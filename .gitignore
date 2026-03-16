@@ -48,6 +48,8 @@ logs/
 .env
 .env.local
 .env.production
+# BUT track .env.development (build flags only, no secrets)
+!landing-page/.env.development
 *.local.json
 secrets.json
 
