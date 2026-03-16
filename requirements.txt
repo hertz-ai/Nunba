@@ -1,11 +1,6 @@
-# AUTO-GENERATED from scripts/deps.py ï¿½ DO NOT EDIT MANUALLY
+# AUTO-GENERATED from scripts/deps.py — DO NOT EDIT MANUALLY
 # Regenerate: python scripts/deps.py requirements
 # Nunba 2.0.0 | Python Embed 3.12.6
-
-# HARTOS â€” Hive Agent Runtime OS (the AI backend)
-# Install from GitHub: pip install git+https://github.com/hertz-ai/HARTOS.git
-# Or from local clone: pip install -e ../HARTOS
-hart-backend @ git+https://github.com/hertz-ai/HARTOS.git
 
 flask==3.1.2
 flask-cors==6.0.2

@@ -122,10 +122,7 @@ python-embed/
 @fortawesome.zip
 landing-page/@fortawesome.zip
 
-# Large media (not tracked — download separately or use LFS)
-landing-page/src/Gif/
-landing-page/src/assets/Video/
-landing-page/src/fonts/materialdesignicons-webfont.svg
+# Large media — tracked (needed for React build)
 
 # Dev analysis artifacts
 agent_data/
