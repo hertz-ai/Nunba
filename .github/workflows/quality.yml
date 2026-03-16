@@ -1,0 +1,77 @@
+name: Code Quality & Security
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+
+jobs:
+  # ── Python: Linting + Security Scanning ──
+  python-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Ruff: lint + security (bandit S rules = OSS Veracode SAST)
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff lint (includes bandit security scan)
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check . || true  # Advisory initially
+
+      # pytest: Backend unit tests (mocked — no running servers required)
+      - name: Install test dependencies
+        run: pip install pytest flask requests
+
+      - name: Run backend tests
+        run: python -m pytest tests/ -v --tb=short 2>&1 || true
+        continue-on-error: true  # Advisory — stabilize then enforce
+
+      # pip-audit: dependency vulnerability scanner (OSS Snyk equivalent)
+      - name: Dependency vulnerability scan
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt --desc 2>&1 || true
+        continue-on-error: true  # Advisory — harden after initial triage
+
+  # ── Frontend: Linting + Dependency Audit ──
+  frontend-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: landing-page
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npx eslint src/ --max-warnings 50 --ext .js,.jsx 2>&1 || true
+        continue-on-error: true  # Advisory — reduce max-warnings over time
+
+      # npm audit: dependency vulnerability scanner (OSS Snyk equivalent)
+      - name: Dependency vulnerability scan
+        run: npm audit --audit-level=high 2>&1 || true
+        continue-on-error: true  # Advisory initially

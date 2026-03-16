@@ -1,0 +1,154 @@
+{
+  "name": "hevolve-ai",
+  "version": "1.0.0",
+  "description": "Hevolve AI — Self-evolving multimodal AI agents through natural conversation",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hertz-ai/nunba.git",
+    "directory": "landing-page"
+  },
+  "homepage": "https://hevolve.ai",
+  "bugs": {
+    "url": "https://github.com/hertz-ai/nunba/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@date-io/date-fns": "^3.2.1",
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@fortawesome/fontawesome-svg-core": "^6.7.1",
+    "@fortawesome/free-solid-svg-icons": "^6.7.1",
+    "@fortawesome/react-fontawesome": "^0.2.2",
+    "@mui/icons-material": "^5.18.0",
+    "@mui/lab": "^7.0.1-beta.20",
+    "@mui/material": "^5.18.0",
+    "@mui/material-next": "^6.0.0-alpha.124",
+    "@mui/styles": "^6.4.8",
+    "@mui/x-date-pickers": "^8.27.0",
+    "@react-pdf-viewer/core": "^3.12.0",
+    "@react-pdf-viewer/default-layout": "^3.12.0",
+    "@testing-library/jest-dom": "^5.17.0",
+    "@testing-library/react": "^13.4.0",
+    "@testing-library/user-event": "^13.5.0",
+    "assert": "^2.1.0",
+    "autobahn": "^22.11.1",
+    "autoprefixer": "^10.4.20",
+    "axios": "^1.6.7",
+    "boardgame.io": "^0.50.2",
+    "buffer": "^6.0.3",
+    "chart.js": "^4.5.1",
+    "crypto-js": "^4.2.0",
+    "date-fns": "^3.6.0",
+    "date-fns-tz": "^3.2.0",
+    "dompurify": "^3.2.4",
+    "jwt-decode": "^4.0.0",
+    "leaflet": "^1.9.4",
+    "libphonenumber-js": "^1.11.17",
+    "lottie-react": "^2.4.1",
+    "lucide-react": "^0.456.0",
+    "pdfjs-dist": "^3.11.174",
+    "phaser": "^3.90.0",
+    "postcss": "^8.4.47",
+    "process": "^0.11.10",
+    "react": "^18.3.1",
+    "react-app-rewired": "^2.2.1",
+    "react-chartjs-2": "^5.3.1",
+    "react-colorful": "^5.6.1",
+    "react-dom": "^18.3.1",
+    "react-ga": "^3.3.1",
+    "react-helmet-async": "^2.0.5",
+    "react-icons": "^4.12.0",
+    "react-modal-video": "^2.0.1",
+    "react-pdf": "^9.2.1",
+    "react-player": "^2.16.0",
+    "react-refresh": "^0.18.0",
+    "react-router-dom": "^6.22.0",
+    "react-scripts": "5.0.1",
+    "react-scroll": "^1.9.0",
+    "react-scroll-to": "^3.0.0-beta.6",
+    "react-spring": "^9.7.3",
+    "react-toastify": "^10.0.6",
+    "react-type-animation": "^3.1.0",
+    "reactstrap": "^9.2.2",
+    "source-map-explorer": "^2.5.3",
+    "stream-browserify": "^3.0.0",
+    "swiper": "~11.1.10",
+    "tailwindcss-animate": "^1.0.7",
+    "uuid": "^13.0.0",
+    "web-vitals": "^2.1.4"
+  },
+  "scripts": {
+    "analyze": "source-map-explorer 'build/static/js/*.js'",
+    "start": "react-app-rewired start",
+    "setup-env": "bash scripts/setup-env.sh",
+    "prebuild": "bash scripts/setup-env.sh",
+    "build": "react-app-rewired build",
+    "encrypt-env": "bash scripts/encrypt-env.sh",
+    "test": "react-app-rewired test",
+    "eject": "react-scripts eject",
+    "lint": "eslint src/ --max-warnings 50 --ext .js,.jsx",
+    "lint:fix": "eslint src/ --fix --ext .js,.jsx",
+    "cy:run": "cypress run --browser chrome",
+    "cy:open": "cypress open",
+    "e2e": "cypress run --browser chrome",
+    "start:coverage": "CYPRESS_COVERAGE=true react-app-rewired start",
+    "e2e:coverage": "CYPRESS_COVERAGE=true cypress run --browser chrome"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
+    "@cypress/code-coverage": "^4.0.0",
+    "ajv": "^8.17.1",
+    "ajv-keywords": "^5.1.0",
+    "babel-eslint": "^10.1.0",
+    "babel-plugin-istanbul": "^7.0.1",
+    "cypress": "^15.10.0",
+    "cypress-mochawesome-reporter": "^4.0.2",
+    "eslint": "^8.57.1",
+    "eslint-config-google": "^0.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
+    "eslint-plugin-security": "^3.0.0",
+    "nyc": "^17.1.0",
+    "postcss-cli": "^11.0.0",
+    "prettier": "^3.8.1",
+    "sass": "^1.98.0",
+    "tailwindcss": "^3.4.14"
+  },
+  "nyc": {
+    "report-dir": "coverage",
+    "reporter": [
+      "text",
+      "html",
+      "json-summary"
+    ],
+    "include": [
+      "src/**/*.js",
+      "src/**/*.jsx"
+    ],
+    "exclude": [
+      "src/**/*.test.js",
+      "src/reportWebVitals.js",
+      "src/setupTests.js"
+    ]
+  },
+  "jest": {
+    "watchPathIgnorePatterns": [
+      "testHelpers.js"
+    ]
+  }
+}

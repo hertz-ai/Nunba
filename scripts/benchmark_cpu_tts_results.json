@@ -1,0 +1,54 @@
+{
+  "timestamp": "2026-03-07 19:31:13",
+  "platform": "win32",
+  "cpu_cores": 16,
+  "piper": {
+    "engine": "piper",
+    "load_time": 0.73,
+    "memory_mb": 24.0,
+    "sample_rate": 22050,
+    "results": [
+      {
+        "engine": "piper",
+        "test": "short",
+        "chars": 25,
+        "synth_time": 5.48,
+        "audio_duration": 1.88,
+        "rtf": 2.913,
+        "accuracy": 1.0,
+        "size_kb": 81.0
+      },
+      {
+        "engine": "piper",
+        "test": "medium",
+        "chars": 90,
+        "synth_time": 6.253,
+        "audio_duration": 6.23,
+        "rtf": 1.003,
+        "accuracy": 0.93,
+        "size_kb": 268.5
+      },
+      {
+        "engine": "piper",
+        "test": "long",
+        "chars": 312,
+        "synth_time": 9.403,
+        "audio_duration": 19.68,
+        "rtf": 0.478,
+        "accuracy": 0.95,
+        "size_kb": 847.5
+      }
+    ]
+  },
+  "pocket_tts": {
+    "engine": "pocket_tts",
+    "note": "Browser-only WASM, zero server CPU",
+    "sample_rate": 24000,
+    "languages": [
+      "en"
+    ],
+    "server_cpu_cost": 0,
+    "ttfa_browser_ms": "50-100",
+    "model_size_mb": "~200"
+  }
+}

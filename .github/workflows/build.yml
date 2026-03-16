@@ -1,0 +1,411 @@
+name: Build & Sign Installers
+
+on:
+  # Build on version tags (e.g. v2.0.1)
+  push:
+    tags:
+      - 'v*'
+  # Manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      skip_signing:
+        description: 'Skip code signing (for test builds)'
+        type: boolean
+        default: false
+
+# Cancel in-progress runs for the same ref
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+
+jobs:
+  # ============================================================
+  # Windows Build
+  # ============================================================
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Nunba
+        uses: actions/checkout@v4
+
+      - name: Checkout hart-backend (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/HARTOS
+          path: ../HARTOS
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+
+      - name: Checkout HevolveAI (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/HevolveAI
+          path: ../hevolveai
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+        continue-on-error: true  # Not fatal if repo is unavailable
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-win-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-win-
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: landing-page\node_modules
+          key: node-win-${{ hashFiles('landing-page/package-lock.json') }}
+          restore-keys: node-win-
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build Nunba app (cx_Freeze + slim)
+        run: python scripts/build.py app --skip-wizard
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Sign Nunba.exe (Azure Trusted Signing)
+        if: ${{ !inputs.skip_signing && secrets.AZURE_TENANT_ID != '' }}
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE }}
+          files-folder: build\Nunba
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Build installer (Inno Setup)
+        run: python scripts/build.py installer
+
+      - name: Sign installer (Azure Trusted Signing)
+        if: ${{ !inputs.skip_signing && secrets.AZURE_TENANT_ID != '' }}
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE }}
+          files-folder: Output
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Smoke test (validate frozen exe)
+        run: |
+          build\Nunba\Nunba.exe --validate
+        timeout-minutes: 5
+        continue-on-error: true  # Don't fail build on validation timeout
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nunba_Setup_Windows
+          path: Output/Nunba_Setup.exe
+          if-no-files-found: error
+
+  # ============================================================
+  # macOS Build
+  # ============================================================
+  build-macos:
+    runs-on: macos-14  # Apple Silicon (M1) runner
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Nunba
+        uses: actions/checkout@v4
+
+      - name: Checkout hart-backend (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/HARTOS
+          path: ../HARTOS
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+
+      - name: Checkout HevolveAI (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/HevolveAI
+          path: ../hevolveai
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+        continue-on-error: true
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-mac-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-mac-
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: landing-page/node_modules
+          key: node-mac-${{ hashFiles('landing-page/package-lock.json') }}
+          restore-keys: node-mac-
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build Nunba
+        run: python scripts/build.py full --skip-wizard
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Import Apple signing certificate
+        if: ${{ !inputs.skip_signing && secrets.APPLE_CERTIFICATE_P12 != '' }}
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Decode the P12 certificate
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > certificate.p12
+
+          # Create a temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the certificate
+          security import certificate.p12 -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+
+          # Allow codesign to use the keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Add to search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # Clean up
+          rm certificate.p12
+
+      - name: Sign and notarize
+        if: ${{ !inputs.skip_signing && secrets.APPLE_DEVELOPER_ID != '' }}
+        env:
+          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: python scripts/build.py sign
+
+      - name: Upload macOS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nunba_Setup_macOS
+          path: Output/Nunba_Setup.dmg
+          if-no-files-found: error
+
+  # ============================================================
+  # Linux Build
+  # ============================================================
+  build-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Nunba
+        uses: actions/checkout@v4
+
+      - name: Checkout hart-backend (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/HARTOS
+          path: ../HARTOS
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+
+      - name: Checkout HevolveAI (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/HevolveAI
+          path: ../hevolveai
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+        continue-on-error: true
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-linux-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-linux-
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: landing-page/node_modules
+          key: node-linux-${{ hashFiles('landing-page/package-lock.json') }}
+          restore-keys: node-linux-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 desktop-file-utils
+
+      - name: Build Nunba app (cx_Freeze)
+        run: python scripts/build.py app --skip-wizard
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Package as AppImage
+        run: |
+          # Download appimagetool
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+          # Create AppDir structure
+          mkdir -p Nunba.AppDir/usr/bin Nunba.AppDir/usr/share/icons/hicolor/256x256/apps
+          cp -r build/Nunba/* Nunba.AppDir/usr/bin/
+
+          # Desktop entry
+          cat > Nunba.AppDir/nunba.desktop << 'EOF'
+          [Desktop Entry]
+          Name=Nunba
+          Comment=Your AI Guardian Angel — Companion App for HART OS
+          Exec=Nunba
+          Icon=nunba
+          Type=Application
+          Categories=Utility;AI;
+          EOF
+
+          # Copy icon (use existing or placeholder)
+          if [ -f assets/icon.png ]; then
+            cp assets/icon.png Nunba.AppDir/usr/share/icons/hicolor/256x256/apps/nunba.png
+          else
+            # Create a 1x1 placeholder if no icon
+            convert -size 256x256 xc:purple Nunba.AppDir/usr/share/icons/hicolor/256x256/apps/nunba.png 2>/dev/null || true
+          fi
+          cp Nunba.AppDir/nunba.desktop Nunba.AppDir/
+          ln -sf usr/share/icons/hicolor/256x256/apps/nunba.png Nunba.AppDir/nunba.png
+
+          # AppRun entry point
+          cat > Nunba.AppDir/AppRun << 'APPRUN'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          exec "${HERE}/usr/bin/Nunba" "$@"
+          APPRUN
+          chmod +x Nunba.AppDir/AppRun
+
+          # Build AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage Nunba.AppDir Output/Nunba-x86_64.AppImage
+        env:
+          ARCH: x86_64
+
+      - name: Build .deb package
+        run: |
+          mkdir -p nunba-deb/DEBIAN
+          mkdir -p nunba-deb/usr/bin
+          mkdir -p nunba-deb/usr/share/applications
+          mkdir -p nunba-deb/usr/share/icons/hicolor/256x256/apps
+
+          # Copy frozen app
+          cp -r build/Nunba/* nunba-deb/usr/bin/
+
+          # Control file
+          VERSION=$(python -c "import hart_version; print(hart_version.VERSION)" 2>/dev/null || echo "1.0.0")
+          cat > nunba-deb/DEBIAN/control << CTRL
+          Package: nunba
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Hevolve AI <legal@hevolve.ai>
+          Description: Nunba — AI Guardian Angel Companion App
+           Your personal AI companion that runs on HART OS.
+           Chat, device control, vision, TTS/STT — all local.
+          CTRL
+
+          # Desktop entry
+          cp Nunba.AppDir/nunba.desktop nunba-deb/usr/share/applications/ 2>/dev/null || true
+
+          # Build .deb
+          dpkg-deb --build nunba-deb Output/nunba_${VERSION}_amd64.deb
+        continue-on-error: true
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nunba_Setup_Linux_AppImage
+          path: Output/Nunba-x86_64.AppImage
+          if-no-files-found: error
+
+      - name: Upload Linux .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nunba_Setup_Linux_deb
+          path: Output/nunba_*.deb
+          if-no-files-found: warn
+
+  # ============================================================
+  # Create GitHub Release (only on tags)
+  # ============================================================
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/Nunba_Setup_Windows/Nunba_Setup.exe
+            artifacts/Nunba_Setup_macOS/Nunba_Setup.dmg
+            artifacts/Nunba_Setup_Linux_AppImage/Nunba-x86_64.AppImage
+            artifacts/Nunba_Setup_Linux_deb/nunba_*.deb

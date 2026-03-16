@@ -1,0 +1,31 @@
+Business Source License 1.1
+
+License text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
+(BSL-1.1 is a standard license format used by CockroachDB, Sentry, HashiCorp, etc.)
+
+Parameters
+
+Licensor:             Hevolve AI (hertz-ai)
+Licensed Work:        Nunba Desktop & Mobile Companion App
+                      The Licensed Work is (c) 2024-2026 Hevolve AI
+
+Additional Use Grant: You may use the Licensed Work for personal,
+                      non-commercial, academic, and evaluation purposes.
+                      You may NOT use it to create a competing commercial
+                      product, service, or operating system.
+
+Change Date:          2030-01-01
+
+Change License:       Apache License, Version 2.0
+
+For information about alternative licensing arrangements for the Licensed Work,
+please contact: legal@hevolve.ai
+
+Notice
+
+The Business Source License (this document, or the "License") is not an Open
+Source license. However, the Licensed Work will eventually be made available
+under an Open Source License, as stated in this License.
+
+License text: https://mariadb.com/bsl11/

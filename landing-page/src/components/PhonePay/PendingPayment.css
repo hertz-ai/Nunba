@@ -1,0 +1,34 @@
+/* PendingPayment.css */
+
+.pending-payment-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  text-align: center;
+}
+
+h1 {
+  color: #c2da3a;
+}
+
+p {
+  margin-top: 20px;
+  color: #666;
+}
+
+.pay-now-button {
+  background-color: #0078ff;
+  color: #fff;
+  padding: 10px 20px;
+  font-size: 16px;
+  margin-top: 20px;
+  cursor: pointer;
+  border: none;
+  border-radius: 5px;
+}
+
+.pay-now-button:hover {
+  background-color: #0056b3;
+}

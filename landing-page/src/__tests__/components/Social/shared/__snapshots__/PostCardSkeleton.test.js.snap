@@ -1,0 +1,78 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`PostCardSkeleton matches snapshot 1`] = `
+<div>
+  <div
+    aria-busy="true"
+    class="MuiPaper-root MuiPaper-elevation MuiPaper-rounded MuiPaper-elevation1 MuiCard-root css-16avhuz-MuiPaper-root-MuiCard-root"
+  >
+    <div
+      class="MuiBox-root css-1ku52lt"
+    />
+    <div
+      class="MuiCardContent-root css-fr31rc-MuiCardContent-root"
+    >
+      <div
+        class="MuiBox-root css-1gh5laf"
+      >
+        <span
+          class="MuiSkeleton-root MuiSkeleton-rounded MuiSkeleton-wave css-126j9jd-MuiSkeleton-root"
+          style="width: 80px; height: 22px;"
+        />
+        <span
+          class="MuiSkeleton-root MuiSkeleton-circular MuiSkeleton-wave css-q8rlzj-MuiSkeleton-root"
+          style="width: 24px; height: 24px;"
+        />
+        <span
+          class="MuiSkeleton-root MuiSkeleton-text MuiSkeleton-wave css-1i0ks03-MuiSkeleton-root"
+          style="width: 20%; height: 18px;"
+        />
+        <span
+          class="MuiSkeleton-root MuiSkeleton-text MuiSkeleton-wave css-1i0ks03-MuiSkeleton-root"
+          style="width: 10%; height: 14px;"
+        />
+      </div>
+      <span
+        class="MuiSkeleton-root MuiSkeleton-text MuiSkeleton-wave css-lp3xuc-MuiSkeleton-root"
+        style="width: 75%; height: 28px;"
+      />
+      <div
+        class="MuiBox-root css-11ko6ms"
+      >
+        <span
+          class="MuiSkeleton-root MuiSkeleton-text MuiSkeleton-wave css-1i0ks03-MuiSkeleton-root"
+          style="width: 100%; height: 18px;"
+        />
+        <span
+          class="MuiSkeleton-root MuiSkeleton-text MuiSkeleton-wave css-1i0ks03-MuiSkeleton-root"
+          style="width: 85%; height: 18px;"
+        />
+      </div>
+      <span
+        class="MuiSkeleton-root MuiSkeleton-text MuiSkeleton-wave css-ey0ajf-MuiSkeleton-root"
+        style="width: 60%; height: 16px;"
+      />
+      <div
+        class="MuiBox-root css-ijrtdf"
+      >
+        <span
+          class="MuiSkeleton-root MuiSkeleton-rounded MuiSkeleton-wave css-uzvwf4-MuiSkeleton-root"
+          style="width: 70px; height: 24px;"
+        />
+        <span
+          class="MuiSkeleton-root MuiSkeleton-rounded MuiSkeleton-wave css-uzvwf4-MuiSkeleton-root"
+          style="width: 60px; height: 24px;"
+        />
+        <span
+          class="MuiSkeleton-root MuiSkeleton-rounded MuiSkeleton-wave css-uzvwf4-MuiSkeleton-root"
+          style="width: 50px; height: 24px;"
+        />
+        <span
+          class="MuiSkeleton-root MuiSkeleton-rounded MuiSkeleton-wave css-uzvwf4-MuiSkeleton-root"
+          style="width: 50px; height: 24px;"
+        />
+      </div>
+    </div>
+  </div>
+</div>
+`;

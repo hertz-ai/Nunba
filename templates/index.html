@@ -1,0 +1,274 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HevolveAi Agent Companion Control Panel</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            margin-top: 0;
+        }
+        .status-box {
+            background-color: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .error {
+            background-color: #ffebee;
+            border-left-color: #f44336;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 10px;
+            margin: 20px 0;
+        }
+        .label {
+            font-weight: bold;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        button {
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #3367d6;
+        }
+        .api-endpoints {
+            margin-top: 30px;
+        }
+        .endpoint {
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        .screenshot {
+            max-width: 100%;
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .success-message {
+            color: #4caf50;
+            margin-left: 10px;
+        }
+        #screenshotContainer {
+            text-align: center;
+            margin-top: 20px;
+            display: none;
+        }
+        .system-tray-notice {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #fff3e0;
+            border-left: 4px solid #ff9800;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>HevolveAi Agent Companion Control Panel</h1>
+
+        <div id="statusBox" class="status-box">
+            <p>Checking server status...</p>
+        </div>
+
+        <div class="info-grid">
+            <div class="label">Server URL:</div>
+            <div id="serverUrl">http://localhost:{port}</div>
+            
+            <div class="label">Device ID:</div>
+            <div id="deviceId">Loading...</div>
+            
+            <div class="label">Log File:</div>
+            <div id="logFile">Loading...</div>
+        </div>
+
+        <div>
+            <button onclick="checkHealth()">Check Health</button>
+            <button onclick="takeScreenshot()">Take Screenshot</button>
+            <button onclick="setupAutostart()">Setup Autostart</button>
+            <button onclick="hideToSystemTray()">Hide to System Tray</button>
+            <span id="message"></span>
+        </div>
+
+        <div class="system-tray-notice">
+            <p>The application continues running in the system tray even when this window is closed. Right-click the system tray icon to show the window again or exit the application.</p>
+        </div>
+
+        <div id="screenshotContainer">
+            <h3>Screenshot</h3>
+            <img id="screenshot" class="screenshot" alt="Screenshot">
+        </div>
+
+        <div class="api-endpoints">
+            <h2>Available API Endpoints</h2>
+            
+            <div class="endpoint">
+                <h3>GET /health</h3>
+                <p>Check if the server is healthy.</p>
+                <pre>curl http://localhost:{port}/health</pre>
+            </div>
+            
+            <div class="endpoint">
+                <h3>GET /status</h3>
+                <p>Get detailed server status information.</p>
+                <pre>curl http://localhost:{port}/status</pre>
+            </div>
+            
+            <div class="endpoint">
+                <h3>GET /screenshot</h3>
+                <p>Capture a screenshot of the current screen.</p>
+                <pre>curl http://localhost:{port}/screenshot -o screenshot.png</pre>
+            </div>
+            
+            <div class="endpoint">
+                <h3>POST /execute</h3>
+                <p>Execute a command on the system.</p>
+                <pre>curl -X POST http://localhost:{port}/execute -H "Content-Type: application/json" -d '{"command": ["echo", "Hello World"]}'</pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const port = PORT_PLACEHOLDER;
+        const baseUrl = `http://localhost:${port}`;
+
+        document.getElementById('serverUrl').textContent = baseUrl;
+
+        // Check server status on page load
+        window.onload = function() {
+            fetchServerStatus();
+        };
+
+        function fetchServerStatus() {
+            fetch(`${baseUrl}/status`)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('statusBox').innerHTML = 
+                        `<p>Server is <strong>operational</strong></p>`;
+                    document.getElementById('deviceId').textContent = data.device_id;
+                    document.getElementById('logFile').textContent = data.log_file;
+                })
+                .catch(error => {
+                    document.getElementById('statusBox').innerHTML = 
+                        `<p>Error connecting to server: ${error.message}</p>`;
+                    document.getElementById('statusBox').classList.add('error');
+                });
+        }
+
+        function checkHealth() {
+            const messageEl = document.getElementById('message');
+            messageEl.textContent = "Checking...";
+            messageEl.className = "";
+
+            fetch(`${baseUrl}/health`)
+                .then(response => response.json())
+                .then(data => {
+                    messageEl.textContent = "Server is healthy!";
+                    messageEl.className = "success-message";
+                })
+                .catch(error => {
+                    messageEl.textContent = `Error: ${error.message}`;
+                    messageEl.className = "error";
+                });
+        }
+
+        function takeScreenshot() {
+            const messageEl = document.getElementById('message');
+            messageEl.textContent = "Taking screenshot...";
+            messageEl.className = "";
+
+            fetch(`${baseUrl}/screenshot`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.blob();
+                })
+                .then(blob => {
+                    const imageUrl = URL.createObjectURL(blob);
+                    document.getElementById('screenshot').src = imageUrl;
+                    document.getElementById('screenshotContainer').style.display = 'block';
+                    messageEl.textContent = "Screenshot captured successfully!";
+                    messageEl.className = "success-message";
+                })
+                .catch(error => {
+                    messageEl.textContent = `Error taking screenshot: ${error.message}`;
+                    messageEl.className = "error";
+                });
+        }
+        
+        function setupAutostart() {
+            const messageEl = document.getElementById('message');
+            messageEl.textContent = "Setting up autostart...";
+            messageEl.className = "";
+
+            fetch(`${baseUrl}/setup_autostart`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        messageEl.textContent = "Autostart configured successfully!";
+                        messageEl.className = "success-message";
+                    } else {
+                        messageEl.textContent = `Error: ${data.error}`;
+                        messageEl.className = "error";
+                    }
+                })
+                .catch(error => {
+                    messageEl.textContent = `Error: ${error.message}`;
+                    messageEl.className = "error";
+                });
+        }
+        
+        function hideToSystemTray() {
+            const messageEl = document.getElementById('message');
+            messageEl.textContent = "Hiding to system tray...";
+            messageEl.className = "";
+
+            fetch(`${baseUrl}/hide_to_tray`)
+                .then(response => response.json())
+                .then(data => {
+                    // The window should be hidden by the server
+                    messageEl.textContent = "Application hidden to system tray";
+                    messageEl.className = "success-message";
+                })
+                .catch(error => {
+                    messageEl.textContent = `Error: ${error.message}`;
+                    messageEl.className = "error";
+                });
+        }
+    </script>
+</body>
+</html>

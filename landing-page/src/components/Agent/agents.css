@@ -1,0 +1,29 @@
+.agents-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 20px;
+  margin-top: 1.5rem;
+  padding: 0 8px;
+}
+
+@media (max-width: 540px) {
+  .agents-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+}
+
+@media (max-width: 360px) {
+  .agents-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+}
+
+.no-agents-message {
+  color: #9ca3af;
+  font-size: 1rem;
+  margin-top: 2rem;
+  text-align: center;
+  grid-column: 1 / -1;
+}

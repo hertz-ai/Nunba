@@ -1,0 +1,23 @@
+{
+    "pid": 1, 
+    "argv": [
+        "crossbar", 
+        "start", 
+        "--cbdir", 
+        "/node/.crossbar"
+    ], 
+    "options": {
+        "debug_lifecycle": false, 
+        "debug_programflow": false, 
+        "command": "start", 
+        "color": "auto", 
+        "loglevel": "info", 
+        "logformat": "standard", 
+        "logdir": null, 
+        "logtofile": false, 
+        "cbdir": "/node/.crossbar", 
+        "config": null, 
+        "shutdownafter": null, 
+        "vmprof": false
+    }
+}

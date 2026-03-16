@@ -1,0 +1,74 @@
+site_name: Nunba Documentation
+site_description: Setup, installation, and development guide for the Nunba AI platform
+site_author: Hevolve AI Pvt Ltd
+site_url: https://hevolve.ai/docs
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - content.tabs.link
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - tables
+  - toc:
+      permalink: true
+  - attr_list
+  - def_list
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Overview: getting-started/overview.md
+    - Prerequisites: getting-started/prerequisites.md
+    - Clone & Install: getting-started/install.md
+    - Environment Configuration: getting-started/environment.md
+    - First Run: getting-started/first-run.md
+  - Backend Setup:
+    - Flask Server: backend/flask-server.md
+    - LLM Setup (llama.cpp): backend/llm-setup.md
+    - Database: backend/database.md
+    - Voice Pipeline: backend/voice-pipeline.md
+  - Frontend Setup:
+    - React Web App: frontend/react-app.md
+    - Environment Variables: frontend/env-vars.md
+    - Encrypted Secrets: frontend/encrypted-secrets.md
+  - Desktop App:
+    - Building from Source: desktop/build.md
+    - Installer Creation: desktop/installer.md
+    - Troubleshooting: desktop/troubleshooting.md
+  - Architecture:
+    - System Overview: architecture/overview.md
+    - LLM Routing: architecture/llm-routing.md
+  - Development:
+    - Contributing: development/contributing.md
+    - Testing: development/testing.md
+    - Code Quality: development/code-quality.md
+  - Reference:
+    - Environment Variables: reference/env-vars.md
+    - Guardrails: reference/guardrails.md

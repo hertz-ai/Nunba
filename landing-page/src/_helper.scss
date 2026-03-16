@@ -1,0 +1,93 @@
+/*****************
+     Helper
+*****************/
+
+.section {
+  padding-top: 90px !important;
+  padding-bottom: 90px !important;
+  position: relative;
+}
+
+.section-sm {
+  padding-top: 60px !important;
+  padding-bottom: 60px !important;
+  position: relative;
+}
+
+.bg-overlay {
+  position: absolute;
+  background-color: rgba(54, 64, 78, 0.85);
+  top: 0;
+  right: 0;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.vertical-content {
+  display: -webkit-flex;
+  display: -moz-flex;
+  display: -ms-flexbox;
+  display: flex;
+  align-items: center;
+  -webkit-align-items: center;
+  justify-content: center;
+  -webkit-justify-content: center;
+  flex-direction: row;
+  -webkit-flex-direction: row;
+}
+
+.title h3 {
+  font-size: 26px;
+}
+
+.title p.subtitle {
+  letter-spacing: 4px;
+  font-weight: 600;
+  // font-family: $font-secondary;
+  font-family: 'Monaco';
+}
+
+.f-12 {
+  font-size: 12px;
+}
+
+.f-13 {
+  font-size: 13px;
+}
+
+.f-14 {
+  font-size: 14px;
+}
+
+.f-16 {
+  font-size: 16px;
+}
+
+.f-17 {
+  font-size: 17px;
+}
+
+.f-18 {
+  font-size: 18px;
+}
+
+a.text-custom:hover {
+  // color: $primary;
+  color: 'black';
+}
+
+.text-light-custom {
+  color: #a0a8b9;
+}
+
+.modal-backdrop {
+  // background-color: $primary;
+  background-color: 'black';
+}
+
+.avatar-md {
+  width: 3.5rem;
+  height: 3.5rem;
+}

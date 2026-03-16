@@ -1,0 +1,249 @@
+"""
+ModelCatalog — Nunba shim.
+
+Re-exports the canonical ModelCatalog from HARTOS and adds Nunba-specific
+subsystem populators (LLM presets from llama_installer, TTS engines from
+tts_engine).  All existing ``from models.catalog import ...`` imports
+continue to work unchanged.
+
+The singleton is shared with HARTOS so that BOTH
+``integrations.service_tools.model_catalog.get_catalog()`` and
+``models.catalog.get_catalog()`` return the same instance.
+"""
+
+import logging
+from typing import Optional
+
+# ── Re-export canonical types from HARTOS ─────────────────────────
+from integrations.service_tools.model_catalog import (       # noqa: F401
+    ModelCatalog, ModelEntry, ModelType, MODEL_TYPES, BACKENDS, SOURCES,
+)
+
+# Access the HARTOS module for shared singleton management
+import integrations.service_tools.model_catalog as _hartos_mod
+
+logger = logging.getLogger('NunbaModelCatalog')
+
+
+# ── Nunba-specific subsystem populators ───────────────────────────
+# These are registered as callbacks on the catalog so HARTOS itself
+# never imports from llama.* or tts.* (avoids circular deps).
+
+def populate_llm_presets(catalog: ModelCatalog) -> int:
+    """Import MODEL_PRESETS from llama_installer into the catalog."""
+    added = 0
+    try:
+        from llama.llama_installer import MODEL_PRESETS
+        for i, preset in enumerate(MODEL_PRESETS):
+            slug = preset.display_name.lower().replace(" ", "-").replace("(", "").replace(")", "")
+            entry_id = f'llm-{slug}'
+            if catalog.get(entry_id):
+                continue
+            vram_est = preset.size_mb / 1024.0
+            files = {'model': preset.file_name}
+            if preset.has_vision and preset.mmproj_file:
+                files['mmproj'] = preset.mmproj_file
+            caps = {'has_vision': preset.has_vision}
+            if 'Qwen3.5' in preset.display_name:
+                caps['context_length'] = 256000
+                caps['chat_template'] = 'jinja'
+
+            tags = ['local']
+            if preset.has_vision:
+                tags.append('vision')
+            if i == 0:
+                tags.append('recommended')
+
+            entry = ModelEntry(
+                id=entry_id,
+                name=preset.display_name,
+                model_type=ModelType.LLM,
+                source='huggingface',
+                repo_id=preset.repo_id,
+                files=files,
+                vram_gb=round(vram_est, 1),
+                ram_gb=round(vram_est * 1.2, 1),
+                disk_gb=round(preset.size_mb / 1024.0, 1),
+                backend='llama.cpp',
+                supports_gpu=True,
+                supports_cpu=True,
+                supports_cpu_offload=False,
+                idle_timeout_s=0,
+                min_build=preset.min_build,
+                capabilities=caps,
+                quality_score=min(0.5 + (preset.size_mb / 20000), 0.95),
+                speed_score=max(0.3, 1.0 - (preset.size_mb / 25000)),
+                priority=90 - i * 5,
+                tags=tags,
+                auto_load=i == 0,
+            )
+            catalog.register(entry, persist=False)
+            added += 1
+    except ImportError:
+        logger.debug("llama_installer not available, skipping LLM presets")
+    return added
+
+
+def populate_tts_engines(catalog: ModelCatalog) -> int:
+    """Import ENGINE_CAPABILITIES from tts_engine into the catalog."""
+    added = 0
+    try:
+        from tts.tts_engine import ENGINE_CAPABILITIES, LANG_ENGINE_PREFERENCE
+        for backend_name, caps in ENGINE_CAPABILITIES.items():
+            entry_id = f'tts-{backend_name}'
+            if catalog.get(entry_id):
+                continue
+
+            langs_raw = caps.get('languages', set())
+            langs = sorted(langs_raw) if isinstance(langs_raw, set) else list(langs_raw)
+            vram = caps.get('vram_gb', 0)
+
+            lang_prio = {}
+            for lang, prefs in LANG_ENGINE_PREFERENCE.items():
+                if backend_name in prefs:
+                    lang_prio[lang] = prefs.index(backend_name) * 10
+
+            entry = ModelEntry(
+                id=entry_id,
+                name=caps.get('name', backend_name),
+                model_type=ModelType.TTS,
+                source='pip',
+                repo_id='',
+                vram_gb=vram,
+                ram_gb=max(1.0, vram * 0.8),
+                backend='torch' if vram > 0 else 'piper',
+                supports_gpu=vram > 0,
+                supports_cpu=True,
+                supports_cpu_offload=vram > 0,
+                cpu_offload_method='restart_cpu' if vram > 0 else 'none',
+                idle_timeout_s=600,
+                capabilities={
+                    'streaming': caps.get('streaming', False),
+                    'voice_cloning': caps.get('voice_cloning', False),
+                    'paralinguistic': caps.get('paralinguistic', []),
+                    'emotion_tags': caps.get('emotion_tags', []),
+                    'sample_rate': caps.get('sample_rate', 22050),
+                },
+                quality_score={'highest': 0.95, 'high': 0.85, 'medium': 0.7,
+                               'low': 0.5}.get(caps.get('quality', 'medium'), 0.7),
+                speed_score=0.8 if vram > 0 else 0.5,
+                languages=langs,
+                language_priority=lang_prio,
+                tags=['local', 'tts'] + (['cpu-friendly'] if vram == 0 else []),
+            )
+            catalog.register(entry, persist=False)
+            added += 1
+    except ImportError:
+        logger.debug("tts_engine not available, skipping TTS engines")
+    return added
+
+
+def populate_media_gen(catalog: ModelCatalog) -> int:
+    """Register music (ACE Step 1.5) and video (LTX2) generation models."""
+    added = 0
+
+    if not catalog.get('audio_gen-acestep-1.5'):
+        catalog.register(ModelEntry(
+            id='audio_gen-acestep-1.5',
+            name='ACE Step 1.5 (Music Generation)',
+            model_type=ModelType.AUDIO_GEN,
+            source='huggingface',
+            repo_id='ACE-Step/ACE-Step-v1-3.5B',
+            vram_gb=6.0,
+            ram_gb=8.0,
+            disk_gb=7.0,
+            backend='torch',
+            supports_gpu=True,
+            supports_cpu=True,
+            supports_cpu_offload=True,
+            cpu_offload_method='torch_to_cpu',
+            idle_timeout_s=300,
+            quality_score=0.9,
+            speed_score=0.6,
+            priority=80,
+            languages=['en'],  # lyrics language — generation is universal
+            tags=['local', 'music', 'generative'],
+            auto_load=False,
+        ), persist=False)
+        added += 1
+
+    if not catalog.get('video_gen-ltx2'):
+        catalog.register(ModelEntry(
+            id='video_gen-ltx2',
+            name='LTX Video 2 (via wan2gp)',
+            model_type=ModelType.VIDEO_GEN,
+            source='huggingface',
+            repo_id='Lightricks/LTX-Video-2',
+            vram_gb=8.0,
+            ram_gb=12.0,
+            disk_gb=10.0,
+            backend='sidecar',
+            supports_gpu=True,
+            supports_cpu=False,
+            supports_cpu_offload=True,
+            cpu_offload_method='torch_to_cpu',
+            idle_timeout_s=300,
+            quality_score=0.92,
+            speed_score=0.4,
+            priority=80,
+            languages=[],  # language-agnostic (text prompt)
+            tags=['local', 'video', 'generative'],
+            auto_load=False,
+        ), persist=False)
+        added += 1
+
+    return added
+
+
+# ── Singleton (shared with HARTOS module) ─────────────────────────
+_populators_registered = False
+
+
+def get_catalog() -> ModelCatalog:
+    """Get or create the global ModelCatalog singleton.
+
+    Shares the singleton with HARTOS's model_catalog module so that
+    both import paths return the same instance.  Registers Nunba-specific
+    LLM/TTS populators before the first auto-populate runs.
+    """
+    global _populators_registered
+
+    if _hartos_mod._catalog_instance is not None:
+        if not _populators_registered:
+            _hartos_mod._catalog_instance.register_populator(
+                'llm_presets', populate_llm_presets)
+            _hartos_mod._catalog_instance.register_populator(
+                'tts_engines', populate_tts_engines)
+            _hartos_mod._catalog_instance.register_populator(
+                'media_gen', populate_media_gen)
+            _populators_registered = True
+        return _hartos_mod._catalog_instance
+
+    with _hartos_mod._catalog_lock:
+        if _hartos_mod._catalog_instance is None:
+            inst = ModelCatalog()
+            inst.register_populator('llm_presets', populate_llm_presets)
+            inst.register_populator('tts_engines', populate_tts_engines)
+            inst.register_populator('media_gen', populate_media_gen)
+            _populators_registered = True
+            if not inst.list_all():
+                inst.populate_from_subsystems()
+            else:
+                # Re-run populators for any new model types not yet in catalog
+                # (e.g., media_gen added after initial catalog creation)
+                existing_ids = {e.id for e in inst.list_all()}
+                for name, fn in inst._populators:
+                    try:
+                        fn(inst)
+                    except Exception:
+                        pass
+            _hartos_mod._catalog_instance = inst
+        elif not _populators_registered:
+            _hartos_mod._catalog_instance.register_populator(
+                'llm_presets', populate_llm_presets)
+            _hartos_mod._catalog_instance.register_populator(
+                'tts_engines', populate_tts_engines)
+            _hartos_mod._catalog_instance.register_populator(
+                'media_gen', populate_media_gen)
+            _populators_registered = True
+    return _hartos_mod._catalog_instance

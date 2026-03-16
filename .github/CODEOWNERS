@@ -1,0 +1,4 @@
+# Nunba Code Owners — every change requires steward approval.
+*                           @hertz-ai/stewards
+/scripts/                   @hertz-ai/stewards
+/.github/                   @hertz-ai/stewards

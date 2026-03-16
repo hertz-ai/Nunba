@@ -1,0 +1,65 @@
+# AUTO-GENERATED from scripts/deps.py � DO NOT EDIT MANUALLY
+# Regenerate: python scripts/deps.py requirements
+# Nunba 2.0.0 | Python Embed 3.12.6
+
+# HARTOS — Hive Agent Runtime OS (the AI backend)
+# Install from GitHub (open source): pip install git+https://github.com/hertz-ai/HARTOS.git
+# Or from local clone: pip install -e ../HARTOS
+hart-backend @ git+https://github.com/hertz-ai/HARTOS.git
+
+flask==3.1.2
+flask-cors==6.0.2
+werkzeug==3.1.5
+waitress==3.0.2
+pywebview==6.1
+pyautogui==0.9.54
+pyperclip==1.11.0
+pillow==12.1.1
+uvicorn==0.40.0
+fastapi==0.133.0
+starlette==0.52.1
+pydantic==2.12.5
+sqlalchemy==2.0.46
+alembic==1.18.4
+greenlet==3.3.1
+requests==2.32.5
+certifi==2026.1.4
+autobahn==25.12.2
+autobahn[serialization]
+autobahn[twisted]
+crossbarhttp3==1.1
+shapely==2.1.2
+cx_Freeze==8.5.3
+numpy==1.26.4
+langchain-classic==1.0.1
+langchain-community==0.4.1
+langchain-core==1.2.15
+langchain-text-splitters==1.1.1
+langsmith==0.7.6
+piper-tts==1.4.1
+onnxruntime==1.24.1
+soundfile==0.13.1
+sentry-sdk[flask]==2.52.0
+google-auth==2.48.0
+cachetools==7.0.1
+PyJWT==2.11.0
+autogen-agentchat==0.2.37
+apscheduler==3.11.2
+json-repair==0.57.1
+beautifulsoup4==4.14.3
+PyPDF2==3.0.1
+redis==7.1.1
+websockets==16.0
+python-multipart==0.0.22
+coloredlogs==15.0.1
+pandas==3.0.0
+python-jose==3.5.0
+pytz==2025.2
+aiohttp==3.13.3
+python-dotenv==1.2.1
+cryptography==46.0.5
+
+# Platform: win32
+pystray==0.19.5
+win10toast==0.9
+pywin32==311

@@ -1,0 +1,40 @@
+.payment-success-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background-color: #f4f4f4;
+  flex-direction: column;
+}
+
+.success-container {
+  background-color: #28a745;
+  padding: 20px;
+  border-radius: 50%;
+  margin-right: 20px;
+}
+
+.success-icon {
+  font-size: 4em;
+  color: #fff;
+}
+
+.success-content {
+  text-align: left;
+}
+
+.success-header {
+  color: #28a745;
+}
+
+.transaction-id {
+  margin-top: 10px;
+  font-size: 1.2em;
+  color: #333;
+}
+
+.thank-you {
+  margin-top: 20px;
+  font-size: 1.5em;
+  color: #555;
+}

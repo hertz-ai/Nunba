@@ -1,0 +1,21 @@
+.datePicker {
+  grid-column: 5/10;
+  grid-row: 2/4;
+  // background: cornflowerblue;
+  margin: 0%;
+
+  input {
+    font-size: 21px;
+    font-family: 'Roboto Condensed';
+    font-weight: bold;
+    color: #444;
+    width: 100%;
+    text-align: center;
+    border: none;
+    background-color: transparent;
+    border-bottom: 2px solid #2581e4;
+    &:focus {
+      outline: none;
+    }
+  }
+}

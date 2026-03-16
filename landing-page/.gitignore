@@ -1,0 +1,49 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# IDE
+.idea
+.vscode
+*.sublime-workspace
+*.sublime-project
+
+# testing
+/coverage
+
+# production
+/build
+dist/
+
+# environment files
+.env
+.env.*
+!.env.example
+!.env.production.enc
+
+# misc
+.DS_Store
+Thumbs.db
+Desktop.ini
+.history
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# vim swap files
+*.swp
+*.swo
+
+# Cypress artifacts
+cypress/screenshots/
+cypress/videos/
+cypress/downloads/
+cypress/reports/
+
+# Code coverage
+.nyc_output/

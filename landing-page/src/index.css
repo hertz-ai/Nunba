@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply cursor-pointer;
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@layer components {
+  /* Gradient action button — primary CTA with press/hover feedback */
+  .btn-gradient {
+    @apply w-full py-2 px-4 rounded text-white font-semibold
+               transition-all duration-200 hover:brightness-110 hover:shadow-lg active:scale-[0.97];
+  }
+
+  /* Subtle press feedback for icon buttons and toggles */
+  .btn-press {
+    @apply transition-all duration-200 active:scale-[0.9];
+  }
+
+  /* Tab/pill toggle with active highlight */
+  .btn-tab {
+    @apply transition-all duration-200 active:scale-[0.95];
+  }
+}
+
+/* Respect user's reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

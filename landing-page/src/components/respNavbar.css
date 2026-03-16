@@ -1,0 +1,317 @@
+html,
+body {
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  scroll-behavior: smooth;
+}
+
+.section {
+  position: relative;
+  background-size: cover;
+  background-repeat: no-repeat;
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.nav {
+  transition: all 0.5s ease;
+  font-size: 0.875rem;
+  font-weight: 400;
+  /* font-family: 'Open Sans', sans-serif; */
+  font-family: 'Open Sans', sans-serif;
+  width: 100%;
+  z-index: 100;
+  position: absolute;
+  /* bottom: 0; */
+  left: 0;
+  /* letter-spacing: 2px; */
+  line-height: 100px;
+  -webkit-transition-property:
+    background-color, box-shadow, line-height, height;
+  transition-property: background-color, box-shadow, line-height, height;
+  -webkit-transition-timing-function: cubic-bezier(0.78, 0.13, 0.15, 0.86);
+  transition-timing-function: cubic-bezier(0.78, 0.13, 0.15, 0.86);
+  -webkit-transition-duration: 0.3s;
+  transition-duration: 0.4s;
+  border-bottom: 1px solid #82868d;
+}
+
+.nav .brand {
+  /* padding: 15px 60px; */
+  /* line-height: 30px; */
+  line-height: 100px;
+  padding-left: 60px;
+  padding-right: 60px;
+  display: inline-block;
+  float: left;
+  font-size: 20px;
+  font-family: 'Pacifico', cursive;
+  -webkit-transition-property:
+    background-color, box-shadow, line-height, height;
+  transition-property: background-color, box-shadow, line-height, height;
+  -webkit-transition-timing-function: cubic-bezier(0.78, 0.13, 0.15, 0.86);
+  transition-timing-function: cubic-bezier(0.78, 0.13, 0.15, 0.86);
+  -webkit-transition-duration: 0.3s;
+  transition-duration: 0.3s;
+
+  max-height: 40px;
+  max-width: 30%;
+  overflow: visible;
+  padding-top: 0;
+  padding-bottom: 0;
+
+  /* border-right : 1px solid #82868d; */
+  /* padding-right: 60px; */
+}
+
+.nav .brand a {
+  color: #e33b00;
+  text-decoration: none;
+}
+
+/* .nav .brand img {
+	object-fit: contain;
+	display: block;
+	width: auto;
+	max-width: 100%;
+	
+} */
+
+.nav .brand .logoDark {
+  display: none;
+}
+
+.sticky .brand .logoDark {
+  display: block;
+}
+
+.sticky .brand .logoWhite {
+  display: block;
+}
+
+.nav ul {
+  float: right;
+  margin: 0;
+  /* text-transform: uppercase; */
+}
+
+.nav ul li {
+  text-align: center;
+  display: inline-block;
+  list-style: none;
+  padding: 15px 15px;
+  cursor: pointer;
+  line-height: 30px;
+}
+
+.nav ul li:hover a {
+  font-weight: bold;
+  color: #e33b00;
+}
+
+.nav ul li a {
+  color: #eee;
+  text-decoration: none;
+}
+
+.sticky {
+  position: fixed !important;
+  top: 0;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  /* box-shadow: 0 4px 5px -2px rgba(0,0,0,0.22), 0 2px 1px -1px rgba(0,0,0,0.05); */
+  background-color: #f9f9f9 !important;
+  line-height: 30px;
+}
+
+.sticky .brand {
+  line-height: 60px;
+  border-right: unset;
+  content: url('https://etime.hertzai.com/web/image/website/1/logo/HertzAI?unique=e737249');
+  /* background-size: 10 10; */
+}
+
+.sticky ul li a {
+  /* color: #6E7982; */
+  color: black;
+}
+
+.sticky ul li:hover a {
+  color: #e33b00;
+}
+
+.pattern-overlay {
+  /* background: rgba(0, 0, 0, 0.3) url("http://orig08.deviantart.net/5704/f/2014/053/6/5/free_space_galaxy_texture_by_lyshastra-d77gh18.jpg") repeat; */
+  height: 100%;
+  left: 0;
+  position: fixed;
+  top: 0;
+  width: 100%;
+  z-index: 0;
+}
+
+.menu {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .sticky .menu {
+    top: 0;
+  }
+
+  .sticky .menu .hamburger {
+    background: #6e7982;
+  }
+
+  .sticky .menu .hamburger::before,
+  .sticky .menu .hamburger::after {
+    background: #6e7982;
+  }
+
+  .open.sticky .hamburger {
+    background: transparent;
+  }
+
+  .open .hamburger {
+    background-color: transparent;
+  }
+
+  .open .hamburger::before {
+    -webkit-transform: rotate(45deg);
+    -ms-transform: rotate(45deg);
+    transform: rotate(45deg);
+  }
+
+  .open .hamburger::after {
+    -webkit-transform: rotate(-45deg) translate(2px, -2px);
+    -ms-transform: rotate(-45deg) translate(2px, -2px);
+    transform: rotate(-45deg) translate(2px, -2px);
+  }
+
+  .menu {
+    display: block;
+    outline: none;
+    position: relative;
+    line-height: 60px;
+    float: left;
+    left: 20px;
+    top: 20px;
+    width: 60px;
+    height: 60px;
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    opacity: 0.7;
+    -webkit-transition: opacity 150ms;
+    transition: opacity 150ms;
+  }
+
+  .menu:hover {
+    opacity: 1;
+  }
+
+  .hamburger,
+  .hamburger::after,
+  .hamburger::before {
+    margin: 0 auto;
+    display: block;
+    width: 24px;
+    height: 3px;
+    line-height: 0;
+    -webkit-transition: all 150ms;
+    transition: all 150ms;
+  }
+
+  .hamburger::before {
+    content: '';
+    -webkit-transform: rotate(45deg);
+    -ms-transform: rotate(45deg);
+    transform: rotate(45deg);
+    background: #fff;
+  }
+
+  .hamburger::after {
+    content: '';
+    -webkit-transform: rotate(-45deg) translate(2px, -2px);
+    -ms-transform: rotate(-45deg) translate(2px, -2px);
+    transform: rotate(-45deg) translate(2px, -2px);
+    background: #fff;
+  }
+
+  .hamburger {
+    background: #fff;
+  }
+
+  .hamburger::after {
+    -webkit-transform: translateY(5px);
+    -ms-transform: translateY(5px);
+    transform: translateY(5px);
+  }
+
+  .hamburger::before {
+    -webkit-transform: translateY(-8px);
+    -ms-transform: translateY(-8px);
+    transform: translateY(-8px);
+  }
+  /*.collapse nav{
+    -webkit-transform:translateY(-100%);
+    -ms-transform:translateY(-100%);
+    transform:translateY(-100%);
+  }*/
+  .navbar {
+    -webkit-transition: -webkit-transform 150ms;
+    transition: transform 150ms;
+  }
+
+  ul.navbar {
+    -webkit-transform: translate(-100%, 0);
+    -ms-transform: translate(-100%, 0);
+    transform: translate(-100%, 0);
+    /* transform: translateY(-200%); */
+    padding-left: 0;
+  }
+
+  ul.navbar li {
+    line-height: calc((100vh - 60px) / 6);
+    display: block;
+  }
+
+  .open .navbar {
+    -webkit-transform: translate(0, 0);
+    -ms-transform: translate(0, 0);
+    transform: translate(0, 0);
+  }
+
+  .nav .brand {
+    display: block;
+    text-align: center;
+    float: none;
+  }
+
+  .sticky .brand {
+    background-color: white;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+
+  #nav {
+    height: 100px;
+  }
+
+  #nav.open {
+    height: auto;
+    min-height: 100%;
+  }
+
+  #nav.sticky {
+    height: 60px;
+  }
+
+  #nav .open.sticky {
+    height: auto;
+  }
+}

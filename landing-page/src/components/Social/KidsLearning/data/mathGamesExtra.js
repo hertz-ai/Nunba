@@ -1,0 +1,1692 @@
+/**
+ * Kids Learning Zone - Extra Math Game Configurations (20 games)
+ *
+ * These supplement the 10 Math games in gameConfigs.js to reach 30 total.
+ * Templates used: timed-rush, match-pairs, story-builder, memory-flip,
+ * drag-to-zone, sequence-order, spot-difference, word-build, simulation,
+ * multiple-choice, true-false, fill-blank, counting.
+ */
+
+const MATH_GAMES_EXTRA = [
+  // 11. Speed Math (timed-rush)
+  {
+    id: 'math-timed-calc-11',
+    title: 'Speed Math',
+    category: 'math',
+    subcategory: 'mixed-operations',
+    template: 'timed-rush',
+    ageRange: [6, 9],
+    difficulty: 2,
+    icon: 'timer',
+    emoji: '⚡',
+    color: '#4ECDC4',
+    estimatedMinutes: 3,
+    questionsPerSession: 15,
+    learningObjectives: ['mental-arithmetic', 'speed', 'mixed-operations'],
+    tags: ['speed', 'arithmetic', 'timed'],
+    content: {
+      timeLimit: 60,
+      questions: [
+        {
+          question: '8 + 7 = ?',
+          options: ['15', '13', '14', '16'],
+          correctIndex: 0,
+          concept: 'speed:8+7',
+        },
+        {
+          question: '12 - 5 = ?',
+          options: ['5', '7', '6', '8'],
+          correctIndex: 1,
+          concept: 'speed:12-5',
+        },
+        {
+          question: '6 x 3 = ?',
+          options: ['15', '16', '18', '21'],
+          correctIndex: 2,
+          concept: 'speed:6x3',
+        },
+        {
+          question: '20 - 8 = ?',
+          options: ['10', '11', '13', '12'],
+          correctIndex: 3,
+          concept: 'speed:20-8',
+        },
+        {
+          question: '9 + 6 = ?',
+          options: ['13', '14', '16', '15'],
+          correctIndex: 3,
+          concept: 'speed:9+6',
+        },
+        {
+          question: '4 x 7 = ?',
+          options: ['28', '26', '24', '30'],
+          correctIndex: 0,
+          concept: 'speed:4x7',
+        },
+        {
+          question: '15 - 9 = ?',
+          options: ['4', '6', '5', '7'],
+          correctIndex: 1,
+          concept: 'speed:15-9',
+        },
+        {
+          question: '7 + 8 = ?',
+          options: ['13', '14', '15', '16'],
+          correctIndex: 2,
+          concept: 'speed:7+8',
+        },
+        {
+          question: '3 x 9 = ?',
+          options: ['24', '25', '29', '27'],
+          correctIndex: 3,
+          concept: 'speed:3x9',
+        },
+        {
+          question: '25 - 7 = ?',
+          options: ['18', '17', '16', '19'],
+          correctIndex: 0,
+          concept: 'speed:25-7',
+        },
+        {
+          question: '11 + 9 = ?',
+          options: ['18', '20', '19', '21'],
+          correctIndex: 1,
+          concept: 'speed:11+9',
+        },
+        {
+          question: '5 x 6 = ?',
+          options: ['25', '28', '30', '35'],
+          correctIndex: 2,
+          concept: 'speed:5x6',
+        },
+        {
+          question: '14 - 6 = ?',
+          options: ['8', '7', '6', '9'],
+          correctIndex: 0,
+          concept: 'speed:14-6',
+        },
+        {
+          question: '8 x 2 = ?',
+          options: ['14', '16', '15', '18'],
+          correctIndex: 1,
+          concept: 'speed:8x2',
+        },
+        {
+          question: '17 + 3 = ?',
+          options: ['18', '19', '21', '20'],
+          correctIndex: 3,
+          concept: 'speed:17+3',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 12, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 12. Fraction Matching (match-pairs)
+  {
+    id: 'math-fraction-match-12',
+    title: 'Fraction Matching',
+    category: 'math',
+    subcategory: 'fractions',
+    template: 'match-pairs',
+    ageRange: [7, 10],
+    difficulty: 2,
+    icon: 'chart-pie',
+    emoji: '🥧',
+    color: '#4ECDC4',
+    estimatedMinutes: 5,
+    questionsPerSession: 8,
+    learningObjectives: ['fractions', 'equivalence', 'number-sense'],
+    tags: ['fractions', 'matching', 'equivalence'],
+    content: {
+      pairs: [
+        {left: '1/2', right: 'half of a whole', concept: 'fraction:half'},
+        {left: '1/4', right: 'one quarter', concept: 'fraction:quarter'},
+        {
+          left: '3/4',
+          right: 'three quarters',
+          concept: 'fraction:three-quarters',
+        },
+        {left: '1/3', right: 'one third', concept: 'fraction:third'},
+        {left: '2/4', right: 'same as 1/2', concept: 'fraction:equiv-half'},
+        {left: '2/3', right: 'two thirds', concept: 'fraction:two-thirds'},
+        {left: '1/5', right: 'one fifth', concept: 'fraction:fifth'},
+        {left: '3/3', right: 'one whole', concept: 'fraction:whole'},
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 13. Math Story Builder (story-builder)
+  {
+    id: 'math-story-problems-13',
+    title: 'Math Story Builder',
+    category: 'math',
+    subcategory: 'word-problems',
+    template: 'story-builder',
+    ageRange: [6, 9],
+    difficulty: 2,
+    icon: 'book-open-variant',
+    emoji: '👨‍🍳',
+    color: '#4ECDC4',
+    estimatedMinutes: 6,
+    questionsPerSession: 8,
+    learningObjectives: ['word-problems', 'addition', 'subtraction', 'logic'],
+    tags: ['story', 'word-problems', 'logic'],
+    content: {
+      story: {
+        start: 'bakery-start',
+        scenes: {
+          'bakery-start': {
+            text: 'Welcome to the Number Bakery! You are the junior baker today. The head baker, Chef Numberto, says: "We have 24 cupcakes to sell today. A customer just ordered 8. How many will we have left?"',
+            icon: 'chef-hat',
+            choices: [
+              {
+                text: '16 cupcakes left',
+                nextScene: 'correct-1',
+                isGood: true,
+                concept: 'math:24-8=16',
+              },
+              {
+                text: '18 cupcakes left',
+                nextScene: 'tryagain-1',
+                isGood: false,
+                concept: 'math:wrong-24-8',
+              },
+            ],
+          },
+          'tryagain-1': {
+            text: 'Chef Numberto smiles and says, "Let us try again! We started with 24 and sold 8. Count back from 24: 23, 22, 21, 20, 19, 18, 17, 16!"',
+            icon: 'emoticon-happy',
+            choices: [
+              {
+                text: 'Got it! 16 cupcakes!',
+                nextScene: 'correct-1',
+                isGood: true,
+                concept: 'math:24-8=16-retry',
+              },
+            ],
+          },
+          'correct-1': {
+            text: '"Excellent! 16 cupcakes remain!" says Chef Numberto. "Now, three more customers come in. The first wants 3, the second wants 5, and the third wants 4. How many cupcakes total do they want?"',
+            icon: 'star',
+            choices: [
+              {
+                text: '12 cupcakes total',
+                nextScene: 'correct-2',
+                isGood: true,
+                concept: 'math:3+5+4=12',
+              },
+              {
+                text: '10 cupcakes total',
+                nextScene: 'tryagain-2',
+                isGood: false,
+                concept: 'math:wrong-3+5+4',
+              },
+            ],
+          },
+          'tryagain-2': {
+            text: '"Let us add them up step by step," says Chef Numberto. "3 plus 5 is 8, then 8 plus 4 is 12!"',
+            icon: 'emoticon-happy',
+            choices: [
+              {
+                text: 'Of course! 12 cupcakes!',
+                nextScene: 'correct-2',
+                isGood: true,
+                concept: 'math:3+5+4=12-retry',
+              },
+            ],
+          },
+          'correct-2': {
+            text: '"Great math! They want 12 cupcakes. We had 16, so how many will we have after selling 12?"',
+            icon: 'star',
+            choices: [
+              {
+                text: '4 cupcakes left',
+                nextScene: 'correct-3',
+                isGood: true,
+                concept: 'math:16-12=4',
+              },
+              {
+                text: '6 cupcakes left',
+                nextScene: 'tryagain-3',
+                isGood: false,
+                concept: 'math:wrong-16-12',
+              },
+            ],
+          },
+          'tryagain-3': {
+            text: '"Close! 16 minus 12: think of it as 16 minus 10 is 6, then minus 2 more is 4!"',
+            icon: 'emoticon-happy',
+            choices: [
+              {
+                text: 'Right, 4 cupcakes!',
+                nextScene: 'correct-3',
+                isGood: true,
+                concept: 'math:16-12=4-retry',
+              },
+            ],
+          },
+          'correct-3': {
+            text: '"We have 4 cupcakes left! Now I need to bake more. If I bake 3 trays with 6 cupcakes each, how many new cupcakes will we have?"',
+            icon: 'chef-hat',
+            choices: [
+              {
+                text: '18 new cupcakes',
+                nextScene: 'bakery-end',
+                isGood: true,
+                concept: 'math:3x6=18',
+              },
+              {
+                text: '15 new cupcakes',
+                nextScene: 'tryagain-4',
+                isGood: false,
+                concept: 'math:wrong-3x6',
+              },
+            ],
+          },
+          'tryagain-4': {
+            text: '"Let us count the trays: 6 + 6 + 6. That is 12 + 6 = 18!"',
+            icon: 'emoticon-happy',
+            choices: [
+              {
+                text: '18 cupcakes from the oven!',
+                nextScene: 'bakery-end',
+                isGood: true,
+                concept: 'math:3x6=18-retry',
+              },
+            ],
+          },
+          'bakery-end': {
+            text: '"Wonderful! 18 new cupcakes plus 4 leftover = 22 cupcakes total. You are a math baking star!" Chef Numberto awards you a golden apron. You learned that math is useful everywhere, even in a bakery!',
+            icon: 'star',
+            choices: [],
+          },
+        },
+      },
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 14. Equation Memory (memory-flip)
+  {
+    id: 'math-memory-equations-14',
+    title: 'Equation Memory',
+    category: 'math',
+    subcategory: 'multiplication',
+    template: 'memory-flip',
+    ageRange: [6, 9],
+    difficulty: 2,
+    icon: 'grid',
+    emoji: '🧠',
+    color: '#4ECDC4',
+    estimatedMinutes: 5,
+    questionsPerSession: 8,
+    learningObjectives: ['multiplication', 'memory', 'number-sense'],
+    tags: ['multiplication', 'memory', 'equations'],
+    content: {
+      pairs: [
+        {id: 'pair-1', front: '6 x 7', match: '42', concept: 'mul:6x7'},
+        {id: 'pair-2', front: '8 x 3', match: '24', concept: 'mul:8x3'},
+        {id: 'pair-3', front: '9 x 4', match: '36', concept: 'mul:9x4'},
+        {id: 'pair-4', front: '7 x 5', match: '35', concept: 'mul:7x5'},
+        {id: 'pair-5', front: '8 x 8', match: '64', concept: 'mul:8x8'},
+        {id: 'pair-6', front: '6 x 9', match: '54', concept: 'mul:6x9'},
+        {id: 'pair-7', front: '7 x 7', match: '49', concept: 'mul:7x7'},
+        {id: 'pair-8', front: '9 x 9', match: '81', concept: 'mul:9x9'},
+      ],
+      gridColumns: 4,
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 15. Number Sorting (drag-to-zone)
+  {
+    id: 'math-drag-sort-15',
+    title: 'Number Sorting',
+    category: 'math',
+    subcategory: 'number-properties',
+    template: 'drag-to-zone',
+    ageRange: [6, 9],
+    difficulty: 2,
+    icon: 'sort-numeric-ascending',
+    emoji: '🔢',
+    color: '#4ECDC4',
+    estimatedMinutes: 5,
+    questionsPerSession: 12,
+    learningObjectives: ['even-odd', 'number-properties', 'classification'],
+    tags: ['numbers', 'sorting', 'even-odd'],
+    content: {
+      zones: [
+        {id: 'even', label: 'Even Numbers', color: '#3498DB'},
+        {id: 'odd', label: 'Odd Numbers', color: '#E74C3C'},
+      ],
+      items: [
+        {id: 'n2', label: '2', zone: 'even', concept: 'number:even-2'},
+        {id: 'n3', label: '3', zone: 'odd', concept: 'number:odd-3'},
+        {id: 'n8', label: '8', zone: 'even', concept: 'number:even-8'},
+        {id: 'n11', label: '11', zone: 'odd', concept: 'number:odd-11'},
+        {id: 'n14', label: '14', zone: 'even', concept: 'number:even-14'},
+        {id: 'n17', label: '17', zone: 'odd', concept: 'number:odd-17'},
+        {id: 'n20', label: '20', zone: 'even', concept: 'number:even-20'},
+        {id: 'n23', label: '23', zone: 'odd', concept: 'number:odd-23'},
+        {id: 'n36', label: '36', zone: 'even', concept: 'number:even-36'},
+        {id: 'n45', label: '45', zone: 'odd', concept: 'number:odd-45'},
+        {id: 'n50', label: '50', zone: 'even', concept: 'number:even-50'},
+        {id: 'n99', label: '99', zone: 'odd', concept: 'number:odd-99'},
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 10, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 16. Number Patterns (sequence-order)
+  {
+    id: 'math-sequence-patterns-16',
+    title: 'Number Patterns',
+    category: 'math',
+    subcategory: 'patterns',
+    template: 'sequence-order',
+    ageRange: [5, 8],
+    difficulty: 2,
+    icon: 'chart-line',
+    emoji: '📈',
+    color: '#4ECDC4',
+    estimatedMinutes: 4,
+    questionsPerSession: 8,
+    learningObjectives: ['patterns', 'sequences', 'number-sense'],
+    tags: ['patterns', 'sequences', 'ordering'],
+    content: {
+      sequences: [
+        {
+          items: ['2', '4', '6', '8', '10', '12', '14', '16'],
+          concept: 'pattern:count-by-2-extended',
+        },
+        {
+          items: ['5', '10', '15', '20', '25', '30', '35', '40'],
+          concept: 'pattern:count-by-5-extended',
+        },
+        {
+          items: ['3', '6', '9', '12', '15', '18', '21', '24'],
+          concept: 'pattern:count-by-3-extended',
+        },
+        {
+          items: ['10', '20', '30', '40', '50', '60', '70', '80'],
+          concept: 'pattern:count-by-10-extended',
+        },
+        {
+          items: ['1', '4', '9', '16', '25'],
+          concept: 'pattern:perfect-squares',
+        },
+        {
+          items: ['1', '1', '2', '3', '5', '8', '13', '21'],
+          concept: 'pattern:fibonacci-intro',
+        },
+        {
+          items: ['100', '90', '80', '70', '60', '50', '40', '30'],
+          concept: 'pattern:countdown-by-10',
+        },
+        {
+          items: ['7', '14', '21', '28', '35', '42', '49', '56'],
+          concept: 'pattern:count-by-7',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 17. Spot the Math Mistake (spot-difference)
+  {
+    id: 'math-spot-mistake-17',
+    title: 'Spot the Math Mistake',
+    category: 'math',
+    subcategory: 'error-detection',
+    template: 'spot-difference',
+    ageRange: [6, 9],
+    difficulty: 2,
+    icon: 'magnify',
+    emoji: '🔍',
+    color: '#4ECDC4',
+    estimatedMinutes: 5,
+    questionsPerSession: 8,
+    learningObjectives: ['arithmetic', 'error-detection', 'critical-thinking'],
+    tags: ['errors', 'arithmetic', 'critical-thinking'],
+    content: {
+      rounds: [
+        {
+          title: '5 + 3 = 9',
+          differences: [{x: 70, y: 50, label: 'The answer should be 8, not 9'}],
+          concept: 'error:5+3',
+        },
+        {
+          title: '12 - 4 = 7',
+          differences: [{x: 70, y: 50, label: 'The answer should be 8, not 7'}],
+          concept: 'error:12-4',
+        },
+        {
+          title: '6 x 4 = 28',
+          differences: [
+            {x: 70, y: 50, label: 'The answer should be 24, not 28'},
+          ],
+          concept: 'error:6x4',
+        },
+        {
+          title: '15 + 7 = 23',
+          differences: [
+            {x: 70, y: 50, label: 'The answer should be 22, not 23'},
+          ],
+          concept: 'error:15+7',
+        },
+        {
+          title: '9 x 3 = 24',
+          differences: [
+            {x: 70, y: 50, label: 'The answer should be 27, not 24'},
+          ],
+          concept: 'error:9x3',
+        },
+        {
+          title: '20 - 13 = 8',
+          differences: [{x: 70, y: 50, label: 'The answer should be 7, not 8'}],
+          concept: 'error:20-13',
+        },
+        {
+          title: '8 x 7 = 54',
+          differences: [
+            {x: 70, y: 50, label: 'The answer should be 56, not 54'},
+          ],
+          concept: 'error:8x7',
+        },
+        {
+          title: '100 - 35 = 75',
+          differences: [
+            {x: 70, y: 50, label: 'The answer should be 65, not 75'},
+          ],
+          concept: 'error:100-35',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 18. Number Words Builder (word-build)
+  {
+    id: 'math-word-numbers-18',
+    title: 'Number Words Builder',
+    category: 'math',
+    subcategory: 'number-words',
+    template: 'word-build',
+    ageRange: [5, 8],
+    difficulty: 2,
+    icon: 'format-text',
+    emoji: '🔤',
+    color: '#4ECDC4',
+    estimatedMinutes: 4,
+    questionsPerSession: 10,
+    learningObjectives: ['number-words', 'spelling', 'number-sense'],
+    tags: ['numbers', 'spelling', 'words'],
+    content: {
+      words: [
+        {
+          word: 'seven',
+          hint: 'The number after six (7)',
+          concept: 'numword:seven',
+          extraLetters: 2,
+          emoji: '7️⃣',
+          imagePrompt:
+            'cute cartoon number seven, large bold number 7 with friendly face, white background, children educational illustration style',
+        },
+        {
+          word: 'twelve',
+          hint: 'A dozen (12)',
+          concept: 'numword:twelve',
+          extraLetters: 2,
+          emoji: '🕛',
+          imagePrompt:
+            'cute cartoon clock showing twelve o clock, round clock face with hands pointing to 12, white background, children educational illustration style',
+        },
+        {
+          word: 'twenty',
+          hint: 'Two tens (20)',
+          concept: 'numword:twenty',
+          extraLetters: 2,
+          emoji: '🔢',
+          imagePrompt:
+            'cute cartoon number twenty, large bold number 20 with colorful design, white background, children educational illustration style',
+        },
+        {
+          word: 'fifteen',
+          hint: 'Five plus ten (15)',
+          concept: 'numword:fifteen',
+          extraLetters: 3,
+          emoji: '🔢',
+          imagePrompt:
+            'cute cartoon number fifteen, large bold number 15 with stars around it, white background, children educational illustration style',
+        },
+        {
+          word: 'thirty',
+          hint: 'Three tens (30)',
+          concept: 'numword:thirty',
+          extraLetters: 2,
+          emoji: '🔢',
+          imagePrompt:
+            'cute cartoon number thirty, large bold number 30 with colorful design, white background, children educational illustration style',
+        },
+        {
+          word: 'eight',
+          hint: 'The number before nine (8)',
+          concept: 'numword:eight',
+          extraLetters: 2,
+          emoji: '8️⃣',
+          imagePrompt:
+            'cute cartoon number eight, large bold number 8 with friendly face, white background, children educational illustration style',
+        },
+        {
+          word: 'forty',
+          hint: 'Four tens (40)',
+          concept: 'numword:forty',
+          extraLetters: 2,
+          emoji: '🔢',
+          imagePrompt:
+            'cute cartoon number forty, large bold number 40 with colorful design, white background, children educational illustration style',
+        },
+        {
+          word: 'hundred',
+          hint: 'Ten tens (100)',
+          concept: 'numword:hundred',
+          extraLetters: 3,
+          emoji: '💯',
+          imagePrompt:
+            'cute cartoon number one hundred, large bold number 100 with celebration confetti, white background, children educational illustration style',
+        },
+        {
+          word: 'eleven',
+          hint: 'One more than ten (11)',
+          concept: 'numword:eleven',
+          extraLetters: 2,
+          emoji: '🔢',
+          imagePrompt:
+            'cute cartoon number eleven, large bold number 11 with colorful design, white background, children educational illustration style',
+        },
+        {
+          word: 'sixteen',
+          hint: 'Six plus ten (16)',
+          concept: 'numword:sixteen',
+          extraLetters: 3,
+          emoji: '🔢',
+          imagePrompt:
+            'cute cartoon number sixteen, large bold number 16 with stars around it, white background, children educational illustration style',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 8, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 19. Shopping Simulator (simulation)
+  {
+    id: 'math-money-sim-19',
+    title: 'Shopping Simulator',
+    category: 'math',
+    subcategory: 'money',
+    template: 'simulation',
+    ageRange: [6, 9],
+    difficulty: 2,
+    icon: 'cart',
+    emoji: '🛒',
+    color: '#4ECDC4',
+    estimatedMinutes: 5,
+    questionsPerSession: 8,
+    learningObjectives: ['money', 'addition', 'subtraction', 'budgeting'],
+    tags: ['money', 'shopping', 'budgeting'],
+    content: {
+      scenario: {
+        title: 'Grocery Store Shopping',
+        concept: 'money:shopping-budget',
+        startingMoney: 20,
+        items: [
+          {
+            name: 'Apple (healthy snack)',
+            price: 2,
+            icon: 'food-apple',
+            isGood: true,
+            feedback: 'Apples are healthy and affordable!',
+          },
+          {
+            name: 'Bread (for sandwiches)',
+            price: 3,
+            icon: 'bread-slice',
+            isGood: true,
+            feedback: 'Bread is a great staple food!',
+          },
+          {
+            name: 'Milk (calcium for bones)',
+            price: 4,
+            icon: 'cup',
+            isGood: true,
+            feedback: 'Milk helps build strong bones!',
+          },
+          {
+            name: 'Eggs (protein power)',
+            price: 3,
+            icon: 'egg',
+            isGood: true,
+            feedback: 'Eggs are full of protein and affordable!',
+          },
+          {
+            name: 'Fancy candy box',
+            price: 8,
+            icon: 'candy',
+            isGood: false,
+            feedback:
+              'That is expensive and not nutritious. Better to save your money!',
+          },
+          {
+            name: 'Bananas (energy fruit)',
+            price: 2,
+            icon: 'food',
+            isGood: true,
+            feedback: 'Bananas give you energy and are a great deal!',
+          },
+          {
+            name: 'Giant toy display',
+            price: 15,
+            icon: 'gamepad',
+            isGood: false,
+            feedback:
+              'That costs almost all your money! This is a grocery trip.',
+          },
+          {
+            name: 'Cheese (for sandwiches)',
+            price: 4,
+            icon: 'cheese',
+            isGood: true,
+            feedback: 'Cheese goes perfectly with your bread!',
+          },
+        ],
+        goal: 'Buy enough healthy food for the week without spending more than $20!',
+      },
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 20. Geometry Quiz (multiple-choice)
+  {
+    id: 'math-geometry-quiz-20',
+    title: 'Geometry Quiz',
+    category: 'math',
+    subcategory: 'geometry',
+    template: 'multiple-choice',
+    ageRange: [7, 10],
+    difficulty: 3,
+    icon: 'shape',
+    emoji: '🔷',
+    color: '#4ECDC4',
+    estimatedMinutes: 5,
+    questionsPerSession: 10,
+    learningObjectives: ['geometry', 'shapes', 'angles', 'area'],
+    tags: ['geometry', 'shapes', 'advanced'],
+    content: {
+      questions: [
+        {
+          question: 'How many sides does a hexagon have?',
+          options: ['5', '6', '7', '8'],
+          correctIndex: 1,
+          concept: 'geometry:hexagon-sides',
+          hint: '"Hexa" means six in Greek',
+        },
+        {
+          question: 'What is the name of a shape with 5 sides?',
+          options: ['Hexagon', 'Octagon', 'Pentagon', 'Heptagon'],
+          correctIndex: 2,
+          concept: 'geometry:pentagon',
+          hint: '"Penta" means five',
+        },
+        {
+          question: 'How many degrees are in a right angle?',
+          options: ['45', '60', '90', '180'],
+          correctIndex: 2,
+          concept: 'geometry:right-angle',
+          hint: 'Think of the corner of a square',
+        },
+        {
+          question: 'What is the perimeter of a square with sides of 5 cm?',
+          options: ['10 cm', '15 cm', '20 cm', '25 cm'],
+          correctIndex: 2,
+          concept: 'geometry:perimeter-square',
+          hint: 'Add all 4 sides: 5 + 5 + 5 + 5',
+        },
+        {
+          question: 'How many faces does a cube have?',
+          options: ['4', '6', '8', '12'],
+          correctIndex: 1,
+          concept: 'geometry:cube-faces',
+          hint: 'Think of a dice - top, bottom, front, back, left, right',
+        },
+        {
+          question:
+            'What is the area of a rectangle with length 4 and width 3?',
+          options: ['7', '10', '12', '14'],
+          correctIndex: 2,
+          concept: 'geometry:area-rectangle',
+          hint: 'Area = length times width',
+        },
+        {
+          question: 'A triangle with all sides equal is called...',
+          options: ['Right triangle', 'Equilateral', 'Isosceles', 'Scalene'],
+          correctIndex: 1,
+          concept: 'geometry:equilateral',
+          hint: '"Equi" means equal, "lateral" means sides',
+        },
+        {
+          question: 'How many sides does an octagon have?',
+          options: ['6', '7', '8', '9'],
+          correctIndex: 2,
+          concept: 'geometry:octagon',
+          hint: 'Think of a stop sign',
+        },
+        {
+          question: 'What shape has no straight sides?',
+          options: ['Triangle', 'Square', 'Circle', 'Rectangle'],
+          correctIndex: 2,
+          concept: 'geometry:circle-no-sides',
+          hint: 'This shape is perfectly round',
+        },
+        {
+          question:
+            'A line that goes from one side of a circle to the other through the center is called...',
+          options: ['Radius', 'Diameter', 'Circumference', 'Chord'],
+          correctIndex: 1,
+          concept: 'geometry:diameter',
+          hint: 'It is twice the radius',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 8, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 21. Place Value Sorting (drag-to-zone)
+  {
+    id: 'math-place-value-21',
+    title: 'Place Value Sorting',
+    category: 'math',
+    subcategory: 'place-value',
+    template: 'drag-to-zone',
+    ageRange: [6, 8],
+    difficulty: 2,
+    icon: 'numeric',
+    emoji: '🔢',
+    color: '#4ECDC4',
+    estimatedMinutes: 4,
+    questionsPerSession: 12,
+    learningObjectives: ['place-value', 'number-sense', 'ones-tens-hundreds'],
+    tags: ['place-value', 'numbers', 'sorting'],
+    content: {
+      zones: [
+        {id: 'ones', label: 'Ones (1-9)', color: '#2ECC71'},
+        {id: 'tens', label: 'Tens (10-99)', color: '#3498DB'},
+        {id: 'hundreds', label: 'Hundreds (100-999)', color: '#E74C3C'},
+      ],
+      items: [
+        {id: 'n5', label: '5', zone: 'ones', concept: 'place:ones-5'},
+        {id: 'n23', label: '23', zone: 'tens', concept: 'place:tens-23'},
+        {
+          id: 'n150',
+          label: '150',
+          zone: 'hundreds',
+          concept: 'place:hundreds-150',
+        },
+        {id: 'n8', label: '8', zone: 'ones', concept: 'place:ones-8'},
+        {id: 'n47', label: '47', zone: 'tens', concept: 'place:tens-47'},
+        {
+          id: 'n312',
+          label: '312',
+          zone: 'hundreds',
+          concept: 'place:hundreds-312',
+        },
+        {id: 'n3', label: '3', zone: 'ones', concept: 'place:ones-3'},
+        {id: 'n72', label: '72', zone: 'tens', concept: 'place:tens-72'},
+        {
+          id: 'n500',
+          label: '500',
+          zone: 'hundreds',
+          concept: 'place:hundreds-500',
+        },
+        {id: 'n1', label: '1', zone: 'ones', concept: 'place:ones-1'},
+        {id: 'n95', label: '95', zone: 'tens', concept: 'place:tens-95'},
+        {
+          id: 'n888',
+          label: '888',
+          zone: 'hundreds',
+          concept: 'place:hundreds-888',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 10, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 22. Measurement Match (match-pairs)
+  {
+    id: 'math-measurement-match-22',
+    title: 'Measurement Match',
+    category: 'math',
+    subcategory: 'measurement',
+    template: 'match-pairs',
+    ageRange: [6, 9],
+    difficulty: 2,
+    icon: 'ruler',
+    emoji: '📏',
+    color: '#4ECDC4',
+    estimatedMinutes: 4,
+    questionsPerSession: 8,
+    learningObjectives: ['measurement', 'units', 'conversions'],
+    tags: ['measurement', 'units', 'matching'],
+    content: {
+      pairs: [
+        {
+          left: '1 meter',
+          right: '100 centimeters',
+          concept: 'measure:meter-cm',
+        },
+        {left: '1 kilogram', right: '1000 grams', concept: 'measure:kg-g'},
+        {left: '1 hour', right: '60 minutes', concept: 'measure:hour-min'},
+        {left: '1 minute', right: '60 seconds', concept: 'measure:min-sec'},
+        {left: '1 day', right: '24 hours', concept: 'measure:day-hours'},
+        {left: '1 week', right: '7 days', concept: 'measure:week-days'},
+        {left: '1 year', right: '12 months', concept: 'measure:year-months'},
+        {
+          left: '1 liter',
+          right: '1000 milliliters',
+          concept: 'measure:liter-ml',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 23. Greater or Less Than (true-false)
+  {
+    id: 'math-compare-tf-23',
+    title: 'Greater or Less Than',
+    category: 'math',
+    subcategory: 'comparison',
+    template: 'true-false',
+    ageRange: [5, 7],
+    difficulty: 1,
+    icon: 'scale-balance',
+    emoji: '⚖️',
+    color: '#4ECDC4',
+    estimatedMinutes: 4,
+    questionsPerSession: 10,
+    learningObjectives: ['comparison', 'number-sense', 'inequalities'],
+    tags: ['comparison', 'greater', 'less'],
+    content: {
+      statements: [
+        {
+          text: '15 is greater than 12.',
+          answer: true,
+          concept: 'compare:15>12',
+          explanation: '15 comes after 12 when counting, so 15 is greater.',
+        },
+        {
+          text: '7 is greater than 9.',
+          answer: false,
+          concept: 'compare:7<9',
+          explanation: '7 comes before 9 when counting, so 7 is less than 9.',
+        },
+        {
+          text: '20 is less than 25.',
+          answer: true,
+          concept: 'compare:20<25',
+          explanation: '20 comes before 25, so 20 is less than 25.',
+        },
+        {
+          text: '100 is less than 50.',
+          answer: false,
+          concept: 'compare:100>50',
+          explanation: '100 is much bigger than 50!',
+        },
+        {
+          text: '33 is greater than 31.',
+          answer: true,
+          concept: 'compare:33>31',
+          explanation: '33 is 2 more than 31.',
+        },
+        {
+          text: '45 is the same as 54.',
+          answer: false,
+          concept: 'compare:45!=54',
+          explanation:
+            '45 and 54 have the same digits but in different order. 54 is greater.',
+        },
+        {
+          text: '0 is less than 1.',
+          answer: true,
+          concept: 'compare:0<1',
+          explanation: 'Zero is less than any counting number.',
+        },
+        {
+          text: '99 is greater than 100.',
+          answer: false,
+          concept: 'compare:99<100',
+          explanation: '100 is one more than 99, so 100 is greater.',
+        },
+        {
+          text: '50 is equal to 50.',
+          answer: true,
+          concept: 'compare:50=50',
+          explanation: 'The same number is always equal to itself.',
+        },
+        {
+          text: '18 is less than 8.',
+          answer: false,
+          concept: 'compare:18>8',
+          explanation: '18 is ten more than 8, so 18 is greater.',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 8, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 24. Addition Within 20 (fill-blank)
+  {
+    id: 'math-add-20-24',
+    title: 'Addition Within 20',
+    category: 'math',
+    subcategory: 'addition',
+    template: 'fill-blank',
+    ageRange: [5, 7],
+    difficulty: 2,
+    icon: 'plus-circle',
+    emoji: '➕',
+    color: '#4ECDC4',
+    estimatedMinutes: 4,
+    questionsPerSession: 10,
+    learningObjectives: ['addition', 'number-bonds', 'mental-math'],
+    tags: ['addition', 'number-bonds'],
+    content: {
+      questions: [
+        {
+          text: '8 + ___ = 15',
+          blank: '7',
+          options: ['5', '6', '7', '8'],
+          concept: 'add:8+?=15',
+          hint: 'What do you add to 8 to get 15?',
+        },
+        {
+          text: '9 + ___ = 17',
+          blank: '8',
+          options: ['6', '7', '8', '9'],
+          concept: 'add:9+?=17',
+          hint: 'Count up from 9 to 17',
+        },
+        {
+          text: '___ + 6 = 13',
+          blank: '7',
+          options: ['5', '6', '7', '8'],
+          concept: 'add:?+6=13',
+          hint: 'What plus 6 equals 13?',
+        },
+        {
+          text: '7 + ___ = 14',
+          blank: '7',
+          options: ['5', '6', '7', '8'],
+          concept: 'add:7+?=14',
+          hint: 'Double 7 is...',
+        },
+        {
+          text: '___ + 5 = 12',
+          blank: '7',
+          options: ['5', '6', '7', '8'],
+          concept: 'add:?+5=12',
+          hint: '12 minus 5 equals...',
+        },
+        {
+          text: '6 + ___ = 11',
+          blank: '5',
+          options: ['4', '5', '6', '7'],
+          concept: 'add:6+?=11',
+          hint: 'Count up from 6 to 11',
+        },
+        {
+          text: '9 + ___ = 18',
+          blank: '9',
+          options: ['7', '8', '9', '10'],
+          concept: 'add:9+?=18',
+          hint: 'Double 9 is...',
+        },
+        {
+          text: '___ + 8 = 16',
+          blank: '8',
+          options: ['6', '7', '8', '9'],
+          concept: 'add:?+8=16',
+          hint: 'Double 8 is...',
+        },
+        {
+          text: '5 + ___ = 13',
+          blank: '8',
+          options: ['6', '7', '8', '9'],
+          concept: 'add:5+?=13',
+          hint: '13 minus 5 equals...',
+        },
+        {
+          text: '7 + ___ = 16',
+          blank: '9',
+          options: ['7', '8', '9', '10'],
+          concept: 'add:7+?=16',
+          hint: 'Count up from 7 to 16',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 8, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 25. Count Objects 11-20 (counting)
+  {
+    id: 'math-count-20-25',
+    title: 'Count Objects 11-20',
+    category: 'math',
+    subcategory: 'counting',
+    template: 'counting',
+    ageRange: [4, 6],
+    difficulty: 2,
+    icon: 'numeric',
+    emoji: '🔢',
+    color: '#4ECDC4',
+    estimatedMinutes: 4,
+    questionsPerSession: 8,
+    learningObjectives: ['counting', 'number-recognition', 'teens'],
+    tags: ['counting', 'numbers', 'teens'],
+    content: {
+      rounds: [
+        {
+          count: 11,
+          icon: 'star',
+          color: '#FFD700',
+          concept: 'count:objects-11',
+          label: 'stars',
+        },
+        {
+          count: 13,
+          icon: 'heart',
+          color: '#FF69B4',
+          concept: 'count:objects-13',
+          label: 'hearts',
+        },
+        {
+          count: 12,
+          icon: 'apple',
+          color: '#FF6347',
+          concept: 'count:objects-12',
+          label: 'apples',
+        },
+        {
+          count: 15,
+          icon: 'flower',
+          color: '#FF8C00',
+          concept: 'count:objects-15',
+          label: 'flowers',
+        },
+        {
+          count: 14,
+          icon: 'fish',
+          color: '#4682B4',
+          concept: 'count:objects-14',
+          label: 'fish',
+        },
+        {
+          count: 17,
+          icon: 'bird',
+          color: '#20B2AA',
+          concept: 'count:objects-17',
+          label: 'birds',
+        },
+        {
+          count: 16,
+          icon: 'butterfly',
+          color: '#9370DB',
+          concept: 'count:objects-16',
+          label: 'butterflies',
+        },
+        {
+          count: 20,
+          icon: 'circle',
+          color: '#3498DB',
+          concept: 'count:objects-20',
+          label: 'circles',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 26. Times Tables 6-9 (timed-rush)
+  {
+    id: 'math-mul-hard-26',
+    title: 'Times Tables 6-9',
+    category: 'math',
+    subcategory: 'multiplication',
+    template: 'timed-rush',
+    ageRange: [7, 10],
+    difficulty: 3,
+    icon: 'timer',
+    emoji: '✖️',
+    color: '#4ECDC4',
+    estimatedMinutes: 3,
+    questionsPerSession: 12,
+    learningObjectives: ['multiplication', 'times-tables', 'speed'],
+    tags: ['multiplication', 'timed', 'advanced'],
+    content: {
+      timeLimit: 60,
+      questions: [
+        {
+          question: '6 x 6 = ?',
+          options: ['30', '34', '36', '38'],
+          correctIndex: 2,
+          concept: 'mul:6x6',
+        },
+        {
+          question: '7 x 8 = ?',
+          options: ['48', '54', '56', '58'],
+          correctIndex: 2,
+          concept: 'mul:7x8',
+        },
+        {
+          question: '8 x 9 = ?',
+          options: ['63', '70', '72', '74'],
+          correctIndex: 2,
+          concept: 'mul:8x9',
+        },
+        {
+          question: '9 x 6 = ?',
+          options: ['48', '52', '54', '56'],
+          correctIndex: 2,
+          concept: 'mul:9x6',
+        },
+        {
+          question: '7 x 7 = ?',
+          options: ['42', '47', '49', '51'],
+          correctIndex: 2,
+          concept: 'mul:7x7-rush',
+        },
+        {
+          question: '6 x 8 = ?',
+          options: ['42', '46', '48', '52'],
+          correctIndex: 2,
+          concept: 'mul:6x8',
+        },
+        {
+          question: '9 x 7 = ?',
+          options: ['56', '61', '63', '65'],
+          correctIndex: 2,
+          concept: 'mul:9x7',
+        },
+        {
+          question: '8 x 6 = ?',
+          options: ['42', '46', '48', '50'],
+          correctIndex: 2,
+          concept: 'mul:8x6',
+        },
+        {
+          question: '7 x 9 = ?',
+          options: ['56', '61', '63', '67'],
+          correctIndex: 2,
+          concept: 'mul:7x9',
+        },
+        {
+          question: '9 x 9 = ?',
+          options: ['72', '79', '81', '83'],
+          correctIndex: 2,
+          concept: 'mul:9x9-rush',
+        },
+        {
+          question: '6 x 9 = ?',
+          options: ['48', '52', '54', '58'],
+          correctIndex: 2,
+          concept: 'mul:6x9-rush',
+        },
+        {
+          question: '8 x 8 = ?',
+          options: ['56', '62', '64', '66'],
+          correctIndex: 2,
+          concept: 'mul:8x8-rush',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 10, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 27. Money Memory (memory-flip)
+  {
+    id: 'math-money-memory-27',
+    title: 'Money Memory',
+    category: 'math',
+    subcategory: 'money',
+    template: 'memory-flip',
+    ageRange: [5, 8],
+    difficulty: 2,
+    icon: 'cash',
+    emoji: '💰',
+    color: '#4ECDC4',
+    estimatedMinutes: 5,
+    questionsPerSession: 8,
+    learningObjectives: ['money', 'value-recognition', 'memory'],
+    tags: ['money', 'memory', 'coins'],
+    content: {
+      pairs: [
+        {
+          id: 'pair-1',
+          front: '1 penny',
+          match: '1 cent',
+          concept: 'money:penny',
+        },
+        {
+          id: 'pair-2',
+          front: '1 nickel',
+          match: '5 cents',
+          concept: 'money:nickel',
+        },
+        {
+          id: 'pair-3',
+          front: '1 dime',
+          match: '10 cents',
+          concept: 'money:dime',
+        },
+        {
+          id: 'pair-4',
+          front: '1 quarter',
+          match: '25 cents',
+          concept: 'money:quarter',
+        },
+        {
+          id: 'pair-5',
+          front: '2 quarters',
+          match: '50 cents',
+          concept: 'money:2-quarters',
+        },
+        {
+          id: 'pair-6',
+          front: '4 quarters',
+          match: '1 dollar',
+          concept: 'money:4-quarters',
+        },
+        {
+          id: 'pair-7',
+          front: '10 dimes',
+          match: '1 dollar',
+          concept: 'money:10-dimes',
+        },
+        {
+          id: 'pair-8',
+          front: '5 nickels',
+          match: '25 cents',
+          concept: 'money:5-nickels',
+        },
+      ],
+      gridColumns: 4,
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 28. Word Problems (multiple-choice)
+  {
+    id: 'math-word-problems-28',
+    title: 'Word Problems',
+    category: 'math',
+    subcategory: 'word-problems',
+    template: 'multiple-choice',
+    ageRange: [6, 9],
+    difficulty: 2,
+    icon: 'book-open-variant',
+    emoji: '📝',
+    color: '#4ECDC4',
+    estimatedMinutes: 5,
+    questionsPerSession: 8,
+    learningObjectives: [
+      'word-problems',
+      'addition',
+      'subtraction',
+      'multiplication',
+    ],
+    tags: ['word-problems', 'logic', 'reading'],
+    content: {
+      questions: [
+        {
+          question:
+            'Tom has 8 apples. He gives 3 to his friend. How many does he have left?',
+          options: ['3', '4', '5', '6'],
+          correctIndex: 2,
+          concept: 'word:8-3=5',
+          hint: 'Giving away means subtraction: 8 - 3',
+        },
+        {
+          question:
+            'A classroom has 4 rows of desks with 5 desks in each row. How many desks in total?',
+          options: ['9', '15', '20', '25'],
+          correctIndex: 2,
+          concept: 'word:4x5=20',
+          hint: '4 groups of 5',
+        },
+        {
+          question:
+            'Lily read 12 pages on Monday and 8 pages on Tuesday. How many pages total?',
+          options: ['18', '19', '20', '21'],
+          correctIndex: 2,
+          concept: 'word:12+8=20',
+          hint: 'Add the pages from both days',
+        },
+        {
+          question: 'A baker made 30 cookies and sold 18. How many are left?',
+          options: ['10', '11', '12', '13'],
+          correctIndex: 2,
+          concept: 'word:30-18=12',
+          hint: 'Sold means subtraction: 30 - 18',
+        },
+        {
+          question:
+            'There are 3 bags with 7 marbles in each. How many marbles in all?',
+          options: ['10', '17', '21', '24'],
+          correctIndex: 2,
+          concept: 'word:3x7=21',
+          hint: '3 groups of 7',
+        },
+        {
+          question:
+            'Sam had 15 stickers and got 9 more. How many does he have now?',
+          options: ['22', '23', '24', '25'],
+          correctIndex: 2,
+          concept: 'word:15+9=24',
+          hint: 'Getting more means addition',
+        },
+        {
+          question:
+            'A bus has 25 seats and 17 are taken. How many empty seats?',
+          options: ['6', '7', '8', '9'],
+          correctIndex: 2,
+          concept: 'word:25-17=8',
+          hint: 'Subtract the taken seats from total',
+        },
+        {
+          question:
+            'If each child gets 2 pencils and there are 9 children, how many pencils are needed?',
+          options: ['11', '16', '18', '20'],
+          correctIndex: 2,
+          concept: 'word:9x2=18',
+          hint: '9 groups of 2',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 29. Tell Time: Half Hours (multiple-choice)
+  {
+    id: 'math-time-half-29',
+    title: 'Tell Time: Half Hours',
+    category: 'math',
+    subcategory: 'time',
+    template: 'multiple-choice',
+    ageRange: [5, 8],
+    difficulty: 2,
+    icon: 'clock-outline',
+    emoji: '🕐',
+    color: '#4ECDC4',
+    estimatedMinutes: 4,
+    questionsPerSession: 8,
+    learningObjectives: ['time-telling', 'half-hours', 'clock-reading'],
+    tags: ['time', 'clock', 'half-hours'],
+    content: {
+      questions: [
+        {
+          question:
+            'The short hand is between 3 and 4, and the long hand points to 6. What time is it?',
+          options: ['3:00', '3:30', '4:00', '4:30'],
+          correctIndex: 1,
+          concept: 'time:half-3:30',
+          hint: 'When the long hand points to 6, it means half past',
+        },
+        {
+          question:
+            'The short hand is between 7 and 8, and the long hand points to 6. What time is it?',
+          options: ['7:00', '7:30', '8:00', '8:30'],
+          correctIndex: 1,
+          concept: 'time:half-7:30',
+          hint: 'The long hand on 6 means 30 minutes',
+        },
+        {
+          question: 'What does "half past 5" mean?',
+          options: ['5:00', '5:15', '5:30', '5:45'],
+          correctIndex: 2,
+          concept: 'time:half-past-5',
+          hint: 'Half of 60 minutes is 30 minutes',
+        },
+        {
+          question: 'The clock shows 10:30. How do we say this?',
+          options: [
+            "Ten o'clock",
+            'Quarter past ten',
+            'Half past ten',
+            'Quarter to eleven',
+          ],
+          correctIndex: 2,
+          concept: 'time:say-10:30',
+          hint: '30 minutes past the hour is half past',
+        },
+        {
+          question: 'At half past 1, where does the long hand point?',
+          options: ['12', '3', '6', '9'],
+          correctIndex: 2,
+          concept: 'time:long-hand-half',
+          hint: 'Half of the clock is at the 6',
+        },
+        {
+          question:
+            'The short hand is between 9 and 10, and the long hand points to 6. What time is it?',
+          options: ['9:00', '9:30', '10:00', '10:30'],
+          correctIndex: 1,
+          concept: 'time:half-9:30',
+          hint: 'The short hand past 9 and long hand on 6',
+        },
+        {
+          question: 'How many minutes is "half past"?',
+          options: ['15 minutes', '20 minutes', '30 minutes', '45 minutes'],
+          correctIndex: 2,
+          concept: 'time:half-minutes',
+          hint: 'Half of 60 minutes',
+        },
+        {
+          question: 'What is 30 minutes after 2:00?',
+          options: ['2:15', '2:30', '2:45', '3:00'],
+          correctIndex: 1,
+          concept: 'time:30-after-2',
+          hint: 'Just add 30 minutes to 2:00',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 6, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+
+  // 30. Doubles and Halves (true-false)
+  {
+    id: 'math-doubles-halves-30',
+    title: 'Doubles and Halves',
+    category: 'math',
+    subcategory: 'number-sense',
+    template: 'true-false',
+    ageRange: [5, 8],
+    difficulty: 2,
+    icon: 'content-copy',
+    emoji: '✂️',
+    color: '#4ECDC4',
+    estimatedMinutes: 4,
+    questionsPerSession: 10,
+    learningObjectives: ['doubles', 'halves', 'mental-math', 'number-sense'],
+    tags: ['doubles', 'halves', 'number-sense'],
+    content: {
+      statements: [
+        {
+          text: 'Double of 5 is 10.',
+          answer: true,
+          concept: 'double:5=10',
+          explanation: '5 + 5 = 10. Correct!',
+        },
+        {
+          text: 'Half of 12 is 5.',
+          answer: false,
+          concept: 'half:12=6',
+          explanation:
+            'Half of 12 is 6, not 5. Split 12 into two equal groups.',
+        },
+        {
+          text: 'Double of 8 is 16.',
+          answer: true,
+          concept: 'double:8=16',
+          explanation: '8 + 8 = 16. Correct!',
+        },
+        {
+          text: 'Half of 20 is 10.',
+          answer: true,
+          concept: 'half:20=10',
+          explanation: '20 split into two equal groups gives 10 and 10.',
+        },
+        {
+          text: 'Double of 7 is 15.',
+          answer: false,
+          concept: 'double:7=14',
+          explanation: 'Double of 7 is 14, not 15. 7 + 7 = 14.',
+        },
+        {
+          text: 'Half of 18 is 9.',
+          answer: true,
+          concept: 'half:18=9',
+          explanation: '18 split into two gives 9 and 9.',
+        },
+        {
+          text: 'Double of 12 is 22.',
+          answer: false,
+          concept: 'double:12=24',
+          explanation: 'Double of 12 is 24, not 22. 12 + 12 = 24.',
+        },
+        {
+          text: 'Half of 14 is 7.',
+          answer: true,
+          concept: 'half:14=7',
+          explanation: '14 split into two groups gives 7 and 7.',
+        },
+        {
+          text: 'Double of 9 is 18.',
+          answer: true,
+          concept: 'double:9=18',
+          explanation: '9 + 9 = 18. Correct!',
+        },
+        {
+          text: 'Half of 30 is 20.',
+          answer: false,
+          concept: 'half:30=15',
+          explanation:
+            'Half of 30 is 15, not 20. 30 split equally is 15 and 15.',
+        },
+      ],
+    },
+    rewards: {starsPerCorrect: 1, bonusThreshold: 8, bonusStars: 3},
+    threeR: {
+      measuresRetention: true,
+      measuresRecall: true,
+      measuresRegistration: true,
+    },
+  },
+];
+
+export default MATH_GAMES_EXTRA;

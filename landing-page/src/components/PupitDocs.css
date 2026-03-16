@@ -1,0 +1,50 @@
+body {
+  font-family: 'Arial', sans-serif;
+  line-height: 1.6;
+  margin: 60px;
+  padding: 20px;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: #2c3e50;
+}
+
+.heading {
+  margin: 20px 0;
+}
+
+.toc {
+  background-color: #ecf0f1;
+  padding: 10px;
+  border-radius: 5px;
+}
+
+.tocList {
+  list-style: none;
+  padding-left: 20px;
+}
+
+.tocLink {
+  text-decoration: none;
+  color: #2980b9;
+}
+
+.tocLink:hover {
+  text-decoration: underline;
+}
+
+.code {
+  background-color: #dcdcdc;
+  padding: 3px 5px;
+  border-radius: 3px;
+}
+
+.pre {
+  background-color: #f0f0f0;
+  padding: 10px;
+  border-radius: 5px;
+  overflow-x: auto;
+}

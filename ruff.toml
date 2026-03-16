@@ -1,0 +1,57 @@
+# Ruff — fast Python linter + security scanner
+# Replaces flake8, bandit, isort, pyupgrade in a single tool.
+# OSS equivalent of Veracode SAST for Python.
+#
+# Usage:
+#   ruff check .          # lint
+#   ruff check . --fix    # auto-fix
+#   ruff format --check . # format check
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = [
+  "E",      # pycodestyle errors
+  "F",      # pyflakes (unused imports, undefined names)
+  "B",      # flake8-bugbear (common bugs, anti-patterns)
+  "S",      # bandit security rules (SAST)
+  "UP",     # pyupgrade (modern Python idioms)
+  "I",      # isort (import ordering)
+]
+ignore = [
+  "E501",   # line too long — too noisy to enforce initially
+  "S101",   # assert usage — fine in non-web code
+  "S603",   # subprocess with shell=False — intentional
+  "S607",   # partial executable path — intentional for bundled tools
+  "S110",   # try-except-pass — will fix incrementally
+  "S112",   # try-except-continue — will fix incrementally
+  "S301",   # pickle — used by agent_ledger
+  "S324",   # hashlib with insecure hash — SHA-256 is fine
+  "S108",   # hardcoded tmp directory — desktop app, not server
+]
+
+exclude = [
+  "build",
+  "dist",
+  ".venv",
+  ".venv.bak",
+  "python-embed",
+  "hartos_backend_src",
+  "landing-page",
+  ".pycharm_plugin",
+  "agent_data",
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["S"]
+"Hevolve_Database/*" = ["S", "E", "F"]
+"scripts/setup_freeze_nunba.py" = ["S603", "S607"]
+"test_*.py" = ["S"]
+
+[lint.isort]
+known-first-party = [
+  "routes",
+  "tts",
+  "llama",
+  "desktop",
+]

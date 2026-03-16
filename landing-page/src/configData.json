@@ -1,0 +1,16 @@
+{
+  "ToSendotp": "https://mailer.hertzai.com/send_otp",
+  "ToVerifyotp": "https://mailer.hertzai.com/validate_otp",
+  "verify_otp": "https://mailer.hertzai.com/varify_otp",
+  "verifyTeacherByPhone": "https://azurekong.hertzai.com/data/login",
+  "getsubscriptionsbyplans": "https://mailer.hertzai.com/getallplandetails",
+  "AddSubscriptio_By_Phone": "https://mailer.hertzai.com/addsubscription_by_phone",
+  "PaymentUrl": "https://mailer.hertzai.com/makepayment",
+  "chatBotApi": "https://azurekong.hertzai.com/chatbot/revision",
+  "forAllAgents": "https://azurekong.hertzai.com/chat/custom_gpt",
+  "personalisedLearningAgent": "https://azurekong.hertzai.com/chat/teachme2",
+  "renew_token": "https://mailer.hertzai.com/refresh_tokens",
+  "verifyOtpWithAzure": "https://azurekong.hertzai.com/data/varify_otp",
+  "registerUser": "https://mailer.hertzai.com/register_student",
+  "registerClient": "https://mailer.hertzai.com/createclient"
+}

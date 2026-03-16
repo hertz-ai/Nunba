@@ -1,0 +1,25 @@
+.btn {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  color: #fff;
+  /* border: 1px solid #13ce67; */
+  text-align: center;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  /* background: linear-gradient(to right, #c471f5  , #fa71cd); */
+  background: #f800a4;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+    'Segoe UI Symbol', 'Noto Color Emoji';
+}
+.btn.blue {
+  color: #fff;
+  /* background: #f800a4; */
+  background: linear-gradient(to right, #f800a4, #0078ff);
+}

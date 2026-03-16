@@ -1,0 +1,36 @@
+# Pre-commit hooks for Nunba
+# Install: pip install pre-commit && pre-commit install
+# Run all: pre-commit run --all-files
+repos:
+  # Python linting + formatting (fast, Rust-based)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.7
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+        args: [--check]
+
+  # Secrets detection — prevent accidental commits of API keys, tokens
+  # OSS equivalent of GitGuardian / GitHub Advanced Security
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: 'package-lock\.json|\.pycharm_plugin/|python-embed/'
+
+  # General file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$|\.patch$'
+      - id: end-of-file-fixer
+        exclude: '\.ico$|\.png$|\.jpg$|\.gif$|\.woff2?$|\.ttf$'
+      - id: check-yaml
+      - id: check-json
+        exclude: 'node_modules/|package-lock\.json'
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict

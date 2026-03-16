@@ -1,0 +1,172 @@
+.pricing-module--tabsWrapper--21kau {
+  display: flex;
+  margin: 0 -5px;
+  border-radius: 4px;
+}
+.pricing-module--plan_cards--1n-zq {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.pricing-module--plan_card--2FQgK {
+  box-shadow: 1px 1px 4px rgba(0, 0, 0, 0.04);
+  background-color: #fff;
+  display: inline-grid;
+  vertical-align: top;
+  grid-template-rows: auto auto 1fr auto;
+  border-radius: 4px;
+  width: 270px;
+  margin: 10px;
+  min-height: 340px;
+  padding: 12px;
+  border: 1px solid #e0e3e8;
+}
+.pricing-module--icon_wrapper--lJxH_ {
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pricing-module--features_short--2z2cH {
+  margin: 20px auto;
+  padding: 0 24px;
+}
+.pricing-module--features_short--2z2cH > p {
+  margin: 0 0 10px;
+  padding-left: 30px;
+  position: relative;
+}
+.pricing-module--features_short--2z2cH > p:before {
+  background-color: #546fff;
+  border-radius: 50%;
+  color: #fff;
+  display: inline-block;
+  font-weight: 900;
+  font-size: 0.75em;
+  height: 1.4em;
+  width: 1.4em;
+  left: 0;
+  line-height: 1.5;
+  position: absolute;
+  top: 0.382em;
+  text-align: center;
+}
+.pricing-module--plan_card--2FQgK .pricing-module--btn--1_rYI {
+  min-width: auto;
+  width: 100%;
+  width: 154px;
+  height: 42px;
+  margin: 20px auto auto;
+}
+.pricing-module--plan_name--ewLx6 {
+  font-size: 12px;
+  font-weight: 500;
+  display: block;
+  text-align: center;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  color: #546fff;
+}
+.pricing-module--table--18MD1 {
+  width: 100%;
+  border-collapse: collapse;
+}
+td {
+  padding: 10px 20px;
+  text-align: center;
+  font-size: 12px;
+  color: #3c4469;
+}
+tr:first-child {
+  background-color: #edf0ff;
+  color: #363e75;
+  font-weight: 600;
+  border-radius: 2px;
+}
+td:first-child {
+  text-align: left;
+}
+.pricing-module--price--72Nkf {
+  text-align: center;
+  margin-bottom: 15px;
+  font-size: 24px;
+  font-weight: 600;
+  color: #354454;
+}
+.pricing-module--price--72Nkf .pricing-module--amount--3A8jT {
+  font-weight: 350;
+}
+.pricing-module--amount--3A8jT:first-letter {
+  font-size: 32px;
+  vertical-align: text-top;
+}
+.pricing-module--custom--2i6J0 {
+  font-size: 20px;
+  color: #3c4469;
+  font-weight: 500;
+}
+.pricing-module--price--72Nkf .pricing-module--sub--3lLKH {
+  font-size: 20px;
+  color: #9b9b9b;
+  font-weight: 200;
+}
+.pricing-module--rule1--kzSBy {
+  border: 1px solid #e2e2e2;
+}
+.pricing-module--plan_card_top--29kaK {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  margin-bottom: 10px;
+}
+.pricing-module--dollar--35au0 {
+  font-size: 32px;
+  vertical-align: text-top;
+}
+.pricing-module--check--vJSej {
+  vertical-align: top;
+  color: #3c4469;
+}
+.pricing-module--feature_name--3Rh2F {
+  display: inline;
+  margin-left: 11px;
+  color: #3c4469;
+  font-size: 14px;
+}
+.pricing-module--card_sub--1Ki0o {
+  display: flex;
+  justify-content: center;
+  color: #94a1af;
+  font-size: 14px;
+}
+
+.inputText {
+  min-width: 240px;
+  height: 48px;
+  outline: 0;
+  border-radius: 4px;
+  padding: 10px;
+  vertical-align: top;
+}
+.btn {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  color: #546fff;
+  border: 1px solid #546fff;
+  text-align: center;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+}
+.btn.blue {
+  color: #fff;
+  background: #546fff;
+}
+.btn.outlined {
+  background: none;
+  border: 1px solid #546fff;
+  color: #546fff;
+}
