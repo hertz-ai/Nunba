@@ -472,16 +472,17 @@ def _load_deferred_config():
 # flask, requests, PIL etc. take seconds to import. Show splash first.
 _early_splash = None   # (root, canvas, status_var, photo_ref)
 _eroot = None
+# Make Tkinter DPI-aware BEFORE creating any windows (early or animated).
+# Without this, Windows upscales the splash (e.g. 900x560 → 1350x840 at 150% DPI)
+# and positions it off-center.
+try:
+    import ctypes as _ct_dpi
+    _ct_dpi.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+except Exception:
+    pass  # Linux/macOS or older Windows — no-op
 # Early splash only in frozen builds — two Tk() instances cause ghost white window
 if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--install-ai' not in sys.argv and '--background' not in sys.argv and '--help' not in sys.argv and '-h' not in sys.argv:
     try:
-        # Make Tkinter DPI-aware BEFORE creating any windows.
-        # Without this, Windows upscales the splash (e.g. 900x560 → 1350x840 at 150% DPI).
-        try:
-            import ctypes as _ct_dpi
-            _ct_dpi.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
-        except Exception:
-            pass  # Linux/macOS or older Windows — no-op
         import tkinter as _estk
         _eroot = _estk.Tk()
         _eroot.withdraw()  # hidden root — setup-ai wizard can use Toplevel on it
@@ -574,13 +575,19 @@ import atexit
 import urllib.parse
 import requests
 
-# Update early splash status after heavy imports
-if _early_splash:
-    try:
-        _early_splash[3].set('Loading modules...')
-        _early_splash[0].update()
-    except Exception:
-        pass
+# Update early splash status after heavy imports (frozen builds only).
+# Use _early_splash[1].update() (Toplevel) NOT [0].update() (_eroot).
+# _eroot.update() maps the hidden root window as white on DPI-aware Windows.
+def _pump_early_splash(msg=None):
+    if _early_splash:
+        try:
+            if msg:
+                _early_splash[3].set(msg)
+            _early_splash[1].update()  # Toplevel — dark, safe
+        except Exception:
+            pass
+
+_pump_early_splash('Loading modules...')
 
 # Lazy import for webview - only loaded when actually needed (not for --install-ai mode)
 pywebview = None
@@ -628,6 +635,8 @@ def get_webview():
         import webview as _pywebview
         pywebview = _pywebview
     return pywebview
+
+_pump_early_splash('Loading AI engine...')
 
 # Import Llama.cpp installer for first-run initialization
 try:
@@ -733,6 +742,7 @@ def _clipboard_monitor_thread():
             pass
         time.sleep(2)
 
+_pump_early_splash('Preparing interface...')
 
 # Default configuration for stop API URL
 DEFAULT_STOP_API_URL = "http://gcp_training2.hertzai.com:5001/stop"
