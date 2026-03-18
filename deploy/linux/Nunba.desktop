@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Name=Nunba
+GenericName=Local AI Companion
+Comment=Your Local HART Mind Companion - Run LLMs, TTS, STT locally
+Exec=Nunba %u
+Icon=nunba
+Terminal=false
+Categories=Education;Development;ArtificialIntelligence;Chat;
+Keywords=AI;LLM;TTS;STT;Agent;Local;Privacy;Offline;HevolveAI;
+MimeType=x-scheme-handler/hevolveai;
+StartupWMClass=Nunba
+StartupNotify=true
+Actions=background;setup-ai;
+
+[Desktop Action background]
+Name=Run in Background
+Exec=Nunba --background
+
+[Desktop Action setup-ai]
+Name=AI Setup Wizard
+Exec=Nunba --setup-ai

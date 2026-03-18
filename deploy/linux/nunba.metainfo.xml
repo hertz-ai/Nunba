@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata for Nunba - Linux app store listing -->
+<!-- Validates with: appstreamcli validate nunba.metainfo.xml -->
+<component type="desktop-application">
+  <id>com.hevolve.nunba</id>
+
+  <name>Nunba</name>
+  <summary>Your Local AI Companion - Run LLMs, TTS, and STT privately</summary>
+
+  <developer id="com.hevolve">
+    <name>HevolveAI</name>
+  </developer>
+
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>BSL-1.1</project_license>
+
+  <description>
+    <p>
+      Nunba is a desktop AI companion that runs large language models, text-to-speech,
+      speech-to-text, and intelligent agents entirely on your local machine. Your data
+      never leaves your device unless you explicitly choose to connect to the Hivemind.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Run LLMs locally via llama.cpp - no cloud required</li>
+      <li>Multi-engine TTS: Piper (CPU), Chatterbox, Parler, F5-TTS (GPU)</li>
+      <li>Intelligent agents with memory, tools, and autonomous creation</li>
+      <li>Social features: share discoveries with friends' agents</li>
+      <li>Kids media generation: safe, educational content creation</li>
+      <li>Cultural wisdom system: 30 cultural traits for diverse AI interactions</li>
+      <li>Privacy-first: all processing happens on your hardware</li>
+      <li>Optional Hivemind: connect your agent with friends for collaborative intelligence</li>
+    </ul>
+    <p>
+      Nunba supports NVIDIA and AMD GPUs for accelerated inference, with automatic
+      CPU fallback. The AI Setup Wizard guides you through model selection and
+      hardware optimization on first launch.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">Nunba.desktop</launchable>
+
+  <url type="homepage">https://hevolve.ai</url>
+  <url type="bugtracker">https://github.com/hertz-ai/Nunba/issues</url>
+  <url type="donation">https://hevolve.ai/donate</url>
+  <url type="help">https://hevolve.ai/docs</url>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#6C63FF</color>
+    <color type="primary" scheme_preference="dark">#0F0E17</color>
+  </branding>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Nunba chat interface with local LLM</caption>
+      <image>https://hevolve.ai/screenshots/nunba-chat.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>AI Setup Wizard for model selection</caption>
+      <image>https://hevolve.ai/screenshots/nunba-setup-wizard.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Social feed - share with friends' agents</caption>
+      <image>https://hevolve.ai/screenshots/nunba-social.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Agent creation and management</caption>
+      <image>https://hevolve.ai/screenshots/nunba-agents.png</image>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>Education</category>
+    <category>Development</category>
+    <category>ArtificialIntelligence</category>
+    <category>Chat</category>
+  </categories>
+
+  <keywords>
+    <keyword>AI</keyword>
+    <keyword>LLM</keyword>
+    <keyword>TTS</keyword>
+    <keyword>STT</keyword>
+    <keyword>agent</keyword>
+    <keyword>local</keyword>
+    <keyword>privacy</keyword>
+    <keyword>llama</keyword>
+    <keyword>chatbot</keyword>
+    <keyword>offline</keyword>
+  </keywords>
+
+  <provides>
+    <binary>Nunba</binary>
+  </provides>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+    <internet>offline-only</internet>
+  </requires>
+
+  <recommends>
+    <memory>8192</memory>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+
+  <supports>
+    <internet>always</internet>
+  </supports>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">moderate</content_attribute>
+    <content_attribute id="social-info">mild</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="2.0.0" date="2026-03-16">
+      <description>
+        <p>Major release: Nunba 2.0</p>
+        <ul>
+          <li>Unified Model Catalog with 11 admin API endpoints</li>
+          <li>Auto Evolve system for democratic experiment selection</li>
+          <li>Agent Memory System with FTS5 graph and 5 LangChain tools</li>
+          <li>Distributed Coding Agent with ledger primitives</li>
+          <li>Universal Shareable Links with OG image generation</li>
+          <li>Cultural Wisdom System with 30 traits</li>
+          <li>3-tier role-based access control</li>
+          <li>Linux AppImage support</li>
+          <li>Multi-engine TTS: Piper, Chatterbox, Parler, F5-TTS</li>
+          <li>Kids media pipeline for safe content generation</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.0.0" date="2025-06-01">
+      <description>
+        <p>Initial release of Nunba desktop application.</p>
+      </description>
+    </release>
+  </releases>
+
+</component>
