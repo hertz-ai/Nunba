@@ -82,7 +82,7 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
       - name: Sign Nunba.exe (Azure Trusted Signing)
-        if: ${{ !inputs.skip_signing && secrets.AZURE_TENANT_ID != '' }}
+        if: ${{ !inputs.skip_signing }}
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -96,12 +96,13 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+        continue-on-error: true
 
       - name: Build installer (Inno Setup)
         run: python scripts/build.py installer
 
       - name: Sign installer (Azure Trusted Signing)
-        if: ${{ !inputs.skip_signing && secrets.AZURE_TENANT_ID != '' }}
+        if: ${{ !inputs.skip_signing }}
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -115,6 +116,7 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+        continue-on-error: true
 
       - name: Smoke test (validate frozen exe)
         run: |
@@ -188,7 +190,7 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
       - name: Import Apple signing certificate
-        if: ${{ !inputs.skip_signing && secrets.APPLE_CERTIFICATE_P12 != '' }}
+        if: ${{ !inputs.skip_signing }}
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -218,7 +220,8 @@ jobs:
           rm certificate.p12
 
       - name: Sign and notarize
-        if: ${{ !inputs.skip_signing && secrets.APPLE_DEVELOPER_ID != '' }}
+        if: ${{ !inputs.skip_signing }}
+        continue-on-error: true
         env:
           APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
