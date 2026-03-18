@@ -50,13 +50,22 @@ jobs:
           token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
         continue-on-error: true
 
-      - name: Symlink sibling repos
+      - name: Link sibling repos
         shell: bash
         run: |
-          # Build scripts expect ../HARTOS and ../hevolveai (sibling dirs)
-          ln -s "$GITHUB_WORKSPACE/_deps/HARTOS" ../HARTOS || true
-          ln -s "$GITHUB_WORKSPACE/_deps/hevolveai" ../hevolveai || true
-          ls -la ../HARTOS/ ../hevolveai/ 2>/dev/null || true
+          # Build scripts expect ../HARTOS and ../hevolveai as sibling dirs.
+          # Windows: use directory junction (mklink /J, no admin needed).
+          # Linux/macOS: use symlink.
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            cmd //c "mklink /J \"$(cygpath -w ../HARTOS)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/HARTOS)\"" 2>/dev/null || true
+            cmd //c "mklink /J \"$(cygpath -w ../hevolveai)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/hevolveai)\"" 2>/dev/null || true
+            cmd //c "mklink /J \"$(cygpath -w ../Hevolve_Database)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/HARTOS)\"" 2>/dev/null || true
+          else
+            ln -sf "$GITHUB_WORKSPACE/_deps/HARTOS" ../HARTOS || true
+            ln -sf "$GITHUB_WORKSPACE/_deps/hevolveai" ../hevolveai || true
+            ln -sf "$GITHUB_WORKSPACE/_deps/HARTOS" ../Hevolve_Database || true
+          fi
+          ls -la ../HARTOS/pyproject.toml ../hevolveai/ 2>/dev/null || echo "Some sibling repos not available"
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
