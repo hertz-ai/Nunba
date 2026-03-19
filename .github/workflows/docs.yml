@@ -59,9 +59,27 @@ jobs:
           token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
         continue-on-error: true
 
+      - name: Checkout HevolveAI (source, if accessible)
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/HevolveAI
+          path: _deps/hevolveai
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
+        continue-on-error: true
+
+      - name: Checkout Hevolve_Database
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/Hevolve_Database
+          path: _deps/Hevolve_Database
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
+        continue-on-error: true
+
       - name: Symlink sibling repos
         run: |
           ln -sf "$GITHUB_WORKSPACE/_deps/HARTOS" ../HARTOS || true
+          ln -sf "$GITHUB_WORKSPACE/_deps/hevolveai" ../hevolveai || true
+          ln -sf "$GITHUB_WORKSPACE/_deps/Hevolve_Database" ../Hevolve_Database || true
 
       - uses: actions/setup-python@v5
         with:
@@ -71,18 +89,31 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # Install Python backend dependencies
+      # Install Python backend + all transitive dependencies
+      # Uses the same install logic as scripts/build.py:
+      #   1. Local sibling source (if checkout succeeded)
+      #   2. Compiled wheel from HARTOS (if source unavailable)
+      #   3. pip install from requirements.txt as baseline
       - name: Install Python dependencies
         run: |
-          pip install flask flask-cors waitress requests pywebview pillow \
-            sqlalchemy alembic greenlet pyjwt cryptography python-jose \
-            autobahn[twisted] crossbarhttp3 numpy langchain-classic \
-            langchain-core langchain-community langsmith apscheduler \
-            json-repair beautifulsoup4 redis aiohttp python-dotenv \
-            sentry-sdk pyperclip pydantic fastapi 2>&1 | tail -5
-          # Install HARTOS if available
-          if [ -d ../HARTOS ]; then
-            pip install --no-deps ../HARTOS 2>&1 | tail -3
+          pip install -r requirements.txt 2>&1 | tail -5
+
+          # Install sibling deps in order (same as build.py):
+          # hevolve-database → hevolveai → hart-backend
+          for dep_dir in ../Hevolve_Database ../hevolveai ../HARTOS; do
+            if [ -f "$dep_dir/pyproject.toml" ] || [ -f "$dep_dir/setup.py" ]; then
+              echo "Installing $(basename $dep_dir) from source..."
+              pip install --no-deps "$dep_dir" 2>&1 | tail -2
+            fi
+          done
+
+          # Fallback: if hevolveai source not available, try compiled wheel
+          if ! python -c "import hevolveai" 2>/dev/null; then
+            if [ -d ../HARTOS/scripts/build_compiled_wheel.py ]; then
+              echo "hevolveai source unavailable — building compiled wheel..."
+              python ../HARTOS/scripts/build_compiled_wheel.py --all 2>&1 | tail -5
+              pip install dist/embodied_ai-*.whl 2>/dev/null || true
+            fi
           fi
 
       # Build React frontend
