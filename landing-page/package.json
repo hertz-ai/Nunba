@@ -150,6 +150,9 @@
   "jest": {
     "watchPathIgnorePatterns": [
       "testHelpers.js"
-    ]
+    ],
+    "moduleNameMapper": {
+      "^axios$": "axios/dist/node/axios.cjs"
+    }
   }
 }

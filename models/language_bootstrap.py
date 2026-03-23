@@ -313,6 +313,19 @@ def _update_step(model_type: str, **kwargs) -> None:
         if step:
             for k, v in kwargs.items():
                 setattr(step, k, v)
+        user_id = _state.language  # bootstrapper doesn't track user — use broadcast
+    # Push via WAMP so frontend SetupProgressCard updates in real-time
+    try:
+        from integrations.social.realtime import publish_event
+        publish_event('setup_progress', {
+            'type': 'setup_progress',
+            'job_type': str(model_type),
+            'model_name': kwargs.get('detail', ''),
+            'status': kwargs.get('status', ''),
+            'message': kwargs.get('detail', ''),
+        })
+    except Exception:
+        pass
 
 
 def _refresh_vram() -> None:

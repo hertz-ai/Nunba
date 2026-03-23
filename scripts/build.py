@@ -767,6 +767,26 @@ def build_windows(python_exe, app_only=False, installer_only=False):
 
     print_header("Building Nunba executable with cx_Freeze")
 
+    # Purge all __pycache__ dirs and stale .pyc files before cx_Freeze.
+    # cx_Freeze reads source .py files directly and compiles them into
+    # lib/*.pyc. If stale __pycache__/*.pyc exist from a previous build
+    # or IDE run, cx_Freeze may pick those up instead of the latest source.
+    # Also removes the previous build output to prevent stale .pyc carry-over.
+    print_info("Purging __pycache__ and stale .pyc to ensure fresh compilation...")
+    _purged = 0
+    for _purge_root in ['.', os.path.join('..', 'HARTOS')]:
+        if os.path.isdir(_purge_root):
+            for _root, _dirs, _files in os.walk(_purge_root):
+                if '__pycache__' in _dirs:
+                    _pc = os.path.join(_root, '__pycache__')
+                    shutil.rmtree(_pc, ignore_errors=True)
+                    _purged += 1
+                    _dirs.remove('__pycache__')
+    if os.path.isdir(os.path.join('build', 'Nunba', 'lib')):
+        shutil.rmtree(os.path.join('build', 'Nunba', 'lib'), ignore_errors=True)
+        print_info("Removed previous build/Nunba/lib/ to prevent stale .pyc carry-over")
+    print_info(f"Purged {_purged} __pycache__ directories")
+
     # Run cx_Freeze
     if not run_command([python_exe, os.path.join('scripts', 'setup_freeze_nunba.py'), 'build'],
                        "Running cx_Freeze..."):
