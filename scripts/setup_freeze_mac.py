@@ -289,6 +289,11 @@ info_plist = f"""<?xml version="1.0" encoding="UTF-8"?>
     </array>
     <key>LSUIElement</key>
     <false/>
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+        <string>x86_64</string>
+    </array>
 </dict>
 </plist>
 """

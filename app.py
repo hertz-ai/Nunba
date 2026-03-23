@@ -501,6 +501,17 @@ try:
     _ct_dpi.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
 except Exception:
     pass  # Linux/macOS or older Windows — no-op
+# cx_Freeze puts tcl/tk in Contents/MacOS/share/ but tkinter looks in
+# Contents/Resources/share/.  Set env vars so every Tk() call finds init.tcl.
+if getattr(sys, 'frozen', False) and sys.platform == 'darwin':
+    _macos_dir = os.path.dirname(sys.executable)
+    _tcl_dir = os.path.join(_macos_dir, 'share', 'tcl8.6')
+    _tk_dir = os.path.join(_macos_dir, 'share', 'tk8.6')
+    if os.path.isdir(_tcl_dir):
+        os.environ['TCL_LIBRARY'] = _tcl_dir
+    if os.path.isdir(_tk_dir):
+        os.environ['TK_LIBRARY'] = _tk_dir
+
 # Early splash only in frozen builds — two Tk() instances cause ghost white window
 if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--install-ai' not in sys.argv and '--background' not in sys.argv and '--help' not in sys.argv and '-h' not in sys.argv:
     try:
@@ -568,7 +579,7 @@ if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--install
                     pass
 
             _es_animate()
-            _eroot.update()  # must be update() not update_idletasks() — processes DPI events
+            _safe_tk_update(_eroot)  # use safe pump — plain update() freezes macOS Cocoa loop
             # Self-destruct: if splash is still alive after 5 min, something hung — kill it
             _eroot.after(300000, lambda: _eroot.destroy())
             # Store: (hidden_root, toplevel, canvas, status_var, photo_ref)
@@ -604,7 +615,7 @@ def _pump_early_splash(msg=None):
         try:
             if msg:
                 _early_splash[3].set(msg)
-            _early_splash[1].update()  # Toplevel — dark, safe
+            _safe_tk_update(_early_splash[1])  # safe pump — plain update() freezes macOS
         except Exception:
             pass
 

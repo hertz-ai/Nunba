@@ -884,6 +884,39 @@ def build_macos(python_exe, app_only=False, installer_only=False):
         if os.path.exists(exe_path):
             os.chmod(exe_path, 0o755)
 
+        # ── Copy tcl/tk scripts to Contents/Resources/share/ ──
+        # cx_Freeze puts tcl/tk in Contents/MacOS/share/ but _tkinter looks in
+        # Contents/Resources/share/ on macOS.  Copy so tkinter finds init.tcl.
+        _macos_share = os.path.join(app_path, 'Contents', 'MacOS', 'share')
+        _resources_share = os.path.join(app_path, 'Contents', 'Resources', 'share')
+        if os.path.isdir(_macos_share) and not os.path.isdir(_resources_share):
+            shutil.copytree(_macos_share, _resources_share)
+            print_info("Copied tcl/tk scripts to Contents/Resources/share/")
+
+        # ── Thin universal binaries to arm64 on Apple Silicon ──
+        # cx_Freeze bundles a universal Python executable but .so extensions are
+        # arm64-only.  If the OS picks the x86_64 slice the .so files fail to
+        # load.  Thinning both the launcher and libPython forces arm64.
+        import platform as _plat
+        import tempfile
+        if _plat.machine() == 'arm64':
+            _python_lib = os.path.join(app_path, 'Contents', 'MacOS', 'lib', 'Python')
+            for _bin in [exe_path, _python_lib]:
+                if not os.path.exists(_bin):
+                    continue
+                try:
+                    _arch_out = subprocess.check_output(['lipo', '-archs', _bin], text=True).strip()
+                    if 'x86_64' in _arch_out and 'arm64' in _arch_out:
+                        _tmp = os.path.join(tempfile.gettempdir(), os.path.basename(_bin) + '.arm64')
+                        subprocess.run(['lipo', _bin, '-thin', 'arm64', '-output', _tmp], check=True)
+                        # Sign in temp location (avoids codesign treating it as bundle root)
+                        subprocess.run(['codesign', '--force', '--sign', '-', _tmp], check=True)
+                        os.replace(_tmp, _bin)
+                        os.chmod(_bin, 0o755)
+                        print_info(f"Thinned to arm64 + re-signed: {os.path.basename(_bin)}")
+                except Exception as _e:
+                    print_warn(f"lipo thin failed for {os.path.basename(_bin)}: {_e}")
+
         print_info(f"Build successful: {app_path}")
 
         if app_only:
