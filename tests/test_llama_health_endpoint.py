@@ -189,3 +189,66 @@ class TestHealthRoutes:
         assert 'managed_by' in data
         assert 'status' in data
         assert 'timestamp' in data
+
+
+# ============================================================
+# Edge cases — error resilience
+# ============================================================
+
+class TestHealthEdgeCases:
+    """Edge cases that occur in production — llama server crashes, slow responses."""
+
+    def test_health_when_llama_not_running(self):
+        """GET /health must still return 200 even when llama.cpp is down."""
+        app = Flask(__name__)
+        app.config['TESTING'] = True
+        from llama.llama_health_endpoint import add_health_routes
+        add_health_routes(app, llama_config=None)
+        with app.test_client() as client:
+            with patch('llama.llama_health_endpoint.requests.get',
+                       side_effect=ConnectionError("refused")):
+                resp = client.get('/health')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['managed_by'] == 'Nunba'
+
+    def test_info_returns_correct_model_info(self):
+        """Model name in /nunba/info must match the selected preset."""
+        app = Flask(__name__)
+        app.config['TESTING'] = True
+        from llama.llama_health_endpoint import add_health_routes
+        mock_config = MagicMock()
+        mock_config.config = {'server_port': 8080, 'use_gpu': False,
+                              'context_size': 4096, 'selected_model_index': 0}
+        mock_preset = MagicMock()
+        mock_preset.display_name = 'TestModel-7B'
+        mock_preset.size_mb = 5000
+        mock_preset.has_vision = False
+        mock_preset.description = 'A test model'
+        mock_config.get_selected_model_preset.return_value = mock_preset
+        add_health_routes(app, llama_config=mock_config)
+        with app.test_client() as client:
+            resp = client.get('/nunba/info')
+        data = resp.get_json()
+        assert data['ai_config']['model']['name'] == 'TestModel-7B'
+        assert data['ai_config']['model']['has_vision'] is False
+
+    def test_health_timestamp_format(self):
+        """Timestamp must be parseable — frontend displays it."""
+        from llama.llama_health_endpoint import LlamaHealthWrapper
+        wrapper = LlamaHealthWrapper()
+        with patch.object(wrapper, 'get_llama_health', return_value={'status': 'ok'}):
+            result = wrapper.get_nunba_health()
+        ts = result['timestamp']
+        # Must be YYYY-MM-DD HH:MM:SS format
+        assert len(ts) >= 19
+        assert '-' in ts and ':' in ts
+
+    def test_wrapper_port_in_response(self):
+        """Frontend uses wrapper_port to construct API URLs."""
+        from llama.llama_health_endpoint import LlamaHealthWrapper
+        wrapper = LlamaHealthWrapper(llama_port=8080, wrapper_port=5000)
+        with patch.object(wrapper, 'get_llama_health', return_value={'status': 'ok'}):
+            result = wrapper.get_nunba_health()
+        assert result['wrapper_port'] == 5000
+        assert result['llama_port'] == 8080
