@@ -5241,10 +5241,16 @@ def main():
         if hasattr(args, 'protocol') and args.protocol and not start_hidden:
             logger.info("Protocol launch overrode background mode - window will be visible")
 
-        # Load webview module (lazy import to avoid pythonnet issues in --install-ai mode)
-        logger.info("[STARTUP] Loading pywebview module...")
+        # Load webview module (lazy import to avoid pythonnet issues in --install-ai mode).
+        # On cold boot this can take 30-60s (.NET JIT + WebView2 COM init).
+        # Flush logs so diagnostic info is available if the user kills the process.
+        logger.info("[STARTUP] Loading pywebview module (may take 30-60s on cold boot)...")
+        for _h in logger.handlers:
+            _h.flush()
+        _wv_start = time.time()
         webview = get_webview()
-        logger.info("[STARTUP] pywebview loaded successfully")
+        _wv_elapsed = time.time() - _wv_start
+        logger.info(f"[STARTUP] pywebview loaded successfully in {_wv_elapsed:.1f}s")
 
         # Create window with conditional hidden status and frameless design
         _window = webview.create_window(
@@ -5290,90 +5296,99 @@ def main():
         # In background mode, reload the page on first show — the initial load
         # may have hit Flask before it was fully ready (especially on Windows boot).
         if start_hidden:
-            _bg_first_show = [True]  # mutable flag — only reload once
+            _bg_first_show = [True]  # mutable flag — only fire once
 
             def _on_bg_shown():
-                if _bg_first_show[0]:
-                    _bg_first_show[0] = False
+                if not _bg_first_show[0]:
+                    return
+                _bg_first_show[0] = False
 
-                    def _bg_reload_with_check():
-                        # WebView2 suspends rendering when window is hidden.
-                        # Even if React mounted while hidden, the canvas is blank.
-                        # ALWAYS force a resize repaint on first show. Only reload
-                        # if the page URL is wrong (about:blank, error).
+                def _ensure_react_mounted():
+                    """Ensure React mounts inside pywebview after hidden→visible transition.
+
+                    pywebview's WebView2 suspends rAF while hidden. React 18's createRoot
+                    uses rAF for scheduling, so the initial render may not complete.
+                    This function: (1) waits for Flask, (2) checks mount state,
+                    (3) reloads if needed, (4) retries up to 3 times.
+                    """
+                    _local_url = f"http://localhost:{args.port}/local"
+                    _MAX_ATTEMPTS = 3
+
+                    # ── Wait for Flask to be ready ──
+                    import urllib.request as _ur
+                    for _ in range(15):  # poll up to 7.5s
                         try:
-                            _cur_url = _window.get_current_url() or ''
-                            if _cur_url and 'localhost' in _cur_url and 'error' not in _cur_url.lower():
-                                # Page URL is correct — force WebView2 to repaint.
-                                # WebView2 suspends its compositor when the window is hidden.
-                                # A JS-triggered reflow + resize forces the compositor to wake up.
-                                logger.info(f"[BACKGROUND] Page loaded while hidden — forcing repaint")
-                                try:
-                                    # 1. JS reflow: read offsetHeight to force layout recalc
-                                    _window.evaluate_js(
-                                        "document.body.style.opacity='0.99';"
-                                        "void document.body.offsetHeight;"
-                                        "requestAnimationFrame(()=>{"
-                                        "  document.body.style.opacity='1';"
-                                        "  void document.body.offsetHeight;"
-                                        "});"
-                                    )
-                                    # 2. Resize trick: ±1px forces compositor
-                                    w, h = _window.width, _window.height
-                                    _window.resize(w + 1, h + 1)
-                                    time.sleep(0.05)
-                                    _window.resize(w, h)
-                                    logger.info("[BACKGROUND] Forced JS reflow + resize repaint on first show")
-                                except Exception as _rp_err:
-                                    logger.warning(f"[BACKGROUND] Repaint workaround failed: {_rp_err}")
-                                return
+                            _r = _ur.urlopen(f"http://127.0.0.1:{args.port}/cors/test", timeout=2)
+                            _r.close()
+                            break
+                        except Exception:
+                            time.sleep(0.5)
+
+                    def _check_mount():
+                        """Returns 'mounted', 'empty', 'no_root', or None (eval failed)."""
+                        try:
+                            return _window.evaluate_js(
+                                "(function(){"
+                                "  var r = document.getElementById('root');"
+                                "  if (!r) return 'no_root';"
+                                "  if (r.children.length === 0) return 'empty';"
+                                "  return 'mounted';"
+                                "})()"
+                            )
+                        except Exception:
+                            return None
+
+                    for attempt in range(_MAX_ATTEMPTS):
+                        # Give React a moment — rAF just resumed after visibility change
+                        time.sleep(1.5 if attempt == 0 else 3.0)
+
+                        state = _check_mount()
+                        logger.info(f"[BACKGROUND] Mount check #{attempt + 1}: {state}")
+
+                        if state == 'mounted':
+                            # React is up — force compositor repaint and done
+                            try:
+                                _window.evaluate_js(
+                                    "document.body.style.display='none';"
+                                    "void document.body.offsetHeight;"
+                                    "document.body.style.display='';"
+                                )
+                            except Exception:
+                                pass
+                            logger.info("[BACKGROUND] React mounted — repaint forced")
+                            return
+
+                        # state is 'empty', 'no_root', or None — React didn't mount.
+                        # Navigate (or re-navigate) to the local page.
+                        logger.warning(f"[BACKGROUND] React not mounted ({state}) — "
+                                       f"{'navigating' if attempt == 0 else 'reloading'}")
+                        try:
+                            _window.load_url(_local_url)
+                        except Exception as e:
+                            logger.warning(f"[BACKGROUND] load_url failed: {e}")
+                            continue
+
+                        # After load, give React time to render
+                        time.sleep(3.0)
+
+                        # Force resize to wake WebView2 compositor
+                        try:
+                            w, h = _window.width, _window.height
+                            _window.resize(w + 1, h)
+                            time.sleep(0.1)
+                            _window.resize(w, h)
                         except Exception:
                             pass
 
-                        logger.info("[BACKGROUND] Window shown for first time — reloading page")
-                        # Wait briefly for Flask to be ready
-                        import urllib.request as _ur_bg
-                        for _bg_poll in range(10):  # poll up to 5s
-                            try:
-                                _r = _ur_bg.urlopen(
-                                    f"http://127.0.0.1:{args.port}/cors/test", timeout=2)
-                                _r.close()
-                                break
-                            except Exception:
-                                time.sleep(0.5)
-                        try:
-                            _window.load_url(f"http://localhost:{args.port}/local")
-                            logger.info("[BACKGROUND] Page reloaded after show")
-                            # Force repaint — WebView2 can skip rendering
-                            # after load_url when window was initially hidden
-                            time.sleep(1.5)
-                            try:
-                                w, h = _window.width, _window.height
-                                _window.resize(w + 1, h)
-                                time.sleep(0.1)
-                                _window.resize(w, h)
-                                logger.info("[BACKGROUND] Forced resize repaint")
-                            except Exception:
-                                pass
-                            # Check if React mounted
-                            time.sleep(2)
-                            try:
-                                state = _window.evaluate_js("""
-                                    JSON.stringify({
-                                        rootChildren: document.getElementById('root')?.children?.length || 0,
-                                        bodyLen: document.body?.innerHTML?.length || 0,
-                                        url: window.location.href,
-                                        readyState: document.readyState,
-                                        reactMounted: !!(document.querySelector('[data-reactroot]') || document.getElementById('root')?.children?.length > 2),
-                                    })
-                                """)
-                                logger.info(f"[BACKGROUND] Post-reload state: {state}")
-                            except Exception as _diag_e:
-                                logger.warning(f"[BACKGROUND] Post-reload diag failed: {_diag_e}")
-                        except Exception as _bge:
-                            logger.warning(f"[BACKGROUND] Reload failed: {_bge}")
+                    # Final check after all attempts
+                    final = _check_mount()
+                    logger.info(f"[BACKGROUND] Final mount state after {_MAX_ATTEMPTS} attempts: {final}")
+                    if final != 'mounted':
+                        logger.error("[BACKGROUND] React failed to mount after all retries. "
+                                     "User will see black screen.")
 
-                    threading.Thread(target=_bg_reload_with_check, daemon=True).start()
+                threading.Thread(target=_ensure_react_mounted, daemon=True,
+                                 name='bg_react_mount').start()
 
             _window.events.shown += _on_bg_shown
 
@@ -6201,17 +6216,26 @@ if __name__ == "__main__":
                     if llama_config.config.get("auto_start_server", True):
                         def server_start_thread():
                             try:
+                                # Warm path: a llama-server process is already reachable
+                                # (healthy OR still loading a model). is_llm_server_running()
+                                # returns True for any HTTP response (200/500/503), False
+                                # only when nothing is listening (ConnectionRefused).
+                                # is_llm_available() is NOT used here — it requires 200
+                                # (model fully loaded), which would miss a loading server
+                                # and trigger a duplicate start + misleading toast.
+                                if llama_config.is_llm_server_running():
+                                    logger.info("LLM server already running — syncing catalog")
+                                    llama_config.start_server()
+                                    return
+
+                                # Cold path: no server detected — start via orchestrator
                                 logger.info("Auto-start enabled, loading LLM via orchestrator...")
                                 from models.orchestrator import get_orchestrator
                                 entry = get_orchestrator().auto_load('llm')
                                 if entry:
                                     logger.info(f"LLM loaded via orchestrator: {entry.id} on {entry.device}")
                                 else:
-                                    logger.warning("Orchestrator: no LLM fits current compute, trying direct start...")
-                                    if llama_config.start_server():
-                                        logger.info("Llama.cpp server started (direct fallback)")
-                                    else:
-                                        logger.warning("Failed to start llama.cpp server")
+                                    logger.warning("Orchestrator: no LLM fits current compute")
                             except Exception as e:
                                 logger.error(f"Failed to start server: {e}")
                                 logger.error(traceback.format_exc())

@@ -782,9 +782,20 @@ def build_windows(python_exe, app_only=False, installer_only=False):
                     shutil.rmtree(_pc, ignore_errors=True)
                     _purged += 1
                     _dirs.remove('__pycache__')
-    if os.path.isdir(os.path.join('build', 'Nunba', 'lib')):
-        shutil.rmtree(os.path.join('build', 'Nunba', 'lib'), ignore_errors=True)
-        print_info("Removed previous build/Nunba/lib/ to prevent stale .pyc carry-over")
+    # Remove ENTIRE previous build output — not just lib/.
+    # Any leftover .pyc, .py, or __pycache__ in build/Nunba/ can shadow fresh sources.
+    if os.path.isdir(os.path.join('build', 'Nunba')):
+        shutil.rmtree(os.path.join('build', 'Nunba'), ignore_errors=True)
+        print_info("Removed previous build/Nunba/ entirely to prevent ANY stale carry-over")
+    # Also purge python-embed __pycache__ in the SOURCE copy (not build/)
+    embed_src = os.path.join('python-embed')
+    if os.path.isdir(embed_src):
+        for _root, _dirs, _files in os.walk(embed_src):
+            if '__pycache__' in _dirs:
+                _pc = os.path.join(_root, '__pycache__')
+                shutil.rmtree(_pc, ignore_errors=True)
+                _purged += 1
+                _dirs.remove('__pycache__')
     print_info(f"Purged {_purged} __pycache__ directories")
 
     # Run cx_Freeze

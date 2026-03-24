@@ -40,9 +40,14 @@ def populate_llm_presets(catalog: ModelCatalog) -> int:
             if catalog.get(entry_id):
                 continue
             vram_est = preset.size_mb / 1024.0
-            files = {'model': preset.file_name}
+            files = {'model': preset.file_name, 'repo': preset.repo_id}
             if preset.has_vision and preset.mmproj_file:
                 files['mmproj'] = preset.mmproj_file
+                # mmproj_source is the HF filename (e.g. "mmproj-F16.gguf");
+                # mmproj is the unique local name (e.g. "mmproj-Qwen3.5-4B-F16.gguf").
+                # Storing both lets downstream code (LlamaLoader, etc.) work
+                # purely from the catalog without re-importing MODEL_PRESETS.
+                files['mmproj_source'] = preset.mmproj_source_file or preset.mmproj_file
             caps = {'has_vision': preset.has_vision}
             if 'Qwen3.5' in preset.display_name:
                 caps['context_length'] = 256000
@@ -85,57 +90,16 @@ def populate_llm_presets(catalog: ModelCatalog) -> int:
 
 
 def populate_tts_engines(catalog: ModelCatalog) -> int:
-    """Import ENGINE_CAPABILITIES from tts_engine into the catalog."""
-    added = 0
-    try:
-        from tts.tts_engine import ENGINE_CAPABILITIES, LANG_ENGINE_PREFERENCE
-        for backend_name, caps in ENGINE_CAPABILITIES.items():
-            entry_id = f'tts-{backend_name}'
-            if catalog.get(entry_id):
-                continue
+    """No-op — HARTOS tts_router.populate_tts_catalog() is now the canonical TTS populator.
 
-            langs_raw = caps.get('languages', set())
-            langs = sorted(langs_raw) if isinstance(langs_raw, set) else list(langs_raw)
-            vram = caps.get('vram_gb', 0)
-
-            lang_prio = {}
-            for lang, prefs in LANG_ENGINE_PREFERENCE.items():
-                if backend_name in prefs:
-                    lang_prio[lang] = prefs.index(backend_name) * 10
-
-            entry = ModelEntry(
-                id=entry_id,
-                name=caps.get('name', backend_name),
-                model_type=ModelType.TTS,
-                source='pip',
-                repo_id='',
-                vram_gb=vram,
-                ram_gb=max(1.0, vram * 0.8),
-                backend='torch' if vram > 0 else 'piper',
-                supports_gpu=vram > 0,
-                supports_cpu=True,
-                supports_cpu_offload=vram > 0,
-                cpu_offload_method='restart_cpu' if vram > 0 else 'none',
-                idle_timeout_s=600,
-                capabilities={
-                    'streaming': caps.get('streaming', False),
-                    'voice_cloning': caps.get('voice_cloning', False),
-                    'paralinguistic': caps.get('paralinguistic', []),
-                    'emotion_tags': caps.get('emotion_tags', []),
-                    'sample_rate': caps.get('sample_rate', 22050),
-                },
-                quality_score={'highest': 0.95, 'high': 0.85, 'medium': 0.7,
-                               'low': 0.5}.get(caps.get('quality', 'medium'), 0.7),
-                speed_score=0.8 if vram > 0 else 0.5,
-                languages=langs,
-                language_priority=lang_prio,
-                tags=['local', 'tts'] + (['cpu-friendly'] if vram == 0 else []),
-            )
-            catalog.register(entry, persist=False)
-            added += 1
-    except ImportError:
-        logger.debug("tts_engine not available, skipping TTS engines")
-    return added
+    TTS engine entries are registered directly by HARTOS via the tts_router subsystem
+    (integrations/tts/tts_router.py → populate_tts_catalog()).  Nunba's tts_engine.py
+    reads back from the catalog via _get_engine_capabilities() / _get_lang_preference()
+    rather than maintaining its own capability matrix.  This function is intentionally
+    left as a no-op so the populator slot remains registered without double-registering
+    TTS entries that HARTOS already owns.
+    """
+    return 0
 
 
 def populate_media_gen(catalog: ModelCatalog) -> int:

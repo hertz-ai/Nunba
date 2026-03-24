@@ -30,28 +30,76 @@ logger = logging.getLogger('NunbaModelOrchestrator')
 
 # ── Nunba-specific ModelLoader implementations ────────────────────
 
+
+def _entry_to_preset(entry: ModelEntry):
+    """Reconstruct a ModelPreset from a catalog ModelEntry.
+
+    The catalog populator (models/catalog.py::populate_llm_presets) stores all
+    download-specific fields inside ``entry.files`` and ``entry.repo_id``, so
+    this helper is the single place that knows the mapping.  Callers never need
+    to import MODEL_PRESETS just to get file paths or repo URLs.
+
+    Returns a ModelPreset instance, or None if the entry lacks required fields.
+    """
+    from llama.llama_installer import ModelPreset
+    file_name = entry.files.get('model')
+    if not file_name:
+        return None
+    # repo_id is stored both on entry.repo_id (canonical) and files['repo']
+    # (redundant copy added by populate_llm_presets for belt-and-suspenders).
+    repo_id = entry.repo_id or entry.files.get('repo', '')
+    has_vision = entry.capabilities.get('has_vision', False)
+    mmproj_file = entry.files.get('mmproj') if has_vision else None
+    mmproj_source = entry.files.get('mmproj_source') if has_vision else None
+    size_mb = int(round((entry.disk_gb or 0) * 1024))
+    return ModelPreset(
+        display_name=entry.name,
+        repo_id=repo_id,
+        file_name=file_name,
+        size_mb=size_mb,
+        description='',          # not needed for load/download operations
+        has_vision=has_vision,
+        mmproj_file=mmproj_file,
+        mmproj_source_file=mmproj_source,
+        min_build=entry.min_build,
+    )
+
+
 class LlamaLoader(ModelLoader):
-    """Loader for LLM models via llama.cpp."""
+    """Loader for LLM models via llama.cpp.
+
+    All operations are driven purely by the ModelCatalog entry — no direct
+    import of MODEL_PRESETS is needed here.  The canonical preset data lives in
+    llama_installer.py; populate_llm_presets() in models/catalog.py translates
+    it into ModelEntry.files so this loader can reconstruct a ModelPreset via
+    _entry_to_preset() without going back to the source list.
+    """
+
+    def _resolve_preset_and_index(self, entry: ModelEntry):
+        """Return (preset, index) by matching the catalog entry against MODEL_PRESETS.
+
+        Index is needed so LlamaConfig can persist ``selected_model_index``.
+        Falls back to a catalog-reconstructed preset (index=None) if the entry
+        can't be matched — e.g. a user-added model not in the built-in list.
+        """
+        from llama.llama_installer import MODEL_PRESETS
+        file_name = entry.files.get('model', '')
+        for i, p in enumerate(MODEL_PRESETS):
+            if p.file_name == file_name or p.display_name == entry.name:
+                return p, i
+        # Not in the built-in list — reconstruct from catalog fields.
+        return _entry_to_preset(entry), None
 
     def load(self, entry: ModelEntry, run_mode: str) -> bool:
         try:
-            from llama.llama_config import LlamaConfig, MODEL_PRESETS
+            from llama.llama_config import LlamaConfig
             config = LlamaConfig()
-            preset = None
-            for i, p in enumerate(MODEL_PRESETS):
-                if p.file_name == entry.files.get('model'):
-                    preset = p
-                    config.config['selected_model_index'] = i
-                    break
-            if not preset:
-                for i, p in enumerate(MODEL_PRESETS):
-                    if p.display_name == entry.name:
-                        preset = p
-                        config.config['selected_model_index'] = i
-                        break
+            preset, idx = self._resolve_preset_and_index(entry)
             if not preset:
                 logger.error(f"LLM preset not found for catalog entry: {entry.id}")
                 return False
+            if idx is not None:
+                config.config['selected_model_index'] = idx
             config.config['use_gpu'] = (run_mode == 'gpu')
             config.config['llm_mode'] = 'local'
             config._save_config()
@@ -70,24 +118,24 @@ class LlamaLoader(ModelLoader):
 
     def download(self, entry: ModelEntry) -> bool:
         try:
-            from llama.llama_installer import MODEL_PRESETS, LlamaInstaller
+            from llama.llama_installer import LlamaInstaller
             installer = LlamaInstaller()
-            for p in MODEL_PRESETS:
-                if p.file_name == entry.files.get('model') or p.display_name == entry.name:
-                    return installer.download_model(p)
-            return False
+            preset, _ = self._resolve_preset_and_index(entry)
+            if not preset:
+                logger.error(f"LLM download: no preset for {entry.id}")
+                return False
+            return installer.download_model(preset)
         except Exception as e:
             logger.error(f"LLM download failed: {e}")
             return False
 
     def is_downloaded(self, entry: ModelEntry) -> bool:
         try:
-            from llama.llama_installer import MODEL_PRESETS, LlamaInstaller
+            from llama.llama_installer import LlamaInstaller
             installer = LlamaInstaller()
-            for p in MODEL_PRESETS:
-                if (p.file_name == entry.files.get('model') or
-                        p.display_name == entry.name):
-                    return installer.is_model_downloaded(p)
+            preset, _ = self._resolve_preset_and_index(entry)
+            if preset:
+                return installer.is_model_downloaded(preset)
         except Exception:
             pass
         return False

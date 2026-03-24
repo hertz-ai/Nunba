@@ -96,7 +96,7 @@ const ChatMessageList = ({
   const isIdleVideo = (url) => url === idleVideoUrl;
 
   return (
-    <div className="max-w-5xl mx-auto p-4 space-y-6">
+    <div className="w-full px-3 py-4 space-y-6">
       {messages.map((message, index) => {
         if (message.type === 'thinking_container') {
           return (
@@ -172,7 +172,7 @@ const ChatMessageList = ({
               key={`llm-setup-${index}`}
               className="rounded-lg p-6 shadow-sm animate-slide-in-left"
               style={{
-                maxWidth: '85%',
+                maxWidth: '75%',
                 backgroundColor: '#1a2332',
                 color: '#FFFFFF',
                 border: '1px solid #6C63FF',
@@ -250,7 +250,7 @@ const ChatMessageList = ({
               key={`plan-card-${index}`}
               className="rounded-lg p-6 shadow-sm animate-slide-in-left"
               style={{
-                maxWidth: '85%',
+                maxWidth: '75%',
                 backgroundColor: '#1a2332',
                 color: '#FFFFFF',
                 border: '1px solid #6C63FF',
@@ -340,7 +340,7 @@ const ChatMessageList = ({
             <div
               className={`rounded-lg p-6 shadow-sm overflow-visible ${message.type === 'user' ? 'animate-slide-in-right' : 'animate-slide-in-left'}`}
               style={{
-                maxWidth: '85%',
+                maxWidth: '75%',
                 backgroundColor:
                   message.type === 'user' ? '#EFEAAA' : '#212A31',
                 color: message.type === 'user' ? '#000000' : '#FFFFFF',
@@ -457,7 +457,7 @@ const ChatMessageList = ({
             {message.type === 'user' &&
               message.status &&
               message.status !== 'sent' && (
-                <div className="mt-1 px-1" style={{maxWidth: '85%'}}>
+                <div className="mt-1 px-1" style={{maxWidth: '75%'}}>
                   <style>{`
                 @keyframes sendDotPulse {
                   0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }

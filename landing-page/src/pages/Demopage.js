@@ -78,12 +78,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // Detect if we're on the /local route to force guest mode
   const isLocalRoute = location.pathname === '/local';
 
-  // Signal readiness immediately on mount — the chat UI is usable before agents load.
-  // Previously onReady was gated behind fetchPrompts (HTTP call) which blocked the
-  // hero→demo transition for seconds on slow/loaded machines.
+  // Hero preloader: onReady fires exactly once — when agents are fetched
+  // (via fetchPrompts finally block), OR after 5s safety timeout, whichever first.
+  const readyFired = useRef(false);
+  const fireOnReady = useCallback(() => {
+    if (!readyFired.current && onReady) {
+      readyFired.current = true;
+      onReady();
+    }
+  }, [onReady]);
+
   useEffect(() => {
-    if (onReady) onReady();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const safetyTimer = setTimeout(fireOnReady, 5000);
+    return () => clearTimeout(safetyTimer);
+  }, [fireOnReady]);
 
   const videoRef = useRef(null);
   const audioRef = useRef(null);
@@ -103,6 +111,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const lastMessageSentAtRef = useRef(0); // Timestamp of last sent message
   const [editingQueueId, setEditingQueueId] = useState(null); // Track which queue item is being edited
   const [requestId, setRequestId] = useState(null);
+  const requestIdRef = useRef(null);
+  // Keep ref in sync — handleDataReceived (useCallback) reads the ref to filter
+  // daemon thinking traces without re-creating the callback on every request.
+  useEffect(() => { requestIdRef.current = requestId; }, [requestId]);
   const [audioUrl, setAudioUrl] = useState(null);
   const messagesEndRef = useRef(null);
   const [userImage, setUserImage] = useState(null);
@@ -745,11 +757,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           localStorage.removeItem('active_agent_id');
         }
 
-        // If still no current agent, pick the first LOCAL agent (avoid defaulting to cloud)
+        // If still no current agent, prefer the built-in default (local_assistant).
+        // Never auto-select a user-created agent — those have full agentic prompts
+        // that would make a simple "hi" trigger an autonomous agent workflow.
         if (!savedAgentId || allAgents.length === 0) {
           if (allAgents.length > 0) {
-            const localAgent = allAgents.find(a => a.type !== 'cloud');
-            setCurrentAgent(localAgent || allAgents[0]);
+            const defaultAgent =
+              allAgents.find(a => a.id === 'local_assistant') ||
+              allAgents.find(a => a.is_default === true) ||
+              allAgents.find(a => a.type === 'local' && !a.create_agent) ||
+              allAgents[0];
+            setCurrentAgent(defaultAgent);
           }
         }
       } catch (error) {
@@ -758,6 +776,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       } finally {
         setAgentsLoading(false);
         setAgentFetchAttempts((prev) => prev + 1);
+        fireOnReady();
       }
     };
     fetchPrompts();
@@ -1274,10 +1293,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       }
 
       if (Number(parsed.priority) === 49 && parsed.action === 'Thinking') {
-        logger.log('🧠 THINKING MODE DETECTED');
+        const traceRequestId = parsed.request_id || 'unknown';
+
+        // Only show thinking traces that belong to the current user chat request.
+        // Daemon/background agent tasks use different request_ids — drop them
+        // so they don't leak into the user's conversation UI.
+        const currentReqId = requestIdRef.current;
+        if (currentReqId && traceRequestId !== 'unknown' && traceRequestId !== currentReqId) {
+          logger.log(`Dropping daemon thinking trace (req=${traceRequestId}, current=${currentReqId})`);
+          return;
+        }
+
+        logger.log('THINKING MODE DETECTED');
 
         const thinkingText = parsed.text?.[0] || '';
-        const requestId = parsed.request_id || 'unknown';
+        const requestId = traceRequestId;
 
         const uniqueThinkingId = `thinking_step_${Date.now()}_${Math.random()
           .toString(36)
@@ -2052,6 +2082,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     setCurrentPage((prev) => (prev < numPages ? prev + 1 : prev));
   const prevPage = () => setCurrentPage((prev) => (prev > 1 ? prev - 1 : prev));
 
+  // BCP-47 locale map for Web Speech API (needs ta-IN not ta)
+  const _sttLangMap = {
+    en: 'en-US', ta: 'ta-IN', hi: 'hi-IN', te: 'te-IN', bn: 'bn-IN',
+    gu: 'gu-IN', kn: 'kn-IN', ml: 'ml-IN', mr: 'mr-IN', pa: 'pa-IN',
+    ur: 'ur-PK', as: 'as-IN', ne: 'ne-NP', sa: 'sa-IN', or: 'or-IN',
+    es: 'es-ES', fr: 'fr-FR', de: 'de-DE', pt: 'pt-BR', ru: 'ru-RU',
+    ja: 'ja-JP', ko: 'ko-KR', zh: 'zh-CN', ar: 'ar-SA', it: 'it-IT',
+    tr: 'tr-TR', vi: 'vi-VN', th: 'th-TH', id: 'id-ID',
+  };
+
   const handleStart = () => {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -2064,14 +2104,46 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    const _hartLang = localStorage.getItem('hart_language') || 'en';
+    recognition.lang = _sttLangMap[_hartLang] || _hartLang;
+
+    // Track what was committed (final) vs what's still interim
+    let committedText = '';
 
     recognition.onresult = (event) => {
-      let transcript = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        transcript += event.results[i][0].transcript;
+      let interim = '';
+      let finalText = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          finalText += result[0].transcript;
+        } else {
+          interim += result[0].transcript;
+        }
       }
-      setInputMessage((prev) => prev + transcript);
+      // Replace input with committed finals + current interim (no duplication)
+      committedText = finalText;
+      setInputMessage(committedText + interim);
+    };
+
+    // Auto-send on speech pause: when a final result arrives and
+    // no new speech for 1.5s, send automatically (voice agent UX)
+    let autoSendTimer = null;
+    const origOnResult = recognition.onresult;
+    recognition.onresult = (event) => {
+      origOnResult(event);
+      // Check if the latest result is final (speech pause detected)
+      const lastResult = event.results[event.results.length - 1];
+      if (lastResult.isFinal) {
+        clearTimeout(autoSendTimer);
+        autoSendTimer = setTimeout(() => {
+          if (committedText.trim()) {
+            // Auto-send without pressing Enter
+            if (handleSendRef.current) handleSendRef.current();
+            committedText = '';
+          }
+        }, 1500); // 1.5s silence → auto-send
+      }
     };
 
     recognition.onerror = (event) => {
@@ -2079,6 +2151,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     };
 
     recognition.onend = () => {
+      clearTimeout(autoSendTimer);
+      // Auto-send any remaining text when recording stops
+      if (committedText.trim() && handleSendRef.current) {
+        handleSendRef.current();
+        committedText = '';
+      }
       setIsRecording(false);
     };
 
@@ -2109,7 +2187,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     const r = new SR();
     r.continuous = true;
     r.interimResults = false;
-    r.lang = localStorage.getItem('hart_language') || 'en-US';
+    // Use same BCP-47 mapping as main speech handler
+    const _wkLang = localStorage.getItem('hart_language') || 'en';
+    r.lang = _sttLangMap[_wkLang] || _wkLang;
     r.onresult = (e) => {
       const text = e.results[e.results.length - 1][0].transcript.toLowerCase().trim();
       const wakeIdx = text.indexOf('nunba');
@@ -3262,7 +3342,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           })}
         </div>
       )}
-      <div className="flex bg-black h-screen overflow-hidden">
+      <div className="flex bg-black min-h-screen">
         <AgentSidebar
           screenWidth={screenWidth}
           showContent={showContent}
@@ -3290,7 +3370,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           toggleDropdown={toggleDropdown}
         />
 
-        <div className="flex flex-col h-full bg-black w-full overflow-hidden">
+        <div className="flex flex-col min-h-screen bg-black w-full">
           <div className="w-full flex flex-col md:flex-row-reverse flex-1">
             {/* Chat/Messages section - Now on the left for wider screens */}
 

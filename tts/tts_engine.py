@@ -42,14 +42,16 @@ BACKEND_PIPER = "piper"
 BACKEND_NONE = "none"
 
 # ════════════════════════════════════════════════════════════════════
-# ENGINE CAPABILITIES — constraints + upper bounds per engine
+# FALLBACK ENGINE CAPABILITIES — degraded-mode fallback only.
 #
-# This matrix drives routing decisions. Each engine's unique features
-# are maximized: Chatterbox Turbo gets [laugh] tags injected,
-# Svara gets <warmly> tags, etc.
+# This matrix is used ONLY when ModelCatalog is unavailable
+# (standalone/embedded mode without HARTOS).  The canonical source of
+# truth is ModelCatalog (populated by HARTOS tts_router).  All runtime
+# code should call _get_engine_capabilities() / _get_lang_preference()
+# rather than reading this dict directly.
 # ════════════════════════════════════════════════════════════════════
 
-ENGINE_CAPABILITIES = {
+_FALLBACK_ENGINE_CAPABILITIES = {
     BACKEND_F5: {
         'name': 'F5-TTS (Flow Matching)',
         'vram_gb': 2.0,
@@ -131,8 +133,10 @@ _INDIC_LANGS = {
     'ml', 'mni', 'mr', 'ne', 'or', 'pa', 'sa', 'sat', 'sd', 'ta', 'te', 'ur',
 }
 
-# Language → preferred engine order (first available wins)
-LANG_ENGINE_PREFERENCE = {
+# Language → preferred engine order (first available wins).
+# Fallback-only — canonical preference is read from ModelCatalog via
+# _get_lang_preference().  Direct use of this dict is degraded-mode only.
+_FALLBACK_LANG_ENGINE_PREFERENCE = {
     # English: Chatterbox Turbo (paralinguistic tags) > F5 (voice cloning) > Indic Parler > Piper CPU fallback
     'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_INDIC_PARLER, BACKEND_PIPER],
     # International: CosyVoice3 (zero-shot cloning) > Chatterbox ML (16GB+)
@@ -147,10 +151,153 @@ LANG_ENGINE_PREFERENCE = {
 }
 # Add all Indic languages → Indic Parler TTS
 for _lang in _INDIC_LANGS:
-    LANG_ENGINE_PREFERENCE[_lang] = [BACKEND_INDIC_PARLER]
+    _FALLBACK_LANG_ENGINE_PREFERENCE[_lang] = [BACKEND_INDIC_PARLER]
 
 # Default fallback chain for unlisted languages
 _DEFAULT_PREFERENCE = [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_INDIC_PARLER]
+
+
+# ════════════════════════════════════════════════════════════════════
+# CATALOG ↔ BACKEND ID MAPPING
+#
+# HARTOS catalog uses 'f5_tts' as the entry id; Nunba's backend
+# constant is 'f5'.  Map both directions so catalog lookups translate
+# cleanly to the backend strings used everywhere in this file.
+# ════════════════════════════════════════════════════════════════════
+
+# catalog entry id (without 'tts-' prefix) → Nunba backend constant
+# Catalog IDs use hyphens (tts-f5-tts → strip prefix → f5-tts)
+# Nunba backend constants use underscores (BACKEND_F5 = "f5")
+_CATALOG_TO_BACKEND: Dict[str, str] = {
+    # Hyphenated form (from HARTOS tts_router.populate_tts_catalog)
+    'f5-tts': BACKEND_F5,
+    'chatterbox-turbo': BACKEND_CHATTERBOX_TURBO,
+    'chatterbox-ml': BACKEND_CHATTERBOX_ML,
+    'indic-parler': BACKEND_INDIC_PARLER,
+    'cosyvoice3': BACKEND_COSYVOICE3,
+    'pocket-tts': BACKEND_PIPER,  # pocket_tts maps to piper in Nunba
+    'piper': BACKEND_PIPER,
+    'espeak': BACKEND_PIPER,      # espeak is piper fallback
+    # Legacy underscore form (backward compat)
+    'f5_tts': BACKEND_F5,
+    'chatterbox_turbo': BACKEND_CHATTERBOX_TURBO,
+    'chatterbox_multilingual': BACKEND_CHATTERBOX_ML,
+    'indic_parler': BACKEND_INDIC_PARLER,
+}
+
+# Reverse: Nunba backend constant → catalog entry id (hyphenated, without 'tts-' prefix)
+_BACKEND_TO_CATALOG: Dict[str, str] = {
+    BACKEND_F5:               'f5-tts',
+    BACKEND_CHATTERBOX_TURBO: 'chatterbox-turbo',
+    BACKEND_CHATTERBOX_ML:    'chatterbox-ml',
+    BACKEND_INDIC_PARLER:     'indic-parler',
+    BACKEND_COSYVOICE3:       'cosyvoice3',
+    BACKEND_PIPER:            'piper',
+}
+
+
+def _entry_to_legacy_caps(entry) -> Dict:
+    """Convert a ModelCatalog ModelEntry (TTS) to the legacy ENGINE_CAPABILITIES dict format.
+
+    Bridges the ModelEntry structure to the flat dict shape that all call
+    sites in this module expect.
+    """
+    caps = entry.capabilities or {}
+    langs_raw = getattr(entry, 'languages', None) or []
+    return {
+        'name':          entry.name,
+        'vram_gb':       getattr(entry, 'vram_gb', 0) or 0,
+        'languages':     set(langs_raw),
+        'paralinguistic': caps.get('paralinguistic', []),
+        'emotion_tags':  caps.get('emotion_tags', []),
+        'voice_cloning': caps.get('voice_cloning', False),
+        'streaming':     caps.get('streaming', False),
+        'sample_rate':   caps.get('sample_rate', 22050),
+        'quality':       ('highest' if getattr(entry, 'quality_score', 0.5) >= 0.93
+                          else 'high' if getattr(entry, 'quality_score', 0.5) >= 0.8
+                          else 'medium' if getattr(entry, 'quality_score', 0.5) >= 0.6
+                          else 'low'),
+    }
+
+
+def _get_engine_capabilities(backend=None) -> Dict:
+    """Return capability dict for one backend (or all backends if backend=None).
+
+    Tries ModelCatalog first (canonical, HARTOS-populated).  Falls back to
+    _FALLBACK_ENGINE_CAPABILITIES if the catalog is unavailable or has no
+    entry for the requested backend.
+
+    When backend=None the returned dict has the same shape as the old
+    ENGINE_CAPABILITIES — keyed by Nunba backend constant.
+    """
+    try:
+        from models.catalog import get_catalog, ModelType
+        catalog = get_catalog()
+        if backend is None:
+            # Return the full dict, keyed by Nunba backend constants
+            result = {}
+            for entry in catalog.list_by_type(ModelType.TTS):
+                # Strip 'tts-' prefix to get the catalog-side id
+                catalog_id = entry.id.replace('tts-', '', 1)
+                be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
+                result[be] = _entry_to_legacy_caps(entry)
+            if result:
+                return result
+        else:
+            catalog_id = _BACKEND_TO_CATALOG.get(backend, backend)
+            entry = catalog.get(f'tts-{catalog_id}')
+            if entry:
+                return _entry_to_legacy_caps(entry)
+    except Exception:
+        pass  # catalog unavailable — fall through to local fallback
+
+    # Degraded-mode fallback
+    if backend is None:
+        return _FALLBACK_ENGINE_CAPABILITIES
+    return _FALLBACK_ENGINE_CAPABILITIES.get(backend, {})
+
+
+def _get_lang_preference(language: str) -> List[str]:
+    """Return ordered list of preferred backends for a language.
+
+    Tries ModelCatalog first (canonical).  Falls back to
+    _FALLBACK_LANG_ENGINE_PREFERENCE if the catalog is unavailable.
+    """
+    try:
+        from models.catalog import get_catalog, ModelType
+        catalog = get_catalog()
+        entries = catalog.list_by_type(ModelType.TTS)
+        if entries:
+            # Build preference list: entries that support this language,
+            # sorted by language_priority (lower value = higher preference),
+            # then by overall priority descending.
+            supporting = []
+            for entry in entries:
+                langs = set(getattr(entry, 'languages', None) or [])
+                if language in langs:
+                    lang_prio = (getattr(entry, 'language_priority', None) or {})
+                    prio_val = lang_prio.get(language, 999)
+                    supporting.append((prio_val, -(getattr(entry, 'priority', 0) or 0), entry))
+            if supporting:
+                supporting.sort(key=lambda x: (x[0], x[1]))
+                result = []
+                for _, _, entry in supporting:
+                    catalog_id = entry.id.replace('tts-', '', 1)
+                    be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
+                    if be not in result:
+                        result.append(be)
+                if result:
+                    return result
+    except Exception:
+        pass  # catalog unavailable — fall through
+
+    return _FALLBACK_LANG_ENGINE_PREFERENCE.get(language, _DEFAULT_PREFERENCE)
+
+
+# ── Backward-compat aliases (importers that do ``from tts.tts_engine import
+#    ENGINE_CAPABILITIES`` continue to work — they get the fallback dict).
+ENGINE_CAPABILITIES = _FALLBACK_ENGINE_CAPABILITIES
+LANG_ENGINE_PREFERENCE = _FALLBACK_LANG_ENGINE_PREFERENCE
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -473,7 +620,7 @@ class TTSEngine:
         2. GPU has CUDA support (for GPU backends, torch.cuda must work)
         3. VRAM is sufficient (via VRAMManager or simple check)
         """
-        cap = ENGINE_CAPABILITIES.get(backend)
+        cap = _get_engine_capabilities(backend)
         if not cap:
             return False
 
@@ -497,7 +644,6 @@ class TTSEngine:
                     import torch
                     TTSEngine._import_check_cache['_torch_cuda'] = torch.cuda.is_available()
                     if not TTSEngine._import_check_cache['_torch_cuda']:
-                        # Log GPU presence for diagnostics
                         self._ensure_hw_detected()
                         logger.info(f"torch.cuda.is_available() = False "
                                     f"(torch {torch.__version__}) — "
@@ -534,7 +680,7 @@ class TTSEngine:
         installed previously), False if install was kicked off in background.
         """
         # Don't install GPU backends on machines without GPUs — waste of bandwidth
-        cap = ENGINE_CAPABILITIES.get(backend, {})
+        cap = _get_engine_capabilities(backend)
         if cap.get('vram_gb', 0) > 0:
             self._ensure_hw_detected()
             if not self.has_gpu:
@@ -610,47 +756,44 @@ class TTSEngine:
         return importlib.util.find_spec(required_pkg) is None
 
     def _select_backend_for_language(self, language='en') -> str:
-        """Select the best backend for a language, respecting hardware + software.
+        """Select the best TTS backend for a language.
 
-        Walks LANG_ENGINE_PREFERENCE for the given language and returns the
-        first backend whose required Python package is installed, torch CUDA
-        works (for GPU engines), and VRAM fits. Falls back to Piper (CPU) if
-        nothing else qualifies.
+        Delegates to ModelOrchestrator.select_best('tts', language) which uses
+        ModelCatalog + VRAMManager (single source of truth for compute-aware
+        model selection). Falls back to local ENGINE_CAPABILITIES walk only
+        if the orchestrator is unavailable (standalone/embedded mode).
 
-        When the top-preferred backend fails due to missing packages (not VRAM),
-        a background auto-install is triggered so the next request can use it.
+        Auto-installs missing backends in background via TTSLoader.download().
         """
+        # Try orchestrator first (canonical path)
+        try:
+            from models.orchestrator import get_orchestrator
+            orch = get_orchestrator()
+            entry = orch.select_best('tts', language=language)
+            if entry:
+                # Map catalog entry ID → Nunba backend constant via canonical mapping
+                catalog_id = entry.id.replace('tts-', '', 1)
+                backend = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
+                if self._can_run_backend(backend):
+                    logger.info(f"Selected backend '{backend}' for language '{language}' (via orchestrator)")
+                    return backend
+                else:
+                    # Orchestrator picked it but it's not runnable — trigger install
+                    self._try_auto_install_backend(backend)
+                    logger.info(f"Backend '{backend}' selected but not runnable — install triggered")
+        except Exception as e:
+            logger.debug(f"Orchestrator TTS selection unavailable: {e}")
+
+        # Fallback: preference walk via catalog (or local dict in standalone mode)
         self._ensure_hw_detected()
-        prefs = LANG_ENGINE_PREFERENCE.get(language, _DEFAULT_PREFERENCE)
-
-        auto_install_triggered = False
-
+        prefs = _get_lang_preference(language)
         for backend in prefs:
             if self._can_run_backend(backend):
-                logger.info(f"Selected backend '{backend}' for language '{language}'")
+                logger.info(f"Selected backend '{backend}' for language '{language}' (local fallback)")
                 return backend
-            else:
-                cap = ENGINE_CAPABILITIES.get(backend, {})
-                logger.debug(f"Skipped '{backend}' ({cap.get('name', '?')}) for language '{language}'")
 
-                # Auto-install: trigger for the first preferred backend that
-                # could work if dependencies were resolved. Covers:
-                #   a) Missing pip package (chatterbox not installed)
-                #   b) Packages present but CUDA torch missing (GPU present)
-                # _try_auto_install_backend guards against no-GPU machines.
-                # install_backend_full handles CUDA upgrade automatically.
-                if not auto_install_triggered:
-                    needs_install = self._is_missing_packages(backend)
-                    needs_cuda_upgrade = (
-                        cap.get('vram_gb', 0) > 0
-                        and not TTSEngine._import_check_cache.get('_torch_cuda', False)
-                    )
-                    if needs_install or needs_cuda_upgrade:
-                        self._try_auto_install_backend(backend)
-                        auto_install_triggered = True
-
-        # Absolute fallback — Piper on CPU (no GPU needed, English only)
-        logger.info(f"All preferred backends unavailable for '{language}', falling back to Piper (CPU)")
+        # Absolute fallback — Piper on CPU
+        logger.info(f"All backends unavailable for '{language}', falling back to Piper (CPU)")
         return BACKEND_PIPER
 
     def _select_backend(self) -> str:
@@ -801,7 +944,7 @@ class TTSEngine:
 
     @property
     def backend_name(self) -> str:
-        cap = ENGINE_CAPABILITIES.get(self._active_backend)
+        cap = _get_engine_capabilities(self._active_backend)
         if cap:
             return cap['name']
         return self._active_backend
@@ -816,7 +959,7 @@ class TTSEngine:
 
     def get_info(self) -> Dict[str, Any]:
         self._ensure_initialized()
-        cap = ENGINE_CAPABILITIES.get(self._active_backend, {})
+        cap = _get_engine_capabilities(self._active_backend)
         return {
             "backend": self._active_backend,
             "backend_name": self.backend_name,
@@ -830,7 +973,7 @@ class TTSEngine:
         }
 
     def _get_features(self) -> List[str]:
-        cap = ENGINE_CAPABILITIES.get(self._active_backend, {})
+        cap = _get_engine_capabilities(self._active_backend)
         features = []
         if cap.get('voice_cloning'):
             features.append('voice-cloning')
@@ -852,8 +995,8 @@ class TTSEngine:
                     for k, v in cap_dict.items()}
 
         if backend:
-            return _sanitize(ENGINE_CAPABILITIES.get(backend, {}))
-        return {name: _sanitize(cap) for name, cap in ENGINE_CAPABILITIES.items()}
+            return _sanitize(_get_engine_capabilities(backend))
+        return {name: _sanitize(cap) for name, cap in _get_engine_capabilities().items()}
 
     def list_voices(self) -> Dict[str, dict]:
         self._ensure_initialized()
@@ -962,7 +1105,7 @@ class TTSEngine:
         already-tried engines. Piper is always the last resort.
         """
         failed = self._active_backend
-        prefs = LANG_ENGINE_PREFERENCE.get(language or 'en', _DEFAULT_PREFERENCE)
+        prefs = _get_lang_preference(language or 'en')
         # Build fallback list: remaining prefs + Piper (if not already in list)
         candidates = [b for b in prefs if b != failed]
         if BACKEND_PIPER not in candidates:
@@ -1033,7 +1176,7 @@ class TTSEngine:
 
     def clone_voice(self, audio_path: str, voice_name: str, **kwargs) -> bool:
         self._ensure_initialized()
-        cap = ENGINE_CAPABILITIES.get(self._active_backend, {})
+        cap = _get_engine_capabilities(self._active_backend)
         if not cap.get('voice_cloning'):
             logger.warning(f"Voice cloning not supported by {self.backend_name}")
             return False
@@ -1477,9 +1620,9 @@ def get_tts_status() -> Dict[str, Any]:
     info = engine.get_info()
     # Count total unique languages across all engines
     all_langs = set()
-    for cap in ENGINE_CAPABILITIES.values():
+    for cap in _get_engine_capabilities().values():
         all_langs.update(cap.get('languages', set()))
-    # Sanitize capabilities — ENGINE_CAPABILITIES uses sets which aren't JSON-serializable
+    # Sanitize capabilities — capability dicts use sets which aren't JSON-serializable
     raw_caps = info.get("capabilities", {})
     safe_caps = {}
     for k, v in raw_caps.items():

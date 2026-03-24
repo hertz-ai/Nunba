@@ -321,3 +321,151 @@ class TestNetworkStatus:
             assert "is_online" in data
             assert data["is_online"] is False
             assert "local_agents_available" in data
+
+
+# ============================================================
+# Thinking traces — per-request isolation + FIFO eviction
+# ============================================================
+
+class TestThinkingTraces:
+    """Tests for _capture_thinking / drain_thinking_traces in hartos_backend_adapter."""
+
+    def _reset_traces(self):
+        """Clear the module-level trace buffer between tests."""
+        from routes.hartos_backend_adapter import _thinking_traces_by_request, _thinking_traces_lock
+        with _thinking_traces_lock:
+            _thinking_traces_by_request.clear()
+
+    def test_capture_isolates_by_request_id(self):
+        """Traces from different request_ids are stored separately."""
+        self._reset_traces()
+        from routes.hartos_backend_adapter import _capture_thinking, drain_thinking_traces
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'req-A', 'text': 'a'})
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'req-B', 'text': 'b'})
+        traces_a = drain_thinking_traces('req-A')
+        traces_b = drain_thinking_traces('req-B')
+        assert len(traces_a) == 1
+        assert traces_a[0]['text'] == 'a'
+        assert len(traces_b) == 1
+        assert traces_b[0]['text'] == 'b'
+
+    def test_drain_removes_only_requested(self):
+        """Draining one request_id leaves others intact."""
+        self._reset_traces()
+        from routes.hartos_backend_adapter import _capture_thinking, drain_thinking_traces
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'req-1', 'text': '1'})
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'req-2', 'text': '2'})
+        drain_thinking_traces('req-1')
+        # req-2 should still be there
+        traces = drain_thinking_traces('req-2')
+        assert len(traces) == 1
+
+    def test_drain_all_fallback(self):
+        """drain_thinking_traces(None) drains everything (backward compat)."""
+        self._reset_traces()
+        from routes.hartos_backend_adapter import _capture_thinking, drain_thinking_traces
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'r1', 'text': '1'})
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'r2', 'text': '2'})
+        all_traces = drain_thinking_traces(None)
+        assert len(all_traces) == 2
+
+    def test_fifo_eviction_removes_oldest_not_alphabetical(self):
+        """When >20 requests exist, the FIRST inserted is evicted (FIFO), not alphabetically first."""
+        self._reset_traces()
+        from routes.hartos_backend_adapter import _capture_thinking, _thinking_traces_by_request, _thinking_traces_lock
+        # Insert 21 requests. ID 'zzz-first' is inserted FIRST but alphabetically LAST.
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'zzz-first', 'text': 'oldest'})
+        for i in range(20):
+            _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': f'aaa-{i:03d}', 'text': f'{i}'})
+        with _thinking_traces_lock:
+            # 'zzz-first' should have been evicted (it was the first inserted)
+            assert 'zzz-first' not in _thinking_traces_by_request, (
+                "FIFO eviction failed: 'zzz-first' was the oldest insertion but survived. "
+                "Eviction is likely sorting alphabetically instead of by insertion order."
+            )
+            assert len(_thinking_traces_by_request) == 20
+
+    def test_per_request_cap_at_50(self):
+        """A single request_id is capped at 50 traces."""
+        self._reset_traces()
+        from routes.hartos_backend_adapter import _capture_thinking, drain_thinking_traces
+        for i in range(60):
+            _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'flood', 'text': f'{i}'})
+        traces = drain_thinking_traces('flood')
+        assert len(traces) == 50
+        # Should keep the LAST 50 (indices 10-59)
+        assert traces[0]['text'] == '10'
+
+    def test_ignores_non_thinking_messages(self):
+        """Messages without priority=49 or action='Thinking' are ignored."""
+        self._reset_traces()
+        from routes.hartos_backend_adapter import _capture_thinking, drain_thinking_traces
+        _capture_thinking({'priority': 10, 'action': 'Thinking', 'request_id': 'r'})
+        _capture_thinking({'priority': 49, 'action': 'NotThinking', 'request_id': 'r'})
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'r', 'text': 'ok'})
+        traces = drain_thinking_traces('r')
+        assert len(traces) == 1
+        assert traces[0]['text'] == 'ok'
+
+    def test_thread_safety_concurrent_capture(self):
+        """Concurrent captures from multiple threads don't corrupt the buffer."""
+        self._reset_traces()
+        import threading
+        from routes.hartos_backend_adapter import _capture_thinking, drain_thinking_traces
+        errors = []
+
+        def capture_batch(req_id, count):
+            try:
+                for i in range(count):
+                    _capture_thinking({'priority': 49, 'action': 'Thinking',
+                                       'request_id': req_id, 'text': f'{i}'})
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=capture_batch, args=(f'thread-{t}', 30))
+                   for t in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Thread errors: {errors}"
+        # All 5 threads should have their traces
+        total = 0
+        for t in range(5):
+            traces = drain_thinking_traces(f'thread-{t}')
+            total += len(traces)
+            assert len(traces) == 30
+        assert total == 150
+
+    def test_daemon_traces_never_leak_into_user_drain(self):
+        """Daemon traces (request_id='daemon_*' or 'unknown') must not appear in user drain."""
+        self._reset_traces()
+        from routes.hartos_backend_adapter import _capture_thinking, drain_thinking_traces
+        # Daemon traces
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'daemon_goal123', 'text': 'daemon work'})
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'unknown', 'text': 'orphan'})
+        # User trace
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'user-req-abc', 'text': 'user thought'})
+
+        # Drain by specific user request_id — should get only user's trace
+        user_traces = drain_thinking_traces('user-req-abc')
+        assert len(user_traces) == 1
+        assert user_traces[0]['text'] == 'user thought'
+
+        # Drain with no matching request_id — should get empty (not daemon traces)
+        leftover = drain_thinking_traces('nonexistent-req')
+        assert len(leftover) == 0
+
+    def test_daemon_traces_excluded_from_fallback_drain(self):
+        """Fallback drain (no request_id) skips daemon_ and unknown traces."""
+        self._reset_traces()
+        from routes.hartos_backend_adapter import _capture_thinking, drain_thinking_traces
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'daemon_goal456', 'text': 'bg'})
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'unknown', 'text': 'orphan'})
+        _capture_thinking({'priority': 49, 'action': 'Thinking', 'request_id': 'user-xyz', 'text': 'user'})
+
+        # Fallback drain (None) should return only user traces
+        all_traces = drain_thinking_traces(None)
+        assert len(all_traces) == 1
+        assert all_traces[0]['text'] == 'user'

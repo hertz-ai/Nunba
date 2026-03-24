@@ -326,7 +326,14 @@ class TestModelOrchestrator(unittest.TestCase):
         self.assertIsNotNone(found)
 
     def test_find_by_id_substring(self):
-        found = self.orch._find_entry_by_name('tts', 'piper')
+        # TTS entries are populated by HARTOS tts_router (canonical).
+        # Use first available TTS entry's name substring for the test.
+        tts_entries = self.catalog.list_by_type('tts')
+        self.assertTrue(len(tts_entries) > 0, "No TTS entries in catalog")
+        # Search by a substring of the first TTS entry's name
+        target = tts_entries[0]
+        search_term = target.name.split()[0].lower()  # e.g. 'Chatterbox' → 'chatterbox'
+        found = self.orch._find_entry_by_name('tts', search_term)
         self.assertIsNotNone(found)
 
     def test_find_by_file_name(self):
@@ -1174,6 +1181,296 @@ class TestThreadSafety(unittest.TestCase):
             t.join(timeout=5)
 
         self.assertEqual(len(errors), 0)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 9. LlamaLoader / TTSLoader / STTLoader catalog dedup tests
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestLlamaLoaderEntryToPreset(unittest.TestCase):
+    """Tests for models/orchestrator.py _entry_to_preset() and _resolve_preset_and_index()."""
+
+    def _make_llm_entry(self, display_name='Qwen3.5-4B VL (Recommended)',
+                        file_name='Qwen3.5-4B-UD-Q4_K_XL.gguf',
+                        repo_id='unsloth/Qwen3.5-4B-GGUF',
+                        size_mb=2910, has_vision=True,
+                        mmproj_file='mmproj-Qwen3.5-4B-F16.gguf',
+                        mmproj_source='mmproj-F16.gguf',
+                        min_build=8148):
+        from models.catalog import ModelEntry, ModelType
+        files = {'model': file_name, 'repo': repo_id}
+        if has_vision and mmproj_file:
+            files['mmproj'] = mmproj_file
+            files['mmproj_source'] = mmproj_source
+        caps = {'has_vision': has_vision}
+        return ModelEntry(
+            id=f'llm-{display_name.lower().replace(" ", "-")}',
+            name=display_name,
+            model_type=ModelType.LLM,
+            source='huggingface',
+            repo_id=repo_id,
+            files=files,
+            vram_gb=round(size_mb / 1024.0, 1),
+            ram_gb=round(size_mb / 1024.0 * 1.2, 1),
+            disk_gb=round(size_mb / 1024.0, 1),
+            backend='llama.cpp',
+            capabilities=caps,
+            min_build=min_build,
+        )
+
+    def test_entry_to_preset_returns_model_preset(self):
+        """_entry_to_preset() converts a ModelEntry into a ModelPreset."""
+        from models.orchestrator import _entry_to_preset
+        from llama.llama_installer import ModelPreset
+        entry = self._make_llm_entry()
+        preset = _entry_to_preset(entry)
+        self.assertIsNotNone(preset, "Expected a ModelPreset, got None")
+        self.assertIsInstance(preset, ModelPreset)
+
+    def test_entry_to_preset_display_name_matches(self):
+        """Preset display_name comes from entry.name."""
+        from models.orchestrator import _entry_to_preset
+        entry = self._make_llm_entry(display_name='My Custom LLM')
+        preset = _entry_to_preset(entry)
+        self.assertEqual(preset.display_name, 'My Custom LLM')
+
+    def test_entry_to_preset_file_name_matches(self):
+        """Preset file_name comes from entry.files['model']."""
+        from models.orchestrator import _entry_to_preset
+        entry = self._make_llm_entry(file_name='some-model-Q4.gguf')
+        preset = _entry_to_preset(entry)
+        self.assertEqual(preset.file_name, 'some-model-Q4.gguf')
+
+    def test_entry_to_preset_repo_id_matches(self):
+        """Preset repo_id comes from entry.repo_id."""
+        from models.orchestrator import _entry_to_preset
+        entry = self._make_llm_entry(repo_id='acme/my-model')
+        preset = _entry_to_preset(entry)
+        self.assertEqual(preset.repo_id, 'acme/my-model')
+
+    def test_entry_to_preset_size_mb_derived_from_disk_gb(self):
+        """Preset size_mb is int(round(disk_gb * 1024))."""
+        from models.orchestrator import _entry_to_preset
+        entry = self._make_llm_entry(size_mb=2910)
+        preset = _entry_to_preset(entry)
+        expected_mb = int(round(entry.disk_gb * 1024))
+        self.assertEqual(preset.size_mb, expected_mb)
+
+    def test_entry_to_preset_has_vision_carried_over(self):
+        """Preset has_vision comes from entry.capabilities['has_vision']."""
+        from models.orchestrator import _entry_to_preset
+        entry = self._make_llm_entry(has_vision=True)
+        preset = _entry_to_preset(entry)
+        self.assertTrue(preset.has_vision)
+
+    def test_entry_to_preset_no_vision(self):
+        """Non-vision entry produces preset with has_vision=False."""
+        from models.orchestrator import _entry_to_preset
+        entry = self._make_llm_entry(has_vision=False, mmproj_file=None)
+        preset = _entry_to_preset(entry)
+        self.assertFalse(preset.has_vision)
+        self.assertIsNone(preset.mmproj_file)
+
+    def test_entry_to_preset_mmproj_file_set_for_vision(self):
+        """Vision entry carries mmproj_file through to the preset."""
+        from models.orchestrator import _entry_to_preset
+        entry = self._make_llm_entry(
+            has_vision=True, mmproj_file='mmproj-Qwen3.5-4B-F16.gguf')
+        preset = _entry_to_preset(entry)
+        self.assertEqual(preset.mmproj_file, 'mmproj-Qwen3.5-4B-F16.gguf')
+
+    def test_entry_to_preset_min_build_carried_over(self):
+        """min_build is carried from entry to preset."""
+        from models.orchestrator import _entry_to_preset
+        entry = self._make_llm_entry(min_build=9000)
+        preset = _entry_to_preset(entry)
+        self.assertEqual(preset.min_build, 9000)
+
+    def test_entry_to_preset_missing_model_file_returns_none(self):
+        """_entry_to_preset returns None when files['model'] is absent."""
+        from models.orchestrator import _entry_to_preset
+        from models.catalog import ModelEntry, ModelType
+        entry = ModelEntry(
+            id='llm-no-file', name='No File Model',
+            model_type=ModelType.LLM,
+            files={},  # no 'model' key
+        )
+        result = _entry_to_preset(entry)
+        self.assertIsNone(result)
+
+    def test_resolve_preset_and_index_known_model(self):
+        """_resolve_preset_and_index returns (preset, int_index) for a known built-in model."""
+        from models.orchestrator import LlamaLoader
+        from llama.llama_installer import MODEL_PRESETS
+        loader = LlamaLoader()
+        # Use the first built-in preset as the target
+        target = MODEL_PRESETS[0]
+        entry = self._make_llm_entry(
+            display_name=target.display_name,
+            file_name=target.file_name,
+            repo_id=target.repo_id,
+        )
+        preset, idx = loader._resolve_preset_and_index(entry)
+        self.assertIsNotNone(preset)
+        self.assertIsNotNone(idx, "Expected an integer index for a known built-in model")
+        self.assertEqual(idx, 0)
+        self.assertEqual(preset.display_name, target.display_name)
+
+    def test_resolve_preset_and_index_unknown_model_returns_none_index(self):
+        """For a model not in MODEL_PRESETS, index is None and preset is reconstructed."""
+        from models.orchestrator import LlamaLoader
+        loader = LlamaLoader()
+        entry = self._make_llm_entry(
+            display_name='Custom User Model XYZ',
+            file_name='custom-model-Q4.gguf',
+            repo_id='user/custom-model',
+        )
+        preset, idx = loader._resolve_preset_and_index(entry)
+        self.assertIsNone(idx, "Expected None index for a model not in MODEL_PRESETS")
+        # Preset is reconstructed from catalog fields
+        self.assertIsNotNone(preset)
+        self.assertEqual(preset.file_name, 'custom-model-Q4.gguf')
+
+    def test_resolve_preset_matches_by_display_name(self):
+        """_resolve_preset_and_index can match via display_name alone (file_name different)."""
+        from models.orchestrator import LlamaLoader
+        from llama.llama_installer import MODEL_PRESETS
+        loader = LlamaLoader()
+        target = MODEL_PRESETS[0]
+        # Use correct display_name but a bogus file_name to test name-based fallback
+        entry = self._make_llm_entry(
+            display_name=target.display_name,
+            file_name='wrong-filename.gguf',
+            repo_id=target.repo_id,
+        )
+        preset, idx = loader._resolve_preset_and_index(entry)
+        # Should still match by display_name
+        self.assertIsNotNone(idx)
+        self.assertEqual(preset.display_name, target.display_name)
+
+
+class TestTTSLoaderDownload(unittest.TestCase):
+    """Tests for TTSLoader.download() — verifies install_backend_full is called."""
+
+    def setUp(self):
+        from models.orchestrator import TTSLoader
+        from models.catalog import ModelEntry, ModelType
+        self.loader = TTSLoader()
+        self.entry = ModelEntry(
+            id='tts-chatterbox_turbo',
+            name='Chatterbox Turbo 350M',
+            model_type=ModelType.TTS,
+        )
+
+    def test_download_calls_install_backend_full(self):
+        """TTSLoader.download() calls install_backend_full with the backend name."""
+        mock_install = MagicMock(return_value=(True, 'installed'))
+        with patch('tts.package_installer.install_backend_full', mock_install):
+            with patch.dict('sys.modules', {}):
+                result = self.loader.download(self.entry)
+        mock_install.assert_called_once_with('chatterbox_turbo')
+        self.assertTrue(result)
+
+    def test_download_returns_false_on_install_failure(self):
+        """TTSLoader.download() returns False when install_backend_full reports failure."""
+        mock_install = MagicMock(return_value=(False, 'pip error'))
+        with patch('tts.package_installer.install_backend_full', mock_install):
+            result = self.loader.download(self.entry)
+        self.assertFalse(result)
+
+    def test_download_strips_tts_prefix_for_backend_name(self):
+        """The 'tts-' prefix is stripped so install_backend_full gets 'piper', not 'tts-piper'."""
+        from models.catalog import ModelEntry, ModelType
+        piper_entry = ModelEntry(
+            id='tts-piper',
+            name='Piper TTS',
+            model_type=ModelType.TTS,
+        )
+        received_names = []
+
+        def capture_install(name):
+            received_names.append(name)
+            return (True, 'ok')
+
+        with patch('tts.package_installer.install_backend_full', side_effect=capture_install):
+            self.loader.download(piper_entry)
+
+        self.assertEqual(received_names, ['piper'])
+
+    def test_download_returns_false_when_package_installer_unavailable(self):
+        """When tts.package_installer is not importable, download returns False gracefully."""
+        with patch.dict('sys.modules', {'tts.package_installer': None}):
+            result = self.loader.download(self.entry)
+        self.assertFalse(result)
+
+
+class TestSTTLoaderDownload(unittest.TestCase):
+    """Tests for STTLoader.download() — verifies faster-whisper pip install is attempted."""
+
+    def setUp(self):
+        from models.orchestrator import STTLoader
+        from models.catalog import ModelEntry, ModelType
+        self.loader = STTLoader()
+        self.entry = ModelEntry(
+            id='stt-whisper-base',
+            name='Whisper Base',
+            model_type=ModelType.STT,
+        )
+
+    def test_download_returns_true_when_faster_whisper_already_installed(self):
+        """If faster_whisper importlib spec is found, download skips pip and returns True."""
+        mock_spec = MagicMock()  # truthy → package already installed
+        with patch('importlib.util.find_spec', return_value=mock_spec), \
+             patch('tts.package_installer.has_nvidia_gpu', return_value=False), \
+             patch('tts.package_installer.is_cuda_torch', return_value=False):
+            result = self.loader.download(self.entry)
+        self.assertTrue(result)
+
+    def test_download_installs_faster_whisper_via_subprocess_when_missing(self):
+        """When faster_whisper is absent, subprocess.run is called with pip install."""
+        import subprocess as sp
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        # find_spec returns None for faster_whisper (not installed)
+        def fake_find_spec(name):
+            if name == 'faster_whisper':
+                return None
+            return MagicMock()
+        with patch('importlib.util.find_spec', side_effect=fake_find_spec), \
+             patch('tts.package_installer.has_nvidia_gpu', return_value=False), \
+             patch('tts.package_installer.is_cuda_torch', return_value=False), \
+             patch('subprocess.run', return_value=mock_result) as mock_run:
+            result = self.loader.download(self.entry)
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]  # positional list
+        self.assertIn('faster-whisper', call_args)
+        self.assertTrue(result)
+
+    def test_download_returns_false_when_pip_fails(self):
+        """When pip install exits with non-zero, download returns False."""
+        import subprocess as sp
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = 'some error'
+
+        def fake_find_spec(name):
+            if name == 'faster_whisper':
+                return None
+            return MagicMock()
+
+        with patch('importlib.util.find_spec', side_effect=fake_find_spec), \
+             patch('tts.package_installer.has_nvidia_gpu', return_value=False), \
+             patch('tts.package_installer.is_cuda_torch', return_value=False), \
+             patch('subprocess.run', return_value=mock_result):
+            result = self.loader.download(self.entry)
+        self.assertFalse(result)
+
+    def test_download_is_downloaded_checks_faster_whisper_spec(self):
+        """STTLoader.is_downloaded() returns True iff faster_whisper importlib spec is found."""
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            self.assertTrue(self.loader.is_downloaded(self.entry))
+        with patch('importlib.util.find_spec', return_value=None):
+            self.assertFalse(self.loader.is_downloaded(self.entry))
 
 
 # ═══════════════════════════════════════════════════════════════════════

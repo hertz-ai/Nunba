@@ -1943,6 +1943,16 @@ def chat_route():
                     # Note: autonomous_creation is now detected by the LLM (Create_Agent tool)
                     # and passed back via the response from hart_intelligence, NOT by pattern matching
 
+                # casual_conv=True disables ALL LangChain tools (memory, visual
+                # context, etc.).  Only safe when there's no agent prompt AND no
+                # agentic flow active — i.e. a pure default-agent chat turn.
+                _is_casual = (
+                    not langchain_prompt_id
+                    and not create_agent
+                    and not agentic_execute
+                    and not agentic_plan
+                )
+
                 result = hevolve_chat(
                     text=text,
                     user_id=str(user_id),
@@ -1950,7 +1960,7 @@ def chat_route():
                     conversation_id=conversation_id,
                     request_id=request_id,
                     create_agent=bool(create_agent),
-                    casual_conv=False,
+                    casual_conv=_is_casual,
                     autonomous=bool(autonomous_creation),
                     agentic_execute=bool(agentic_execute),
                     agentic_plan=agentic_plan,
@@ -1984,7 +1994,7 @@ def chat_route():
                     if secret_req:
                         error_response['secret_request'] = secret_req
                     # Include any thinking traces captured before the error
-                    thinking_traces = drain_thinking_traces()
+                    thinking_traces = drain_thinking_traces(request_id)
                     if thinking_traces:
                         error_response['thinking_steps'] = thinking_traces
                     return jsonify(error_response)
@@ -2045,7 +2055,7 @@ def chat_route():
                     if result.get('agentic_plan'):
                         response_json['agentic_plan'] = result['agentic_plan']
                     # Include thinking traces captured during LangChain/autogen execution
-                    thinking_traces = drain_thinking_traces()
+                    thinking_traces = drain_thinking_traces(request_id)
                     if thinking_traces:
                         response_json['thinking_steps'] = thinking_traces
                         logger.info(f'Including {len(thinking_traces)} thinking traces in response')

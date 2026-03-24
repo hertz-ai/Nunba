@@ -117,5 +117,37 @@ root.render(
   </React.StrictMode>
 );
 
+// WebView2 suspends requestAnimationFrame for hidden windows (--background start).
+// React 18's createRoot uses rAF internally for scheduling. If the window is hidden,
+// the initial render may not complete until the window becomes visible.
+// Fix: when visibility changes from hidden→visible, give React a few frames to
+// flush pending work before reloading as a last resort.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', function onVisible() {
+    if (document.visibilityState === 'visible') {
+      document.removeEventListener('visibilitychange', onVisible);
+      const rootEl = document.getElementById('root');
+      if (rootEl && rootEl.children.length === 0) {
+        // Wake compositor with a reflow toggle
+        rootEl.style.display = 'none';
+        void rootEl.offsetHeight;
+        rootEl.style.display = '';
+        // Give React up to 5 rAF frames (~80ms) to mount before reloading
+        let retries = 0;
+        const MAX_RETRIES = 5;
+        const checkMount = () => {
+          if (rootEl.children.length > 0) return; // mounted — done
+          if (++retries >= MAX_RETRIES) {
+            window.location.reload();
+            return;
+          }
+          requestAnimationFrame(checkMount);
+        };
+        requestAnimationFrame(checkMount);
+      }
+    }
+  });
+}
+
 // Register service worker in production for offline caching of JS/CSS/fonts
 serviceWorker.register();

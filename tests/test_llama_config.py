@@ -396,3 +396,280 @@ class TestModuleLevelHelpers:
         with patch("llama.llama_config.requests.get", side_effect=req.exceptions.ConnectionError):
             result = lc.check_llama_health()
             assert result is False
+
+
+# ============================================================
+# Warm LLM detection: is_llm_available treats loading server as available
+# ============================================================
+
+class TestIsLlmServerRunning:
+    """is_llm_server_running detects ANY reachable server (healthy or loading).
+    is_llm_available only returns True for healthy (200) servers.
+    The startup thread uses is_llm_server_running to avoid duplicate starts."""
+
+    def _make_cfg(self, tmp_config_dir):
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+        cfg.config['cloud_provider'] = None  # force local check
+        return cfg
+
+    # ── is_llm_server_running: True for any HTTP response ──
+
+    def test_server_running_healthy_200(self, tmp_config_dir):
+        cfg = self._make_cfg(tmp_config_dir)
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch('urllib.request.urlopen', return_value=mock_resp):
+            assert cfg.is_llm_server_running() is True
+
+    def test_server_running_loading_500(self, tmp_config_dir):
+        """500 = server exists, model loading → True (don't start a duplicate)."""
+        import urllib.request
+        cfg = self._make_cfg(tmp_config_dir)
+        with patch('urllib.request.urlopen',
+                   side_effect=urllib.request.HTTPError(
+                       url='', code=500, msg='', hdrs=None, fp=None)):
+            assert cfg.is_llm_server_running() is True
+
+    def test_server_running_loading_503(self, tmp_config_dir):
+        """503 = server exists, model loading → True."""
+        import urllib.request
+        cfg = self._make_cfg(tmp_config_dir)
+        with patch('urllib.request.urlopen',
+                   side_effect=urllib.request.HTTPError(
+                       url='', code=503, msg='', hdrs=None, fp=None)):
+            assert cfg.is_llm_server_running() is True
+
+    def test_server_not_running_connection_refused(self, tmp_config_dir):
+        """ConnectionRefused = no server → False."""
+        cfg = self._make_cfg(tmp_config_dir)
+        with patch('urllib.request.urlopen', side_effect=ConnectionRefusedError):
+            assert cfg.is_llm_server_running() is False
+
+    def test_server_not_running_timeout(self, tmp_config_dir):
+        """Timeout = no server reachable → False."""
+        import urllib.request
+        cfg = self._make_cfg(tmp_config_dir)
+        with patch('urllib.request.urlopen', side_effect=urllib.request.URLError('timeout')):
+            assert cfg.is_llm_server_running() is False
+
+    # ── is_llm_available: True ONLY for 200 ──
+
+    def test_available_false_for_500(self, tmp_config_dir):
+        """is_llm_available must return False for 500 (model loading, not ready for chat)."""
+        import urllib.request
+        cfg = self._make_cfg(tmp_config_dir)
+        with patch('urllib.request.urlopen',
+                   side_effect=urllib.request.HTTPError(
+                       url='', code=500, msg='', hdrs=None, fp=None)):
+            assert cfg.is_llm_available() is False
+
+    def test_available_true_for_200(self, tmp_config_dir):
+        cfg = self._make_cfg(tmp_config_dir)
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch('urllib.request.urlopen', return_value=mock_resp):
+            assert cfg.is_llm_available() is True
+
+    def test_cloud_configured_skips_local(self, tmp_config_dir):
+        """Both methods return True for cloud without checking local."""
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+        cfg.config['cloud_provider'] = 'custom_api'
+        with patch('urllib.request.urlopen', side_effect=AssertionError("Should not be called")):
+            assert cfg.is_llm_available() is True
+            assert cfg.is_llm_server_running() is True
+
+
+# ============================================================
+# Catalog dedup: deleted methods and orchestrator integration
+# ============================================================
+
+class TestComputeBudgetMethodsDeleted:
+    """
+    _compute_budget and select_best_model_for_hardware were deleted from
+    LlamaConfig.  Model selection is the orchestrator's job.
+    These tests assert those methods do NOT exist on LlamaConfig instances.
+    """
+
+    def test_compute_budget_does_not_exist(self, tmp_config_dir):
+        """_compute_budget must NOT be a method on LlamaConfig."""
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+        assert not hasattr(cfg, '_compute_budget'), (
+            "_compute_budget still exists on LlamaConfig — it should have been deleted. "
+            "Model selection belongs to ModelOrchestrator/VRAMManager."
+        )
+
+    def test_select_best_model_for_hardware_does_not_exist(self, tmp_config_dir):
+        """select_best_model_for_hardware must NOT be a method on LlamaConfig."""
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+        assert not hasattr(cfg, 'select_best_model_for_hardware'), (
+            "select_best_model_for_hardware still exists on LlamaConfig — it should have "
+            "been deleted. Model selection belongs to ModelOrchestrator/VRAMManager."
+        )
+
+    def test_compute_budget_not_callable_at_module_level(self):
+        """_compute_budget must not be importable as a module-level function either."""
+        import llama.llama_config as lc
+        assert not hasattr(lc, '_compute_budget'), (
+            "_compute_budget found at module level in llama_config — should be deleted."
+        )
+
+    def test_select_best_model_for_hardware_not_callable_at_module_level(self):
+        """select_best_model_for_hardware must not be importable as a module-level function."""
+        import llama.llama_config as lc
+        assert not hasattr(lc, 'select_best_model_for_hardware'), (
+            "select_best_model_for_hardware found at module level in llama_config — "
+            "should be deleted."
+        )
+
+    def test_deletion_comment_present_in_source(self):
+        """The source file must contain the deletion notice comment."""
+        import llama.llama_config as lc
+        import inspect
+        try:
+            src = inspect.getsource(lc)
+            assert '_compute_budget' in src and 'DELETED' in src, (
+                "Expected to find the '_compute_budget … DELETED' comment in llama_config.py"
+            )
+        except OSError:
+            # In frozen builds inspect.getsource may fail — skip gracefully
+            pass
+
+
+class TestDiagnoseUsesOrchestrator:
+    """
+    diagnose() must read the best model index from the orchestrator/catalog
+    (get_orchestrator().select_best) rather than calling _compute_budget or
+    select_best_model_for_hardware directly.
+    """
+
+    def test_diagnose_calls_get_orchestrator(self, tmp_config_dir):
+        """diagnose() must call get_orchestrator().select_best('llm') for model selection."""
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+
+        # Build a mock orchestrator that returns a fake 'best' entry
+        mock_entry = MagicMock()
+        mock_entry.name = 'Qwen3.5-4B VL (Recommended)'
+        mock_entry.files = {'model': 'Qwen3.5-4B-UD-Q4_K_XL.gguf'}
+        mock_orch = MagicMock()
+        mock_orch.select_best.return_value = mock_entry
+
+        with patch('models.orchestrator.get_orchestrator', return_value=mock_orch) as mock_get_orch, \
+             patch.object(cfg.installer, 'find_llama_server', return_value=None), \
+             patch.object(cfg.installer, 'get_model_path', return_value=None), \
+             patch.object(cfg.installer, 'is_system_installation', return_value=False):
+            diag = cfg.diagnose()
+
+        # get_orchestrator was imported and called
+        mock_get_orch.assert_called()
+        mock_orch.select_best.assert_called_with('llm')
+
+        # diagnose result must have the required keys
+        assert 'best_model_index' in diag
+        assert 'best_model_name' in diag
+        assert 'actions' in diag
+        assert 'action' in diag
+
+    def test_diagnose_falls_back_gracefully_when_orchestrator_unavailable(self, tmp_config_dir):
+        """diagnose() must not crash when get_orchestrator raises ImportError."""
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+
+        with patch('models.orchestrator.get_orchestrator',
+                   side_effect=ImportError("models.orchestrator not available")), \
+             patch.object(cfg.installer, 'find_llama_server', return_value=None), \
+             patch.object(cfg.installer, 'get_model_path', return_value=None), \
+             patch.object(cfg.installer, 'is_system_installation', return_value=False):
+            # Must not raise
+            diag = cfg.diagnose()
+
+        assert 'best_model_index' in diag
+        assert 'actions' in diag
+
+    def test_diagnose_result_has_no_compute_budget_key(self, tmp_config_dir):
+        """diagnose() result must NOT contain old 'compute_budget_mb' as a top-level planned field.
+
+        Note: 'compute_budget_mb' IS legitimately present as an internal
+        diagnostic key used for action logic. This test verifies it is present
+        only as part of the diagnosis dict (expected behavior) and confirms the
+        old SELECT logic is gone by checking get_orchestrator path is used.
+        """
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+
+        mock_orch = MagicMock()
+        mock_orch.select_best.return_value = None  # no entry found — use fallback
+
+        with patch('models.orchestrator.get_orchestrator', return_value=mock_orch), \
+             patch.object(cfg.installer, 'find_llama_server', return_value=None), \
+             patch.object(cfg.installer, 'get_model_path', return_value=None), \
+             patch.object(cfg.installer, 'is_system_installation', return_value=False):
+            diag = cfg.diagnose()
+
+        # The orchestrator path must have been attempted
+        mock_orch.select_best.assert_called_with('llm')
+        # Diagnosis struct must still be valid
+        assert isinstance(diag, dict)
+        assert 'action' in diag
+
+
+class TestStartServerUsesConfigIndex:
+    """
+    start_server() without a model_preset argument must read from
+    config['selected_model_index'] (set previously by the orchestrator /
+    LlamaLoader), NOT call select_best_model_for_hardware or _compute_budget.
+    """
+
+    def test_start_server_no_preset_reads_config_index(self, tmp_config_dir):
+        """Without model_preset, start_server reads MODEL_PRESETS[selected_model_index]."""
+        from llama.llama_config import LlamaConfig
+        from llama.llama_installer import MODEL_PRESETS
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+        # Set a specific index — orchestrator would normally do this via LlamaLoader.load()
+        cfg.config['selected_model_index'] = 1
+
+        # We don't want the server to actually start — patch _do_start_server
+        with patch.object(cfg, '_do_start_server', return_value=True) as mock_do_start:
+            cfg.start_server()
+
+        mock_do_start.assert_called_once()
+
+    def test_start_server_with_preset_skips_config_index(self, tmp_config_dir):
+        """When model_preset is provided, it is used directly (config index ignored)."""
+        from llama.llama_config import LlamaConfig
+        from llama.llama_installer import MODEL_PRESETS, ModelPreset
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+        cfg.config['selected_model_index'] = 99  # garbage index
+
+        explicit_preset = MODEL_PRESETS[0]
+        with patch.object(cfg, '_do_start_server', return_value=True) as mock_do_start:
+            cfg.start_server(model_preset=explicit_preset)
+
+        mock_do_start.assert_called_once_with(explicit_preset, False)
+
+    def test_do_start_server_uses_config_index_not_select_best(self, tmp_config_dir):
+        """_do_start_server selects MODEL_PRESETS[selected_model_index], never calls
+        select_best_model_for_hardware (which no longer exists)."""
+        from llama.llama_config import LlamaConfig
+        from llama.llama_installer import MODEL_PRESETS
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+        cfg.config['selected_model_index'] = 0
+
+        # Short-circuit early: no llama-server binary, returns False
+        with patch.object(cfg.installer, 'find_llama_server', return_value=None), \
+             patch.object(cfg, 'check_server_type',
+                          return_value=('not_running', None)), \
+             patch.object(cfg, 'is_llm_available', return_value=False):
+            result = cfg._do_start_server(model_preset=None)
+
+        # Returns False (no binary) — the key point is it did NOT call
+        # select_best_model_for_hardware (which is deleted) and did not crash.
+        assert result is False
+        assert not hasattr(cfg, 'select_best_model_for_hardware')

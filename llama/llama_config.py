@@ -35,8 +35,9 @@ KNOWN_LLM_ENDPOINTS = [
     {"name": "LM Studio", "base_url": "http://localhost:1234", "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
     # LocalAI
     {"name": "LocalAI", "base_url": "http://localhost:8080", "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
-    # text-generation-webui (oobabooga)
-    {"name": "Text Generation WebUI", "base_url": "http://localhost:5000", "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
+    # text-generation-webui (oobabooga) — port 5000 excluded because Nunba's
+    # own Flask server runs there. Scanning it falsely detects Flask as TG-WebUI.
+    {"name": "Text Generation WebUI", "base_url": "http://localhost:7860", "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
     # vLLM
     {"name": "vLLM", "base_url": "http://localhost:8000", "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
     # KoboldCpp
@@ -233,79 +234,9 @@ class LlamaConfig:
         except ImportError:
             return None
 
-    def _compute_budget(self) -> tuple:
-        """Compute the VRAM/RAM budget for model selection.
-
-        Uses the global VRAMManager singleton (same instance TTS uses) so
-        VRAM allocations from TTS engines, MiniCPM, etc. are accounted for.
-
-        Returns:
-            (budget_mb: int, free_vram_gb: float, source: str, gpu_occupied: bool)
-            source is 'vram' or 'ram'.
-        """
-        free_vram_gb = 0.0
-        gpu_occupied = False
-        vm = self._get_vram_manager()
-        if vm:
-            gpu_info = vm.detect_gpu()
-            # Use get_free_vram() which subtracts allocations (TTS, vision, etc.)
-            effective_free = vm.get_free_vram()
-            total_gb = gpu_info.get('total_gb', 0.0)
-            free_vram_gb = effective_free
-            # GPU is occupied if it exists but effective free < 20% of total
-            if total_gb > 0 and effective_free / total_gb < 0.20:
-                gpu_occupied = True
-                free_vram_gb = 0  # Force RAM budget
-        elif self.installer.gpu_available != 'none':
-            # No VRAMManager but GPU detected — estimate conservatively
-            free_vram_gb = 2.0  # safe minimum
-
-        if free_vram_gb > 0.5 and not gpu_occupied:
-            budget_mb = int((free_vram_gb * 1024) / 2)
-            return budget_mb, free_vram_gb, 'vram', gpu_occupied
-        else:
-            try:
-                import psutil
-                ram_gb = psutil.virtual_memory().available / (1024 ** 3)
-            except Exception:
-                ram_gb = 4.0
-            budget_mb = int((ram_gb * 1024) / 2)
-            return budget_mb, free_vram_gb, 'ram', gpu_occupied
-
-    def select_best_model_for_hardware(self) -> int:
-        """Dynamically select the best model that fits in half the available compute.
-
-        Uses the unified VRAMManager singleton (shared with TTS engines, MiniCPM, etc.)
-        so VRAM already allocated to other models is excluded from the budget.
-
-        Rule: model size_mb must be <= budget_mb (half of free VRAM or RAM).
-        Falls back to smallest CPU-friendly model if no GPU or insufficient VRAM.
-
-        Returns:
-            Index into MODEL_PRESETS for the best fitting model.
-        """
-        budget_mb, free_vram_gb, source, _ = self._compute_budget()
-
-        # Find the best Qwen3.5 model for available budget:
-        # - Budget ≥ 2910MB → Qwen3.5-4B (index 0)
-        # - Budget < 2910MB → Qwen3.5-2B (index 1)
-        # Then try larger models (9B, 27B, etc.) if they fit
-        # Find the largest model that fits the budget.
-        # Walk all presets and pick the biggest one within budget.
-        # Falls back to Gemma-1B (index 3, ~632MB) for very low-budget/CPU machines.
-        best_idx = 3  # Gemma-3-1B as absolute fallback (smallest, ~632MB)
-        best_size = 0
-        for i, preset in enumerate(MODEL_PRESETS):
-            if preset.size_mb <= budget_mb and preset.size_mb > best_size:
-                best_idx = i
-                best_size = preset.size_mb
-
-        logger.info(
-            f"Dynamic model selection: budget={budget_mb}MB "
-            f"(source={source}, VRAM_free={free_vram_gb:.1f}GB), "
-            f"selected={MODEL_PRESETS[best_idx].display_name}"
-        )
-        return best_idx
+    # _compute_budget and select_best_model_for_hardware DELETED.
+    # Model selection is the orchestrator's job (ModelCatalog.select_best + VRAMManager).
+    # llama_config.py only manages the llama-server process (start/stop/port/flags).
 
     def diagnose(self) -> dict:
         """Comprehensive hardware + software diagnosis for smart auto-start.
@@ -390,11 +321,24 @@ class LlamaConfig:
         except Exception:
             diag['ram_gb'] = 4.0
 
-        # ── Compute budget (unified with TTS model loading) ────────
-        budget_mb, _, source, gpu_occ = self._compute_budget()
+        # ── Compute budget via VRAMManager (public API) ────────
+        try:
+            from integrations.service_tools.vram_manager import vram_manager
+            gpu = vram_manager.detect_gpu()
+            free_vram = vram_manager.get_free_vram()
+            gpu_available = gpu.get('cuda_available', False) or gpu.get('metal_available', False)
+            if gpu_available and free_vram > 0.5:
+                budget_mb = int(free_vram * 1024)
+                source = 'vram'
+            else:
+                import psutil
+                budget_mb = int(psutil.virtual_memory().available / (1024 * 1024) / 2)
+                source = 'ram'
+        except Exception:
+            budget_mb = 2000
+            source = 'ram'
         diag['compute_budget_mb'] = budget_mb
         diag['compute_source'] = source
-        diag['gpu_occupied'] = diag['gpu_occupied'] or gpu_occ
         diag['run_mode'] = 'gpu' if source == 'vram' else 'cpu'
 
         # ── Binary detection ───────────────────────────────────────
@@ -416,9 +360,20 @@ class LlamaConfig:
             elif not diag['gpu_detected'] and diag['binary_supports_gpu'] and diag['gpu_type'] != 'metal':
                 diag['binary_mismatch'] = 'gpu_build_no_gpu'
 
-        # ── Best model selection (server-side compute check) ──────
-        best_idx = self.select_best_model_for_hardware()
-        best_preset = MODEL_PRESETS[best_idx]
+        # ── Best model selection via orchestrator catalog ──────
+        best_idx = self.config.get('selected_model_index', 0)
+        try:
+            from models.orchestrator import get_orchestrator
+            entry = get_orchestrator().select_best('llm')
+            if entry:
+                # Match catalog entry back to MODEL_PRESETS index
+                for i, p in enumerate(MODEL_PRESETS):
+                    if p.display_name == entry.name or p.file_name == entry.files.get('model', ''):
+                        best_idx = i
+                        break
+        except Exception:
+            pass
+        best_preset = MODEL_PRESETS[best_idx] if best_idx < len(MODEL_PRESETS) else MODEL_PRESETS[0]
         diag['best_model_index'] = best_idx
         diag['best_model_name'] = best_preset.display_name
         diag['best_model_size_mb'] = best_preset.size_mb
@@ -735,10 +690,10 @@ class LlamaConfig:
             return False
 
     def is_llm_available(self) -> bool:
-        """Check if any LLM endpoint is available (local server or cloud configured)."""
+        """Check if any LLM endpoint is ready for completions (local server healthy or cloud configured)."""
         if self.is_cloud_configured():
             return True
-        # Check if local server is running
+        # Check if local server is running AND healthy (model loaded)
         try:
             import urllib.request
             port = self.config.get('server_port', 8080)
@@ -750,6 +705,27 @@ class LlamaConfig:
                 return resp.status == 200
         except Exception:
             return False
+
+    def is_llm_server_running(self) -> bool:
+        """Check if a llama-server process is reachable — even if still loading a model.
+
+        Unlike is_llm_available() (which requires 200 = healthy), this returns True
+        for ANY HTTP response (200, 500, 503). Only returns False when the connection
+        is refused (no process listening). Used by startup logic to avoid launching
+        a duplicate server while a model is still loading.
+        """
+        if self.is_cloud_configured():
+            return True
+        import urllib.request
+        port = self.config.get('server_port', 8080)
+        try:
+            req = urllib.request.Request(f'http://127.0.0.1:{port}/health', method='GET')
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                return True  # 200 = healthy
+        except urllib.request.HTTPError:
+            return True  # 500/503 = server exists, model loading
+        except Exception:
+            return False  # ConnectionRefused/Timeout = no server
 
     def detect_and_cache_version(self) -> Optional[int]:
         """Detect the installed llama.cpp build number and cache it in config."""
@@ -1085,15 +1061,15 @@ class LlamaConfig:
         else:
             logger.info(f"Using Nunba-managed llama.cpp installation: {llama_server}")
 
-        # Get model — always use hardware-aware selection to avoid
-        # trying a model that doesn't fit in VRAM (wastes 30s on crash)
+        # Get model from config (set by orchestrator via LlamaLoader or previous run).
+        # Model selection is the orchestrator's job (ModelCatalog.select_best + VRAMManager).
+        # start_server() only manages the llama-server process.
         if not model_preset:
-            best_idx = self.select_best_model_for_hardware()
-            model_preset = MODEL_PRESETS[best_idx]
-            # Update config so next startup uses the right model directly
-            if self.config.get('selected_model_index') != best_idx:
-                self.config['selected_model_index'] = best_idx
-                self._save_config()
+            idx = self.config.get('selected_model_index', 0)
+            if 0 <= idx < len(MODEL_PRESETS):
+                model_preset = MODEL_PRESETS[idx]
+            else:
+                model_preset = MODEL_PRESETS[0]
 
         if not model_preset:
             logger.error("No model selected")
@@ -1101,32 +1077,19 @@ class LlamaConfig:
 
         model_path = self.installer.get_model_path(model_preset)
         if not model_path:
-            logger.warning(f"Model not found: {model_preset.display_name} — trying dynamic fallback")
-            # Fallback: find any downloaded model that fits in available VRAM
-            fallback_idx = self.select_best_model_for_hardware()
-            fallback_preset = MODEL_PRESETS[fallback_idx]
-            if fallback_preset.display_name != model_preset.display_name:
-                fallback_path = self.installer.get_model_path(fallback_preset)
-                if fallback_path:
-                    logger.info(f"Falling back to available model: {fallback_preset.display_name}")
-                    model_preset = fallback_preset
-                    model_path = fallback_path
-                    # Update config so next restart uses this model directly
-                    self.config['selected_model_index'] = fallback_idx
+            # Model not on disk — try any downloaded model from presets
+            logger.warning(f"Model not found: {model_preset.display_name} — scanning for alternatives")
+            for i, preset in enumerate(MODEL_PRESETS):
+                p = self.installer.get_model_path(preset)
+                if p:
+                    logger.info(f"Found downloaded model: {preset.display_name}")
+                    model_preset = preset
+                    model_path = p
+                    self.config['selected_model_index'] = i
                     self._save_config()
-            # If still no model, try ANY downloaded model from presets
+                    break
             if not model_path:
-                for i, preset in enumerate(MODEL_PRESETS):
-                    p = self.installer.get_model_path(preset)
-                    if p:
-                        logger.info(f"Found downloaded model: {preset.display_name}")
-                        model_preset = preset
-                        model_path = p
-                        self.config['selected_model_index'] = i
-                        self._save_config()
-                        break
-            if not model_path:
-                logger.error(f"No downloaded models found. Please download a model first.")
+                logger.error("No downloaded models found. Please download a model first.")
                 return False
 
         # Check version compatibility for the selected model
