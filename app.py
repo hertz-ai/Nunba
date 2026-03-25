@@ -4217,7 +4217,7 @@ def ensure_working_directory():
 # Lightweight Flask — serves React SPA immediately while main.py imports.
 # Has just enough routes for the webview to show the UI (static files + SPA catch-all).
 # The full flask_app (with chat, social, admin routes) replaces it after import.
-gui_app = Flask(__name__)
+gui_app = Flask(__name__, static_folder=None)
 
 # Serve React SPA from gui_app so webview shows UI before main.py finishes
 _gui_build_dir = os.path.join(
@@ -4367,6 +4367,16 @@ def _import_main_app():
     for h in logging.getLogger().handlers + _setup_logger.handlers:
         if hasattr(h, 'flush'):
             h.flush()
+
+    # Clear stale SQLAlchemy metadata to prevent "Table already defined" errors
+    # in frozen builds where import order differs from dev.
+    try:
+        from sqlalchemy.orm import declarative_base
+        from sql.models import Base as _sql_base
+        if hasattr(_sql_base, 'metadata'):
+            _sql_base.metadata.clear()
+    except Exception:
+        pass
 
     # Load main.py as a module
     spec = importlib.util.spec_from_file_location("main_module", main_path)

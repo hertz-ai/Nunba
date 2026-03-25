@@ -921,11 +921,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           !currentAgent ||
           currentAgent.prompt_id !== matchedAgent.prompt_id
         ) {
-          if (currentAgent?.prompt_id && messages.length > 0) {
+          const _switchFromId = currentAgent?.prompt_id || currentAgent?.id;
+          if (_switchFromId && messages.length > 0) {
             logger.log(
               `💾 Saving ${messages.length} messages for agent: ${currentAgent.name}`
             );
-            saveMessagesToStorage(messages, currentAgent.prompt_id);
+            saveMessagesToStorage(messages, _switchFromId);
           }
 
           // Setup/install cards are system-global, not agent-scoped — carry
@@ -941,13 +942,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           setMessages(carriedSetup);
 
           setCurrentAgent(matchedAgent);
-          if (matchedAgent.prompt_id) {
-            localStorage.setItem('active_agent_id', String(matchedAgent.prompt_id));
+          const _switchToId = matchedAgent.prompt_id || matchedAgent.id;
+          if (_switchToId) {
+            localStorage.setItem('active_agent_id', String(_switchToId));
           }
 
           setTimeout(() => {
             const savedMessages = loadMessagesFromStorage(
-              matchedAgent.prompt_id
+              matchedAgent.prompt_id || matchedAgent.id
             );
             logger.log(
               `📥 Loading ${savedMessages.length} messages for agent: ${matchedAgent.name}`
@@ -980,7 +982,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Saving ${messages.length} messages before creating new agent`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
       }
 
       logger.log(
@@ -1021,11 +1023,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   useEffect(() => {
     return () => {
       // Save messages when component unmounts (using refs to avoid stale closure)
-      if (currentAgentRef.current?.prompt_id && messagesRef.current.length > 0) {
+      const _unmountId = currentAgentRef.current?.prompt_id || currentAgentRef.current?.id;
+      if (_unmountId && messagesRef.current.length > 0) {
         logger.log(
           `💾 Component unmount: Saving ${messagesRef.current.length} messages for ${currentAgentRef.current.name}`
         );
-        saveMessagesToStorage(messagesRef.current, currentAgentRef.current.prompt_id);
+        saveMessagesToStorage(messagesRef.current, _unmountId);
       }
     };
   }, []);
@@ -1112,9 +1115,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         // Restore last active agent from localStorage
         const savedAgentId = localStorage.getItem('active_agent_id');
-        if (savedAgentId && /^\d+$/.test(savedAgentId) && allAgents.length > 0) {
+        if (savedAgentId && allAgents.length > 0) {
           const savedAgent = allAgents.find(
-            (a) => String(a.prompt_id) === String(savedAgentId)
+            (a) => String(a.prompt_id) === String(savedAgentId) ||
+                   String(a.id) === String(savedAgentId)
           );
           if (savedAgent) {
             logger.log('Restoring active agent:', savedAgent.name);
@@ -1128,7 +1132,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // a per-message dedup key (most non-user message types
             // are id-less, see comment at NunbaChatProvider:982).
             // Regression guard 2026-05-11 (overwrite caused live loss).
-            const savedMessages = loadMessagesFromStorage(savedAgent.prompt_id);
+            const savedMessages = loadMessagesFromStorage(savedAgent.prompt_id || savedAgent.id);
             setMessages((prev) =>
               savedMessages.length > prev.length ? savedMessages : prev
             );
@@ -1177,15 +1181,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             }
             logger.log(`Saved agent ${savedAgentId} not found and no orphan chat — falling back to default`);
           }
-        } else if (savedAgentId && !/^\d+$/.test(savedAgentId)) {
-          console.warn('Clearing invalid active_agent_id:', savedAgentId);
-          localStorage.removeItem('active_agent_id');
         }
 
         // If still no current agent, prefer the built-in default (local_assistant).
         // Never auto-select a user-created agent — those have full agentic prompts
         // that would make a simple "hi" trigger an autonomous agent workflow.
-        if (!savedAgentId || allAgents.length === 0) {
+        if (!savedAgentId || !allAgents.find(a => String(a.prompt_id) === String(savedAgentId) || String(a.id) === String(savedAgentId))) {
           if (allAgents.length > 0) {
             const defaultAgent =
               allAgents.find(a => a.id === 'local_assistant') ||
@@ -1200,6 +1201,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // sees an empty chat even though their previous default-agent
             // history is intact in storage (whatsapp/teams expectation:
             // navigation back shows last conversation, not a clean slate).
+            const _defaultId = defaultAgent?.prompt_id || defaultAgent?.id;
+            if (_defaultId) {
+              localStorage.setItem('active_agent_id', String(_defaultId));
+            }
             if (defaultAgent?.prompt_id) {
               const savedMessages = loadMessagesFromStorage(defaultAgent.prompt_id);
               // Same append-only superset rule as the savedAgent +
@@ -1515,15 +1520,35 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         messages: messages,
       };
       localStorage.setItem(storageKey, JSON.stringify(chatData));
-      logger.log(`💾 Saved ${messages.length} messages for agent ${promptId}`);
+      logger.log(`Saved ${messages.length} messages for agent ${promptId}`);
     } catch (error) {
       console.error('Failed to save messages to localStorage:', error);
     }
+
+    // Also persist to server DB (survives app reinstall/WebView reset)
+    try {
+      const uid = effectiveUserId || localStorage.getItem('guest_user_id') || 'guest';
+      const last = messages[messages.length - 1];
+      const prev = messages.length >= 2 ? messages[messages.length - 2] : null;
+      if (last) {
+        fetch('/conversation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: uid,
+            request: prev?.text || prev?.content || '',
+            response: last?.text || last?.content || '',
+            topic: `agent_${promptId}`,
+          }),
+        }).catch(() => {});
+      }
+    } catch (_) {}
   };
 
   const loadMessagesFromStorage = (promptId) => {
     if (!promptId) return [];
 
+    // Try localStorage first (fastest)
     try {
       const storageKey = getChatStorageKey(promptId);
       const savedData = localStorage.getItem(storageKey);
@@ -1563,6 +1588,28 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     } catch (error) {
       console.error('Failed to load messages from localStorage:', error);
     }
+
+    // Fallback: load from server DB (survives WebView reset / reinstall)
+    try {
+      const uid = effectiveUserId || localStorage.getItem('guest_user_id') || 'guest';
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', `/conversation?user_id=${encodeURIComponent(uid)}&topic=agent_${promptId}`, false);
+      xhr.send();
+      if (xhr.status === 200) {
+        const convs = JSON.parse(xhr.responseText);
+        if (Array.isArray(convs) && convs.length > 0) {
+          const restored = [];
+          convs.forEach((c) => {
+            if (c.request) restored.push({ role: 'user', text: c.request });
+            if (c.response) restored.push({ role: 'assistant', text: c.response });
+          });
+          if (restored.length > 0) {
+            logger.log(`Restored ${restored.length} messages from server DB for agent ${promptId}`);
+            return restored;
+          }
+        }
+      }
+    } catch (_) {}
 
     return [];
   };
@@ -1646,7 +1693,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       };
 
       if (currentAgent?.prompt_id && messages.length > 0) {
-        saveMessagesToStorage(messages, currentAgent.prompt_id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
       }
       setMessages([
         {
@@ -1675,7 +1722,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Saving ${messages.length} messages before selecting ${agent.name}`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
       }
 
       logger.log(`🧹 Clearing messages for agent selection: ${agent.name}`);
@@ -2848,7 +2895,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Saving ${messages.length} messages before switching to ${chat.name}`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
       }
 
       logger.log(`🧹 Clearing messages for agent switch to: ${chat.name}`);
@@ -2956,6 +3003,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     tr: 'tr-TR', vi: 'vi-VN', th: 'th-TH', id: 'id-ID',
   };
 
+  // MediaRecorder fallback refs (used when Web Speech API is unavailable, e.g. macOS WKWebView)
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+
   const handleStart = () => {
     // Barge-in: if TTS is playing, stop it before starting mic
     if (tts.isSpeaking) {
@@ -2964,9 +3015,41 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       setAnimatingMessageIndex(null);
     }
 
+    // ── Native mic fallback (pywebview JS-Python bridge) ──
+    // Used when getUserMedia AND the browser SpeechRecognition API are both
+    // unavailable (macOS WKWebView over HTTP, where WKWebView denies
+    // getUserMedia() and SpeechRecognition errors 'not-allowed').  Records
+    // via Python sounddevice and transcribes via Whisper server-side.
+    // Shared by both call sites in _useWebSpeech below (unsupported API,
+    // and a live 'not-allowed'/'service-not-allowed' error) so the fallback
+    // logic isn't duplicated.
+    const _useNativeMic = () => {
+      if (!(window.pywebview && window.pywebview.api && window.pywebview.api.native_mic_record)) {
+        alert('Microphone is not available. Please check System Settings > Privacy > Microphone.');
+        return;
+      }
+      console.log('[STT] Using native pywebview mic capture');
+      setInputMessage('Listening (5s)...');
+      setIsRecording(true);
+      window.pywebview.api.native_mic_record(5).then((result) => {
+        setIsRecording(false);
+        if (result && !result.startsWith('__ERROR__')) {
+          setInputMessage(result);
+          setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 500);
+        } else {
+          setInputMessage('');
+          console.warn('[STT] Native mic error:', result);
+        }
+      }).catch((err) => {
+        setIsRecording(false);
+        setInputMessage('');
+        console.error('[STT] Native mic call failed:', err);
+      });
+    };
+
     // Tier 1: WebSocket streaming STT (GPU faster-whisper, real-time)
-    // Tier 2: Batch HTTP STT (GPU faster-whisper, 2s chunks)
-    // Tier 3: Browser Web Speech API (fallback)
+    // Tier 2: Browser Web Speech API (fallback)
+    // Tier 3: Native pywebview mic bridge (macOS WKWebView last resort)
     const _useStreamingWhisper = async () => {
       try {
         // Discover streaming STT WebSocket port
@@ -3096,7 +3179,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         window.SpeechRecognition || window.webkitSpeechRecognition;
 
       if (!SpeechRecognition) {
-        alert('Speech Recognition is not supported in your browser.');
+        // Browser has no SpeechRecognition at all (or WKWebView reports
+        // an object that's non-functional) — try the native mic bridge
+        // before giving up entirely.
+        _useNativeMic();
         return;
       }
 
@@ -3140,7 +3226,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         }
       };
 
-      recognition.onerror = (event) => console.error('Speech recognition error', event.error);
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error', event.error);
+        // Permission denied (expected under macOS WKWebView over HTTP) —
+        // fall through to the native mic bridge instead of dead-ending.
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          setIsRecording(false);
+          recognitionRef.current = null;
+          _useNativeMic();
+        }
+      };
 
       recognition.onend = () => {
         clearTimeout(autoSendTimer);
@@ -3156,13 +3251,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       setIsRecording(true);
     };
 
-    // Tier cascade: WebSocket streaming → Web Speech fallback
+    // Tier cascade: WebSocket streaming → Web Speech → native mic bridge
     _useStreamingWhisper().then(ok => { if (!ok) _useWebSpeech(); });
   };
   handleStartRef.current = handleStart;
 
   const handleStop = () => {
-    recognitionRef.current?.stop();
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
     setIsRecording(false);
   };
 
@@ -4063,6 +4163,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
                 });
               }
+            }
+            // Auto-save after each response (survives force-quit)
+            const _saveId = currentAgent?.prompt_id || currentAgent?.id;
+            if (_saveId) {
+              setTimeout(() => saveMessagesToStorage(messagesRef.current, _saveId), 100);
             }
             setLoading(false);
             setIsRequestInFlight(false);
