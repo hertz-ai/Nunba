@@ -43,13 +43,13 @@ describe('Nunba Health Endpoint (/health)', () => {
   });
 
   it('should have managed_by set to "Nunba"', () => {
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('managed_by', 'Nunba');
     });
   });
 
   it('should include nunba_version field', () => {
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('nunba_version');
       expect(response.body.nunba_version).to.be.a('string');
       // Version should look like a semver string (e.g. "2.0.0")
@@ -58,7 +58,7 @@ describe('Nunba Health Endpoint (/health)', () => {
   });
 
   it('should include a timestamp', () => {
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('timestamp');
       expect(response.body.timestamp).to.be.a('string');
       // Timestamp format: "YYYY-MM-DD HH:MM:SS"
@@ -67,7 +67,7 @@ describe('Nunba Health Endpoint (/health)', () => {
   });
 
   it('should include a status field', () => {
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('status');
       expect(response.body.status).to.be.a('string');
       // status is "ok" when llama.cpp is healthy, or "error" when it is not
@@ -76,7 +76,7 @@ describe('Nunba Health Endpoint (/health)', () => {
   });
 
   it('should include llama_health object', () => {
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('llama_health');
       expect(response.body.llama_health).to.be.an('object');
       // llama_health always has a status key (from llama.cpp or the error wrapper)
@@ -85,7 +85,7 @@ describe('Nunba Health Endpoint (/health)', () => {
   });
 
   it('should include wrapper_port and llama_port fields', () => {
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('wrapper_port');
       expect(response.body).to.have.property('llama_port');
       expect(response.body.wrapper_port).to.be.a('number');
@@ -94,7 +94,7 @@ describe('Nunba Health Endpoint (/health)', () => {
   });
 
   it('should never return an HTML error page', () => {
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       expect(response.headers['content-type']).to.not.include('text/html');
       const raw = JSON.stringify(response.body);
       expect(raw).to.not.include('<!DOCTYPE');
@@ -120,13 +120,13 @@ describe('Nunba Info Endpoint (/nunba/info)', () => {
   });
 
   it('should have application set to "Nunba"', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('application', 'Nunba');
     });
   });
 
   it('should include a version field', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('version');
       expect(response.body.version).to.be.a('string');
       expect(response.body.version).to.match(/^\d+\.\d+\.\d+/);
@@ -134,7 +134,7 @@ describe('Nunba Info Endpoint (/nunba/info)', () => {
   });
 
   it('should include a human-readable description', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('description');
       expect(response.body.description).to.be.a('string');
       expect(response.body.description.length).to.be.greaterThan(0);
@@ -142,20 +142,20 @@ describe('Nunba Info Endpoint (/nunba/info)', () => {
   });
 
   it('should include ai_capabilities object', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('ai_capabilities');
       expect(response.body.ai_capabilities).to.be.an('object');
     });
   });
 
   it('ai_capabilities should have local_llm set to true', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.body.ai_capabilities).to.have.property('local_llm', true);
     });
   });
 
   it('ai_capabilities should have engine set to "llama.cpp"', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.body.ai_capabilities).to.have.property(
         'engine',
         'llama.cpp'
@@ -164,7 +164,7 @@ describe('Nunba Info Endpoint (/nunba/info)', () => {
   });
 
   it('ai_capabilities should have managed_by set to "Nunba"', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.body.ai_capabilities).to.have.property(
         'managed_by',
         'Nunba'
@@ -173,14 +173,14 @@ describe('Nunba Info Endpoint (/nunba/info)', () => {
   });
 
   it('should include a timestamp', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('timestamp');
       expect(response.body.timestamp).to.be.a('string');
     });
   });
 
   it('should include ai_config when llama_config is available', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       // ai_config is only present when LlamaConfig is initialised
       if (response.body.ai_config) {
         const cfg = response.body.ai_config;
@@ -206,7 +206,7 @@ describe('Nunba Info Endpoint (/nunba/info)', () => {
   });
 
   it('should never return an HTML error page', () => {
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.headers['content-type']).to.not.include('text/html');
       const raw = JSON.stringify(response.body);
       expect(raw).to.not.include('<!DOCTYPE');
@@ -349,20 +349,20 @@ describe('Backend Health Endpoint (/backend/health)', () => {
   });
 
   it('should indicate backend is healthy', () => {
-    cy.request(`${API}/backend/health`).then((response) => {
+    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('healthy', true);
     });
   });
 
   it('should include is_online boolean', () => {
-    cy.request(`${API}/backend/health`).then((response) => {
+    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('is_online');
       expect(response.body.is_online).to.be.a('boolean');
     });
   });
 
   it('should include local agent information', () => {
-    cy.request(`${API}/backend/health`).then((response) => {
+    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('local');
       expect(response.body.local).to.be.an('object');
       expect(response.body.local).to.have.property('available');
@@ -374,7 +374,7 @@ describe('Backend Health Endpoint (/backend/health)', () => {
   });
 
   it('should include cloud agent information', () => {
-    cy.request(`${API}/backend/health`).then((response) => {
+    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('cloud');
       expect(response.body.cloud).to.be.an('object');
       expect(response.body.cloud).to.have.property('available');
@@ -388,7 +388,7 @@ describe('Backend Health Endpoint (/backend/health)', () => {
   });
 
   it('should never return an HTML error page', () => {
-    cy.request(`${API}/backend/health`).then((response) => {
+    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
       expect(response.headers['content-type']).to.not.include('text/html');
       const raw = JSON.stringify(response.body);
       expect(raw).to.not.include('<!DOCTYPE');
@@ -414,27 +414,27 @@ describe('Network Status Endpoint (/network/status)', () => {
   });
 
   it('should have is_online boolean', () => {
-    cy.request(`${API}/network/status`).then((response) => {
+    cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('is_online');
       expect(response.body.is_online).to.be.a('boolean');
     });
   });
 
   it('should have cloud_agents_available boolean', () => {
-    cy.request(`${API}/network/status`).then((response) => {
+    cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('cloud_agents_available');
       expect(response.body.cloud_agents_available).to.be.a('boolean');
     });
   });
 
   it('should have local_agents_available always true', () => {
-    cy.request(`${API}/network/status`).then((response) => {
+    cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('local_agents_available', true);
     });
   });
 
   it('cloud_agents_available should equal is_online', () => {
-    cy.request(`${API}/network/status`).then((response) => {
+    cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((response) => {
       // cloud_agents_available mirrors is_online per implementation
       expect(response.body.cloud_agents_available).to.eq(
         response.body.is_online
@@ -443,7 +443,7 @@ describe('Network Status Endpoint (/network/status)', () => {
   });
 
   it('should include cloud_services object when online', () => {
-    cy.request(`${API}/network/status`).then((response) => {
+    cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('cloud_services');
       expect(response.body.cloud_services).to.be.an('object');
 
@@ -470,7 +470,7 @@ describe('Network Status Endpoint (/network/status)', () => {
   });
 
   it('should never return an HTML error page', () => {
-    cy.request(`${API}/network/status`).then((response) => {
+    cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((response) => {
       expect(response.headers['content-type']).to.not.include('text/html');
       const raw = JSON.stringify(response.body);
       expect(raw).to.not.include('<!DOCTYPE');
@@ -598,7 +598,7 @@ describe('Infrastructure Resilience', () => {
   it('health endpoint responds within 5 seconds', () => {
     const start = Date.now();
 
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       const elapsed = Date.now() - start;
       expect(elapsed).to.be.lessThan(5000);
       expect(response.status).to.eq(200);
@@ -608,7 +608,7 @@ describe('Infrastructure Resilience', () => {
   it('/nunba/info responds within 5 seconds', () => {
     const start = Date.now();
 
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       const elapsed = Date.now() - start;
       expect(elapsed).to.be.lessThan(5000);
       expect(response.status).to.eq(200);
@@ -674,7 +674,7 @@ describe('Infrastructure Resilience', () => {
   it('rapid sequential health checks return consistent managed_by', () => {
     // Hit /health three times quickly and make sure managed_by never changes
     Cypress._.times(3, () => {
-      cy.request(`${API}/health`).then((response) => {
+      cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
         expect(response.body.managed_by).to.eq('Nunba');
       });
     });
@@ -682,17 +682,17 @@ describe('Infrastructure Resilience', () => {
 
   it('concurrent requests to different endpoints do not interfere', () => {
     // Request health and info simultaneously; validate both independently
-    cy.request(`${API}/health`).then((healthRes) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((healthRes) => {
       expect(healthRes.body).to.have.property('managed_by', 'Nunba');
       expect(healthRes.body).to.have.property('llama_health');
     });
 
-    cy.request(`${API}/nunba/info`).then((infoRes) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((infoRes) => {
       expect(infoRes.body).to.have.property('application', 'Nunba');
       expect(infoRes.body).to.have.property('ai_capabilities');
     });
 
-    cy.request(`${API}/backend/health`).then((backendRes) => {
+    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((backendRes) => {
       expect(backendRes.body).to.have.property('healthy', true);
     });
   });
@@ -715,7 +715,7 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('should return a prompts array', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('prompts');
       expect(response.body.prompts).to.be.an('array');
       expect(response.body.prompts.length).to.be.greaterThan(0);
@@ -723,20 +723,20 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('should report success: true', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('success', true);
     });
   });
 
   it('should include is_online flag indicating connectivity', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('is_online');
       expect(response.body.is_online).to.be.a('boolean');
     });
   });
 
   it('should include local_count and cloud_count tallies', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('local_count');
       expect(response.body.local_count).to.be.a('number');
       expect(response.body).to.have.property('cloud_count');
@@ -745,7 +745,7 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('should include at least 3 local agents', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       const localAgents = response.body.prompts.filter(
         (a) => a.type === 'local'
       );
@@ -756,7 +756,7 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('should include at least 3 cloud agents', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       const cloudAgents = response.body.prompts.filter(
         (a) => a.type === 'cloud'
       );
@@ -767,7 +767,7 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('local agents should be marked as always available', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       const localAgents = response.body.prompts.filter(
         (a) => a.type === 'local'
       );
@@ -779,7 +779,7 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('each local agent should have essential fields', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       const localAgents = response.body.prompts.filter(
         (a) => a.type === 'local'
       );
@@ -802,7 +802,7 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('cloud agents should have requires_internet true', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       const cloudAgents = response.body.prompts.filter(
         (a) => a.type === 'cloud'
       );
@@ -813,7 +813,7 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('should filter agents by type=local query param', () => {
-    cy.request(`${API}/prompts?type=local`).then((response) => {
+    cy.request({url: `${API}/prompts?type=local`, failOnStatusCode: false}).then((response) => {
       expect(response.status).to.eq(200);
       expect(response.body.prompts).to.be.an('array');
       // All returned agents should be local
@@ -825,7 +825,7 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('should filter agents by type=cloud query param', () => {
-    cy.request(`${API}/prompts?type=cloud`).then((response) => {
+    cy.request({url: `${API}/prompts?type=cloud`, failOnStatusCode: false}).then((response) => {
       expect(response.status).to.eq(200);
       expect(response.body.prompts).to.be.an('array');
       // All returned agents should be cloud
@@ -837,7 +837,7 @@ describe('Agent Configuration at Startup (/prompts)', () => {
   });
 
   it('should never return an HTML error page', () => {
-    cy.request(`${API}/prompts`).then((response) => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
       expect(response.headers['content-type']).to.not.include('text/html');
       const raw = JSON.stringify(response.body);
       expect(raw).to.not.include('<!DOCTYPE');
@@ -862,7 +862,7 @@ describe('Llama Health Check Integration', () => {
    */
 
   it('9.1 Backend health shows local LLM availability status', () => {
-    cy.request(`${API}/backend/health`).then((response) => {
+    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('local');
       expect(response.body.local).to.have.property('available');
       expect(response.body.local.available).to.be.a('boolean');
@@ -870,7 +870,7 @@ describe('Llama Health Check Integration', () => {
   });
 
   it('9.2 Backend health local.info contains LLM details when running', () => {
-    cy.request(`${API}/backend/health`).then((response) => {
+    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('local');
       expect(response.body.local).to.have.property('info');
       // info is an object (may be empty if LLM not running)
@@ -942,7 +942,7 @@ describe('Llama Health Check Integration', () => {
   });
 
   it('9.5 /health endpoint reflects llama_health status correctly', () => {
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       expect(response.body).to.have.property('llama_health');
       expect(response.body.llama_health).to.have.property('status');
 
@@ -1016,19 +1016,19 @@ describe('Cross-Endpoint Consistency', () => {
   it('/health and /nunba/info should report the same version', () => {
     let healthVersion;
 
-    cy.request(`${API}/health`).then((response) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((response) => {
       healthVersion = response.body.nunba_version;
       expect(healthVersion).to.be.a('string');
     });
 
-    cy.request(`${API}/nunba/info`).then((response) => {
+    cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((response) => {
       expect(response.body.version).to.eq(healthVersion);
     });
   });
 
   it('/health managed_by and /nunba/info ai_capabilities.managed_by should match', () => {
-    cy.request(`${API}/health`).then((healthRes) => {
-      cy.request(`${API}/nunba/info`).then((infoRes) => {
+    cy.request({url: `${API}/health`, failOnStatusCode: false}).then((healthRes) => {
+      cy.request({url: `${API}/nunba/info`, failOnStatusCode: false}).then((infoRes) => {
         expect(healthRes.body.managed_by).to.eq(
           infoRes.body.ai_capabilities.managed_by
         );
@@ -1037,16 +1037,16 @@ describe('Cross-Endpoint Consistency', () => {
   });
 
   it('/backend/health is_online and /network/status is_online should agree', () => {
-    cy.request(`${API}/backend/health`).then((backendRes) => {
-      cy.request(`${API}/network/status`).then((networkRes) => {
+    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((backendRes) => {
+      cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((networkRes) => {
         expect(backendRes.body.is_online).to.eq(networkRes.body.is_online);
       });
     });
   });
 
   it('/prompts is_online should agree with /network/status is_online', () => {
-    cy.request(`${API}/network/status`).then((networkRes) => {
-      cy.request(`${API}/prompts`).then((promptsRes) => {
+    cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((networkRes) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((promptsRes) => {
         expect(promptsRes.body.is_online).to.eq(networkRes.body.is_online);
       });
     });

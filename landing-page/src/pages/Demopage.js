@@ -787,23 +787,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     fetchPrompts();
   }, [agentData, decryptedUserId, agentRetryTrigger]);
 
-  // Post-HART welcome: greet user by HART name in the chat after first load
-  const hartGreetedRef = useRef(false);
-  useEffect(() => {
-    if (hartGreetedRef.current) return;
-    const hartName = localStorage.getItem('hart_name');
-    const hartSealed = localStorage.getItem('hart_sealed');
-    const hartGreeted = sessionStorage.getItem('hart_greeted');
-    if (hartSealed && hartName && !hartGreeted && messages.length === 0) {
-      hartGreetedRef.current = true;
-      sessionStorage.setItem('hart_greeted', 'true');
-      const emoji = localStorage.getItem('hart_emoji') || '';
-      setMessages([{
-        type: 'assistant',
-        content: `${emoji} Welcome, @${hartName}! I'm your personal agent. Ask me anything or tell me what you'd like to build.`,
-      }]);
-    }
-  }, [messages.length]);
+  // HART welcome: previously injected a fake assistant message which prevented
+  // the empty-state welcome view (agent name + starter chips) from showing.
+  // Removed — the default agent now shows the same clean welcome view as all
+  // other agents. The HART name is displayed in the agent heading instead.
 
   // Proactive LLM status check — diagnose hardware + software state and act accordingly
   // Handles: GPU binary w/o GPU, CPU binary w/ GPU, GPU occupied, model too big,

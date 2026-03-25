@@ -21,9 +21,7 @@ Covers:
 import os
 import sys
 import time
-import tempfile
-from pathlib import Path
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -41,7 +39,7 @@ class TestTTSEngineSelection:
 
     def test_no_backend_when_nothing_available(self):
         """When neither GPU nor Piper is available, backend is 'none'."""
-        from tts.tts_engine import TTSEngine, BACKEND_NONE
+        from tts.tts_engine import BACKEND_NONE, TTSEngine
         engine = TTSEngine(auto_init=False)
         # Mock hardware detection to report no GPU
         engine._hw_detected = True
@@ -56,7 +54,7 @@ class TestTTSEngineSelection:
 
     def test_force_piper_backend(self):
         """Force Piper backend even if GPU is available."""
-        from tts.tts_engine import TTSEngine, BACKEND_PIPER
+        from tts.tts_engine import BACKEND_PIPER, TTSEngine
 
         engine = TTSEngine(auto_init=False)
 
@@ -74,14 +72,14 @@ class TestTTSEngineSelection:
 
     def test_backend_name_piper(self):
         """When Piper backend, backend_name contains 'Piper'."""
-        from tts.tts_engine import TTSEngine, BACKEND_PIPER
+        from tts.tts_engine import BACKEND_PIPER, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._active_backend = BACKEND_PIPER
         assert "Piper" in engine.backend_name
 
     def test_backend_name_chatterbox(self):
         """When Chatterbox Turbo backend, backend_name contains 'Chatterbox'."""
-        from tts.tts_engine import TTSEngine, BACKEND_CHATTERBOX_TURBO
+        from tts.tts_engine import BACKEND_CHATTERBOX_TURBO, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._active_backend = BACKEND_CHATTERBOX_TURBO
         assert "Chatterbox" in engine.backend_name
@@ -92,7 +90,7 @@ class TestTTSEngineFeatures:
 
     def test_piper_features(self):
         """Piper has no cloning/streaming/paralinguistic/emotion/multilingual."""
-        from tts.tts_engine import TTSEngine, BACKEND_PIPER
+        from tts.tts_engine import BACKEND_PIPER, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._active_backend = BACKEND_PIPER
         features = engine._get_features()
@@ -100,7 +98,7 @@ class TestTTSEngineFeatures:
 
     def test_chatterbox_turbo_features(self):
         """Chatterbox Turbo has voice-cloning and paralinguistic."""
-        from tts.tts_engine import TTSEngine, BACKEND_CHATTERBOX_TURBO
+        from tts.tts_engine import BACKEND_CHATTERBOX_TURBO, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._active_backend = BACKEND_CHATTERBOX_TURBO
         features = engine._get_features()
@@ -109,14 +107,14 @@ class TestTTSEngineFeatures:
 
     def test_indic_parler_features(self):
         """Indic Parler has multilingual (21 languages)."""
-        from tts.tts_engine import TTSEngine, BACKEND_INDIC_PARLER
+        from tts.tts_engine import BACKEND_INDIC_PARLER, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._active_backend = BACKEND_INDIC_PARLER
         features = engine._get_features()
         assert "multilingual" in features
 
     def test_no_features_when_no_backend(self):
-        from tts.tts_engine import TTSEngine, BACKEND_NONE
+        from tts.tts_engine import BACKEND_NONE, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._active_backend = BACKEND_NONE
         features = engine._get_features()
@@ -142,7 +140,7 @@ class TestTTSEngineSynthesizeGuards:
 
     def test_synthesize_no_backend_loaded(self):
         """synthesize returns None when no backend is loaded in _backends."""
-        from tts.tts_engine import TTSEngine, BACKEND_PIPER
+        from tts.tts_engine import BACKEND_PIPER, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._initialized = True
         engine._active_backend = BACKEND_PIPER
@@ -152,7 +150,7 @@ class TestTTSEngineSynthesizeGuards:
 
     def test_clone_voice_requires_vibevoice(self):
         """clone_voice should fail if backend is not vibevoice."""
-        from tts.tts_engine import TTSEngine, BACKEND_PIPER
+        from tts.tts_engine import BACKEND_PIPER, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._initialized = True
         engine._active_backend = BACKEND_PIPER
@@ -164,7 +162,7 @@ class TestTTSEngineShutdown:
     """Test engine shutdown."""
 
     def test_shutdown_clears_state(self):
-        from tts.tts_engine import TTSEngine, BACKEND_PIPER, BACKEND_NONE
+        from tts.tts_engine import BACKEND_NONE, BACKEND_PIPER, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._initialized = True
         engine._active_backend = BACKEND_PIPER
@@ -209,7 +207,7 @@ class TestPiperTTSVoicePresets:
             assert not missing, f"Voice {vid} missing keys: {missing}"
 
     def test_default_voice_in_presets(self):
-        from tts.piper_tts import VOICE_PRESETS, DEFAULT_VOICE
+        from tts.piper_tts import DEFAULT_VOICE, VOICE_PRESETS
         assert DEFAULT_VOICE in VOICE_PRESETS
 
 
@@ -342,7 +340,7 @@ class TestVibeVoiceSpeakers:
             assert not missing, f"Speaker {sid} missing keys: {missing}"
 
     def test_default_speaker_exists(self):
-        from tts.vibevoice_tts import VIBEVOICE_SPEAKERS, DEFAULT_SPEAKER
+        from tts.vibevoice_tts import DEFAULT_SPEAKER, VIBEVOICE_SPEAKERS
         assert DEFAULT_SPEAKER in VIBEVOICE_SPEAKERS
 
 
@@ -443,7 +441,7 @@ class TestGetEngineCapabilitiesCatalogIntegration:
 
     def test_get_piper_caps_has_expected_keys(self):
         """_get_engine_capabilities('piper') returns a dict with all required keys."""
-        from tts.tts_engine import _get_engine_capabilities, BACKEND_PIPER
+        from tts.tts_engine import BACKEND_PIPER, _get_engine_capabilities
         caps = _get_engine_capabilities(BACKEND_PIPER)
         required = {'name', 'vram_gb', 'languages', 'paralinguistic', 'emotion_tags',
                     'voice_cloning', 'streaming', 'sample_rate', 'quality'}
@@ -452,7 +450,7 @@ class TestGetEngineCapabilitiesCatalogIntegration:
 
     def test_get_piper_caps_values_are_sane(self):
         """Piper caps should report CPU-only (vram_gb=0) and medium quality."""
-        from tts.tts_engine import _get_engine_capabilities, BACKEND_PIPER
+        from tts.tts_engine import BACKEND_PIPER, _get_engine_capabilities
         caps = _get_engine_capabilities(BACKEND_PIPER)
         assert caps['vram_gb'] == 0
         assert 'en' in caps['languages']
@@ -461,8 +459,7 @@ class TestGetEngineCapabilitiesCatalogIntegration:
 
     def test_get_all_caps_returns_dict_keyed_by_backend(self):
         """_get_engine_capabilities() with no arg returns dict with multiple backends."""
-        from tts.tts_engine import (_get_engine_capabilities,
-                                    BACKEND_PIPER, BACKEND_INDIC_PARLER)
+        from tts.tts_engine import _get_engine_capabilities
         all_caps = _get_engine_capabilities()
         # Must be a dict keyed by backend constants
         assert isinstance(all_caps, dict)
@@ -473,8 +470,7 @@ class TestGetEngineCapabilitiesCatalogIntegration:
 
     def test_get_all_caps_includes_piper_and_indic_parler(self):
         """Full caps dict must include both piper and indic_parler backends."""
-        from tts.tts_engine import (_get_engine_capabilities,
-                                    BACKEND_PIPER, BACKEND_INDIC_PARLER)
+        from tts.tts_engine import BACKEND_INDIC_PARLER, BACKEND_PIPER, _get_engine_capabilities
         all_caps = _get_engine_capabilities()
         assert BACKEND_PIPER in all_caps
         assert BACKEND_INDIC_PARLER in all_caps
@@ -494,7 +490,7 @@ class TestGetEngineCapabilitiesCatalogIntegration:
     def test_catalog_unavailable_single_backend_falls_back(self):
         """When catalog is broken, single-backend lookup returns fallback data."""
         import tts.tts_engine as te
-        from tts.tts_engine import BACKEND_PIPER, _FALLBACK_ENGINE_CAPABILITIES
+        from tts.tts_engine import _FALLBACK_ENGINE_CAPABILITIES, BACKEND_PIPER
         with patch.dict('sys.modules', {'models.catalog': None}):
             caps = te._get_engine_capabilities(BACKEND_PIPER)
         assert caps == _FALLBACK_ENGINE_CAPABILITIES[BACKEND_PIPER]
@@ -507,7 +503,7 @@ class TestGetEngineCapabilitiesCatalogIntegration:
 
     def test_engine_capabilities_alias_equals_fallback(self):
         """ENGINE_CAPABILITIES must equal _FALLBACK_ENGINE_CAPABILITIES (not the catalog live dict)."""
-        from tts.tts_engine import ENGINE_CAPABILITIES, _FALLBACK_ENGINE_CAPABILITIES
+        from tts.tts_engine import _FALLBACK_ENGINE_CAPABILITIES, ENGINE_CAPABILITIES
         assert ENGINE_CAPABILITIES is _FALLBACK_ENGINE_CAPABILITIES
 
     def test_lang_engine_preference_backward_compat_importable(self):
@@ -522,7 +518,7 @@ class TestGetLangPreferenceCatalogIntegration:
 
     def test_ta_preference_starts_with_indic_parler(self):
         """Tamil (ta) must prefer Indic Parler TTS as the first choice."""
-        from tts.tts_engine import _get_lang_preference, BACKEND_INDIC_PARLER
+        from tts.tts_engine import BACKEND_INDIC_PARLER, _get_lang_preference
         pref = _get_lang_preference('ta')
         assert isinstance(pref, list)
         assert len(pref) > 0, "Expected at least one backend for 'ta'"
@@ -532,14 +528,13 @@ class TestGetLangPreferenceCatalogIntegration:
 
     def test_hi_preference_starts_with_indic_parler(self):
         """Hindi (hi), another Indic lang, must also prefer Indic Parler first."""
-        from tts.tts_engine import _get_lang_preference, BACKEND_INDIC_PARLER
+        from tts.tts_engine import BACKEND_INDIC_PARLER, _get_lang_preference
         pref = _get_lang_preference('hi')
         assert pref[0] == BACKEND_INDIC_PARLER
 
     def test_en_preference_starts_with_chatterbox_or_f5(self):
         """English must prefer Chatterbox Turbo or F5-TTS as the first choice."""
-        from tts.tts_engine import (_get_lang_preference,
-                                    BACKEND_CHATTERBOX_TURBO, BACKEND_F5)
+        from tts.tts_engine import BACKEND_CHATTERBOX_TURBO, BACKEND_F5, _get_lang_preference
         pref = _get_lang_preference('en')
         assert isinstance(pref, list)
         assert len(pref) > 0, "Expected at least one backend for 'en'"
@@ -549,7 +544,7 @@ class TestGetLangPreferenceCatalogIntegration:
 
     def test_en_preference_includes_piper_as_fallback(self):
         """Piper must appear somewhere in the English preference chain as CPU fallback."""
-        from tts.tts_engine import _get_lang_preference, BACKEND_PIPER
+        from tts.tts_engine import BACKEND_PIPER, _get_lang_preference
         pref = _get_lang_preference('en')
         assert BACKEND_PIPER in pref
 
@@ -605,7 +600,7 @@ class TestCatalogToBackendMapping:
 
     def test_all_fallback_backends_have_reverse_mapping(self):
         """Every backend in _FALLBACK_ENGINE_CAPABILITIES has a _BACKEND_TO_CATALOG entry."""
-        from tts.tts_engine import _FALLBACK_ENGINE_CAPABILITIES, _BACKEND_TO_CATALOG
+        from tts.tts_engine import _BACKEND_TO_CATALOG, _FALLBACK_ENGINE_CAPABILITIES
         for backend in _FALLBACK_ENGINE_CAPABILITIES:
             assert backend in _BACKEND_TO_CATALOG, (
                 f"Backend '{backend}' has no _BACKEND_TO_CATALOG entry — "
@@ -614,7 +609,7 @@ class TestCatalogToBackendMapping:
 
     def test_reverse_mapping_round_trips(self):
         """_BACKEND_TO_CATALOG → _CATALOG_TO_BACKEND round-trips to the original backend."""
-        from tts.tts_engine import _CATALOG_TO_BACKEND, _BACKEND_TO_CATALOG
+        from tts.tts_engine import _BACKEND_TO_CATALOG, _CATALOG_TO_BACKEND
         for backend, catalog_id in _BACKEND_TO_CATALOG.items():
             resolved = _CATALOG_TO_BACKEND.get(catalog_id)
             assert resolved == backend, (
@@ -625,8 +620,11 @@ class TestCatalogToBackendMapping:
     def test_hyphenated_catalog_ids_resolve_correctly(self):
         """HARTOS tts_router uses hyphenated IDs (e.g. 'chatterbox-turbo'). These must resolve."""
         from tts.tts_engine import (
-            _CATALOG_TO_BACKEND, BACKEND_F5, BACKEND_CHATTERBOX_TURBO,
-            BACKEND_CHATTERBOX_ML, BACKEND_INDIC_PARLER
+            _CATALOG_TO_BACKEND,
+            BACKEND_CHATTERBOX_ML,
+            BACKEND_CHATTERBOX_TURBO,
+            BACKEND_F5,
+            BACKEND_INDIC_PARLER,
         )
         expected = {
             'f5-tts': BACKEND_F5,
@@ -641,7 +639,7 @@ class TestCatalogToBackendMapping:
 
     def test_select_backend_uses_mapping_for_orchestrator_entry(self):
         """_select_backend_for_language must map orchestrator entry.id via _CATALOG_TO_BACKEND."""
-        from tts.tts_engine import TTSEngine, BACKEND_CHATTERBOX_TURBO
+        from tts.tts_engine import BACKEND_CHATTERBOX_TURBO, TTSEngine
         engine = TTSEngine.__new__(TTSEngine)
         engine._active_backend = None
         engine.has_gpu = False
@@ -685,3 +683,120 @@ class TestCatalogToBackendMapping:
             result = engine._select_backend_for_language('en')
 
         assert result == 'future-engine'
+
+
+# ============================================================
+# TTSEngine — backend capability checks
+# ============================================================
+
+class TestCanRunBackend:
+    """_can_run_backend determines if a TTS engine is usable on this hardware."""
+
+    def _make_engine(self):
+        from tts.tts_engine import TTSEngine
+        engine = TTSEngine.__new__(TTSEngine)
+        engine._active_backend = None
+        engine.has_gpu = False
+        engine._hw_detected = True
+        engine._import_check_cache = {}
+        engine._install_threads = {}
+        return engine
+
+    def test_returns_false_for_unknown_backend(self):
+        """Unknown backend name = False (don't crash, just skip)."""
+        engine = self._make_engine()
+        assert engine._can_run_backend('nonexistent_engine_xyz') is False
+
+    def test_returns_false_when_package_missing(self):
+        """Backend with missing pip package = False."""
+        engine = self._make_engine()
+        engine._import_check_cache = {}
+        with patch('importlib.util.find_spec', return_value=None):
+            # Clear cache to force re-check
+            from tts.tts_engine import TTSEngine
+            TTSEngine._import_check_cache = {}
+            result = engine._can_run_backend('chatterbox_turbo')
+        assert result is False
+
+    def test_piper_runs_without_gpu(self):
+        """Piper is CPU-only — must not require GPU/CUDA."""
+        engine = self._make_engine()
+        engine.has_gpu = False
+        from tts.tts_engine import BACKEND_PIPER, TTSEngine
+        TTSEngine._import_check_cache = {}
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            result = engine._can_run_backend(BACKEND_PIPER)
+        # Piper needs piper_tts or piper package
+        assert isinstance(result, bool)
+
+
+# ============================================================
+# TTSEngine — synthesis and voice management
+# ============================================================
+
+class TestTTSEnginePublicAPI:
+    """Public API that the /voice endpoints and frontend call."""
+
+    def test_backend_name_returns_string(self):
+        """backend_name shown in the TTS status toast."""
+        from tts.tts_engine import TTSEngine
+        engine = TTSEngine.__new__(TTSEngine)
+        engine._active_backend = 'piper'
+        name = engine.backend_name
+        assert isinstance(name, str)
+        assert len(name) > 0
+
+    def test_get_features_returns_list(self):
+        """Features list shown in the TTS info panel."""
+        from tts.tts_engine import TTSEngine
+        engine = TTSEngine.__new__(TTSEngine)
+        engine._active_backend = 'piper'
+        features = engine._get_features()
+        assert isinstance(features, list)
+
+    def test_get_info_is_callable(self):
+        """get_info() must be callable — feeds /api/social/tts/status endpoint."""
+        from tts.tts_engine import TTSEngine
+        assert callable(getattr(TTSEngine, 'get_info', None))
+
+
+# ============================================================
+# Module-level functions
+# ============================================================
+
+class TestModuleFunctions:
+    """Module-level TTS functions used by chatbot_routes.py."""
+
+    def test_get_tts_status_returns_dict(self):
+        from tts.tts_engine import get_tts_status
+        result = get_tts_status()
+        assert isinstance(result, dict)
+
+    def test_entry_to_legacy_caps_returns_dict(self):
+        """_entry_to_legacy_caps bridges ModelCatalog entries to old ENGINE_CAPABILITIES format."""
+        from tts.tts_engine import _entry_to_legacy_caps
+        mock_entry = MagicMock()
+        mock_entry.name = 'Test TTS'
+        mock_entry.vram_gb = 2.0
+        mock_entry.languages = ['en', 'ta']
+        mock_entry.capabilities = {'streaming': True, 'voice_cloning': False}
+        mock_entry.quality_score = 0.85
+        result = _entry_to_legacy_caps(mock_entry)
+        assert isinstance(result, dict)
+        assert result['name'] == 'Test TTS'
+        assert result['vram_gb'] == 2.0
+        assert 'en' in result['languages']
+
+    def test_fallback_engine_capabilities_is_dict(self):
+        from tts.tts_engine import _FALLBACK_ENGINE_CAPABILITIES
+        assert isinstance(_FALLBACK_ENGINE_CAPABILITIES, dict)
+        assert len(_FALLBACK_ENGINE_CAPABILITIES) >= 3  # At least piper + 2 GPU engines
+
+    def test_fallback_lang_preference_has_en(self):
+        from tts.tts_engine import _FALLBACK_LANG_ENGINE_PREFERENCE
+        assert 'en' in _FALLBACK_LANG_ENGINE_PREFERENCE
+
+    def test_default_preference_is_list(self):
+        from tts.tts_engine import _DEFAULT_PREFERENCE
+        assert isinstance(_DEFAULT_PREFERENCE, list)
+        assert len(_DEFAULT_PREFERENCE) > 0

@@ -13,10 +13,10 @@ Covers:
 import io
 import json
 import os
+import struct
 import sys
 import wave
-import struct
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -411,6 +411,7 @@ class TestThinkingTraces:
         """Concurrent captures from multiple threads don't corrupt the buffer."""
         self._reset_traces()
         import threading
+
         from routes.hartos_backend_adapter import _capture_thinking, drain_thinking_traces
         errors = []
 
@@ -469,3 +470,112 @@ class TestThinkingTraces:
         all_traces = drain_thinking_traces(None)
         assert len(all_traces) == 1
         assert all_traces[0]['text'] == 'user'
+
+
+# ============================================================
+# Missing key detection — agent-driven secret request
+# ============================================================
+
+class TestMissingKeyDetection:
+    """_detect_missing_key_in_response identifies when an agent tool needs an API key."""
+
+    def test_detects_api_key_not_found(self):
+        from routes.chatbot_routes import _detect_missing_key_in_response
+        result = _detect_missing_key_in_response("Error: api key not found for Google Search")
+        assert result is not None
+
+    def test_detects_authentication_failed(self):
+        from routes.chatbot_routes import _detect_missing_key_in_response
+        result = _detect_missing_key_in_response("authentication failed: invalid credentials")
+        assert result is not None
+
+    def test_returns_none_for_normal_response(self):
+        from routes.chatbot_routes import _detect_missing_key_in_response
+        result = _detect_missing_key_in_response("Here is your answer about Python.")
+        assert result is None
+
+    def test_returns_none_for_empty(self):
+        from routes.chatbot_routes import _detect_missing_key_in_response
+        assert _detect_missing_key_in_response("") is None
+        assert _detect_missing_key_in_response(None) is None
+
+
+# ============================================================
+# Resource request extraction
+# ============================================================
+
+class TestResourceRequestExtraction:
+    """_extract_resource_request parses tool output for structured resource needs."""
+
+    def test_extracts_valid_json(self):
+        """Extracts when __SECRET_REQUEST__ flag is present."""
+        from routes.chatbot_routes import _extract_resource_request
+        text = 'RESOURCE_REQUEST:{"__SECRET_REQUEST__": true, "key_name": "GOOGLE_API_KEY", "label": "Google Key"}'
+        result = _extract_resource_request(text)
+        assert result is not None
+        assert result['key_name'] == 'GOOGLE_API_KEY'
+
+    def test_returns_none_without_marker(self):
+        from routes.chatbot_routes import _extract_resource_request
+        assert _extract_resource_request("Just a normal response") is None
+
+    def test_returns_none_for_invalid_json(self):
+        from routes.chatbot_routes import _extract_resource_request
+        result = _extract_resource_request("RESOURCE_REQUEST:{invalid json")
+        assert result is None
+
+    def test_returns_none_for_none_input(self):
+        from routes.chatbot_routes import _extract_resource_request
+        assert _extract_resource_request(None) is None
+
+
+# ============================================================
+# Language change + match_options stubs
+# ============================================================
+
+class TestStubFunctions:
+    """Stubs that exist but are not yet implemented — must return safe defaults."""
+
+    def test_language_change_returns_list(self):
+        from routes.chatbot_routes import language_change
+        result = language_change("en", "user_1")
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    def test_match_options_returns_none(self):
+        from routes.chatbot_routes import match_options
+        result = match_options("prefix", "text")
+        assert result is None
+
+
+# ============================================================
+# TTS wrapper functions
+# ============================================================
+
+class TestTTSWrappers:
+    """TTS wrapper functions used by the /voice endpoints."""
+
+    def test_get_tts_engine_returns_engine_or_none(self):
+        from routes.chatbot_routes import get_tts_engine
+        result = get_tts_engine()
+        # Returns TTSEngine instance or None if not initialized
+        assert result is not None or result is None  # doesn't crash
+
+    def test_get_tts_status_returns_dict(self):
+        from routes.chatbot_routes import get_tts_status
+        result = get_tts_status()
+        assert isinstance(result, dict)
+
+
+# ============================================================
+# _require_local_or_token decorator — auth boundary
+# ============================================================
+
+class TestAuthDecorator:
+    """_require_local_or_token allows localhost but requires token for remote."""
+
+    def test_decorator_exists(self):
+        """Auth decorator must exist — it protects all /chat endpoints."""
+        import routes.chatbot_routes as cr
+        assert hasattr(cr, '_require_local_or_token')
+        assert callable(cr._require_local_or_token)

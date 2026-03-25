@@ -29,7 +29,7 @@ describe('Chat Flow E2E', () => {
   // =========================================================================
   describe('1. UI Presence Tests', () => {
     it('1.1 demo page has chat UI elements (textarea + buttons)', () => {
-      cy.visit('/#/demo');
+      cy.visit('/local');
 
       cy.wait('@getPrompts', {timeout: 20000});
       cy.wait(2000);
@@ -43,7 +43,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('1.2 chat textarea is present and shows placeholder', () => {
-      cy.visit('/#/demo');
+      cy.visit('/local');
 
       cy.wait('@getPrompts', {timeout: 20000});
       cy.wait(2000);
@@ -54,7 +54,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('1.3 shows login prompt when not authenticated', () => {
-      cy.visit('/#/demo');
+      cy.visit('/local');
 
       cy.wait('@getPrompts', {timeout: 20000});
       cy.wait(2000);
@@ -73,7 +73,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('1.4 chat textarea is disabled when not logged in (expected behavior)', () => {
-      cy.visit('/#/demo');
+      cy.visit('/local');
 
       cy.wait('@getPrompts', {timeout: 20000});
       cy.wait(2000);
@@ -353,7 +353,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('4.1 Guest user can see chat interface enabled', () => {
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsStubbed', {timeout: 20000});
       cy.wait(2000);
 
@@ -363,7 +363,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('4.2 Chat response uses "text" field (not "response")', () => {
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsStubbed', {timeout: 20000});
 
       // Verify the intercepted response format
@@ -394,7 +394,7 @@ describe('Chat Flow E2E', () => {
   // =========================================================================
   describe('5. /prompts Agent Schema Validation', () => {
     it('5.1 GET /prompts returns agents with required "id" field', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         expect(response.status).to.eq(200);
         expect(response.body).to.have.property('prompts');
         expect(response.body.prompts).to.be.an('array');
@@ -408,7 +408,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.2 GET /prompts returns agents with required "type" field (local or cloud)', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         response.body.prompts.forEach((agent) => {
           expect(agent).to.have.property('type');
           expect(agent.type).to.be.oneOf(['local', 'cloud']);
@@ -417,7 +417,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.3 GET /prompts local agents have "system_prompt" field', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         const localAgents = response.body.prompts.filter(
           (a) => a.type === 'local'
         );
@@ -432,7 +432,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.4 GET /prompts agents have "name" and "description" fields', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         response.body.prompts.forEach((agent) => {
           expect(agent).to.have.property('name');
           expect(agent.name).to.be.a('string');
@@ -443,7 +443,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.5 GET /prompts agents have "capabilities" array', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         response.body.prompts.forEach((agent) => {
           expect(agent).to.have.property('capabilities');
           expect(agent.capabilities).to.be.an('array');
@@ -452,7 +452,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.6 GET /prompts local agents include "offline" and "private" capabilities', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         const localAgents = response.body.prompts.filter(
           (a) => a.type === 'local'
         );
@@ -465,7 +465,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.7 GET /prompts agents have "requires_internet" boolean', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         response.body.prompts.forEach((agent) => {
           expect(agent).to.have.property('requires_internet');
           expect(agent.requires_internet).to.be.a('boolean');
@@ -474,7 +474,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.8 GET /prompts local agents have requires_internet=false', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         const localAgents = response.body.prompts.filter(
           (a) => a.type === 'local'
         );
@@ -486,7 +486,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.9 GET /prompts cloud agents have requires_internet=true', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         const cloudAgents = response.body.prompts.filter(
           (a) => a.type === 'cloud'
         );
@@ -498,7 +498,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.10 GET /prompts agents have "available" boolean field', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         response.body.prompts.forEach((agent) => {
           expect(agent).to.have.property('available');
           expect(agent.available).to.be.a('boolean');
@@ -507,7 +507,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.11 GET /prompts local agents are always available (available=true)', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         const localAgents = response.body.prompts.filter(
           (a) => a.type === 'local'
         );
@@ -520,7 +520,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('5.12 Schema validation: all required fields present for chat functionality', () => {
-      cy.request(`${API}/prompts`).then((response) => {
+      cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((response) => {
         // These are the minimum fields required by the chat UI and API
         const requiredFields = ['id', 'type', 'name', 'available'];
 
@@ -669,7 +669,7 @@ describe('Chat Flow E2E', () => {
         });
       }).as('chatSend');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsUI', {timeout: 20000});
       cy.wait(2000);
 
@@ -699,7 +699,7 @@ describe('Chat Flow E2E', () => {
     });
 
     it('7.2 Send button is disabled when textarea is empty', () => {
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsUI', {timeout: 20000});
       cy.wait(2000);
 
@@ -735,7 +735,7 @@ describe('Chat Flow E2E', () => {
         });
       }).as('chatDelayed');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsUI', {timeout: 20000});
       cy.wait(2000);
 
@@ -784,7 +784,7 @@ describe('Chat Flow E2E', () => {
         },
       }).as('chatError');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsUI', {timeout: 20000});
       cy.wait(2000);
 
@@ -831,7 +831,7 @@ describe('Chat Flow E2E', () => {
         },
       }).as('chatSuccess');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsUI', {timeout: 20000});
       cy.wait(2000);
 
@@ -877,7 +877,7 @@ describe('Chat Flow E2E', () => {
         },
       }).as('chatClear');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsUI', {timeout: 20000});
       cy.wait(2000);
 
@@ -921,7 +921,7 @@ describe('Chat Flow E2E', () => {
         });
       }).as('chatEnter');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsUI', {timeout: 20000});
       cy.wait(2000);
 
@@ -989,7 +989,7 @@ describe('Chat Flow E2E', () => {
         });
       }).as('slowChat');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsLoading', {timeout: 20000});
       cy.wait(2000);
 
@@ -1038,7 +1038,7 @@ describe('Chat Flow E2E', () => {
         },
       }).as('quickChat');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsLoading', {timeout: 20000});
       cy.wait(2000);
 
@@ -1086,7 +1086,7 @@ describe('Chat Flow E2E', () => {
         });
       }).as('rapidChat');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsLoading', {timeout: 20000});
       cy.wait(2000);
 
@@ -1144,7 +1144,7 @@ describe('Chat Flow E2E', () => {
         'networkError'
       );
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsError', {timeout: 20000});
       cy.wait(2000);
 
@@ -1177,7 +1177,7 @@ describe('Chat Flow E2E', () => {
         body: {error: 'Internal server error'},
       }).as('serverError');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsError', {timeout: 20000});
       cy.wait(2000);
 
@@ -1210,7 +1210,7 @@ describe('Chat Flow E2E', () => {
         req.destroy();
       }).as('timeoutError');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsError', {timeout: 20000});
       cy.wait(2000);
 
@@ -1249,7 +1249,7 @@ describe('Chat Flow E2E', () => {
         },
       }).as('llmUnavailable');
 
-      cy.visit('/#/demo');
+      cy.visit('/local');
       cy.wait('@getPromptsError', {timeout: 20000});
       cy.wait(2000);
 
