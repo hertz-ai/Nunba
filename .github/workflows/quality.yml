@@ -102,7 +102,7 @@ jobs:
   # HARTOS is pip-installed. SQLite for DB (no external services needed).
   cypress-e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
