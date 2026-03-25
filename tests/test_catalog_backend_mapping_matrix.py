@@ -17,6 +17,9 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from integrations.service_tools.model_catalog import ModelType
+
+from models.catalog import get_catalog
 from tts.tts_engine import (
     _BACKEND_TO_CATALOG,
     _CATALOG_TO_BACKEND,
@@ -28,11 +31,6 @@ from tts.tts_engine import (
     BACKEND_INDIC_PARLER,
     BACKEND_PIPER,
 )
-
-from integrations.service_tools.model_catalog import ModelType
-
-from models.catalog import get_catalog
-
 
 # ==========================================================================
 # 1. Forward Mapping: catalog → backend

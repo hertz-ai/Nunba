@@ -106,8 +106,9 @@ class TestNunbaShims:
         assert ModelType is not None
 
     def test_models_catalog_shared_singleton(self):
-        from models.catalog import get_catalog as nunba_get
         from integrations.service_tools.model_catalog import get_catalog as hartos_get
+
+        from models.catalog import get_catalog as nunba_get
         assert nunba_get() is hartos_get(), "Catalog singleton must be shared"
 
     def test_models_orchestrator_importable(self):

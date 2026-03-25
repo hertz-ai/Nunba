@@ -95,7 +95,7 @@ class TestCacheHash:
         with tempfile.TemporaryDirectory() as td:
             cache = PreSynthCache(cache_dir=td)
             h = cache._hash('test', 'default')
-            expected = hashlib.md5('test|default'.encode()).hexdigest()[:16]
+            expected = hashlib.md5(b'test|default').hexdigest()[:16]
             assert h == expected
 
 

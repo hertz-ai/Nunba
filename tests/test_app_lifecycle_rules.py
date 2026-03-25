@@ -141,7 +141,7 @@ class TestWindowPositioning:
         assert pos['x'] <= 20
 
     def test_all_positions_positive(self):
-        from app import calculate_perfect_right_dock, calculate_perfect_left_dock
+        from app import calculate_perfect_left_dock, calculate_perfect_right_dock
         for fn in [calculate_perfect_right_dock, calculate_perfect_left_dock]:
             pos = fn()
             assert pos['x'] >= 0
@@ -156,6 +156,7 @@ class TestWindowPositioning:
 class TestSafeTkUpdate:
     def test_handles_destroyed_root(self):
         import tkinter
+
         from app import _safe_tk_update
         mock = MagicMock()
         mock.update.side_effect = tkinter.TclError("destroyed")

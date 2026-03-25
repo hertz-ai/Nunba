@@ -31,7 +31,7 @@ from llama.llama_installer import MODEL_PRESETS, LlamaInstaller, ModelPreset
 class TestModelPresetData:
     def test_all_presets_have_display_name(self):
         for p in MODEL_PRESETS:
-            assert p.display_name, f"Preset missing display_name"
+            assert p.display_name, "Preset missing display_name"
 
     def test_all_presets_have_repo_id(self):
         for p in MODEL_PRESETS:

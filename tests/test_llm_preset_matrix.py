@@ -21,7 +21,6 @@ if PROJECT_ROOT not in sys.path:
 
 from llama.llama_installer import MODEL_PRESETS
 
-
 # Generate parametrize IDs from display names
 PRESET_IDS = [p.display_name for p in MODEL_PRESETS]
 
