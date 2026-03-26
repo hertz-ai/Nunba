@@ -59,7 +59,7 @@ const stubFeed = () => {
 
 const visitSocial = (path = '/social') => {
   cy.visit(path, {
-    timeout: 120000,
+    timeout: 60000,
     onBeforeLoad(win) {
       win.localStorage.setItem('social_token', 'stub-jwt-token');
       win.localStorage.setItem('access_token', 'stub-jwt-token');
@@ -369,7 +369,7 @@ describe('GameAssetService — JWT Auth Header', () => {
 
     // Navigate to a kids game page to trigger GameAssetService
     cy.visit('/social/kids', {
-      timeout: 120000,
+      timeout: 60000,
       onBeforeLoad(win) {
         win.localStorage.setItem('social_token', 'my-test-jwt-123');
         win.localStorage.setItem('access_token', 'my-test-jwt-123');
@@ -389,7 +389,7 @@ describe('GameAssetService — JWT Auth Header', () => {
     }).as('mediaNoAuth');
 
     cy.visit('/social/kids', {
-      timeout: 120000,
+      timeout: 60000,
       onBeforeLoad(win) {
         win.localStorage.removeItem('social_token');
         // Keep access_token for SocialContext auth
@@ -495,7 +495,7 @@ describe('RoleGuard — Kids Learning Zone Access', () => {
       body: {success: false, error: 'Unauthorized'},
     });
 
-    cy.visit('/social/kids', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/social/kids', {timeout: 60000, failOnStatusCode: false});
     cy.get('body', {timeout: 300000}).should('be.visible');
     // Should redirect to /social (RoleGuard blocks anonymous)
   });

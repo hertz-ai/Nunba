@@ -2,7 +2,7 @@
 
 describe('Landing Page Renders', () => {
   beforeEach(() => {
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
   });
 
   it('has the correct title', () => {

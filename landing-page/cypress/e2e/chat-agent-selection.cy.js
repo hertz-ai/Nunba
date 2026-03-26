@@ -155,7 +155,7 @@ describe('Chat Agent Selection', () => {
     });
 
     it('1.1 selects local_assistant as default when no saved preference', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
@@ -167,7 +167,7 @@ describe('Chat Agent Selection', () => {
     });
 
     it('1.2 does not auto-select a user-created agent on fresh load', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
@@ -184,7 +184,7 @@ describe('Chat Agent Selection', () => {
     it('1.3 restores saved agent from localStorage if valid', () => {
       // Pre-set active_agent_id to the cloud agent
       localStorage.setItem('active_agent_id', '2');
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
@@ -197,7 +197,7 @@ describe('Chat Agent Selection', () => {
     it('1.4 clears invalid active_agent_id and falls back to default', () => {
       // Set a non-numeric agent ID which Demopage treats as invalid
       localStorage.setItem('active_agent_id', 'garbage_value');
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
@@ -219,7 +219,7 @@ describe('Chat Agent Selection', () => {
       localStorage.setItem('hart_name', 'CypressTest');
       localStorage.setItem('guest_mode', 'true');
       localStorage.setItem('guest_user_id', 'cypress_user_001');
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
     });
@@ -283,7 +283,7 @@ describe('Chat Agent Selection', () => {
       localStorage.setItem('hart_name', 'CypressTest');
       localStorage.setItem('guest_mode', 'true');
       localStorage.setItem('guest_user_id', 'cypress_user_001');
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
     });
@@ -337,7 +337,7 @@ describe('Chat Agent Selection', () => {
         body: fixtureWithInactive,
       }).as('getPromptsInactive');
 
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPromptsInactive', { timeout: 300000 });
       cy.wait(3000);
 
@@ -362,7 +362,7 @@ describe('Chat Agent Selection', () => {
       localStorage.setItem('hart_name', 'CypressTest');
       localStorage.setItem('guest_mode', 'true');
       localStorage.setItem('guest_user_id', 'cypress_user_001');
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
     });

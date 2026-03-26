@@ -253,7 +253,7 @@ describe('Distributed Goal Notifications E2E', () => {
       });
 
       cy.visit('/social/notifications', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           // Set a token so SocialContext's useEffect enters the auth branch
           win.localStorage.setItem(

@@ -16,7 +16,7 @@ describe('Local Chat Flow', () => {
     localStorage.setItem('hart_name', 'CypressTest');
     localStorage.setItem('guest_mode', 'true');
     localStorage.setItem('guest_user_id', 'cypress_user_001');
-    cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
   });
 
   describe('Page Load & Hero Transition', () => {
@@ -75,7 +75,7 @@ describe('Local Chat Flow', () => {
   describe('Toolbar on Mobile', () => {
     beforeEach(() => {
       cy.viewport(375, 812); // iPhone X
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     });
 
     it('toolbar is visible and does not cover full width', () => {

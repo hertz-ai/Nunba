@@ -58,7 +58,7 @@ describe('Guest Widget Flow', () => {
         const token = res.body.data?.token || res.body.token || '';
         if (token) {
           // Visit Demopage with token
-          cy.visit(`/?embed=true&companionAppInstalled=true&token=${encodeURIComponent(token)}`, {timeout: 120000, failOnStatusCode: false});
+          cy.visit(`/?embed=true&companionAppInstalled=true&token=${encodeURIComponent(token)}`, {timeout: 60000, failOnStatusCode: false});
           // Should NOT show login modal/button
           cy.get('body').should('not.contain', 'Sign In');
           cy.get('body').should('not.contain', 'Log In');
@@ -78,7 +78,7 @@ describe('Guest Widget Flow', () => {
       }).then((res) => {
         const token = res.body.data?.token || res.body.token || '';
         if (token) {
-          cy.visit(`/?embed=true&companionAppInstalled=true&token=${encodeURIComponent(token)}`, {timeout: 120000, failOnStatusCode: false});
+          cy.visit(`/?embed=true&companionAppInstalled=true&token=${encodeURIComponent(token)}`, {timeout: 60000, failOnStatusCode: false});
 
           // Find chat input and type
           cy.get('textarea, input[type="text"]', { timeout: 300000 })
@@ -103,7 +103,7 @@ describe('Guest Widget Flow', () => {
     it('should recover guest session from localStorage', () => {
       // Set guest mode in localStorage before visiting
       cy.visit('/', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_user_id', 'test-guest-123');

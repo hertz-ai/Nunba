@@ -233,7 +233,7 @@ function stubMultiplayerAPIs() {
 function visitGame(gameSlug) {
   cy.visit(`/social/games/${gameSlug}`, {
     failOnStatusCode: false,
-    timeout: 120000,
+    timeout: 60000,
     onBeforeLoad(win) {
       win.localStorage.setItem('access_token', FAKE_TOKEN);
     },

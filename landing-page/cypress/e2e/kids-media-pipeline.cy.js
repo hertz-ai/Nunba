@@ -245,7 +245,7 @@ describe('Kids Media Pipeline', () => {
     it('renders emoji fallback when image unavailable', () => {
       // Visit kids learning area — games show emojis when backend returns 503
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt-token');
         },
@@ -277,7 +277,7 @@ describe('Kids Media Pipeline', () => {
       }).as('mediaAsset503');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -296,7 +296,7 @@ describe('Kids Media Pipeline', () => {
       }).as('mediaImage');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -312,7 +312,7 @@ describe('Kids Media Pipeline', () => {
       }).as('mediaImageJson');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -351,7 +351,7 @@ describe('Kids Media Pipeline', () => {
       }).as('ttsQuick');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -367,7 +367,7 @@ describe('Kids Media Pipeline', () => {
       }).as('tts503');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -403,7 +403,7 @@ describe('Kids Media Pipeline', () => {
       }).as('musicReq');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -423,7 +423,7 @@ describe('Kids Media Pipeline', () => {
       }).as('videoReq');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -492,7 +492,7 @@ describe('Kids Media Pipeline', () => {
 
     it('page loads with all media stubs in place', () => {
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -521,7 +521,7 @@ describe('Kids Media Pipeline', () => {
       }).as('elephantFail');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -561,7 +561,7 @@ describe('Kids Media Pipeline', () => {
       }).as('feed');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -659,7 +659,7 @@ describe('Kids Media Pipeline', () => {
 
     it('page loads without errors even with no media backend', () => {
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -735,7 +735,7 @@ describe('Kids Media Pipeline', () => {
       }).as('musicReq');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -772,7 +772,7 @@ describe('Kids Media Pipeline', () => {
       }).as('networkError');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
@@ -788,7 +788,7 @@ describe('Kids Media Pipeline', () => {
       }).as('ttsNetworkError');
 
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },

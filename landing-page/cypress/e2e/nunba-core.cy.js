@@ -78,7 +78,7 @@ describe('Habit Features', () => {
     beforeEach(() => {
       const token = Cypress.env('guestToken') || '';
       cy.visit(`/local`, {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('hart_sealed', 'true');
           win.localStorage.setItem('guest_mode', 'true');
@@ -117,7 +117,7 @@ describe('Habit Features', () => {
   describe('4. Notification Toast System', () => {
     it('should not show notifications on fresh load', () => {
       cy.visit('/local', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('hart_sealed', 'true');
           win.localStorage.setItem('guest_mode', 'true');
@@ -176,7 +176,7 @@ describe('Habit Features', () => {
           preferred_lang: 'en',
         },
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
       }).then((res) => {
         expect(res.status).to.eq(200);
         expect(res.body).to.have.any.keys('text', 'response', 'loading');

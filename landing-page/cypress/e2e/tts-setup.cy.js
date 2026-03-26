@@ -439,7 +439,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('visiting /#/demo triggers a TTS status endpoint call', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       // The useTTS hook calls /tts/status on mount via checkStatus()
       cy.wait('@ttsStatus', {timeout: 300000}).then((interception) => {
@@ -449,7 +449,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('page loads without TTS errors crashing the app', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
@@ -476,7 +476,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('Volume/TTS toggle controls are present in the UI', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
@@ -510,7 +510,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('TTS toggle button can be clicked without crashing the page', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
@@ -939,7 +939,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
 
       cy.intercept('GET', '**/prompts*').as('getPrompts');
 
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@ttsMocked503', {timeout: 300000});
       cy.wait('@getPrompts', {timeout: 300000});
@@ -966,7 +966,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
 
       cy.intercept('GET', '**/prompts*').as('getPrompts');
 
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@ttsUnavailable', {timeout: 300000});
       cy.wait('@getPrompts', {timeout: 300000});
@@ -1015,7 +1015,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         },
       }).as('chatSuccess');
 
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
@@ -1036,7 +1036,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
 
       cy.intercept('GET', '**/prompts*').as('getPrompts');
 
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
@@ -1076,7 +1076,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('TTS toggle button persists state to localStorage', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
@@ -1116,7 +1116,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('TTS toggle button title changes when clicked', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
@@ -1147,7 +1147,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('TTS toggle changes icon between Volume2 and VolumeX', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
@@ -1185,7 +1185,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     it('enabling TTS calls status endpoint to check availability', () => {
       // First disable TTS via localStorage
       cy.visit('/local', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('tts_enabled', 'false');
         },

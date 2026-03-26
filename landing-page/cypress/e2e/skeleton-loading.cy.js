@@ -81,7 +81,7 @@ describe('Skeleton Loading — Feed Page Initial Load', () => {
 
 describe('Skeleton Loading — Suspense Fallbacks', () => {
   it('should show PageSkeleton as Suspense fallback for lazy routes', () => {
-    cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
 
     // The first render should show PageSkeleton (from Suspense fallback)
@@ -98,7 +98,7 @@ describe('Skeleton Loading — Suspense Fallbacks', () => {
   });
 
   it('should NOT show "..." or empty Suspense fallback', () => {
-    cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
 
     // Wait for the lazy-loaded component to hydrate past any Suspense fallback
@@ -152,7 +152,7 @@ describe('Skeleton Loading — Infinite Scroll', () => {
 
 describe('Skeleton Loading — Chat Page', () => {
   it('should show chat skeleton variant for demo page fallback', () => {
-    cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
 
     // Wait for the page component to hydrate past any Suspense fallback

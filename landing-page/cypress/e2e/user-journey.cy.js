@@ -90,7 +90,7 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
   describe('1. Guest Browsing Phase', () => {
     it('1.1 should start with no auth tokens in localStorage', () => {
       cy.clearLocalStorage();
-      cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
       cy.window().then((win) => {
         expect(win.localStorage.getItem('access_token')).to.be.null;
         expect(win.localStorage.getItem('guest_mode')).to.be.null;
@@ -98,20 +98,20 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
     });
 
     it('1.2 should load social feed as anonymous user without crashing', () => {
-      cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
       cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
     it('1.3 should allow anonymous browsing of feed content', () => {
-      cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
       cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').invoke('text').should('have.length.greaterThan', 0);
     });
 
     it('1.4 should set guest_mode items when visiting /local as guest', () => {
       cy.visit('/local', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'Cool.Blue.Cypress');
@@ -129,7 +129,7 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
 
     it('1.5 should allow guest to browse social feed', () => {
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'Test.Guest.User');
@@ -160,7 +160,7 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
         body: {data: [], success: true},
       });
       cy.visit('/social/post/1', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'Test.Guest.Nav');
@@ -174,7 +174,7 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
   describe('2. Login Transition (OTP Flow)', () => {
     it('2.1 should preserve guest browsing context URL during OTP flow', () => {
       cy.visit('/agents/Hevolve', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'OTP.Test.User');
@@ -190,7 +190,7 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
 
     it('2.2 should clear guest_mode items after successful login simulation', () => {
       cy.visit('/social', {
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           // Set guest mode first
           win.localStorage.setItem('guest_mode', 'true');

@@ -105,7 +105,7 @@ describe('Chat Thinking Traces', () => {
       }).as('postChat');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
     });
@@ -197,7 +197,7 @@ describe('Chat Thinking Traces', () => {
     });
 
     it('2.1 thinking container button is clickable (toggle expand)', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
@@ -219,7 +219,7 @@ describe('Chat Thinking Traces', () => {
     });
 
     it('2.2 expand/collapse does not crash the page', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
@@ -245,7 +245,7 @@ describe('Chat Thinking Traces', () => {
     });
 
     it('2.3 thinking container shows green checkmark when completed', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
@@ -285,7 +285,7 @@ describe('Chat Thinking Traces', () => {
       }).as('postChat');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
     });
@@ -376,7 +376,7 @@ describe('Chat Thinking Traces', () => {
         },
       }).as('postChat');
 
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
@@ -401,7 +401,7 @@ describe('Chat Thinking Traces', () => {
         delay: 2000,
       }).as('postChatSlow');
 
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
@@ -433,7 +433,7 @@ describe('Chat Thinking Traces', () => {
         },
       }).as('postChat');
 
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
@@ -470,7 +470,7 @@ describe('Chat Thinking Traces', () => {
         },
       }).as('postChatError');
 
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 

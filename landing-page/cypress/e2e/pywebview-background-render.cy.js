@@ -26,7 +26,7 @@ describe('Background Start Rendering', () => {
 
   describe('Normal Start (visible from beginning)', () => {
     beforeEach(() => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     });
 
     it('React root has children (not empty mount)', () => {
@@ -92,7 +92,7 @@ describe('Background Start Rendering', () => {
     //    but we can test the recovery mechanisms)
 
     beforeEach(() => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     });
 
     it('content renders after visibility change event', () => {
@@ -139,7 +139,7 @@ describe('Background Start Rendering', () => {
 
   describe('Hero Preloader Behavior', () => {
     it('hero shows while demo loads (returning user)', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       // Hero should be in DOM immediately
       cy.get('#hero-section', { timeout: 300000 }).should('exist');
@@ -154,7 +154,7 @@ describe('Background Start Rendering', () => {
     });
 
     it('demo section becomes active after hero fades', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait(8000); // Wait for hero→demo transition + safety margin
 
       cy.get('#demo-section').should(($demo) => {
@@ -166,7 +166,7 @@ describe('Background Start Rendering', () => {
     it('hero does not block forever (safety timeout)', () => {
       // Even if fetchPrompts fails, hero should fade within 7s
       // (5s safety timeout + 2s transition delay)
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait(8000);
 
       // Chat input should be available
@@ -182,7 +182,7 @@ describe('Background Start Rendering', () => {
     });
 
     it('shows LightYourHART onboarding (not hero or blank)', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       // Should show onboarding, not hero or chat
       cy.wait(3000);
@@ -196,7 +196,7 @@ describe('Background Start Rendering', () => {
 
   describe('Rapid Page Reload (mimics restart)', () => {
     it('content survives rapid reload', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait(2000);
       cy.reload();
       cy.wait(3000);
@@ -208,7 +208,7 @@ describe('Background Start Rendering', () => {
     });
 
     it('no blank flash on reload for returning user', () => {
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait(5000);
 
       // Capture content before reload

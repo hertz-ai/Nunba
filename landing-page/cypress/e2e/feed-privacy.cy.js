@@ -1187,7 +1187,7 @@ describe('Feed Privacy — Anonymous User', () => {
       body: {success: false, error: 'Authorization required'},
     }).as('authMeAnon');
 
-    cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -1233,7 +1233,7 @@ describe('Feed Privacy — Anonymous User', () => {
       body: {success: false, error: 'Authorization required'},
     }).as('authMeAnon');
 
-    cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -1255,7 +1255,7 @@ describe('Feed Privacy — Anonymous User', () => {
       body: {success: false, error: 'Authorization required'},
     }).as('authMeAnon');
 
-    cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
 
     // Page should render something (feed, login prompt, etc.)
@@ -1282,7 +1282,7 @@ describe('Feed Privacy — Anonymous User', () => {
       body: {success: false, error: 'Authorization required'},
     }).as('authMeAnon');
 
-    cy.visit(`/social/post/${hiddenPostId}`, {timeout: 120000, failOnStatusCode: false});
+    cy.visit(`/social/post/${hiddenPostId}`, {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 

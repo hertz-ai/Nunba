@@ -104,7 +104,7 @@ function setupCommonIntercepts() {
 // "/agents/Hevolve" is the specific agent URL and also renders Agent/Demopage.
 // ---------------------------------------------------------------------------
 function visitAgentPage(path = '/agents/Hevolve') {
-  cy.visit(path, {failOnStatusCode: false, timeout: 120000});
+  cy.visit(path, {failOnStatusCode: false, timeout: 60000});
   // Wait for the React app to mount -- use a DOM element check instead of
   // waiting on the cloud API intercept which may time out.
   cy.get('#root', {timeout: 300000}).should('exist');
@@ -988,7 +988,7 @@ describe('Authentication Flows E2E', () => {
       // Pre-populate localStorage via onBeforeLoad so it is set before the page loads
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'some-token');
           win.localStorage.setItem('user_id', 'encrypted-uid');
@@ -1043,7 +1043,7 @@ describe('Authentication Flows E2E', () => {
       // Simulate guest mode via onBeforeLoad
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'Clever.Amber.GuestUser');
@@ -1085,7 +1085,7 @@ describe('Authentication Flows E2E', () => {
       // Set up guest mode via onBeforeLoad then logout then do OTP login
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'Swift.Ruby.GuestBob');
@@ -1620,7 +1620,7 @@ describe('Authentication Flows E2E', () => {
       // Set up localStorage with a token that will expire soon
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'expiring-soon-token');
           win.localStorage.setItem('expire_token', '3'); // 3 seconds expiry
@@ -1654,7 +1654,7 @@ describe('Authentication Flows E2E', () => {
 
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'valid-token');
           win.localStorage.setItem('expire_token', '2');
@@ -1700,7 +1700,7 @@ describe('Authentication Flows E2E', () => {
       // Pre-populate all auth items
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'test-token');
           win.localStorage.setItem('user_id', 'encrypted-user-id');
@@ -1813,7 +1813,7 @@ describe('Authentication Flows E2E', () => {
     it('should redirect to login page after logout', () => {
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'test-token');
           win.localStorage.setItem('user_id', 'test-user');
@@ -1882,7 +1882,7 @@ describe('Authentication Flows E2E', () => {
     it('should enable chat input when authenticated', () => {
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'valid-token');
           win.localStorage.setItem('user_id', 'test-user');
@@ -1906,7 +1906,7 @@ describe('Authentication Flows E2E', () => {
     it('should show authenticated state when user has valid token', () => {
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
-        timeout: 120000,
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('access_token', 'valid-token');
           win.localStorage.setItem('user_id', 'encrypted-user-123');
@@ -1940,7 +1940,7 @@ describe('Authentication Flows E2E', () => {
       cy.clearLocalStorage();
 
       // Visit a protected route directly
-      cy.visit('/agents/Hevolve', {failOnStatusCode: false, timeout: 120000});
+      cy.visit('/agents/Hevolve', {failOnStatusCode: false, timeout: 60000});
       cy.get('#root', {timeout: 300000}).should('exist');
       cy.wait(2000);
 

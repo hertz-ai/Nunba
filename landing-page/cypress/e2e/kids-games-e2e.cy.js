@@ -100,7 +100,7 @@ function stubAll() {
 function visitKidsHub() {
   cy.visit('/social/kids', {
     failOnStatusCode: false,
-    timeout: 120000,
+    timeout: 60000,
     onBeforeLoad(win) {
       win.localStorage.setItem('access_token', FAKE_TOKEN);
     },

@@ -14,7 +14,7 @@ describe('Reduced Motion — CSS Global Override', () => {
     // Emulate prefers-reduced-motion: reduce
     // Cypress can set this via CSS or by injecting a style tag
     cy.visit('/', {
-      timeout: 120000,
+      timeout: 60000,
       onBeforeLoad(win) {
         // Override matchMedia to return reduced motion
         const originalMatchMedia = win.matchMedia.bind(win);
@@ -193,7 +193,7 @@ describe('Reduced Motion — Authenticated Pages', () => {
 describe('Reduced Motion — Chat Page', () => {
   it('should render chat page fully with reduced motion', () => {
     cy.visit('/local', {
-      timeout: 120000,
+      timeout: 60000,
       onBeforeLoad(win) {
         const originalMatchMedia = win.matchMedia?.bind(win);
         if (originalMatchMedia) {
@@ -241,7 +241,7 @@ describe('Reduced Motion — Chat Page', () => {
 
   it('should allow message sending with reduced motion', () => {
     cy.visit('/local', {
-      timeout: 120000,
+      timeout: 60000,
       onBeforeLoad(win) {
         const originalMatchMedia = win.matchMedia?.bind(win);
         if (originalMatchMedia) {
@@ -286,7 +286,7 @@ describe('Reduced Motion — Chat Page', () => {
 describe('Reduced Motion — Element Visibility', () => {
   it('should not have any elements stuck at opacity 0 or scale 0', () => {
     cy.visit('/', {
-      timeout: 120000,
+      timeout: 60000,
       onBeforeLoad(win) {
         const originalMatchMedia = win.matchMedia?.bind(win);
         if (originalMatchMedia) {

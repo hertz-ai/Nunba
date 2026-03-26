@@ -101,7 +101,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
 
       // The Demopage fires /api/llm/status once on mount
@@ -123,7 +123,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
@@ -149,7 +149,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
@@ -167,7 +167,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
@@ -218,7 +218,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
 
       // Wait for the status check + auto-setup call
@@ -261,7 +261,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait('@llmStatus', { timeout: 300000 });
       cy.wait(3000);
@@ -315,7 +315,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait('@llmStatus', { timeout: 300000 });
       cy.wait('@autoSetupFail', { timeout: 300000 });
@@ -343,7 +343,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait('@llmStatus', { timeout: 300000 });
       cy.wait(3000);
@@ -380,7 +380,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait('@autoSetup', { timeout: 300000 });
       cy.wait(2000);
@@ -410,7 +410,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(6000); // Wait for bootstrap polling (initial check at 4s)
 
@@ -453,7 +453,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait('@autoSetup', { timeout: 300000 });
       cy.wait(2000);
@@ -498,7 +498,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait('@autoSetup', { timeout: 300000 });
       cy.wait(2000);
@@ -528,7 +528,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
 
       cy.wait('@llmStatus', { timeout: 300000 }).then((interception) => {
@@ -555,7 +555,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait('@llmStatus', { timeout: 300000 });
       cy.wait(3000);
@@ -586,7 +586,7 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 

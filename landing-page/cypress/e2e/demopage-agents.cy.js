@@ -7,7 +7,7 @@ describe('Demopage - Agent Loading E2E', () => {
   });
 
   it('loads the demopage and fetches agents from backend', () => {
-    cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
     cy.wait('@getPrompts', {timeout: 300000}).then((interception) => {
       // Assert backend returned correct format
@@ -19,7 +19,7 @@ describe('Demopage - Agent Loading E2E', () => {
   });
 
   it('renders agent names from API response in the UI', () => {
-    cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
     cy.wait('@getPrompts', {timeout: 300000}).then((interception) => {
       const agentNames = interception.response.body.prompts.map((p) => p.name);
@@ -40,7 +40,7 @@ describe('Demopage - Agent Loading E2E', () => {
   });
 
   it('does NOT crash with .map error on prompts response', () => {
-    cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
     cy.wait('@getPrompts', {timeout: 300000});
     cy.wait(2000);
@@ -53,7 +53,7 @@ describe('Demopage - Agent Loading E2E', () => {
   });
 
   it('agent cards are interactive (buttons exist)', () => {
-    cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
     cy.wait('@getPrompts', {timeout: 300000});
     cy.wait(2000);

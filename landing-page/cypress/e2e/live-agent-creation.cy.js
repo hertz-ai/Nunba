@@ -42,7 +42,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
       body: {agent_type: 'local', agent_id: 'local_assistant', ...body},
       headers: {'Content-Type': 'application/json'},
       failOnStatusCode: false,
-      timeout: 120000,
+      timeout: 60000,
     });
   }
 
@@ -365,7 +365,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         .type('Hello, what can you do?{enter}', {force: true});
 
       // Wait for the live response (generous timeout for LLM)
-      cy.wait('@liveChat', {timeout: 120000}).then((interception) => {
+      cy.wait('@liveChat', {timeout: 60000}).then((interception) => {
         if (interception.response && interception.response.statusCode === 200) {
           expect(interception.response.body).to.have.property('text');
         }
@@ -382,7 +382,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         .type('Tell me about Nunba{enter}', {force: true});
 
       // The response should render as a message in the chat
-      cy.wait('@liveChat', {timeout: 120000});
+      cy.wait('@liveChat', {timeout: 60000});
       // Give React time to render
       cy.wait(2000);
       // There should be at least the user's message in the chat
@@ -400,7 +400,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
           force: true,
         });
 
-      cy.wait('@liveChat', {timeout: 120000}).then((interception) => {
+      cy.wait('@liveChat', {timeout: 60000}).then((interception) => {
         if (interception.response && interception.response.statusCode === 200) {
           const body = interception.response.body;
           expect(body).to.have.property('text').that.is.a('string');

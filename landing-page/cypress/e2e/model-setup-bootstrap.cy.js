@@ -7,7 +7,7 @@
 
 describe('Model Setup & Bootstrap', () => {
   beforeEach(() => {
-    cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
   });
 
   describe('Bootstrap API', () => {

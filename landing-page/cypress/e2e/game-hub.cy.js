@@ -212,7 +212,7 @@ function stubBackend(options = {}) {
 function visitGameHub() {
   cy.visit('/social/games', {
     failOnStatusCode: false,
-    timeout: 120000,
+    timeout: 60000,
     onBeforeLoad(win) {
       win.localStorage.setItem('access_token', FAKE_TOKEN);
     },
@@ -240,7 +240,7 @@ function visitGameScreen(gameId) {
 
   cy.visit(`/social/games/${gameId}`, {
     failOnStatusCode: false,
-    timeout: 120000,
+    timeout: 60000,
     onBeforeLoad(win) {
       win.localStorage.setItem('access_token', FAKE_TOKEN);
     },

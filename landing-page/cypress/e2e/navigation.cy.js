@@ -2,33 +2,33 @@
 
 describe('App Navigation E2E', () => {
   it('landing page loads and renders React app', () => {
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('#root div').should('have.length.greaterThan', 0);
   });
 
   it('navigates to demo page via hash route', () => {
-    cy.visit('/local', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
   });
 
   it('page title is set to Hevolve', () => {
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.title().should('contain', 'Hevolve');
   });
 
   it('page is responsive on mobile viewport', () => {
     cy.viewport(375, 667);
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root div').should('have.length.greaterThan', 0);
   });
 
   it('page works on tablet viewport', () => {
     cy.viewport(768, 1024);
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root div').should('have.length.greaterThan', 0);
   });
@@ -41,7 +41,7 @@ describe('App Navigation E2E', () => {
 
 describe('Navigation - Interactive Link Clicks', () => {
   it('should navigate to social feed when clicking social link', () => {
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -58,14 +58,14 @@ describe('Navigation - Interactive Link Clicks', () => {
         cy.url().should('include', '/social');
       } else {
         // Direct navigation test
-        cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+        cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
         cy.get('#root', {timeout: 300000}).should('exist');
       }
     });
   });
 
   it('should navigate back to home when clicking logo/brand', () => {
-    cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -85,7 +85,7 @@ describe('Navigation - Interactive Link Clicks', () => {
   });
 
   it('should navigate using navbar menu items', () => {
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -241,7 +241,7 @@ describe('Navigation - State Preservation', () => {
 
 describe('Navigation - Error Pages', () => {
   it('should show 404 page for non-existent route', () => {
-    cy.visit('/this-page-definitely-does-not-exist-12345', {timeout: 120000, 
+    cy.visit('/this-page-definitely-does-not-exist-12345', {timeout: 60000, 
       failOnStatusCode: false,
     });
     cy.get('#root', {timeout: 300000}).should('exist');
@@ -264,7 +264,7 @@ describe('Navigation - Error Pages', () => {
   });
 
   it('should handle invalid social route gracefully', () => {
-    cy.visit('/social/post/invalid-post-id-that-does-not-exist', {timeout: 120000, 
+    cy.visit('/social/post/invalid-post-id-that-does-not-exist', {timeout: 60000, 
       failOnStatusCode: false,
     });
     cy.get('#root', {timeout: 300000}).should('exist');
@@ -278,7 +278,7 @@ describe('Navigation - Error Pages', () => {
   });
 
   it('should handle invalid admin route gracefully', () => {
-    cy.visit('/admin/nonexistent-section', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/admin/nonexistent-section', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -469,7 +469,7 @@ describe('Navigation - History Management', () => {
 
 describe('Navigation - Loading States', () => {
   it('should show loading indicator during route transitions', () => {
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
 
     // Page should show content or loading
@@ -490,7 +490,7 @@ describe('Navigation - Loading States', () => {
   it('should complete loading within reasonable time', () => {
     const startTime = Date.now();
 
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
 
     // Page should load within 10 seconds
@@ -507,7 +507,7 @@ describe('Navigation - Loading States', () => {
 describe('Navigation - Responsive Behavior', () => {
   it('should show mobile navigation menu on small screens', () => {
     cy.viewport(375, 667);
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -537,7 +537,7 @@ describe('Navigation - Responsive Behavior', () => {
 
   it('should navigate correctly from mobile menu', () => {
     cy.viewport(375, 667);
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -570,7 +570,7 @@ describe('Navigation - Responsive Behavior', () => {
 
   it('should close mobile menu after navigation', () => {
     cy.viewport(375, 667);
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -599,7 +599,7 @@ describe('Navigation - Responsive Behavior', () => {
   });
 
   it('should adapt navigation layout on viewport resize', () => {
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(1000);
 
@@ -625,7 +625,7 @@ describe('Navigation - Authentication Redirects', () => {
     // Clear any existing auth
     cy.clearLocalStorage();
 
-    cy.visit('/admin', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/admin', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
@@ -663,7 +663,7 @@ describe('Navigation - Performance', () => {
     const pages = ['/social', '/social/search', '/social'];
 
     pages.forEach((page) => {
-      cy.visit(page, {timeout: 120000, failOnStatusCode: false});
+      cy.visit(page, {timeout: 60000, failOnStatusCode: false});
       cy.get('#root', {timeout: 300000}).should('exist');
       cy.wait(500);
     });
@@ -674,13 +674,13 @@ describe('Navigation - Performance', () => {
   });
 
   it('should handle rapid navigation without errors', () => {
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 300000}).should('exist');
 
     // Rapid navigation
-    cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
-    cy.visit('/', {timeout: 120000, failOnStatusCode: false});
-    cy.visit('/social', {timeout: 120000, failOnStatusCode: false});
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.wait(1000);
 
     // Should settle on final page

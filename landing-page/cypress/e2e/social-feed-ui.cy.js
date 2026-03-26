@@ -1546,7 +1546,7 @@ describe('Social Feed UI - Full Auth Flow', () => {
     expect(token).to.not.be.undefined;
 
     cy.visit('/social', {
-      timeout: 120000,
+      timeout: 60000,
       onBeforeLoad(win) {
         win.localStorage.setItem('access_token', token);
       },
