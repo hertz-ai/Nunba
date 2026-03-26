@@ -5645,9 +5645,15 @@ window.addEventListener('unhandledrejection', function(e) {
             try:
                 logger.info(f"Starting webview with EdgeChromium backend, storage: {_webview_data_dir}")
                 webview.start(gui='edgechromium', storage_path=_webview_data_dir, private_mode=False)
-                logger.info("Successfully started with EdgeChromium backend")
+                try:
+                    logger.info("Successfully started with EdgeChromium backend")
+                except ValueError:
+                    pass  # Log file closed during teardown — harmless
             except Exception as e:
-                logger.error(f"EdgeChromium backend failed: {str(e)}")
+                try:
+                    logger.error(f"EdgeChromium backend failed: {str(e)}")
+                except ValueError:
+                    pass  # Log file closed during teardown — harmless
                 # Show error message to user
                 try:
                     import ctypes
@@ -6247,13 +6253,22 @@ if __name__ == "__main__":
         logger.info("Calling main() function...")
         main()
 
-        logger.info("=== main() FUNCTION COMPLETED ===")
+        try:
+            logger.info("=== main() FUNCTION COMPLETED ===")
+        except ValueError:
+            pass  # Log file closed during teardown — harmless
 
     except KeyboardInterrupt:
-        logger.info("Application interrupted by user")
+        try:
+            logger.info("Application interrupted by user")
+        except ValueError:
+            pass
         sys.exit(0)
     except SystemExit as e:
-        logger.info(f"Application exited with code: {e.code}")
+        try:
+            logger.info(f"Application exited with code: {e.code}")
+        except ValueError:
+            pass
         sys.exit(e.code)
     except Exception as e:
         logger.error(f"=== APPLICATION CRASHED ===")
