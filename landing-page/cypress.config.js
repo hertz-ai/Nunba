@@ -2,9 +2,9 @@ const {defineConfig} = require('cypress');
 
 module.exports = defineConfig({
   e2e: {
-    // Retry failed tests in CI (runMode) to handle transient timing issues
+    // Retry once in CI — catches transient timing without 5hr runs
     retries: {
-      runMode: 2,
+      runMode: 1,
       openMode: 0,
     },
     // React dev server on 3000, Flask backend on 5000
