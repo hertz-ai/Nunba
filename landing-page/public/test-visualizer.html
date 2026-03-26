@@ -37,6 +37,8 @@ var freqData = null;
 
 var bass = 0, mid = 0, treble = 0;
 var bassCur = 0, midCur = 0, trebleCur = 0;
+var dir = 1; // flips on natural speech pauses
+var wasQuiet = false; // tracks if we were in a quiet zone
 
 function connectAudio() {
   if (source) return;
@@ -94,6 +96,12 @@ function render() {
   trebleCur += (treble - trebleCur) * 0.08;
   var energy = bassCur * 0.5 + midCur * 0.35 + trebleCur * 0.15;
 
+  // Flip wave direction on natural speech pauses
+  if (isPlaying) {
+    if (energy < 0.03) { wasQuiet = true; }
+    else if (wasQuiet && energy > 0.08) { wasQuiet = false; dir = -dir; }
+  }
+
   ctx.fillStyle = '#0A0914';
   ctx.fillRect(0, 0, W, H);
 
@@ -109,13 +117,14 @@ function render() {
   // Compute outer ring radius — ALWAYS >= baseR (peaks only go outward)
   for (var i = 0; i <= PTS; i++) {
     var a = (i / PTS) * Math.PI * 2;
+    var d = dir;
     var wave =
-      bassCur   * 55 * Math.sin(2 * a + time * 1.5) +
-      bassCur   * 32 * Math.sin(3 * a - time * 0.8) +
-      midCur    * 40 * Math.sin(4 * a + time * 2.2) +
-      midCur    * 24 * Math.sin(6 * a - time * 1.3) +
-      trebleCur * 28 * Math.sin(8 * a + time * 3.0) +
-      trebleCur * 16 * Math.sin(11 * a - time * 1.8);
+      bassCur   * 55 * Math.sin(2 * a + time * 1.5 * d) +
+      bassCur   * 32 * Math.sin(3 * a - time * 0.8 * d) +
+      midCur    * 40 * Math.sin(4 * a + time * 2.2 * d) +
+      midCur    * 24 * Math.sin(6 * a - time * 1.3 * d) +
+      trebleCur * 28 * Math.sin(8 * a + time * 3.0 * d) +
+      trebleCur * 16 * Math.sin(11 * a - time * 1.8 * d);
 
     // Smooth rectifier: wave² / (|wave| + softness) — no sharp V at zero crossings
     // Peaks stay tall, troughs become gentle hills instead of sharp folds

@@ -19,7 +19,7 @@ var VoiceVisualizer = function({ audioRef, isActive, size, style }) {
   var analyserRef = useRef(null);
   var sourceRef = useRef(null);
   var audioCtxRef = useRef(null);
-  var stateRef = useRef({ bass: 0, mid: 0, treble: 0, bassCur: 0, midCur: 0, trebleCur: 0, time: 0 });
+  var stateRef = useRef({ bass: 0, mid: 0, treble: 0, bassCur: 0, midCur: 0, trebleCur: 0, time: 0, dir: 1, wasQuiet: false });
   var outerR = useRef(new Float32Array(PTS + 1));
 
   var connectAnalyser = useCallback(function() {
@@ -75,7 +75,15 @@ var VoiceVisualizer = function({ audioRef, isActive, size, style }) {
       s.midCur += (s.mid - s.midCur) * 0.10;
       s.trebleCur += (s.treble - s.trebleCur) * 0.08;
       var energy = s.bassCur * 0.5 + s.midCur * 0.35 + s.trebleCur * 0.15;
+
+      // Flip wave direction on natural speech pauses
+      if (isActive) {
+        if (energy < 0.03) { s.wasQuiet = true; }
+        else if (s.wasQuiet && energy > 0.08) { s.wasQuiet = false; s.dir = -s.dir; }
+      }
+
       var t = s.time;
+      var d = s.dir;
 
       ctx.fillStyle = '#0A0914';
       ctx.fillRect(0, 0, W, H);
@@ -92,12 +100,12 @@ var VoiceVisualizer = function({ audioRef, isActive, size, style }) {
       for (var i = 0; i <= PTS; i++) {
         var a = (i / PTS) * Math.PI * 2;
         var wave =
-          s.bassCur * 55 * Math.sin(2 * a + t * 1.5) +
-          s.bassCur * 32 * Math.sin(3 * a - t * 0.8) +
-          s.midCur * 40 * Math.sin(4 * a + t * 2.2) +
-          s.midCur * 24 * Math.sin(6 * a - t * 1.3) +
-          s.trebleCur * 28 * Math.sin(8 * a + t * 3.0) +
-          s.trebleCur * 16 * Math.sin(11 * a - t * 1.8);
+          s.bassCur * 55 * Math.sin(2 * a + t * 1.5 * d) +
+          s.bassCur * 32 * Math.sin(3 * a - t * 0.8 * d) +
+          s.midCur * 40 * Math.sin(4 * a + t * 2.2 * d) +
+          s.midCur * 24 * Math.sin(6 * a - t * 1.3 * d) +
+          s.trebleCur * 28 * Math.sin(8 * a + t * 3.0 * d) +
+          s.trebleCur * 16 * Math.sin(11 * a - t * 1.8 * d);
         var soft = 8;
         var rectified = (wave * wave) / (Math.abs(wave) + soft);
         // Scale amplitude relative to canvas size
