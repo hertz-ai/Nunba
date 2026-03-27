@@ -116,9 +116,13 @@ jobs:
             fi
           done
 
-          # Verify critical imports
-          python -c "import hart_intelligence; print('hart_intelligence OK')" 2>/dev/null || echo "WARN: hart_intelligence not importable"
-          python -c "import hevolveai; print('hevolveai OK')" 2>/dev/null || echo "WARN: hevolveai not importable"
+          # Hevolve_Database has no setup.py — add to path directly
+          if [ -d "../Hevolve_Database/sql" ]; then
+            SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
+            echo "$(cd ../Hevolve_Database && pwd)" > "$SITE_PKG/hevolve_database.pth"
+            echo "Added Hevolve_Database to Python path via .pth"
+          fi
+          python -c "import sql; print('sql OK')" 2>/dev/null || echo "WARN: sql not importable"
         continue-on-error: true
 
       - name: Build Nunba app (cx_Freeze + slim)
@@ -276,6 +280,11 @@ jobs:
               pip install --no-deps -e "$dep_dir" 2>&1 | tail -2
             fi
           done
+          if [ -d "../Hevolve_Database/sql" ]; then
+            SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
+            echo "$(cd ../Hevolve_Database && pwd)" > "$SITE_PKG/hevolve_database.pth"
+            echo "Added Hevolve_Database to Python path via .pth"
+          fi
         continue-on-error: true
 
       - name: Build Nunba
@@ -425,6 +434,15 @@ jobs:
               ls -la "$dep_dir/" 2>&1 | head -5
             fi
           done
+
+          # Hevolve_Database has no setup.py in the repo — add it to Python path directly
+          if [ -d "../Hevolve_Database/sql" ]; then
+            echo "Adding Hevolve_Database to PYTHONPATH (no setup.py in repo)"
+            export PYTHONPATH="../Hevolve_Database:$PYTHONPATH"
+            # Also create a .pth file so cx_Freeze can trace it
+            SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
+            echo "$(realpath ../Hevolve_Database)" > "$SITE_PKG/hevolve_database.pth"
+          fi
 
           echo "=== Verify imports ==="
           python -c "import sql; print('sql OK:', sql.__file__)" 2>&1 || echo "WARN: sql not importable"
