@@ -182,7 +182,13 @@ def activate_venv():
     - No --user fallback (venv site-packages is always writable)
     - No user site-packages leaking into the build
     - Reproducible builds regardless of host Python environment
+
+    On CI (NUNBA_CI=1), skip venv — deps are pre-installed by the workflow.
     """
+    if os.environ.get('NUNBA_CI'):
+        print_info("CI mode — using system Python (deps pre-installed by workflow)")
+        return sys.executable
+
     venv_dir = '.venv'
     venv_paths = ['.venv', 'venv']
 

@@ -117,6 +117,7 @@ jobs:
         run: python scripts/build.py app --skip-wizard
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NUNBA_CI: '1'
 
       - name: Sign Nunba.exe (Azure Trusted Signing)
         if: ${{ !inputs.skip_signing }}
@@ -265,6 +266,7 @@ jobs:
         run: python scripts/build.py full --skip-wizard
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NUNBA_CI: '1'
 
       - name: Import Apple signing certificate
         if: ${{ !inputs.skip_signing }}
@@ -398,6 +400,7 @@ jobs:
         run: python scripts/build.py app --skip-wizard
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NUNBA_CI: '1'
 
       - name: E2E smoke test (start server, hit health endpoint)
         run: |
