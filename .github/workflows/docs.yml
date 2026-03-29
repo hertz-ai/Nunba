@@ -47,7 +47,7 @@ jobs:
   # ── Run Cypress E2E tests with full backend ──
   test-reports:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 

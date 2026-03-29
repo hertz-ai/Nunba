@@ -2092,6 +2092,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
+    // STT: use hart_language as a HINT for browser Speech API,
+    // but user can speak any language — Whisper auto-detects on server.
+    // Browser API needs a BCP-47 hint for best results but handles
+    // mixed language (code-switching) reasonably well.
     const _hartLang = localStorage.getItem('hart_language') || 'en';
     recognition.lang = _sttLangMap[_hartLang] || _hartLang;
 
@@ -2451,7 +2455,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       teacher_avatar_id: agentData?.teacher_avatar_id || null,
       conversation_id: conversationId,
       request_id: generatedRequestId,
-      prompt_id: currentAgent?.prompt_id || null,
+      prompt_id: currentAgent?.prompt_id ?? 0,
       bot_type: currentAgent?.name || '',
       create_agent: currentAgent?.create_agent || false,
       autonomous_creation: currentAgent?.autonomous_creation || false,
@@ -2521,7 +2525,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               agent_type: currentAgent?.type || 'local',
               conversation_id: conversationId,
               video_req: false,
-              prompt_id: currentAgent?.prompt_id || null,
+              prompt_id: currentAgent?.prompt_id ?? 0,
               create_agent: currentAgent?.create_agent || false,
               autonomous_creation: currentAgent?.autonomous_creation || false,
               image_url: userImage || null,
@@ -3359,6 +3363,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         />
 
         <div className="flex flex-col min-h-screen bg-black w-full">
+          {/* VoiceVisualizer — outside layout columns so never clipped */}
+          {audioUrl && !videoUrl && (
+            <div className="fixed bottom-24 right-4 z-50">
+              <VoiceVisualizer audioRef={audioRef} isActive={isPlayingResponse} size={120} />
+            </div>
+          )}
           <div className="w-full flex flex-col md:flex-row-reverse flex-1">
             {/* Chat/Messages section - Now on the left for wider screens */}
 
@@ -3394,22 +3404,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                           onError={handleVideoError}
                         />
                       ) : audioUrl ? (
-                        <div className="fixed bottom-24 right-4 z-50 flex flex-col items-center">
-                          <VoiceVisualizer
-                            audioRef={audioRef}
-                            isActive={isPlayingResponse}
-                            size={120}
-                          />
-                          <audio
-                            ref={audioRef}
-                            src={audioUrl}
-                            autoPlay
-                            controlsList="nodownload noplaybackrate"
-                            controls={false}
-                            onLoadedMetadata={handleLoadedMetadataaudio}
-                            onEnded={handleMediaEnded}
-                          />
-                        </div>
+                        <audio
+                          ref={audioRef}
+                          src={audioUrl}
+                          autoPlay
+                          controlsList="nodownload noplaybackrate"
+                          controls={false}
+                          onLoadedMetadata={handleLoadedMetadataaudio}
+                          onEnded={handleMediaEnded}
+                          style={{display: 'none'}}
+                        />
                       ) : null}
                     </>
                   ) : (
@@ -3535,7 +3539,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                       </div>
                     </div>
                   )}
-                  <div className="h-5/6 flex items-center justify-center">
+                  <div className="fixed inset-0 flex items-center justify-center pointer-events-none" style={{zIndex: 1}}>
+                   <div className="pointer-events-auto">
                     {agentsLoading ? (
                       /* ── Loading skeleton while agents are being fetched ── */
                       <div className="text-center space-y-4 mb-1 w-full max-w-lg px-4">
@@ -3569,7 +3574,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                         )}
                       </div>
                     ) : (
-                    <div className="text-center space-y-4 mb-1">
+                    <div className="text-center space-y-4 mb-1 w-full max-w-2xl mx-auto px-4">
                       {/* Backend offline warning — only when no path forward (local_only or no internet) */}
                       {backendHealth === 'offline' && allAgents.length === 0 && (intelligencePreference === 'local_only' || !navigator.onLine) && (
                         <div className="flex items-center justify-center gap-2 mb-4 px-4 py-2 rounded-lg text-sm"
@@ -3675,6 +3680,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                       )}
                     </div>
                     )}
+                   </div>
                   </div>
                 </>
               ) : (

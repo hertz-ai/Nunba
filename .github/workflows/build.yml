@@ -50,6 +50,14 @@ jobs:
           token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
         continue-on-error: true
 
+      - name: Checkout Hevolve_Database
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/Hevolve_Database
+          path: _deps/Hevolve_Database
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
+        continue-on-error: true
+
       - name: Link sibling repos
         shell: bash
         run: |
@@ -59,11 +67,11 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             cmd //c "mklink /J \"$(cygpath -w ../HARTOS)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/HARTOS)\"" 2>/dev/null || true
             cmd //c "mklink /J \"$(cygpath -w ../hevolveai)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/hevolveai)\"" 2>/dev/null || true
-            cmd //c "mklink /J \"$(cygpath -w ../Hevolve_Database)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/HARTOS)\"" 2>/dev/null || true
+            cmd //c "mklink /J \"$(cygpath -w ../Hevolve_Database)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/Hevolve_Database)\"" 2>/dev/null || true
           else
             ln -sf "$GITHUB_WORKSPACE/_deps/HARTOS" ../HARTOS || true
             ln -sf "$GITHUB_WORKSPACE/_deps/hevolveai" ../hevolveai || true
-            ln -sf "$GITHUB_WORKSPACE/_deps/HARTOS" ../Hevolve_Database || true
+            ln -sf "$GITHUB_WORKSPACE/_deps/Hevolve_Database" ../Hevolve_Database || true
           fi
           ls -la ../HARTOS/pyproject.toml ../hevolveai/ 2>/dev/null || echo "Some sibling repos not available"
 
@@ -94,10 +102,34 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      - name: Install Python dependencies + sibling repos
+        shell: bash
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt 2>&1 | tail -5
+
+          # Install sibling deps in order: Hevolve_Database → hevolveai → HARTOS
+          for dep_dir in ../Hevolve_Database ../hevolveai ../HARTOS; do
+            if [ -f "$dep_dir/pyproject.toml" ] || [ -f "$dep_dir/setup.py" ]; then
+              echo "Installing $(basename $dep_dir) from source..."
+              pip install --no-deps -e "$dep_dir" 2>&1 | tail -2
+            fi
+          done
+
+          # Hevolve_Database has no setup.py — add to path directly
+          if [ -d "../Hevolve_Database/sql" ]; then
+            SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
+            echo "$(cd ../Hevolve_Database && pwd)" > "$SITE_PKG/hevolve_database.pth"
+            echo "Added Hevolve_Database to Python path via .pth"
+          fi
+          python -c "import sql; print('sql OK')" 2>/dev/null || echo "WARN: sql not importable"
+        continue-on-error: true
+
       - name: Build Nunba app (cx_Freeze + slim)
         run: python scripts/build.py app --skip-wizard
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NUNBA_CI: '1'
 
       - name: Sign Nunba.exe (Azure Trusted Signing)
         if: ${{ !inputs.skip_signing }}
@@ -198,10 +230,18 @@ jobs:
           token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
         continue-on-error: true
 
+      - name: Checkout Hevolve_Database
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/Hevolve_Database
+          path: _deps/Hevolve_Database
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
+        continue-on-error: true
       - name: Symlink sibling repos
         run: |
           ln -s "$GITHUB_WORKSPACE/_deps/HARTOS" ../HARTOS || true
           ln -s "$GITHUB_WORKSPACE/_deps/hevolveai" ../hevolveai || true
+          ln -sf "$GITHUB_WORKSPACE/_deps/Hevolve_Database" ../Hevolve_Database || true
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
@@ -230,10 +270,28 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
+      - name: Install Python dependencies + sibling repos
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt 2>&1 | tail -5
+          for dep_dir in ../Hevolve_Database ../hevolveai ../HARTOS; do
+            if [ -f "$dep_dir/pyproject.toml" ] || [ -f "$dep_dir/setup.py" ]; then
+              echo "Installing $(basename $dep_dir) from source..."
+              pip install --no-deps -e "$dep_dir" 2>&1 | tail -2
+            fi
+          done
+          if [ -d "../Hevolve_Database/sql" ]; then
+            SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
+            echo "$(cd ../Hevolve_Database && pwd)" > "$SITE_PKG/hevolve_database.pth"
+            echo "Added Hevolve_Database to Python path via .pth"
+          fi
+        continue-on-error: true
+
       - name: Build Nunba
         run: python scripts/build.py full --skip-wizard
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NUNBA_CI: '1'
 
       - name: Import Apple signing certificate
         if: ${{ !inputs.skip_signing }}
@@ -317,11 +375,19 @@ jobs:
           token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
         continue-on-error: true
 
+      - name: Checkout Hevolve_Database
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/Hevolve_Database
+          path: _deps/Hevolve_Database
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
+        continue-on-error: true
       - name: Symlink sibling repos
         run: |
           ln -s "$GITHUB_WORKSPACE/_deps/HARTOS" ../HARTOS || true
           ln -s "$GITHUB_WORKSPACE/_deps/hevolveai" ../hevolveai || true
 
+          ln -sf "$GITHUB_WORKSPACE/_deps/Hevolve_Database" ../Hevolve_Database || true
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
@@ -351,10 +417,44 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libfuse2 desktop-file-utils
 
+      - name: Install Python dependencies + sibling repos
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt 2>&1 | tail -5
+
+          echo "=== Checking sibling repos ==="
+          ls -la ../Hevolve_Database/ ../hevolveai/ ../HARTOS/ 2>&1 | head -20
+          echo "=== Installing sibling deps ==="
+          for dep_dir in ../Hevolve_Database ../hevolveai ../HARTOS; do
+            if [ -f "$dep_dir/pyproject.toml" ] || [ -f "$dep_dir/setup.py" ]; then
+              echo "Installing $(basename $dep_dir) from $dep_dir..."
+              pip install --no-deps -e "$dep_dir" 2>&1 | tail -3
+            else
+              echo "SKIP $dep_dir — no pyproject.toml or setup.py found"
+              ls -la "$dep_dir/" 2>&1 | head -5
+            fi
+          done
+
+          # Hevolve_Database has no setup.py in the repo — add it to Python path directly
+          if [ -d "../Hevolve_Database/sql" ]; then
+            echo "Adding Hevolve_Database to PYTHONPATH (no setup.py in repo)"
+            export PYTHONPATH="../Hevolve_Database:$PYTHONPATH"
+            # Also create a .pth file so cx_Freeze can trace it
+            SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
+            echo "$(realpath ../Hevolve_Database)" > "$SITE_PKG/hevolve_database.pth"
+          fi
+
+          echo "=== Verify imports ==="
+          python -c "import sql; print('sql OK:', sql.__file__)" 2>&1 || echo "WARN: sql not importable"
+          python -c "import hevolveai; print('hevolveai OK')" 2>&1 || echo "WARN: hevolveai not importable"
+          python -c "import hart_intelligence; print('hart_intelligence OK')" 2>&1 || echo "WARN: hart_intelligence not importable"
+        continue-on-error: true
+
       - name: Build Nunba app (cx_Freeze)
         run: python scripts/build.py app --skip-wizard
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NUNBA_CI: '1'
 
       - name: E2E smoke test (start server, hit health endpoint)
         run: |

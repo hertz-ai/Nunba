@@ -5692,35 +5692,38 @@ window.addEventListener('unhandledrejection', function(e) {
 
         logger.info("Event handlers connected directly")
 
-        # Set up connectivity monitor (detects offline→local, online→cloud transitions)
-        setup_connectivity_monitor(_window, args.port)
-
-        # Apply window theme
-        if sys.platform == "win32":
-            set_window_theme_attribute(_window)
-            apply_dark_mode_to_all_windows()
-
-        # Monitor thread
-        monitor_thread = threading.Thread(target=lambda: monitor_tray_loop(), daemon=True)
-        monitor_thread.start()
-
-        # Close splash screen — main window is about to appear
-        _splash_update('Hevolve Hive Agent Runtime Ready')
+        # ── Pre-webview setup — MUST NOT crash or webview.start() never runs ──
+        # Wrap each step in try/except so a failure in theme/splash/tray
+        # doesn't prevent the webview from starting (black screen bug).
         try:
-            time.sleep(0.5)  # Brief flash so user reads the message
+            setup_connectivity_monitor(_window, args.port)
+        except Exception as _e:
+            logger.warning(f"[STARTUP] Connectivity monitor failed (non-fatal): {_e}")
+
+        try:
+            if sys.platform == "win32":
+                set_window_theme_attribute(_window)
+                apply_dark_mode_to_all_windows()
+        except Exception as _e:
+            logger.warning(f"[STARTUP] Window theme failed (non-fatal): {_e}")
+
+        try:
+            monitor_thread = threading.Thread(target=lambda: monitor_tray_loop(), daemon=True)
+            monitor_thread.start()
+        except Exception as _e:
+            logger.warning(f"[STARTUP] Monitor thread failed (non-fatal): {_e}")
+
+        try:
+            _splash_update('Hevolve Hive Agent Runtime Ready')
+            time.sleep(0.5)
             _close_splash()
         except Exception:
             pass
 
-        # Bring webview to foreground after it renders — the topmost splash
-        # just closed, so OS may focus whatever was behind it.
-        # Must happen AFTER webview.start() begins, so use the loaded event.
         if not start_hidden and _window and sys.platform == 'win32':
             def _bring_to_front():
-                """Bring window to foreground once webview has loaded."""
-                time.sleep(1)  # let webview render first frame
+                time.sleep(1)
                 try:
-                    # Use Win32 API directly — pywebview's show() can't force focus
                     hwnd = ctypes.windll.user32.FindWindowW(None, args.title)
                     if hwnd:
                         ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -5730,18 +5733,20 @@ window.addEventListener('unhandledrejection', function(e) {
             _window.events.loaded += lambda: threading.Thread(
                 target=_bring_to_front, daemon=True).start()
 
-        # Notify user via system tray when started in background (Windows auto-start)
         if start_hidden and _tray_icon:
             def _bg_tray_notify():
-                time.sleep(2)  # let tray icon fully initialize
-                notify_minimized_to_tray(
-                    _tray_icon,
-                    "Nunba is running in the background. Click the tray icon to open."
-                )
+                time.sleep(2)
+                try:
+                    notify_minimized_to_tray(
+                        _tray_icon,
+                        "Nunba is running in the background. Click the tray icon to open."
+                    )
+                except Exception:
+                    pass
             threading.Thread(target=_bg_tray_notify, daemon=True).start()
 
-        # Start webview
-        _startup_phase = 'running'  # Watchdog stops monitoring
+        # ── Start webview — THIS MUST ALWAYS BE REACHED ──
+        _startup_phase = 'running'
         logger.info("Starting webview")
 
         # Persistent storage path for WebView2 (localStorage, cookies, cache).

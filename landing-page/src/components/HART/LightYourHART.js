@@ -1159,9 +1159,9 @@ export default function LightYourHART({userId, onComplete}) {
           style={{position: 'absolute', inset: 0, zIndex: 0}}
         />
 
-        {/* Voice visualizer — always alive, reacts when HART speaks */}
-        <Box sx={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 1 }}>
-          <VoiceVisualizer audioRef={hartAudioRef} isActive={hartSpeaking} size={160} />
+        {/* Voice visualizer — behind content, subtle ambient presence */}
+        <Box sx={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 0, opacity: 0.6 }}>
+          <VoiceVisualizer audioRef={hartAudioRef} isActive={hartSpeaking} size={100} />
         </Box>
 
         {/* Reveal flash — subtle white bloom at THE moment */}

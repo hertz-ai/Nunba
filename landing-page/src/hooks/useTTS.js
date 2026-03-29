@@ -305,8 +305,10 @@ export function useTTS(options = {}) {
       const serverOk = serverAvailableRef.current;
       const browserOk = pocketTTSRef.current?.isReady;
 
-      // Pocket TTS is English-only — non-English text must use server TTS
-      const isEnglish = _isLikelyEnglish(trimmed);
+      // Pocket TTS is English-only — non-English must use server TTS (GPU engine)
+      // Check both text content AND user's preferred language
+      const preferredLang = localStorage.getItem('hart_language') || 'en';
+      const isEnglish = _isLikelyEnglish(trimmed) && preferredLang === 'en';
       const canUseBrowser = browserOk && isEnglish;
 
       // Browser TTS available → non-blocking fire-and-forget (no await)
@@ -333,6 +335,9 @@ export function useTTS(options = {}) {
     async (text, opts) => {
       setIsLoading(true);
       try {
+        // Send preferred language so server routes to correct GPU engine
+        // (Tamil→Indic Parler, Japanese→CosyVoice3, English→Chatterbox Turbo)
+        const lang = opts.language || localStorage.getItem('hart_language') || 'en';
         const resp = await fetch(`${TTS_API_BASE}/synthesize`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -340,6 +345,7 @@ export function useTTS(options = {}) {
             text,
             voice_id: opts.voiceId || currentVoice,
             speed: opts.speed || speed,
+            language: lang,
           }),
         });
         if (!resp.ok) throw new Error('Server TTS failed');
@@ -428,7 +434,8 @@ export function useTTS(options = {}) {
         svc.speak(trimmed, opts.browserVoice);
       } else {
         // Server TTS — no position tracking, just estimate-based timing
-        speak(trimmed, opts);
+        // Pass language so server routes to correct GPU engine
+        speak(trimmed, { ...opts, language: localStorage.getItem('hart_language') || 'en' });
       }
 
       return {

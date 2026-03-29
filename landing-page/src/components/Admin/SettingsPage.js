@@ -1531,6 +1531,43 @@ export default function SettingsPage() {
                         Check Status
                       </Button>
                     </Box>
+
+                    {/* ── HART Identity Reset ── */}
+                    <Box sx={{mt: 4, pt: 3, borderTop: '1px solid rgba(255,255,255,0.08)'}}>
+                      <Box sx={{display: 'flex', alignItems: 'center', gap: 1.5, mb: 1}}>
+                        <Typography variant="h6" sx={{color: '#fff', fontWeight: 600, fontSize: 15}}>
+                          HART Identity
+                        </Typography>
+                      </Box>
+                      <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.5)', mb: 2}}>
+                        Your HART name: <strong style={{color: '#6C63FF'}}>{localStorage.getItem('hart_name') || 'Not set'}</strong>
+                        {localStorage.getItem('hart_language') && (
+                          <> &middot; Language: <strong style={{color: '#6C63FF'}}>{localStorage.getItem('hart_language')}</strong></>
+                        )}
+                      </Typography>
+                      <Button
+                        variant="outlined"
+                        color="error"
+                        size="small"
+                        onClick={() => {
+                          if (window.confirm('Reset your HART name? You will go through the naming ceremony again.')) {
+                            localStorage.removeItem('hart_sealed');
+                            localStorage.removeItem('hart_name');
+                            localStorage.removeItem('hart_emoji');
+                            localStorage.removeItem('hart_language');
+                            window.location.href = '/local';
+                          }
+                        }}
+                        sx={{
+                          borderColor: 'rgba(244,67,54,0.3)',
+                          color: '#f44336',
+                          textTransform: 'none',
+                          '&:hover': { borderColor: '#f44336', bgcolor: 'rgba(244,67,54,0.08)' },
+                        }}
+                      >
+                        Reset HART Name
+                      </Button>
+                    </Box>
                   </CardContent>
                 </Card>
               </Grow>

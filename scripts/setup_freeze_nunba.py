@@ -126,7 +126,7 @@ for _sib_dir, _pkg_name in _sibling_editable_deps:
     print(f"Auto-installing {_pkg_name} from {_sib_path}...")
     _result = _sp.run(
         [sys.executable, '-m', 'pip', 'install', '-e', _sib_path, '--no-deps', '--quiet'],
-        capture_output=True, text=True, timeout=60)
+        capture_output=True, text=True, timeout=300)
     if _result.returncode != 0:
         # Retry once after aggressive build cleanup
         print(f"  Retry: cleaning build artifacts and reinstalling {_pkg_name}...")
@@ -136,7 +136,7 @@ for _sib_dir, _pkg_name in _sibling_editable_deps:
                 shutil.rmtree(_stale_path, ignore_errors=True)
         _result = _sp.run(
             [sys.executable, '-m', 'pip', 'install', '-e', _sib_path, '--no-deps', '--quiet'],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, timeout=300)
         if _result.returncode != 0:
             print(f"  WARNING: {_pkg_name} install failed: {_result.stderr.strip()}")
 print("Sibling deps verified")
