@@ -1048,12 +1048,15 @@ export default function LightYourHART({ userId, onComplete }) {
       await _sleep(2000);
       if (cancelled) return;
 
-      // Post-reveal
-      setPhase('post_reveal');
+      // Post-reveal — speak BEFORE changing phase to avoid effect cleanup
+      // killing the audio (setPhase triggers re-render → cleanup → stop())
       const postText = _getLine('post_reveal', language);
       setPaText(postText);
       await speak('post_reveal', postText);
-      await _sleep(4000);
+      await _sleep(2000);
+      if (cancelled) return;
+      setPhase('post_reveal');
+      await _sleep(2000);
 
       // Seal via API — retry with candidates if name was taken (race condition)
       let sealedName = hartName;

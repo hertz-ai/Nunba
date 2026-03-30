@@ -3447,7 +3447,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         />
 
         <div className="flex flex-col min-h-screen bg-black w-full">
-          {/* VoiceVisualizer removed from corner — now lives in the media column */}
+          {/* VoiceVisualizer removed from here — lives in the media column */}
           <div className="w-full flex flex-col md:flex-row-reverse flex-1">
             {/* Chat/Messages section - Now on the left for wider screens */}
 
@@ -3459,6 +3459,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               } ${
                 window.innerWidth <= 768 ? (isTextMode ? '' : (videoUrl || mediaMode === 'audio' ? 'h-[35vh] mb-4' : '')) : ''
               } flex justify-center items-center transition-all duration-300`}
+              style={{ overflow: 'visible' }}
             >
               {!isTextMode && (
                 <>
@@ -3484,7 +3485,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                         />
                       ) : mediaMode === 'audio' ? (
                         <>
-                          {/* Hidden audio element for playback */}
                           {audioUrl && (
                             <audio
                               ref={audioRef}
@@ -3497,14 +3497,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                               style={{display: 'none'}}
                             />
                           )}
-                          {/* VoiceVisualizer — centered in media column */}
-                          <div className="flex justify-center items-center w-full h-full">
-                            <VoiceVisualizer
-                              audioRef={audioRef}
-                              isActive={isPlayingResponse || tts.isSpeaking}
-                              size={window.innerWidth <= 768 ? 200 : 280}
-                            />
-                          </div>
+                          <VoiceVisualizer
+                            audioRef={audioRef}
+                            isActive={isPlayingResponse || tts.isSpeaking}
+                            size={window.innerWidth <= 768 ? 180 : Math.min(window.innerWidth * 0.25, 250)}
+                          />
                         </>
                       ) : null}
                     </>

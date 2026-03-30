@@ -111,8 +111,7 @@ var VoiceVisualizer = function({ audioRef, isActive, size, style }) {
       var t = s.time;
       var d = s.dir;
 
-      ctx.fillStyle = '#0A0914';
-      ctx.fillRect(0, 0, W, H);
+      ctx.clearRect(0, 0, W, H);
 
       // Background glow
       var bg = ctx.createRadialGradient(cx, cy, baseR - 10, cx, cy, baseR + 70);
@@ -219,18 +218,19 @@ var VoiceVisualizer = function({ audioRef, isActive, size, style }) {
 
   return React.createElement('div', {
     style: Object.assign({
-      width: size, height: size, position: 'relative',
+      width: size, height: size + 20, position: 'relative',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flexDirection: 'column',
     }, style || {}),
   },
     React.createElement('canvas', {
       ref: canvasRef,
       width: size * 2, height: size * 2,
-      style: { width: size, height: size, borderRadius: '50%' },
+      style: { width: size, height: size },
     }),
     isActive ? React.createElement('div', {
       style: {
-        position: 'absolute', bottom: -14, left: '50%', transform: 'translateX(-50%)',
+        marginTop: 4, textAlign: 'center',
         fontSize: 8, letterSpacing: 4, textTransform: 'uppercase', fontWeight: 700,
         background: 'linear-gradient(90deg,#6C63FF,#00D2FF)', WebkitBackgroundClip: 'text',
         WebkitTextFillColor: 'transparent', backgroundClip: 'text', opacity: 0.7,
