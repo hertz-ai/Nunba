@@ -390,6 +390,8 @@ build_exe_options = {
     # build/test scripts, and venv dirs)
     "include_files": (
         # 1. Auto-include ALL .py files from project root
+        # These are needed because app.py loads main.py via importlib (not standard import)
+        # and cx_Freeze doesn't trace importlib.util.spec_from_file_location targets.
         [(f, f) for f in glob.glob("*.py")
          if f not in ("app.py", "setup.py") and not f.startswith(("test_", "_test_"))]
         # 2. Auto-include ALL .json files from project root (config, templates)
@@ -927,11 +929,45 @@ import subprocess
 if ('build' in sys.argv or 'build_exe' in sys.argv):
     _embed_sp = os.path.join("python-embed", "Lib", "site-packages")
     if os.path.isdir(_embed_sp):
+        # ── Always re-install HARTOS + sibling deps into python-embed ──
+        # Editable install in system Python doesn't update python-embed's copy.
+        # Must pip install --target into python-embed so the frozen build has
+        # the latest code from all sibling repos.
+        _sibling_deps = [
+            ('HARTOS', 'hart-backend'),
+            ('hevolveai', 'hevolveai'),
+            ('Hevolve_Database', 'hevolve-database'),
+            ('HARTOS/agent-ledger-opensource', 'agent-ledger'),
+        ]
+        for _sib_dir, _pkg_name in _sibling_deps:
+            _sib_path = os.path.join(_project_root, _sib_dir)
+            if os.path.isdir(_sib_path) and (
+                os.path.isfile(os.path.join(_sib_path, 'pyproject.toml')) or
+                os.path.isfile(os.path.join(_sib_path, 'setup.py'))
+            ):
+                print(f"python-embed: re-installing {_pkg_name} from {_sib_dir}...")
+                _r = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--no-deps",
+                     "--target", _embed_sp, "--upgrade", _sib_path],
+                    capture_output=True, text=True, timeout=120)
+                if _r.returncode == 0:
+                    print(f"python-embed: {_pkg_name} updated OK")
+                else:
+                    print(f"python-embed: {_pkg_name} update FAILED: {_r.stderr[:200]}")
+
+        # Invalidate hash cache — sibling deps changed python-embed contents
+        _skip_python_embed_copy = False
+        current_python_embed_hash = get_directory_hash("python-embed")
+
         _tts_deps = [
             # (package_name, pip_install_name, check_import)
+            # Build runs on the target platform → gets correct native binaries
             ("torchaudio", "torchaudio", "torchaudio"),
             ("chatterbox-tts", "chatterbox-tts", "chatterbox"),
             ("parler-tts", "parler-tts", "parler_tts"),
+            # STT — CTranslate2 bundles platform-specific CUDA runtime
+            ("faster-whisper", "faster-whisper", "faster_whisper"),
+            ("ctranslate2", "ctranslate2", "ctranslate2"),
         ]
         for _pkg_label, _pip_name, _import_name in _tts_deps:
             _check_path = os.path.join(_embed_sp, _import_name)
@@ -1001,6 +1037,30 @@ if ('build' in sys.argv or 'build_exe' in sys.argv) and not _skip_python_embed_c
         if _orphan_count:
             print(f"Post-build: cleaned {_orphan_count} orphan files/dirs from python-embed")
         print(f"Post-build: python-embed copied ({_src_embed} -> {_dst_embed})")
+
+        # ── Remove distutils-precedence.pth ──
+        # setuptools writes this .pth file which imports _distutils_hack at startup.
+        # _distutils_hack isn't bundled in python-embed → breaks ALL pip installs
+        # at runtime (CUDA torch, chatterbox-tts, indic-parler, f5-tts).
+        _pth_file = os.path.join(_dst_embed, 'Lib', 'site-packages',
+                                  'distutils-precedence.pth')
+        if os.path.exists(_pth_file):
+            os.remove(_pth_file)
+            print("Post-build: removed distutils-precedence.pth (fixes runtime pip)")
+
+        # ── Remove torch CPU stub from python-embed ──
+        # Torch is installed dynamically at runtime (CPU or CUDA depending on GPU).
+        # The stub in python-embed shadows the user-installed CUDA torch because
+        # python-embed/ is on sys.path before ~/.nunba/site-packages/.
+        # Removing it lets the dynamic install be the only torch Python finds.
+        # torchaudio is kept — it imports torch at runtime from wherever it's installed.
+        _torch_dir = os.path.join(_dst_embed, 'Lib', 'site-packages', 'torch')
+        if os.path.isdir(_torch_dir):
+            shutil.rmtree(_torch_dir, ignore_errors=True)
+            print("Post-build: removed torch from python-embed (dynamic install at runtime)")
+        # Also remove torch dist-info
+        for _di in glob.glob(os.path.join(_dst_embed, 'Lib', 'site-packages', 'torch-*')):
+            shutil.rmtree(_di, ignore_errors=True)
 
         # ── Fix torch._C conflict ──
         # PyTorch ships with both torch/_C.cp312-win_amd64.pyd (the real compiled

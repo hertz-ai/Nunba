@@ -5166,7 +5166,7 @@ def main():
         try:
             import urllib.request
             _resp = urllib.request.urlopen(
-                f"http://127.0.0.1:{args.port}/cors/test", timeout=2
+                f"http://127.0.0.1:{args.port}/backend/health", timeout=2
             )
             _resp.close()
             _flask_ready = True
@@ -5416,7 +5416,7 @@ def main():
                     import urllib.request as _ur
                     for _ in range(15):  # poll up to 7.5s
                         try:
-                            _r = _ur.urlopen(f"http://127.0.0.1:{args.port}/cors/test", timeout=2)
+                            _r = _ur.urlopen(f"http://127.0.0.1:{args.port}/backend/health", timeout=2)
                             _r.close()
                             break
                         except Exception:
@@ -5518,7 +5518,7 @@ def main():
                 for _ri in range(_max_extra * 2):
                     try:
                         _r = _ur.urlopen(
-                            f"http://127.0.0.1:{_deferred_port}/cors/test", timeout=2)
+                            f"http://127.0.0.1:{_deferred_port}/backend/health", timeout=2)
                         _r.close()
                         logger.info(f"[DEFERRED] Flask ready after {_ri * 0.5:.1f}s extra — reloading webview")
                         time.sleep(1)  # let server fully warm up

@@ -80,14 +80,17 @@ MODEL_PRESETS = [
         mmproj_file="mmproj-Qwen3-VL-2B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf"
     ),
-    # Smallest Qwen3.5 — for CPU-only / ultra-low VRAM machines
+    # Smallest Qwen3.5 — vision+text, ideal for continuous captioning
     ModelPreset(
-        "Qwen3.5-0.8B UD-Q4_K_XL",
+        "Qwen3.5-0.8B VL (Caption)",
         "unsloth/Qwen3.5-0.8B-GGUF",
         "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
         550,
-        "Smallest Qwen3.5, text-only, ~550MB, runs on anything",
-        has_vision=False
+        "Smallest VLM, ~750MB with mmproj, ~1.9 FPS captioning, runs on anything",
+        has_vision=True,
+        mmproj_file="mmproj-Qwen3.5-0.8B-F16.gguf",
+        mmproj_source_file="mmproj-F16.gguf",
+        min_build=MIN_LLAMACPP_BUILD_QWEN35
     ),
     ModelPreset(
         "Qwen3-2B Text-Only Q4_K_M",
@@ -197,7 +200,8 @@ class LlamaInstaller:
                         return "cuda"
                 except Exception:
                     pass
-                # Check for AMD ROCm via rocm-smi (Linux primarily)
+                # Check for AMD GPU via rocm-smi (Linux primarily)
+                # RDNA3/RDNA4 consumer GPUs use zinc (Vulkan), not ROCm
                 try:
                     result = subprocess.run(
                         ["rocm-smi", "--showproductname"],
@@ -205,10 +209,27 @@ class LlamaInstaller:
                         startupinfo=si, creationflags=cf
                     )
                     if result.returncode == 0 and result.stdout.strip():
-                        logger.debug(f"AMD GPU detected: {result.stdout.strip()}")
+                        gpu_name = result.stdout.strip().upper()
+                        logger.debug(f"AMD GPU detected: {gpu_name}")
+                        # RDNA3/RDNA4 consumer cards → zinc (Vulkan, no ROCm needed)
+                        # MI-series data center cards → rocm (traditional HIP/ROCm)
+                        if any(x in gpu_name for x in ['RDNA', 'RX 9', 'RX 7', 'AI PRO']):
+                            return "zinc"
                         return "rocm"
                 except Exception:
                     pass
+                # Fallback: lspci for AMD GPUs without rocm-smi
+                if "linux" in self.os_name:
+                    try:
+                        result = subprocess.run(
+                            ['lspci'], capture_output=True, text=True, timeout=5,
+                            startupinfo=si, creationflags=cf)
+                        if result.returncode == 0:
+                            for line in result.stdout.splitlines():
+                                if 'AMD' in line and ('VGA' in line or 'Display' in line):
+                                    return "zinc"  # assume consumer AMD → zinc
+                    except Exception:
+                        pass
         except Exception as e:
             logger.debug(f"GPU detection failed: {e}")
 

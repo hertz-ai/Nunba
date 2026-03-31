@@ -202,6 +202,7 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
     cmd = [python_exe, '-m', 'pip'] + args
     env = os.environ.copy()
     env['PYTHONNOUSERSITE'] = '1'  # Don't leak to user site-packages
+    env['SETUPTOOLS_USE_DISTUTILS'] = 'stdlib'  # Skip _distutils_hack shim (missing in frozen build)
 
     logger.info(f"Running: {' '.join(cmd)}")
     if progress_cb:

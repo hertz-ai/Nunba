@@ -138,6 +138,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const messagesRef = useRef(messages);
   const currentAgentRef = useRef(currentAgent);
   const handleSendRef = useRef(null); // Stable ref for queue processor
+  const handleStartRef = useRef(null); // Stable ref for auto-start mic when STT ready
   const [duration, setDuration] = useState(0);
   const [showTooltip, setShowTooltip] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -250,6 +251,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             const label = CAPABILITY_LABELS[type];
             if (label) {
               pushNotification({ type: 'success', message: label });
+            }
+            // Auto-start mic when STT is ready — voice-first UX
+            if (type === 'stt' && !isRecording && handleStartRef.current) {
+              handleStartRef.current();
             }
           }
         }
@@ -2240,6 +2245,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     // Tier cascade: WebSocket streaming → Web Speech fallback
     _useStreamingWhisper().then(ok => { if (!ok) _useWebSpeech(); });
   };
+  handleStartRef.current = handleStart;
 
   const handleStop = () => {
     recognitionRef.current?.stop();
@@ -2296,6 +2302,83 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       }
     } catch { /* clipboard not available */ }
   };
+
+  // ── Video mode: stream webcam frames to VisionService at 5 FPS ──
+  const frameStreamRef = useRef(null);
+
+  useEffect(() => {
+    if (mediaMode !== 'video') {
+      // Cleanup if switching away from video mode
+      if (frameStreamRef.current) {
+        frameStreamRef.current.stop();
+        frameStreamRef.current = null;
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const userId = decryptedUserId || localStorage.getItem('guest_name') || 'anon';
+
+    const startStreaming = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480, frameRate: 5 },
+        });
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+
+        // Connect to VisionService WebSocket (port 5460)
+        const wsPort = 5460;
+        const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.muted = true;
+        await video.play();
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 480;
+        const ctx = canvas.getContext('2d');
+
+        ws.onopen = () => {
+          // Send user_id first, then video_start
+          ws.send(userId);
+          ws.send('video_start');
+        };
+
+        // Stream frames at 5 FPS — backend discards what it can't process
+        const interval = setInterval(() => {
+          if (ws.readyState !== WebSocket.OPEN || cancelled) return;
+          ctx.drawImage(video, 0, 0, 640, 480);
+          canvas.toBlob((blob) => {
+            if (blob && ws.readyState === WebSocket.OPEN) {
+              blob.arrayBuffer().then(buf => ws.send(buf));
+            }
+          }, 'image/jpeg', 0.6); // quality 0.6 = ~20-40KB per frame
+        }, 200); // 200ms = 5 FPS
+
+        frameStreamRef.current = {
+          stop: () => {
+            clearInterval(interval);
+            try { ws.send('video_stop'); } catch {}
+            ws.close();
+            stream.getTracks().forEach(t => t.stop());
+            video.srcObject = null;
+          },
+        };
+      } catch (err) {
+        console.warn('Video frame streaming failed:', err.message);
+      }
+    };
+
+    startStreaming();
+    return () => {
+      cancelled = true;
+      if (frameStreamRef.current) {
+        frameStreamRef.current.stop();
+        frameStreamRef.current = null;
+      }
+    };
+  }, [mediaMode, decryptedUserId]);
 
   // ── Camera capture — snap frame, send as image ──
   const handleCameraCapture = async () => {

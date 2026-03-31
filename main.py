@@ -337,6 +337,32 @@ def _deferred_platform_init():
     except Exception as e:
         logging.warning(f"Local subscribers bootstrap skipped: {e}")
 
+    # Subscribe to HARTOS caption server events (lazy start/stop 0.8B VLM)
+    try:
+        from core.platform.registry import get_registry
+        bus = get_registry().get('events')
+        if bus:
+            def _on_caption_requested(data):
+                try:
+                    from llama.llama_config import LlamaConfig
+                    port = data.get('port', 8081)
+                    LlamaConfig().start_caption_server(port=port)
+                except Exception as e:
+                    logging.warning(f"Caption server start failed: {e}")
+
+            def _on_caption_stop(data):
+                try:
+                    from llama.llama_config import LlamaConfig
+                    LlamaConfig().stop_caption_server()
+                except Exception as e:
+                    logging.debug(f"Caption server stop: {e}")
+
+            bus.on('vlm_caption.requested', lambda topic, data: _on_caption_requested(data))
+            bus.on('vlm_caption.stop', lambda topic, data: _on_caption_stop(data))
+            logging.info("Caption server event subscribers registered")
+    except Exception as e:
+        logging.debug(f"Caption server event subscription skipped: {e}")
+
 threading.Thread(target=_deferred_platform_init, daemon=True,
                  name='platform-init').start()
 
@@ -2353,6 +2379,43 @@ def start_background_services():
                 if os.path.exists(_hart_lang_file):
                     with open(_hart_lang_file) as _f:
                         preferred_lang = _json.load(_f).get('language', 'en')
+            except Exception:
+                pass
+
+            # Ensure ~/.nunba/site-packages is on sys.path
+            try:
+                from tts.package_installer import ensure_user_site_on_path
+                ensure_user_site_on_path()
+            except Exception:
+                pass
+
+            # Ensure CUDA torch is installed (frozen build ships CPU stub)
+            # Must happen BEFORE set_language() so GPU backends pass _can_run_backend()
+            try:
+                from tts.package_installer import has_nvidia_gpu, install_cuda_torch, is_cuda_torch
+                if has_nvidia_gpu() and not is_cuda_torch():
+                    logging.info("TTS warm-up: installing CUDA PyTorch (~2.5GB, one-time)...")
+                    def _cuda_progress(msg):
+                        logging.info(f"CUDA torch: {msg}")
+                        try:
+                            from integrations.social.realtime import publish_event
+                            publish_event('setup_progress', {
+                                'type': 'setup_progress',
+                                'job_type': 'cuda_torch',
+                                'status': 'loading',
+                                'message': msg,
+                            })
+                        except Exception:
+                            pass
+                    ok, msg = install_cuda_torch(progress_cb=_cuda_progress)
+                    logging.info(f"CUDA torch install: {'OK' if ok else msg}")
+            except Exception as _cte:
+                logging.debug(f"CUDA torch check skipped: {_cte}")
+
+            # Clear TTSEngine's cached torch check (may have cached False from stub)
+            try:
+                from tts.tts_engine import TTSEngine
+                TTSEngine._import_check_cache.pop('_torch_cuda', None)
             except Exception:
                 pass
 

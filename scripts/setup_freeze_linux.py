@@ -18,6 +18,25 @@ import py_compile
 import shutil
 import sys
 
+# ── Fix transformers frozenset crash before cx_Freeze traces it ──
+# transformers/__init__.py line 772: import_structure[frozenset({})].update(...)
+# fails in cx_Freeze frozen builds. Patch the source file to use .setdefault().
+try:
+    import importlib.util as _ilu_patch
+    _tf_spec = _ilu_patch.find_spec('transformers')
+    if _tf_spec and _tf_spec.origin:
+        with open(_tf_spec.origin, encoding='utf-8') as _f:
+            _src = _f.read()
+        _bad = 'import_structure[frozenset({})].update(_import_structure)'
+        if _bad in _src:
+            _src = _src.replace(_bad,
+                'import_structure.setdefault(frozenset({}), {}).update(_import_structure)')
+            with open(_tf_spec.origin, 'w', encoding='utf-8') as _f:
+                _f.write(_src)
+            print("Patched transformers/__init__.py: frozenset fix applied")
+except Exception as _e:
+    print(f"WARNING: Could not patch transformers: {_e}")
+
 # Ensure we're on Linux
 if not sys.platform.startswith('linux'):
     print("This script is for Linux only.")
@@ -610,6 +629,40 @@ setup(
 )
 
 # ============================================================================
+# Pre-build: bundle TTS/STT packages into python-embed site-packages
+# Build runs on target platform → pip gets correct native binaries
+# ============================================================================
+
+if 'build' in sys.argv or 'build_exe' in sys.argv:
+    _embed_sp = os.path.join("python-embed", "Lib", "site-packages")
+    if not os.path.isdir(_embed_sp):
+        # Linux may use lib/pythonX.Y/site-packages
+        for _pyver in ('python3.12', 'python3.11', 'python3.10'):
+            _alt = os.path.join("python-embed", "lib", _pyver, "site-packages")
+            if os.path.isdir(_alt):
+                _embed_sp = _alt
+                break
+
+    if os.path.isdir(_embed_sp):
+        _tts_stt_deps = [
+            # (label, pip_name, check_import)
+            ("torchaudio", "torchaudio", "torchaudio"),
+            ("chatterbox-tts", "chatterbox-tts", "chatterbox"),
+            ("parler-tts", "parler-tts", "parler_tts"),
+            ("faster-whisper", "faster-whisper", "faster_whisper"),
+            ("ctranslate2", "ctranslate2", "ctranslate2"),
+        ]
+        for _label, _pip, _imp in _tts_stt_deps:
+            _check = os.path.join(_embed_sp, _imp)
+            if os.path.isdir(_check) or os.path.isfile(_check + '.py'):
+                print(f"python-embed: {_label} already present")
+                continue
+            print(f"python-embed: installing {_label} via --target...")
+            _cmd = [sys.executable, "-m", "pip", "install", _pip,
+                    "--target", _embed_sp, "--no-deps", "--quiet"]
+            subprocess.run(_cmd, check=False)
+
+# ============================================================================
 # Post-build steps
 # ============================================================================
 
@@ -689,6 +742,45 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
             if _orphan_count:
                 print(f"Post-build: cleaned {_orphan_count} orphan files/dirs from python-embed")
             print(f"Post-build: python-embed copied ({_src_embed} -> {_dst_embed})")
+
+            # ── Remove distutils-precedence.pth ──
+            # Breaks runtime pip installs (_distutils_hack not bundled)
+            for _pyver in ('python3.12', 'python3.11', 'python3.10'):
+                _pth = os.path.join(_dst_embed, 'lib', _pyver, 'site-packages',
+                                     'distutils-precedence.pth')
+                if os.path.exists(_pth):
+                    os.remove(_pth)
+                    print(f"Post-build: removed {_pth}")
+                    break
+
+            # ── Fix torch._C conflict ──
+            # PyTorch ships with both torch/_C.cpython-*.so (the real compiled
+            # extension) AND torch/_C/ (a directory with .pyi type-hint stubs).
+            # Python's import system resolves the directory first, which causes:
+            #   "Failed to load PyTorch C extensions: It appears that PyTorch has
+            #    loaded the `torch/_C` folder of the PyTorch repository rather than
+            #    the C extensions"
+            # Fix: remove the torch/_C/ package directory so the .so loads correctly.
+            _torch_sp = os.path.join(_dst_embed, 'Lib', 'site-packages', 'torch')
+            # Also check Linux-style path
+            if not os.path.isdir(_torch_sp):
+                _torch_sp = os.path.join(_dst_embed, 'lib',
+                                          f'python{sys.version_info.major}.{sys.version_info.minor}',
+                                          'site-packages', 'torch')
+            _torch_c_dir = os.path.join(_torch_sp, '_C')
+            _torch_c_so = [f for f in (os.listdir(_torch_sp) if os.path.isdir(_torch_sp) else [])
+                           if f.startswith('_C.cpython') and f.endswith('.so')]
+            if os.path.isdir(_torch_c_dir) and _torch_c_so:
+                shutil.rmtree(_torch_c_dir)
+                print("Post-build: removed torch/_C/ stub directory (keeps _C.so extension)")
+            # Also remove torch/_C_flatbuffer/ if present (same type-hint conflict)
+            _torch_c_fb = os.path.join(_torch_sp, '_C_flatbuffer')
+            if os.path.isdir(_torch_c_fb):
+                _fb_so = [f for f in (os.listdir(_torch_sp) if os.path.isdir(_torch_sp) else [])
+                          if f.startswith('_C_flatbuffer') and f.endswith('.so')]
+                if _fb_so:
+                    shutil.rmtree(_torch_c_fb)
+                    print("Post-build: removed torch/_C_flatbuffer/ stub directory")
 
     # -- Post-build: strip HevolveAI source from python-embed --
     _hv_sp = os.path.join(_build_dir, "python-embed", "Lib", "site-packages")
