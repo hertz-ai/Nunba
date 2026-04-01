@@ -232,6 +232,16 @@ class STTLoader(ModelLoader):
             return False
 
     def load(self, entry: ModelEntry, run_mode: str) -> bool:
+        # Set the actual model size in whisper_tool using its existing mapping
+        try:
+            from integrations.service_tools.whisper_tool import _CATALOG_ID_TO_FASTER_WHISPER_SIZE
+            import integrations.service_tools.whisper_tool as wt
+            size = _CATALOG_ID_TO_FASTER_WHISPER_SIZE.get(entry.id)
+            if size:
+                wt._FASTER_WHISPER_MODEL_SIZE = size
+                logger.info(f"STT model size set to '{size}' (from {entry.id})")
+        except Exception:
+            pass
         logger.info(f"STT model {entry.id} will load lazily on first use")
         return True
 

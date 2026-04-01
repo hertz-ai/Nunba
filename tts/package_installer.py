@@ -262,11 +262,31 @@ def install_cuda_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
     ], progress_cb, timeout=900)
 
     if ok:
+        # Remove the stub torch (0.0.0) from python-embed so the CUDA version
+        # from ~/.nunba/site-packages is the only one Python finds
+        _embed_sp = get_embed_site_packages()
+        if _embed_sp:
+            import shutil
+            for _stub_dir in ('torch', 'torchaudio'):
+                _stub_path = os.path.join(_embed_sp, _stub_dir)
+                if os.path.isdir(_stub_path):
+                    try:
+                        # Check if this is the stub (version 0.0.0) not the real one
+                        _ver_file = os.path.join(_stub_path, 'version.py')
+                        _is_stub = False
+                        if os.path.isfile(_ver_file):
+                            with open(_ver_file) as _vf:
+                                _is_stub = '0.0.0' in _vf.read()
+                        if _is_stub:
+                            shutil.rmtree(_stub_path, ignore_errors=True)
+                            logger.info(f"Removed stub {_stub_dir} from python-embed")
+                    except Exception as _e:
+                        logger.debug(f"Could not remove stub {_stub_dir}: {_e}")
+
         # Invalidate cached import checks
         _invalidate_import_cache()
 
-        # Force-reload torch in current session — the old stub (0.0.0)
-        # is cached in sys.modules and won't be replaced by importlib alone
+        # Force-reload torch in current session
         _torch_mods = [k for k in sys.modules if k == 'torch' or k.startswith('torch.')]
         for k in _torch_mods:
             del sys.modules[k]
