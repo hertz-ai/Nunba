@@ -605,6 +605,9 @@ class TTSEngine:
         BACKEND_CHATTERBOX_ML: 'chatterbox',
         BACKEND_INDIC_PARLER: 'parler_tts',
         BACKEND_COSYVOICE3: 'cosyvoice',
+        # LuxTTS requires sherpa-onnx pip package AND ONNX model files.
+        # Without sherpa_onnx installed, _can_run_backend returns False → Piper wins.
+        'luxtts': 'sherpa_onnx',
         # Piper has no external dep — it's bundled
     }
 
@@ -930,7 +933,15 @@ class TTSEngine:
             return _LazyCosyVoice3()
         elif backend == BACKEND_PIPER:
             return _LazyPiper()
-        return None
+        # Unknown backend (e.g. 'luxtts' when sherpa_onnx somehow passed the
+        # import check but has no in-process implementation here) — fall back
+        # to Piper so TTS is never silently broken.
+        logger.warning(
+            f"No in-process handler for TTS backend '{backend}' — "
+            f"falling back to Piper (CPU). "
+            f"Install sherpa-onnx and luxtts ONNX models to enable {backend}."
+        )
+        return _LazyPiper()
 
     def _ensure_initialized(self):
         if not self._initialized and self.auto_init:

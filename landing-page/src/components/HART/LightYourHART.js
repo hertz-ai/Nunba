@@ -1021,30 +1021,39 @@ export default function LightYourHART({userId, onComplete}) {
       setLoading(true);
 
       try {
-        const resp = await fetch(`${API_BASE_URL}/api/hart/generate`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(localStorage.getItem('access_token')
-              ? {
-                  Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-                }
-              : {}),
-          },
-          body: JSON.stringify({
-            language,
-            locale,
-            passion_key: passionKey || key, // passionKey might not be set yet due to closure
-            escape_key: key,
-          }),
-        });
-        if (resp.ok) {
-          const result = await resp.json();
-          setHartName(result.name);
-          setHartTag(result.hart_tag || '');
-          setEmojiCombo(result.emoji_combo || '');
-        } else {
-          // Fallback name if backend fails
+        const controller = new AbortController();
+        const generateTimeout = setTimeout(() => controller.abort(), 10000); // 10s max
+        try {
+          const resp = await fetch(`${API_BASE_URL}/api/hart/generate`, {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+              'Content-Type': 'application/json',
+              ...(localStorage.getItem('access_token')
+                ? {
+                    Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+                  }
+                : {}),
+            },
+            body: JSON.stringify({
+              language,
+              locale,
+              passion_key: passionKey || key, // passionKey might not be set yet due to closure
+              escape_key: key,
+            }),
+          });
+          clearTimeout(generateTimeout);
+          if (resp.ok) {
+            const result = await resp.json();
+            setHartName(result.name);
+            setHartTag(result.hart_tag || '');
+            setEmojiCombo(result.emoji_combo || '');
+          } else {
+            // Fallback name if backend fails
+            setHartName(_fallbackName());
+          }
+        } catch {
+          clearTimeout(generateTimeout);
           setHartName(_fallbackName());
         }
       } catch {

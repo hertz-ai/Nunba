@@ -103,6 +103,20 @@ class PiperTTS:
     def _init_piper(self):
         """Initialize piper-tts module"""
         try:
+            # In a frozen (cx_Freeze) app the espeakbridge extension looks for
+            # espeak-ng-data relative to its .pyd file, but that path resolution
+            # fails when sys.frozen is True.  Set ESPEAK_DATA_PATH explicitly so
+            # espeak-ng always finds its data regardless of how Python is run.
+            if getattr(sys, 'frozen', False) and 'ESPEAK_DATA_PATH' not in os.environ:
+                _exe_dir = Path(sys.executable).parent
+                for _candidate in [
+                    _exe_dir / 'lib' / 'piper' / 'espeak-ng-data',
+                    _exe_dir / 'piper' / 'espeak-ng-data',
+                ]:
+                    if _candidate.exists():
+                        os.environ['ESPEAK_DATA_PATH'] = str(_candidate)
+                        logger.info(f"Frozen app: ESPEAK_DATA_PATH set to {_candidate}")
+                        break
             import piper
             self._piper_module = piper
             logger.info("Piper TTS module loaded successfully")

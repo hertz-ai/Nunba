@@ -1,0 +1,60 @@
+{
+  "user_id": "test_user_1",
+  "tuning": {
+    "formality_score": 0.3798237499999999,
+    "verbosity_score": 0.32636125,
+    "warmth_score": 0.4842375,
+    "pace_score": 0.6929375,
+    "technical_depth": 0.30706249999999996,
+    "encouragement_level": 0.5614124999999999,
+    "humor_receptivity": 0.2614125,
+    "autonomy_preference": 0.5
+  },
+  "face_embedding": null,
+  "voice_embedding": null,
+  "face_enrollment_count": 0,
+  "voice_enrollment_count": 0,
+  "avg_message_length": 5.789624999999999,
+  "avg_response_time_ms": 0.0,
+  "vocabulary_complexity": 0.5,
+  "topic_preferences": {},
+  "tuning_history": [
+    [
+      0.46549999999999997,
+      0.4305,
+      0.555,
+      0.575,
+      0.425,
+      0.585,
+      0.28500000000000003,
+      0.5
+    ],
+    [
+      0.39567499999999994,
+      0.370425,
+      0.51675,
+      0.6387499999999999,
+      0.36124999999999996,
+      0.5722499999999999,
+      0.27225,
+      0.5
+    ],
+    [
+      0.3798237499999999,
+      0.32636125,
+      0.4842375,
+      0.6929375,
+      0.30706249999999996,
+      0.5614124999999999,
+      0.2614125,
+      0.5
+    ]
+  ],
+  "gradient_active": false,
+  "ema_alpha": null,
+  "total_interactions": 3,
+  "resonance_confidence": 0.1392920235749422,
+  "last_interaction_at": 1774874534.608703,
+  "created_at": 1774874413.3672285,
+  "updated_at": 1774874534.608703
+}
