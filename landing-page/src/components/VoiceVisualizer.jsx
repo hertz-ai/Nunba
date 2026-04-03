@@ -218,7 +218,7 @@ var VoiceVisualizer = function({ audioRef, isActive, size, style }) {
 
   return React.createElement('div', {
     style: Object.assign({
-      width: size, height: size + 20, position: 'relative',
+      width: size, height: size, position: 'relative',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       flexDirection: 'column',
     }, style || {}),

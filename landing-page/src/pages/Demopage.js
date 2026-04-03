@@ -3655,7 +3655,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                             <VoiceVisualizer
                               audioRef={audioRef}
                               isActive={isPlayingResponse || tts.isSpeaking}
-                              size={window.innerWidth <= 768 ? 180 : Math.min(window.innerWidth * 0.25, 250)}
+                              size={window.innerWidth <= 768 ? Math.min(window.innerWidth * 0.35, 160) : Math.min(window.innerWidth * 0.2, 200)}
                             />
                           </div>
                         </>
@@ -3757,7 +3757,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 !isTextMode && videoUrl && !uploadedImage && !uploadedPdf && window.innerWidth > 768
                   ? 'md:w-[60%]'
                   : 'md:w-full'
-              } overflow-x-clip overflow-y-auto pt-10 md:pt-0`}
+              } overflow-x-clip overflow-y-auto scrollbar-hide pt-10 md:pt-0`}
+              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
             >
               {messages.length === 0 ? (
                 <>
