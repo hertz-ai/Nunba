@@ -246,19 +246,12 @@ if getattr(sys, 'frozen', False):
     if os.path.isdir(_embed_site_packages) and _embed_site_packages not in sys.path:
         sys.path.append(_embed_site_packages)
     # User site-packages (~/.nunba/site-packages/) — runtime pip installs go here.
-    # INSERT at index 0 so CUDA torch shadows the CPU stub in python-embed.
+    # APPEND (not insert) so python-embed's bundled modules load first.
+    # CUDA torch from --target install doesn't work reliably (torch._C
+    # can't find DLLs). Non-torch packages (f5-tts, parler-tts, etc.) are fine.
     _user_sp = os.path.join(os.path.expanduser('~'), '.nunba', 'site-packages')
     if os.path.isdir(_user_sp) and _user_sp not in sys.path:
-        sys.path.insert(0, _user_sp)
-    # Windows: add torch/lib to DLL search path for CUDA DLLs
-    _torch_lib = os.path.join(_user_sp, 'torch', 'lib')
-    if os.path.isdir(_torch_lib):
-        if hasattr(os, 'add_dll_directory'):
-            try:
-                os.add_dll_directory(_torch_lib)
-            except OSError:
-                pass
-        os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
+        sys.path.append(_user_sp)
     # Win32GUI base sets sys.stdout/stderr to None, which crashes modules that
     # do sys.stdout.buffer (e.g. hart_intelligence line 6). Fix by redirecting
     # to devnull before any imports that might touch stdout.
