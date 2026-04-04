@@ -648,9 +648,35 @@ class TTSEngine:
                                     f"(torch {torch.__version__}) — "
                                     f"GPU TTS needs CUDA torch upgrade"
                                     f"{' (GPU present via nvidia-smi)' if self.has_gpu else ''}")
-                except ImportError:
-                    TTSEngine._import_check_cache['_torch_cuda'] = False
-                    logger.info("torch not installed — GPU TTS engines disabled")
+                    else:
+                        logger.info(f"torch {torch.__version__} CUDA available — GPU TTS enabled")
+                except (ImportError, OSError) as _torch_err:
+                    # torch._C DLL load failure in frozen builds — retry with DLL path
+                    _retried = False
+                    try:
+                        import os as _os, sys as _sys
+                        _usp = _os.path.join(_os.path.expanduser('~'), '.nunba', 'site-packages')
+                        _tlib = _os.path.join(_usp, 'torch', 'lib')
+                        if _os.path.isdir(_tlib):
+                            if hasattr(_os, 'add_dll_directory'):
+                                _os.add_dll_directory(_tlib)
+                            _os.environ['PATH'] = _tlib + _os.pathsep + _os.environ.get('PATH', '')
+                            if _usp not in _sys.path:
+                                _sys.path.insert(0, _usp)
+                            # Clear failed import from sys.modules so retry works
+                            for _mk in list(_sys.modules):
+                                if _mk == 'torch' or _mk.startswith('torch.'):
+                                    del _sys.modules[_mk]
+                            import torch
+                            TTSEngine._import_check_cache['_torch_cuda'] = torch.cuda.is_available()
+                            _retried = True
+                            logger.info(f"torch {torch.__version__} loaded after DLL retry — "
+                                        f"cuda={torch.cuda.is_available()}")
+                    except Exception as _retry_err:
+                        logger.info(f"torch DLL retry also failed: {_retry_err}")
+                    if not _retried:
+                        TTSEngine._import_check_cache['_torch_cuda'] = False
+                        logger.info(f"torch not installed — GPU TTS engines disabled ({_torch_err})")
             if not TTSEngine._import_check_cache['_torch_cuda']:
                 return False
 
