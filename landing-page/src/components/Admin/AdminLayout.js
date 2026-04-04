@@ -30,6 +30,7 @@ import MonetizationOnIcon from '@mui/icons-material/MonetizationOn';
 import BuildIcon from '@mui/icons-material/Build';
 import HubIcon from '@mui/icons-material/Hub';
 import MemoryIcon from '@mui/icons-material/Memory';
+import CloudIcon from '@mui/icons-material/Cloud';
 import React, {useState, useEffect} from 'react';
 import {useNavigate, useLocation, Navigate} from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
@@ -52,6 +53,7 @@ const adminNav = [
   {label: 'Content Tasks', path: '/admin/content-tasks', icon: <BuildIcon />},
   {label: 'Network Nodes', path: '/admin/network-nodes', icon: <HubIcon />, minRole: 'central'},
   {label: 'Models', path: '/admin/models', icon: <MemoryIcon />},
+  {label: 'Providers', path: '/admin/providers', icon: <CloudIcon />},
 ];
 
 export default function AdminLayout({children}) {
