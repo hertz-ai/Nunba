@@ -3596,7 +3596,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           toggleDropdown={toggleDropdown}
         />
 
-        <div className="flex flex-col h-screen bg-black w-full overflow-hidden">
+        <div className="flex flex-col h-screen bg-black w-full overflow-y-auto overflow-x-hidden">
           {/* VoiceVisualizer removed from here — lives in the media column */}
           <div className="w-full flex flex-col md:flex-row-reverse flex-1 min-h-0">
             {/* Chat/Messages section - Now on the left for wider screens */}
@@ -3608,7 +3608,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   : 'w-full'
               } ${
                 window.innerWidth <= 768 ? (isTextMode ? '' : (videoUrl || mediaMode === 'audio' ? 'h-[35vh] mb-4' : '')) : ''
-              } relative flex justify-center items-center transition-all duration-300`}
+              } relative flex justify-center items-center transition-all duration-300 md:sticky md:top-0 md:h-screen`}
               style={{ overflow: 'visible' }}
             >
               {!isTextMode && (
@@ -3757,7 +3757,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 !isTextMode && videoUrl && !uploadedImage && !uploadedPdf && window.innerWidth > 768
                   ? 'md:w-[60%]'
                   : 'md:w-full'
-              } overflow-x-clip overflow-y-auto pt-2 md:pt-0`}
+              } overflow-x-clip pt-2 md:pt-0`}
             >
               {messages.length === 0 ? (
                 <>
