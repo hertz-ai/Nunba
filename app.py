@@ -134,7 +134,9 @@ def _check_single_instance():
         except Exception:
             pass
 
-_check_single_instance()
+# Skip single-instance check under pytest (PYTEST_CURRENT_TEST is set by pytest)
+if not os.environ.get('PYTEST_CURRENT_TEST'):
+    _check_single_instance()
 
 # === Frozen exe stdout/stderr fix ===
 # cx_Freeze GUI exes have no console → stdout/stderr file descriptors are closed.
