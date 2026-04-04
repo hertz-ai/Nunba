@@ -2073,6 +2073,26 @@ def chat_route():
                     # Pass through agentic plan for Plan Mode UI
                     if result.get('agentic_plan'):
                         response_json['agentic_plan'] = result['agentic_plan']
+                    # Pass through dynamic_layout for Liquid UI rendering
+                    # (creative tools: Movie_Maker, Game_Asset_Creator, Story_Director
+                    #  return JSON that the Liquid UI renders natively)
+                    if result.get('dynamic_layout'):
+                        response_json['dynamic_layout'] = result['dynamic_layout']
+                    elif response_text and response_text.lstrip().startswith('{'):
+                        # Auto-detect JSON tool output as dynamic_layout candidate
+                        try:
+                            import json as _json
+                            parsed = _json.loads(response_text)
+                            # Creative tool outputs have specific keys
+                            if any(k in parsed for k in ('scenes', 'characters', 'images',
+                                                         'videos', 'timeline', 'game_title',
+                                                         'backgrounds', 'items', 'audio')):
+                                response_json['dynamic_layout'] = {
+                                    'type': 'creative_output',
+                                    'data': parsed,
+                                }
+                        except (ValueError, _json.JSONDecodeError):
+                            pass  # Not JSON — leave as text
                     # Include thinking traces captured during LangChain/autogen execution
                     thinking_traces = drain_thinking_traces(request_id)
                     if thinking_traces:
