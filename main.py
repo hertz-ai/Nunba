@@ -2614,7 +2614,35 @@ def start_background_services():
         try:
             if os.environ.get('NUNBA_DISABLE_TTS'):
                 return
-            from tts.tts_engine import get_tts_engine
+
+            # Pre-check CUDA torch via subprocess (clean process, no stub pollution).
+            # The frozen build's stub torch (0.0.0) poisons sys.modules — importing
+            # it in-process then trying the real torch fails. Subprocess avoids this.
+            _cuda_ok = False
+            try:
+                import subprocess as _sp
+                _embed_py = os.path.join(os.path.dirname(sys.executable), 'python-embed', 'python.exe')
+                if not os.path.isfile(_embed_py):
+                    _embed_py = None
+                _usp = os.path.join(os.path.expanduser('~'), '.nunba', 'site-packages')
+                _tlib = os.path.join(_usp, 'torch', 'lib')
+                if _embed_py and os.path.isdir(_tlib):
+                    _r = _sp.run(
+                        [_embed_py, '-c',
+                         f'import sys,os;sys.path.insert(0,r"{_usp}");'
+                         f'os.add_dll_directory(r"{_tlib}");'
+                         f'import torch;print(torch.cuda.is_available())'],
+                        capture_output=True, text=True, timeout=15)
+                    _cuda_ok = _r.returncode == 0 and 'True' in _r.stdout
+                    logging.info(f"TTS torch subprocess: cuda={_cuda_ok} (exit={_r.returncode})")
+            except Exception as _te:
+                logging.debug(f"TTS torch subprocess check failed: {_te}")
+
+            from tts.tts_engine import get_tts_engine, TTSEngine
+            # Prime the cache so tts_engine.pyc never attempts in-process torch import
+            if _cuda_ok:
+                TTSEngine._import_check_cache['_torch_cuda'] = True
+                logging.info("TTS: CUDA torch verified via subprocess — GPU TTS enabled")
             engine = get_tts_engine()
 
             # Read user's preferred language from HART onboarding
