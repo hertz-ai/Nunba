@@ -150,8 +150,15 @@ def check_backend_runnable(backend: str, import_name: str) -> bool:
         if ok:
             logger.info("Backend probe: %s (%s) importable (subprocess)", backend, import_name)
         else:
-            logger.info("Backend probe: %s (%s) NOT importable: %s",
-                        backend, import_name, r.stderr[:200].strip())
+            # Write full error to file for debugging (log truncates)
+            try:
+                _err_file = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs', f'probe_{backend}.err')
+                with open(_err_file, 'w') as _ef:
+                    _ef.write(r.stderr)
+            except Exception:
+                pass
+            logger.info("Backend probe: %s (%s) NOT importable (see probe_%s.err)",
+                        backend, import_name, backend)
         return ok
     except Exception as e:
         logger.debug("Backend probe error for %s: %s", backend, e)
