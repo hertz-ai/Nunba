@@ -674,15 +674,12 @@ class TTSEngine:
                 return False
 
         # ── VRAM check: enough room? ──
-        # Use VRAMManager if available (HARTOS)
-        if hasattr(self, '_vram_manager') and self._vram_manager:
-            tool_name = self._VRAM_TOOL_MAP.get(backend)
-            if tool_name:
-                return self._vram_manager.can_fit(tool_name)
-        # Fallback: simple VRAM check
+        # GPU backends can still run in cpu_offload mode if VRAM is tight.
+        # Don't block the backend — let the model loader decide the fit mode.
         if required_vram == 0:
             return True
-        return self.has_gpu and self.vram_gb >= required_vram
+        # As long as GPU + CUDA exist, the backend is runnable (cpu_offload as fallback)
+        return True
 
     # Track which backends have a background auto-install in progress
     _auto_install_pending = set()
