@@ -651,32 +651,50 @@ class TTSEngine:
                     else:
                         logger.info(f"torch {torch.__version__} CUDA available — GPU TTS enabled")
                 except (ImportError, OSError) as _torch_err:
-                    # torch._C DLL load failure in frozen builds — retry with DLL path
+                    # torch._C DLL load failure in frozen builds.
+                    # The stub torch (0.0.0) in python-embed poisons sys.modules,
+                    # making in-process retry impossible. Instead, subprocess check
+                    # using python-embed/python.exe (which has correct sys.path).
                     _retried = False
                     try:
-                        import os as _os, sys as _sys
+                        import subprocess as _sp, os as _os, sys as _sys
                         _usp = _os.path.join(_os.path.expanduser('~'), '.nunba', 'site-packages')
                         _tlib = _os.path.join(_usp, 'torch', 'lib')
-                        if _os.path.isdir(_tlib):
-                            if hasattr(_os, 'add_dll_directory'):
-                                _os.add_dll_directory(_tlib)
-                            _os.environ['PATH'] = _tlib + _os.pathsep + _os.environ.get('PATH', '')
-                            if _usp not in _sys.path:
-                                _sys.path.insert(0, _usp)
-                            # Clear failed import from sys.modules so retry works
-                            for _mk in list(_sys.modules):
-                                if _mk == 'torch' or _mk.startswith('torch.'):
-                                    del _sys.modules[_mk]
-                            import torch
-                            TTSEngine._import_check_cache['_torch_cuda'] = torch.cuda.is_available()
-                            _retried = True
-                            logger.info(f"torch {torch.__version__} loaded after DLL retry — "
-                                        f"cuda={torch.cuda.is_available()}")
+                        # Find python-embed python.exe (frozen builds)
+                        _py = None
+                        if getattr(_sys, 'frozen', False):
+                            _embed = _os.path.join(_os.path.dirname(_sys.executable), 'python-embed', 'python.exe')
+                            if _os.path.isfile(_embed):
+                                _py = _embed
+                        if _py and _os.path.isdir(_tlib):
+                            # Subprocess: clean Python process, no stub pollution
+                            _result = _sp.run(
+                                [_py, '-c',
+                                 f'import sys,os;'
+                                 f'sys.path.insert(0,r"{_usp}");'
+                                 f'os.add_dll_directory(r"{_tlib}");'
+                                 f'import torch;'
+                                 f'print(torch.__version__,torch.cuda.is_available())'],
+                                capture_output=True, text=True, timeout=15,
+                            )
+                            if _result.returncode == 0:
+                                _parts = _result.stdout.strip().split()
+                                _ver = _parts[0] if _parts else '?'
+                                _cuda = _parts[1] == 'True' if len(_parts) > 1 else False
+                                TTSEngine._import_check_cache['_torch_cuda'] = _cuda
+                                _retried = True
+                                logger.info(f"torch {_ver} CUDA={_cuda} (verified via python-embed subprocess)")
+                                if _cuda:
+                                    # Set env so HARTOS model loading uses correct paths
+                                    _os.environ['TORCH_USER_SP'] = _usp
+                                    _os.environ['TORCH_LIB_DIR'] = _tlib
+                            else:
+                                logger.info(f"python-embed torch check failed: {_result.stderr[:200]}")
                     except Exception as _retry_err:
-                        logger.info(f"torch DLL retry also failed: {_retry_err}")
+                        logger.info(f"torch subprocess check failed: {_retry_err}")
                     if not _retried:
                         TTSEngine._import_check_cache['_torch_cuda'] = False
-                        logger.info(f"torch not installed — GPU TTS engines disabled ({_torch_err})")
+                        logger.info(f"torch not available — GPU TTS disabled ({_torch_err})")
             if not TTSEngine._import_check_cache['_torch_cuda']:
                 return False
 
