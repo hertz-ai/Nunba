@@ -35,10 +35,14 @@ def _resolve_paths():
     if sys.platform != 'win32' or not getattr(sys, 'frozen', False):
         return False
 
-    candidate = os.path.join(os.path.dirname(sys.executable), 'python-embed', 'python.exe')
-    if os.path.isfile(candidate):
-        _embed_py = candidate
-        return True
+    _embed_dir = os.path.join(os.path.dirname(sys.executable), 'python-embed')
+    # Prefer pythonw.exe (GUI subsystem, never creates console window)
+    # over python.exe (console subsystem, briefly flashes even with CREATE_NO_WINDOW)
+    for _name in ('pythonw.exe', 'python.exe'):
+        candidate = os.path.join(_embed_dir, _name)
+        if os.path.isfile(candidate):
+            _embed_py = candidate
+            return True
     return False
 
 
