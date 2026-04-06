@@ -64,6 +64,8 @@ _LYRICS_RE = re.compile(
 
 _ATTR_RE = re.compile(r"""(\w+)\s*=\s*['"]([^'"]*?)['"]""")
 
+MAX_MEDIA_DURATION_S = 120  # Cap to prevent abuse via tag injection
+
 
 def _parse_attrs(attr_str: str) -> dict:
     """Parse HTML-style attributes: genre="jazz" duration="10" → dict."""
@@ -72,9 +74,12 @@ def _parse_attrs(attr_str: str) -> dict:
         key, val = m.group(1).lower(), m.group(2)
         if key == 'duration':
             try:
-                val = int(val)
+                val = min(int(val), MAX_MEDIA_DURATION_S)
             except ValueError:
                 val = 30
+        elif key == 'genre':
+            # Sanitize: alphanumeric + spaces only (prevent injection)
+            val = re.sub(r'[^a-zA-Z0-9 ]', '', val)[:50]
         attrs[key] = val
     return attrs
 

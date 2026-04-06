@@ -1354,7 +1354,6 @@ class TTSEngine:
                 try:
                     fsize = os.path.getsize(result)
                     text_len = len(text.strip())
-                    # WAV: ~32KB/s at 16kHz 16-bit. If file < 0.5s for 10+ char text, it's empty/broken
                     if text_len >= 10 and fsize < 16000:
                         logger.warning(f"TTS output suspiciously small ({fsize}B for {text_len} chars), may be broken")
                 except Exception:
@@ -1362,21 +1361,16 @@ class TTSEngine:
             return result
         except Exception as e:
             logger.error(f"Synthesis failed ({self._active_backend}): {e}")
+            # Fallback chain: try next engines in preference order
+            return self._synthesize_with_fallback(
+                text, output_path, voice, self._language, **kwargs)
         finally:
             # Restore evicted models (e.g., Whisper back to GPU for STT).
-            # Immediate — don't wait for lifecycle daemon's 15s tick.
             try:
                 from integrations.service_tools.model_lifecycle import get_model_lifecycle_manager
                 get_model_lifecycle_manager()._process_swap_queue()
             except Exception:
                 pass
-            # ── Fallback chain: try next engines in preference order ──
-            # If the selected engine fails (missing package, CUDA error, model
-            # not downloaded), walk the preference chain and try each remaining
-            # engine. This ensures we always produce audio when possible.
-            return self._synthesize_with_fallback(
-                text, output_path, voice, self._language, **kwargs
-            )
 
     def _synthesize_with_fallback(self, text, output_path, voice, language, **kwargs):
         """Try remaining engines in the preference chain after the primary fails.

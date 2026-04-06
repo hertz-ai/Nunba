@@ -3183,6 +3183,20 @@ def register_routes(app):
     app.route("/agents/migrate", methods=["POST"])(agents_migrate)
     app.route("/agents/<prompt_id>/post", methods=["POST"])(agent_post)
 
+    # TTS audio serving — for async push playback (pupit topic)
+    def tts_serve_audio(filename):
+        """Serve a TTS audio file by filename. Used by frontend after WAMP/SSE push."""
+        import tempfile
+        from flask import send_file, abort
+        # Security: only serve from temp dir, no path traversal
+        if '..' in filename or '/' in filename or '\\' in filename:
+            abort(400)
+        path = os.path.join(tempfile.gettempdir(), filename)
+        if not os.path.isfile(path):
+            abort(404)
+        return send_file(path, mimetype='audio/wav')
+    app.route("/tts/audio/<filename>", methods=["GET"])(tts_serve_audio)
+
     # TTS routes (original)
     app.route("/tts/synthesize", methods=["POST"])(tts_synthesize)
     app.route("/tts/voices", methods=["GET"])(tts_voices)
