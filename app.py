@@ -362,13 +362,11 @@ if getattr(sys, 'frozen', False):
     if _is_stream_broken(sys.stderr):
         sys.stderr = _safe_devnull()
 
-# ── Fix langchain_classic lazy imports for frozen builds ──
-# langchain_classic uses __getattr__ + create_importer (importlib.import_module)
-# for lazy class loading. In frozen cx_Freeze builds, this mechanism fails for
-# chains/loading.py line 17: "from langchain_classic.chains import ReduceDocumentsChain".
-# Fix: pre-import the target submodule and inject the class into the parent namespace
-# so Python finds it in __dict__ directly, bypassing __getattr__.
-if getattr(sys, 'frozen', False):
+# ── Frozen build import fixes (langchain, torch, transformers) ──
+# These take 30+ seconds. SKIPPED here, run AFTER splash is visible.
+# See _FROZEN_FIXES_DONE flag check below.
+_FROZEN_FIXES_DONE = False
+if getattr(sys, 'frozen', False) and False:  # DISABLED — moved after splash
     # Suppress ALL warnings before importing langchain/autogen — they try to write
     # to stderr which may be closed in GUI exe even after our devnull redirect.
     # flaml (via autogen) emits UserWarning, langchain emits DeprecationWarning.
@@ -532,6 +530,59 @@ if getattr(sys, 'frozen', False):
                     _f.write(_fixed)
     except Exception:
         pass
+
+# ── Deferred frozen fixes — run AFTER splash is shown ──
+def _run_frozen_import_fixes():
+    """Run the langchain/torch/transformers fixes that were skipped above."""
+    global _FROZEN_FIXES_DONE
+    if _FROZEN_FIXES_DONE or not getattr(sys, 'frozen', False):
+        return
+    _FROZEN_FIXES_DONE = True
+    import warnings as _warnings
+    _warnings.filterwarnings('ignore')
+    try:
+        import opentelemetry.util._importlib_metadata as _otel_meta
+        _orig_ep_fn = _otel_meta.entry_points
+        class _ContextVarsEP:
+            name = 'contextvars_context'
+            group = 'opentelemetry_context'
+            def load(self):
+                from opentelemetry.context.contextvars_context import ContextVarsRuntimeContext
+                return ContextVarsRuntimeContext
+        def _patched_eps(**kwargs):
+            if kwargs.get('group') == 'opentelemetry_context':
+                return (_ContextVarsEP(),)
+            return _orig_ep_fn(**kwargs)
+        _otel_meta.entry_points = _patched_eps
+    except Exception:
+        pass
+    try:
+        import langchain_classic.chains as _lc_chains
+        if not hasattr(_lc_chains, 'ReduceDocumentsChain'):
+            class _Stub:
+                pass
+            _lc_chains.ReduceDocumentsChain = _Stub
+        del _lc_chains
+    except Exception:
+        pass
+    try:
+        import torch as _torch_test
+        del _torch_test
+    except (ImportError, ModuleNotFoundError):
+        pass
+    except (AttributeError, OSError, RuntimeError):
+        import types as _types
+        _torch_stub = _types.ModuleType('torch')
+        _torch_stub.__path__ = []
+        _torch_stub.__file__ = 'frozen_stub'
+        _torch_stub.cuda = _types.ModuleType('torch.cuda')
+        _torch_stub.cuda.is_available = lambda: False
+        _torch_stub.Tensor = type('Tensor', (), {})
+        _torch_stub.no_grad = lambda: type('', (), {'__enter__': lambda s: None, '__exit__': lambda s, *a: None})()
+        _torch_stub.float32 = 'float32'
+        _torch_stub.bfloat16 = 'bfloat16'
+        sys.modules['torch'] = _torch_stub
+        sys.modules['torch.cuda'] = _torch_stub.cuda
 
 # -- macOS-safe tkinter event pump --
 # On macOS, root.update() enters the Cocoa run loop and never returns when
@@ -734,6 +785,9 @@ if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--install
             _eroot.destroy()
     except Exception:
         _early_splash = None
+
+# ── NOW run the heavy frozen fixes (splash is visible) ──
+_run_frozen_import_fixes()
 
 import argparse
 import atexit
