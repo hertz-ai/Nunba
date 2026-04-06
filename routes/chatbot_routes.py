@@ -1849,8 +1849,8 @@ def chat_route():
                 if resp_text and response.status_code == 200:
                     from hart_intelligence_entry import _tts_synthesize_and_publish
                     _tts_synthesize_and_publish(resp_text, user_id, request_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"TTS after_this_request failed: {e}", exc_info=True)
             return response
 
     # Find the agent configuration
