@@ -325,7 +325,7 @@ if getattr(sys, 'frozen', False):
 # These take 30+ seconds. SKIPPED here, run AFTER splash is visible.
 # See _FROZEN_FIXES_DONE flag check below.
 _FROZEN_FIXES_DONE = False
-if getattr(sys, 'frozen', False) and False:  # DISABLED — moved after splash
+if getattr(sys, 'frozen', False):
     # Suppress ALL warnings before importing langchain/autogen — they try to write
     # to stderr which may be closed in GUI exe even after our devnull redirect.
     # flaml (via autogen) emits UserWarning, langchain emits DeprecationWarning.
