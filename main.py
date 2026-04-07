@@ -14,6 +14,10 @@ import tempfile
 import threading
 import traceback
 
+# PyTorch CUDA: use expandable segments to prevent fragmentation OOM.
+# Without this, 24MB allocations fail even with 5GB free due to fragmentation.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+
 # HuggingFace: skip model update checks when running offline / cached.
 # Prevents 30-60s of HEAD request timeouts on every model load.
 # Models are downloaded during install — no need to re-check at runtime.
