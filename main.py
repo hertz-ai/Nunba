@@ -1812,16 +1812,24 @@ def sse_event_stream():
     from flask import request as flask_request
 
     token = flask_request.args.get('token', '').strip()
-    if not token:
+
+    # Bundled/local mode: allow SSE without JWT (same machine, no auth needed for TTS push)
+    _is_local = bool(os.environ.get('NUNBA_BUNDLED') or getattr(sys, 'frozen', False))
+    if not token and not _is_local:
         return _jsonify({"error": "Missing token query parameter"}), 401
 
-    try:
-        from integrations.social.auth import decode_jwt
-        payload = decode_jwt(token)
-        uid = payload.get('user_id')
-        if not uid:
-            return _jsonify({"error": "Invalid or expired token"}), 401
-    except Exception:
+    uid = None
+    if token:
+        try:
+            from integrations.social.auth import decode_jwt
+            payload = decode_jwt(token)
+            uid = payload.get('user_id')
+        except Exception:
+            if not _is_local:
+                return _jsonify({"error": "Invalid or expired token"}), 401
+    if not uid:
+        uid = flask_request.args.get('user_id', 'guest') if _is_local else None
+    if not uid:
         return _jsonify({"error": "Invalid or expired token"}), 401
 
     _cleanup_dead_sse_clients()

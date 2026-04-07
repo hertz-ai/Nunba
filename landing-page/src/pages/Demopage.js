@@ -1799,14 +1799,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // Listens for long-running setup job progress (TTS engine install, model
   // downloads, etc.) and adds them as chat messages with SetupProgressCard.
   useEffect(() => {
-    // Guard: skip SSE if no JWT — unauthenticated users would trigger a
-    // 401 reconnection storm (EventSource retries every 3s on HTTP errors
-    // with no onerror handler, freezing the UI event loop).
+    // Connect SSE for push events (TTS audio, setup progress).
+    // JWT for authenticated users; guest mode uses user_id param (local/bundled).
     const jwt = localStorage.getItem('jwt');
-    if (!jwt) return;
-
     const baseUrl = window.location.origin;
-    const sseUrl = `${baseUrl}/api/social/events/stream?token=${encodeURIComponent(jwt)}`;
+    const sseUrl = jwt
+      ? `${baseUrl}/api/social/events/stream?token=${encodeURIComponent(jwt)}`
+      : `${baseUrl}/api/social/events/stream?user_id=${encodeURIComponent(effectiveUserId || 'guest')}`;
 
     let eventSource;
     try {
@@ -1819,6 +1818,23 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     eventSource.onerror = () => {
       if (eventSource.readyState === EventSource.CLOSED) return;
       eventSource.close();
+    };
+
+    // TTS audio push — play only if request_id matches current chat request
+    eventSource.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.action === 'TTS' && data.generated_audio_url) {
+          // Skip stale audio from previous requests (same as Android latestRequestId)
+          if (data.request_id && requestIdRef.current && data.request_id !== requestIdRef.current) {
+            logger.log('SSE TTS: stale request_id, skipping', data.request_id, '!=', requestIdRef.current);
+            return;
+          }
+          logger.log('SSE TTS AUDIO:', data.generated_audio_url);
+          const audio = new Audio(data.generated_audio_url);
+          audio.play().catch(() => {});
+        }
+      } catch { /* ignore parse errors */ }
     };
 
     eventSource.addEventListener('setup_progress', (e) => {
