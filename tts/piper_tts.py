@@ -318,7 +318,7 @@ class PiperTTS:
             try:
                 return self._synthesize_with_module(text, output_path, model_path, speed)
             except Exception as e:
-                logger.warning(f"Module synthesis failed: {e}, trying executable")
+                logger.error(f"Module synthesis failed: {e}", exc_info=True)
 
         # Fallback to executable
         piper_exe = self._find_piper_executable()
