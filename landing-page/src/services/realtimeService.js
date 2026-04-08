@@ -67,11 +67,12 @@ class RealtimeService {
             connected: this._connected,
           });
 
-          if (isConnected) {
-            // Crossbar is primary — tear down SSE if open
-            this._closeSSE();
-          } else {
-            // Crossbar lost — open SSE fallback
+          // SSE stays open even when crossbar connects.
+          // Crossbar connects to CLOUD router (aws_rasa.hertzai.com) — handles
+          // remote events. SSE connects to LOCAL Flask — handles TTS audio,
+          // setup progress, agent UI updates from the local HARTOS backend.
+          // Both transports coexist; dedup prevents double delivery.
+          if (!this._sseConnected) {
             this._openSSE();
           }
         }
@@ -184,13 +185,12 @@ class RealtimeService {
 
     _eventSource.onerror = () => {
       this._closeSSE();
-      // Auto-reconnect unless crossbar came back
-      if (!this._crossbarConnected) {
-        _sseReconnectTimer = setTimeout(
-          () => this._openSSE(),
-          SSE_RECONNECT_DELAY
-        );
-      }
+      // Always reconnect SSE — local events (TTS, agent UI) need it
+      // even when cloud crossbar is connected.
+      _sseReconnectTimer = setTimeout(
+        () => this._openSSE(),
+        SSE_RECONNECT_DELAY
+      );
     };
   }
 
