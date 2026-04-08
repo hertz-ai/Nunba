@@ -8,6 +8,7 @@ import connectedImg from '../assets/images/connectedImg.gif';
 import DisconnectedImg from '../assets/images/DisconnectedImg.gif';
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
+import AgentOverlay from '../components/AgentOverlay/AgentOverlay';
 import {Link as RouterLink, useNavigate, useParams, useLocation} from 'react-router-dom';
 import {
   ChevronDown,
@@ -4234,6 +4235,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           />
         )}
       </div>}
+
+      {/* Agent UI Overlay — floating glass cards for agent-pushed components */}
+      <AgentOverlay
+        navigate={navigate}
+        onInlineChatCard={(card) => {
+          setMessages((prev) => [...prev, {
+            type: 'agent_ui',
+            component: card,
+            timestamp: new Date(),
+            sender: 'agent',
+          }]);
+        }}
+      />
     </>
   );
 };
