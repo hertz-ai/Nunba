@@ -1792,6 +1792,7 @@ def sse_event_stream():
     Frontend connects here only when the Crossbar worker reports disconnected.
     Requires a valid JWT token as ``?token=`` query parameter.
     """
+    logging.info(f"SSE: client connecting (args={dict(request.args)})")
     from flask import Response
     from flask import jsonify as _jsonify
     from flask import request as flask_request
