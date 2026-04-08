@@ -1607,6 +1607,17 @@ class _LazyF5:
     def _ensure_loaded(self):
         if self._model is None:
             device = _suggest_device('tts_f5')
+            if device == 'cuda':
+                # Re-check VRAM right before loading — other models may have
+                # claimed GPU since _suggest_device was called at init time.
+                try:
+                    from integrations.service_tools.vram_manager import vram_manager
+                    free = vram_manager.get_free_vram()
+                    if free < 2.0:  # F5 needs ~1.3GB model + buffers
+                        logger.warning(f"F5: only {free:.1f}GB free at load time — using CPU")
+                        device = 'cpu'
+                except Exception:
+                    pass
             from f5_tts.api import F5TTS
             self._model = F5TTS(model='F5TTS_v1_Base', device=device)
             self._device = device
