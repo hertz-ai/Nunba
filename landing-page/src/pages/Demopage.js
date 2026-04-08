@@ -1786,7 +1786,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       }
     };
 
-    if (decryptedUserId && !activeWorker) {
+    if (!activeWorker) {
       initializeWorker();
     }
 
