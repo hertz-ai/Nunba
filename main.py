@@ -2824,16 +2824,28 @@ def start_background_services():
                     pass
                 time.sleep(3)
 
-            # Force F5 model load with a short test sentence:
-            import tempfile as _tf
-            _test_path = os.path.join(_tf.gettempdir(), '_nunba_tts_warmup.wav')
+            # Pre-load F5 only if enough VRAM (model 1.3GB + buffers = need 2.5GB free).
+            # If VRAM is too tight (llama took most of it), skip — first chat uses Piper.
+            _can_preload = False
             try:
-                engine.synthesize("test", output_path=_test_path, language=preferred_lang)
-                if os.path.exists(_test_path):
-                    os.unlink(_test_path)
-                logging.info("TTS warm-up: F5 pre-loaded on GPU — first response will be fast")
-            except Exception as _se:
-                logging.info(f"TTS warm-up: pre-load skipped ({_se}) — first response uses Piper")
+                from integrations.service_tools.vram_manager import vram_manager
+                _free = vram_manager.get_free_vram()
+                _can_preload = _free >= 3.0  # need headroom above 2.5 for model + inference
+                if not _can_preload:
+                    logging.info(f"TTS warm-up: only {_free:.1f}GB VRAM free — skipping F5 pre-load")
+            except Exception:
+                pass
+
+            if _can_preload:
+                import tempfile as _tf
+                _test_path = os.path.join(_tf.gettempdir(), '_nunba_tts_warmup.wav')
+                try:
+                    engine.synthesize("test", output_path=_test_path, language=preferred_lang)
+                    if os.path.exists(_test_path):
+                        os.unlink(_test_path)
+                    logging.info("TTS warm-up: F5 pre-loaded on GPU — first response will be fast")
+                except Exception as _se:
+                    logging.info(f"TTS warm-up: pre-load skipped ({_se}) — first response uses Piper")
 
             backend = engine.get_info().get('active_backend', 'unknown')
             logging.info(f"TTS engine warmed up: {backend} (language={preferred_lang})")
