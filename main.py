@@ -16,6 +16,12 @@ import traceback
 
 # PYTORCH_CUDA_ALLOC_CONF is set in app.py (must be before first torch import).
 
+# WebView2 autoplay: allow Audio.play() from async callbacks (TTS via SSE).
+# Must be set before pywebview creates the WebView2 environment.
+# main.py loads before webview.start() in the frozen build.
+os.environ.setdefault('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+                       '--autoplay-policy=no-user-gesture-required')
+
 # HuggingFace: skip model update checks when running offline / cached.
 # Prevents 30-60s of HEAD request timeouts on every model load.
 # Models are downloaded during install — no need to re-check at runtime.
