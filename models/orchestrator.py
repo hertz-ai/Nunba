@@ -243,6 +243,9 @@ class STTLoader(ModelLoader):
         except Exception:
             pass
         logger.info(f"STT model {entry.id} will load lazily on first use")
+        # Return 'cpu' as run_mode so orchestrator doesn't phantom-allocate GPU VRAM.
+        # The actual device is decided at first transcription by whisper_tool.
+        entry._lazy_stt = True
         return True
 
     def is_downloaded(self, entry: ModelEntry) -> bool:

@@ -2655,14 +2655,12 @@ def start_background_services():
     vision_thread = threading.Thread(target=_start_vision_service, daemon=True)
     vision_thread.start()
 
-    # Start streaming STT WebSocket server (faster-whisper, real-time mic input)
-    try:
-        from integrations.service_tools.whisper_tool import start_stt_stream_server
-        stt_port = start_stt_stream_server()
-        if stt_port:
-            logging.info(f"Streaming STT WebSocket server started on port {stt_port}")
-    except Exception as e:
-        logging.debug(f"Streaming STT server skipped: {e}")
+    # Streaming STT WebSocket server (faster-whisper).
+    # Whisper loads lazily on first transcription request — no need to pre-load.
+    # Pre-loading claims 3GB VRAM on GPU, starving F5-TTS (also needs GPU).
+    # STT works on-demand via the /stt endpoint without the streaming server.
+    # TODO: re-enable with lazy GPU load when user starts recording.
+    logging.info("Streaming STT server deferred (VRAM reserved for TTS)")
 
     # Start DiarizationService (speaker diarization sidecar) in daemon thread
     diarization_thread = threading.Thread(target=_start_diarization_service, daemon=True)

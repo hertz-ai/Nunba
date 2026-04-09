@@ -1628,7 +1628,7 @@ class _LazyF5:
                 try:
                     from integrations.service_tools.vram_manager import vram_manager
                     free = vram_manager.get_free_vram()
-                    if free < 4.0:  # F5 needs 2.5GB + headroom for fragmentation
+                    if free < 2.5:  # F5 model 1.3GB + inference buffers
                         logger.warning(f"F5: only {free:.1f}GB free — skipping (GPU-only model)")
                         raise RuntimeError(f"F5 needs 4GB free VRAM, only {free:.1f}GB available")
                 except ImportError:
