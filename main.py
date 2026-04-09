@@ -1806,6 +1806,16 @@ except Exception:
     pass
 
 
+@app.route('/api/jslog', methods=['POST'])
+def jslog():
+    """Receive console.log from WebView2 and write to frozen_debug.log."""
+    data = request.get_json(silent=True) or {}
+    msg = data.get('msg', '')
+    level = data.get('level', 'log')
+    logging.info(f"[JS:{level}] {msg}")
+    return '', 204
+
+
 @app.route('/api/social/events/stream')
 def sse_event_stream():
     """Local SSE endpoint — fallback transport for flat/desktop topology.

@@ -1803,6 +1803,24 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // All events arrive via realtimeService (WAMP primary, SSE fallback).
   // No transport-specific code here — realtimeService handles reconnection,
   // dedup, and guest/JWT auth internally.
+  // Redirect JS console to server log file (WebView2 has no dev tools access)
+  useEffect(() => {
+    const _origLog = console.log;
+    const _origWarn = console.warn;
+    const _origErr = console.error;
+    const _send = (level, args) => {
+      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+      if (msg.includes('[TTS]') || msg.includes('[SSE]')) {
+        fetch('/api/jslog', { method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({level, msg}) }).catch(() => {});
+      }
+    };
+    console.log = (...args) => { _origLog(...args); _send('log', args); };
+    console.warn = (...args) => { _origWarn(...args); _send('warn', args); };
+    console.error = (...args) => { _origErr(...args); _send('error', args); };
+    return () => { console.log = _origLog; console.warn = _origWarn; console.error = _origErr; };
+  }, []);
+
   useEffect(() => {
     // TTS audio — play when received, skip stale request_ids
     // Persistent audio element — survives across TTS events.
