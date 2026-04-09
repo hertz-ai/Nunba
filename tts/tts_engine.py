@@ -1628,11 +1628,16 @@ class _LazyF5:
                 try:
                     from integrations.service_tools.vram_manager import vram_manager
                     free = vram_manager.get_free_vram()
-                    if free < 2.0:  # F5 needs ~1.3GB model + buffers
-                        logger.warning(f"F5: only {free:.1f}GB free at load time — using CPU")
-                        device = 'cpu'
-                except Exception:
+                    if free < 4.0:  # F5 needs 2.5GB + headroom for fragmentation
+                        logger.warning(f"F5: only {free:.1f}GB free — skipping (GPU-only model)")
+                        raise RuntimeError(f"F5 needs 4GB free VRAM, only {free:.1f}GB available")
+                except ImportError:
                     pass
+            elif device == 'cpu':
+                # F5 on CPU is too slow (120s+ per utterance, times out).
+                # Skip directly — let fallback chain use Piper (instant on CPU).
+                logger.info("F5: CPU mode too slow — skipping to Piper")
+                raise RuntimeError("F5-TTS is GPU-only (CPU inference exceeds timeout)")
             from f5_tts.api import F5TTS
             self._model = F5TTS(model='F5TTS_v1_Base', device=device)
             self._device = device
