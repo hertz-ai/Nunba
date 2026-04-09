@@ -2813,6 +2813,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             const localResult = await chatApi.chat({
               text: inputMessage,
               user_id: effectiveUserId,
+              request_id: generatedRequestId,
               agent_id: currentAgent?.id || currentAgent?.prompt_id || 'local_assistant',
               agent_type: currentAgent?.type || 'local',
               conversation_id: conversationId,
