@@ -1843,11 +1843,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       if (data.generated_audio_url) {
         console.log('[TTS] Playing audio:', data.generated_audio_url);
         ttsAudio.src = data.generated_audio_url;
+        // Wire to audioRef so VoiceVisualizer can animate
+        audioRef.current = ttsAudio;
+        setIsPlayingResponse(true);
+        ttsAudio.onended = () => setIsPlayingResponse(false);
+        ttsAudio.onerror = () => setIsPlayingResponse(false);
         ttsAudio.play().then(() => {
           console.log('[TTS] Audio playing OK');
         }).catch((err) => {
           console.error('[TTS] Play FAILED:', err.message);
-          // Fallback: try with user gesture simulation via click handler
+          setIsPlayingResponse(false);
           const resumeAudio = () => {
             ttsAudio.play().catch(() => {});
             document.removeEventListener('click', resumeAudio);
