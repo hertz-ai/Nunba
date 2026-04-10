@@ -72,6 +72,134 @@ class TestDetectCreateAgentIntent:
         assert self.detect("stop create an agent") is False
 
 
+class TestDetectChannelConnectIntent:
+    """Tier-1 deterministic detection for 'connect to whatsapp' et al.
+    The chat handler uses this result to nudge the LangChain agent toward
+    the Connect_Channel tool instead of producing a text answer."""
+
+    @pytest.fixture(autouse=True)
+    def _import_detector(self):
+        from routes.chatbot_routes import _detect_channel_connect_intent
+        self.detect = _detect_channel_connect_intent
+
+    def test_connect_whatsapp(self):
+        assert self.detect("connect to whatsapp") == "whatsapp"
+
+    def test_connect_whatsapp_no_preposition(self):
+        assert self.detect("connect whatsapp") == "whatsapp"
+
+    def test_add_telegram(self):
+        assert self.detect("add telegram") == "telegram"
+
+    def test_link_my_slack(self):
+        assert self.detect("link my slack") == "slack"
+
+    def test_set_up_discord(self):
+        assert self.detect("set up discord") == "discord"
+
+    def test_hook_up_gmail(self):
+        assert self.detect("hook up gmail") == "gmail"
+
+    def test_register_matrix(self):
+        assert self.detect("register matrix") == "matrix"
+
+    def test_activate_signal(self):
+        assert self.detect("activate signal") == "signal"
+
+    def test_x_normalizes_to_twitter(self):
+        assert self.detect("connect x") == "twitter"
+
+    def test_rocketchat_normalizes(self):
+        assert self.detect("connect rocketchat") == "rocket.chat"
+
+    def test_case_insensitive(self):
+        assert self.detect("CONNECT TO WHATSAPP") == "whatsapp"
+
+    def test_trailing_punctuation(self):
+        assert self.detect("connect whatsapp!") == "whatsapp"
+
+    def test_no_verb(self):
+        # No connect verb → nothing to match
+        assert self.detect("whatsapp is great") is None
+
+    def test_unknown_channel(self):
+        assert self.detect("connect something unknown") is None
+
+    def test_empty(self):
+        assert self.detect("") is None
+
+    def test_none(self):
+        assert self.detect(None) is None
+
+    def test_connect_in_other_context(self):
+        # "connect" without a known channel name → no match
+        assert self.detect("connect me to the database") is None
+
+
+class TestIsCasualMessage:
+    """Tier-0 chit-chat classifier. Casual messages bypass LangChain tool
+    resolution and go straight to the LLM as pure chat — cuts ~3s off
+    'hi' / 'thanks' in bundled mode."""
+
+    @pytest.fixture(autouse=True)
+    def _import_detector(self):
+        from routes.chatbot_routes import _is_casual_message
+        self.is_casual = _is_casual_message
+
+    def test_hi(self):
+        assert self.is_casual("hi") is True
+
+    def test_hello(self):
+        assert self.is_casual("hello") is True
+
+    def test_thanks(self):
+        assert self.is_casual("thanks") is True
+
+    def test_ok(self):
+        assert self.is_casual("ok") is True
+
+    def test_how_are_you(self):
+        assert self.is_casual("how are you") is True
+
+    def test_good_morning(self):
+        assert self.is_casual("good morning") is True
+
+    def test_uppercase_greeting(self):
+        assert self.is_casual("HEY") is True
+
+    def test_trailing_punctuation(self):
+        assert self.is_casual("thanks!!") is True
+
+    def test_long_message_not_casual(self):
+        # Over 8 words → not casual even if no tool trigger
+        assert self.is_casual(
+            "this is a much longer sentence that absolutely should not count"
+        ) is False
+
+    def test_tool_trigger_open(self):
+        assert self.is_casual("open notepad") is False
+
+    def test_tool_trigger_whatsapp(self):
+        # Tool-trigger overrides short length
+        assert self.is_casual("connect whatsapp") is False
+
+    def test_tool_trigger_search(self):
+        assert self.is_casual("search for X") is False
+
+    def test_tool_trigger_remember(self):
+        assert self.is_casual("remember this") is False
+
+    def test_short_unknown_phrase_is_casual(self):
+        # ≤3 words, no tool trigger → treated as casual ack
+        assert self.is_casual("sounds fine") is True
+
+    def test_empty(self):
+        assert self.is_casual("") is False
+
+    def test_none(self):
+        assert self.is_casual(None) is False
+
+
 class TestExtractResourceRequest:
     """Test the RESOURCE_REQUEST marker extraction."""
 
