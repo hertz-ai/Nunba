@@ -239,6 +239,16 @@ class TTSLoader(ModelLoader):
 
         # 3. GPU backends: eagerly spawn the ToolWorker subprocess.
         try:
+            # Sync idle_timeout from the catalog entry so the admin UI's
+            # "idle auto-stop" setting takes effect on this instance
+            # (not just the hardcoded default in the tool module).
+            idle_s = getattr(entry, 'idle_timeout_s', None)
+            if idle_s is not None and hasattr(worker, 'set_idle_timeout'):
+                try:
+                    worker.set_idle_timeout(float(idle_s))
+                except Exception:
+                    pass
+
             worker._get_or_start()
             entry.loaded = True
             entry.device = 'cuda' if run_mode == 'gpu' else run_mode
@@ -347,6 +357,15 @@ class STTLoader(ModelLoader):
             if _stt_tool.is_alive():
                 logger.info("STT worker alive with old size — stopping for respawn")
                 _stt_tool.stop()
+
+        # Sync idle_timeout from the catalog entry so admin-UI edits
+        # take effect on this instance.
+        idle_s = getattr(entry, 'idle_timeout_s', None)
+        if idle_s is not None and hasattr(_stt_tool, 'set_idle_timeout'):
+            try:
+                _stt_tool.set_idle_timeout(float(idle_s))
+            except Exception:
+                pass
 
         entry.loaded = True
         entry.device = 'cuda' if run_mode == 'gpu' else 'cpu'
