@@ -153,6 +153,26 @@ const ReversiGame = {
       }
     },
   },
+
+  // AI move enumeration — uses the same getValidMoves helper that
+  // the UI and onBegin auto-pass use, so there's exactly one
+  // source of truth for "what's a legal move". Empty list = pass.
+  //
+  // Defense in depth: the turn.onBegin above auto-passes when no
+  // valid moves exist, so in normal play the bot is never asked to
+  // enumerate in the no-moves state — onBegin fires first. But we
+  // still emit the pass move here so the bot never sees an empty
+  // enumeration (which would break MCTSBot's selection step). Do
+  // NOT remove without also confirming onBegin stays authoritative.
+  ai: {
+    enumerate: (G, ctx) => {
+      const validMoves = getValidMoves(G.board, ctx.currentPlayer);
+      if (validMoves.length === 0) {
+        return [{move: 'pass', args: []}];
+      }
+      return validMoves.map((m) => ({move: 'placePiece', args: [m.r, m.c]}));
+    },
+  },
 };
 
 const BOARD_GREEN = '#2E7D32';
