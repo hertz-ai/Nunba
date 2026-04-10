@@ -442,11 +442,13 @@ if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--install
 # These take 20-30s. Splash is already visible above.
 _FROZEN_FIXES_DONE = False
 if getattr(sys, 'frozen', False):
+    _trace("frozen fixes block starting")
     # Suppress ALL warnings before importing langchain/autogen — they try to write
     # to stderr which may be closed in GUI exe even after our devnull redirect.
     # flaml (via autogen) emits UserWarning, langchain emits DeprecationWarning.
     import warnings as _warnings
     _warnings.filterwarnings('ignore')
+    _trace("starting opentelemetry fix")
     # ── Fix opentelemetry.context StopIteration crash in frozen builds ──
     # cx_Freeze doesn't bundle setuptools/importlib_metadata dist-info, so
     # entry_points(group="opentelemetry_context") returns empty →
@@ -475,6 +477,7 @@ if getattr(sys, 'frozen', False):
         _otel_meta.entry_points = _patched_eps
     except Exception:
         pass
+    _trace("opentelemetry fix done, starting langchain fix")
     # ── Inject ReduceDocumentsChain placeholder into langchain_classic.chains ──
     # chains/loading.py line 17: "from langchain_classic.chains import ReduceDocumentsChain"
     # This triggers __getattr__ → create_importer → importlib.import_module →
@@ -496,20 +499,64 @@ if getattr(sys, 'frozen', False):
         del _lc_chains
     except Exception:
         pass
-    # ── Pre-guard torch to prevent circular import crash ──
-    # autogen → transformers → torch. In frozen builds (python-embed),
-    # torch can't fully initialize (missing cuda DLLs, partial .pyd files).
-    # Result: "partially initialized module 'torch' has no attribute 'autograd'"
-    # which kills the entire Tier-1 import chain (hart_intelligence → create_recipe).
-    # Fix: attempt a clean import. If it fails, replace the partially-initialized
-    # module with a stub so autogen's import doesn't crash the chain.
+    _trace("langchain fixes done, starting torch pre-guard")
+    # ── Pre-guard torch to prevent crash from broken native DLL ──
+    # autogen → transformers → torch. In frozen builds, torch_cpu.dll can
+    # segfault (0xc0000005) if CUDA DLLs are corrupted or have dependency
+    # conflicts. Python's try/except CANNOT catch C-level segfaults — the OS
+    # kills the entire process instantly (Event ID 1000 in Windows Event Viewer).
+    # Fix: test torch import in a subprocess (python-embed/python.exe) first.
+    # If the subprocess crashes, we apply the stub without ever loading the
+    # broken DLL in-process. Subprocess crash → exit code != 0 → safe fallback.
+    _torch_safe = False
     try:
-        import torch as _torch_test
-        # torch loaded OK (bundled CPU torch or user-installed CUDA torch)
-        del _torch_test
-    except (ImportError, ModuleNotFoundError):
-        pass  # torch not installed at all — shouldn't happen with bundled CPU torch
-    except (AttributeError, OSError, RuntimeError):
+        _torch_test_exe = os.path.join(
+            os.path.dirname(os.path.abspath(sys.executable)),
+            'python-embed', 'python.exe'
+        )
+        if os.path.isfile(_torch_test_exe):
+            import subprocess as _sub_torch
+            _torch_env = os.environ.copy()
+            # Ensure user site-packages (CUDA torch) is discoverable
+            _torch_env['PYTHONPATH'] = os.pathsep.join([
+                _user_sp,
+                os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                             'python-embed', 'Lib', 'site-packages'),
+                _torch_env.get('PYTHONPATH', ''),
+            ])
+            try:
+                _tp = _sub_torch.run(
+                    [_torch_test_exe, '-c',
+                     'import torch; print(torch.__version__); '
+                     'print("cuda" if torch.cuda.is_available() else "cpu")'],
+                    capture_output=True, text=True, timeout=30,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW
+                    env=_torch_env,
+                )
+                _torch_safe = (_tp.returncode == 0)
+                if _torch_safe:
+                    _trace(f"torch subprocess OK: {_tp.stdout.strip()}")
+                else:
+                    _trace(f"torch subprocess FAILED (exit {_tp.returncode}): {_tp.stderr[:200]}")
+            except Exception as _e:
+                _trace(f"torch subprocess test error: {_e}")
+            del _sub_torch
+        else:
+            # No python-embed (dev mode) — direct import is safer (not frozen DLL issues)
+            _torch_safe = True
+    except Exception:
+        pass
+
+    if _torch_safe:
+        try:
+            import torch as _torch_test
+            del _torch_test
+        except (ImportError, ModuleNotFoundError):
+            pass
+        except (AttributeError, OSError, RuntimeError):
+            _torch_safe = False  # fall through to stub
+
+    if not _torch_safe:
         # torch partially initialized or DLL load failure — stub it out.
         # Must be comprehensive: downstream code (CLIPBackend, rl_ef, VibeVoice)
         # checks torch.Tensor, torch.no_grad, torch.float32, torch.bfloat16, etc.
@@ -582,6 +629,7 @@ if getattr(sys, 'frozen', False):
         sys.modules['torch.nn.functional'] = _torch_stub.nn.functional
         del _types, _torch_stub, _bad_torch, _TensorStub, _NoGradStub
 
+    _trace("torch pre-guard done, starting transformers fix")
     # ── Fix transformers.__init__ frozenset crash in frozen builds ──
     # transformers 5.x uses `import_structure[frozenset({})]` at line 772.
     # In cx_Freeze frozen builds, the dict keys resolve differently and the
@@ -640,24 +688,9 @@ def _run_frozen_import_fixes():
         del _lc_chains
     except Exception:
         pass
-    try:
-        import torch as _torch_test
-        del _torch_test
-    except (ImportError, ModuleNotFoundError):
-        pass
-    except (AttributeError, OSError, RuntimeError):
-        import types as _types
-        _torch_stub = _types.ModuleType('torch')
-        _torch_stub.__path__ = []
-        _torch_stub.__file__ = 'frozen_stub'
-        _torch_stub.cuda = _types.ModuleType('torch.cuda')
-        _torch_stub.cuda.is_available = lambda: False
-        _torch_stub.Tensor = type('Tensor', (), {})
-        _torch_stub.no_grad = lambda: type('', (), {'__enter__': lambda s: None, '__exit__': lambda s, *a: None})()
-        _torch_stub.float32 = 'float32'
-        _torch_stub.bfloat16 = 'bfloat16'
-        sys.modules['torch'] = _torch_stub
-        sys.modules['torch.cuda'] = _torch_stub.cuda
+    # torch pre-guard already ran at module level (subprocess + stub).
+    # If _FROZEN_FIXES_DONE was False, the module-level block already handled torch.
+    # No need to re-import here — the stub or real module is already in sys.modules.
 
 # -- macOS-safe tkinter event pump --
 # On macOS, root.update() enters the Cocoa run loop and never returns when
