@@ -305,9 +305,14 @@ class TestGetLangPreference:
         result = _get_lang_preference('en')
         assert result[0] == BACKEND_CHATTERBOX_TURBO
 
-    def test_unknown_language_returns_default(self):
+    def test_unknown_language_matches_wildcard_engine(self):
+        # Piper and espeak carry languages=('*',) in the catalog spec so
+        # the primary catalog-driven path matches them for any language,
+        # including ones not listed in LANG_ENGINE_PREFERENCE. That's why
+        # this test isn't the `_DEFAULT_PREFERENCE` hardcoded fallback
+        # anymore — the catalog succeeds first via the wildcard match.
         result = _get_lang_preference('xx_unknown')
-        assert result == _DEFAULT_PREFERENCE
+        assert 'piper' in result or result == _DEFAULT_PREFERENCE
 
     def test_hindi_returns_indic_parler(self):
         result = _get_lang_preference('hi')

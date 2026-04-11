@@ -316,7 +316,10 @@ def _get_lang_preference(language: str) -> list[str]:
             supporting = []
             for entry in entries:
                 langs = set(getattr(entry, 'languages', None) or [])
-                if language in langs:
+                # '*' is the wildcard convention for engines that
+                # support every language (piper, espeak) — a single
+                # spec covers all languages, no per-language duplication.
+                if language in langs or '*' in langs:
                     lang_prio = (getattr(entry, 'language_priority', None) or {})
                     prio_val = lang_prio.get(language, 999)
                     supporting.append((prio_val, -(getattr(entry, 'priority', 0) or 0), entry))
