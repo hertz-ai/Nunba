@@ -1434,10 +1434,19 @@ class LlamaConfig:
                 self._download_mmproj_only(preset)
                 mmproj_path = self.installer.get_mmproj_path(preset)
 
-        # Build command — same pattern as start_server but with caption-optimized flags
-        binary_path = self.installer.get_binary_path()
+        # Build command — same pattern as start_server but with caption-optimized flags.
+        # NOTE: the installer exposes find_llama_server(), NOT get_binary_path().
+        # The old caption path invented that method name and crashed at boot with
+        # AttributeError, which meant the draft 0.8B never came up and HARTOS's
+        # draft-first dispatcher silently fell through to the 4B main model for
+        # every request. Use the same resolver the main start_server calls.
+        binary_path = self.installer.find_llama_server(check_system_first=True)
         if not binary_path:
-            logger.error("llama-server binary not found")
+            logger.error(
+                "llama-server binary not found by installer.find_llama_server() — "
+                "draft caption server cannot start. Run the main LLM setup first "
+                "or call installer.install_llama_cpp() to provision the binary."
+            )
             return False
 
         cmd = [str(binary_path), "--model", str(model_path),

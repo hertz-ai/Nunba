@@ -380,16 +380,34 @@ def _deferred_platform_init():
     except Exception as e:
         logging.debug(f"Caption server event subscription skipped: {e}")
 
-    # Eager-start the 0.8B caption/draft server so HARTOS's draft-first
-    # dispatcher has a live endpoint the moment the first /chat request
-    # arrives. Before this, the caption server was only started lazily
-    # on the first video frame, which meant chat draft-first always
-    # fell through to the 4B main model — defeating the intent of the
-    # fast-path classifier. The 0.8B is small enough (~550MB + mmproj)
-    # that paying its start cost once at boot is far cheaper than
-    # paying the 4B's full latency on every "hi". Disable with
-    # HEVOLVE_DRAFT_FIRST=0.
-    if os.environ.get('HEVOLVE_DRAFT_FIRST', '').strip() != '0':
+    # Eager-start BOTH llama-server instances at boot so the first /chat
+    # request doesn't cold-start either model.
+    #
+    # Why both, and why parallel:
+    #   - The draft 0.8B (port 8081) services HARTOS's draft-first
+    #     dispatcher, which expects an immediate ~300ms classifier reply
+    #     on every /chat. Without it, draft-first silently falls through
+    #     to the 4B and the user eats the full 4B latency on every "hi".
+    #   - The main 4B (port 8080) services the full agentic path
+    #     (LangChain + autogen tool calls). Lazy-starting it on first
+    #     chat adds ~8-15s of cold-start on top of LangChain setup.
+    #   - Each model has its OWN mmproj file — mmproj-Qwen3.5-0.8B-F16.gguf
+    #     for the draft and mmproj-Qwen3.5-4B-F16.gguf for the main.
+    #     The installer.get_mmproj_path(preset) resolver inside
+    #     start_server / start_caption_server handles the preset-specific
+    #     download + path independently, so booting both in parallel
+    #     does not race on a shared mmproj file.
+    #   - We boot them on two separate background threads so the slower
+    #     4B download+load doesn't hold up the faster 0.8B, and neither
+    #     blocks the Flask app thread.
+    #
+    # Disable the draft eager-boot with HEVOLVE_DRAFT_FIRST=0.
+    # Disable the main eager-boot with HEVOLVE_EAGER_LLM=0 (e.g. when
+    # running against a remote llama.cpp server already serving :8080).
+    _boot_draft = os.environ.get('HEVOLVE_DRAFT_FIRST', '').strip() != '0'
+    _boot_main = os.environ.get('HEVOLVE_EAGER_LLM', '').strip() != '0'
+
+    if _boot_draft:
         def _boot_draft_server():
             try:
                 from llama.llama_config import LlamaConfig
@@ -406,6 +424,35 @@ def _deferred_platform_init():
 
         threading.Thread(target=_boot_draft_server, daemon=True,
                          name='draft-server-boot').start()
+
+    if _boot_main:
+        def _boot_main_server():
+            try:
+                from llama.llama_config import LlamaConfig
+                cfg = LlamaConfig()
+                # check_server_running() is cheap — avoids a redundant
+                # start when the installer or a prior run already left
+                # a healthy llama-server on the main port.
+                main_port = int(cfg.config.get('server_port', 8080))
+                if cfg.check_server_running(main_port):
+                    logging.info(
+                        f"Main LLM server already running on port "
+                        f"{main_port} — skipping eager boot")
+                    return
+                ok = cfg.start_server()
+                if ok:
+                    logging.info(
+                        f"Main LLM server ready on port {main_port} "
+                        f"(mmproj auto-loaded by start_server)")
+                else:
+                    logging.warning(
+                        "Main LLM server failed to start at boot — "
+                        "first /chat request will cold-start it")
+            except Exception as e:
+                logging.warning(f"Main LLM boot failed: {e}")
+
+        threading.Thread(target=_boot_main_server, daemon=True,
+                         name='main-llm-boot').start()
 
 threading.Thread(target=_deferred_platform_init, daemon=True,
                  name='platform-init').start()
