@@ -115,11 +115,14 @@ langchain_config.json
 Hevolve_Sales_Outreach_Embodied_AI.md
 outreach_sender.html
 
-# Claude Code — personal state only. Agent specs + project hooks are TRACKED.
+# Claude Code — personal state only. Agent specs, project hooks, and the
+# shared agent workspace are TRACKED.
 .claude/*
 !.claude/agents/
 !.claude/agents/**
 !.claude/settings.json
+!.claude/shared/
+!.claude/shared/**
 
 # Credentials and keys
 *.pem
