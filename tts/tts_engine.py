@@ -1472,11 +1472,18 @@ class TTSEngine:
                    text: str,
                    output_path: str | None = None,
                    voice: str | None = None,
-                   speed: float = 1.0,
+                   speed: float | None = None,
                    language: str | None = None,
                    **kwargs) -> str | None:
         """
         Synthesize text to speech.
+
+        When ``speed`` is left as None (the default), the active
+        TTS_SPEED_PROFILE multiplier is applied — fast/balanced/
+        natural/slow, read from env var or ~/.nunba/tts_config.json.
+        Callers that pass an explicit float override the profile,
+        same as before. The default profile is ``balanced`` (×1.10)
+        per the project guideline "speed > naturalness default".
 
         Checks pre-synth cache first for instant playback.
         Routes to the best engine for the given language.
@@ -1484,6 +1491,18 @@ class TTSEngine:
         """
         if not text or not text.strip():
             return None
+
+        # Resolve the effective speed multiplier. None → profile
+        # default, explicit float → caller override. This is the ONE
+        # place the profile is consulted for TTS synth — every engine
+        # sees the same multiplier via the `speed` kwarg we forward
+        # below, so there's no per-engine drift.
+        if speed is None:
+            try:
+                from tts.speed_profile import get_default_speed
+                speed = get_default_speed()
+            except Exception:
+                speed = 1.0
 
         # Multi-language / multi-modal segmentation: split text by script
         # and media tags (<music>, <sing>, <lyrics>), synth each segment
@@ -1565,9 +1584,15 @@ class TTSEngine:
         # Serialize GPU inference — PyTorch models are NOT thread-safe.
         # Without this, concurrent calls (e.g. warm-up + chat) cause tensor
         # corruption, CUDA state errors, or segfaults.
+        #
+        # speed is forwarded explicitly because it's declared as its own
+        # param on this method's signature — **kwargs does NOT capture
+        # named params, so without this pass-through the profile
+        # multiplier (and caller overrides) would be silently dropped.
         with self._synth_lock:
             try:
                 result = inst.synthesize(text=text, output_path=output_path,
+                                         voice=voice, speed=speed,
                                          language=self._language, **kwargs)
                 if result and os.path.isfile(result):
                     try:
