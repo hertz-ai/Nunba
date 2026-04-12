@@ -574,15 +574,20 @@ def _run_router(port: int, host: str):
             logger.warning("WAMP router did not start — realtime features will use SSE fallback")
 
 
-def start_wamp_router(port: int = 8088, host: str = '0.0.0.0') -> bool:
+def start_wamp_router(port: int = 8088, host: str = '127.0.0.1') -> bool:
     """Start the embedded WAMP router in a daemon thread.
 
     Non-blocking. Returns True if startup was initiated.
     Safe to call multiple times (idempotent).
 
+    Security: defaults to 127.0.0.1 (localhost only). Set host='0.0.0.0'
+    explicitly for regional/LAN deployments where React Native clients
+    connect from other devices. WAMP auth should be added before exposing
+    to LAN (tracked: ethical-hacker finding #1).
+
     Args:
         port: WebSocket port (default 8088, matching crossbarWorker.js expectation)
-        host: Bind address (default 0.0.0.0 for LAN access from RN clients)
+        host: Bind address (default 127.0.0.1 — localhost only for security)
     """
     global _router_thread, _started
 
