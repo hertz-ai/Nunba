@@ -54,6 +54,7 @@ const adminNav = [
   {label: 'Network Nodes', path: '/admin/network-nodes', icon: <HubIcon />, minRole: 'central'},
   {label: 'Models', path: '/admin/models', icon: <MemoryIcon />},
   {label: 'Providers', path: '/admin/providers', icon: <CloudIcon />},
+  {label: 'Task Ledger', path: '/admin/task-ledger', icon: <BuildIcon />},
 ];
 
 export default function AdminLayout({children}) {

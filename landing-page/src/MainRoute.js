@@ -153,6 +153,7 @@ const AdminContentTasks = lazyRetry(() => import('./components/Admin/ContentTask
 const AdminNetworkNodes = lazyRetry(() => import('./pages/admin/NetworkNodesPage'));
 const AdminModelManagement = lazyRetry(() => import('./pages/admin/ModelManagementPage'));
 const AdminProviderManagement = lazyRetry(() => import('./pages/admin/ProviderManagementPage'));
+const AdminTaskLedger = lazyRetry(() => import('./pages/Admin/TaskLedgerPage'));
 
 function MainRoutes() {
   return (
@@ -558,6 +559,7 @@ function MainRoutes() {
         <Route path="/admin/network-nodes" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="central" fallback="/admin"><AdminNetworkNodes /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/models" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminModelManagement /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/providers" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminProviderManagement /></RoleGuard></AdminLayout></Suspense>} />
+        <Route path="/admin/task-ledger" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminTaskLedger /></RoleGuard></AdminLayout></Suspense>} />
 
         {/* 404 catch-all */}
         <Route path="*" element={<NotFoundPage />} />
