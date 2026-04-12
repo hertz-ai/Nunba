@@ -341,6 +341,19 @@ app = Flask(__name__, static_folder=None)
 # for serving the React SPA or handling the first chat message.
 def _deferred_platform_init():
     """Bootstrap EventBus + Crossbar subscribers in background."""
+    # Point HARTOS crossbar_server.py (WAMP client) at our embedded router
+    # so it connects locally instead of trying the unreachable cloud router.
+    _wamp_port = os.environ.get('NUNBA_WAMP_PORT', '8088')
+    if not os.environ.get('CBURL'):
+        os.environ['CBURL'] = f'ws://localhost:{_wamp_port}/ws'
+    # Point HARTOS realtime.py HTTP publisher at our Flask HTTP bridge
+    # (crossbarhttp3 defaults to :8088/publish which is the full Crossbar
+    # node's HTTP bridge — our embedded router doesn't have that, but
+    # Flask :5000/publish acts as the equivalent).
+    if not os.environ.get('WAMP_URL'):
+        _flask_port = os.environ.get('NUNBA_PORT', '5000')
+        os.environ['WAMP_URL'] = f'http://localhost:{_flask_port}/publish'
+
     try:
         from core.platform.bootstrap import bootstrap_platform
         bootstrap_platform()
@@ -1934,7 +1947,26 @@ def broadcast_sse_event(event_type, data, user_id=None):
     Used by realtime.py as a local fallback when Crossbar WAMP is unavailable.
     If *user_id* is provided, only sends to that user's queues.
     If *user_id* is None, broadcasts to ALL connected clients.
+
+    Also publishes into the embedded WAMP router (if running) so
+    crossbarWorker.js subscribers receive the event in real time.
     """
+    # Mirror to embedded WAMP router for crossbarWorker.js subscribers
+    try:
+        from wamp_router import publish_local, is_running
+        if is_running() and user_id:
+            # Map event types to the WAMP topics crossbarWorker.js subscribes to
+            wamp_data = dict(data) if isinstance(data, dict) else {'raw': data}
+            wamp_data['type'] = event_type
+            if event_type == 'tts' or (isinstance(data, dict) and data.get('action') == 'TTS'):
+                publish_local(f'com.hertzai.pupit.{user_id}', wamp_data)
+            elif event_type == 'notification':
+                publish_local(f'com.hertzai.hevolve.social.{user_id}', wamp_data)
+            else:
+                publish_local(f'com.hertzai.hevolve.chat.{user_id}', wamp_data)
+    except Exception:
+        pass  # WAMP router not available — SSE is the primary transport
+
     import json
     msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
     now = time.time()
@@ -1987,6 +2019,49 @@ try:
         _main_ref.broadcast_sse_event = broadcast_sse_event
 except Exception:
     pass
+
+
+@app.route('/publish', methods=['POST'])
+def wamp_http_bridge():
+    """HTTP bridge for WAMP publish — compatible with crossbarhttp3 protocol.
+
+    Accepts POST with JSON body: {topic: str, args: list, kwargs: dict}
+    Publishes into the embedded WAMP router so all WebSocket subscribers receive it.
+    This replaces the Crossbar.io HTTP Bridge Service for local/bundled mode.
+    """
+    try:
+        from wamp_router import publish_local, is_running
+        if not is_running():
+            return jsonify({'error': 'WAMP router not running'}), 503
+        data = request.get_json(silent=True) or {}
+        topic = data.get('topic', '')
+        args = data.get('args', [])
+        kwargs = data.get('kwargs', {})
+        if not topic:
+            return jsonify({'error': 'Missing topic'}), 400
+        # crossbarhttp3 sends args as a single JSON string; unwrap it
+        if isinstance(args, str):
+            try:
+                args = [json.loads(args)]
+            except (json.JSONDecodeError, TypeError):
+                args = [args]
+        publish_local(topic, args, kwargs)
+        return jsonify({'id': None}), 200
+    except ImportError:
+        return jsonify({'error': 'WAMP router not available'}), 503
+    except Exception as e:
+        logging.warning(f"WAMP HTTP bridge error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/wamp/status')
+def wamp_router_status():
+    """Return embedded WAMP router health and statistics."""
+    try:
+        from wamp_router import get_stats
+        return jsonify(get_stats())
+    except ImportError:
+        return jsonify({'running': False, 'error': 'module not available'}), 503
 
 
 @app.route('/api/jslog', methods=['POST'])
@@ -2834,6 +2909,19 @@ def start_background_services():
         logging.debug("Background services already started — skipping")
         return
     _bg_services_started = True
+
+    # Start embedded WAMP router (port 8088) for realtime push.
+    # Must start BEFORE LangChain/crossbar_server (they are WAMP *clients*
+    # that connect TO this router). In bundled mode the cloud router at
+    # aws_rasa.hertzai.com is unreachable — this local router is the only
+    # transport for TTS audio delivery, chat streaming, game state, etc.
+    try:
+        from wamp_router import start_wamp_router
+        start_wamp_router()
+        logging.info("Embedded WAMP router starting on port %s",
+                     os.environ.get('NUNBA_WAMP_PORT', '8088'))
+    except Exception as e:
+        logging.warning("WAMP router failed to start (realtime will use SSE fallback): %s", e)
 
     # Start LangChain service in background thread (non-blocking)
     langchain_thread = threading.Thread(target=start_langchain_service, daemon=True)

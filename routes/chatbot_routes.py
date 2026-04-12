@@ -648,6 +648,35 @@ def publish(inp, user_id, topic):
     logger.info(f'STUB: publish called for user {user_id}, topic {topic}')
 
 
+def publish_to_crossbar(user_id, data):
+    """Publish a message to WAMP subscribers via the embedded router + SSE.
+
+    Used by upload_routes.py (PDF parse completion) and any code that needs
+    to push events to the frontend in real time.
+
+    Args:
+        user_id: Target user's ID (used in topic routing)
+        data: Dict payload to publish
+    """
+    # 1. Embedded WAMP router (reaches crossbarWorker.js subscribers)
+    try:
+        from wamp_router import publish_local, is_running
+        if is_running():
+            topic = f'com.hertzai.hevolve.chat.{user_id}'
+            publish_local(topic, data)
+    except Exception:
+        pass
+
+    # 2. SSE fallback (reaches realtimeService.js EventSource subscribers)
+    try:
+        import __main__
+        if hasattr(__main__, 'broadcast_sse_event'):
+            event_type = data.get('type', 'message') if isinstance(data, dict) else 'message'
+            __main__.broadcast_sse_event(event_type, data, user_id=user_id)
+    except Exception:
+        pass
+
+
 
 def setfit(input_text, request_id=None):
     """

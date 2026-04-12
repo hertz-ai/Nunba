@@ -21,7 +21,7 @@ import {
   Clock,
   ChevronLeft,
 } from 'lucide-react';
-import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL } from '../config/apiBase';
+import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL } from '../config/apiBase';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -1798,10 +1798,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             decryptedUserId,
             requestId
           );
+          // Local-first: connect to embedded WAMP router (port 8088)
+          // when Flask backend is on localhost, otherwise use cloud router.
+          const isLocalBackend = window.location.hostname === 'localhost' ||
+            window.location.hostname === '127.0.0.1' ||
+            window.location.hostname === '0.0.0.0';
+          const wsUri = isLocalBackend ? WAMP_LOCAL_URL : WAMP_CLOUD_URL;
           crossbarWorker.postMessage({
             type: 'INIT',
             payload: {
-              wsUri: 'wss://aws_rasa.hertzai.com:8445/wss',
+              wsUri,
               userId: decryptedUserId,
               maxRetries: 8,
               retryDelay: 5000,
