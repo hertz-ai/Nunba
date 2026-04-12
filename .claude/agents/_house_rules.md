@@ -109,7 +109,13 @@ These rules come from repeated operator directives across multiple sessions. Tre
 - **Push only when explicitly asked.** Same rule.
 - **Validate CI after push.** Use `gh` (the real GitHub CLI, not the conda impostor) to check workflow status.
 
-## 8. Communication rules
+## 8. Model and effort rules
+
+- **ONLY Claude Opus** for all agent invocations. No Sonnet, no Haiku, no exceptions. Pass `model: 'opus'` on every Agent tool call.
+- **Maximum effort** on every agent invocation. No shortcuts, no "good enough" approximations, no skipping steps because the context is large. Each agent does its FULL checklist on every invocation. If the checklist has 10 items, all 10 are evaluated.
+- **Full transparency** — every agent narrates its actions to the user in real-time (see master-orchestrator's live-updates protocol). No silent work.
+
+## 9. Communication rules
 
 - **Terse by default.** No headers and subheaders for a simple answer. Match response length to question complexity.
 - **No narration of internal deliberation.** State decisions and results directly.

@@ -1,0 +1,45 @@
+{
+  "_comment": "State file for the master-orchestrator continuous loop. Updated in-place by the orchestrator on every iteration. Tracks iteration count, start time, 24-hour bound, target instance, and the last iteration's top-line outcome so cross-session runs have continuity.",
+  "loop_id": "nunba-installed-build-2026-04-12",
+  "started_at_iso": "2026-04-12T00:00:00Z",
+  "started_at_note": "FILLED BY FIRST ITERATION — orchestrator overwrites with real ISO timestamp on its first fire",
+  "target": {
+    "instance": "Installed Nunba desktop build",
+    "install_path_windows": "C:\\Program Files (x86)\\HevolveAI\\Nunba\\",
+    "binary": "C:\\Program Files (x86)\\HevolveAI\\Nunba\\Nunba.exe",
+    "python_embed": "C:\\Program Files (x86)\\HevolveAI\\Nunba\\python-embed\\",
+    "logs_dir": "C:\\Users\\sathi\\Documents\\Nunba\\logs\\",
+    "flask_port": 5000,
+    "main_llama_port": 8080,
+    "draft_llama_port": 8081,
+    "crossbar_port": 8088,
+    "vision_ws_port": 5460,
+    "minicpm_port": 9891
+  },
+  "iteration_count": 0,
+  "max_iterations": 288,
+  "max_wall_clock_hours": 24,
+  "interval_minutes": 5,
+  "cron_schedule": "2-57/5 * * * *",
+  "cron_job_id": "FILLED_BY_CRONCREATE",
+  "last_iteration": {
+    "iso": null,
+    "outcome": null,
+    "duration_seconds": null,
+    "findings_count": 0,
+    "failures_count": 0,
+    "tasks_filed": 0
+  },
+  "cumulative": {
+    "findings_total": 0,
+    "failures_total": 0,
+    "tasks_filed_total": 0,
+    "fixes_committed": 0,
+    "drift_entries_filed": 0,
+    "runtime_log_critical_total": 0,
+    "runtime_log_error_total": 0,
+    "runtime_log_warning_total": 0
+  },
+  "learned_patterns_applied": [],
+  "_protocol": "Every orchestrator iteration must: (1) read this file, (2) check wall-clock vs max_wall_clock_hours — if exceeded, call CronDelete on cron_job_id and exit, (3) check iteration_count vs max_iterations — same, (4) do one loop phase A/B/C/D, (5) update last_iteration + cumulative + iteration_count += 1, (6) save this file back atomically."
+}
