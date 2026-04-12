@@ -139,3 +139,42 @@ These rules come from repeated operator directives across multiple sessions. Tre
 ---
 
 **Every specialist agent in this directory reads both `_ecosystem-context.md` AND this `_house_rules.md` before producing a review. A finding that violates these rules is wrong, regardless of how well-written the agent's other output is.**
+
+## 11. Question original intent before changing code
+
+- **Never remove existing logic without understanding WHY it was written that way.** Read git blame, read the commit message, read surrounding comments. The old code may have a subtle correctness reason.
+- **When an agent proposes a code change, the orchestrator must dispatch the architect agent to verify the change doesn't break an assumption the original author had.** The user should NOT be the one catching these — the agents should catch them before commit.
+- **Specific pattern: mmproj name injection.** The old `_download_mmproj_only` injected the model's base name into the local mmproj filename to distinguish between models that share the same HF source file (all Qwen models share `mmproj-F16.gguf` but need unique local copies). The T9 fix preserved this via `preset.mmproj_file` (the unique local name) vs `preset.mmproj_source_file` (the shared HF name). Future agents must understand this distinction.
+- **When changing a function with a parallel path, read BOTH paths completely before editing EITHER.** The "correct" path and the "broken" path may each hold a piece of the full intent.
+
+## 12. Every task passes through ALL agents before moving on
+
+- **No task is considered done until EVERY relevant agent has signed off.** The orchestrator does NOT move to the next task until the current task has been reviewed by all agents in the 4-wave pipeline AND each agent has returned APPROVE / SHIP.
+- **If ANY agent returns REWORK or REJECT, the task stays open.** The orchestrator addresses the feedback, re-runs the rejecting agent, and only moves on when that agent flips to APPROVE.
+- **The sign-off chain is explicit and visible.** For every task, the orchestrator maintains a sign-off ledger:
+
+```
+Task: T20 — speculative_dispatch tier fix
+  Wave 1:
+    [x] architect    — APPROVE (SRP clean, no parallel paths)
+    [x] ciso         — APPROVE (no auth surface change)
+    [x] ethical-hacker — APPROVE (no new attack vector)
+    [x] vuln-scanner — APPROVE (no new deps)
+    [x] perf-engineer — APPROVE (no latency impact)
+    [x] devops       — APPROVE (CI green)
+    [x] sre          — APPROVE (no SLO risk)
+  Wave 2:
+    [x] testing      — GREEN (verified on live instance)
+    [x] reviewer     — APPROVE (DRY/SRP/SoC clean)
+  Wave 3:
+    [x] tpo          — SHIP (no cross-repo impact)
+    [x] product-owner — SHIP (unblocks draft-first UX)
+    [x] tech-writer  — APPROVE (docstring updated)
+  Wave 4 (if needed):
+    [-] ceo          — not needed (all waves unanimous)
+```
+
+- **The sign-off ledger is appended to `.claude/shared/agent-findings.md`** so there's a permanent audit trail of which agents reviewed what.
+- **Skipping an agent is NOT allowed.** If an agent is not relevant (e.g., ux-designer for a backend-only change), the orchestrator explicitly marks it N/A with a one-line reason — not silently omitted.
+- **The testing agent signs off LAST in Wave 2** — it exercises the fix on the live running instance. If the live test fails, the entire sign-off chain is void and the task goes back to Wave 1.
+- **Moving to the next task without full sign-off is a protocol violation** that the orchestrator must flag and self-correct. If time pressure forces a partial sign-off, the task stays IN_PROGRESS (not COMPLETED) and the missing agent reviews are queued for the next iteration.

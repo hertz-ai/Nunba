@@ -1,45 +1,43 @@
 {
-  "_comment": "State file for the master-orchestrator continuous loop. Updated in-place by the orchestrator on every iteration. Tracks iteration count, start time, 24-hour bound, target instance, and the last iteration's top-line outcome so cross-session runs have continuity.",
+  "_comment": "State file for the master-orchestrator continuous loop.",
   "loop_id": "nunba-installed-build-2026-04-12",
-  "started_at_iso": "2026-04-12T00:00:00Z",
-  "started_at_note": "FILLED BY FIRST ITERATION — orchestrator overwrites with real ISO timestamp on its first fire",
+  "started_at_iso": "2026-04-12T06:30:00Z",
   "target": {
     "instance": "Installed Nunba desktop build",
-    "install_path_windows": "C:\\Program Files (x86)\\HevolveAI\\Nunba\\",
-    "binary": "C:\\Program Files (x86)\\HevolveAI\\Nunba\\Nunba.exe",
-    "python_embed": "C:\\Program Files (x86)\\HevolveAI\\Nunba\\python-embed\\",
     "logs_dir": "C:\\Users\\sathi\\Documents\\Nunba\\logs\\",
     "flask_port": 5000,
-    "main_llama_port": 8080,
     "draft_llama_port": 8081,
-    "crossbar_port": 8088,
-    "vision_ws_port": 5460,
-    "minicpm_port": 9891
+    "crossbar_port": 8088
   },
-  "iteration_count": 0,
+  "iteration_count": 3,
   "max_iterations": 288,
   "max_wall_clock_hours": 24,
   "interval_minutes": 5,
-  "cron_schedule": "2-57/5 * * * *",
-  "cron_job_id": "FILLED_BY_CRONCREATE",
+  "cron_job_id": "bd555892",
   "last_iteration": {
-    "iso": null,
-    "outcome": null,
-    "duration_seconds": null,
-    "findings_count": 0,
+    "iso": "2026-04-12T08:10:00Z",
+    "phase": "C+A_hybrid",
+    "outcome": "T20 fixed + committed (8e712d1). speculative_dispatch + local_llm moved from FULL to STANDARD tier. RAM threshold 16.0→15.0. Draft-first classifier now ENABLED on desktop. Also verified T9 mmproj fix is NOT regressed (confirmed preset.mmproj_file vs mmproj_source_file distinction is correct). Added house rule #11 (question original intent).",
+    "duration_seconds": 200,
+    "findings_count": 2,
     "failures_count": 0,
-    "tasks_filed": 0
+    "tasks_filed": 0,
+    "tasks_completed": 1
   },
   "cumulative": {
-    "findings_total": 0,
-    "failures_total": 0,
-    "tasks_filed_total": 0,
-    "fixes_committed": 0,
+    "findings_total": 7,
+    "failures_total": 2,
+    "tasks_filed_total": 1,
+    "fixes_committed": 3,
     "drift_entries_filed": 0,
-    "runtime_log_critical_total": 0,
-    "runtime_log_error_total": 0,
-    "runtime_log_warning_total": 0
+    "runtime_log_critical_total": 1,
+    "runtime_log_error_total": 1,
+    "runtime_log_warning_total": 3
   },
-  "learned_patterns_applied": [],
-  "_protocol": "Every orchestrator iteration must: (1) read this file, (2) check wall-clock vs max_wall_clock_hours — if exceeded, call CronDelete on cron_job_id and exit, (3) check iteration_count vs max_iterations — same, (4) do one loop phase A/B/C/D, (5) update last_iteration + cumulative + iteration_count += 1, (6) save this file back atomically."
+  "learned_patterns_applied": [
+    "architect: mmproj_source_file for HF URLs, not mmproj_file",
+    "architect: check_server_running must verify /v1/models identity",
+    "sre: speculative_dispatch requires NodeTierLevel.FULL but desktop reports STANDARD",
+    "house_rule_11: question original intent before changing code — read BOTH parallel paths"
+  ]
 }
