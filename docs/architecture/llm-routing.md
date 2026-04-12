@@ -1,95 +1,113 @@
 # LLM Routing
 
-Nunba uses a multi-tier routing system to process chat messages, balancing speed, intelligence, and reliability.
+Nunba uses a draft-first routing architecture where every chat message hits the 0.8B draft model first. The draft either responds directly (casual chat) or signals the 4B main model to handle it (tool-assisted reasoning).
+
+## Architecture Overview
+
+```
+User message
+  → chatbot_routes.py (casual_conv=True by default)
+    → hartos_backend_adapter.chat()
+      → HARTOS /chat endpoint
+        → speculative_dispatcher.dispatch_draft_first()
+          → 0.8B Qwen3.5 on :8081 (~300ms)
+            ├── casual_conv=True + confidence ≥ 0.85 → DRAFT RESPONDS DIRECTLY
+            ├── delegate=local → re-dispatch to 4B LangChain Agent
+            ├── is_create_agent=true → autogen agent creation pipeline
+            └── channel_connect=<channel> → channel connection flow
+```
 
 ## Routing Tiers
 
-### Tier 1: Deterministic Intent Detection (chatbot_routes.py)
+### Tier 0: Draft-First Classifier (0.8B on :8081)
 
-Fast, rule-based pattern matching. No LLM needed.
+The 0.8B Qwen3.5 model is the ONLY intent classifier. No Python-side regex, no keyword tables, no deterministic pattern matching. The draft receives an augmented prompt with JSON schema instructions and returns a structured envelope:
 
-- **Greetings**: "hello", "hi", "hey" → template response
-- **Abusive language**: profanity filter → polite rejection
-- **Agent creation**: "create an agent", "build me a bot" → creation pipeline
-- **Negation guards**: "don't create", "no I meant" → prevents false triggers
-
-Response time: < 10 ms
-
-### Tier 2: LangChain Agent (hart_intelligence, port 6778)
-
-Full-featured AI with tools, memory, and conversation history.
-
-```
-chatbot_routes.py → POST :6778/chat → LangChain Agent
-                                         ├── Web Search tool
-                                         ├── Visual Context (camera) tool
-                                         ├── Memory tools (remember, recall)
-                                         ├── Agent creation tools
-                                         └── LLM backend → llama.cpp :8080
+```json
+{
+  "reply": "Hey! How can I help?",
+  "delegate": "none",
+  "is_casual": true,
+  "is_correction": false,
+  "is_create_agent": false,
+  "channel_connect": null,
+  "language_change": null,
+  "confidence": 0.95
+}
 ```
 
-Features:
-- **Tools**: Web search, visual context, memory graph, agent creation
-- **Memory**: Conversation history + semantic memory graph
-- **Prompts**: Hevolve system prompt with cultural wisdom layer
-- **Prompt routing**: `prompt_id=None` → regular chat, `prompt_id=<id>` → specific agent
+- `delegate: "none"` + `confidence >= 0.85` → draft reply returned directly
+- `delegate: "local"` → escalates to 4B LangChain Agent with tools
+- `is_create_agent: true` → routes to autogen agent creation
+- `language_change: "ta"` → overrides preferred_lang, persists to hart_language.json
+
+Response time: ~300ms (pinned in VRAM, never evicted)
+
+### Tier 1: LangChain Agent (4B on :8080)
+
+Full-featured AI with tools, memory, and conversation history. Only invoked when the draft escalates (`delegate: "local"`) or when `casual_conv=False` (agentic flows).
+
+```
+HARTOS /chat (casual_conv=False)
+  → LangChain Agent (CustomGPT on :8080)
+    ├── Web Search tool
+    ├── Visual Context (camera) tool
+    ├── Memory tools (remember, recall)
+    ├── Shell_Command tool
+    ├── Agent creation tools
+    ├── Calculator, Full History, etc.
+    └── LLM backend → llama.cpp 4B on :8080
+```
 
 Response time: 1-10 seconds (depends on tools used)
 
-### Tier 3: Raw llama.cpp (port 8080)
+### Tier 2: Raw llama.cpp (port 8080)
 
-Direct LLM inference without tools or memory. Used as fallback.
-
-```
-chatbot_routes.py → POST :8080/v1/chat/completions
-```
-
-- No tools, no memory, no system prompt enrichment
-- Fastest LLM response path
-- Used when LangChain service is down
+Direct LLM inference without tools or memory. Used as fallback when HARTOS is still loading.
 
 Response time: 0.5-5 seconds
 
-## Cloud Routing (Optional)
+## `casual_conv` Flag
 
-When connected to Hevolve cloud:
+The `casual_conv` parameter controls which model handles the request:
 
-```
-React → azurekong.hertzai.com/chat/custom_gpt
-         → chatbot_pipeline → gpt_lang()
-         → hart_intelligence → Azure GPT
-```
+- `casual_conv=True` (default for plain chat) → routes to 0.8B draft via `DRAFT_GPT_API`
+- `casual_conv=False` (agentic flows) → routes to 4B main via `GPT_API` with full tool chain
 
-The frontend detects cloud availability via the backend health endpoint and routes accordingly.
+**When is `casual_conv=False`?** When any of these are set:
+- `agent_id` / `prompt_id` (specific trained agent)
+- `create_agent=True`
+- `agentic_execute=True`
+- `agentic_plan` is set
+- `autonomous_creation=True`
 
-## Agent Creation Pipeline
+## Model Lifecycle
 
-When the user requests agent creation (detected via Tier 1 or Tier 2):
+| Model | Port | VRAM | Lifecycle | Purpose |
+|-------|------|------|-----------|---------|
+| 0.8B Qwen3.5 (draft) | :8081 | ~1.5GB | `pinned=True` (never evicted) | Chat classifier + casual replies |
+| 4B Qwen3.5 (main) | :8080 | ~3.5GB | `pressure_evict_only=True` | Tool-assisted reasoning |
+| STT/TTS/VLM | varies | varies | Default (idle eviction) | One-shot tasks |
 
-```
-1. Intent detected: "create an agent for X"
-2. prompt_id assigned (or existing agent reused)
-3. Autonomous mode: backend drives gather_info → create_recipe
-4. Frontend auto-sends "proceed" every 1.5s
-5. Status lifecycle: Creation → Review → Evaluation → Completed
-6. Completed agent added to agent list for reuse
-```
+## Endpoint Resolution
 
-## Configuration
+Both `GPT_API` (4B) and `DRAFT_GPT_API` (0.8B) resolve via `_resolve_llm_endpoint`:
 
-### `casual_conv` Flag
+1. `core.port_registry.get_local_llm_url()` / `get_local_draft_url()`
+2. Env var fallback: `HEVOLVE_LOCAL_LLM_URL` / `HEVOLVE_LOCAL_DRAFT_URL`
+3. Appends `/chat/completions` to the base URL
 
-The `casual_conv` parameter in `hevolve_backend_adapter.py` controls tool availability:
+## Authentication (Tier-Based)
 
-- `casual_conv=False` (default) → all LangChain tools enabled
-- `casual_conv=True` → tools disabled, chat-only mode
+| Tier | `HEVOLVE_NODE_TIER` | `/chat` auth | Body user_id |
+|------|---------------------|--------------|--------------|
+| Flat (desktop) | `flat` (default) | Optional | Accepted |
+| Regional (LAN) | `regional` | JWT required | Rejected (401) |
+| Central (cloud) | `central` | JWT required | Rejected (401) |
 
-!!! warning
-    Setting `casual_conv=True` silently disables ALL tools (web search, visual context, memory, etc.). This was a known bug that caused tools to appear broken.
+## Intelligence Preference
 
-### Intelligence Preference
-
-Users can set their preferred LLM routing in the frontend:
+Users can set their preferred routing in the frontend:
 
 | Preference | Behavior |
 |------------|----------|
