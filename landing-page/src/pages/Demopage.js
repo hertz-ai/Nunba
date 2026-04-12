@@ -1287,6 +1287,38 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         return;
       }
 
+      // Draft-replacement: if the WAMP message carries a speculation_id,
+      // find the draft bubble and replace its content in-place instead of
+      // appending a second message. This prevents the "two bubbles" confusion.
+      if (parsed.speculation_id && extractedText) {
+        const specId = parsed.speculation_id;
+        setMessages((prev) => {
+          const idx = prev.findIndex(
+            (m) => m.speculationId === specId && m.isDraft
+          );
+          if (idx !== -1) {
+            const updated = [...prev];
+            updated[idx] = {
+              ...updated[idx],
+              content: extractedText,
+              isDraft: false,
+              source: parsed.source || 'expert',
+            };
+            return updated;
+          }
+          // No matching draft found — append normally
+          return [...prev, {
+            type: 'assistant',
+            content: extractedText,
+            source: parsed.source || 'expert',
+          }];
+        });
+        setShouldScroll(true);
+        setLoading(false);
+        setIsRequestInFlight(false);
+        return;
+      }
+
       // TTS audio pushed from backend — play immediately
       if (parsed.action === 'TTS' && parsed.generated_audio_url) {
         logger.log('TTS AUDIO RECEIVED:', parsed.generated_audio_url);
@@ -2977,6 +3009,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 content: responseText,
                 source: resultData.source || 'langchain_local',
                 timestamp: new Date(),
+                // Draft-first: tag with speculationId so the expert
+                // response arriving via WAMP can replace this bubble
+                // instead of appending a second one.
+                ...(resultData.speculation_id && resultData.expert_pending && {
+                  speculationId: resultData.speculation_id,
+                  isDraft: true,
+                }),
               };
               setMessages((prev) => {
                 const updated = [...prev];
