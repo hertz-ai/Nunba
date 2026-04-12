@@ -983,39 +983,22 @@ class TTSEngine:
     def _select_backend_for_language(self, language='en') -> str:
         """Select the best TTS backend for a language.
 
-        Delegates to ModelOrchestrator.select_best('tts', language) which uses
-        ModelCatalog + VRAMManager (single source of truth for compute-aware
-        model selection). Falls back to local ENGINE_CAPABILITIES walk only
-        if the orchestrator is unavailable (standalone/embedded mode).
+        Walks the quality-ordered LANG_ENGINE_PREFERENCE list and picks the
+        first engine that _can_run_backend(). This ensures the HIGHEST QUALITY
+        runnable engine is always selected — not the one with the highest
+        catalog score (which favors previously-loaded engines over better ones).
 
         Auto-installs missing backends in background via TTSLoader.download().
         """
-        # Try orchestrator first (canonical path)
-        try:
-            from models.orchestrator import get_orchestrator
-            orch = get_orchestrator()
-            entry = orch.select_best('tts', language=language)
-            if entry:
-                # Map catalog entry ID → Nunba backend constant via canonical mapping
-                catalog_id = entry.id.replace('tts-', '', 1)
-                backend = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
-                if self._can_run_backend(backend):
-                    logger.info(f"Selected backend '{backend}' for language '{language}' (via orchestrator)")
-                    return backend
-                else:
-                    # Orchestrator picked it but it's not runnable — trigger install
-                    self._try_auto_install_backend(backend)
-                    logger.info(f"Backend '{backend}' selected but not runnable — install triggered")
-        except Exception as e:
-            logger.debug(f"Orchestrator TTS selection unavailable: {e}")
-
-        # Fallback: preference walk via catalog (or local dict in standalone mode)
         self._ensure_hw_detected()
         prefs = _get_lang_preference(language)
         for backend in prefs:
             if self._can_run_backend(backend):
-                logger.info(f"Selected backend '{backend}' for language '{language}' (local fallback)")
+                logger.info(f"Selected backend '{backend}' for language '{language}' (quality-ordered)")
                 return backend
+            else:
+                # Not runnable — trigger background install for next time
+                self._try_auto_install_backend(backend)
 
         # Absolute fallback — Piper on CPU
         logger.info(f"All backends unavailable for '{language}', falling back to Piper (CPU)")
