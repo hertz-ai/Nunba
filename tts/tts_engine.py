@@ -881,16 +881,21 @@ class TTSEngine:
         # ── VRAM check: VRAMManager.can_fit() is the single authority ──
         if required_vram == 0:
             return True
+        return self._vram_allows(backend)
+
+    def _vram_allows(self, backend) -> bool:
+        """Check if VRAMManager says this backend can fit in available VRAM."""
         tool_name = self._get_vram_tool_name(backend)
-        if tool_name:
-            try:
-                from integrations.service_tools.vram_manager import vram_manager
-                if not vram_manager.can_fit(tool_name):
-                    logger.info(f"Backend {backend} skipped: "
-                                f"VRAMManager says {tool_name} won't fit")
-                    return False
-            except Exception:
-                pass
+        if not tool_name:
+            return True
+        try:
+            from integrations.service_tools.vram_manager import vram_manager
+            if not vram_manager.can_fit(tool_name):
+                logger.info(f"Backend {backend} blocked: "
+                            f"VRAMManager says {tool_name} won't fit")
+                return False
+        except Exception:
+            pass
         return True
 
     # Track which backends have a background auto-install in progress
@@ -908,23 +913,14 @@ class TTSEngine:
         installed previously), False if install was kicked off in background.
         """
         # Don't install GPU backends that can't run on this hardware.
-        # VRAMManager.can_fit() is the single source of truth for GPU budget.
         cap = _get_engine_capabilities(backend)
         if cap.get('vram_gb', 0) > 0:
             self._ensure_hw_detected()
             if not self.has_gpu:
                 logger.debug(f"Skipping auto-install of '{backend}': no GPU detected")
                 return False
-            tool_name = self._get_vram_tool_name(backend)
-            if tool_name:
-                try:
-                    from integrations.service_tools.vram_manager import vram_manager
-                    if not vram_manager.can_fit(tool_name):
-                        logger.info(f"Skipping auto-install of '{backend}': "
-                                    f"VRAMManager says {tool_name} won't fit")
-                        return False
-                except Exception:
-                    pass
+            if not self._vram_allows(backend):
+                return False
 
         with TTSEngine._auto_install_lock:
             # Already failed? Don't retry every request

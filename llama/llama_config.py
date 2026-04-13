@@ -258,7 +258,7 @@ class LlamaConfig:
                         f"free={free:.1f}GB → {'dual' if viable else 'single'}")
             return viable
         except Exception:
-            return True  # safe default
+            return False  # safe default — single model, no wasted startup
 
     def diagnose(self) -> dict:
         """Comprehensive hardware + software diagnosis for smart auto-start.

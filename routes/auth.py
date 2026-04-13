@@ -24,7 +24,7 @@ def _is_local_request():
     trusted_proxy = os.environ.get('TRUSTED_PROXY', '')
     if trusted_proxy and request.remote_addr == trusted_proxy:
         forwarded_for = request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
-        return forwarded_for in ('127.0.0.1', '::1', 'localhost', '')
+        return forwarded_for in ('127.0.0.1', '::1', 'localhost')
     # Direct connection - check remote_addr
     return request.remote_addr in ('127.0.0.1', '::1')
 
