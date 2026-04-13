@@ -878,23 +878,19 @@ class TTSEngine:
             if not TTSEngine._import_check_cache['_torch_cuda']:
                 return False
 
-        # ── VRAM check: enough room alongside the LLM? ──
-        # GPU-heavy TTS engines (F5=2.5GB, chatterbox=1.5GB) need VRAM that
-        # may already be consumed by the LLM. On ≤6GB cards the LLM is pinned
-        # and leaves no headroom — skip to CPU engines (kokoro/piper/espeak)
-        # instead of installing a GPU engine that will OOM at inference time.
+        # ── VRAM check: VRAMManager.can_fit() is the single authority ──
         if required_vram == 0:
             return True
-        try:
-            from integrations.service_tools.vram_manager import vram_manager
-            free_gb = vram_manager.get_free_vram()
-            if free_gb < required_vram:
-                logger.info(
-                    f"Backend {backend} skipped: needs {required_vram}GB VRAM "
-                    f"but only {free_gb:.1f}GB free (LLM pinned)")
-                return False
-        except Exception:
-            pass  # VRAMManager unavailable — let it try
+        tool_name = self._get_vram_tool_name(backend)
+        if tool_name:
+            try:
+                from integrations.service_tools.vram_manager import vram_manager
+                if not vram_manager.can_fit(tool_name):
+                    logger.info(f"Backend {backend} skipped: "
+                                f"VRAMManager says {tool_name} won't fit")
+                    return False
+            except Exception:
+                pass
         return True
 
     # Track which backends have a background auto-install in progress
@@ -911,13 +907,24 @@ class TTSEngine:
         Returns True if packages are already importable (may have been partially
         installed previously), False if install was kicked off in background.
         """
-        # Don't install GPU backends on machines without GPUs — waste of bandwidth
+        # Don't install GPU backends that can't run on this hardware.
+        # VRAMManager.can_fit() is the single source of truth for GPU budget.
         cap = _get_engine_capabilities(backend)
         if cap.get('vram_gb', 0) > 0:
             self._ensure_hw_detected()
             if not self.has_gpu:
                 logger.debug(f"Skipping auto-install of '{backend}': no GPU detected")
                 return False
+            tool_name = self._get_vram_tool_name(backend)
+            if tool_name:
+                try:
+                    from integrations.service_tools.vram_manager import vram_manager
+                    if not vram_manager.can_fit(tool_name):
+                        logger.info(f"Skipping auto-install of '{backend}': "
+                                    f"VRAMManager says {tool_name} won't fit")
+                        return False
+                except Exception:
+                    pass
 
         with TTSEngine._auto_install_lock:
             # Already failed? Don't retry every request
@@ -942,6 +949,7 @@ class TTSEngine:
             TTSEngine._auto_install_pending.add(backend)
 
         def _bg_install():
+            progress = None
             try:
                 from tts.package_installer import install_backend_full, make_chat_progress_callback
                 logger.info(f"[auto-install] Starting background install for '{backend}'")
@@ -954,8 +962,12 @@ class TTSEngine:
                 if ok:
                     logger.info(f"[auto-install] '{backend}' installed successfully — "
                                 f"will be used on next TTS request")
+                    if progress:
+                        progress(f"{backend} ready!")
                 else:
                     logger.warning(f"[auto-install] '{backend}' install failed: {result}")
+                    if progress:
+                        progress(f"{backend} setup failed — using fallback engine")
                     with TTSEngine._auto_install_lock:
                         TTSEngine._auto_install_failed.add(backend)
             except ImportError:
@@ -965,11 +977,25 @@ class TTSEngine:
                     TTSEngine._auto_install_failed.add(backend)
             except Exception as e:
                 logger.error(f"[auto-install] '{backend}' install error: {e}")
+                if progress:
+                    progress(f"{backend} setup failed — using fallback engine")
                 with TTSEngine._auto_install_lock:
                     TTSEngine._auto_install_failed.add(backend)
             finally:
                 with TTSEngine._auto_install_lock:
                     TTSEngine._auto_install_pending.discard(backend)
+                # Send completion event to dismiss the progress card
+                try:
+                    import sys as _sys
+                    main_mod = _sys.modules.get('__main__')
+                    if main_mod and hasattr(main_mod, 'broadcast_sse_event'):
+                        main_mod.broadcast_sse_event('setup_progress', {
+                            'type': 'setup_progress',
+                            'job_type': f'tts_setup_{backend}',
+                            'complete': True,
+                        })
+                except Exception:
+                    pass
 
         t = threading.Thread(target=_bg_install, daemon=True,
                              name=f"tts-auto-install-{backend}")
