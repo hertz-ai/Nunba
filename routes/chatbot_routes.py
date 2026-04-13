@@ -3304,7 +3304,7 @@ def register_routes(app):
             _home / '.nunba' / 'vibevoice' / 'cache',
             _home / '.nunba' / 'tts_cache' / 'presynth',
             _home / '.nunba' / 'tts_cache',
-            Path(tempfile.gettempdir()),
+            # tempdir removed — serves arbitrary files (ethical-hacker finding)
         ]
         for d in search_dirs:
             path = d / filename

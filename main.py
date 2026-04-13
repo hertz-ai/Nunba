@@ -2022,6 +2022,7 @@ def wamp_http_bridge():
 
 
 @app.route('/api/wamp/status')
+@require_local_or_token
 def wamp_router_status():
     """Return embedded WAMP router health and statistics."""
     try:
@@ -2392,6 +2393,7 @@ logging.info(f"hart-backend direct: {HARTOS_BACKEND_DIRECT}, adapter: {HARTOS_BA
 # ============== Logs Viewer Endpoints ==============
 
 @app.route('/logs', methods=['GET'])
+@require_local_or_token
 def list_logs():
     """List available log files"""
     log_files = []
@@ -2548,6 +2550,7 @@ def clear_log():
 
 
 @app.route('/logs/open-folder', methods=['GET'])
+@require_local_or_token
 def open_logs_folder():
     """Open the logs folder in file explorer"""
     try:

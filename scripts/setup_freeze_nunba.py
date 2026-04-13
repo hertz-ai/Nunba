@@ -290,6 +290,7 @@ build_exe_options = {
         "waitress",
         "requests",
 
+        "routes.auth",  # Shared auth decorator (require_local_or_token)
         "routes.chatbot_routes",  # Chatbot routes module
         "routes.kids_media_routes",  # Kids media generation routes
 
