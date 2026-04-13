@@ -35,6 +35,7 @@ export default function SetupProgressCard({ steps = [], jobType = '', isComplete
 
   const label = JOB_LABELS[jobType] || jobType.replace(/^tts_setup_/, '').replace(/_/g, ' ');
   const latestStep = steps[steps.length - 1];
+  const isFailed = steps.some(s => s.message?.includes('failed') || s.message?.includes('error'));
   // Estimate progress: most installs have 6-10 steps
   const estimatedTotal = 8;
   const progressPercent = isComplete ? 100 : Math.min(95, (steps.length / estimatedTotal) * 100);
@@ -84,7 +85,7 @@ export default function SetupProgressCard({ steps = [], jobType = '', isComplete
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
           <Box sx={{
             width: 8, height: 8, borderRadius: '50%',
-            background: isComplete ? '#2ECC71' : ACCENT,
+            background: isComplete ? (isFailed ? '#E74C3C' : '#2ECC71') : ACCENT,
             animation: isComplete ? 'none' : 'pulse 1.5s infinite',
             '@keyframes pulse': {
               '0%, 100%': { opacity: 1 },
@@ -97,7 +98,9 @@ export default function SetupProgressCard({ steps = [], jobType = '', isComplete
             fontSize: '0.85rem',
             letterSpacing: '0.02em',
           }}>
-            {isComplete ? `${label} Ready` : `Setting up ${label}...`}
+            {isComplete
+              ? (isFailed ? `${label} Failed` : `${label} Ready`)
+              : `Setting up ${label}...`}
           </Typography>
         </Box>
 
@@ -160,13 +163,15 @@ export default function SetupProgressCard({ steps = [], jobType = '', isComplete
         {showComplete && (
           <Fade in timeout={600}>
             <Typography sx={{
-              color: '#2ECC71',
+              color: isFailed ? '#E74C3C' : '#2ECC71',
               fontSize: '0.8rem',
               fontWeight: 500,
               mt: 1,
               textAlign: 'center',
             }}>
-              Voice engine ready — next message will use {label}
+              {isFailed
+                ? `${label} unavailable — using fallback voice engine`
+                : `Voice engine ready — next message will use ${label}`}
             </Typography>
           </Fade>
         )}
