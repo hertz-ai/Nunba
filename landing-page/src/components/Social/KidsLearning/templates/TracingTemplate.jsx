@@ -29,7 +29,7 @@ import {
 } from '@mui/material';
 import {kidsColors, kidsAnimations} from '../kidsTheme';
 import {GameSounds, GameCommentary} from '../shared/SoundManager';
-import CelebrationOverlay from '../shared/CelebrationOverlay';
+import InlineCelebration from '../shared/InlineCelebration';
 import ProgressStars from '../shared/ProgressStars';
 import useCelebration from '../shared/useCelebration';
 
@@ -761,14 +761,7 @@ export default function TracingTemplate({config, onAnswer, onComplete}) {
         </Box>
       </Fade>
 
-      <CelebrationOverlay
-        type={celebType}
-        visible={celebVisible}
-        streakCount={celebStreak}
-        onDone={handleCelebDone}
-        starsEarned={starsEarned}
-        score={celebScore}
-      />
+      <InlineCelebration type={celebType} gameTemplate="tracing" visible={celebVisible} onDone={handleCelebDone} streakCount={celebStreak} score={celebScore} />
     </Box>
   );
 }

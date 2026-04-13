@@ -322,6 +322,7 @@ def chat(
     casual_conv: bool = False,
     video_req: bool = False,
     media_request: bool = False,
+    media_mode: str = 'text',
     autonomous: bool = False,
     agentic_execute: bool = False,
     agentic_plan: dict = None,
@@ -368,6 +369,7 @@ def chat(
         "tools": None,
         "video_req": video_req,
         "media_request": media_request,
+        "media_mode": media_mode,  # TODO: HARTOS /chat needs data.get('media_mode') to use this
         "autonomous": autonomous,
         "agentic_execute": agentic_execute,
     }
@@ -957,6 +959,9 @@ def create_proxy_blueprint():
             conversation_id=data.get('conversation_id'),
             request_id=data.get('request_id')
         )
+        # TTS is fired from hart_intelligence_entry.py line 5431 (inside HARTOS /chat handler)
+        # No duplicate call needed here — proxy_chat calls HARTOS via test_client
+        # which goes through the full /chat handler including _tts_synthesize_and_publish.
         return jsonify(result)
 
     @proxy_bp.route('/prompts', methods=['GET'])

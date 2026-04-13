@@ -4,9 +4,25 @@ import {usersApi, chatApi} from '../../../services/socialApi';
 import {Box, CircularProgress, Typography} from '@mui/material';
 import React, {useState, useEffect, lazy, Suspense} from 'react';
 import {useParams, useLocation} from 'react-router-dom';
+import LiquidActionBar from './LiquidActionBar';
 
 // Lazy load the full ported Demopage (ChatInterface) for local/offline mode
 const ChatInterface = lazy(() => import('../../../pages/Demopage'));
+
+// Pull the user role off of localStorage/session so LiquidActionBar can
+// filter admin-only destinations out for unprivileged viewers. Falls back
+// to 'flat' when unknown.
+function getSessionRole() {
+  try {
+    return (
+      localStorage.getItem('hevolve_access_role') ||
+      localStorage.getItem('social_user_role') ||
+      'flat'
+    );
+  } catch {
+    return 'flat';
+  }
+}
 
 const HOSTED_URL = 'https://hevolve.hertzai.com';
 
@@ -187,6 +203,7 @@ export default function AgentChatPage() {
   }
 
   // ── Local mode: render the full ported ChatInterface (Demopage.js) ──
+  const userRole = getSessionRole();
   return (
     <Box sx={{height: '100vh', display: 'flex', flexDirection: 'column'}}>
       <ModeBar
@@ -194,6 +211,7 @@ export default function AgentChatPage() {
         onClick={() => setViewMode('webview')}
       />
       <Box sx={{flex: 1, minHeight: 0, position: 'relative'}}>
+        <LiquidActionBar userRole={userRole} />
         <Suspense
           fallback={
             <Box textAlign="center" py={6}>

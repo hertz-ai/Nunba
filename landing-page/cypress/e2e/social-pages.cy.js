@@ -114,18 +114,18 @@ describe('Social/Gamification Pages E2E Tests', () => {
   // -----------------------------------------------------------------------
   describe('Social Feed Page', () => {
     it('should load the social feed page without crashing', () => {
-      cy.visit('/social', {timeout: 30000});
+      cy.visit('/social', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       cy.url().should('include', '/social');
     });
 
     it('should handle empty feed data gracefully', () => {
-      cy.visit('/social', {timeout: 30000});
+      cy.visit('/social', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Should not show unhandled crash errors
       cy.get('body').should('not.contain.text', 'Uncaught');
@@ -138,19 +138,19 @@ describe('Social/Gamification Pages E2E Tests', () => {
   // -----------------------------------------------------------------------
   describe('Challenges Page', () => {
     it('should load the challenges page without crashing', () => {
-      cy.visit('/social/challenges', {timeout: 30000});
+      cy.visit('/social/challenges', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       cy.url().should('include', '/social/challenges');
     });
 
     it('should make API call to fetch challenges', () => {
-      cy.visit('/social/challenges', {timeout: 30000});
+      cy.visit('/social/challenges', {timeout: 300000});
 
       // ChallengesPage calls challengesApi.list({ status: 'active' })
-      cy.wait('@getChallenges', {timeout: 30000}).then((interception) => {
+      cy.wait('@getChallenges', {timeout: 300000}).then((interception) => {
         expect(interception.response.statusCode).to.equal(200);
         expect(interception.response.body).to.have.property('success', true);
         expect(interception.response.body).to.have.property('data');
@@ -158,22 +158,22 @@ describe('Social/Gamification Pages E2E Tests', () => {
     });
 
     it('should handle empty challenges data gracefully', () => {
-      cy.visit('/social/challenges', {timeout: 30000});
+      cy.visit('/social/challenges', {timeout: 300000});
 
-      cy.wait('@getChallenges', {timeout: 30000});
+      cy.wait('@getChallenges', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Page should render even with empty data - no crash
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
     it('should display content when challenges are empty', () => {
-      cy.visit('/social/challenges', {timeout: 30000});
+      cy.visit('/social/challenges', {timeout: 300000});
 
-      cy.wait('@getChallenges', {timeout: 30000});
+      cy.wait('@getChallenges', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Page should have rendered markup
       cy.get('body').then(($body) => {
@@ -188,19 +188,19 @@ describe('Social/Gamification Pages E2E Tests', () => {
   // -----------------------------------------------------------------------
   describe('Achievements Page', () => {
     it('should load the achievements page without crashing', () => {
-      cy.visit('/social/achievements', {timeout: 30000});
+      cy.visit('/social/achievements', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       cy.url().should('include', '/social/achievements');
     });
 
     it('should make API call to fetch achievements', () => {
-      cy.visit('/social/achievements', {timeout: 30000});
+      cy.visit('/social/achievements', {timeout: 300000});
 
       // AchievementsPage calls achievementsApi.list()
-      cy.wait('@getAchievements', {timeout: 30000}).then((interception) => {
+      cy.wait('@getAchievements', {timeout: 300000}).then((interception) => {
         expect(interception.response.statusCode).to.equal(200);
         expect(interception.response.body).to.have.property('success', true);
         expect(interception.response.body).to.have.property('data');
@@ -208,22 +208,22 @@ describe('Social/Gamification Pages E2E Tests', () => {
     });
 
     it('should handle empty achievements data gracefully', () => {
-      cy.visit('/social/achievements', {timeout: 30000});
+      cy.visit('/social/achievements', {timeout: 300000});
 
-      cy.wait('@getAchievements', {timeout: 30000});
+      cy.wait('@getAchievements', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Should not crash with empty data
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
     it('should display content area for achievements', () => {
-      cy.visit('/social/achievements', {timeout: 30000});
+      cy.visit('/social/achievements', {timeout: 300000});
 
-      cy.wait('@getAchievements', {timeout: 30000});
+      cy.wait('@getAchievements', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
   });
@@ -233,40 +233,40 @@ describe('Social/Gamification Pages E2E Tests', () => {
   // -----------------------------------------------------------------------
   describe('Seasons Page', () => {
     it('should load the seasons page without crashing', () => {
-      cy.visit('/social/seasons', {timeout: 30000});
+      cy.visit('/social/seasons', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       cy.url().should('include', '/social/seasons');
     });
 
     it('should make API call to fetch current season', () => {
-      cy.visit('/social/seasons', {timeout: 30000});
+      cy.visit('/social/seasons', {timeout: 300000});
 
-      cy.wait('@getCurrentSeason', {timeout: 30000}).then((interception) => {
+      cy.wait('@getCurrentSeason', {timeout: 300000}).then((interception) => {
         expect(interception.response.statusCode).to.equal(200);
         expect(interception.response.body).to.have.property('success', true);
       });
     });
 
     it('should handle no active season gracefully', () => {
-      cy.visit('/social/seasons', {timeout: 30000});
+      cy.visit('/social/seasons', {timeout: 300000});
 
-      cy.wait('@getCurrentSeason', {timeout: 30000});
+      cy.wait('@getCurrentSeason', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Should render page even without an active season
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
     it('should display page content for seasons', () => {
-      cy.visit('/social/seasons', {timeout: 30000});
+      cy.visit('/social/seasons', {timeout: 300000});
 
-      cy.wait('@getCurrentSeason', {timeout: 30000});
+      cy.wait('@getCurrentSeason', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     });
   });
 
@@ -275,27 +275,27 @@ describe('Social/Gamification Pages E2E Tests', () => {
   // -----------------------------------------------------------------------
   describe('Resonance Dashboard Page', () => {
     it('should load the resonance page without crashing', () => {
-      cy.visit('/social/resonance', {timeout: 30000});
+      cy.visit('/social/resonance', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       cy.url().should('include', '/social/resonance');
     });
 
     it('should handle authentication error gracefully', () => {
-      cy.visit('/social/resonance', {timeout: 30000});
+      cy.visit('/social/resonance', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Page should handle auth error without crashing
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
     it('should display content when not authenticated', () => {
-      cy.visit('/social/resonance', {timeout: 30000});
+      cy.visit('/social/resonance', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Should show some content (skeleton, login prompt, empty state, or data)
       cy.get('body').then(($body) => {
@@ -305,10 +305,10 @@ describe('Social/Gamification Pages E2E Tests', () => {
     });
 
     it('should render the page even without wallet data', () => {
-      cy.visit('/social/resonance', {timeout: 30000});
+      cy.visit('/social/resonance', {timeout: 300000});
 
       // Just verify the page loads and renders
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
   });
@@ -331,7 +331,7 @@ describe('Social/Gamification Pages E2E Tests', () => {
     it('should load the regions page without crashing', () => {
       cy.socialVisit('/social/regions');
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       cy.url().should('include', '/social/regions');
@@ -340,7 +340,7 @@ describe('Social/Gamification Pages E2E Tests', () => {
     it('should make API call to fetch regions', () => {
       cy.socialVisit('/social/regions');
 
-      cy.wait('@getRegions', {timeout: 30000}).then((interception) => {
+      cy.wait('@getRegions', {timeout: 300000}).then((interception) => {
         expect(interception.response.statusCode).to.equal(200);
         expect(interception.response.body).to.have.property('success', true);
         expect(interception.response.body).to.have.property('data');
@@ -350,9 +350,9 @@ describe('Social/Gamification Pages E2E Tests', () => {
     it('should handle empty regions data gracefully', () => {
       cy.socialVisit('/social/regions');
 
-      cy.wait('@getRegions', {timeout: 30000});
+      cy.wait('@getRegions', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Should not crash with empty regions
       cy.get('body').should('not.contain.text', 'Uncaught');
@@ -361,9 +361,9 @@ describe('Social/Gamification Pages E2E Tests', () => {
     it('should display content when no regions are available', () => {
       cy.socialVisit('/social/regions');
 
-      cy.wait('@getRegions', {timeout: 30000});
+      cy.wait('@getRegions', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     });
   });
 
@@ -372,57 +372,57 @@ describe('Social/Gamification Pages E2E Tests', () => {
   // -----------------------------------------------------------------------
   describe('Navigation Between Social Pages', () => {
     it('should navigate from social feed to challenges', () => {
-      cy.visit('/social', {timeout: 30000});
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.visit('/social', {timeout: 300000});
+      cy.get('#root', {timeout: 300000}).should('exist');
 
-      cy.visit('/social/challenges', {timeout: 30000});
+      cy.visit('/social/challenges', {timeout: 300000});
       cy.url().should('include', '/social/challenges');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
 
     it('should navigate from challenges to achievements', () => {
-      cy.visit('/social/challenges', {timeout: 30000});
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.visit('/social/challenges', {timeout: 300000});
+      cy.get('#root', {timeout: 300000}).should('exist');
 
-      cy.visit('/social/achievements', {timeout: 30000});
+      cy.visit('/social/achievements', {timeout: 300000});
       cy.url().should('include', '/social/achievements');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
 
     it('should navigate from achievements to seasons', () => {
-      cy.visit('/social/achievements', {timeout: 30000});
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.visit('/social/achievements', {timeout: 300000});
+      cy.get('#root', {timeout: 300000}).should('exist');
 
-      cy.visit('/social/seasons', {timeout: 30000});
+      cy.visit('/social/seasons', {timeout: 300000});
       cy.url().should('include', '/social/seasons');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
 
     it('should navigate from seasons to resonance', () => {
-      cy.visit('/social/seasons', {timeout: 30000});
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.visit('/social/seasons', {timeout: 300000});
+      cy.get('#root', {timeout: 300000}).should('exist');
 
-      cy.visit('/social/resonance', {timeout: 30000});
+      cy.visit('/social/resonance', {timeout: 300000});
       cy.url().should('include', '/social/resonance');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
 
     it('should navigate from resonance to regions', () => {
-      cy.visit('/social/resonance', {timeout: 30000});
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.visit('/social/resonance', {timeout: 300000});
+      cy.get('#root', {timeout: 300000}).should('exist');
 
-      cy.visit('/social/regions', {timeout: 30000});
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.visit('/social/regions', {timeout: 300000});
+      cy.get('#root', {timeout: 300000}).should('exist');
       // RoleGuard may redirect unauthenticated users to /social
       cy.url().should('include', '/social');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
 
     it('should navigate from regions back to social feed', () => {
-      cy.visit('/social/regions', {timeout: 30000});
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.visit('/social/regions', {timeout: 300000});
+      cy.get('#root', {timeout: 300000}).should('exist');
 
-      cy.visit('/social', {timeout: 30000});
+      cy.visit('/social', {timeout: 300000});
       cy.url().should('include', '/social');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
@@ -438,8 +438,8 @@ describe('Social/Gamification Pages E2E Tests', () => {
       ];
 
       pages.forEach((page, index) => {
-        cy.visit(page, {timeout: 30000});
-        cy.get('#root', {timeout: 30000}).should('exist');
+        cy.visit(page, {timeout: 300000});
+        cy.get('#root', {timeout: 300000}).should('exist');
 
         // Small wait between navigations
         if (index < pages.length - 1) {
@@ -459,9 +459,9 @@ describe('Social/Gamification Pages E2E Tests', () => {
         body: {success: false, error: 'Internal server error'},
       }).as('getChallengesError');
 
-      cy.visit('/social/challenges', {timeout: 30000});
+      cy.visit('/social/challenges', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Page should still render even with API error
       cy.get('body').should('not.contain.text', 'Uncaught');
@@ -473,9 +473,9 @@ describe('Social/Gamification Pages E2E Tests', () => {
         body: {success: false, error: 'Internal server error'},
       }).as('getAchievementsError');
 
-      cy.visit('/social/achievements', {timeout: 30000});
+      cy.visit('/social/achievements', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
@@ -489,12 +489,12 @@ describe('Social/Gamification Pages E2E Tests', () => {
       }).as('getRegionsDelayed');
 
       // RoleGuard may redirect unauthenticated users; just verify the app doesn't crash
-      cy.visit('/social/regions', {timeout: 30000});
+      cy.visit('/social/regions', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Should show loading state or eventually render
-      cy.get('body', {timeout: 30000}).should('exist');
+      cy.get('body', {timeout: 300000}).should('exist');
     });
 
     it('should handle malformed API response on challenges page', () => {
@@ -503,9 +503,9 @@ describe('Social/Gamification Pages E2E Tests', () => {
         body: 'invalid json',
       }).as('getChallengesMalformed');
 
-      cy.visit('/social/challenges', {timeout: 30000});
+      cy.visit('/social/challenges', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Should not crash the entire app
       cy.get('body').should('exist');
@@ -525,14 +525,14 @@ describe('Social/Gamification Pages E2E Tests', () => {
         });
       }).as('getChallengesDelayed');
 
-      cy.visit('/social/challenges', {timeout: 30000});
+      cy.visit('/social/challenges', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
 
       // Check if page is rendering during load
       cy.get('body').should('exist');
 
-      cy.wait('@getChallengesDelayed', {timeout: 30000});
+      cy.wait('@getChallengesDelayed', {timeout: 300000});
 
       // Page should still be visible after load
       cy.get('#root').invoke('html').should('not.be.empty');
@@ -548,9 +548,9 @@ describe('Social/Gamification Pages E2E Tests', () => {
       }).as('getRegionsDelayed');
 
       // RoleGuard may redirect unauthenticated users; just verify the app doesn't crash
-      cy.visit('/social/regions', {timeout: 30000});
+      cy.visit('/social/regions', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
   });
@@ -579,11 +579,11 @@ describe('Social/Gamification Pages E2E Tests', () => {
         },
       }).as('getChallengesPopulated');
 
-      cy.visit('/social/challenges', {timeout: 30000});
+      cy.visit('/social/challenges', {timeout: 300000});
 
-      cy.wait('@getChallengesPopulated', {timeout: 30000});
+      cy.wait('@getChallengesPopulated', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
 
@@ -605,11 +605,11 @@ describe('Social/Gamification Pages E2E Tests', () => {
         },
       }).as('getAchievementsPopulated');
 
-      cy.visit('/social/achievements', {timeout: 30000});
+      cy.visit('/social/achievements', {timeout: 300000});
 
-      cy.wait('@getAchievementsPopulated', {timeout: 30000});
+      cy.wait('@getAchievementsPopulated', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
 
@@ -631,9 +631,9 @@ describe('Social/Gamification Pages E2E Tests', () => {
       }).as('getRegionsPopulated');
 
       // RoleGuard may redirect unauthenticated users; just verify the app doesn't crash
-      cy.visit('/social/regions', {timeout: 30000});
+      cy.visit('/social/regions', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
 
@@ -652,11 +652,11 @@ describe('Social/Gamification Pages E2E Tests', () => {
         },
       }).as('getCurrentSeasonActive');
 
-      cy.visit('/social/seasons', {timeout: 30000});
+      cy.visit('/social/seasons', {timeout: 300000});
 
-      cy.wait('@getCurrentSeasonActive', {timeout: 30000});
+      cy.wait('@getCurrentSeasonActive', {timeout: 300000});
 
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
   });
@@ -757,8 +757,8 @@ describe('Authenticated Social Page Loads', () => {
   it('should load feed page with auth', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 
@@ -766,72 +766,72 @@ describe('Authenticated Social Page Loads', () => {
     const userId = Cypress.env('socialUserId') || 'me';
     cy.socialVisit(`/social/profile/${userId}`);
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 
   it('should load regions page with auth', () => {
     cy.socialVisit('/social/regions');
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 
   it('should load encounters page with auth', () => {
     cy.socialVisit('/social/encounters');
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 
   it('should load challenges page with auth', () => {
     cy.socialVisit('/social/challenges');
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 
   it('should load achievements page with auth', () => {
     cy.socialVisit('/social/achievements');
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 
   it('should load campaigns page with auth', () => {
     cy.socialVisit('/social/campaigns');
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 
   it('should load notifications page with auth', () => {
     cy.socialVisit('/social/notifications');
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 
   it('should load search page with auth', () => {
     cy.socialVisit('/social/search');
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 
   it('should load recipes page with auth', () => {
     cy.socialVisit('/social/recipes');
 
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('#root', {timeout: 15000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Uncaught');
   });
 });

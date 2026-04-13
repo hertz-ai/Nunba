@@ -4,6 +4,20 @@ import {FileText} from 'lucide-react';
 import Lottie from 'lottie-react';
 import hourglassAnimation from '../../assets/hourglass-lottie.json';
 import TypeWriterForSubtitle from './TypeWriterSubtitle';
+
+// Timestamp format — ported from Hevolve.ai ConversationHistoryPanel.js
+function formatTimestamp(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  return d.toLocaleDateString(undefined, {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'});
+}
 import ThinkingProcessContainer from './ThinkingProcessContainer';
 import WorkflowFlowchart from './WorkflowFlowchart';
 import SetupProgressCard from './SetupProgressCard';
@@ -96,7 +110,7 @@ const ChatMessageList = ({
   const isIdleVideo = (url) => url === idleVideoUrl;
 
   return (
-    <div className="w-full px-3 py-4 space-y-6">
+    <div className="w-full px-3 py-4 space-y-6" role="log" aria-live="polite" aria-label="Chat messages">
       {messages.map((message, index) => {
         if (message.type === 'thinking_container') {
           return (
@@ -172,7 +186,7 @@ const ChatMessageList = ({
               key={`llm-setup-${index}`}
               className="rounded-lg p-6 shadow-sm animate-slide-in-left"
               style={{
-                maxWidth: '75%',
+                maxWidth: '100%',
                 backgroundColor: '#1a2332',
                 color: '#FFFFFF',
                 border: '1px solid #6C63FF',
@@ -250,7 +264,7 @@ const ChatMessageList = ({
               key={`plan-card-${index}`}
               className="rounded-lg p-6 shadow-sm animate-slide-in-left"
               style={{
-                maxWidth: '75%',
+                maxWidth: '100%',
                 backgroundColor: '#1a2332',
                 color: '#FFFFFF',
                 border: '1px solid #6C63FF',
@@ -340,7 +354,7 @@ const ChatMessageList = ({
             <div
               className={`rounded-lg p-6 shadow-sm overflow-visible ${message.type === 'user' ? 'animate-slide-in-right' : 'animate-slide-in-left'}`}
               style={{
-                maxWidth: '75%',
+                maxWidth: '100%',
                 backgroundColor:
                   message.type === 'user' ? '#EFEAAA' : '#212A31',
                 color: message.type === 'user' ? '#000000' : '#FFFFFF',
@@ -418,20 +432,23 @@ const ChatMessageList = ({
                       ) : (
                         <div>{message.content}</div>
                       )}
-                      {/* Intelligence source badge */}
-                      {message.source && (
-                        <div className="flex items-center gap-1 mt-2 opacity-50 text-xs">
+                      {/* Intelligence source badge + timestamp */}
+                      <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                        <div className="flex items-center gap-1">
                           <span
                             className="inline-block w-2 h-2 rounded-full"
                             style={{
-                              backgroundColor: message.source?.includes('local')
+                              backgroundColor: message.source?.includes('local') || !message.source
                                 ? '#2ECC71'
                                 : '#6C63FF',
                             }}
                           />
-                          {message.source?.includes('local') ? 'Local' : 'Hive'}
+                          {message.source?.includes('local') || !message.source ? 'Local' : 'Hive'}
                         </div>
-                      )}
+                        {message.timestamp && (
+                          <span>&middot; {formatTimestamp(message.timestamp)}</span>
+                        )}
+                      </div>
                     </>
                   )}
 

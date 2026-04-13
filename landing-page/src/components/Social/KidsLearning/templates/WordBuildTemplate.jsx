@@ -27,7 +27,7 @@ import {kidsColors, kidsAnimations} from '../kidsTheme';
 import {GameSounds, GameCommentary} from '../shared/SoundManager';
 import GameAssetService from '../shared/GameAssetService';
 import GameItemImage from '../shared/GameItemImage';
-import CelebrationOverlay from '../shared/CelebrationOverlay';
+import InlineCelebration from '../shared/InlineCelebration';
 import ProgressStars from '../shared/ProgressStars';
 import useCelebration from '../shared/useCelebration';
 
@@ -802,14 +802,7 @@ export default function WordBuildTemplate({config, onAnswer, onComplete}) {
         </Fade>
       )}
 
-      <CelebrationOverlay
-        type={celebType}
-        visible={celebVisible}
-        streakCount={celebStreak}
-        onDone={handleCelebDone}
-        starsEarned={starsEarned}
-        score={celebScore}
-      />
+      <InlineCelebration type={celebType} gameTemplate="word_build" visible={celebVisible} onDone={handleCelebDone} streakCount={celebStreak} score={celebScore} />
     </Box>
   );
 }

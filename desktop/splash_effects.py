@@ -342,7 +342,7 @@ def _render_divider(width):
     return (photo, width, h)
 
 
-def _render_version_badge(text='v2.0.0', color='#6C63FF'):
+def _render_version_badge(text='v0.1.0', color='#6C63FF'):
     """Render the version badge."""
     if not _HAS_PIL:
         return None

@@ -31,7 +31,7 @@ import {kidsColors, kidsAnimations, numPadColors} from '../kidsTheme';
 import {GameSounds, GameCommentary} from '../shared/SoundManager';
 import GameAssetService from '../shared/GameAssetService';
 import GameItemImage from '../shared/GameItemImage';
-import CelebrationOverlay from '../shared/CelebrationOverlay';
+import InlineCelebration from '../shared/InlineCelebration';
 import useCelebration from '../shared/useCelebration';
 import GameLivesBar from '../shared/GameLivesBar';
 import KidsCharacter from '../shared/KidsCharacter';
@@ -646,14 +646,7 @@ export default function CountingTemplate({config, onAnswer, onComplete}) {
         </Box>
       </Fade>
 
-      <CelebrationOverlay
-        type={celebType}
-        visible={celebVisible}
-        streakCount={celebStreak}
-        onDone={handleCelebDone}
-        starsEarned={starsEarned}
-        score={celebScore}
-      />
+      <InlineCelebration type={celebType} gameTemplate="counting" visible={celebVisible} onDone={handleCelebDone} streakCount={celebStreak} score={celebScore} />
     </Box>
   );
 }

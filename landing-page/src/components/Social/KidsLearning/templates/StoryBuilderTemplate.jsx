@@ -20,7 +20,7 @@ import {Box, Typography, Button, Card, Fade, Grow} from '@mui/material';
 import {kidsColors, kidsAnimations} from '../kidsTheme';
 import {GameSounds} from '../shared/SoundManager';
 import TTSManager from '../shared/TTSManager';
-import CelebrationOverlay from '../shared/CelebrationOverlay';
+import InlineCelebration from '../shared/InlineCelebration';
 import ProgressStars from '../shared/ProgressStars';
 import useCelebration from '../shared/useCelebration';
 
@@ -740,14 +740,7 @@ export default function StoryBuilderTemplate({config, onAnswer, onComplete}) {
         </Box>
       )}
 
-      <CelebrationOverlay
-        type={celebType}
-        visible={celebVisible}
-        streakCount={celebStreak}
-        onDone={handleCelebDone}
-        starsEarned={starsEarned}
-        score={celebScore}
-      />
+      <InlineCelebration type={celebType} gameTemplate="story_builder" visible={celebVisible} onDone={handleCelebDone} streakCount={celebStreak} score={celebScore} />
     </Box>
   );
 }

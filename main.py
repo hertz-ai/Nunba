@@ -14,6 +14,23 @@ import tempfile
 import threading
 import traceback
 
+# PYTORCH_CUDA_ALLOC_CONF is set in app.py (must be before first torch import).
+
+# WebView2 autoplay: allow Audio.play() from async callbacks (TTS via SSE).
+# Must be set before pywebview creates the WebView2 environment.
+# main.py loads before webview.start() in the frozen build.
+os.environ.setdefault('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+                       '--autoplay-policy=no-user-gesture-required')
+
+# HuggingFace: skip model update checks when running offline / cached.
+# Prevents 30-60s of HEAD request timeouts on every model load.
+# Models are downloaded during install — no need to re-check at runtime.
+if not os.environ.get('HF_HUB_OFFLINE'):
+    _hf_cache = os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')
+    if os.path.isdir(_hf_cache) and any(
+            d.startswith('models--') for d in os.listdir(_hf_cache)):
+        os.environ['HF_HUB_OFFLINE'] = '1'
+
 from flask import Flask, jsonify, request, send_file
 
 try:
@@ -324,6 +341,19 @@ app = Flask(__name__, static_folder=None)
 # for serving the React SPA or handling the first chat message.
 def _deferred_platform_init():
     """Bootstrap EventBus + Crossbar subscribers in background."""
+    # Point HARTOS crossbar_server.py (WAMP client) at our embedded router
+    # so it connects locally instead of trying the unreachable cloud router.
+    _wamp_port = os.environ.get('NUNBA_WAMP_PORT', '8088')
+    if not os.environ.get('CBURL'):
+        os.environ['CBURL'] = f'ws://localhost:{_wamp_port}/ws'
+    # Point HARTOS realtime.py HTTP publisher at our Flask HTTP bridge
+    # (crossbarhttp3 defaults to :8088/publish which is the full Crossbar
+    # node's HTTP bridge — our embedded router doesn't have that, but
+    # Flask :5000/publish acts as the equivalent).
+    if not os.environ.get('WAMP_URL'):
+        _flask_port = os.environ.get('NUNBA_PORT', '5000')
+        os.environ['WAMP_URL'] = f'http://localhost:{_flask_port}/publish'
+
     try:
         from core.platform.bootstrap import bootstrap_platform
         bootstrap_platform()
@@ -336,6 +366,126 @@ def _deferred_platform_init():
         logging.info("Local Crossbar subscribers bootstrapped")
     except Exception as e:
         logging.warning(f"Local subscribers bootstrap skipped: {e}")
+
+    # Subscribe to HARTOS caption server events (lazy start/stop 0.8B VLM)
+    try:
+        from core.platform.registry import get_registry
+        bus = get_registry().get('events')
+        if bus:
+            def _on_caption_requested(data):
+                try:
+                    from llama.llama_config import LlamaConfig
+                    port = data.get('port', 8081)
+                    LlamaConfig().start_caption_server(port=port)
+                except Exception as e:
+                    logging.warning(f"Caption server start failed: {e}")
+
+            def _on_caption_stop(data):
+                try:
+                    from llama.llama_config import LlamaConfig
+                    LlamaConfig().stop_caption_server()
+                except Exception as e:
+                    logging.debug(f"Caption server stop: {e}")
+
+            bus.on('vlm_caption.requested', lambda topic, data: _on_caption_requested(data))
+            bus.on('vlm_caption.stop', lambda topic, data: _on_caption_stop(data))
+            logging.info("Caption server event subscribers registered")
+    except Exception as e:
+        logging.debug(f"Caption server event subscription skipped: {e}")
+
+    # Eager-start BOTH llama-server instances at boot so the first /chat
+    # request doesn't cold-start either model.
+    #
+    # Why both, and why parallel:
+    #   - The draft 0.8B (port 8081) services HARTOS's draft-first
+    #     dispatcher, which expects an immediate ~300ms classifier reply
+    #     on every /chat. Without it, draft-first silently falls through
+    #     to the 4B and the user eats the full 4B latency on every "hi".
+    #   - The main 4B (port 8080) services the full agentic path
+    #     (LangChain + autogen tool calls). Lazy-starting it on first
+    #     chat adds ~8-15s of cold-start on top of LangChain setup.
+    #   - Each model has its OWN mmproj file — mmproj-Qwen3.5-0.8B-F16.gguf
+    #     for the draft and mmproj-Qwen3.5-4B-F16.gguf for the main.
+    #     The installer.get_mmproj_path(preset) resolver inside
+    #     start_server / start_caption_server handles the preset-specific
+    #     download + path independently, so booting both in parallel
+    #     does not race on a shared mmproj file.
+    #   - We boot them on two separate background threads so the slower
+    #     4B download+load doesn't hold up the faster 0.8B, and neither
+    #     blocks the Flask app thread.
+    #
+    # Disable the draft eager-boot with HEVOLVE_DRAFT_FIRST=0.
+    # Disable the main eager-boot with HEVOLVE_EAGER_LLM=0 (e.g. when
+    # running against a remote llama.cpp server already serving :8080).
+    _boot_draft = os.environ.get('HEVOLVE_DRAFT_FIRST', '').strip() != '0'
+    _boot_main = os.environ.get('HEVOLVE_EAGER_LLM', '').strip() != '0'
+
+    if _boot_draft:
+        def _boot_draft_server():
+            try:
+                from llama.llama_config import LlamaConfig
+                port = int(os.environ.get('HEVOLVE_VLM_CAPTION_PORT', 8081))
+                ok = LlamaConfig().start_caption_server(port=port)
+                if ok:
+                    logging.info(f"Draft server (0.8B) ready on port {port}")
+                else:
+                    logging.warning(
+                        "Draft server failed to start — chat draft-first will "
+                        "fall through to the 4B main model")
+            except Exception as e:
+                logging.warning(f"Draft server boot failed: {e}")
+
+        threading.Thread(target=_boot_draft_server, daemon=True,
+                         name='draft-server-boot').start()
+
+    if _boot_main:
+        def _boot_main_server():
+            try:
+                from llama.llama_config import LlamaConfig
+                cfg = LlamaConfig()
+                main_port = int(cfg.config.get('server_port', 8080))
+                # Verify the port is ACTUALLY serving a llama.cpp model
+                # by calling /v1/models. The previous check_server_running()
+                # accepted any HTTP 200 on /health, which meant a stale
+                # process or a non-llama service would cause the boot to
+                # skip, leaving the main LLM down. This was the root cause
+                # of the "Main LLM server already running — skipping" log
+                # line at 01:26:08 on 2026-04-12 despite :8080 being dead.
+                _already_running = False
+                if cfg.check_server_running(main_port):
+                    try:
+                        import requests as _req
+                        resp = _req.get(
+                            f'http://127.0.0.1:{main_port}/v1/models',
+                            timeout=2,
+                        )
+                        if resp.status_code == 200:
+                            models = resp.json().get('data', [])
+                            if any(m.get('id', '') for m in models):
+                                model_id = models[0].get('id', 'unknown')
+                                logging.info(
+                                    f"Main LLM server verified on port "
+                                    f"{main_port} (model={model_id}) — "
+                                    f"skipping eager boot")
+                                _already_running = True
+                    except Exception:
+                        pass
+                if _already_running:
+                    return
+                ok = cfg.start_server()
+                if ok:
+                    logging.info(
+                        f"Main LLM server ready on port {main_port} "
+                        f"(mmproj auto-loaded by start_server)")
+                else:
+                    logging.warning(
+                        "Main LLM server failed to start at boot — "
+                        "first /chat request will cold-start it")
+            except Exception as e:
+                logging.warning(f"Main LLM boot failed: {e}")
+
+        threading.Thread(target=_boot_main_server, daemon=True,
+                         name='main-llm-boot').start()
 
 threading.Thread(target=_deferred_platform_init, daemon=True,
                  name='platform-init').start()
@@ -428,6 +578,27 @@ def log_request():
     if path.startswith('/static/') or path.endswith(('.png', '.gif', '.svg', '.jpg', '.jpeg')):
         logging.debug(f"Static request: {request.method} {path}")
 
+# ── CORS origin check (single source of truth) ─────────────────────────
+_ALLOWED_ORIGINS = {
+    'https://hevolve.ai',
+    'https://www.hevolve.ai',
+    'https://hertzai.com',
+    'https://www.hertzai.com',
+    'https://hevolve.hertzai.com',
+    'https://www.hevolve.hertzai.com',
+}
+
+
+def _is_allowed_origin(origin):
+    if origin in _ALLOWED_ORIGINS:
+        return True
+    if origin.startswith('http://localhost:') or origin == 'http://localhost':
+        return True
+    if origin.startswith('http://127.0.0.1:') or origin == 'http://127.0.0.1':
+        return True
+    return False
+
+
 # Additional CORS headers for all routes
 @app.after_request
 def after_request(response):
@@ -436,28 +607,7 @@ def after_request(response):
     if path.startswith('/static/') or path.endswith(('.png', '.gif', '.svg', '.jpg', '.jpeg')):
         logging.debug(f"Static response: {path} -> {response.status_code}")
 
-    # Get the origin from the request
     origin = request.headers.get('Origin')
-
-    # List of allowed origins
-    allowed_origins = [
-        'https://hevolve.ai',
-        'https://www.hevolve.ai',
-        'https://hertzai.com',
-        'https://www.hertzai.com',
-        'https://hevolve.hertzai.com',
-        'https://www.hevolve.hertzai.com'
-    ]
-
-    # Check if origin is in allowed list or is a local dev origin
-    def _is_allowed_origin(origin):
-        if origin in allowed_origins:
-            return True
-        if origin.startswith('http://localhost:') or origin == 'http://localhost':
-            return True
-        if origin.startswith('http://127.0.0.1:') or origin == 'http://127.0.0.1':
-            return True
-        return False
 
     if origin and _is_allowed_origin(origin):
         response.headers['Access-Control-Allow-Origin'] = origin
@@ -482,23 +632,6 @@ def handle_preflight():
     if request.method == "OPTIONS":
         response = jsonify({"status": "ok"})
         origin = request.headers.get('Origin')
-
-        # Allow requests from hevolve domains and localhost
-        allowed_origins = [
-            'https://hevolve.ai',
-            'https://www.hevolve.ai',
-            'https://hevolve.hertzai.com',
-            'https://www.hevolve.hertzai.com'
-        ]
-
-        def _is_allowed_origin(origin):
-            if origin in allowed_origins:
-                return True
-            if origin.startswith('http://localhost:') or origin == 'http://localhost':
-                return True
-            if origin.startswith('http://127.0.0.1:') or origin == 'http://127.0.0.1':
-                return True
-            return False
 
         if origin and _is_allowed_origin(origin):
             response.headers['Access-Control-Allow-Origin'] = origin
@@ -613,7 +746,7 @@ def call_stop_api():
                                 logger.info(f"Using speific stop for user_id={user_id}, prompt_id={prompt_id}")
                             else:
                                 logger.info(f"Using user-specific stop for user_id={user_id}")
-                
+
                 except Exception as e:
                     logger.error(f"Error reading user data: {str(e)}")
             else:
@@ -622,7 +755,7 @@ def call_stop_api():
                 logger.error(f"Error preparing stop payload: {str(e)}")
                 stop_payload = {}
 
-                
+
         # Make the API Call
         logger.info(f"Calling the stop API at {args.stop_api_url} with payload: {stop_payload}")
 
@@ -652,11 +785,11 @@ def call_stop_api():
     except Exception as e:
         logger.error(f"Error calling stop API: {str(e)}")
         logger.error(traceback.format_exc())
-        return False  
+        return False
 
 # Get or generate device ID at startup
 DEVICE_ID = get_device_id()
-logging.info(f"Device ID: {DEVICE_ID}")     
+logging.info(f"Device ID: {DEVICE_ID}")
 
 @app.route('/probe', methods=['GET'])
 def probe_endpoint():
@@ -706,7 +839,7 @@ def execute_command():
             if (time.time() - last_activity_time) > ACTIVITY_TIMEOUT:
                 llm_control_active = False
                 toggle_indicator(False)
-        
+
         timeout_thread = threading.Thread(target=reset_after_timeout, daemon=True)
         timeout_thread.start()
 
@@ -723,8 +856,8 @@ def execute_command():
         logging.info(f"Executing command: {command}")
 
         # Check if this is a Python command that we should intercept
-        if (not shell and len(command) >= 2 and 
-            (command[0] == "python" or command[0] == "python3") and 
+        if (not shell and len(command) >= 2 and
+            (command[0] == "python" or command[0] == "python3") and
             ("-c" in command or "-m" in command)):
             # Try to use embedded Python
             embedded_python = get_embedded_python_path()
@@ -759,20 +892,20 @@ def execute_command():
             # Add environment variables
             env = os.environ.copy()
             result = subprocess.run(
-                command, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, 
-                shell=shell, 
-                text=True, 
-                timeout=120, 
-                env=env, 
-                startupinfo=startupinfo, 
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=shell,
+                text=True,
+                timeout=120,
+                env=env,
+                startupinfo=startupinfo,
                 creationflags=creation_flags)
             logging.info(f"Command executed with return code: {result.returncode}")
 
             # After executing the command, update the timestamp again to extend the indicator display
             last_activity_time = time.time()
-            
+
             return jsonify({
                 'status': 'success',
                 'output': result.stdout,
@@ -811,7 +944,7 @@ def capture_screen_with_cursor():
                 screenshot.paste(cursor, (cursor_x, cursor_y), cursor)
             except Exception as e:
                 logging.error(f"Failed to process cursor image: {str(e)}")
-    
+
 
         # Convert PIL Image to bytes and send
         img_io = BytesIO()
@@ -832,7 +965,7 @@ def stop_ai_control_endpoint():
 
     try:
         logger.info("Stop AI Control request received")
-        
+
         # Just hide the indicator
         llm_control_active = False
         toggle_indicator(False)
@@ -852,17 +985,17 @@ def stop_ai_control_endpoint():
                 "status": "indicator hidden but stop request failed",
                 "error": "Failed to send stop request to server"
             })
-            
+
     except Exception as e:
         logger.error(f"Error stopping AI Control: {str(e)}")
         logger.error(traceback.format_exc())
-        
+
         # Even if we fail, try to hide the indicator
         try:
             toggle_indicator(False)
         except Exception:
             pass
-            
+
         return jsonify({"success": False, "error": str(e)})
 
 @app.route('/llm_control_status', methods=["GET"])
@@ -873,7 +1006,7 @@ def llm_control_status():
     if llm_control_active and (time.time() - last_activity_time) > ACTIVITY_TIMEOUT:
         llm_control_active = False
         toggle_indicator(False)
-    
+
     return jsonify({
         'active': llm_control_active,
         'last_activity': last_activity_time,
@@ -1039,6 +1172,40 @@ def llm_switch_model():
 # Central CRUD for ALL model types (LLM, TTS, STT, VLM, image_gen, etc.)
 # Uses ModelCatalog (JSON-backed registry) + ModelOrchestrator (compute-aware loader).
 
+@app.route('/api/harthash', methods=["GET"])
+def harthash():
+    """@HARTHASH — returns git commit hashes of all repos at build time.
+
+    Used to verify which version is installed. Reads from build_hashes.json
+    (generated by build.py) or falls back to live git if in dev mode.
+    """
+    import json as _json
+    # Try build-time hashes first (frozen build)
+    _hash_file = os.path.join(os.path.dirname(os.path.abspath(
+        sys.executable if getattr(sys, 'frozen', False) else __file__)), 'build_hashes.json')
+    if os.path.isfile(_hash_file):
+        with open(_hash_file) as f:
+            return jsonify(_json.load(f))
+    # Dev mode — read live git hashes
+    import subprocess
+    hashes = {}
+    repos = {
+        'nunba': os.path.dirname(os.path.abspath(__file__)),
+        'hartos': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'HARTOS'),
+        'hevolve_database': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Hevolve_Database'),
+        'hevolveai': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hevolveai'),
+    }
+    for name, path in repos.items():
+        try:
+            r = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
+                               capture_output=True, text=True, cwd=path, timeout=5)
+            hashes[name] = r.stdout.strip() if r.returncode == 0 else 'unknown'
+        except Exception:
+            hashes[name] = 'unknown'
+    hashes['build_time'] = 'dev-mode'
+    return jsonify(hashes)
+
+
 @app.route('/api/admin/models', methods=["GET"])
 def admin_models_list():
     """List all models in the catalog with compute state and runtime status."""
@@ -1114,12 +1281,28 @@ def admin_models_update(model_id):
 
 @app.route('/api/admin/models/<model_id>', methods=["DELETE"])
 def admin_models_delete(model_id):
-    """Remove a model from the catalog."""
+    """Remove a model from the catalog.
+
+    If the model is currently loaded, unload it first so the worker
+    subprocess stops and VRAM is released. Otherwise deleting the
+    catalog entry would orphan a running worker.
+    """
     if not _is_local_request():
         return jsonify({"error": "local only"}), 403
     try:
         from models.catalog import get_catalog
+        from models.orchestrator import get_orchestrator
         catalog = get_catalog()
+        entry = catalog.get(model_id)
+        if entry is None:
+            return jsonify({"success": False, "error": "not found"}), 404
+        # Unload before delete so the worker subprocess stops
+        # and VRAM/process resources are released.
+        if entry.loaded:
+            try:
+                get_orchestrator().unload(model_id)
+            except Exception as e:
+                logging.warning(f"Unload before delete failed for {model_id}: {e}")
         removed = catalog.unregister(model_id)
         return jsonify({"success": removed})
     except Exception as e:
@@ -1159,18 +1342,50 @@ def admin_models_unload(model_id):
         return jsonify({"error": str(e)}), 500
 
 
+# Track active downloads for progress reporting
+_download_progress = {}  # model_id → {status, percent, message, started_at}
+
 @app.route('/api/admin/models/<model_id>/download', methods=["POST"])
 def admin_models_download(model_id):
-    """Download a model without loading it."""
+    """Download a model in background. Poll /download/status for progress."""
     if not _is_local_request():
         return jsonify({"error": "local only"}), 403
     try:
         from models.orchestrator import get_orchestrator
+        import threading, time
         orch = get_orchestrator()
-        success = orch.download(model_id)
-        return jsonify({"success": success})
+
+        _download_progress[model_id] = {
+            'status': 'downloading', 'percent': 0,
+            'message': 'Starting download...', 'started_at': time.time(),
+        }
+
+        def _bg_download():
+            try:
+                success = orch.download(model_id)
+                _download_progress[model_id] = {
+                    'status': 'complete' if success else 'error',
+                    'percent': 100 if success else 0,
+                    'message': 'Download complete' if success else 'Download failed',
+                }
+            except Exception as e:
+                _download_progress[model_id] = {
+                    'status': 'error', 'percent': 0, 'message': str(e),
+                }
+
+        threading.Thread(target=_bg_download, daemon=True).start()
+        return jsonify({"success": True, "status": "downloading"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/models/<model_id>/download/status', methods=["GET"])
+def admin_models_download_status(model_id):
+    """Poll download progress for a model."""
+    progress = _download_progress.get(model_id)
+    if not progress:
+        return jsonify({"status": "idle"})
+    return jsonify(progress)
 
 
 @app.route('/api/admin/models/auto-select', methods=["POST"])
@@ -1201,11 +1416,47 @@ def admin_models_auto_select():
 
 @app.route('/api/admin/models/health', methods=["GET"])
 def admin_models_health():
-    """Full lifecycle health dashboard: process health, crash state, swap queue, pressure."""
+    """Full lifecycle health dashboard: process health, crash state, swap queue, pressure.
+
+    Cross-checks the catalog flags against live loader.is_loaded() probes
+    so idle auto-stops, subprocess crashes, and out-of-band process kills
+    show up as drift warnings instead of stale loaded:True entries.
+    """
     try:
         from integrations.service_tools.model_lifecycle import get_model_lifecycle_manager
+        from models.orchestrator import get_orchestrator
         mlm = get_model_lifecycle_manager()
-        return jsonify(mlm.get_status())
+
+        # Sync catalog flags with live loader state BEFORE building the
+        # response so the UI always sees reality.
+        drift = []
+        try:
+            orch = get_orchestrator()
+            # Build drift list before reconciling so we can report
+            # the entries whose state was stale.
+            for entry in orch._catalog.list_all():
+                loader = orch._loaders.get(entry.model_type)
+                if loader is None:
+                    continue
+                try:
+                    live = bool(loader.is_loaded(entry))
+                except Exception:
+                    continue
+                if live != bool(entry.loaded):
+                    drift.append({
+                        'model_id': entry.id,
+                        'catalog_loaded': bool(entry.loaded),
+                        'live_loaded': live,
+                    })
+            orch.reconcile_live_state()
+        except Exception as e:
+            logging.warning(f"Health: reconcile failed: {e}")
+
+        status = mlm.get_status()
+        if isinstance(status, dict):
+            status['drift_detected'] = drift
+            status['drift_count'] = len(drift)
+        return jsonify(status)
     except ImportError:
         return jsonify({"error": "Lifecycle manager not available"}), 503
     except Exception as e:
@@ -1214,28 +1465,274 @@ def admin_models_health():
 
 @app.route('/api/admin/models/swap', methods=["POST"])
 def admin_models_swap():
-    """Request a model swap: evict a GPU model to make room for another.
+    """Atomically swap models: evict an existing GPU model and load a new one.
 
     Body: {"needed_model": "model_id", "evict_target": "optional_target_id"}
+
+    Coordinates both halves of the swap via the orchestrator:
+      1. Request eviction of the current GPU model (or explicit evict_target)
+         through ModelLifecycleManager — this stops its worker subprocess
+         and releases VRAM.
+      2. Load the new model via ModelOrchestrator.load(), which goes through
+         the matching loader (TTSLoader/STTLoader/VLMLoader/LlamaLoader)
+         and eagerly spawns the new worker subprocess.
+      3. On load failure, report the error so the caller can decide whether
+         to retry or manually restore the evicted model.
     """
     if not _is_local_request():
         return jsonify({"error": "local only"}), 403
     try:
         from integrations.service_tools.model_lifecycle import get_model_lifecycle_manager
+        from models.orchestrator import get_orchestrator
         data = request.get_json(silent=True) or {}
         needed = data.get('needed_model')
         if not needed:
             return jsonify({"error": "needed_model required"}), 400
+
         mlm = get_model_lifecycle_manager()
-        success = mlm.request_swap(
+        orch = get_orchestrator()
+
+        # 1. Evict old model to free VRAM (its worker subprocess stops here)
+        evict_ok = mlm.request_swap(
             needed_model=needed,
             evict_target=data.get('evict_target'),
         )
-        return jsonify({"success": success, "needed_model": needed})
+        if not evict_ok:
+            return jsonify({
+                "success": False,
+                "needed_model": needed,
+                "error": "no evictable model found",
+            }), 409
+
+        # 2. Load new model (eagerly spawns the new worker subprocess)
+        new_entry = orch.load(needed)
+        if new_entry is None:
+            return jsonify({
+                "success": False,
+                "needed_model": needed,
+                "evicted": True,
+                "error": "eviction succeeded but new model load failed",
+            }), 500
+
+        return jsonify({
+            "success": True,
+            "needed_model": needed,
+            "device": new_entry.device,
+            "evicted": True,
+        })
     except ImportError:
         return jsonify({"error": "Lifecycle manager not available"}), 503
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Provider Management Admin API  (/api/admin/providers/*)
+# Exposes HARTOS ProviderRegistry + Gateway + EfficiencyMatrix
+# ═══════════════════════════════════════════════════════════════════════
+
+@app.route('/api/admin/providers', methods=['GET'])
+def admin_providers_list():
+    """List all providers with status, model count, and capabilities."""
+    try:
+        from integrations.providers.registry import get_registry
+        reg = get_registry()
+        category = request.args.get('category', '')
+        ptype = request.args.get('type', '')  # api, affiliate, local
+
+        providers = reg.list_all()
+        if category:
+            providers = [p for p in providers if category in p.categories]
+        if ptype:
+            providers = [p for p in providers if p.provider_type == ptype]
+
+        result = []
+        for p in providers:
+            result.append({
+                'id': p.id,
+                'name': p.name,
+                'provider_type': p.provider_type,
+                'url': p.url,
+                'categories': p.categories,
+                'tags': p.tags,
+                'model_count': len(p.models),
+                'api_key_set': p.has_api_key(),
+                'enabled': p.enabled,
+                'healthy': p.healthy,
+                'commission_pct': p.commission_pct,
+                'commission_type': p.commission_type,
+                'avg_latency_ms': p.avg_latency_ms,
+            })
+        return jsonify({'success': True, 'providers': result})
+    except ImportError:
+        return jsonify({'error': 'Provider gateway not available'}), 503
+
+
+@app.route('/api/admin/providers/<provider_id>', methods=['GET'])
+def admin_providers_get(provider_id):
+    """Get full provider details including all models and pricing."""
+    try:
+        from integrations.providers.registry import get_registry
+        reg = get_registry()
+        p = reg.get(provider_id)
+        if not p:
+            return jsonify({'error': 'Provider not found'}), 404
+        data = p.to_dict()
+        data['api_key_set'] = p.has_api_key()
+        return jsonify({'success': True, 'provider': data})
+    except ImportError:
+        return jsonify({'error': 'Provider gateway not available'}), 503
+
+
+@app.route('/api/admin/providers/<provider_id>/api-key', methods=['POST'])
+def admin_providers_set_key(provider_id):
+    """Set or update API key for a provider."""
+    try:
+        from integrations.providers.registry import get_registry
+        data = request.get_json(force=True)
+        api_key = data.get('api_key', '')
+        if not api_key:
+            return jsonify({'error': 'api_key required'}), 400
+        reg = get_registry()
+        success = reg.set_api_key(provider_id, api_key)
+        if not success:
+            return jsonify({'error': 'Provider not found or no env_key configured'}), 404
+        return jsonify({'success': True})
+    except ImportError:
+        return jsonify({'error': 'Provider gateway not available'}), 503
+
+
+@app.route('/api/admin/providers/<provider_id>/api-key', methods=['DELETE'])
+def admin_providers_remove_key(provider_id):
+    """Remove API key for a provider."""
+    try:
+        from integrations.providers.registry import get_registry
+        reg = get_registry()
+        p = reg.get(provider_id)
+        if not p or not p.env_key:
+            return jsonify({'error': 'Provider not found'}), 404
+        os.environ.pop(p.env_key, None)
+        p.api_key_set = False
+        reg.save()
+        return jsonify({'success': True})
+    except ImportError:
+        return jsonify({'error': 'Provider gateway not available'}), 503
+
+
+@app.route('/api/admin/providers/<provider_id>/test', methods=['POST'])
+def admin_providers_test(provider_id):
+    """Test provider connection with a simple request."""
+    try:
+        from integrations.providers.gateway import get_gateway
+        gw = get_gateway()
+        result = gw.generate(
+            'Say "hello" in one word.',
+            model_type='llm',
+            provider_id=provider_id,
+            max_tokens=10,
+            temperature=0,
+        )
+        return jsonify({
+            'success': result.success,
+            'content': result.content[:200] if result.content else '',
+            'latency_ms': round(result.latency_ms, 1),
+            'cost_usd': result.cost_usd,
+            'error': result.error,
+        })
+    except ImportError:
+        return jsonify({'error': 'Provider gateway not available'}), 503
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/admin/providers/<provider_id>/enable', methods=['POST'])
+def admin_providers_enable(provider_id):
+    """Enable or disable a provider."""
+    try:
+        from integrations.providers.registry import get_registry
+        data = request.get_json(force=True)
+        enabled = data.get('enabled', True)
+        reg = get_registry()
+        p = reg.get(provider_id)
+        if not p:
+            return jsonify({'error': 'Provider not found'}), 404
+        p.enabled = enabled
+        reg.save()
+        return jsonify({'success': True, 'enabled': p.enabled})
+    except ImportError:
+        return jsonify({'error': 'Provider gateway not available'}), 503
+
+
+@app.route('/api/admin/providers/gateway/stats', methods=['GET'])
+def admin_providers_gateway_stats():
+    """Get gateway usage stats: total cost, requests, recent activity."""
+    try:
+        from integrations.providers.gateway import get_gateway
+        return jsonify({'success': True, **get_gateway().get_stats()})
+    except ImportError:
+        return jsonify({'error': 'Provider gateway not available'}), 503
+
+
+@app.route('/api/admin/providers/efficiency/leaderboard', methods=['GET'])
+def admin_providers_leaderboard():
+    """Get efficiency leaderboard — ranked by speed, quality, cost."""
+    try:
+        from integrations.providers.efficiency_matrix import get_matrix
+        model_type = request.args.get('model_type', 'llm')
+        sort_by = request.args.get('sort_by', 'efficiency')
+        entries = get_matrix().get_leaderboard(model_type, sort_by)
+        from dataclasses import asdict
+        return jsonify({
+            'success': True,
+            'leaderboard': [asdict(e) for e in entries[:20]],
+            'summary': get_matrix().get_matrix_summary(),
+        })
+    except ImportError:
+        return jsonify({'error': 'Efficiency matrix not available'}), 503
+
+
+@app.route('/api/admin/providers/capabilities', methods=['GET'])
+def admin_providers_capabilities():
+    """Get capabilities summary: what model types Nunba can serve right now."""
+    try:
+        from integrations.providers.registry import get_registry
+        return jsonify({
+            'success': True,
+            'capabilities': get_registry().get_capabilities_summary(),
+        })
+    except ImportError:
+        return jsonify({'error': 'Provider registry not available'}), 503
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Resource Monitor Admin API  (/api/admin/resources/*)
+# ═══════════════════════════════════════════════════════════════════════
+
+@app.route('/api/admin/resources/stats', methods=['GET'])
+def admin_resources_stats():
+    """Get current resource usage: CPU, RAM, GPU, throttle, mode."""
+    try:
+        from core.resource_governor import get_governor
+        gov = get_governor()
+        stats = gov.get_stats()
+        # Add live system metrics
+        try:
+            import psutil
+            stats['cpu_percent'] = psutil.cpu_percent(interval=None)
+            mem = psutil.virtual_memory()
+            stats['ram_used_gb'] = round(mem.used / (1024**3), 1)
+            stats['ram_total_gb'] = round(mem.total / (1024**3), 1)
+            stats['ram_percent'] = mem.percent
+        except ImportError:
+            pass
+        try:
+            from integrations.service_tools.vram_manager import vram_manager
+            stats['gpu'] = vram_manager.detect_gpu()
+        except Exception:
+            pass
+        return jsonify({'success': True, **stats})
+    except ImportError:
+        return jsonify({'error': 'Resource governor not available'}), 503
 
 
 @app.route('/status', methods=["GET"])
@@ -1450,10 +1947,32 @@ def broadcast_sse_event(event_type, data, user_id=None):
     Used by realtime.py as a local fallback when Crossbar WAMP is unavailable.
     If *user_id* is provided, only sends to that user's queues.
     If *user_id* is None, broadcasts to ALL connected clients.
+
+    Also publishes into the embedded WAMP router (if running) so
+    crossbarWorker.js subscribers receive the event in real time.
     """
+    # Mirror to embedded WAMP router for crossbarWorker.js subscribers
+    try:
+        from wamp_router import publish_local, is_running
+        if is_running() and user_id:
+            # Map event types to the WAMP topics crossbarWorker.js subscribes to
+            wamp_data = dict(data) if isinstance(data, dict) else {'raw': data}
+            wamp_data['type'] = event_type
+            if event_type == 'tts' or (isinstance(data, dict) and data.get('action') == 'TTS'):
+                publish_local(f'com.hertzai.pupit.{user_id}', wamp_data)
+            elif event_type == 'notification':
+                publish_local(f'com.hertzai.hevolve.social.{user_id}', wamp_data)
+            else:
+                publish_local(f'com.hertzai.hevolve.chat.{user_id}', wamp_data)
+    except Exception:
+        pass  # WAMP router not available — SSE is the primary transport
+
     import json
     msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
     now = time.time()
+    logging.info(f"broadcast_sse_event: type={event_type}, user_id={user_id}, "
+                 f"clients={list(_sse_clients.keys())}, "
+                 f"client_count={sum(len(v) for v in _sse_clients.values())}")
     with _sse_lock:
         if user_id is not None:
             clients = _sse_clients.get(user_id, [])
@@ -1490,6 +2009,71 @@ def broadcast_sse_event(event_type, data, user_id=None):
                 _sse_clients.pop(uid, None)
 
 
+# Expose on __main__ so HARTOS can find it via `import __main__`.
+# In frozen builds, __main__ is app.py (Nunba.exe). main.py is loaded as
+# a module by _import_main_app(). Without this, HARTOS's
+# `__main__.broadcast_sse_event` is undefined and SSE events are silently dropped.
+try:
+    import __main__ as _main_ref
+    if not hasattr(_main_ref, 'broadcast_sse_event'):
+        _main_ref.broadcast_sse_event = broadcast_sse_event
+except Exception:
+    pass
+
+
+@app.route('/publish', methods=['POST'])
+def wamp_http_bridge():
+    """HTTP bridge for WAMP publish — compatible with crossbarhttp3 protocol.
+
+    Accepts POST with JSON body: {topic: str, args: list, kwargs: dict}
+    Publishes into the embedded WAMP router so all WebSocket subscribers receive it.
+    This replaces the Crossbar.io HTTP Bridge Service for local/bundled mode.
+    """
+    try:
+        from wamp_router import publish_local, is_running
+        if not is_running():
+            return jsonify({'error': 'WAMP router not running'}), 503
+        data = request.get_json(silent=True) or {}
+        topic = data.get('topic', '')
+        args = data.get('args', [])
+        kwargs = data.get('kwargs', {})
+        if not topic:
+            return jsonify({'error': 'Missing topic'}), 400
+        # crossbarhttp3 sends args as a single JSON string; unwrap it
+        if isinstance(args, str):
+            try:
+                args = [json.loads(args)]
+            except (json.JSONDecodeError, TypeError):
+                args = [args]
+        publish_local(topic, args, kwargs)
+        return jsonify({'id': None}), 200
+    except ImportError:
+        return jsonify({'error': 'WAMP router not available'}), 503
+    except Exception as e:
+        logging.warning(f"WAMP HTTP bridge error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/wamp/status')
+def wamp_router_status():
+    """Return embedded WAMP router health and statistics."""
+    try:
+        from wamp_router import get_stats
+        return jsonify(get_stats())
+    except ImportError:
+        return jsonify({'running': False, 'error': 'module not available'}), 503
+
+
+@app.route('/api/jslog', methods=['POST'])
+def jslog():
+    """Receive console.log from WebView2 and write to frozen_debug.log."""
+    data = request.get_json(silent=True) or {}
+    msg = data.get('msg', '')
+    level = data.get('level', 'log')
+    logging.info(f"[JS:{level}] {msg}")
+    return '', 204
+
+
 @app.route('/api/social/events/stream')
 def sse_event_stream():
     """Local SSE endpoint — fallback transport for flat/desktop topology.
@@ -1497,21 +2081,30 @@ def sse_event_stream():
     Frontend connects here only when the Crossbar worker reports disconnected.
     Requires a valid JWT token as ``?token=`` query parameter.
     """
+    logging.info(f"SSE: client connecting (args={dict(request.args)})")
     from flask import Response
     from flask import jsonify as _jsonify
     from flask import request as flask_request
 
     token = flask_request.args.get('token', '').strip()
-    if not token:
+
+    # Bundled/local mode: allow SSE without JWT (same machine, no auth needed for TTS push)
+    _is_local = bool(os.environ.get('NUNBA_BUNDLED') or getattr(sys, 'frozen', False))
+    if not token and not _is_local:
         return _jsonify({"error": "Missing token query parameter"}), 401
 
-    try:
-        from integrations.social.auth import decode_jwt
-        payload = decode_jwt(token)
-        uid = payload.get('user_id')
-        if not uid:
-            return _jsonify({"error": "Invalid or expired token"}), 401
-    except Exception:
+    uid = None
+    if token:
+        try:
+            from integrations.social.auth import decode_jwt
+            payload = decode_jwt(token)
+            uid = payload.get('user_id')
+        except Exception:
+            if not _is_local:
+                return _jsonify({"error": "Invalid or expired token"}), 401
+    if not uid:
+        uid = flask_request.args.get('user_id', 'guest') if _is_local else None
+    if not uid:
         return _jsonify({"error": "Invalid or expired token"}), 401
 
     _cleanup_dead_sse_clients()
@@ -1686,6 +2279,12 @@ if HARTOS_BACKEND_DIRECT:
         pass
 
     try:
+        from routes.kids_game_recommendation import kids_recommendation_bp
+        app.register_blueprint(kids_recommendation_bp)
+    except Exception:
+        pass
+
+    try:
         from routes.upload_routes import register_upload_routes
         register_upload_routes(app)
     except Exception:
@@ -1696,6 +2295,15 @@ if HARTOS_BACKEND_DIRECT:
         register_db_routes(app)
     except Exception:
         pass
+
+    # ── Register ALL HARTOS hive blueprints (marketplace, benchmarks, robotics, etc.) ──
+    try:
+        from integrations.blueprint_registry import register_all_blueprints
+        result = register_all_blueprints(app)
+        logging.info(f"HARTOS blueprints: {len(result['registered'])} registered, "
+                     f"{len(result['skipped'])} skipped: {result['registered']}")
+    except Exception as e:
+        logging.warning(f"HARTOS blueprint registry failed: {e}")
 
 
 def _deferred_social_init():
@@ -1712,16 +2320,25 @@ def _deferred_social_init():
             logging.warning(f"hart-backend migrations: {mig_err}")
         logging.info(f"hart-backend DB initialized: {NUNBA_DB_PATH}")
 
-        # Channel adapters (Telegram, Discord — background daemon threads)
+        # Channel adapters — env-gated, each registers only if its token/URL is set
         try:
             from core.port_registry import get_port
             from integrations.channels.flask_integration import init_channels
-            init_channels(app, {
+            channels = init_channels(app, {
                 'agent_api_url': f'http://localhost:{get_port("backend")}/chat',
                 'default_user_id': 10077,
                 'default_prompt_id': 8888,
                 'device_id': DEVICE_ID,
             })
+            channels.register_telegram()    # needs TELEGRAM_BOT_TOKEN
+            channels.register_discord()     # needs DISCORD_BOT_TOKEN
+            channels.register_whatsapp()    # needs WHATSAPP_API_URL
+            channels.register_slack()       # needs SLACK_BOT_TOKEN
+            channels.register_signal()      # needs SIGNAL_PHONE_NUMBER
+            channels.register_imessage()    # needs BLUEBUBBLES_PASSWORD
+            channels.register_google_chat() # needs GOOGLE_CHAT_WEBHOOK or GOOGLE_CHAT_SA_FILE
+            channels.register_web_chat()    # always available (WebSocket)
+            channels.start()
             logging.info("Channel adapters initialized")
         except Exception as ch_err:
             logging.debug(f"Channel adapters skipped: {ch_err}")
@@ -2279,6 +2896,245 @@ def _start_diarization_service():
         logging.warning(f"DiarizationService failed to start: {e}")
 
 
+_bg_services_started = False
+
+def start_background_services():
+    """Start all background services: LangChain, vision, diarization, TTS warm-up.
+
+    Called from both `python main.py` (direct) and `app.py` (frozen exe import).
+    Guarded — only runs once per process.
+    """
+    global _bg_services_started
+    if _bg_services_started:
+        logging.debug("Background services already started — skipping")
+        return
+    _bg_services_started = True
+
+    # Start embedded WAMP router (port 8088) for realtime push.
+    # Must start BEFORE LangChain/crossbar_server (they are WAMP *clients*
+    # that connect TO this router). In bundled mode the cloud router at
+    # aws_rasa.hertzai.com is unreachable — this local router is the only
+    # transport for TTS audio delivery, chat streaming, game state, etc.
+    try:
+        from wamp_router import start_wamp_router
+        start_wamp_router()
+        logging.info("Embedded WAMP router starting on port %s",
+                     os.environ.get('NUNBA_WAMP_PORT', '8088'))
+    except Exception as e:
+        logging.warning("WAMP router failed to start (realtime will use SSE fallback): %s", e)
+
+    # Start LangChain service in background thread (non-blocking)
+    langchain_thread = threading.Thread(target=start_langchain_service, daemon=True)
+    langchain_thread.start()
+
+    # Start LangChain watchdog (monitors subprocess health, auto-restarts on failure).
+    # Only needed when LangChain runs as a subprocess (standalone, non-bundled mode).
+    _should_watchdog = not (os.environ.get('NUNBA_BUNDLED') or getattr(sys, 'frozen', False))
+    if _should_watchdog:
+        try:
+            from routes.hartos_backend_adapter import _hartos_backend_available
+            if _hartos_backend_available:
+                _should_watchdog = False  # in-process, no subprocess to watch
+        except Exception:
+            pass  # import failed, subprocess might be needed
+
+    if _should_watchdog:
+        watchdog_thread = threading.Thread(
+            target=_langchain_watchdog, daemon=True, name='LangChainWatchdog'
+        )
+        watchdog_thread.start()
+        logging.info("LangChain watchdog thread started")
+    else:
+        logging.info("LangChain watchdog skipped (in-process or bundled mode)")
+
+    # Start VisionService (MiniCPM + frame receiver) in daemon thread
+    vision_thread = threading.Thread(target=_start_vision_service, daemon=True)
+    vision_thread.start()
+
+    # Start streaming STT WebSocket server (faster-whisper, real-time mic input).
+    # Whisper model loads lazily on first transcription — NOT at server start.
+    # This prevents whisper from claiming 3GB GPU VRAM before F5-TTS needs it.
+    try:
+        from integrations.service_tools.whisper_tool import start_stt_stream_server
+        stt_port = start_stt_stream_server()
+        if stt_port:
+            logging.info(f"Streaming STT WebSocket server started on port {stt_port}")
+    except Exception as e:
+        logging.debug(f"Streaming STT server skipped: {e}")
+
+    # Start DiarizationService (speaker diarization sidecar) in daemon thread
+    diarization_thread = threading.Thread(target=_start_diarization_service, daemon=True)
+    diarization_thread.start()
+
+    # Warm-up TTS engine in background with user's preferred language
+    # so the correct GPU engine (Indic Parler, CosyVoice3, Chatterbox Turbo)
+    # is loaded BEFORE the first TTS request — no cold-start delay.
+    def _warmup_tts():
+        try:
+            if os.environ.get('NUNBA_DISABLE_TTS'):
+                return
+
+            # Pre-check CUDA torch via clean subprocess (avoids stub pollution).
+            # Must run BEFORE importing tts_engine so the cache is primed.
+            from tts._torch_probe import check_cuda_available
+            _cuda_ok = check_cuda_available()
+
+            # Import TTSEngine class first (just the class, not get_tts_engine singleton)
+            # so we can prime its cache BEFORE it constructs the engine
+            from tts.tts_engine import TTSEngine
+            if _cuda_ok:
+                TTSEngine._import_check_cache['_torch_cuda'] = True
+                logging.info("TTS: CUDA torch verified via subprocess — GPU TTS enabled")
+                # Probe each GPU backend so the compiled .pyc's _can_run_backend
+                # sees them in cache and skips the poisoned in-process import
+                from tts._torch_probe import check_backend_runnable
+                for _be, _imp in TTSEngine._BACKEND_REQUIRED_IMPORTS.items():
+                    if check_backend_runnable(_be, _imp):
+                        TTSEngine._import_check_cache[_imp] = True
+                        logging.info(f"TTS: backend {_be} ({_imp}) verified runnable")
+            # NOW create the engine — cache is primed, _can_run_backend will find entries
+            from tts.tts_engine import get_tts_engine
+            engine = get_tts_engine()
+
+            # Read user's preferred language from HART onboarding
+            preferred_lang = 'en'
+            try:
+                import json as _json
+                _hart_lang_file = os.path.join(
+                    os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'hart_language.json')
+                if os.path.exists(_hart_lang_file):
+                    with open(_hart_lang_file) as _f:
+                        preferred_lang = _json.load(_f).get('language', 'en')
+            except Exception:
+                pass
+
+            # If GPU detected but CUDA torch not installed, install it NOW
+            # (blocking) so GPU TTS works on first launch. Shows progress via
+            # WAMP push so the UI can display download status.
+            try:
+                from tts.package_installer import has_nvidia_gpu, is_cuda_torch
+                if has_nvidia_gpu() and not is_cuda_torch():
+                    logging.info("TTS: GPU detected — installing CUDA PyTorch (first launch, ~2.5GB)...")
+                    from tts.package_installer import install_gpu_torch
+                    def _progress(msg):
+                        logging.info(f"CUDA torch: {msg}")
+                        try:
+                            from integrations.social.realtime import publish_event
+                            publish_event('setup_progress', {
+                                'type': 'setup_progress',
+                                'job_type': 'cuda_torch',
+                                'status': 'loading',
+                                'message': msg,
+                            })
+                        except Exception:
+                            pass
+                    ok, msg = install_gpu_torch(progress_cb=_progress)
+                    if ok:
+                        logging.info("CUDA torch installed — GPU TTS active on next restart")
+                        # Notify user in their language that voice is upgrading
+                        _voice_msgs = {
+                            'en': "I'm upgrading my voice. Next time we talk, I'll sound much better.",
+                            'ta': "என் குரலை மேம்படுத்திக்கொண்டிருக்கிறேன். அடுத்த முறை இன்னும் நன்றாக பேசுவேன்.",
+                            'hi': "मैं अपनी आवाज़ बेहतर कर रहा हूँ. अगली बार और अच्छा लगेगा.",
+                            'bn': "আমার গলা আপগ্রেড করছি। পরের বার আরও ভালো শোনাবে।",
+                            'te': "నా గొంతు అప్‌గ్రేడ్ చేస్తున్నాను. తర్వాత మాట్లాడినప్పుడు బాగుంటుంది.",
+                            'kn': "ನನ್ನ ಧ್ವನಿ ಅಪ್‌ಗ್ರೇಡ್ ಮಾಡ್ತಿದ್ದೀನಿ. ಮುಂದಿನ ಸಲ ಇನ್ನೂ ಚೆನ್ನಾಗಿ ಮಾತಾಡ್ತೀನಿ.",
+                            'ml': "എന്റെ ശബ്ദം അപ്‌ഗ്രേഡ് ചെയ്യുന്നു. അടുത്ത തവണ കൂടുതല്‍ നന്നായി സംസാരിക്കാം.",
+                            'gu': "મારો અવાજ સુધારી રહ્યો છું. આવતી વખતે વધુ સારું લાગશે.",
+                            'mr': "माझा आवाज सुधारतोय. पुढच्या वेळी अजून छान वाटेल.",
+                            'pa': "ਮੈਂ ਆਪਣੀ ਆਵਾਜ਼ ਬਿਹਤਰ ਕਰ ਰਿਹਾ ਹਾਂ. ਅਗਲੀ ਵਾਰ ਹੋਰ ਵਧੀਆ ਲੱਗੇਗਾ.",
+                            'ur': "میں اپنی آواز بہتر کر رہا ہوں۔ اگلی بار اور اچھا لگے گا۔",
+                            'ne': "मेरो आवाज सुधार्दैछु। अर्को पटक झन राम्रो सुनिनेछ।",
+                            'or': "ମୋ ସ୍ବର ଉନ୍ନତ କରୁଛି। ପରବର୍ତ୍ତୀ ଥର ଆହୁରି ଭଲ ଲାଗିବ।",
+                            'as': "মোৰ মাত উন্নত কৰি আছোঁ। পিছৰবাৰ আৰু ভাল লাগিব।",
+                            'sa': "मम स्वरं सुधारयामि। अग्रिमे वारे श्रेष्ठतरं भविष्यति।",
+                            'ja': "声をアップグレード中。次に話す時はもっと自然に聞こえるよ。",
+                            'ko': "목소리를 업그레이드하고 있어요. 다음에 만나면 더 좋아질 거예요.",
+                            'zh': "正在升级我的声音。下次聊天时会好听很多。",
+                            'es': "Estoy mejorando mi voz. La próxima vez sonaré mucho mejor.",
+                            'fr': "J'améliore ma voix. La prochaine fois, ce sera beaucoup mieux.",
+                            'de': "Ich verbessere meine Stimme. Nächstes Mal klinge ich viel besser.",
+                            'it': "Sto migliorando la mia voce. La prossima volta sarà molto meglio.",
+                            'pt': "Estou melhorando minha voz. Na próxima vez vai soar muito melhor.",
+                            'ar': "أحسّن صوتي. المرة القادمة سيكون أفضل بكثير.",
+                            'ru': "Улучшаю свой голос. В следующий раз буду звучать намного лучше.",
+                        }
+                        _vmsg = _voice_msgs.get(preferred_lang, _voice_msgs['en'])
+                        try:
+                            from integrations.social.realtime import publish_event
+                            publish_event('setup_progress', {
+                                'type': 'setup_progress',
+                                'job_type': 'cuda_torch',
+                                'status': 'done',
+                                'message': _vmsg,
+                            })
+                        except Exception:
+                            pass
+                    else:
+                        logging.warning(f"CUDA torch install failed: {msg} — using CPU TTS")
+            except Exception:
+                pass
+
+            # Trigger language-based engine selection (loads GPU model if CUDA torch available)
+            logging.info(f"TTS warm-up: user prefers '{preferred_lang}', selecting GPU engine...")
+            engine.set_language(preferred_lang)
+
+            # Wait for backend switch to settle:
+            for _wait in range(20):
+                if not getattr(engine, '_pending_backend', None):
+                    break
+                time.sleep(0.5)
+
+            # Pre-load F5 on GPU AFTER llama-server is ready.
+            # Wait for llama-server to finish loading so VRAM settles.
+            # Then force F5 model load via a test synthesis.
+            # The _synth_lock serializes with chat threads (no race condition).
+            # The 60s idle timer will unload F5 if no real TTS comes.
+            logging.info("TTS warm-up: waiting for llama-server to settle before F5 pre-load...")
+            for _llm_wait in range(30):  # up to 90s
+                try:
+                    import urllib.request as _ur
+                    _h = _ur.urlopen('http://127.0.0.1:8080/health', timeout=2)
+                    _status = _h.read()
+                    _h.close()
+                    if b'"ok"' in _status:
+                        logging.info("TTS warm-up: llama-server ready, pre-loading F5...")
+                        break
+                except Exception:
+                    pass
+                time.sleep(3)
+
+            # Pre-load F5 only if enough VRAM (model 1.3GB + buffers = need 2.5GB free).
+            # If VRAM is too tight (llama took most of it), skip — first chat uses Piper.
+            _can_preload = False
+            try:
+                from integrations.service_tools.vram_manager import vram_manager
+                _free = vram_manager.get_free_vram()
+                _can_preload = _free >= 3.0  # need headroom above 2.5 for model + inference
+                if not _can_preload:
+                    logging.info(f"TTS warm-up: only {_free:.1f}GB VRAM free — skipping F5 pre-load")
+            except Exception:
+                pass
+
+            if _can_preload:
+                import tempfile as _tf
+                _test_path = os.path.join(_tf.gettempdir(), '_nunba_tts_warmup.wav')
+                try:
+                    engine.synthesize("test", output_path=_test_path, language=preferred_lang)
+                    if os.path.exists(_test_path):
+                        os.unlink(_test_path)
+                    logging.info("TTS warm-up: F5 pre-loaded on GPU — first response will be fast")
+                except Exception as _se:
+                    logging.info(f"TTS warm-up: pre-load skipped ({_se}) — first response uses Piper")
+
+            backend = engine.get_info().get('active_backend', 'unknown')
+            logging.info(f"TTS engine warmed up: {backend} (language={preferred_lang})")
+        except Exception as e:
+            logging.warning(f"TTS warm-up failed (non-blocking): {e}")
+    tts_thread = threading.Thread(target=_warmup_tts, daemon=True, name='TTSWarmup')
+    tts_thread.start()
+
+
 if __name__ == '__main__':
     try:
         # Log Python version and environment info
@@ -2286,50 +3142,7 @@ if __name__ == '__main__':
         logging.info(f"Running from: {os.path.abspath(__file__)}")
         logging.info(f"Hevolve build directory: {LANDING_PAGE_BUILD_DIR}")
 
-        # Start LangChain service in background thread (non-blocking)
-        langchain_thread = threading.Thread(target=start_langchain_service, daemon=True)
-        langchain_thread.start()
-
-        # Start LangChain watchdog (monitors subprocess health, auto-restarts on failure).
-        # Only needed when LangChain runs as a subprocess (standalone, non-bundled mode).
-        _should_watchdog = not (os.environ.get('NUNBA_BUNDLED') or getattr(sys, 'frozen', False))
-        if _should_watchdog:
-            try:
-                from routes.hartos_backend_adapter import _hartos_backend_available
-                if _hartos_backend_available:
-                    _should_watchdog = False  # in-process, no subprocess to watch
-            except Exception:
-                pass  # import failed, subprocess might be needed
-
-        if _should_watchdog:
-            watchdog_thread = threading.Thread(
-                target=_langchain_watchdog, daemon=True, name='LangChainWatchdog'
-            )
-            watchdog_thread.start()
-            logging.info("LangChain watchdog thread started")
-        else:
-            logging.info("LangChain watchdog skipped (in-process or bundled mode)")
-
-        # Start VisionService (MiniCPM + frame receiver) in daemon thread
-        vision_thread = threading.Thread(target=_start_vision_service, daemon=True)
-        vision_thread.start()
-
-        # Start DiarizationService (speaker diarization sidecar) in daemon thread
-        diarization_thread = threading.Thread(target=_start_diarization_service, daemon=True)
-        diarization_thread.start()
-
-        # Warm-up TTS engine in background (pre-loads model so first TTS request is fast)
-        def _warmup_tts():
-            try:
-                if os.environ.get('NUNBA_DISABLE_TTS'):
-                    return
-                from tts.tts_engine import get_tts_engine
-                engine = get_tts_engine()
-                logging.info(f"TTS engine warmed up: {engine.get_info().get('active_backend', 'unknown')}")
-            except Exception as e:
-                logging.warning(f"TTS warm-up failed (non-blocking): {e}")
-        tts_thread = threading.Thread(target=_warmup_tts, daemon=True, name='TTSWarmup')
-        tts_thread.start()
+        start_background_services()
 
         # Start the server via waitress (production WSGI)
         # Default to 127.0.0.1 (loopback only) for security; set NUNBA_BIND_HOST=0.0.0.0 to expose on all interfaces

@@ -16,7 +16,7 @@ import {logger} from '../../../../utils/logger';
 import {Box, Typography, Card, Fade, Grow} from '@mui/material';
 import {kidsColors, kidsAnimations} from '../kidsTheme';
 import {GameSounds, GameCommentary} from '../shared/SoundManager';
-import CelebrationOverlay from '../shared/CelebrationOverlay';
+import InlineCelebration from '../shared/InlineCelebration';
 import GameLivesBar from '../shared/GameLivesBar';
 import KidsCharacter from '../shared/KidsCharacter';
 import VisualHint from '../shared/VisualHint';
@@ -654,14 +654,7 @@ export default function DragToZoneTemplate({config, onAnswer, onComplete}) {
         </Fade>
       )}
 
-      <CelebrationOverlay
-        type={celebType}
-        visible={celebVisible}
-        streakCount={celebStreak}
-        onDone={handleCelebDone}
-        starsEarned={starsEarned}
-        score={celebScore}
-      />
+      <InlineCelebration type={celebType} gameTemplate="drag_to_zone" visible={celebVisible} onDone={handleCelebDone} streakCount={celebStreak} score={celebScore} />
     </Box>
   );
 }

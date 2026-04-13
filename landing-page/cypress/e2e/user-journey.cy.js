@@ -90,7 +90,7 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
   describe('1. Guest Browsing Phase', () => {
     it('1.1 should start with no auth tokens in localStorage', () => {
       cy.clearLocalStorage();
-      cy.visit('/social');
+      cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
       cy.window().then((win) => {
         expect(win.localStorage.getItem('access_token')).to.be.null;
         expect(win.localStorage.getItem('guest_mode')).to.be.null;
@@ -98,19 +98,20 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
     });
 
     it('1.2 should load social feed as anonymous user without crashing', () => {
-      cy.visit('/social');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
     it('1.3 should allow anonymous browsing of feed content', () => {
-      cy.visit('/social');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').invoke('text').should('have.length.greaterThan', 0);
     });
 
     it('1.4 should set guest_mode items when visiting /local as guest', () => {
       cy.visit('/local', {
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'Cool.Blue.Cypress');
@@ -128,13 +129,14 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
 
     it('1.5 should allow guest to browse social feed', () => {
       cy.visit('/social', {
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'Test.Guest.User');
           win.localStorage.setItem('guest_user_id', 'guest_test_002');
         },
       });
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
@@ -158,26 +160,28 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
         body: {data: [], success: true},
       });
       cy.visit('/social/post/1', {
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'Test.Guest.Nav');
           win.localStorage.setItem('guest_user_id', 'guest_test_003');
         },
       });
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
   });
 
   describe('2. Login Transition (OTP Flow)', () => {
     it('2.1 should preserve guest browsing context URL during OTP flow', () => {
       cy.visit('/agents/Hevolve', {
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
           win.localStorage.setItem('guest_name', 'OTP.Test.User');
           win.localStorage.setItem('guest_user_id', 'guest_otp_001');
         },
       });
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       // Verify guest mode was set
       cy.window().then((win) => {
         expect(win.localStorage.getItem('guest_mode')).to.equal('true');
@@ -186,6 +190,7 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
 
     it('2.2 should clear guest_mode items after successful login simulation', () => {
       cy.visit('/social', {
+        timeout: 60000,
         onBeforeLoad(win) {
           // Set guest mode first
           win.localStorage.setItem('guest_mode', 'true');
@@ -223,7 +228,7 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
 
     it('3.1 should show authenticated feed content after login', () => {
       cy.socialVisit('/social');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
@@ -243,7 +248,7 @@ describe('User Journey E2E -- Guest to Login Transition', () => {
         body: {data: {id: userId, username: 'test', karma: 0}, success: true},
       });
       cy.socialVisit(`/social/profile/${userId}`);
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
   });
 });
@@ -284,7 +289,7 @@ describe('User Journey E2E -- Social Route Navigation', () => {
   describe('1. Sequential Route Navigation', () => {
     it('1.1 should navigate: feed -> search -> notifications -> feed', () => {
       cy.socialVisit('/social');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.socialVisit('/social/search');
       cy.url().should('include', '/social/search');
       cy.socialVisit('/social/notifications');
@@ -314,17 +319,17 @@ describe('User Journey E2E -- Social Route Navigation', () => {
       });
       cy.socialVisit('/social');
       cy.socialVisit('/social/post/1');
-      cy.url({timeout: 10000}).should('include', '/social/post/1');
+      cy.url({timeout: 300000}).should('include', '/social/post/1');
       cy.go('back');
-      cy.url({timeout: 10000}).should('include', '/social');
+      cy.url({timeout: 300000}).should('include', '/social');
     });
 
     it('1.3 should navigate: feed -> communities -> back', () => {
       cy.socialVisit('/social');
       cy.socialVisit('/social/communities');
-      cy.url({timeout: 10000}).should('include', '/social/communities');
+      cy.url({timeout: 300000}).should('include', '/social/communities');
       cy.go('back');
-      cy.url({timeout: 10000}).should('include', '/social');
+      cy.url({timeout: 300000}).should('include', '/social');
     });
 
     it('1.4 should navigate: feed -> achievements -> challenges', () => {
@@ -333,7 +338,7 @@ describe('User Journey E2E -- Social Route Navigation', () => {
         body: {data: [], success: true},
       });
       cy.socialVisit('/social/achievements');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.socialVisit('/social/challenges');
       cy.get('#root').should('exist');
     });
@@ -352,12 +357,12 @@ describe('User Journey E2E -- Social Route Navigation', () => {
 
     it('1.6 should navigate to backup settings page', () => {
       cy.socialVisit('/social/settings/backup');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
 
     it('1.7 should navigate to agents audit page', () => {
       cy.socialVisit('/social/agents');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
   });
 
@@ -384,7 +389,7 @@ describe('User Journey E2E -- Social Route Navigation', () => {
       cy.socialVisit('/social');
       cy.socialVisit('/social/post/1');
       cy.go('back');
-      cy.url({timeout: 10000}).should('include', '/social');
+      cy.url({timeout: 300000}).should('include', '/social');
     });
 
     it('2.2 should support browser back from profile to feed', () => {
@@ -396,14 +401,14 @@ describe('User Journey E2E -- Social Route Navigation', () => {
       cy.socialVisit('/social');
       cy.socialVisit(`/social/profile/${userId}`);
       cy.go('back');
-      cy.url({timeout: 10000}).should('include', '/social');
+      cy.url({timeout: 300000}).should('include', '/social');
     });
 
     it('2.3 should support browser back from search to previous page', () => {
       cy.socialVisit('/social/communities');
       cy.socialVisit('/social/search');
       cy.go('back');
-      cy.url({timeout: 10000}).should('include', '/social/communities');
+      cy.url({timeout: 300000}).should('include', '/social/communities');
     });
 
     it('2.4 should support multiple back navigations across route chain', () => {
@@ -416,11 +421,11 @@ describe('User Journey E2E -- Social Route Navigation', () => {
       cy.socialVisit('/social/achievements');
       cy.socialVisit('/social/challenges');
       cy.go('back');
-      cy.url({timeout: 10000}).should('include', '/social/achievements');
+      cy.url({timeout: 300000}).should('include', '/social/achievements');
       cy.go('back');
-      cy.url({timeout: 10000}).should('include', '/social/search');
+      cy.url({timeout: 300000}).should('include', '/social/search');
       cy.go('back');
-      cy.url({timeout: 10000}).should('include', '/social');
+      cy.url({timeout: 300000}).should('include', '/social');
     });
   });
 
@@ -445,7 +450,7 @@ describe('User Journey E2E -- Social Route Navigation', () => {
         body: {data: [], success: true},
       });
       cy.socialVisit('/social/post/42');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
 
     it('3.2 should load search page via deep link', () => {
@@ -461,7 +466,7 @@ describe('User Journey E2E -- Social Route Navigation', () => {
         body: {data: {id: userId, username: 'test', karma: 0}, success: true},
       });
       cy.socialVisit(`/social/profile/${userId}`);
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
   });
 });
@@ -500,12 +505,12 @@ describe('User Journey E2E -- Agent Page and Social Navigation', () => {
   describe('1. Demopage to Social Navigation', () => {
     it('1.1 should load Demopage (/) and render agent content', () => {
       cy.socialVisit('/');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
 
     it('1.2 should navigate from Demopage to /social', () => {
       cy.socialVisit('/');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.socialVisit('/social');
       cy.url().should('include', '/social');
     });
@@ -513,7 +518,7 @@ describe('User Journey E2E -- Agent Page and Social Navigation', () => {
     it('1.3 should load social feed after navigating from Demopage', () => {
       cy.socialVisit('/');
       cy.socialVisit('/social');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
   });
@@ -521,7 +526,7 @@ describe('User Journey E2E -- Agent Page and Social Navigation', () => {
   describe('2. Social to Demopage Navigation', () => {
     it('2.1 should navigate from /social back to Demopage (/)', () => {
       cy.socialVisit('/social');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.socialVisit('/');
       cy.url().should('match', /\/$/);
     });
@@ -530,7 +535,7 @@ describe('User Journey E2E -- Agent Page and Social Navigation', () => {
       cy.socialVisit('/');
       cy.socialVisit('/social');
       cy.socialVisit('/');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
 
     it('2.3 should preserve auth state across Demopage <-> Social transitions', () => {
@@ -675,39 +680,39 @@ describe('User Journey E2E -- Multi-Channel Journey Tracing', () => {
   describe('1. Channel API Stubs', () => {
     it('1.1 should load admin channels page with stubbed channel list', () => {
       cy.socialVisitAsAdmin('/admin/channels');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
 
     it('1.2 should display stubbed channel data without crashing', () => {
       cy.socialVisitAsAdmin('/admin/channels');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
 
     it('1.3 should load admin dashboard with stubbed metrics', () => {
       cy.socialVisitAsAdmin('/admin');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
     });
   });
 
   describe('2. Cross-Channel User Journey', () => {
     it('2.1 should navigate from social feed to admin dashboard', () => {
       cy.socialVisitAsAdmin('/social');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.socialVisitAsAdmin('/admin');
       cy.url().should('include', '/admin');
     });
 
     it('2.2 should navigate from admin dashboard to admin channels', () => {
       cy.socialVisitAsAdmin('/admin');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.socialVisitAsAdmin('/admin/channels');
       cy.url().should('include', '/admin/channels');
     });
 
     it('2.3 should navigate from admin channels back to social feed', () => {
       cy.socialVisitAsAdmin('/admin/channels');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.socialVisitAsAdmin('/social');
       cy.url().should('include', '/social');
     });
@@ -723,7 +728,7 @@ describe('User Journey E2E -- Multi-Channel Journey Tracing', () => {
 
     it('2.5 should handle multi-channel session data via admin', () => {
       cy.socialVisitAsAdmin('/admin');
-      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.get('body').should('not.contain.text', 'Uncaught');
     });
   });

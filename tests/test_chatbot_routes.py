@@ -30,46 +30,117 @@ if PROJECT_ROOT not in sys.path:
 # Unit tests for helper functions (no Flask app needed)
 # ============================================================
 
-class TestDetectCreateAgentIntent:
-    """Test the deterministic agent-creation intent detector."""
+class TestIntentClassifiersAreDraftOnly:
+    """All user-intent classification for the chat route lives in the
+    HARTOS Qwen3.5-0.8B draft-first classifier. There is NO Python-level
+    phrase list, exact-match set, or regex-based detector for:
 
-    @pytest.fixture(autouse=True)
-    def _import_detector(self):
-        from routes.chatbot_routes import _detect_create_agent_intent
-        self.detect = _detect_create_agent_intent
+        - create-agent intent
+        - channel-connect intent
+        - casual-chit-chat intent
+        - correction intent
 
-    def test_positive_create_agent(self):
-        assert self.detect("create an agent that summarizes news") is True
+    These guard tests lock that contract. Every resurfaced symbol below
+    represents a shadow code path that duplicates the draft model's
+    classification and inevitably drifts from it.
+    """
 
-    def test_positive_build_agent(self):
-        assert self.detect("build agent for data analysis") is True
+    @pytest.mark.parametrize('symbol', [
+        # Deleted correction-intent detector
+        '_detect_correction_intent',
+        '_CORRECTION_MARKERS',
+        # Deleted create-agent phrase allowlist + detector
+        '_detect_create_agent_intent',
+        '_CREATE_AGENT_EXACT',
+        # Deleted channel-connect regex detector + tables
+        '_detect_channel_connect_intent',
+        '_CONNECT_CHANNEL_VERBS',
+        '_CHANNEL_NAMES',
+        # Deleted casual-chit-chat classifier + tables
+        '_is_casual_message',
+        '_CASUAL_EXACT',
+        '_TOOL_TRIGGER_TOKENS',
+    ])
+    def test_symbol_is_not_reexported(self, symbol):
+        import routes.chatbot_routes as cr
+        assert not hasattr(cr, symbol), (
+            f'{symbol} resurfaced in routes/chatbot_routes.py — the draft '
+            f'classifier owns this decision now. If you need a new intent, '
+            f'add a field to _build_draft_classifier_prompt instead of '
+            f'reviving a phrase list.'
+        )
 
-    def test_positive_new_agent(self):
-        assert self.detect("I want a new agent") is True
+    def test_submit_correction_still_exported(self):
+        """The async submitter stays — it's the bridge to
+        WorldModelBridge, triggered by reading is_correction off the
+        /chat response dict."""
+        from routes.chatbot_routes import _submit_correction_async
+        assert callable(_submit_correction_async)
 
-    def test_positive_train_agent(self):
-        assert self.detect("train an agent to write poetry") is True
 
-    def test_positive_case_insensitive(self):
-        assert self.detect("CREATE AN AGENT for me") is True
+class TestSubmitCorrectionAsync:
+    """The correction submission must be fire-and-forget and never
+    raise into the chat response path, even if WorldModelBridge is
+    broken or HevolveAI is offline."""
 
-    def test_negative_no_pattern(self):
-        assert self.detect("what is the weather today?") is False
+    def test_spawns_daemon_thread(self):
+        from routes.chatbot_routes import _submit_correction_async
+        with patch('threading.Thread') as mock_thread:
+            mock_thread.return_value = MagicMock()
+            _submit_correction_async('old', 'new', user_id='u1')
+            mock_thread.assert_called_once()
+            assert mock_thread.call_args.kwargs.get('daemon') is True
+            assert mock_thread.call_args.kwargs.get('name') == 'submit_correction'
 
-    def test_negative_dont_create_agent(self):
-        assert self.detect("don't create an agent please") is False
+    def test_worker_calls_bridge_with_right_args(self):
+        from routes.chatbot_routes import _submit_correction_async
+        captured = {}
+        def capture_thread(target=None, **kwargs):
+            captured['fn'] = target
+            return MagicMock()
+        mock_bridge = MagicMock()
+        with patch('threading.Thread', side_effect=capture_thread):
+            _submit_correction_async('old answer', 'actually correct', 'u1')
+        with patch('integrations.agent_engine.world_model_bridge.get_world_model_bridge',
+                   return_value=mock_bridge):
+            captured['fn']()
+        mock_bridge.submit_correction.assert_called_once()
+        call_kwargs = mock_bridge.submit_correction.call_args.kwargs
+        assert call_kwargs['original_response'] == 'old answer'
+        assert call_kwargs['corrected_response'] == 'actually correct'
+        assert call_kwargs['expert_id'] == 'chat:u1'
 
-    def test_negative_do_not_create(self):
-        assert self.detect("do not create agent") is False
+    def test_worker_swallows_bridge_exceptions(self):
+        from routes.chatbot_routes import _submit_correction_async
+        captured = {}
+        def capture_thread(target=None, **kwargs):
+            captured['fn'] = target
+            return MagicMock()
+        with patch('threading.Thread', side_effect=capture_thread):
+            _submit_correction_async('a', 'b', 'u1')
+        with patch('integrations.agent_engine.world_model_bridge.get_world_model_bridge',
+                   side_effect=RuntimeError('bridge down')):
+            # Must NOT raise
+            captured['fn']()
 
-    def test_negative_cancel_create(self):
-        assert self.detect("cancel create agent") is False
 
-    def test_negative_empty_string(self):
-        assert self.detect("") is False
+class TestLlmAutoStartDelegation:
+    """Chat route owns NO model lifecycle logic. It just calls
+    ModelOrchestrator.ensure_loaded_async — the single unified entry
+    point for every model type (llm, tts, stt, vlm, ...). No in-memory
+    debounce, no thread spawning in the route file, no fallback cascade
+    duplication. This test locks in the delegation so a future refactor
+    can't silently re-introduce a per-model-type starter inside the
+    Flask route layer."""
 
-    def test_negative_stop_create(self):
-        assert self.detect("stop create an agent") is False
+    def test_ensure_loaded_async_is_the_one_entry_point(self):
+        mock_orch = MagicMock()
+        with patch('models.orchestrator.get_orchestrator',
+                   return_value=mock_orch):
+            from models.orchestrator import get_orchestrator
+            get_orchestrator().ensure_loaded_async('llm', caller='chat:u1')
+            mock_orch.ensure_loaded_async.assert_called_once_with(
+                'llm', caller='chat:u1')
 
 
 class TestExtractResourceRequest:

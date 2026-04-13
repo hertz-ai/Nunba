@@ -190,6 +190,38 @@ const CheckersGame = {
   },
 
   turn: {minMoves: 1, maxMoves: 1},
+
+  // AI move enumeration — respects the forced-capture rule: if any
+  // capture is available anywhere on the board, the AI MUST choose
+  // from captures only (matching moves.movePiece's INVALID_MOVE
+  // return when a non-capture is attempted while captures exist).
+  // Uses getAllCaptures + getAllNonCaptures so the rules stay in
+  // one place.
+  ai: {
+    enumerate: (G, ctx) => {
+      const playerID = ctx.currentPlayer;
+      const captures = getAllCaptures(G.board, playerID);
+
+      if (captures.length > 0) {
+        const out = [];
+        for (const {fromR, fromC, moves: captureMoves} of captures) {
+          for (const m of captureMoves) {
+            out.push({move: 'movePiece', args: [fromR, fromC, m.toR, m.toC]});
+          }
+        }
+        return out;
+      }
+
+      const nonCaptures = getAllNonCaptures(G.board, playerID);
+      const out = [];
+      for (const {fromR, fromC, moves: regularMoves} of nonCaptures) {
+        for (const m of regularMoves) {
+          out.push({move: 'movePiece', args: [fromR, fromC, m.toR, m.toC]});
+        }
+      }
+      return out;
+    },
+  },
 };
 
 const LIGHT_SQUARE = '#D4A574';

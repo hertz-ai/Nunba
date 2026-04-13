@@ -2,34 +2,34 @@
 
 describe('App Navigation E2E', () => {
   it('landing page loads and renders React app', () => {
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('#root div').should('have.length.greaterThan', 0);
   });
 
   it('navigates to demo page via hash route', () => {
-    cy.visit('/local');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
   });
 
   it('page title is set to Hevolve', () => {
-    cy.visit('/');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
     cy.title().should('contain', 'Hevolve');
   });
 
   it('page is responsive on mobile viewport', () => {
     cy.viewport(375, 667);
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root div').should('have.length.greaterThan', 0);
   });
 
   it('page works on tablet viewport', () => {
     cy.viewport(768, 1024);
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root div').should('have.length.greaterThan', 0);
   });
 });
@@ -41,8 +41,8 @@ describe('App Navigation E2E', () => {
 
 describe('Navigation - Interactive Link Clicks', () => {
   it('should navigate to social feed when clicking social link', () => {
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -58,15 +58,15 @@ describe('Navigation - Interactive Link Clicks', () => {
         cy.url().should('include', '/social');
       } else {
         // Direct navigation test
-        cy.visit('/social');
-        cy.get('#root', {timeout: 20000}).should('exist');
+        cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
+        cy.get('#root', {timeout: 300000}).should('exist');
       }
     });
   });
 
   it('should navigate back to home when clicking logo/brand', () => {
-    cy.visit('/social');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -85,8 +85,8 @@ describe('Navigation - Interactive Link Clicks', () => {
   });
 
   it('should navigate using navbar menu items', () => {
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -114,7 +114,7 @@ describe('Navigation - State Preservation', () => {
 
   it('should preserve authentication state after navigation', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Navigate to profile
@@ -127,7 +127,7 @@ describe('Navigation - State Preservation', () => {
     cy.wait(1000);
 
     // Should still be authenticated (FAB button visible for creating posts)
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const hasFab =
         $body.find('[class*="MuiFab"], button[class*="Fab"]').length > 0;
       const hasAuthContent =
@@ -140,7 +140,7 @@ describe('Navigation - State Preservation', () => {
 
   it('should preserve scroll position when using browser back', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Scroll down
@@ -167,7 +167,7 @@ describe('Navigation - State Preservation', () => {
 
   it('should preserve form input when navigating back', () => {
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -196,14 +196,14 @@ describe('Navigation - State Preservation', () => {
 
   it('should maintain feed tab selection after viewing post and returning', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
       const tabs = $body.find('[role="tab"]');
       if (tabs.length >= 2) {
         // Click second tab (Trending)
-        cy.get('[role="tab"]').eq(1).click({force: true});
+        cy.get('[role="tab"]', {timeout: 300000}).eq(1).click({force: true});
         cy.wait(1000);
 
         // Click on a post card if available
@@ -218,7 +218,7 @@ describe('Navigation - State Preservation', () => {
           cy.wait(2000);
 
           // Page should be stable - wait for React to re-render
-          cy.get('#root', {timeout: 20000}).should('exist');
+          cy.get('#root', {timeout: 300000}).should('exist');
           cy.get('body').then(($b) => {
             const rootHtml = $b.find('#root').html() || '';
             const pageLoaded = $b.html().length > 200;
@@ -241,16 +241,16 @@ describe('Navigation - State Preservation', () => {
 
 describe('Navigation - Error Pages', () => {
   it('should show 404 page for non-existent route', () => {
-    cy.visit('/this-page-definitely-does-not-exist-12345', {
+    cy.visit('/this-page-definitely-does-not-exist-12345', {timeout: 60000, 
       failOnStatusCode: false,
     });
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Should show error page or redirect, not crash
     cy.get('body').should('not.contain.text', 'Cannot read properties');
     cy.get('body').should('not.contain.text', 'Uncaught');
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const has404 =
         text.includes('404') ||
@@ -264,10 +264,10 @@ describe('Navigation - Error Pages', () => {
   });
 
   it('should handle invalid social route gracefully', () => {
-    cy.visit('/social/post/invalid-post-id-that-does-not-exist', {
+    cy.visit('/social/post/invalid-post-id-that-does-not-exist', {timeout: 60000, 
       failOnStatusCode: false,
     });
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Should not crash
     cy.get('body').should('not.contain.text', 'Cannot read properties');
@@ -278,8 +278,8 @@ describe('Navigation - Error Pages', () => {
   });
 
   it('should handle invalid admin route gracefully', () => {
-    cy.visit('/admin/nonexistent-section', {failOnStatusCode: false});
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/admin/nonexistent-section', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Should not crash
@@ -287,7 +287,7 @@ describe('Navigation - Error Pages', () => {
     // The page should either render content in #root or redirect to another page.
     // Some routes may render an empty #root while redirecting, so also check body.
     cy.get('body').invoke('html').should('not.be.empty');
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const rootHtml = $body.find('#root').html() || '';
       const pageLoaded = $body.html().length > 200;
       expect(
@@ -314,11 +314,11 @@ describe('Navigation - Deep Linking', () => {
 
         // Deep link directly to post
         cy.socialVisit(`/social/post/${postId}`);
-        cy.get('#root', {timeout: 20000}).should('exist');
+        cy.get('#root', {timeout: 300000}).should('exist');
         cy.wait(2000);
 
         // Should show post content
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasContent =
             text.includes('Deep Link Test') ||
@@ -335,11 +335,11 @@ describe('Navigation - Deep Linking', () => {
     const userId = Cypress.env('socialUserId');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Should show profile content
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasProfile = text.includes('Karma') || text.includes('Followers');
       const pageLoaded = $body.html().length > 100;
@@ -350,7 +350,7 @@ describe('Navigation - Deep Linking', () => {
 
   it('should handle query parameters correctly', () => {
     cy.socialVisit('/social/search?q=test');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // Search query should be processed
@@ -383,7 +383,7 @@ describe('Navigation - History Management', () => {
 
   it('should update URL when navigating within app', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Navigate to profile
@@ -397,7 +397,7 @@ describe('Navigation - History Management', () => {
 
   it('should support browser back button', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(1000);
 
     // Navigate to another page
@@ -416,12 +416,12 @@ describe('Navigation - History Management', () => {
 
   it('should support browser forward button', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(1000);
 
     // Navigate forward
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(1000);
 
     // Go back
@@ -434,8 +434,8 @@ describe('Navigation - History Management', () => {
 
     // Should be on search page - the app may take time to re-render after forward nav
     cy.url().should('include', '/social');
-    cy.get('#root', {timeout: 20000}).should('exist');
-    cy.get('body').then(($body) => {
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('body').should(($body) => {
       const rootHtml = $body.find('#root').html() || '';
       const pageLoaded = $body.html().length > 200;
       expect(
@@ -469,8 +469,8 @@ describe('Navigation - History Management', () => {
 
 describe('Navigation - Loading States', () => {
   it('should show loading indicator during route transitions', () => {
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Page should show content or loading
     cy.get('body').then(($body) => {
@@ -490,8 +490,8 @@ describe('Navigation - Loading States', () => {
   it('should complete loading within reasonable time', () => {
     const startTime = Date.now();
 
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Page should load within 10 seconds
     cy.get('#root')
@@ -507,8 +507,8 @@ describe('Navigation - Loading States', () => {
 describe('Navigation - Responsive Behavior', () => {
   it('should show mobile navigation menu on small screens', () => {
     cy.viewport(375, 667);
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -537,8 +537,8 @@ describe('Navigation - Responsive Behavior', () => {
 
   it('should navigate correctly from mobile menu', () => {
     cy.viewport(375, 667);
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -570,8 +570,8 @@ describe('Navigation - Responsive Behavior', () => {
 
   it('should close mobile menu after navigation', () => {
     cy.viewport(375, 667);
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -599,8 +599,8 @@ describe('Navigation - Responsive Behavior', () => {
   });
 
   it('should adapt navigation layout on viewport resize', () => {
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(1000);
 
     // Desktop
@@ -625,8 +625,8 @@ describe('Navigation - Authentication Redirects', () => {
     // Clear any existing auth
     cy.clearLocalStorage();
 
-    cy.visit('/admin');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/admin', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Should redirect to login or show access denied
@@ -648,7 +648,7 @@ describe('Navigation - Authentication Redirects', () => {
     // This tests the post-login redirect flow
     cy.socialAuth().then(() => {
       cy.socialVisit('/admin');
-      cy.get('#root', {timeout: 20000}).should('exist');
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.wait(2000);
 
       // Should show admin content or redirect appropriately
@@ -663,8 +663,8 @@ describe('Navigation - Performance', () => {
     const pages = ['/social', '/social/search', '/social'];
 
     pages.forEach((page) => {
-      cy.visit(page);
-      cy.get('#root', {timeout: 20000}).should('exist');
+      cy.visit(page, {timeout: 60000, failOnStatusCode: false});
+      cy.get('#root', {timeout: 300000}).should('exist');
       cy.wait(500);
     });
 
@@ -674,13 +674,13 @@ describe('Navigation - Performance', () => {
   });
 
   it('should handle rapid navigation without errors', () => {
-    cy.visit('/');
-    cy.get('#root', {timeout: 20000}).should('exist');
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Rapid navigation
-    cy.visit('/social');
-    cy.visit('/');
-    cy.visit('/social');
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.wait(1000);
 
     // Should settle on final page

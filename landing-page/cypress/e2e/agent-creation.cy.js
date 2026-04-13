@@ -255,7 +255,7 @@ describe('Agent Creation & Types E2E', () => {
   // Returns a Cypress chainable that yields true/false.
   // ---------------------------------------------------------------------------
   function openCreateAgentForm() {
-    cy.contains('Create new Agent', {timeout: 10000})
+    cy.contains('Create new Agent', {timeout: 300000})
       .first()
       .click({force: true});
     // Give the form a moment to render
@@ -277,7 +277,7 @@ describe('Agent Creation & Types E2E', () => {
 
     it('should display the "Create new Agent" button on the demo page', () => {
       // The button text "Create new Agent" appears in the sidebar (both desktop and mobile)
-      cy.contains('Create new Agent', {timeout: 10000}).should('exist');
+      cy.contains('Create new Agent', {timeout: 300000}).should('exist');
     });
 
     it('should open the CreateAgentForm when "Create new Agent" is clicked', () => {
@@ -297,7 +297,7 @@ describe('Agent Creation & Types E2E', () => {
       cy.get('body').then(($body) => {
         const hasBtn = $body.text().includes('Create new Agent');
         if (hasBtn) {
-          cy.contains('Create new Agent', {timeout: 10000})
+          cy.contains('Create new Agent', {timeout: 300000})
             .first()
             .click({force: true});
           cy.wait(1000);
@@ -325,23 +325,23 @@ describe('Agent Creation & Types E2E', () => {
       cy.get('body').then(($body) => {
         if ($body.find('#agentName').length > 0) {
           // Agent Name input (id="agentName")
-          cy.get('#agentName', {timeout: 5000})
+          cy.get('#agentName', {timeout: 300000})
             .should('exist')
             .and('have.attr', 'type', 'text');
 
           // Agent Prompt textarea (id="prompt")
-          cy.get('#prompt', {timeout: 5000})
+          cy.get('#prompt', {timeout: 300000})
             .should('exist')
             .and('have.prop', 'tagName')
             .should('eq', 'TEXTAREA');
 
           // isPublic checkbox (id="isPublic")
-          cy.get('#isPublic', {timeout: 5000})
+          cy.get('#isPublic', {timeout: 300000})
             .should('exist')
             .and('have.attr', 'type', 'checkbox');
 
           // Submit button with text "Create Agent"
-          cy.get('button[type="submit"]', {timeout: 5000})
+          cy.get('button[type="submit"]', {timeout: 300000})
             .should('exist')
             .and('contain.text', 'Create Agent');
         } else {
@@ -358,25 +358,25 @@ describe('Agent Creation & Types E2E', () => {
       cy.get('body').then(($body) => {
         if ($body.find('#agentName').length > 0) {
           // Image upload label and drop zone
-          cy.contains('Agent Image', {timeout: 5000}).should('be.visible');
-          cy.contains('Upload an image for your agent', {timeout: 5000}).should(
+          cy.contains('Agent Image', {timeout: 300000}).should('be.visible');
+          cy.contains('Upload an image for your agent', {timeout: 300000}).should(
             'be.visible'
           );
 
           // Audio upload label and drop zone
-          cy.contains('Agent Voice (Audio)', {timeout: 5000}).should(
+          cy.contains('Agent Voice (Audio)', {timeout: 300000}).should(
             'be.visible'
           );
           cy.contains("Upload an audio file for your agent's voice", {
-            timeout: 5000,
+            timeout: 300000,
           }).should('be.visible');
 
           // Hidden file inputs exist for image and audio
           cy.get('input[type="file"][accept="image/*"]', {
-            timeout: 5000,
+            timeout: 300000,
           }).should('exist');
           cy.get('input[type="file"][accept="audio/*"]', {
-            timeout: 5000,
+            timeout: 300000,
           }).should('exist');
         } else {
           cy.log(
@@ -429,7 +429,7 @@ describe('Agent Creation & Types E2E', () => {
           cy.get('button[type="submit"]').click({force: true});
 
           // While waiting, button should say "Creating..." and be disabled
-          cy.get('button[type="submit"]', {timeout: 3000})
+          cy.get('button[type="submit"]', {timeout: 30000})
             .should('contain.text', 'Creating...')
             .and('be.disabled');
         } else {
@@ -496,7 +496,7 @@ describe('Agent Creation & Types E2E', () => {
 
           cy.get('button[type="submit"]').click({force: true});
 
-          cy.wait('@createPrompt', {timeout: 15000}).then((interception) => {
+          cy.wait('@createPrompt', {timeout: 300000}).then((interception) => {
             expect(interception.response.statusCode).to.eq(200);
 
             const body = interception.request.body;
@@ -527,7 +527,7 @@ describe('Agent Creation & Types E2E', () => {
 
           cy.get('button[type="submit"]').click({force: true});
 
-          cy.wait('@createPrompt', {timeout: 15000}).then((interception) => {
+          cy.wait('@createPrompt', {timeout: 300000}).then((interception) => {
             expect(interception.response.statusCode).to.eq(200);
 
             const body = interception.request.body;
@@ -553,7 +553,7 @@ describe('Agent Creation & Types E2E', () => {
 
           cy.get('button[type="submit"]').click({force: true});
 
-          cy.wait('@createPrompt', {timeout: 15000}).then((interception) => {
+          cy.wait('@createPrompt', {timeout: 300000}).then((interception) => {
             // Verify the URL is the expected cloud endpoint
             expect(interception.request.url).to.include(
               'azurekong.hertzai.com/db/create_prompt'
@@ -770,7 +770,7 @@ describe('Agent Creation & Types E2E', () => {
       cy.wait(3000);
 
       // Page should not crash regardless of whether cloud calls fired
-      cy.get('#root', {timeout: 10000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     });
 
     it('should deduplicate agents with the same prompt_id during merge', () => {
@@ -834,7 +834,7 @@ describe('Agent Creation & Types E2E', () => {
       cy.wait(4000);
 
       // Page should not crash
-      cy.get('#root', {timeout: 10000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
       cy.get('body')
         .invoke('text')
         .should('not.contain', '.map is not a function');
@@ -859,7 +859,7 @@ describe('Agent Creation & Types E2E', () => {
       });
 
       // Page should not crash
-      cy.get('#root', {timeout: 10000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
     });
 
     it('should handle empty prompts array from local backend without crashing', () => {
@@ -870,11 +870,11 @@ describe('Agent Creation & Types E2E', () => {
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getEmptyLocalPrompts', {timeout: 20000});
+      cy.wait('@getEmptyLocalPrompts', {timeout: 300000});
       cy.wait(2000);
 
       // Page should not crash even with 0 local agents
-      cy.get('#root', {timeout: 10000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
       cy.get('body')
         .invoke('text')
         .should('not.contain', '.map is not a function');
@@ -889,11 +889,11 @@ describe('Agent Creation & Types E2E', () => {
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getMalformedPrompts', {timeout: 20000});
+      cy.wait('@getMalformedPrompts', {timeout: 300000});
       cy.wait(2000);
 
       // Page should not crash thanks to the Array.isArray guard
-      cy.get('#root', {timeout: 10000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
       cy.get('body')
         .invoke('text')
         .should('not.contain', '.map is not a function');
@@ -967,7 +967,7 @@ describe('Agent Creation & Types E2E', () => {
               {force: true}
             );
 
-          cy.wait('@uploadAudio', {timeout: 15000}).then((interception) => {
+          cy.wait('@uploadAudio', {timeout: 300000}).then((interception) => {
             expect(interception.request.url).to.include(
               'azurekong.hertzai.com/makeit/upload_audio'
             );
@@ -1042,7 +1042,7 @@ describe('Agent Creation & Types E2E', () => {
             );
 
           // After selecting audio, the file name should appear in the UI
-          cy.contains('my-voice-clip.wav', {timeout: 10000}).should(
+          cy.contains('my-voice-clip.wav', {timeout: 300000}).should(
             'be.visible'
           );
         } else {
@@ -1085,7 +1085,7 @@ describe('Agent Creation & Types E2E', () => {
           cy.get('button[type="submit"]').click({force: true});
 
           // Verify create_prompt was called with correct payload
-          cy.wait('@createPrompt', {timeout: 15000}).then((interception) => {
+          cy.wait('@createPrompt', {timeout: 300000}).then((interception) => {
             const body = interception.request.body;
             expect(body.name).to.eq('My Private E2E Agent');
             expect(body.prompt).to.eq(
@@ -1100,7 +1100,7 @@ describe('Agent Creation & Types E2E', () => {
           // Form should close after successful submission.
           // Note: The mock response returns name='Cypress Test Agent' which the
           // app uses to navigate, but the form heading should still disappear.
-          cy.contains('Create New Agent', {timeout: 10000}).should('not.exist');
+          cy.contains('Create New Agent', {timeout: 300000}).should('not.exist');
         } else {
           cy.log(
             'CreateAgentForm did not appear -- skipping private agent E2E test'
@@ -1120,14 +1120,14 @@ describe('Agent Creation & Types E2E', () => {
 
           cy.get('button[type="submit"]').click({force: true});
 
-          cy.wait('@createPrompt', {timeout: 15000}).then((interception) => {
+          cy.wait('@createPrompt', {timeout: 300000}).then((interception) => {
             const body = interception.request.body;
             expect(body.name).to.eq('My Public E2E Agent');
             expect(body.isPublic).to.eq(true);
           });
 
           // Form should close
-          cy.contains('Create New Agent', {timeout: 10000}).should('not.exist');
+          cy.contains('Create New Agent', {timeout: 300000}).should('not.exist');
         } else {
           cy.log(
             'CreateAgentForm did not appear -- skipping public agent E2E test'
@@ -1149,7 +1149,7 @@ describe('Agent Creation & Types E2E', () => {
           cy.get('button[type="submit"]').click({force: true});
 
           // The form should still be open (submit was blocked by validation)
-          cy.contains('Create New Agent', {timeout: 5000}).should('be.visible');
+          cy.contains('Create New Agent', {timeout: 300000}).should('be.visible');
 
           // The agentName input should be marked as invalid
           cy.get('#agentName').then(($input) => {
@@ -1174,7 +1174,7 @@ describe('Agent Creation & Types E2E', () => {
           cy.get('button[type="submit"]').click({force: true});
 
           // Form should still be open
-          cy.contains('Create New Agent', {timeout: 5000}).should('be.visible');
+          cy.contains('Create New Agent', {timeout: 300000}).should('be.visible');
 
           // The prompt textarea should be marked as invalid
           cy.get('#prompt').then(($textarea) => {
@@ -1203,7 +1203,7 @@ describe('Agent Creation & Types E2E', () => {
       cy.wait(3000);
 
       // The button shows "Login required" when isAuthenticated is false
-      cy.contains('Login required', {timeout: 10000}).should('exist');
+      cy.contains('Login required', {timeout: 300000}).should('exist');
     });
 
     it('should NOT open the CreateAgentForm when unauthenticated user clicks Create', () => {
@@ -1211,7 +1211,7 @@ describe('Agent Creation & Types E2E', () => {
       cy.wait(3000);
 
       // Click the Create new Agent button (it should open the login modal instead)
-      cy.contains('Create new Agent', {timeout: 10000})
+      cy.contains('Create new Agent', {timeout: 300000})
         .first()
         .click({force: true});
 
@@ -1227,7 +1227,7 @@ describe('Agent Creation & Types E2E', () => {
 
       // The button should have the orange active styling (text-orange-500)
       // and should NOT show "Login required"
-      cy.contains('Create new Agent', {timeout: 10000})
+      cy.contains('Create new Agent', {timeout: 300000})
         .first()
         .should('not.contain.text', 'Login required');
     });

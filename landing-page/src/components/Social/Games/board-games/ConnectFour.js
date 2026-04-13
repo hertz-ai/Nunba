@@ -141,6 +141,20 @@ const ConnectFourGame = {
   },
 
   turn: {minMoves: 1, maxMoves: 1},
+
+  // AI move enumeration — see TicTacToe.ai.enumerate for rationale.
+  // A column is playable iff its topmost cell (row 0) is empty.
+  ai: {
+    enumerate: (G) => {
+      const moves = [];
+      for (let col = 0; col < COLS; col++) {
+        if (G.board[0][col] === null) {
+          moves.push({move: 'dropPiece', args: [col]});
+        }
+      }
+      return moves;
+    },
+  },
 };
 
 const PLAYER_COLORS = {

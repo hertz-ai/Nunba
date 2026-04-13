@@ -31,15 +31,38 @@ function VRAMBar({ compute }) {
         }} />
       </div>
       {Object.keys(allocs).length > 0 && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-          {Object.entries(allocs).map(([name, gb]) => (
-            <span key={name} style={{
-              fontSize: 11, background: '#1a2332', padding: '2px 6px',
-              borderRadius: 4, color: '#8899aa',
-            }}>
-              {name}: {gb.toFixed(1)}GB
-            </span>
-          ))}
+        <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+          {Object.entries(allocs).map(([name, info]) => {
+            const isRich = typeof info === 'object' && info !== null;
+            const gb = isRich ? info.gb : info;
+            const device = isRich ? info.device : null;
+            const quant = isRich ? info.quant : null;
+            const ctx = isRich ? info.context : null;
+            const vision = isRich ? info.vision : false;
+            const mmproj = isRich ? info.mmproj : null;
+            const deviceColor = device === 'gpu' ? '#4CAF50' : device === 'cpu' ? '#FF9800' : '#8899aa';
+            return (
+              <div key={name} style={{
+                fontSize: 11, background: '#1a2332', padding: '4px 8px',
+                borderRadius: 6, border: '1px solid #2a3a4a',
+                display: 'flex', flexDirection: 'column', gap: 2,
+              }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span style={{ color: '#ccc', fontWeight: 600 }}>{name}</span>
+                  <span style={{ color: deviceColor, fontWeight: 600 }}>{gb?.toFixed?.(1) || gb}GB</span>
+                  {device && <span style={{ color: deviceColor, fontSize: 10 }}>{device.toUpperCase()}</span>}
+                </div>
+                {(quant || ctx || vision || mmproj) && (
+                  <div style={{ display: 'flex', gap: 6, fontSize: 10, color: '#667' }}>
+                    {quant && <span style={{ background: '#6C63FF22', color: '#9990ff', padding: '0 4px', borderRadius: 3 }}>{quant}</span>}
+                    {ctx && <span>ctx: {typeof ctx === 'number' && ctx >= 1000 ? `${Math.round(ctx/1024)}K` : ctx}</span>}
+                    {vision && <span style={{ color: '#4CAF50' }}>VLM</span>}
+                    {mmproj && <span>mmproj: {mmproj}</span>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -51,6 +74,34 @@ function ModelCard({ model, onLoad, onUnload, onDownload }) {
   const isDownloaded = model.downloaded;
   const typeLabel = MODEL_TYPE_LABELS[model.model_type] || model.model_type;
   const deviceColor = DEVICE_COLORS[model.device] || '#666';
+  const [dlStatus, setDlStatus] = useState(null); // {status, percent, message}
+
+  // Poll download progress when downloading
+  useEffect(() => {
+    if (!dlStatus || dlStatus.status !== 'downloading') return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/admin/models/${model.id}/download/status`);
+        if (res.ok) {
+          const data = await res.json();
+          setDlStatus(data);
+          if (data.status === 'complete' || data.status === 'error') {
+            clearInterval(interval);
+            if (data.status === 'complete') {
+              // Refresh parent to update downloaded state
+              setTimeout(() => window.location.reload(), 1000);
+            }
+          }
+        }
+      } catch { /* ignore */ }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [dlStatus, model.id]);
+
+  const handleDownload = () => {
+    setDlStatus({ status: 'downloading', percent: 0, message: 'Starting...' });
+    onDownload(model.id);
+  };
 
   return (
     <div style={{
@@ -84,6 +135,9 @@ function ModelCard({ model, onLoad, onUnload, onDownload }) {
         {model.ram_gb > 0 && <span>RAM: {model.ram_gb}GB</span>}
         {model.disk_gb > 0 && <span>Disk: {model.disk_gb}GB</span>}
         <span>Backend: {model.backend}</span>
+        {model.cost_per_1k > 0 && (
+          <span style={{ color: '#FF9800' }}>${model.cost_per_1k.toFixed(4)}/1K tok</span>
+        )}
         {model.languages?.length > 0 && (
           <span>Lang: {model.languages.slice(0, 5).join(', ')}{model.languages.length > 5 ? '...' : ''}</span>
         )}
@@ -122,11 +176,38 @@ function ModelCard({ model, onLoad, onUnload, onDownload }) {
         </div>
       )}
 
+      {/* Download progress bar */}
+      {dlStatus && dlStatus.status === 'downloading' && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: '#FF9800', marginBottom: 4 }}>
+            {dlStatus.message || 'Downloading...'}
+          </div>
+          <div style={{ height: 4, background: '#333', borderRadius: 2 }}>
+            <div style={{
+              height: '100%', borderRadius: 2, background: '#FF9800',
+              width: `${Math.max(5, dlStatus.percent || 0)}%`,
+              transition: 'width 0.5s',
+              animation: dlStatus.percent === 0 ? 'pulse 1.5s infinite' : 'none',
+            }} />
+          </div>
+        </div>
+      )}
+      {dlStatus && dlStatus.status === 'complete' && (
+        <div style={{ fontSize: 12, color: '#4CAF50', marginBottom: 8 }}>Download complete</div>
+      )}
+      {dlStatus && dlStatus.status === 'error' && (
+        <div style={{ fontSize: 12, color: '#f44336', marginBottom: 8 }}>{dlStatus.message}</div>
+      )}
+
       {/* Actions */}
       <div style={{ display: 'flex', gap: 8 }}>
         {!isDownloaded && model.source !== 'api' && model.source !== 'pip' && (
-          <button onClick={() => onDownload(model.id)} style={btnStyle('#FF9800')}>
-            Download
+          <button
+            onClick={handleDownload}
+            disabled={dlStatus?.status === 'downloading'}
+            style={btnStyle(dlStatus?.status === 'downloading' ? '#555' : '#FF9800')}
+          >
+            {dlStatus?.status === 'downloading' ? 'Downloading...' : 'Download'}
           </button>
         )}
         {!isLoaded && (isDownloaded || model.source === 'api' || model.source === 'pip') && (
@@ -298,11 +379,16 @@ export default function ModelManagementPage() {
   const [filter, setFilter] = useState('all');
   const [showAdd, setShowAdd] = useState(false);
   const [actionInProgress, setActionInProgress] = useState(null);
+  const [providerCaps, setProviderCaps] = useState(null);
 
   const fetchModels = useCallback(async () => {
     try {
-      const res = await fetch('/api/admin/models');
-      if (res.ok) setData(await res.json());
+      const [modelsRes, capsRes] = await Promise.all([
+        fetch('/api/admin/models').then(r => r.ok ? r.json() : null),
+        fetch('/api/admin/providers/capabilities').then(r => r.ok ? r.json() : null),
+      ]);
+      if (modelsRes) setData(modelsRes);
+      if (capsRes) setProviderCaps(capsRes.capabilities);
     } catch { /* ignore */ }
     setLoading(false);
   }, []);
@@ -345,6 +431,11 @@ export default function ModelManagementPage() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 13, color: '#8899aa' }}>
             {data.loaded_count} loaded / {data.downloaded_count} downloaded / {data.total_models} total
+            {providerCaps && Object.keys(providerCaps).length > 0 && (
+              <span style={{ color: '#6C63FF', marginLeft: 8 }}>
+                · {Object.values(providerCaps).flat().filter((v, i, a) => a.indexOf(v) === i).length} cloud providers
+              </span>
+            )}
           </span>
           <button onClick={() => setShowAdd(true)} style={{ ...btnStyle('#6C63FF'), padding: '6px 14px' }}>
             + Add Model

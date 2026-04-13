@@ -108,8 +108,25 @@ tests/Nunba_Test_Scenarios.pdf
 # TrueFlow runtime injector (deployed by plugin, not source)
 .pycharm_plugin/
 
-# Claude Code
-.claude/
+# Runtime agent data (user-specific, machine-generated)
+agent_data/
+langchain_config.json
+
+# MCP server config (local dev tool)
+.mcp.json
+
+# Business/sales documents (not source code, kept on disk only)
+Hevolve_Sales_Outreach_Embodied_AI.md
+outreach_sender.html
+
+# Claude Code — personal state only. Agent specs, project hooks, and the
+# shared agent workspace are TRACKED.
+.claude/*
+!.claude/agents/
+!.claude/agents/**
+!.claude/settings.json
+!.claude/shared/
+!.claude/shared/**
 
 # Credentials and keys
 *.pem

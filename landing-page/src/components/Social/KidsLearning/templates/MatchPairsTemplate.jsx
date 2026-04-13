@@ -20,7 +20,7 @@ import {kidsColors, kidsAnimations} from '../kidsTheme';
 import {GameSounds, GameCommentary} from '../shared/SoundManager';
 import GameAssetService from '../shared/GameAssetService';
 import GameItemImage from '../shared/GameItemImage';
-import CelebrationOverlay from '../shared/CelebrationOverlay';
+import InlineCelebration from '../shared/InlineCelebration';
 import useCelebration from '../shared/useCelebration';
 import GameLivesBar from '../shared/GameLivesBar';
 import KidsCharacter from '../shared/KidsCharacter';
@@ -674,14 +674,7 @@ export default function MatchPairsTemplate({config, onAnswer, onComplete}) {
         </Fade>
       )}
 
-      <CelebrationOverlay
-        type={celebType}
-        visible={celebVisible}
-        streakCount={celebStreak}
-        onDone={handleCelebDone}
-        starsEarned={starsEarned}
-        score={celebScore}
-      />
+      <InlineCelebration type={celebType} gameTemplate="match_pairs" visible={celebVisible} onDone={handleCelebDone} streakCount={celebStreak} score={celebScore} />
     </Box>
   );
 }

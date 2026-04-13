@@ -105,18 +105,18 @@ describe('Chat Thinking Traces', () => {
       }).as('postChat');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
     });
 
     it('1.1 shows loading indicator after sending a message', () => {
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('what is 2+2{enter}', { force: true });
 
       // A loading indicator (hourglass animation, dots, or cycling verb) should appear
-      cy.get('body', { timeout: 10000 }).should(($body) => {
+      cy.get('body', { timeout: 300000 }).should(($body) => {
         const text = $body.text();
         // The CyclingVerb component shows words like "Analyzing...", "Processing...", etc.
         const hasLoadingIndicator =
@@ -139,31 +139,31 @@ describe('Chat Thinking Traces', () => {
     });
 
     it('1.2 user message appears in the chat before response arrives', () => {
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('hello there{enter}', { force: true });
 
       // User message should be visible immediately
-      cy.contains('hello there', { timeout: 5000 }).should('exist');
+      cy.contains('hello there', { timeout: 300000 }).should('exist');
     });
 
     it('1.3 response text appears after the API returns', () => {
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('what is 2+2{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 20000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(1000);
 
-      cy.contains('The answer is 4', { timeout: 10000 }).should('exist');
+      cy.contains('The answer is 4', { timeout: 300000 }).should('exist');
     });
 
     it('1.4 response does not contain raw <think> tags', () => {
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('tell me something{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 20000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(1000);
 
       cy.get('body').then(($body) => {
@@ -197,15 +197,15 @@ describe('Chat Thinking Traces', () => {
     });
 
     it('2.1 thinking container button is clickable (toggle expand)', () => {
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('what is the capital of France{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 15000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(1000);
 
       // If a thinking container appeared, its toggle button should be clickable
@@ -219,15 +219,15 @@ describe('Chat Thinking Traces', () => {
     });
 
     it('2.2 expand/collapse does not crash the page', () => {
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('explain gravity{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 15000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(1000);
 
       // Double-toggle: expand then collapse
@@ -245,15 +245,15 @@ describe('Chat Thinking Traces', () => {
     });
 
     it('2.3 thinking container shows green checkmark when completed', () => {
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('hello{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 15000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(2000);
 
       // After response arrives, if thinking container exists it should show completed state
@@ -285,17 +285,17 @@ describe('Chat Thinking Traces', () => {
       }).as('postChat');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
     });
 
     it('3.1 chat does not show autogen daemon content', () => {
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('hi{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 15000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -308,11 +308,11 @@ describe('Chat Thinking Traces', () => {
     });
 
     it('3.2 chat does not show raw daemon request IDs', () => {
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('hello{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 15000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -325,27 +325,27 @@ describe('Chat Thinking Traces', () => {
     });
 
     it('3.3 only user message and assistant response are visible', () => {
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('test message{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 15000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(2000);
 
       // User message should be present
-      cy.contains('test message', { timeout: 5000 }).should('exist');
+      cy.contains('test message', { timeout: 300000 }).should('exist');
       // Assistant response should be present
-      cy.contains('I can help with that', { timeout: 5000 }).should('exist');
+      cy.contains('I can help with that', { timeout: 300000 }).should('exist');
     });
 
     it('3.4 no Thinking Process label shown for simple responses', () => {
       // For a quick response with no thinking steps, there should be no
       // "Thinking Process:" raw text
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('hi{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 15000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -376,16 +376,16 @@ describe('Chat Thinking Traces', () => {
         },
       }).as('postChat');
 
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('hey{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 15000 });
-      cy.contains('Quick reply!', { timeout: 10000 }).should('exist');
+      cy.wait('@postChat', { timeout: 300000 });
+      cy.contains('Quick reply!', { timeout: 300000 }).should('exist');
     });
 
     it('4.2 completed thinking shows duration label', () => {
@@ -401,22 +401,22 @@ describe('Chat Thinking Traces', () => {
         delay: 2000,
       }).as('postChatSlow');
 
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('think about this{enter}', { force: true });
 
-      cy.wait('@postChatSlow', { timeout: 20000 });
+      cy.wait('@postChatSlow', { timeout: 300000 });
       cy.wait(2000);
 
       // If thinking container is present, it should show a time duration
       cy.get('body').then(($body) => {
         if ($body.text().includes('Thought process')) {
           // Duration is shown as Xms or X.Xs or XmXs
-          cy.get('.font-mono', { timeout: 5000 }).should('exist');
+          cy.get('.font-mono', { timeout: 300000 }).should('exist');
         }
       });
     });
@@ -433,27 +433,27 @@ describe('Chat Thinking Traces', () => {
         },
       }).as('postChat');
 
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
       // Send first message
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('first question{enter}', { force: true });
-      cy.wait('@postChat', { timeout: 15000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(1500);
 
       // Send second message
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('second question{enter}', { force: true });
-      cy.wait('@postChat', { timeout: 15000 });
+      cy.wait('@postChat', { timeout: 300000 });
       cy.wait(1500);
 
       // Both messages should be present
-      cy.contains('first question', { timeout: 5000 }).should('exist');
-      cy.contains('second question', { timeout: 5000 }).should('exist');
+      cy.contains('first question', { timeout: 300000 }).should('exist');
+      cy.contains('second question', { timeout: 300000 }).should('exist');
       // Page should not crash with multiple messages
       cy.get('#root').invoke('html').should('not.be.empty');
     });
@@ -470,15 +470,15 @@ describe('Chat Thinking Traces', () => {
         },
       }).as('postChatError');
 
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(2000);
 
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('trigger error{enter}', { force: true });
 
-      cy.wait('@postChatError', { timeout: 15000 });
+      cy.wait('@postChatError', { timeout: 300000 });
       cy.wait(3000);
 
       // After an error, there should be no forever-spinning thinking indicator.

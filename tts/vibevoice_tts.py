@@ -76,12 +76,8 @@ def _detect_nvidia() -> dict | None:
     if not nvidia_smi:
         return None
     try:
-        _si, _cf = None, 0
-        if sys.platform == 'win32':
-            _si = subprocess.STARTUPINFO()
-            _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            _si.wShowWindow = 0
-            _cf = subprocess.CREATE_NO_WINDOW
+        from tts._subprocess import hidden_startupinfo
+        _si, _cf = hidden_startupinfo()
         proc = subprocess.run(
             [nvidia_smi, '--query-gpu=name,memory.total,driver_version',
              '--format=csv,noheader,nounits'],
@@ -112,12 +108,8 @@ def _detect_amd() -> dict | None:
     if not rocm_smi:
         return None
     try:
-        _si, _cf = None, 0
-        if sys.platform == 'win32':
-            _si = subprocess.STARTUPINFO()
-            _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            _si.wShowWindow = 0
-            _cf = subprocess.CREATE_NO_WINDOW
+        from tts._subprocess import hidden_startupinfo
+        _si, _cf = hidden_startupinfo()
         # Get GPU name
         proc_name = subprocess.run(
             [rocm_smi, '--showproductname'],
@@ -174,16 +166,15 @@ def _detect_gpu_wmic() -> dict | None:
     if sys.platform != 'win32':
         return None
     try:
-        _si = subprocess.STARTUPINFO()
-        _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        _si.wShowWindow = 0
+        from tts._subprocess import hidden_startupinfo
+        _si, _cf = hidden_startupinfo()
         proc = subprocess.run(
             ['powershell', '-NoProfile', '-Command',
              "Get-CimInstance Win32_VideoController | "
              "Select-Object -First 1 Name, AdapterRAM | "
              "ForEach-Object { $_.Name + '|' + $_.AdapterRAM }"],
             capture_output=True, text=True, timeout=10,
-            startupinfo=_si, creationflags=subprocess.CREATE_NO_WINDOW,
+            startupinfo=_si, creationflags=_cf,
         )
         if proc.returncode != 0 or not proc.stdout.strip():
             return None

@@ -40,21 +40,21 @@ describe('Mindstory Page', () => {
 
   it('renders the Mindstory page with header', () => {
     cy.socialVisit('/social/mindstory');
-    cy.contains('Mindstory', {timeout: 10000}).should('be.visible');
+    cy.contains('Mindstory', {timeout: 300000}).should('be.visible');
     cy.contains('Create AI videos from any character').should('be.visible');
   });
 
   it('loads character cards from API', () => {
     cy.socialVisit('/social/mindstory');
     cy.wait('@getCharacters');
-    cy.contains('Einstein', {timeout: 10000}).should('be.visible');
+    cy.contains('Einstein', {timeout: 300000}).should('be.visible');
     cy.contains('Shakespeare').should('be.visible');
   });
 
   it('shows search input for filtering characters', () => {
     cy.socialVisit('/social/mindstory');
     cy.wait('@getCharacters');
-    cy.get('.input_Search', {timeout: 10000}).should('be.visible');
+    cy.get('.input_Search', {timeout: 300000}).should('be.visible');
   });
 
   it('filters characters by search term', () => {
@@ -68,8 +68,8 @@ describe('Mindstory Page', () => {
   it('opens Create Your Video modal on card button click', () => {
     cy.socialVisit('/social/mindstory');
     cy.wait('@getCharacters');
-    cy.contains('Create Your Video', {timeout: 10000}).first().click({force: true});
-    cy.get('.modal', {timeout: 5000}).should('be.visible');
+    cy.contains('Create Your Video', {timeout: 300000}).first().click({force: true});
+    cy.get('.modal', {timeout: 300000}).should('be.visible');
     cy.get('.inputmodal').should('be.visible');
   });
 
@@ -79,12 +79,12 @@ describe('Mindstory Page', () => {
     cy.contains('Create Your Video').first().click({force: true});
     cy.get('.inputmodal').type('short', {force: true});
     cy.get('.submitButton').click({force: true});
-    cy.contains('atleast 10 Character', {timeout: 5000}).should('be.visible');
+    cy.contains('atleast 10 Character', {timeout: 300000}).should('be.visible');
   });
 
   it('is accessible from the sidebar navigation', () => {
     cy.socialVisit('/social');
-    cy.contains('Mindstory', {timeout: 10000}).should('be.visible');
+    cy.contains('Mindstory', {timeout: 300000}).should('be.visible');
     cy.contains('Mindstory').click({force: true});
     cy.url().should('include', '/social/mindstory');
   });

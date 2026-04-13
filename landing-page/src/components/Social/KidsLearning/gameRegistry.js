@@ -10,9 +10,10 @@
  * 2. Server-Driven UI: Uses DynamicTemplateEngine with JSON layout from server
  * 3. HTML5 Dynamic: Uses DynamicGameRenderer with server-generated HTML5 games (online)
  *
- * Built-in templates (15 total):
- *   - 6 already exist as .jsx files in ./templates/
- *   - 9 are placeholder lazy imports (created as needed or rendered via server)
+ * Built-in templates (34 total):
+ *   - 15 touch templates (original + future)
+ *   - 10 canvas game templates
+ *   - 9 voice-activated game templates (mic amplitude + STT)
  *
  * Dynamic templates from the server are registered at runtime and stored
  * in localStorage alongside the built-in 15 templates.
@@ -64,6 +65,17 @@ const TEMPLATE_REGISTRY = {
   'paint-by-concept': lazy(() => import('./templates/PaintByConceptTemplate')),
   builder: lazy(() => import('./templates/BuilderTemplate')),
   'word-maze': lazy(() => import('./templates/WordMazeTemplate')),
+
+  // ── Voice-Activated Game Templates (9) ─────────────────────────────────────
+  voice_spell: lazy(() => import('./templates/VoiceSpellTemplate')),
+  sound_charades: lazy(() => import('./templates/SoundCharadesTemplate')),
+  whisper_shout: lazy(() => import('./templates/WhisperShoutTemplate')),
+  story_weaver: lazy(() => import('./templates/StoryWeaverTemplate')),
+  beat_match: lazy(() => import('./templates/BeatMatchTemplate')),
+  voice_paint: lazy(() => import('./templates/VoicePaintTemplate')),
+  'voice-balloon-pop': lazy(() => import('./templates/VoiceBalloonPopTemplate')),
+  peekaboo: lazy(() => import('./templates/PeekabooTemplate')),
+  'speech-bubble': lazy(() => import('./templates/SpeechBubbleTemplate')),
 };
 
 // ── Backward-compatible aliases ──────────────────────────────────────────────
@@ -74,6 +86,10 @@ const TEMPLATE_ALIASES = {
   matching: 'match-pairs',
   sorting: 'drag-to-zone',
   fillBlank: 'fill-blank',
+  // Voice template aliases (mobile uses both underscore and hyphen forms)
+  'balloon-pop-voice': 'voice-balloon-pop',
+  balloon_pop: 'voice-balloon-pop',
+  'speech_bubble': 'speech-bubble',
 };
 
 // ── Dynamic Template Registry ────────────────────────────────────────────────
@@ -378,6 +394,62 @@ export const TEMPLATE_INFO = {
     label: 'Word Maze',
     description: 'Navigate a maze by answering at junctions',
     icon: 'explore',
+    contentKey: 'questions',
+  },
+
+  // ── Voice-Activated Game Templates (9) ─────────────────────────────────────
+  voice_spell: {
+    label: 'Voice Spell',
+    description: 'Say the word aloud to practice pronunciation',
+    icon: 'mic',
+    contentKey: 'words',
+  },
+  sound_charades: {
+    label: 'Sound Charades',
+    description: 'Make the sound of the emoji shown',
+    icon: 'record-voice-over',
+    contentKey: 'charades',
+  },
+  whisper_shout: {
+    label: 'Whisper & Shout',
+    description: 'Control a runner with your voice volume',
+    icon: 'volume-up',
+    contentKey: 'obstacles',
+  },
+  story_weaver: {
+    label: 'Story Weaver',
+    description: 'Choose your own adventure with voice or tap',
+    icon: 'auto-stories',
+    contentKey: 'scenes',
+  },
+  beat_match: {
+    label: 'Beat Match',
+    description: 'Listen to a rhythm and clap it back',
+    icon: 'music-note',
+    contentKey: 'patterns',
+  },
+  voice_paint: {
+    label: 'Voice Paint',
+    description: 'Use your voice volume to paint shapes',
+    icon: 'palette',
+    contentKey: 'shapes',
+  },
+  'voice-balloon-pop': {
+    label: 'Voice Balloon Pop',
+    description: 'Say the word to pop the balloon',
+    icon: 'bubble-chart',
+    contentKey: 'questions',
+  },
+  peekaboo: {
+    label: 'Peekaboo',
+    description: 'Say peekaboo to find the hiding character',
+    icon: 'visibility',
+    contentKey: 'questions',
+  },
+  'speech-bubble': {
+    label: 'Speech Bubble',
+    description: 'Say words to pop letter bubbles in order',
+    icon: 'chat-bubble',
     contentKey: 'questions',
   },
 };

@@ -323,7 +323,7 @@ class TestPilGuards:
 
     def test_render_version_badge_without_pil(self):
         with patch.object(splash_effects, '_HAS_PIL', False):
-            result = splash_effects._render_version_badge("v2.0.0")
+            result = splash_effects._render_version_badge("v0.1.0")
             assert result is None
 
     def test_render_neutron_star_without_pil(self):

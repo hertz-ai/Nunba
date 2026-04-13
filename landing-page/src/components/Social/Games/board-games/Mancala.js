@@ -119,6 +119,23 @@ const MancalaGame = {
   },
 
   turn: {minMoves: 1, maxMoves: 1},
+
+  // AI move enumeration — a pit is playable iff it's on the current
+  // player's side and has stones (moves.sowStones validates the same
+  // invariants). The boardgame.io AI framework passes the current
+  // player via ctx.currentPlayer.
+  ai: {
+    enumerate: (G, ctx) => {
+      const {start, end} = getPlayerPitRange(ctx.currentPlayer);
+      const moves = [];
+      for (let pit = start; pit <= end; pit++) {
+        if (G.pits[pit] > 0) {
+          moves.push({move: 'sowStones', args: [pit]});
+        }
+      }
+      return moves;
+    },
+  },
 };
 
 const WOOD_BG = '#8B6914';

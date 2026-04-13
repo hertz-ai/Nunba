@@ -62,7 +62,9 @@ export function useTTS(options = {}) {
   } = options;
 
   // --- State ---
-  const [isAvailable, setIsAvailable] = useState(false);
+  // Server TTS is always available on Nunba (Piper CPU on localhost).
+  // Start as true so Demopage's tts.isAvailable check passes immediately.
+  const [isAvailable, setIsAvailable] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -88,7 +90,9 @@ export function useTTS(options = {}) {
   const isProcessingRef = useRef(false);
   const pocketTTSRef = useRef(null);
   const voiceCacheRef = useRef(new Map()); // avatarId → encoded voice
-  const serverAvailableRef = useRef(false);
+  // Server TTS is ALWAYS available on Nunba (Piper CPU runs on any machine).
+  // Don't wait for async CDN probe — it hangs in pywebview (no internet).
+  const serverAvailableRef = useRef(true);
   const probeRef = useRef(null); // cached capability probe result
 
   // --- Helper: wire callbacks and init a browser TTS engine instance ---
@@ -153,6 +157,10 @@ export function useTTS(options = {}) {
           console.warn(`[TTS] Fallback ${probe.fallback} also failed:`, fallbackErr);
         }
       }
+      // Browser TTS failed but server TTS is always available
+      // (Piper CPU runs on any machine, no internet needed)
+      serverAvailableRef.current = true;
+      setIsAvailable(true);
       setBrowserTTSLoading(false);
     }
   }, [browserTTSLoading, _wireAndInit]);
@@ -297,7 +305,10 @@ export function useTTS(options = {}) {
       const trimmed = text.trim();
 
       // Lazy-init browser TTS on first speak (satisfies AudioContext autoplay policy)
-      if (!pocketTTSRef.current) initBrowserTTS();
+      // MUST await — otherwise serverAvailableRef is still false when we check it
+      if (!pocketTTSRef.current && !serverAvailableRef.current) {
+        await initBrowserTTS();
+      }
 
       setIsLoading(true);
       setError(null);
@@ -305,19 +316,19 @@ export function useTTS(options = {}) {
       const serverOk = serverAvailableRef.current;
       const browserOk = pocketTTSRef.current?.isReady;
 
-      // Pocket TTS is English-only — non-English text must use server TTS
-      const isEnglish = _isLikelyEnglish(trimmed);
-      const canUseBrowser = browserOk && isEnglish;
-
-      // Browser TTS available → non-blocking fire-and-forget (no await)
-      if (canUseBrowser) {
-        _speakBrowserNonBlocking(trimmed, speakOpts.browserVoice);
-        return null;
-      }
-
-      // Server TTS for non-English or when browser isn't ready
+      // Prefer server GPU engine when available — superior quality
+      // (Chatterbox Turbo for English, Indic Parler for Tamil, CosyVoice3 for CJK)
+      // Browser Pocket TTS is only used when server is unavailable
       if (serverOk) {
         return _speakServer(trimmed, speakOpts);
+      }
+
+      // Fallback: browser Pocket TTS (English only, no server needed)
+      const preferredLang = localStorage.getItem('hart_language') || 'en';
+      const isEnglish = _isLikelyEnglish(trimmed) && preferredLang === 'en';
+      if (browserOk && isEnglish) {
+        _speakBrowserNonBlocking(trimmed, speakOpts.browserVoice);
+        return null;
       }
 
       // Neither available
@@ -333,6 +344,9 @@ export function useTTS(options = {}) {
     async (text, opts) => {
       setIsLoading(true);
       try {
+        // Send preferred language so server routes to correct GPU engine
+        // (Tamil→Indic Parler, Japanese→CosyVoice3, English→Chatterbox Turbo)
+        const lang = opts.language || localStorage.getItem('hart_language') || 'en';
         const resp = await fetch(`${TTS_API_BASE}/synthesize`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -340,6 +354,7 @@ export function useTTS(options = {}) {
             text,
             voice_id: opts.voiceId || currentVoice,
             speed: opts.speed || speed,
+            language: lang,
           }),
         });
         if (!resp.ok) throw new Error('Server TTS failed');
@@ -366,8 +381,21 @@ export function useTTS(options = {}) {
         }
         return url;
       } catch (err) {
-        setError(err.message);
-        return null;
+        // Server TTS failed — fall back to browser Web Speech API
+        // (works for most languages, lower quality but better than silence)
+        try {
+          const utter = new SpeechSynthesisUtterance(text);
+          utter.lang = lang;
+          utter.rate = 0.9;
+          utter.onend = () => setIsSpeaking(false);
+          utter.onerror = () => setIsSpeaking(false);
+          window.speechSynthesis.speak(utter);
+          setIsSpeaking(true);
+          return 'webspeech';
+        } catch {
+          setError(err.message);
+          return null;
+        }
       } finally {
         setIsLoading(false);
       }
@@ -442,7 +470,8 @@ export function useTTS(options = {}) {
         svc.speak(trimmed, opts.browserVoice);
       } else {
         // Server TTS — no position tracking, just estimate-based timing
-        speak(trimmed, opts);
+        // Pass language so server routes to correct GPU engine
+        speak(trimmed, { ...opts, language: localStorage.getItem('hart_language') || 'en' });
       }
 
       return {

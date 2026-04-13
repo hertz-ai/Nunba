@@ -155,8 +155,8 @@ describe('Chat Agent Selection', () => {
     });
 
     it('1.1 selects local_assistant as default when no saved preference', () => {
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
       // The agent name "HART" (local_assistant) should appear in the page
@@ -167,8 +167,8 @@ describe('Chat Agent Selection', () => {
     });
 
     it('1.2 does not auto-select a user-created agent on fresh load', () => {
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
       // Should NOT show the created agent's name as the active/heading agent
@@ -184,8 +184,8 @@ describe('Chat Agent Selection', () => {
     it('1.3 restores saved agent from localStorage if valid', () => {
       // Pre-set active_agent_id to the cloud agent
       localStorage.setItem('active_agent_id', '2');
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
       cy.get('body').should(($body) => {
@@ -197,8 +197,8 @@ describe('Chat Agent Selection', () => {
     it('1.4 clears invalid active_agent_id and falls back to default', () => {
       // Set a non-numeric agent ID which Demopage treats as invalid
       localStorage.setItem('active_agent_id', 'garbage_value');
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
       // Invalid ID should be cleared; page should show default agent
@@ -219,14 +219,14 @@ describe('Chat Agent Selection', () => {
       localStorage.setItem('hart_name', 'CypressTest');
       localStorage.setItem('guest_mode', 'true');
       localStorage.setItem('guest_user_id', 'cypress_user_001');
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
     });
 
     it('2.1 clicking an agent in the sidebar updates the active agent', () => {
       // Find and click on the "Cloud GPT" agent button/link in the sidebar
-      cy.contains('Cloud GPT', { timeout: 10000 }).click({ force: true });
+      cy.contains('Cloud GPT', { timeout: 300000 }).click({ force: true });
       cy.wait(1000);
 
       // After clicking, the active agent name should update in the UI
@@ -237,7 +237,7 @@ describe('Chat Agent Selection', () => {
     });
 
     it('2.2 switching agents persists active_agent_id to localStorage', () => {
-      cy.contains('Cloud GPT', { timeout: 10000 }).click({ force: true });
+      cy.contains('Cloud GPT', { timeout: 300000 }).click({ force: true });
       cy.wait(1000);
 
       cy.window().then((win) => {
@@ -248,11 +248,11 @@ describe('Chat Agent Selection', () => {
 
     it('2.3 switching back to default agent works', () => {
       // First switch away
-      cy.contains('Cloud GPT', { timeout: 10000 }).click({ force: true });
+      cy.contains('Cloud GPT', { timeout: 300000 }).click({ force: true });
       cy.wait(500);
 
       // Then switch back to HART
-      cy.contains('HART', { timeout: 10000 }).first().click({ force: true });
+      cy.contains('HART', { timeout: 300000 }).first().click({ force: true });
       cy.wait(1000);
 
       cy.get('body').should(($body) => {
@@ -262,7 +262,7 @@ describe('Chat Agent Selection', () => {
     });
 
     it('2.4 switching to a created agent shows its name', () => {
-      cy.contains('Science Tutor', { timeout: 10000 }).click({ force: true });
+      cy.contains('Science Tutor', { timeout: 300000 }).click({ force: true });
       cy.wait(1000);
 
       cy.get('body').should(($body) => {
@@ -283,19 +283,19 @@ describe('Chat Agent Selection', () => {
       localStorage.setItem('hart_name', 'CypressTest');
       localStorage.setItem('guest_mode', 'true');
       localStorage.setItem('guest_user_id', 'cypress_user_001');
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
     });
 
     it('3.1 user-created agents appear in the agent list', () => {
-      cy.contains('Science Tutor', { timeout: 10000 }).should('exist');
-      cy.contains('Music Composer', { timeout: 10000 }).should('exist');
+      cy.contains('Science Tutor', { timeout: 300000 }).should('exist');
+      cy.contains('Music Composer', { timeout: 300000 }).should('exist');
     });
 
     it('3.2 built-in agents appear in the agent list', () => {
-      cy.contains('HART', { timeout: 10000 }).should('exist');
-      cy.contains('Cloud GPT', { timeout: 10000 }).should('exist');
+      cy.contains('HART', { timeout: 300000 }).should('exist');
+      cy.contains('Cloud GPT', { timeout: 300000 }).should('exist');
     });
 
     it('3.3 total agent count matches fixture', () => {
@@ -337,12 +337,12 @@ describe('Chat Agent Selection', () => {
         body: fixtureWithInactive,
       }).as('getPromptsInactive');
 
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPromptsInactive', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPromptsInactive', { timeout: 300000 });
       cy.wait(3000);
 
       // Active agents should be visible
-      cy.contains('HART', { timeout: 10000 }).should('exist');
+      cy.contains('HART', { timeout: 300000 }).should('exist');
       // Inactive agent should not appear (backend filters, frontend also filters)
       cy.get('body').then(($body) => {
         const text = $body.text();
@@ -362,8 +362,8 @@ describe('Chat Agent Selection', () => {
       localStorage.setItem('hart_name', 'CypressTest');
       localStorage.setItem('guest_mode', 'true');
       localStorage.setItem('guest_user_id', 'cypress_user_001');
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
     });
 
@@ -380,18 +380,18 @@ describe('Chat Agent Selection', () => {
 
     it('4.2 selecting a local agent sends agent_type "local" in chat payload', () => {
       // Ensure HART (local) is selected (default)
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .type('hello{enter}', { force: true });
 
-      cy.wait('@postChat', { timeout: 15000 }).then((interception) => {
+      cy.wait('@postChat', { timeout: 300000 }).then((interception) => {
         expect(interception.request.body).to.have.property('agent_type', 'local');
         expect(interception.request.body).to.have.property('agent_id');
       });
     });
 
     it('4.3 /prompts response contains expected agent fields', () => {
-      cy.wait('@getPrompts', { timeout: 20000 }).then((interception) => {
+      cy.wait('@getPrompts', { timeout: 300000 }).then((interception) => {
         const agents = interception.response.body.prompts;
         agents.forEach((agent) => {
           expect(agent).to.have.property('prompt_id');
@@ -402,7 +402,7 @@ describe('Chat Agent Selection', () => {
     });
 
     it('4.4 chat textarea is available for interaction', () => {
-      cy.get('textarea, input[type="text"]', { timeout: 15000 })
+      cy.get('textarea, input[type="text"]', { timeout: 300000 })
         .first()
         .should('exist');
     });

@@ -98,7 +98,7 @@ class TestLlamaHealthWrapperGetHealth:
         with patch.object(w, "get_llama_health", return_value={"status": "ok"}):
             result = w.get_nunba_health()
             assert result["managed_by"] == "Nunba"
-            assert result["nunba_version"] == "2.0.0"
+            assert result["nunba_version"] == "0.1.0"
             assert result["wrapper_port"] == 5000
             assert result["llama_port"] == 8080
             assert result["status"] == "ok"
@@ -176,7 +176,7 @@ class TestAddHealthRoutes:
             assert resp.status_code == 200
             data = resp.get_json()
             assert data["application"] == "Nunba"
-            assert data["version"] == "2.0.0"
+            assert data["version"] == "0.1.0"
             assert data["ai_capabilities"]["local_llm"] is True
             assert "ai_config" not in data
 

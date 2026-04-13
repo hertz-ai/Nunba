@@ -9,6 +9,7 @@ import ConnectFourGame, {ConnectFourBoard} from '../board-games/ConnectFour';
 import CheckersGame, {CheckersBoard} from '../board-games/Checkers';
 import ReversiGame, {ReversiBoard} from '../board-games/Reversi';
 import MancalaGame, {MancalaBoard} from '../board-games/Mancala';
+import {buildSoloBotsMap, DIFFICULTY} from '../../../../utils/gameAI';
 
 const BOARD_REGISTRY = {
   tictactoe: {game: TicTacToeGame, board: TicTacToeBoard},
@@ -117,8 +118,31 @@ export default function BoardGameEngine({
   multiplayer,
   catalogEntry,
   onComplete,
+  difficulty = DIFFICULTY.MEDIUM,
+  soloMode = 'ai',  // 'ai' | 'hotseat' — how solo play is handled
 }) {
   const boardType = catalogEntry?.engine_config?.board_type || 'tictactoe';
+
+  // Solo mode = no server-backed multiplayer session.
+  // - multiplayer hook null/absent → solo
+  // - multiplayer.isMultiplayer false → hook started but no peers → solo
+  //
+  // `soloMode` picks between two solo experiences:
+  //   'ai'      — player '1' is AI-controlled via boardgame.io/ai bots.
+  //               This is the default so a lone user gets an opponent
+  //               out of the box.
+  //   'hotseat' — both players are human on the same device (the
+  //               previous default). Preserved so two people sharing
+  //               a laptop/tablet can still play without a new lobby
+  //               flow. Phase 2 lobby work will expose this as a
+  //               visible toggle.
+  const isSolo = !multiplayer || !multiplayer.isMultiplayer;
+
+  // Lock difficulty at mount — prevents mid-game reset if the lobby
+  // Phase 2 work starts feeding a changing prop. The underlying
+  // useMemo would otherwise rebuild the GameClient and blow away
+  // board state.
+  const [lockedDifficulty] = useState(difficulty);
 
   const GameClient = useMemo(() => {
     const entry = BOARD_REGISTRY[boardType];
@@ -128,13 +152,22 @@ export default function BoardGameEngine({
       <GameBoardWithEndDetection board={entry.board} {...props} />
     );
 
+    // In solo mode with soloMode='ai', attach a bot for player '1'.
+    // If the board type doesn't have ai.enumerate yet, buildSoloBotsMap
+    // returns null and we fall back to Local() hotseat (same as when
+    // soloMode='hotseat' was explicitly requested).
+    const bots =
+      isSolo && soloMode === 'ai'
+        ? buildSoloBotsMap(boardType, lockedDifficulty)
+        : null;
+
     return Client({
       game: entry.game,
       board: WrappedBoard,
-      multiplayer: Local(),
+      multiplayer: bots ? Local({bots}) : Local(),
       numPlayers: 2,
     });
-  }, [boardType]);
+  }, [boardType, isSolo, soloMode, lockedDifficulty]);
 
   if (!BOARD_REGISTRY[boardType]) {
     return (

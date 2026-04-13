@@ -114,6 +114,13 @@ export const VIDEO_GEN_URL = `${CLOUD_API_URL}/db/video_gen`;
 // ── Email (SMS service) ──
 export const SEND_EMAIL_URL = `${SMS_BASE_URL}/sendEmailViaHertz`;
 
+// ── WAMP / Crossbar ──
+// Local/bundled mode: embedded WAMP router on port 8088 (started by main.py).
+// Cloud/regional mode: Crossbar.io router at aws_rasa.hertzai.com.
+export const WAMP_LOCAL_URL =
+  process.env.REACT_APP_WAMP_URL || 'ws://localhost:8088/ws';
+export const WAMP_CLOUD_URL = 'wss://aws_rasa.hertzai.com:8445/wss';
+
 // ── Local API ──
 export const LOCAL_API_URL = API_BASE_URL;
 export const LOCAL_PROMPTS_URL = `${API_BASE_URL}/prompts`;

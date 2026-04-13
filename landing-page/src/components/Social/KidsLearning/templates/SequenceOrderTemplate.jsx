@@ -27,7 +27,7 @@ import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import {kidsColors, kidsAnimations} from '../kidsTheme';
 import {GameSounds, GameCommentary} from '../shared/SoundManager';
-import CelebrationOverlay from '../shared/CelebrationOverlay';
+import InlineCelebration from '../shared/InlineCelebration';
 import ProgressStars from '../shared/ProgressStars';
 import useCelebration from '../shared/useCelebration';
 
@@ -680,14 +680,7 @@ export default function SequenceOrderTemplate({config, onAnswer, onComplete}) {
         })}
       </Box>
 
-      <CelebrationOverlay
-        type={celebType}
-        visible={celebVisible}
-        streakCount={celebStreak}
-        onDone={handleCelebDone}
-        starsEarned={starsEarned}
-        score={celebScore}
-      />
+      <InlineCelebration type={celebType} gameTemplate="sequence_order" visible={celebVisible} onDone={handleCelebDone} streakCount={celebStreak} score={celebScore} />
     </Box>
   );
 }

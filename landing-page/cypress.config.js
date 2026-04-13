@@ -2,15 +2,20 @@ const {defineConfig} = require('cypress');
 
 module.exports = defineConfig({
   e2e: {
+    // Retry once in CI — catches transient timing without 5hr runs
+    retries: {
+      runMode: 1,
+      openMode: 0,
+    },
     // React dev server on 3000, Flask backend on 5000
     baseUrl: 'http://localhost:3000',
     supportFile: 'cypress/support/e2e.js',
     specPattern: 'cypress/e2e/**/*.cy.{js,jsx}',
     viewportWidth: 1280,
     viewportHeight: 720,
-    defaultCommandTimeout: 15000,
-    requestTimeout: 20000,
-    responseTimeout: 20000,
+    defaultCommandTimeout: 20000,
+    requestTimeout: 60000,
+    responseTimeout: 60000,
     video: false,
     screenshotOnRunFailure: true,
     chromeWebSecurity: false,

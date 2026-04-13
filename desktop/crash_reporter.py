@@ -26,7 +26,7 @@ except ImportError:
         'https://b5e7f8c9d1234567890abcdef1234567@o4508123456789.ingest.us.sentry.io/4508123456789'
     )
     APP_NAME = "Nunba"
-    APP_VERSION = "2.0.0"
+    APP_VERSION = "0.1.0"
     ENVIRONMENT = "development"
     CRASH_REPORTING_ENABLED = os.environ.get('NUNBA_CRASH_REPORTING', 'true').lower() == 'true'
     PERFORMANCE_MONITORING = os.environ.get('NUNBA_PERFORMANCE', 'true').lower() == 'true'

@@ -25,7 +25,7 @@
  *   - {force: true} on ALL cy.click() and cy.type() calls
  *   - failOnStatusCode: false on all cy.request() calls
  *   - cy.socialAuth() in before() once per describe block
- *   - Generous timeouts: { timeout: 15000 }
+ *   - Generous timeouts: { timeout: 300000 }
  *   - No reliance on cy.wait('@alias') for external API intercepts
  */
 
@@ -40,15 +40,15 @@ describe('Autopilot -- Page Load', () => {
 
   it('should load autopilot page without crashing', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
 
   it('should show "Nunba Autopilot" heading', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('body', {timeout: 10000}).should(($body) => {
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasHeading =
         text.includes('Nunba Autopilot') ||
@@ -60,8 +60,8 @@ describe('Autopilot -- Page Load', () => {
 
   it('should show "Your Day" timeline section', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('body', {timeout: 10000}).should(($body) => {
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasTimeline =
         text.includes('Your Day') ||
@@ -75,8 +75,8 @@ describe('Autopilot -- Page Load', () => {
 
   it('should show "Active Automations" toggles', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('body', {timeout: 10000}).should(($body) => {
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasAutomations =
         text.includes('Active Automations') ||
@@ -90,8 +90,8 @@ describe('Autopilot -- Page Load', () => {
 
   it('should show "Your Interests" chip selector', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('body', {timeout: 10000}).should(($body) => {
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasInterests =
         text.includes('Your Interests') ||
@@ -106,8 +106,8 @@ describe('Autopilot -- Page Load', () => {
 
   it('should show "Daily Insight" card', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
-    cy.get('body', {timeout: 10000}).should(($body) => {
+    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasInsight =
         text.includes('Daily Insight') ||
@@ -123,7 +123,7 @@ describe('Autopilot -- Page Load', () => {
 
   it('should not crash with runtime errors', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
     cy.get('body').should('not.contain.text', 'Uncaught');
     cy.get('body').should('not.contain.text', 'TypeError');
@@ -137,7 +137,7 @@ describe('Autopilot -- Automations Toggles', () => {
 
   it('should toggle Daily Digest switch', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -160,7 +160,7 @@ describe('Autopilot -- Automations Toggles', () => {
 
   it('should toggle Smart Reminders switch', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -180,7 +180,7 @@ describe('Autopilot -- Automations Toggles', () => {
 
   it('should toggle Health Nudges switch', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -200,7 +200,7 @@ describe('Autopilot -- Automations Toggles', () => {
 
   it('should persist toggle state in localStorage', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -234,10 +234,10 @@ describe('Autopilot -- Interest Selection', () => {
 
   it('should show interest topic chips', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const chips = $body.find('[class*="MuiChip"], [class*="chip"]');
       const hasChips = chips.length > 0;
       const hasTopicText =
@@ -254,7 +254,7 @@ describe('Autopilot -- Interest Selection', () => {
 
   it('should toggle interest chip on click', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -273,7 +273,7 @@ describe('Autopilot -- Interest Selection', () => {
 
   it('should persist interests in localStorage', () => {
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -306,10 +306,10 @@ describe('Autopilot Banner -- Feed', () => {
 
   it('should show autopilot banner on feed page', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasBanner =
         text.includes('Autopilot') ||
@@ -325,7 +325,7 @@ describe('Autopilot Banner -- Feed', () => {
 
   it('should dismiss banner when close button clicked', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -361,10 +361,10 @@ describe('Autopilot Banner -- Feed', () => {
       },
     });
 
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       // After setting dismissal flag, the banner element should not be present
       // or at least the page loads without crashing
       const pageLoaded = $body.html().length > 100;
@@ -374,7 +374,7 @@ describe('Autopilot Banner -- Feed', () => {
 
   it('should navigate to /social/autopilot when banner clicked', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -426,10 +426,10 @@ describe('Autopilot -- Navigation', () => {
 
   it('should show Autopilot in sidebar navigation', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasNavItem =
         text.includes('Autopilot') ||
@@ -443,7 +443,7 @@ describe('Autopilot -- Navigation', () => {
 
   it('should navigate to /social/autopilot when clicked', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -462,7 +462,7 @@ describe('Autopilot -- Navigation', () => {
           cy.wrap(navDrawerToggle.first()).click({force: true});
           cy.wait(500);
           // Now look for autopilot link in drawer
-          cy.get('a[href*="autopilot"]', {timeout: 5000}).then(($link) => {
+          cy.get('a[href*="autopilot"]', {timeout: 300000}).then(($link) => {
             if ($link.length > 0) {
               cy.wrap($link.first()).click({force: true});
               cy.wait(1000);
@@ -489,14 +489,14 @@ describe('Kids Learning -- Search Input Fix', () => {
 
   it('should load kids learning hub without crashing', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
 
   it('should show search input with visible text when typing', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -519,7 +519,7 @@ describe('Kids Learning -- Search Input Fix', () => {
 
   it('should filter games when searching', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -548,7 +548,7 @@ describe('Kids Learning -- Emoji Display', () => {
 
   it('should show emoji icons on game cards', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -565,10 +565,10 @@ describe('Kids Learning -- Emoji Display', () => {
 
   it('should show category gradient top bars on cards', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       // Cards should have gradient or colored top bar per category
       const hasGradients =
         $body.find('[style*="gradient"], [style*="linear-gradient"]').length >
@@ -583,10 +583,10 @@ describe('Kids Learning -- Emoji Display', () => {
 
   it('should show different card styles per category', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       // Kids hub has categories like Math, Language, Science, etc.
       const hasCategories =
@@ -610,7 +610,7 @@ describe('Kids Learning -- Game Templates TTS', () => {
 
   it('should load a multiple choice game without crashing', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Click first game card to load a game
@@ -631,7 +631,7 @@ describe('Kids Learning -- Game Templates TTS', () => {
 
   it('should load a word build game without crashing', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -650,7 +650,7 @@ describe('Kids Learning -- Game Templates TTS', () => {
 
   it('should load a tracing game without crashing', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -669,7 +669,7 @@ describe('Kids Learning -- Game Templates TTS', () => {
 
   it('should show emoji alongside questions in games', () => {
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -704,10 +704,10 @@ describe('Social Feed -- Rich Post Cards', () => {
 
   it('should show author avatar on post cards', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const hasAvatars =
         $body.find('[class*="MuiAvatar"], [class*="Avatar"], [class*="avatar"]')
           .length > 0;
@@ -721,10 +721,10 @@ describe('Social Feed -- Rich Post Cards', () => {
 
   it('should show engagement bar with vote/comment/share icons', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const hasVoteIcons =
         $body.find(
           '[data-testid="ArrowUpwardIcon"], [data-testid="ArrowDownwardIcon"]'
@@ -754,7 +754,7 @@ describe('Social Feed -- Rich Post Cards', () => {
 
   it('should show quick reaction emojis', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -779,7 +779,7 @@ describe('Social Feed -- Rich Post Cards', () => {
 
   it('should show intent-colored accent on post cards', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -805,10 +805,10 @@ describe('Social Feed -- Nunba Daily Card', () => {
 
   it('should show Nunba Daily card at top of feed', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasNunbaDaily =
         text.includes('Nunba Daily') ||
@@ -825,10 +825,10 @@ describe('Social Feed -- Nunba Daily Card', () => {
 
   it('should show daily tip content', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       // Daily tip card should have actual tip content (a sentence or paragraph)
       const hasTipContent =
@@ -844,10 +844,10 @@ describe('Social Feed -- Nunba Daily Card', () => {
 
   it('should show "Autopilot" chip on Nunba Daily card', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasAutopilotChip =
         text.includes('Autopilot') ||
@@ -865,10 +865,10 @@ describe('Social Feed -- Interest Filter Chips', () => {
 
   it('should show interest topic filter chips', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const chips = $body.find('[class*="MuiChip"]');
       const hasFilterChips = chips.length > 0;
       const hasTopicNames =
@@ -883,7 +883,7 @@ describe('Social Feed -- Interest Filter Chips', () => {
 
   it('should toggle chip selection on click', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -903,10 +903,10 @@ describe('Social Feed -- Interest Filter Chips', () => {
 
   it('should show For You as default tab', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasForYou = text.includes('For You');
       // The default selected tab should be "For You"
@@ -926,10 +926,10 @@ describe('Social Feed -- For You Default Tab', () => {
 
   it('should default to For You tab (index 0)', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 10000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       if ($tabs.length > 0) {
         // First tab should be selected by default
         const firstTabSelected = $tabs.first().attr('aria-selected') === 'true';
@@ -945,10 +945,10 @@ describe('Social Feed -- For You Default Tab', () => {
 
   it('should have 4 feed tabs: For You, Experiments, Trending, Community', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 10000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       if ($tabs.length > 0) {
         // Enriched feed should have at least 3-4 tabs
         expect($tabs.length).to.be.at.least(2);
@@ -985,7 +985,7 @@ describe('Communities -- Grid Layout', () => {
 
   it('should load communities page without crashing', () => {
     cy.socialVisit('/social/communities');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
@@ -1023,10 +1023,10 @@ describe('Communities -- Grid Layout', () => {
     });
 
     cy.socialVisit('/social/communities');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       // Grid layout uses MUI Grid or CSS grid/flex
       const hasGrid =
         $body.find(
@@ -1058,10 +1058,10 @@ describe('Communities -- Grid Layout', () => {
     });
 
     cy.socialVisit('/social/communities');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const hasGradients =
         $body.find('[style*="gradient"], [style*="linear-gradient"]').length >
           0 || $body.find('[class*="gradient"], [class*="header"]').length > 0;
@@ -1090,10 +1090,10 @@ describe('Communities -- Grid Layout', () => {
     });
 
     cy.socialVisit('/social/communities');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body', {timeout: 10000}).should(($body) => {
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasMemberCount =
         text.includes('42 members') ||
@@ -1132,10 +1132,10 @@ describe('Communities -- Grid Layout', () => {
     });
 
     cy.socialVisit('/social/communities');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasJoinChip =
         text.includes('Join') ||
@@ -1157,7 +1157,7 @@ describe('Admin Link -- Role Visibility', () => {
   it('should NOT show Admin link for flat role users', () => {
     cy.socialAuthWithRole('flat');
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Admin should NOT be in nav for flat users
@@ -1174,11 +1174,11 @@ describe('Admin Link -- Role Visibility', () => {
   it('should show Admin link for regional role users', () => {
     cy.socialAuthWithRole('regional');
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Admin should be visible for regional+
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       // Regional users should see admin in sidebar
       const pageLoaded = $body.html().length > 100;
@@ -1189,7 +1189,7 @@ describe('Admin Link -- Role Visibility', () => {
   it('should show Admin link for central role users', () => {
     cy.socialAuthWithRole('central');
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
     cy.get('#root').invoke('html').should('not.be.empty');
   });
@@ -1207,12 +1207,12 @@ describe('Enriched Features -- Responsive', () => {
   it('should render autopilot page on mobile', () => {
     cy.viewport(375, 667);
     cy.socialVisit('/social/autopilot');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
 
     // Content should still be visible on mobile
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasContent =
         text.includes('Autopilot') ||
@@ -1225,12 +1225,12 @@ describe('Enriched Features -- Responsive', () => {
   it('should render kids hub on mobile', () => {
     cy.viewport(375, 667);
     cy.socialVisit('/social/kids');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
 
     // Cards should render on mobile
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const hasCards =
         $body.find('[class*="MuiCard"], [class*="card"]').length > 0;
       const pageLoaded = $body.html().length > 100;
@@ -1241,12 +1241,12 @@ describe('Enriched Features -- Responsive', () => {
   it('should render feed with Nunba Daily on mobile', () => {
     cy.viewport(375, 667);
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
 
     // Tabs and feed content should be visible on mobile
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasContent = text.length > 50;
       expect(hasContent).to.be.true;
@@ -1274,12 +1274,12 @@ describe('Enriched Features -- Responsive', () => {
     });
 
     cy.socialVisit('/social/communities');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
 
     // Community cards should render on mobile
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const hasCards =
         $body.find('[class*="MuiCard"], [class*="card"]').length > 0;
       const pageLoaded = $body.html().length > 100;

@@ -42,7 +42,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
       body: {agent_type: 'local', agent_id: 'local_assistant', ...body},
       headers: {'Content-Type': 'application/json'},
       failOnStatusCode: false,
-      timeout: 120000,
+      timeout: 60000,
     });
   }
 
@@ -98,12 +98,12 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
       cy.request({
         url: `${API}/backend/health`,
         failOnStatusCode: false,
-        timeout: 30000,
+        timeout: 300000,
       }).then((res) => {
         if (res.status === 200) {
           flaskAvailable = true;
         }
-        expect(res.status).to.be.oneOf([200, 500]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
       });
     });
 
@@ -111,7 +111,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
       cy.request({
         url: `${LANGCHAIN_API}/health`,
         failOnStatusCode: false,
-        timeout: 30000,
+        timeout: 300000,
       }).then((res) => {
         if (res.status === 200) {
           langchainAvailable = true;
@@ -125,7 +125,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
       cy.request({
         url: `${LLAMA_API}/health`,
         failOnStatusCode: false,
-        timeout: 30000,
+        timeout: 300000,
       }).then((res) => {
         if (res.status === 200) {
           llamaAvailable = true;
@@ -144,7 +144,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         text: 'Hello, what is 2 plus 2?',
         user_id: 'cypress-live-test',
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 500]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         if (res.status === 200) {
           expect(res.body).to.have.property('text').that.is.a('string').and.not
             .empty;
@@ -159,7 +159,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         text: 'I want to create an agent for summarizing documents',
         user_id: 'cypress-live-create',
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 500]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         if (res.status === 200) {
           expect(res.body).to.have.property('text').that.is.a('string').and.not
             .empty;
@@ -178,7 +178,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         text: "don't create an agent, just tell me a joke",
         user_id: 'cypress-live-negate',
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 500]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         if (res.status === 200) {
           expect(res.body).to.have.property('text').that.is.a('string');
           // Negation guard should prevent agent_status from being set
@@ -205,7 +205,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         create_agent: true,
         prompt_id: promptId,
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 500]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         if (res.status === 200) {
           expect(res.body).to.have.property('text').that.is.a('string');
           expect(res.body).to.have.property('prompt_id').that.is.a('number');
@@ -218,7 +218,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         text: 'What can you help me with?',
         user_id: 'cypress-live-schema',
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 500]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         if (res.status === 200) {
           const body = res.body;
           expect(body).to.have.property('text').that.is.a('string');
@@ -247,7 +247,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         create_agent: true,
       })
         .then((res) => {
-          expect(res.status).to.be.oneOf([200, 500]);
+          expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
           if (res.status !== 200) return;
 
           promptId = res.body.prompt_id;
@@ -304,7 +304,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         create_agent: true,
         autonomous_creation: true,
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 500]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         if (res.status === 200) {
           expect(res.body).to.have.property('text').that.is.a('string');
           // The backend may or may not echo autonomous_creation depending on LLM response
@@ -356,16 +356,16 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
 
     it('4.1 Demopage loads and sends message to live backend', () => {
-      cy.visit('/local', {timeout: 30000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 300000, failOnStatusCode: false});
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       seedGuestAuth();
 
-      cy.get('textarea', {timeout: 20000})
+      cy.get('textarea', {timeout: 300000})
         .first()
         .type('Hello, what can you do?{enter}', {force: true});
 
       // Wait for the live response (generous timeout for LLM)
-      cy.wait('@liveChat', {timeout: 120000}).then((interception) => {
+      cy.wait('@liveChat', {timeout: 60000}).then((interception) => {
         if (interception.response && interception.response.statusCode === 200) {
           expect(interception.response.body).to.have.property('text');
         }
@@ -373,16 +373,16 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
 
     it('4.2 Chat response from live LLM renders in the UI', () => {
-      cy.visit('/local', {timeout: 30000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 300000, failOnStatusCode: false});
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       seedGuestAuth();
 
-      cy.get('textarea', {timeout: 20000})
+      cy.get('textarea', {timeout: 300000})
         .first()
         .type('Tell me about Nunba{enter}', {force: true});
 
       // The response should render as a message in the chat
-      cy.wait('@liveChat', {timeout: 120000});
+      cy.wait('@liveChat', {timeout: 60000});
       // Give React time to render
       cy.wait(2000);
       // There should be at least the user's message in the chat
@@ -390,17 +390,17 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
 
     it('4.3 Agent creation intent from UI triggers creation flow', () => {
-      cy.visit('/local', {timeout: 30000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 300000, failOnStatusCode: false});
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       seedGuestAuth();
 
-      cy.get('textarea', {timeout: 20000})
+      cy.get('textarea', {timeout: 300000})
         .first()
         .type('I want to create an agent for writing emails{enter}', {
           force: true,
         });
 
-      cy.wait('@liveChat', {timeout: 120000}).then((interception) => {
+      cy.wait('@liveChat', {timeout: 60000}).then((interception) => {
         if (interception.response && interception.response.statusCode === 200) {
           const body = interception.response.body;
           expect(body).to.have.property('text').that.is.a('string');

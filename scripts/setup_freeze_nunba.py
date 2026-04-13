@@ -126,7 +126,7 @@ for _sib_dir, _pkg_name in _sibling_editable_deps:
     print(f"Auto-installing {_pkg_name} from {_sib_path}...")
     _result = _sp.run(
         [sys.executable, '-m', 'pip', 'install', '-e', _sib_path, '--no-deps', '--quiet'],
-        capture_output=True, text=True, timeout=60)
+        capture_output=True, text=True, timeout=300)
     if _result.returncode != 0:
         # Retry once after aggressive build cleanup
         print(f"  Retry: cleaning build artifacts and reinstalling {_pkg_name}...")
@@ -136,7 +136,7 @@ for _sib_dir, _pkg_name in _sibling_editable_deps:
                 shutil.rmtree(_stale_path, ignore_errors=True)
         _result = _sp.run(
             [sys.executable, '-m', 'pip', 'install', '-e', _sib_path, '--no-deps', '--quiet'],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, timeout=300)
         if _result.returncode != 0:
             print(f"  WARNING: {_pkg_name} install failed: {_result.stderr.strip()}")
 print("Sibling deps verified")
@@ -354,7 +354,7 @@ build_exe_options = {
         "shapely.plotting", "shapely.tests",
         # Exclude large unnecessary packages
         "cv2", "opencv",  # pyautogui uses PIL.ImageGrab on Windows, not cv2
-        "torch", "tensorflow", "keras",
+        "torch", "torchvision", "torchaudio", "tensorflow", "keras",
         # embodied_ai/hevolveai are pip-installed but their heavy deps
         # (torch, transformers) are bundled via python-embed, not cx_Freeze
         "embodied_ai", "hevolveai",
@@ -390,6 +390,8 @@ build_exe_options = {
     # build/test scripts, and venv dirs)
     "include_files": (
         # 1. Auto-include ALL .py files from project root
+        # These are needed because app.py loads main.py via importlib (not standard import)
+        # and cx_Freeze doesn't trace importlib.util.spec_from_file_location targets.
         [(f, f) for f in glob.glob("*.py")
          if f not in ("app.py", "setup.py") and not f.startswith(("test_", "_test_"))]
         # 2. Auto-include ALL .json files from project root (config, templates)
@@ -918,6 +920,37 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
     if _removed:
         print(f"Post-build: removed {_removed} __pycache__ dirs from build")
 
+# ── Post-build: verify .pyc magic numbers match runtime Python ──
+# Catches cross-version .pyc files that would cause silent ImportError at runtime.
+# The build Python and frozen runtime Python MUST be the same version.
+if 'build' in sys.argv or 'build_exe' in sys.argv:
+    import importlib.util as _ilu_magic
+    _expected_magic = _ilu_magic.MAGIC_NUMBER
+    _build_dir_verify = os.path.abspath(build_exe_options["build_exe"])
+    _bad_pyc = []
+    for _root_v, _dirs_v, _files_v in os.walk(_build_dir_verify):
+        for _fv in _files_v:
+            if _fv.endswith('.pyc'):
+                _fpath = os.path.join(_root_v, _fv)
+                try:
+                    with open(_fpath, 'rb') as _fh:
+                        _file_magic = _fh.read(4)
+                    if _file_magic != _expected_magic:
+                        _bad_pyc.append((_fpath.replace(_build_dir_verify, ''), _file_magic.hex()))
+                except Exception:
+                    pass
+    if _bad_pyc:
+        print(f"[WARNING] {len(_bad_pyc)} .pyc files have WRONG magic number "
+              f"(expected {_expected_magic.hex()}):")
+        for _bp, _bm in _bad_pyc[:10]:
+            print(f"  {_bm} {_bp}")
+        if len(_bad_pyc) > 10:
+            print(f"  ... and {len(_bad_pyc) - 10} more")
+        print("  These will cause 'bad magic number' ImportError at runtime!")
+        print("  Fix: ensure build Python matches frozen runtime Python version.")
+    else:
+        print(f"Post-build: all .pyc files verified (magic={_expected_magic.hex()})")
+
 # ── Pre-copy: install TTS packages into python-embed ──
 # GPU TTS backends need pip packages in python-embed's site-packages.
 # python-embed's own pip is broken (distutils-precedence.pth), so we use
@@ -927,22 +960,57 @@ import subprocess
 if ('build' in sys.argv or 'build_exe' in sys.argv):
     _embed_sp = os.path.join("python-embed", "Lib", "site-packages")
     if os.path.isdir(_embed_sp):
-        _tts_deps = [
-            # (package_name, pip_install_name, check_import)
-            ("torchaudio", "torchaudio", "torchaudio"),
-            ("chatterbox-tts", "chatterbox-tts", "chatterbox"),
-            ("parler-tts", "parler-tts", "parler_tts"),
+        # ── Always re-install HARTOS + sibling deps into python-embed ──
+        # Editable install in system Python doesn't update python-embed's copy.
+        # Must pip install --target into python-embed so the frozen build has
+        # the latest code from all sibling repos.
+        _sibling_deps = [
+            ('HARTOS', 'hart-backend'),
+            ('hevolveai', 'hevolveai'),
+            ('Hevolve_Database', 'hevolve-database'),
+            ('HARTOS/agent-ledger-opensource', 'agent-ledger'),
         ]
-        for _pkg_label, _pip_name, _import_name in _tts_deps:
+        for _sib_dir, _pkg_name in _sibling_deps:
+            _sib_path = os.path.join(_project_root, _sib_dir)
+            if os.path.isdir(_sib_path) and (
+                os.path.isfile(os.path.join(_sib_path, 'pyproject.toml')) or
+                os.path.isfile(os.path.join(_sib_path, 'setup.py'))
+            ):
+                print(f"python-embed: re-installing {_pkg_name} from {_sib_dir}...")
+                _r = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--no-deps",
+                     "--target", _embed_sp, "--upgrade", _sib_path],
+                    capture_output=True, text=True, timeout=600)
+                if _r.returncode == 0:
+                    print(f"python-embed: {_pkg_name} updated OK")
+                else:
+                    print(f"python-embed: {_pkg_name} update FAILED: {_r.stderr[:200]}")
+
+        # Invalidate hash cache — sibling deps changed python-embed contents
+        _skip_python_embed_copy = False
+        current_python_embed_hash = get_directory_hash("python-embed")
+
+        _tts_deps = [
+            # NOTE: torch is NOT installed here. python-embed ships a minimal
+            # torch stub (0.0.0) that satisfies import checks without loading
+            # native DLLs. Full torch (CPU or CUDA) is installed at RUNTIME
+            # to ~/.nunba/site-packages/ by install_gpu_torch().
+            # Installing full torch here causes stack overflow: torch.__init__
+            # loads _C.pyd → needs torch_cpu.dll → DLL loader recurses → crash.
+            ("chatterbox-tts", "chatterbox-tts", "chatterbox", []),
+            ("parler-tts", "parler-tts", "parler_tts", []),
+            # STT — CTranslate2 bundles platform-specific CUDA runtime
+            ("faster-whisper", "faster-whisper", "faster_whisper", []),
+            ("ctranslate2", "ctranslate2", "ctranslate2", []),
+        ]
+        for _pkg_label, _pip_name, _import_name, _extra_args in _tts_deps:
             _check_path = os.path.join(_embed_sp, _import_name)
             if os.path.isdir(_check_path) or os.path.isfile(_check_path + '.py'):
                 print(f"python-embed: {_pkg_label} already present")
                 continue
             print(f"python-embed: installing {_pkg_label} via --target...")
             _pip_cmd = [sys.executable, "-m", "pip", "install", _pip_name,
-                        "--target", _embed_sp, "--no-deps", "--quiet"]
-            if _pip_name == "torchaudio":
-                _pip_cmd.extend(["--index-url", "https://download.pytorch.org/whl/cu126"])
+                        "--target", _embed_sp, "--no-deps", "--quiet"] + _extra_args
             _r = subprocess.run(_pip_cmd, capture_output=True, text=True, timeout=300)
             if _r.returncode == 0:
                 print(f"python-embed: {_pkg_label} installed OK")
@@ -1001,6 +1069,37 @@ if ('build' in sys.argv or 'build_exe' in sys.argv) and not _skip_python_embed_c
         if _orphan_count:
             print(f"Post-build: cleaned {_orphan_count} orphan files/dirs from python-embed")
         print(f"Post-build: python-embed copied ({_src_embed} -> {_dst_embed})")
+
+        # ── Remove distutils-precedence.pth ──
+        # setuptools writes this .pth file which imports _distutils_hack at startup.
+        # _distutils_hack isn't bundled in python-embed → breaks ALL pip installs
+        # at runtime (CUDA torch, chatterbox-tts, indic-parler, f5-tts).
+        _pth_file = os.path.join(_dst_embed, 'Lib', 'site-packages',
+                                  'distutils-precedence.pth')
+        if os.path.exists(_pth_file):
+            os.remove(_pth_file)
+            print("Post-build: removed distutils-precedence.pth (fixes runtime pip)")
+
+        # ── Copy unittest into python-embed ──
+        # transformers/testing_utils.py imports unittest (transitively via Indic Parler TTS).
+        # Can't add to cx_Freeze packages (causes stack overflow from deep mock imports).
+        # Can't rely on cx_Freeze auto-detect (not in app.py import chain).
+        # Direct file copy is the safe path.
+        _unittest_dst = os.path.join(_dst_embed, 'Lib', 'unittest')
+        if not os.path.isdir(_unittest_dst):
+            import sysconfig
+            _stdlib = sysconfig.get_paths()['stdlib']
+            _unittest_src = os.path.join(_stdlib, 'unittest')
+            if os.path.isdir(_unittest_src):
+                shutil.copytree(_unittest_src, _unittest_dst)
+                print(f"Post-build: copied unittest to python-embed ({_unittest_src})")
+            else:
+                print("WARNING: unittest not found in stdlib — TTS may fail")
+
+        # ── torch CPU is bundled (real, not a stub) ──
+        # Provides functional CPU inference for all packages at startup.
+        # At runtime, if GPU detected, CUDA torch is installed to
+        # ~/.nunba/site-packages/ which is first on sys.path → shadows CPU torch.
 
         # ── Fix torch._C conflict ──
         # PyTorch ships with both torch/_C.cp312-win_amd64.pyd (the real compiled
@@ -1075,6 +1174,35 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
             _lp = os.path.join(_di, _leak)
             if os.path.isfile(_lp):
                 os.remove(_lp)
+
+# ── Post-build: increase exe stack size ──
+# cx_Freeze frozen builds with 15K+ modules cause deep import chains that
+# overflow the default 1MB thread stack. Patch the PE header to 8MB.
+if 'build' in sys.argv or 'build_exe' in sys.argv:
+    _build_dir_pe = os.path.abspath(build_exe_options["build_exe"])
+    _exe_pe = os.path.join(_build_dir_pe, "Nunba.exe")
+    if os.path.isfile(_exe_pe):
+        try:
+            import struct as _struct
+            with open(_exe_pe, 'rb') as _f:
+                _pe_data = bytearray(_f.read())
+            _pe_off = _struct.unpack_from('<I', _pe_data, 0x3C)[0]
+            _pe_magic = _struct.unpack_from('<H', _pe_data, _pe_off + 0x18)[0]
+            if _pe_magic == 0x20B:  # PE32+ (64-bit)
+                _stack_off = _pe_off + 0x18 + 0x48
+                _fmt = '<Q'
+            else:  # PE32 (32-bit)
+                _stack_off = _pe_off + 0x18 + 0x44
+                _fmt = '<I'
+            _old_stack = _struct.unpack_from(_fmt, _pe_data, _stack_off)[0]
+            _new_stack = 8 * 1024 * 1024  # 8MB
+            _struct.pack_into(_fmt, _pe_data, _stack_off, _new_stack)
+            with open(_exe_pe, 'wb') as _f:
+                _f.write(_pe_data)
+            print(f"Post-build: stack reserve {_old_stack // 1024}KB -> "
+                  f"{_new_stack // 1024 // 1024}MB")
+        except Exception as _e:
+            print(f"WARNING: could not patch stack size: {_e}")
 
 # ── Post-build validation: run Nunba.exe --validate in the frozen environment ──
 if 'build' in sys.argv or 'build_exe' in sys.argv:

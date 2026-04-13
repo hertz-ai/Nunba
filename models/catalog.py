@@ -167,6 +167,17 @@ def populate_media_gen(catalog: ModelCatalog) -> int:
 _populators_registered = False
 
 
+def _register_nunba_populators(catalog: ModelCatalog):
+    """Register Nunba-specific populators (LLM presets, TTS engines, media gen)."""
+    global _populators_registered
+    if _populators_registered:
+        return
+    catalog.register_populator('llm_presets', populate_llm_presets)
+    catalog.register_populator('tts_engines', populate_tts_engines)
+    catalog.register_populator('media_gen', populate_media_gen)
+    _populators_registered = True
+
+
 def get_catalog() -> ModelCatalog:
     """Get or create the global ModelCatalog singleton.
 
@@ -174,44 +185,23 @@ def get_catalog() -> ModelCatalog:
     both import paths return the same instance.  Registers Nunba-specific
     LLM/TTS populators before the first auto-populate runs.
     """
-    global _populators_registered
-
     if _hartos_mod._catalog_instance is not None:
-        if not _populators_registered:
-            _hartos_mod._catalog_instance.register_populator(
-                'llm_presets', populate_llm_presets)
-            _hartos_mod._catalog_instance.register_populator(
-                'tts_engines', populate_tts_engines)
-            _hartos_mod._catalog_instance.register_populator(
-                'media_gen', populate_media_gen)
-            _populators_registered = True
+        _register_nunba_populators(_hartos_mod._catalog_instance)
         return _hartos_mod._catalog_instance
 
     with _hartos_mod._catalog_lock:
         if _hartos_mod._catalog_instance is None:
             inst = ModelCatalog()
-            inst.register_populator('llm_presets', populate_llm_presets)
-            inst.register_populator('tts_engines', populate_tts_engines)
-            inst.register_populator('media_gen', populate_media_gen)
-            _populators_registered = True
+            _register_nunba_populators(inst)
             if not inst.list_all():
                 inst.populate_from_subsystems()
             else:
-                # Re-run populators for any new model types not yet in catalog
-                # (e.g., media_gen added after initial catalog creation)
-                existing_ids = {e.id for e in inst.list_all()}
                 for name, fn in inst._populators:
                     try:
                         fn(inst)
                     except Exception:
                         pass
             _hartos_mod._catalog_instance = inst
-        elif not _populators_registered:
-            _hartos_mod._catalog_instance.register_populator(
-                'llm_presets', populate_llm_presets)
-            _hartos_mod._catalog_instance.register_populator(
-                'tts_engines', populate_tts_engines)
-            _hartos_mod._catalog_instance.register_populator(
-                'media_gen', populate_media_gen)
-            _populators_registered = True
+        else:
+            _register_nunba_populators(_hartos_mod._catalog_instance)
     return _hartos_mod._catalog_instance

@@ -25,6 +25,20 @@ import {
   Tooltip,
 } from '@mui/material';
 import {alpha} from '@mui/material/styles';
+
+// Ported from Hevolve.ai ConversationHistoryPanel.js
+function formatTimestamp(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  return d.toLocaleDateString(undefined, {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'});
+}
 import CloseIcon from '@mui/icons-material/Close';
 import SendIcon from '@mui/icons-material/Send';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
@@ -732,6 +746,24 @@ function PanelContent() {
                         msg.text
                       )}
                     </Typography>
+
+                    {/* Timestamp — same format as Hevolve.ai chat */}
+                    {msg.ts && (
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          display: 'block',
+                          fontSize: '0.6rem',
+                          color: isUser
+                            ? 'rgba(255,255,255,0.5)'
+                            : alpha(theme.palette.text.secondary, 0.5),
+                          mt: 0.3,
+                          textAlign: isUser ? 'right' : 'left',
+                        }}
+                      >
+                        {formatTimestamp(msg.ts)}
+                      </Typography>
+                    )}
 
                     {isUser && msg.status === 'sent' && (
                       <Box

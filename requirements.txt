@@ -1,6 +1,6 @@
-# AUTO-GENERATED from scripts/deps.py â€” DO NOT EDIT MANUALLY
+# AUTO-GENERATED from scripts/deps.py — DO NOT EDIT MANUALLY
 # Regenerate: python scripts/deps.py requirements
-# Nunba 2.0.0 | Python Embed 3.12.6
+# Nunba 0.1.0 | Python Embed 3.12.6
 
 flask==3.1.2
 flask-cors==6.0.2

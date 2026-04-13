@@ -1,0 +1,12 @@
+Nunba — HART Companion Desktop App
+Copyright 2024-2026 Hevolve AI (hertz-ai) and contributors
+
+This product includes software developed at Hevolve.ai (https://hevolve.ai).
+
+Nunba is the desktop companion for HART OS (https://github.com/hertz-ai/HARTOS),
+which is also licensed under Apache 2.0.
+
+HEVOLVEAI HIVE INTELLIGENCE
+HevolveAI — the native hive intelligence layer — is a separate, proprietary
+product not covered by this license. Nunba functions fully as a standalone
+desktop AI agent without HevolveAI. Connecting to the hive requires HevolveAI.

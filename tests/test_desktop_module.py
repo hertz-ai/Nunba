@@ -437,7 +437,7 @@ class TestConfig:
     def test_app_constants(self):
         from desktop.config import APP_IDENTIFIER, APP_NAME, APP_VERSION
         assert APP_NAME == "Nunba"
-        assert APP_VERSION == "2.0.0"
+        assert APP_VERSION == "0.1.0"
         assert APP_IDENTIFIER == "com.hevolve.nunba"
 
     def test_crash_reporting_disabled_by_default(self):

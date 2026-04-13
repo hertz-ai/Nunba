@@ -112,31 +112,65 @@ _sessions_lock = threading.Lock()
 sessions = {}
 custom_sessions = {}
 
-# Agent creation intent detection — exact phrase match only.
-# Fuzzy/substring matching removed. The LLM's Create_Agent tool handles
-# paraphrases, ambiguous cases, and negation naturally via reasoning.
-# This is just a fast-path for obvious unambiguous phrases.
-_CREATE_AGENT_EXACT = {
-    'create an agent', 'create agent', 'build an agent', 'build agent',
-    'make an agent', 'create a new agent', 'train an agent', 'train agent',
-    'i want a new agent', 'i want an agent', 'i want to create',
-    'i need a new agent', 'i need an agent', 'new agent',
-}
+# ---------------------------------------------------------------------------
+# USER-INTENT CLASSIFICATION LIVES IN THE HARTOS DRAFT MODEL.
+#
+# Every default chat turn goes through dispatch_draft_first in HARTOS
+# (integrations/agent_engine/speculative_dispatcher.py), which calls the
+# Qwen3.5-0.8B draft with a JSON-schema prompt that emits these flags on
+# the reply:
+#
+#     is_correction   — user is correcting the previous assistant turn
+#     is_casual       — pure chit-chat, doesn't need tools
+#     is_create_agent — user wants a new agent built
+#     channel_connect — lowercased channel name (whatsapp/telegram/...) or ''
+#
+# The flags ride back on the /chat response JSON so the chat handler can
+# route without ever running a phrase-matching classifier on Python
+# strings. The previous hardcoded detectors (_CREATE_AGENT_EXACT,
+# _CONNECT_CHANNEL_VERBS, _CASUAL_EXACT, _TOOL_TRIGGER_TOKENS, etc.) are
+# gone — they were shadow code that couldn't keep up with paraphrases
+# and duplicated the same classification the draft model already does.
+# ---------------------------------------------------------------------------
 
-def _detect_create_agent_intent(text):
-    """Exact phrase match only — no fuzzy substring matching.
 
-    The LLM handles everything else via the Create_Agent tool description.
-    This just short-circuits the obvious cases for speed (0ms vs 2s LLM call).
-    """
-    text_lower = text.lower().strip()
-    # Only match if the ENTIRE message is the intent (or starts with it)
-    # "create an agent that does X" → match (starts with exact phrase)
-    # "can you create an agent" → no match (let LLM handle)
-    for phrase in _CREATE_AGENT_EXACT:
-        if text_lower.startswith(phrase):
-            return True
-    return False
+# ---------------------------------------------------------------------------
+# Correction intent: "no, that's wrong", "actually ...", "I meant ...".
+# When the HARTOS draft-first dispatcher's Qwen3.5-0.8B classifier flags
+# ``is_correction=true`` on the user message, the current turn is treated
+# as an expert correction of the immediately preceding assistant response
+# and flows to HevolveAI's RL-EF / Kernel Continual Learner via
+# WorldModelBridge.submit_correction so the hive learns from it in real
+# time.
+#
+# There is NO hardcoded phrase list here — the 0.8B draft is already the
+# intent classifier for every default chat turn (see
+# speculative_dispatcher._build_draft_classifier_prompt), so correction
+# detection rides that same model call for zero extra cost and adapts
+# to paraphrases the way a static string match never could.
+# ---------------------------------------------------------------------------
+
+
+def _submit_correction_async(original_response, corrected_text, user_id):
+    """Fire-and-forget: push a user correction into HevolveAI via the
+    existing WorldModelBridge. Runs in a daemon thread so the chat
+    response is never delayed. Exceptions never escape."""
+    def _worker():
+        try:
+            from integrations.agent_engine.world_model_bridge import get_world_model_bridge
+            get_world_model_bridge().submit_correction(
+                original_response=original_response or '',
+                corrected_response=corrected_text or '',
+                expert_id=f'chat:{user_id}' if user_id else 'chat:anon',
+                confidence=0.8,
+                explanation='User correction captured from chat',
+            )
+            logger.info(f'Correction submitted to HevolveAI (user={user_id})')
+        except Exception as e:
+            logger.debug(f'Correction submit skipped: {e}')
+
+    threading.Thread(target=_worker, daemon=True,
+                     name='submit_correction').start()
 
 
 # Agent-driven secret request detection
@@ -202,6 +236,14 @@ def _detect_missing_key_in_response(text):
         'description': 'A tool requires an API key that is not yet configured.',
         'used_by': 'Unknown tool',
     }
+
+
+# LLM auto-start when chat hits an unreachable llama.cpp is owned by
+# LlamaConfig.ensure_running_async — the chat route just calls it. This
+# file used to carry its own _trigger_llm_auto_start_once with an
+# in-memory debounce, but that was a parallel path because LlamaConfig
+# already owns concurrency via .server_starting.lock. See
+# llama/llama_config.py::LlamaConfig.ensure_running_async.
 
 # Configuration from config.json
 CONTEXT_LEN = 2500
@@ -381,7 +423,7 @@ def gpt_lang(message, user_id, prompt=None, prompt_id=None, timeout=120, probe=F
         "file_id": sessions.get(user_id, {}).get('file_id', 0),
         "tools": None,
         "prompt_id": prompt_id,
-        "casual_conv": False,
+        "casual_conv": not bool(prompt_id or create_agent),
         "probe": probe,
         "intermediate": False,
         "create_agent": create_agent
@@ -604,6 +646,35 @@ def publish(inp, user_id, topic):
     TODO: Implement actual Crossbar message publishing
     """
     logger.info(f'STUB: publish called for user {user_id}, topic {topic}')
+
+
+def publish_to_crossbar(user_id, data):
+    """Publish a message to WAMP subscribers via the embedded router + SSE.
+
+    Used by upload_routes.py (PDF parse completion) and any code that needs
+    to push events to the frontend in real time.
+
+    Args:
+        user_id: Target user's ID (used in topic routing)
+        data: Dict payload to publish
+    """
+    # 1. Embedded WAMP router (reaches crossbarWorker.js subscribers)
+    try:
+        from wamp_router import publish_local, is_running
+        if is_running():
+            topic = f'com.hertzai.hevolve.chat.{user_id}'
+            publish_local(topic, data)
+    except Exception:
+        pass
+
+    # 2. SSE fallback (reaches realtimeService.js EventSource subscribers)
+    try:
+        import __main__
+        if hasattr(__main__, 'broadcast_sse_event'):
+            event_type = data.get('type', 'message') if isinstance(data, dict) else 'message'
+            __main__.broadcast_sse_event(event_type, data, user_id=user_id)
+    except Exception:
+        pass
 
 
 
@@ -1512,6 +1583,18 @@ def voice_transcribe():
             pass
 
 
+def voice_stt_stream_port():
+    """GET /voice/stt/stream-port — return WebSocket port for streaming STT."""
+    try:
+        from integrations.service_tools.whisper_tool import get_stt_stream_port
+        port = get_stt_stream_port()
+        if port:
+            return jsonify({'port': port, 'url': f'ws://127.0.0.1:{port}'})
+        return jsonify({'error': 'Streaming STT not running'}), 503
+    except ImportError:
+        return jsonify({'error': 'STT module not available'}), 501
+
+
 def voice_diarize():
     """
     POST /voice/diarize
@@ -1814,6 +1897,24 @@ def chat_route():
     if not text.strip():
         return jsonify({'error': 'Text is required'}), 400
 
+    # Async TTS: after ANY successful response, synthesize audio in background
+    # and push via WAMP/SSE.
+    # Unified flag: media_mode ('audio'|'video'|'text') — same across all platforms.
+    # Backwards compat: video_req=true maps to 'video', default='audio' for bundled.
+    media_mode = data.get('media_mode')
+    if not media_mode:
+        if video_req:
+            media_mode = 'video'
+        elif bool(os.environ.get('NUNBA_BUNDLED') or getattr(sys, 'frozen', False)):
+            media_mode = 'audio'  # Nunba desktop default
+        else:
+            media_mode = 'text'   # Cloud/web default
+    audio_mode = media_mode in ('audio', 'video')
+    # TTS is handled INSIDE HARTOS /chat handler (line 5449 in hart_intelligence_entry.py).
+    # Do NOT call _tts_synthesize_and_publish here — it creates a duplicate call that
+    # races with the HARTOS one and kills the executor via after_this_request timing
+    # (Flask test_client context closes → "cannot schedule new futures after shutdown").
+
     # Find the agent configuration
     agent_config = None
     all_agents = LOCAL_AGENTS + CLOUD_AGENTS
@@ -1935,31 +2036,21 @@ def chat_route():
                     if os.path.isfile(_prompt_file):
                         langchain_prompt_id = int(_candidate_pid)
 
-                # --- Recursion guard: skip detection if already in creation/review flow ---
-                already_creating = (
-                    create_agent or
-                    (langchain_prompt_id and str(langchain_prompt_id).isdigit())
-                )
-
-                # Conservative deterministic detection — only for unambiguous, non-negated cases
-                # For intelligent detection (paraphrases, etc.), the LangChain Create_Agent
-                # tool handles it via LLM reasoning in hart_intelligence
-                if not already_creating and _detect_create_agent_intent(text):
-                    create_agent = True
-                    logger.info('Deterministic: detected agent creation intent (server will generate prompt_id)')
-                    # Note: autonomous_creation is now detected by the LLM (Create_Agent tool)
-                    # and passed back via the response from hart_intelligence, NOT by pattern matching
-
-                # casual_conv=True disables ALL LangChain tools (memory, visual
-                # context, etc.).  Only safe when there's no agent prompt AND no
-                # agentic flow active — i.e. a pure default-agent chat turn.
-                _is_casual = (
-                    not langchain_prompt_id
-                    and not create_agent
-                    and not agentic_execute
-                    and not agentic_plan
-                )
-
+                # Intent routing (casual_conv / create_agent / channel
+                # connect nudge) is performed inside HARTOS by the
+                # Qwen3.5-0.8B draft-first classifier — no phrase tables
+                # here. We pass neutral flags to hevolve_chat so HARTOS
+                # can make its own decisions; the draft's reply short-
+                # circuits casual turns at HARTOS level (/chat returns
+                # the draft envelope directly before the LangChain path
+                # even runs), so we don't need a local casual_conv
+                # computation to save latency. Agent-creation and
+                # channel-connect both get handled by the draft flags
+                # the adapter surfaces on the /chat response.
+                # Default to casual (0.8B draft) unless an agentic flow needs tools.
+                _needs_tools = bool(langchain_prompt_id or create_agent
+                                    or agentic_execute or agentic_plan
+                                    or autonomous_creation)
                 result = hevolve_chat(
                     text=text,
                     user_id=str(user_id),
@@ -1967,7 +2058,8 @@ def chat_route():
                     conversation_id=conversation_id,
                     request_id=request_id,
                     create_agent=bool(create_agent),
-                    casual_conv=_is_casual,
+                    casual_conv=not _needs_tools,
+                    media_mode=media_mode,
                     autonomous=bool(autonomous_creation),
                     agentic_execute=bool(agentic_execute),
                     agentic_plan=agentic_plan,
@@ -2009,6 +2101,25 @@ def chat_route():
                 response_text = result.get('text') or result.get('response')
                 if response_text and not result.get('error'):
                     logger.info(f'LangChain local response: {response_text[:100]}...')
+                    # Correction intent: the HARTOS draft-first dispatcher's
+                    # Qwen3.5-0.8B classifier tags every default chat turn
+                    # with is_correction (true/false) inside the /chat
+                    # response envelope. When true, the CURRENT user message
+                    # was correcting the PREVIOUS assistant turn — fire a
+                    # fire-and-forget WorldModelBridge.submit_correction so
+                    # HevolveAI's RL-EF / Kernel Continual Learner learns in
+                    # real time. We read the prev_assistant from sessions
+                    # BEFORE we overwrite it with the new response below.
+                    if result.get('is_correction'):
+                        with _sessions_lock:
+                            _prev_assistant = sessions.get(str(user_id), {}).get(
+                                'last_assistant_text', '')
+                        _submit_correction_async(_prev_assistant, text, user_id)
+                    # Retain the last assistant turn on the user's session so
+                    # the next turn's correction classifier has context. Kept
+                    # tiny (last message only) — no transcript buffering here.
+                    with _sessions_lock:
+                        sessions.setdefault(str(user_id), {})['last_assistant_text'] = response_text[:4000]
                     response_json = {
                         'text': response_text,
                         'agent_id': agent_id,
@@ -2061,6 +2172,26 @@ def chat_route():
                     # Pass through agentic plan for Plan Mode UI
                     if result.get('agentic_plan'):
                         response_json['agentic_plan'] = result['agentic_plan']
+                    # Pass through dynamic_layout for Liquid UI rendering
+                    # (creative tools: Movie_Maker, Game_Asset_Creator, Story_Director
+                    #  return JSON that the Liquid UI renders natively)
+                    if result.get('dynamic_layout'):
+                        response_json['dynamic_layout'] = result['dynamic_layout']
+                    elif response_text and response_text.lstrip().startswith('{'):
+                        # Auto-detect JSON tool output as dynamic_layout candidate
+                        try:
+                            import json as _json
+                            parsed = _json.loads(response_text)
+                            # Creative tool outputs have specific keys
+                            if any(k in parsed for k in ('scenes', 'characters', 'images',
+                                                         'videos', 'timeline', 'game_title',
+                                                         'backgrounds', 'items', 'audio')):
+                                response_json['dynamic_layout'] = {
+                                    'type': 'creative_output',
+                                    'data': parsed,
+                                }
+                        except (ValueError, _json.JSONDecodeError):
+                            pass  # Not JSON — leave as text
                     # Include thinking traces captured during LangChain/autogen execution
                     thinking_traces = drain_thinking_traces(request_id)
                     if thinking_traces:
@@ -2101,23 +2232,39 @@ def chat_route():
             except Exception as e:
                 logger.warning(f'LangChain pipeline unavailable, falling back to raw llama: {e}')
 
-        # --- Tier 2: Fallback to raw Llama.cpp (port 8080) ---
+        # --- Tier 2: Fallback to raw llama-server ---
+        # Try 0.8B draft first (fast, always available), then 4B.
+        # The 4B may be stuck serving daemon autogen goals.
         try:
             from llama.llama_config import check_llama_health, get_llama_endpoint
-            if check_llama_health():
-                endpoint = get_llama_endpoint()
-                messages = [{"role": "user", "content": text}]
-                if system_prompt:
-                    messages.insert(0, {"role": "system", "content": system_prompt})
+            messages = [{"role": "user", "content": text}]
+            if system_prompt:
+                messages.insert(0, {"role": "system", "content": system_prompt})
+            _payload = {"model": "local", "messages": messages, "stream": False}
 
+            # Try 0.8B draft first (port 8081) — 5s timeout, fast fallback
+            response_text = ''
+            try:
+                _draft_resp = requests.post(
+                    "http://127.0.0.1:8081/v1/chat/completions",
+                    json={**_payload, "max_tokens": 200},
+                    timeout=5,
+                )
+                if _draft_resp.status_code == 200:
+                    _dr = _draft_resp.json()
+                    if 'choices' in _dr:
+                        response_text = _dr["choices"][0]["message"]["content"]
+                        logger.info(f"Tier-2 draft 0.8B responded: {response_text[:60]}...")
+            except Exception:
+                pass
+
+            # If draft didn't respond, try 4B (may be slow/stuck)
+            if not response_text and check_llama_health():
+                endpoint = get_llama_endpoint()
                 response = requests.post(
                     f"{endpoint}/v1/chat/completions",
-                    json={
-                        "model": "local",
-                        "messages": messages,
-                        "stream": False
-                    },
-                    timeout=120
+                    json=_payload,
+                    timeout=30,
                 )
                 result = response.json()
                 response_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -2134,13 +2281,26 @@ def chat_route():
         except Exception as e:
             logger.warning(f'Local Llama error: {e}')
 
-        # No LLM backend available at all
+        # No LLM backend reachable — one unified "bring up the right
+        # model for this capability" call. The orchestrator owns model
+        # selection + loading for every type (llm, tts, stt, vlm, ...)
+        # and the chat route stays a single line.
+        try:
+            from models.orchestrator import get_orchestrator
+            get_orchestrator().ensure_loaded_async('llm', caller=f'chat:{user_id}')
+        except ImportError:
+            logger.warning('Orchestrator unavailable — cannot auto-start LLM')
         return jsonify({
-            'text': 'Local LLM is not running. Please start Llama.cpp or download a model via Nunba settings.',
+            'text': (
+                "Starting the local AI engine for you now. "
+                "Give it a few seconds and send your message again."
+            ),
             'agent_id': agent_id,
             'agent_type': 'local',
-            'error': 'local_llm_unavailable',
-            'success': False
+            'error': 'local_llm_starting',
+            'llm_starting': True,
+            'retry_hint_seconds': 6,
+            'success': False,
         })
 
     # ============== CLOUD AGENT ==============
@@ -3151,6 +3311,31 @@ def register_routes(app):
     app.route("/agents/migrate", methods=["POST"])(agents_migrate)
     app.route("/agents/<prompt_id>/post", methods=["POST"])(agent_post)
 
+    # TTS audio serving — for async push playback (pupit topic)
+    def tts_serve_audio(filename):
+        """Serve a TTS audio file by filename. Used by frontend after WAMP/SSE push."""
+        import tempfile
+        from pathlib import Path
+        from flask import send_file, abort
+        # Security: only serve from temp dir, no path traversal
+        if '..' in filename or '/' in filename or '\\' in filename:
+            abort(400)
+        # Search all TTS cache directories — each engine writes to its own cache
+        _home = Path.home()
+        search_dirs = [
+            _home / '.nunba' / 'piper' / 'cache',
+            _home / '.nunba' / 'vibevoice' / 'cache',
+            _home / '.nunba' / 'tts_cache' / 'presynth',
+            _home / '.nunba' / 'tts_cache',
+            Path(tempfile.gettempdir()),
+        ]
+        for d in search_dirs:
+            path = d / filename
+            if path.is_file():
+                return send_file(str(path), mimetype='audio/wav')
+        abort(404)
+    app.route("/tts/audio/<filename>", methods=["GET"])(tts_serve_audio)
+
     # TTS routes (original)
     app.route("/tts/synthesize", methods=["POST"])(tts_synthesize)
     app.route("/tts/voices", methods=["GET"])(tts_voices)
@@ -3169,6 +3354,7 @@ def register_routes(app):
     # Voice pipeline routes (STT + Diarization — batch fallback for WS streaming primary)
     app.route("/voice/transcribe", methods=["POST"])(voice_transcribe)
     app.route("/voice/diarize", methods=["POST"])(voice_diarize)
+    app.route("/voice/stt/stream-port", methods=["GET"])(voice_stt_stream_port)
 
     # LLM config routes (AI provider management) — protected by auth (D4 fix)
     app.route("/api/llm/config", methods=["GET"])(_require_local_or_token(llm_config_get))

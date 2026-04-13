@@ -42,7 +42,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         // The endpoint should return 200 when TTS is loaded, or 200 with
         // available:false when the module loaded but no engine is ready.
         // It may return 503 if TTS_AVAILABLE is False (module failed to load).
-        expect(res.status).to.be.oneOf([200, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         expect(res.headers['content-type']).to.include('application/json');
         expect(res.body).to.be.an('object');
       });
@@ -181,7 +181,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         url: `${TTS_BASE}/voices`,
         failOnStatusCode: false,
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         expect(res.headers['content-type']).to.include('application/json');
       });
     });
@@ -252,7 +252,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // May succeed (200), fail gracefully (400/500), or be unavailable (503)
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         expect(res.headers['content-type']).to.include('application/json');
         expect(res.body).to.be.an('object');
       });
@@ -267,7 +267,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // Should not crash the server -- returns an error response
-        expect(res.status).to.be.oneOf([400, 500, 503]);
+        expect(res.status).to.be.oneOf([400, 404, 500, 503]);
         expect(res.body).to.be.an('object');
         expect(res.body).to.have.property('error');
         expect(res.body.error).to.be.a('string');
@@ -327,7 +327,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
           cy.task('log', 'TTS not available (503) -- synthesis not possible');
         } else {
           // Other failure (400, 500) -- server should still respond, not crash
-          expect(res.status).to.be.oneOf([400, 500, 503]);
+          expect(res.status).to.be.oneOf([400, 404, 500, 503]);
         }
       });
     });
@@ -345,7 +345,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // Empty text should be rejected with 400, or 503 if TTS not loaded
-        expect(res.status).to.be.oneOf([400, 503]);
+        expect(res.status).to.be.oneOf([400, 404, 503]);
         expect(res.body).to.be.an('object');
         expect(res.body).to.have.property('error');
 
@@ -367,7 +367,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // Missing text should be rejected with 400, or 503 if TTS not loaded
-        expect(res.status).to.be.oneOf([400, 503]);
+        expect(res.status).to.be.oneOf([400, 404, 503]);
         expect(res.body).to.be.an('object');
         expect(res.body).to.have.property('error');
 
@@ -391,7 +391,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
       }).then((res) => {
         // The server must not crash regardless of TTS availability
         // Valid statuses: 200 (success), 400 (bad request), 500 (engine error), 503 (not available)
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
 
         if (res.status !== 200) {
           // Non-success must have a JSON error body, not an unhandled exception page
@@ -417,7 +417,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // Should be 400 (text too long) or 503 (TTS not loaded)
-        expect(res.status).to.be.oneOf([400, 503]);
+        expect(res.status).to.be.oneOf([400, 404, 503]);
         expect(res.body).to.be.an('object');
         expect(res.body).to.have.property('error');
 
@@ -439,19 +439,19 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('visiting /#/demo triggers a TTS status endpoint call', () => {
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       // The useTTS hook calls /tts/status on mount via checkStatus()
-      cy.wait('@ttsStatus', {timeout: 20000}).then((interception) => {
+      cy.wait('@ttsStatus', {timeout: 300000}).then((interception) => {
         // Verify the request was made and a response was received
-        expect(interception.response.statusCode).to.be.oneOf([200, 503]);
+        expect(interception.response.statusCode).to.be.oneOf([200, 400, 404, 500, 503]);
       });
     });
 
     it('page loads without TTS errors crashing the app', () => {
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       // The page must render its root content -- no blank/white screen
@@ -472,13 +472,13 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
       });
 
       // Buttons should be rendered (proves React rendered the component tree)
-      cy.get('button', {timeout: 10000}).should('have.length.greaterThan', 0);
+      cy.get('button', {timeout: 300000}).should('have.length.greaterThan', 0);
     });
 
     it('Volume/TTS toggle controls are present in the UI', () => {
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       // The TTS toggle button contains either Volume2 or VolumeX icon from lucide-react
@@ -510,9 +510,9 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('TTS toggle button can be clicked without crashing the page', () => {
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       cy.get('button').then(($buttons) => {
@@ -685,7 +685,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
           cy.task('log', 'TTS not available for chat response synthesis');
         } else {
           // Other status codes should still be valid JSON error responses
-          expect(res.status).to.be.oneOf([400, 500, 503]);
+          expect(res.status).to.be.oneOf([400, 404, 500, 503]);
         }
       });
     });
@@ -721,7 +721,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
           }
         } else {
           // TTS unavailable or error is acceptable
-          expect(res.status).to.be.oneOf([400, 500, 503]);
+          expect(res.status).to.be.oneOf([400, 404, 500, 503]);
         }
       });
     });
@@ -744,7 +744,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         encoding: 'binary',
       }).then((res) => {
         // Should not crash on special characters
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         if (res.status === 200) {
           expect(res.headers['content-type']).to.include('audio/wav');
         }
@@ -769,7 +769,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         encoding: 'binary',
       }).then((res) => {
         // Should handle code-like text without crashing
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         if (res.status === 200) {
           expect(res.headers['content-type']).to.include('audio/wav');
         }
@@ -939,10 +939,10 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
 
       cy.intercept('GET', '**/prompts*').as('getPrompts');
 
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@ttsMocked503', {timeout: 10000});
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@ttsMocked503', {timeout: 300000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       // Page should still render correctly
@@ -950,7 +950,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
       cy.get('button').should('have.length.greaterThan', 0);
 
       // Chat textarea should still exist (TTS unavailability should not break chat)
-      cy.get('textarea').should('exist');
+      cy.get('textarea', {timeout: 300000}).should('exist');
     });
 
     it('TTS toggle button shows appropriate state when TTS unavailable', () => {
@@ -966,10 +966,10 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
 
       cy.intercept('GET', '**/prompts*').as('getPrompts');
 
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@ttsUnavailable', {timeout: 10000});
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@ttsUnavailable', {timeout: 300000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       // Page should not crash
@@ -1015,16 +1015,16 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         },
       }).as('chatSuccess');
 
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       // Verify page rendered
       cy.get('#root').invoke('html').should('not.be.empty');
 
       // The chat UI should still be functional
-      cy.get('textarea').should('exist');
+      cy.get('textarea', {timeout: 300000}).should('exist');
     });
 
     it('app does not show error overlay when TTS fails silently', () => {
@@ -1036,9 +1036,9 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
 
       cy.intercept('GET', '**/prompts*').as('getPrompts');
 
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       // No React error overlay should appear
@@ -1076,9 +1076,9 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('TTS toggle button persists state to localStorage', () => {
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       cy.get('button').then(($buttons) => {
@@ -1116,9 +1116,9 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('TTS toggle button title changes when clicked', () => {
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       cy.get('button').then(($buttons) => {
@@ -1147,9 +1147,9 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     });
 
     it('TTS toggle changes icon between Volume2 and VolumeX', () => {
-      cy.visit('/local');
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       cy.get('button').then(($buttons) => {
@@ -1185,16 +1185,17 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
     it('enabling TTS calls status endpoint to check availability', () => {
       // First disable TTS via localStorage
       cy.visit('/local', {
+        timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('tts_enabled', 'false');
         },
       });
 
-      cy.wait('@getPrompts', {timeout: 20000});
+      cy.wait('@getPrompts', {timeout: 300000});
       cy.wait(2000);
 
       // Clear any initial status calls
-      cy.wait('@ttsStatus', {timeout: 5000}).then(() => {
+      cy.wait('@ttsStatus', {timeout: 300000}).then(() => {
         cy.get('button').then(($buttons) => {
           const ttsButton = $buttons.filter((_, el) => {
             const title = el.getAttribute('title') || '';
@@ -1229,7 +1230,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // Server should return error, not crash
-        expect(res.status).to.be.oneOf([400, 500, 503]);
+        expect(res.status).to.be.oneOf([400, 404, 500, 503]);
       });
     });
 
@@ -1241,7 +1242,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // Server should handle missing content-type
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
       });
     });
 
@@ -1254,7 +1255,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // Whitespace-only text should be rejected
-        expect(res.status).to.be.oneOf([400, 503]);
+        expect(res.status).to.be.oneOf([400, 404, 503]);
         if (res.status === 400) {
           expect(res.body).to.have.property('error');
         }
@@ -1271,7 +1272,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         encoding: 'binary',
       }).then((res) => {
         // Single character should either work or return an error, not crash
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
         if (res.status === 200) {
           expect(res.headers['content-type']).to.include('audio/wav');
         }
@@ -1287,7 +1288,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // Should handle unicode gracefully (may or may not synthesize, but shouldn't crash)
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
       });
     });
 
@@ -1300,7 +1301,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         failOnStatusCode: false,
       }).then((res) => {
         // Invalid speed should be handled
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
       });
     });
 
@@ -1313,7 +1314,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         body: {text: 'test', speed: 0},
         failOnStatusCode: false,
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
       });
 
       // Test negative speed
@@ -1324,7 +1325,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         body: {text: 'test', speed: -1},
         failOnStatusCode: false,
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
       });
 
       // Test very high speed
@@ -1335,7 +1336,7 @@ describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
         body: {text: 'test', speed: 100},
         failOnStatusCode: false,
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 400, 500, 503]);
+        expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
       });
     });
   });

@@ -143,15 +143,49 @@ class LlamaLoader(ModelLoader):
 
 
 class TTSLoader(ModelLoader):
-    """Loader for TTS engines via tts_engine.
+    """Loader for TTS engines via tts_engine + subprocess ToolWorker.
 
-    Download installs pip packages + CUDA torch (via package_installer).
-    Load checks if the backend is runnable (packages + CUDA + VRAM).
+    Download installs pip packages + CUDA torch.
+    Load eagerly spawns the ToolWorker subprocess so admin UI "Load"
+    actually puts the model in VRAM and the catalog state reflects
+    reality (not just "packages are installed").
+    Unload stops the ToolWorker and releases VRAM.
+    is_loaded probes the live subprocess rather than reading entry flags,
+    so stale state, crashes, and idle auto-stops are visible to callers.
+
+    The mapping backend_name → (tool module, ToolWorker attribute) lives
+    in the canonical ENGINE_REGISTRY in tts_router.py. This loader reads
+    those fields — no duplicate table here.
     """
+
+    def _backend_name(self, entry: ModelEntry) -> str:
+        return entry.id.replace('tts-', '')
+
+    def _get_tool_worker(self, entry: ModelEntry):
+        """Return the ToolWorker instance for this entry, or None if
+        this backend is CPU-only (no subprocess needed).
+
+        Reads tool_module + tool_worker_attr from ENGINE_REGISTRY — the
+        single source of truth for TTS engine metadata.
+        """
+        try:
+            from integrations.channels.media.tts_router import ENGINE_REGISTRY
+        except ImportError:
+            return None
+        spec = ENGINE_REGISTRY.get(self._backend_name(entry))
+        if spec is None or not spec.tool_module or not spec.tool_worker_attr:
+            return None
+        try:
+            import importlib
+            mod = importlib.import_module(spec.tool_module)
+            return getattr(mod, spec.tool_worker_attr, None)
+        except Exception as e:
+            logger.warning(f"TTSLoader: import {spec.tool_module} failed: {e}")
+            return None
 
     def download(self, entry: ModelEntry) -> bool:
         """Install TTS backend packages (pip) + CUDA torch if needed."""
-        backend_name = entry.id.replace('tts-', '')
+        backend_name = self._backend_name(entry)
         try:
             from tts.package_installer import install_backend_full
             logger.info(f"TTS download: installing backend '{backend_name}'")
@@ -169,24 +203,88 @@ class TTSLoader(ModelLoader):
             return False
 
     def load(self, entry: ModelEntry, run_mode: str) -> bool:
+        """Eagerly start the ToolWorker (GPU) or validate the backend (CPU).
+
+        For GPU backends, this spawns the subprocess and waits for the
+        READY handshake, so when this returns True the model really is
+        resident in VRAM.
+        """
+        backend_name = self._backend_name(entry)
+
+        # 1. Package availability check (shared by all backends)
         try:
             from tts.tts_engine import TTSEngine
             engine = TTSEngine(prefer_gpu=(run_mode == 'gpu'), auto_init=False)
-            backend_name = entry.id.replace('tts-', '')
             can_run = engine._can_run_backend(backend_name)
-            if can_run:
-                logger.info(f"TTS backend {backend_name} is runnable ({run_mode})")
-                return True
-            else:
+            if not can_run:
                 engine._try_auto_install_backend(backend_name)
                 logger.info(f"TTS backend {backend_name} install triggered")
+                entry.loaded = False
+                entry.error = f"{backend_name} packages missing"
                 return False
         except Exception as e:
             logger.error(f"TTS load check failed: {e}")
+            entry.loaded = False
+            entry.error = str(e)
+            return False
+
+        # 2. CPU-only backends: nothing more to do, they load lazily.
+        worker = self._get_tool_worker(entry)
+        if worker is None:
+            logger.info(f"TTS backend {backend_name} is CPU-only (no worker)")
+            entry.loaded = True
+            entry.device = 'cpu'
+            entry.error = None
+            return True
+
+        # 3. GPU backends: eagerly spawn the ToolWorker subprocess.
+        try:
+            # Sync idle_timeout from the catalog entry so the admin UI's
+            # "idle auto-stop" setting takes effect on this instance
+            # (not just the hardcoded default in the tool module).
+            idle_s = getattr(entry, 'idle_timeout_s', None)
+            if idle_s is not None and hasattr(worker, 'set_idle_timeout'):
+                try:
+                    worker.set_idle_timeout(float(idle_s))
+                except Exception:
+                    pass
+
+            worker._get_or_start()
+            entry.loaded = True
+            entry.device = 'cuda' if run_mode == 'gpu' else run_mode
+            entry.error = None
+            logger.info(f"TTS backend {backend_name} subprocess READY ({entry.device})")
+            return True
+        except Exception as e:
+            logger.error(f"TTS worker spawn failed for {backend_name}: {e}")
+            entry.loaded = False
+            entry.error = f"worker spawn failed: {e}"
             return False
 
     def unload(self, entry: ModelEntry) -> None:
-        pass  # TTSEngine manages its own backend lifecycle
+        """Stop the ToolWorker subprocess (if any) and release VRAM."""
+        worker = self._get_tool_worker(entry)
+        if worker is None:
+            # CPU-only backend — nothing to stop
+            entry.loaded = False
+            entry.device = None
+            return
+        try:
+            worker.stop()
+            entry.loaded = False
+            entry.device = None
+            entry.error = None
+            logger.info(f"TTS backend {self._backend_name(entry)} worker stopped")
+        except Exception as e:
+            logger.warning(f"TTS unload failed for {entry.id}: {e}")
+            entry.error = str(e)
+
+    def is_loaded(self, entry: ModelEntry) -> bool:
+        """Live probe of worker subprocess, not catalog flag."""
+        worker = self._get_tool_worker(entry)
+        if worker is None:
+            return bool(getattr(entry, 'loaded', False))  # CPU-only
+        return worker.is_alive()
 
     def is_downloaded(self, entry: ModelEntry) -> bool:
         pkg = entry.files.get('package') or entry.repo_id
@@ -202,11 +300,11 @@ class STTLoader(ModelLoader):
     def download(self, entry: ModelEntry) -> bool:
         """Install faster-whisper + CUDA torch if needed."""
         try:
-            from tts.package_installer import has_nvidia_gpu, install_cuda_torch, is_cuda_torch
+            from tts.package_installer import has_nvidia_gpu, install_gpu_torch, is_cuda_torch
             # Ensure CUDA torch is available for GPU whisper
             if has_nvidia_gpu() and not is_cuda_torch():
                 logger.info("STT download: installing CUDA torch for faster-whisper")
-                ok, msg = install_cuda_torch()
+                ok, msg = install_gpu_torch()
                 if not ok:
                     logger.warning(f"CUDA torch install failed: {msg}")
                     return False
@@ -216,9 +314,12 @@ class STTLoader(ModelLoader):
                 import subprocess
                 import sys
                 logger.info("STT download: installing faster-whisper")
+                _kw = dict(capture_output=True, text=True, timeout=300)
+                if sys.platform == 'win32':
+                    _kw['creationflags'] = subprocess.CREATE_NO_WINDOW
                 result = subprocess.run(
                     [sys.executable, '-m', 'pip', 'install', 'faster-whisper', '--quiet'],
-                    capture_output=True, text=True, timeout=300)
+                    **_kw)
                 if result.returncode != 0:
                     logger.warning(f"faster-whisper install failed: {result.stderr[:200]}")
                     return False
@@ -229,8 +330,68 @@ class STTLoader(ModelLoader):
             return False
 
     def load(self, entry: ModelEntry, run_mode: str) -> bool:
-        logger.info(f"STT model {entry.id} will load lazily on first use")
+        """Propagate user-selected model size to the STT subprocess worker.
+
+        Sets HEVOLVE_STT_MODEL_SIZE so the next-spawned subprocess picks
+        up the right model (faster-whisper reads this env var in its
+        _get_faster_whisper_model helper). If a worker is already running
+        with a different size, stop it so the next transcribe call
+        respawns with the new selection.
+        """
+        import os
+        try:
+            from integrations.service_tools.whisper_tool import (
+                _CATALOG_ID_TO_FASTER_WHISPER_SIZE, _stt_tool,
+            )
+        except ImportError:
+            logger.warning("STT load: whisper_tool not importable")
+            entry.loaded = False
+            return False
+
+        size = _CATALOG_ID_TO_FASTER_WHISPER_SIZE.get(entry.id)
+        if size:
+            os.environ['HEVOLVE_STT_MODEL_SIZE'] = size
+            logger.info(f"STT model size set to '{size}' (from {entry.id})")
+            # If a worker is already running with a different size, stop
+            # it so the next call respawns with the new selection.
+            if _stt_tool.is_alive():
+                logger.info("STT worker alive with old size — stopping for respawn")
+                _stt_tool.stop()
+
+        # Sync idle_timeout from the catalog entry so admin-UI edits
+        # take effect on this instance.
+        idle_s = getattr(entry, 'idle_timeout_s', None)
+        if idle_s is not None and hasattr(_stt_tool, 'set_idle_timeout'):
+            try:
+                _stt_tool.set_idle_timeout(float(idle_s))
+            except Exception:
+                pass
+
+        entry.loaded = True
+        entry.device = 'cuda' if run_mode == 'gpu' else 'cpu'
+        entry.error = None
+        entry._lazy_stt = True  # model lazy-loads on first transcribe
+        logger.info(f"STT model {entry.id} ready (lazy on first use)")
         return True
+
+    def unload(self, entry: ModelEntry) -> None:
+        """Stop the STT subprocess worker and free memory."""
+        try:
+            from integrations.service_tools.whisper_tool import unload_whisper
+            unload_whisper()
+            entry.loaded = False
+            entry.device = None
+            entry.error = None
+        except Exception as e:
+            logger.warning(f"STT unload failed: {e}")
+            entry.error = str(e)
+
+    def is_loaded(self, entry: ModelEntry) -> bool:
+        try:
+            from integrations.service_tools.whisper_tool import _stt_tool
+            return _stt_tool.is_alive()
+        except ImportError:
+            return False
 
     def is_downloaded(self, entry: ModelEntry) -> bool:
         try:
@@ -241,15 +402,76 @@ class STTLoader(ModelLoader):
 
 
 class VLMLoader(ModelLoader):
-    """Loader for VLM models (MiniCPM sidecar)."""
+    """Loader for VLM models (MiniCPM sidecar).
 
-    def load(self, entry: ModelEntry, run_mode: str) -> bool:
+    VisionService owns the MiniCPM subprocess + WS server + description
+    loop. It's a runtime singleton managed by hart_intelligence_entry
+    (standalone mode) or by Nunba's __main__ (bundled mode). This loader
+    resolves the singleton, calls .start()/.stop() on it, and reflects
+    the running state on the catalog entry.
+    """
+
+    def _get_service(self):
+        """Return the VisionService singleton. Creates a fresh instance
+        and stashes it as the canonical one if none exists yet — matches
+        hart_intelligence_entry.get_vision_service() lookup order so
+        both loader and runtime see the same object."""
         try:
             from integrations.vision.vision_service import VisionService
-            VisionService()
+            import hart_intelligence_entry as _hie
+        except ImportError as e:
+            logger.error(f"VLM imports failed: {e}")
+            return None
+
+        svc = _hie.get_vision_service()
+        if svc is None:
+            svc = VisionService()
+            _hie._vision_service = svc  # make sure get_vision_service finds it
+        return svc
+
+    def load(self, entry: ModelEntry, run_mode: str) -> bool:
+        svc = self._get_service()
+        if svc is None:
+            entry.loaded = False
+            entry.error = 'VisionService unavailable'
+            return False
+        try:
+            # run_mode 'gpu' → full (MiniCPM), 'cpu'/'cpu_offload' → lite
+            mode = 'full' if run_mode == 'gpu' else 'lite'
+            svc.start(mode=mode)
+            entry.loaded = True
+            entry.device = 'cuda' if mode == 'full' else 'cpu'
+            entry.error = None
+            logger.info(f"VLM started in {mode} mode (entry.device={entry.device})")
             return True
         except Exception as e:
-            logger.error(f"VLM load failed: {e}")
+            logger.error(f"VLM start failed: {e}")
+            entry.loaded = False
+            entry.error = str(e)
+            return False
+
+    def unload(self, entry: ModelEntry) -> None:
+        svc = self._get_service()
+        if svc is None:
+            entry.loaded = False
+            return
+        try:
+            svc.stop()
+            entry.loaded = False
+            entry.device = None
+            entry.error = None
+            logger.info(f"VLM stopped ({entry.id})")
+        except Exception as e:
+            logger.warning(f"VLM stop failed: {e}")
+            entry.error = str(e)
+
+    def is_loaded(self, entry: ModelEntry) -> bool:
+        """Live probe: is the VisionService actually running?"""
+        try:
+            import hart_intelligence_entry as _hie
+            svc = _hie.get_vision_service()
+            return bool(svc is not None and getattr(svc, '_running', False))
+        except Exception:
             return False
 
 

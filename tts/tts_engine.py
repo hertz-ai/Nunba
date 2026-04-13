@@ -21,6 +21,7 @@ Engine lifecycle:
 """
 import gc
 import hashlib
+import json
 import logging
 import os
 import sys
@@ -28,7 +29,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger('NunbaTTSEngine')
 
@@ -38,6 +39,7 @@ BACKEND_CHATTERBOX_TURBO = "chatterbox_turbo"
 BACKEND_CHATTERBOX_ML = "chatterbox_multilingual"
 BACKEND_INDIC_PARLER = "indic_parler"
 BACKEND_COSYVOICE3 = "cosyvoice3"
+BACKEND_KOKORO = "kokoro"
 BACKEND_PIPER = "piper"
 BACKEND_NONE = "none"
 
@@ -54,7 +56,7 @@ BACKEND_NONE = "none"
 _FALLBACK_ENGINE_CAPABILITIES = {
     BACKEND_F5: {
         'name': 'F5-TTS (Flow Matching)',
-        'vram_gb': 2.0,
+        'vram_gb': 2.5,  # model 1.2GB + vocos 200MB + CUDA context + inference buffers
         'languages': {'en', 'zh'},
         'paralinguistic': [],
         'emotion_tags': [],
@@ -114,6 +116,24 @@ _FALLBACK_ENGINE_CAPABILITIES = {
         'sample_rate': 22050,
         'quality': 'high',
     },
+    BACKEND_KOKORO: {
+        # Kokoro 82M — tiny neural English TTS, sits between the big
+        # GPU engines and Piper on the quality ladder. Runs on CPU at
+        # ~1x real-time, or GPU at ~0.1x. No voice cloning, but ~25
+        # English presets shipped with the model. Benchmark vs Piper:
+        # quality 0.88 vs 0.70, CPU latency 400ms vs 200ms per 10
+        # words — Kokoro is ~2x slower but noticeably less robotic,
+        # so it's tried FIRST before we give up and use Piper on CPU.
+        'name': 'Kokoro 82M',
+        'vram_gb': 0.2,
+        'languages': {'en'},
+        'paralinguistic': [],
+        'emotion_tags': [],
+        'voice_cloning': False,
+        'streaming': False,
+        'sample_rate': 24000,
+        'quality': 'high',
+    },
     BACKEND_PIPER: {
         'name': 'Piper TTS (CPU)',
         'vram_gb': 0,
@@ -137,8 +157,13 @@ _INDIC_LANGS = {
 # Fallback-only — canonical preference is read from ModelCatalog via
 # _get_lang_preference().  Direct use of this dict is degraded-mode only.
 _FALLBACK_LANG_ENGINE_PREFERENCE = {
-    # English: Chatterbox Turbo (paralinguistic tags) > F5 (voice cloning) > Indic Parler > Piper CPU fallback
-    'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_INDIC_PARLER, BACKEND_PIPER],
+    # English ladder (quality first, then CPU-friendly):
+    # 1. Chatterbox Turbo — big GPU, paralinguistic tags, voice clone
+    # 2. F5-TTS           — big GPU, voice clone
+    # 3. Indic Parler     — big GPU, also covers English
+    # 4. Kokoro 82M       — small neural, CPU-friendly, beats Piper
+    # 5. Piper            — bundled CPU absolute-last-resort
+    'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_INDIC_PARLER, BACKEND_KOKORO, BACKEND_PIPER],
     # International: CosyVoice3 (zero-shot cloning) > Chatterbox ML (16GB+)
     'es': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
     'fr': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
@@ -160,40 +185,72 @@ _DEFAULT_PREFERENCE = [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_INDIC_
 # ════════════════════════════════════════════════════════════════════
 # CATALOG ↔ BACKEND ID MAPPING
 #
-# HARTOS catalog uses 'f5_tts' as the entry id; Nunba's backend
-# constant is 'f5'.  Map both directions so catalog lookups translate
-# cleanly to the backend strings used everywhere in this file.
+# Nunba backend constants (BACKEND_F5 = "f5") differ from the HARTOS
+# tts_router.ENGINE_REGISTRY keys (e.g. 'f5_tts'), and the HARTOS
+# ModelCatalog uses yet another form ('f5-tts' with hyphens and no
+# 'tts-' prefix). Rather than maintaining three parallel lookup
+# tables that drift apart, we declare ONE bridge —
+# `_BACKEND_TO_REGISTRY_KEY` — that maps every GPU backend to its
+# canonical ENGINE_REGISTRY key. Everything downstream (catalog IDs,
+# VRAM tool names, required pip packages) is derived from that.
 # ════════════════════════════════════════════════════════════════════
 
-# catalog entry id (without 'tts-' prefix) → Nunba backend constant
-# Catalog IDs use hyphens (tts-f5-tts → strip prefix → f5-tts)
-# Nunba backend constants use underscores (BACKEND_F5 = "f5")
-_CATALOG_TO_BACKEND: dict[str, str] = {
-    # Hyphenated form (from HARTOS tts_router.populate_tts_catalog)
-    'f5-tts': BACKEND_F5,
-    'chatterbox-turbo': BACKEND_CHATTERBOX_TURBO,
-    'chatterbox-ml': BACKEND_CHATTERBOX_ML,
-    'indic-parler': BACKEND_INDIC_PARLER,
-    'cosyvoice3': BACKEND_COSYVOICE3,
-    'pocket-tts': BACKEND_PIPER,  # pocket_tts maps to piper in Nunba
-    'piper': BACKEND_PIPER,
-    'espeak': BACKEND_PIPER,      # espeak is piper fallback
-    # Legacy underscore form (backward compat)
-    'f5_tts': BACKEND_F5,
-    'chatterbox_turbo': BACKEND_CHATTERBOX_TURBO,
-    'chatterbox_multilingual': BACKEND_CHATTERBOX_ML,
-    'indic_parler': BACKEND_INDIC_PARLER,
+# SINGLE SOURCE OF TRUTH: Nunba backend constant → HARTOS ENGINE_REGISTRY key.
+# CPU-only backends (PIPER, ESPEAK) are handled separately in the
+# derived maps below because they don't have a 1:1 match — espeak is a
+# fallback of piper in Nunba, and neither has a GPU ToolWorker.
+_BACKEND_TO_REGISTRY_KEY: dict[str, str] = {
+    BACKEND_F5:               'f5_tts',
+    BACKEND_CHATTERBOX_TURBO: 'chatterbox_turbo',
+    BACKEND_CHATTERBOX_ML:    'chatterbox_ml',
+    BACKEND_INDIC_PARLER:     'indic_parler',
+    BACKEND_COSYVOICE3:       'cosyvoice3',
+    BACKEND_KOKORO:           'kokoro',
+    # CPU engines — also run via HARTOS RuntimeToolManager subprocess
+    'luxtts':                 'luxtts',
+    'pocket_tts':             'pocket_tts',
 }
 
-# Reverse: Nunba backend constant → catalog entry id (hyphenated, without 'tts-' prefix)
+
+def _get_engine_registry():
+    """Lazy import — tts_router imports vram_manager which imports torch."""
+    try:
+        from integrations.channels.media.tts_router import ENGINE_REGISTRY
+        return ENGINE_REGISTRY
+    except Exception:
+        return {}
+
+
+def _registry_key_to_catalog_id(registry_key: str) -> str:
+    """Convert 'f5_tts' → 'f5-tts' (HARTOS ModelCatalog uses hyphens)."""
+    return registry_key.replace('_', '-')
+
+
+# Derived: Nunba backend constant → catalog entry id (hyphenated,
+# without 'tts-' prefix). Builds from the single bridge above.
 _BACKEND_TO_CATALOG: dict[str, str] = {
-    BACKEND_F5:               'f5-tts',
-    BACKEND_CHATTERBOX_TURBO: 'chatterbox-turbo',
-    BACKEND_CHATTERBOX_ML:    'chatterbox-ml',
-    BACKEND_INDIC_PARLER:     'indic-parler',
-    BACKEND_COSYVOICE3:       'cosyvoice3',
-    BACKEND_PIPER:            'piper',
+    backend: _registry_key_to_catalog_id(key)
+    for backend, key in _BACKEND_TO_REGISTRY_KEY.items()
 }
+_BACKEND_TO_CATALOG[BACKEND_PIPER] = 'piper'  # CPU-only alias
+
+
+# Derived: catalog entry id → Nunba backend constant.
+# Inverse of _BACKEND_TO_CATALOG plus CPU-only aliases that all route
+# to Piper (Nunba doesn't have separate implementations for espeak /
+# pocket_tts — they fall through to Piper as the last-resort CPU engine).
+_CATALOG_TO_BACKEND: dict[str, str] = {
+    catalog_id: backend for backend, catalog_id in _BACKEND_TO_CATALOG.items()
+}
+# Also accept the underscore-form the HARTOS registry key uses,
+# so both 'f5-tts' (catalog) and 'f5_tts' (registry key) map back.
+for _backend, _key in _BACKEND_TO_REGISTRY_KEY.items():
+    _CATALOG_TO_BACKEND.setdefault(_key, _backend)
+# CPU alias fallbacks — all route to Piper in Nunba
+_CATALOG_TO_BACKEND.setdefault('pocket-tts', BACKEND_PIPER)
+_CATALOG_TO_BACKEND.setdefault('pocket_tts', BACKEND_PIPER)
+_CATALOG_TO_BACKEND.setdefault('espeak', BACKEND_PIPER)
+_CATALOG_TO_BACKEND.setdefault('chatterbox_multilingual', BACKEND_CHATTERBOX_ML)  # legacy name
 
 
 def _entry_to_legacy_caps(entry) -> dict:
@@ -204,13 +261,26 @@ def _entry_to_legacy_caps(entry) -> dict:
     """
     caps = entry.capabilities or {}
     langs_raw = getattr(entry, 'languages', None) or []
+    # Two catalog populators exist in the tree and use different key
+    # names for the same concept: the in-tree TTS spec populator writes
+    # `voice_clone` (matching the TTSEngineSpec dataclass field), while
+    # older entries persisted from the subsystems populator use
+    # `voice_cloning`. Accept either so the Nunba feature list matches
+    # reality regardless of which populator wrote the entry. Same for
+    # emotion_tags which is sometimes a list, sometimes a bool.
+    _voice_cloning = caps.get('voice_cloning')
+    if _voice_cloning is None:
+        _voice_cloning = caps.get('voice_clone', False)
+    _emotion_tags = caps.get('emotion_tags', [])
+    if isinstance(_emotion_tags, bool):
+        _emotion_tags = ['emotion'] if _emotion_tags else []
     return {
         'name':          entry.name,
         'vram_gb':       getattr(entry, 'vram_gb', 0) or 0,
         'languages':     set(langs_raw),
         'paralinguistic': caps.get('paralinguistic', []),
-        'emotion_tags':  caps.get('emotion_tags', []),
-        'voice_cloning': caps.get('voice_cloning', False),
+        'emotion_tags':  _emotion_tags,
+        'voice_cloning': bool(_voice_cloning),
         'streaming':     caps.get('streaming', False),
         'sample_rate':   caps.get('sample_rate', 22050),
         'quality':       ('highest' if getattr(entry, 'quality_score', 0.5) >= 0.93
@@ -274,7 +344,10 @@ def _get_lang_preference(language: str) -> list[str]:
             supporting = []
             for entry in entries:
                 langs = set(getattr(entry, 'languages', None) or [])
-                if language in langs:
+                # '*' is the wildcard convention for engines that
+                # support every language (piper, espeak) — a single
+                # spec covers all languages, no per-language duplication.
+                if language in langs or '*' in langs:
                     lang_prio = (getattr(entry, 'language_priority', None) or {})
                     prio_val = lang_prio.get(language, 999)
                     supporting.append((prio_val, -(getattr(entry, 'priority', 0) or 0), entry))
@@ -298,6 +371,115 @@ def _get_lang_preference(language: str) -> list[str]:
 #    ENGINE_CAPABILITIES`` continue to work — they get the fallback dict).
 ENGINE_CAPABILITIES = _FALLBACK_ENGINE_CAPABILITIES
 LANG_ENGINE_PREFERENCE = _FALLBACK_LANG_ENGINE_PREFERENCE
+
+
+# ════════════════════════════════════════════════════════════════════
+# DEVICE SELECTION — VRAMManager is the single source of truth
+# ════════════════════════════════════════════════════════════════════
+
+# Default timeout for a single GPU inference call (seconds).
+# Prevents indefinite hangs from corrupted CUDA state or model bugs.
+_INFERENCE_TIMEOUT_S = 120
+
+
+def _run_with_timeout(fn, timeout_s=_INFERENCE_TIMEOUT_S):
+    """Run fn() with a hard timeout. Uses a bare thread — no executor.
+
+    ThreadPoolExecutor creates/destroys per call and fails with
+    'cannot schedule new futures after interpreter shutdown' during
+    process cleanup. A bare thread avoids this.
+    """
+    result = [None]
+    error = [None]
+
+    def _worker():
+        try:
+            result[0] = fn()
+        except Exception as e:
+            error[0] = e
+
+    t = threading.Thread(target=_worker, daemon=True, name='tts-infer-timeout')
+    t.start()
+    t.join(timeout=timeout_s)
+    if t.is_alive():
+        logger.error(f"GPU inference timed out after {timeout_s}s")
+        raise TimeoutError(f"TTS inference exceeded {timeout_s}s")
+    if error[0] is not None:
+        raise error[0]
+    return result[0]
+
+
+# Minimum free VRAM (GB) required before starting GPU inference.
+# Below this, CUDA allocations risk triggering a C-level abort that
+# kills the ENTIRE process — uncatchable by Python try/except.
+_MIN_INFERENCE_HEADROOM_GB = 0.3
+
+
+def _oom_guard(fn, device=None):
+    """Run GPU inference with OOM blast-radius containment.
+
+    Pre-flight: checks VRAM headroom. If too low, raises RuntimeError
+    BEFORE touching CUDA — preventing the C-level abort.
+
+    Post-flight: catches CUDA OOM (RuntimeError) and cleans up CUDA state
+    so the app stays alive and can fall back to CPU.
+    """
+    # Pre-flight: reject if VRAM too tight (prevents uncatchable C abort)
+    if device == 'cuda':
+        try:
+            from integrations.service_tools.vram_manager import vram_manager
+            free = vram_manager.get_free_vram()
+            if free < _MIN_INFERENCE_HEADROOM_GB:
+                raise RuntimeError(
+                    f"OOM guard: {free:.2f}GB free < {_MIN_INFERENCE_HEADROOM_GB}GB headroom. "
+                    f"Skipping GPU inference to prevent process crash.")
+        except ImportError:
+            pass
+        except RuntimeError:
+            raise  # re-raise the guard error
+        except Exception:
+            pass
+
+    # Run inference — catch CUDA OOM (RuntimeError) before it cascades
+    try:
+        return fn()
+    except RuntimeError as e:
+        err_str = str(e).lower()
+        if 'out of memory' in err_str or 'cuda' in err_str:
+            logger.error(f"OOM guard caught CUDA error: {e}")
+            _clear_cuda_cache()
+            raise  # let TTSEngine._synthesize_with_fallback handle it
+        raise
+
+
+def _clear_cuda_cache():
+    """Release cached CUDA memory. Safe no-op if torch/CUDA unavailable."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _suggest_device(tool_name: str) -> str:
+    """Ask VRAMManager which device a TTS model should load on.
+
+    Returns 'cuda' or 'cpu'. VRAMManager.suggest_offload_mode() considers
+    free VRAM, model size from VRAM_BUDGETS, and existing allocations.
+    """
+    try:
+        from integrations.service_tools.vram_manager import vram_manager
+        mode = vram_manager.suggest_offload_mode(tool_name)
+        # 'gpu' → cuda, 'cpu_offload' → cuda (model handles mixed),
+        # 'cpu_only' → cpu
+        device = 'cpu' if mode == 'cpu_only' else 'cuda'
+        if device == 'cpu':
+            free = vram_manager.get_free_vram()
+            logger.info(f"{tool_name}: {free:.1f}GB VRAM free — using CPU")
+        return device
+    except Exception:
+        return 'cpu'
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -526,6 +708,7 @@ class TTSEngine:
         self._active_backend = BACKEND_NONE
         self._initialized = False
         self._init_lock = threading.Lock()
+        self._synth_lock = threading.Lock()  # GPU backends are not thread-safe
         self._pending_backend = None  # backend being loaded in background
 
         # Hardware info (detected lazily)
@@ -587,26 +770,35 @@ class TTSEngine:
             self._hw_detected = True
             self._detect_hardware()
 
-    # Map backend names to VRAMManager tool names
-    _VRAM_TOOL_MAP = {
-        BACKEND_F5: 'tts_f5',
-        BACKEND_CHATTERBOX_TURBO: 'tts_chatterbox_turbo',
-        BACKEND_CHATTERBOX_ML: 'tts_chatterbox_ml',
-        BACKEND_INDIC_PARLER: 'tts_indic_parler',
-        BACKEND_COSYVOICE3: 'tts_cosyvoice3',
-    }
+    @classmethod
+    def _get_vram_tool_name(cls, backend: str) -> Optional[str]:
+        """Nunba backend constant → VRAMManager tool name.
 
-    # Map backend names to the Python packages they need at runtime.
-    # _can_run_backend uses this to skip backends whose deps aren't installed
-    # (e.g. frozen build without chatterbox-tts pip package).
-    _BACKEND_REQUIRED_IMPORTS = {
-        BACKEND_F5: 'f5_tts',
-        BACKEND_CHATTERBOX_TURBO: 'chatterbox',
-        BACKEND_CHATTERBOX_ML: 'chatterbox',
-        BACKEND_INDIC_PARLER: 'parler_tts',
-        BACKEND_COSYVOICE3: 'cosyvoice',
-        # Piper has no external dep — it's bundled
-    }
+        Derives from HARTOS ENGINE_REGISTRY[key].vram_key — no local
+        lookup table, so adding a new engine's VRAM budget only
+        requires updating the canonical registry in tts_router.
+        """
+        key = _BACKEND_TO_REGISTRY_KEY.get(backend)
+        if not key:
+            return None
+        registry = _get_engine_registry()
+        spec = registry.get(key)
+        return spec.vram_key if spec else None
+
+    @classmethod
+    def _get_required_package(cls, backend: str) -> Optional[str]:
+        """Nunba backend constant → pip package required for in-process run.
+
+        Derives from HARTOS ENGINE_REGISTRY[key].required_package.
+        Returns None if the backend has no extra pip dep (Piper is
+        bundled, espeak is a system binary, makeittalk is cloud-only).
+        """
+        key = _BACKEND_TO_REGISTRY_KEY.get(backend)
+        if not key:
+            return None
+        registry = _get_engine_registry()
+        spec = registry.get(key)
+        return spec.required_package if spec else None
 
     # Cache results of import checks (module name -> bool)
     _import_check_cache = {}
@@ -623,16 +815,23 @@ class TTSEngine:
         if not cap:
             return False
 
-        # ── Software check: is the required package installed? ──
-        required_pkg = self._BACKEND_REQUIRED_IMPORTS.get(backend)
+        # ── Software check: is the required package actually importable? ──
+        # Uses subprocess probe (python-embed) to avoid stub torch poisoning.
+        # find_spec only checks if the .py exists, not if imports succeed.
+        required_pkg = self._get_required_package(backend)
         if required_pkg:
             if required_pkg not in TTSEngine._import_check_cache:
-                import importlib.util
-                TTSEngine._import_check_cache[required_pkg] = (
-                    importlib.util.find_spec(required_pkg) is not None
-                )
+                try:
+                    from tts._torch_probe import check_backend_runnable
+                    TTSEngine._import_check_cache[required_pkg] = check_backend_runnable(backend, required_pkg)
+                except Exception:
+                    # Fallback to find_spec if probe unavailable (dev mode)
+                    import importlib.util
+                    TTSEngine._import_check_cache[required_pkg] = (
+                        importlib.util.find_spec(required_pkg) is not None
+                    )
             if not TTSEngine._import_check_cache[required_pkg]:
-                logger.debug(f"Backend {backend} skipped: '{required_pkg}' package not installed")
+                logger.debug(f"Backend {backend} skipped: '{required_pkg}' not runnable")
                 return False
 
         # ── GPU backends need working CUDA in torch ──
@@ -641,34 +840,57 @@ class TTSEngine:
             if '_torch_cuda' not in TTSEngine._import_check_cache:
                 try:
                     import torch
-                    TTSEngine._import_check_cache['_torch_cuda'] = torch.cuda.is_available()
-                    if not TTSEngine._import_check_cache['_torch_cuda']:
+                    _cuda_ok = torch.cuda.is_available()
+                    if not _cuda_ok:
+                        # In-process torch may be CPU-only (python-embed ships CPU stub).
+                        # The real CUDA torch lives in ~/.nunba/site-packages/ and is used
+                        # by subprocess workers. Check via subprocess probe before giving up.
                         self._ensure_hw_detected()
-                        logger.info(f"torch.cuda.is_available() = False "
-                                    f"(torch {torch.__version__}) — "
-                                    f"GPU TTS needs CUDA torch upgrade"
-                                    f"{' (GPU present via nvidia-smi)' if self.has_gpu else ''}")
-                except ImportError:
-                    TTSEngine._import_check_cache['_torch_cuda'] = False
-                    logger.info("torch not installed — GPU TTS engines disabled")
+                        if self.has_gpu:
+                            try:
+                                from tts._torch_probe import check_cuda_available
+                                _cuda_ok = check_cuda_available()
+                                if _cuda_ok:
+                                    logger.info("TTS: CUDA torch verified via subprocess — GPU TTS enabled")
+                            except Exception:
+                                pass
+                        if not _cuda_ok:
+                            logger.info(f"torch.cuda.is_available() = False "
+                                        f"(torch {torch.__version__}) — "
+                                        f"GPU TTS needs CUDA torch upgrade"
+                                        f"{' (GPU present via nvidia-smi)' if self.has_gpu else ''}")
+                    else:
+                        logger.info(f"torch {torch.__version__} CUDA available — GPU TTS enabled")
+                    TTSEngine._import_check_cache['_torch_cuda'] = _cuda_ok
+                except (ImportError, OSError) as _torch_err:
+                    # Stub torch poisons sys.modules — use shared subprocess probe
+                    try:
+                        from tts._torch_probe import check_cuda_available
+                        _cuda = check_cuda_available()
+                        TTSEngine._import_check_cache['_torch_cuda'] = _cuda
+                        if _cuda:
+                            logger.info("torch CUDA verified via subprocess — GPU TTS enabled")
+                        else:
+                            logger.info(f"torch not available — GPU TTS disabled ({_torch_err})")
+                    except Exception as _probe_err:
+                        TTSEngine._import_check_cache['_torch_cuda'] = False
+                        logger.info(f"torch not available — GPU TTS disabled ({_torch_err})")
             if not TTSEngine._import_check_cache['_torch_cuda']:
                 return False
 
         # ── VRAM check: enough room? ──
-        # Use VRAMManager if available (HARTOS)
-        if hasattr(self, '_vram_manager') and self._vram_manager:
-            tool_name = self._VRAM_TOOL_MAP.get(backend)
-            if tool_name:
-                return self._vram_manager.can_fit(tool_name)
-        # Fallback: simple VRAM check
+        # GPU backends can still run in cpu_offload mode if VRAM is tight.
+        # Don't block the backend — let the model loader decide the fit mode.
         if required_vram == 0:
             return True
-        return self.has_gpu and self.vram_gb >= required_vram
+        # As long as GPU + CUDA exist, the backend is runnable (cpu_offload as fallback)
+        return True
 
     # Track which backends have a background auto-install in progress
     _auto_install_pending = set()
     # Cache backends that failed to install — don't retry every request
     _auto_install_failed = set()
+    _auto_install_lock = threading.Lock()
 
     def _try_auto_install_backend(self, backend):
         """Trigger a background install of the given backend's packages + models.
@@ -686,27 +908,27 @@ class TTSEngine:
                 logger.debug(f"Skipping auto-install of '{backend}': no GPU detected")
                 return False
 
-        # Already failed? Don't retry every request
-        if backend in TTSEngine._auto_install_failed:
-            logger.debug(f"Auto-install for '{backend}' previously failed, skipping")
-            return False
+        with TTSEngine._auto_install_lock:
+            # Already failed? Don't retry every request
+            if backend in TTSEngine._auto_install_failed:
+                logger.debug(f"Auto-install for '{backend}' previously failed, skipping")
+                return False
 
-        # Already running?
-        if backend in TTSEngine._auto_install_pending:
-            logger.debug(f"Auto-install for '{backend}' already in progress, skipping")
-            return False
+            # Already running?
+            if backend in TTSEngine._auto_install_pending:
+                logger.debug(f"Auto-install for '{backend}' already in progress, skipping")
+                return False
 
-        # Quick check — maybe packages landed since last cache refresh
-        required_pkg = self._BACKEND_REQUIRED_IMPORTS.get(backend)
-        if required_pkg:
-            import importlib.util
-            if importlib.util.find_spec(required_pkg) is not None:
-                # Packages exist — clear stale cache entry so _can_run_backend sees it
-                TTSEngine._import_check_cache.pop(required_pkg, None)
-                logger.info(f"Packages for '{backend}' already importable after cache refresh")
-                return True
+            # Quick check — maybe packages landed since last cache refresh
+            required_pkg = self._get_required_package(backend)
+            if required_pkg:
+                import importlib.util
+                if importlib.util.find_spec(required_pkg) is not None:
+                    TTSEngine._import_check_cache.pop(required_pkg, None)
+                    logger.info(f"Packages for '{backend}' already importable after cache refresh")
+                    return True
 
-        TTSEngine._auto_install_pending.add(backend)
+            TTSEngine._auto_install_pending.add(backend)
 
         def _bg_install():
             try:
@@ -723,16 +945,20 @@ class TTSEngine:
                                 f"will be used on next TTS request")
                 else:
                     logger.warning(f"[auto-install] '{backend}' install failed: {result}")
-                    TTSEngine._auto_install_failed.add(backend)
+                    with TTSEngine._auto_install_lock:
+                        TTSEngine._auto_install_failed.add(backend)
             except ImportError:
                 logger.warning(f"[auto-install] package_installer not available, "
                                f"cannot auto-install '{backend}'")
-                TTSEngine._auto_install_failed.add(backend)
+                with TTSEngine._auto_install_lock:
+                    TTSEngine._auto_install_failed.add(backend)
             except Exception as e:
                 logger.error(f"[auto-install] '{backend}' install error: {e}")
-                TTSEngine._auto_install_failed.add(backend)
+                with TTSEngine._auto_install_lock:
+                    TTSEngine._auto_install_failed.add(backend)
             finally:
-                TTSEngine._auto_install_pending.discard(backend)
+                with TTSEngine._auto_install_lock:
+                    TTSEngine._auto_install_pending.discard(backend)
 
         t = threading.Thread(target=_bg_install, daemon=True,
                              name=f"tts-auto-install-{backend}")
@@ -744,7 +970,7 @@ class TTSEngine:
     def _is_missing_packages(self, backend):
         """Return True if this backend failed _can_run_backend due to missing
         packages (as opposed to insufficient VRAM or no CUDA)."""
-        required_pkg = self._BACKEND_REQUIRED_IMPORTS.get(backend)
+        required_pkg = self._get_required_package(backend)
         if not required_pkg:
             return False
         cached = TTSEngine._import_check_cache.get(required_pkg)
@@ -757,39 +983,22 @@ class TTSEngine:
     def _select_backend_for_language(self, language='en') -> str:
         """Select the best TTS backend for a language.
 
-        Delegates to ModelOrchestrator.select_best('tts', language) which uses
-        ModelCatalog + VRAMManager (single source of truth for compute-aware
-        model selection). Falls back to local ENGINE_CAPABILITIES walk only
-        if the orchestrator is unavailable (standalone/embedded mode).
+        Walks the quality-ordered LANG_ENGINE_PREFERENCE list and picks the
+        first engine that _can_run_backend(). This ensures the HIGHEST QUALITY
+        runnable engine is always selected — not the one with the highest
+        catalog score (which favors previously-loaded engines over better ones).
 
         Auto-installs missing backends in background via TTSLoader.download().
         """
-        # Try orchestrator first (canonical path)
-        try:
-            from models.orchestrator import get_orchestrator
-            orch = get_orchestrator()
-            entry = orch.select_best('tts', language=language)
-            if entry:
-                # Map catalog entry ID → Nunba backend constant via canonical mapping
-                catalog_id = entry.id.replace('tts-', '', 1)
-                backend = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
-                if self._can_run_backend(backend):
-                    logger.info(f"Selected backend '{backend}' for language '{language}' (via orchestrator)")
-                    return backend
-                else:
-                    # Orchestrator picked it but it's not runnable — trigger install
-                    self._try_auto_install_backend(backend)
-                    logger.info(f"Backend '{backend}' selected but not runnable — install triggered")
-        except Exception as e:
-            logger.debug(f"Orchestrator TTS selection unavailable: {e}")
-
-        # Fallback: preference walk via catalog (or local dict in standalone mode)
         self._ensure_hw_detected()
         prefs = _get_lang_preference(language)
         for backend in prefs:
             if self._can_run_backend(backend):
-                logger.info(f"Selected backend '{backend}' for language '{language}' (local fallback)")
+                logger.info(f"Selected backend '{backend}' for language '{language}' (quality-ordered)")
                 return backend
+            else:
+                # Not runnable — trigger background install for next time
+                self._try_auto_install_backend(backend)
 
         # Absolute fallback — Piper on CPU
         logger.info(f"All backends unavailable for '{language}', falling back to Piper (CPU)")
@@ -845,15 +1054,10 @@ class TTSEngine:
                     old_inst.unload_model()
                 del old_inst
                 gc.collect()
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except Exception:
-                    pass
+                _clear_cuda_cache()
                 # Release VRAM allocation via VRAMManager
                 if hasattr(self, '_vram_manager') and self._vram_manager:
-                    tool_name = self._VRAM_TOOL_MAP.get(old)
+                    tool_name = self._get_vram_tool_name(old)
                     if tool_name:
                         self._vram_manager.release(tool_name)
                 logger.info(f"Unloaded {old}")
@@ -861,7 +1065,7 @@ class TTSEngine:
         self._active_backend = new_backend
         # Allocate VRAM for new backend
         if hasattr(self, '_vram_manager') and self._vram_manager:
-            tool_name = self._VRAM_TOOL_MAP.get(new_backend)
+            tool_name = self._get_vram_tool_name(new_backend)
             if tool_name:
                 self._vram_manager.allocate(tool_name)
         self._initialized = False
@@ -918,24 +1122,267 @@ class TTSEngine:
             self._init_lock.release()
 
     def _create_backend(self, backend):
-        if backend == BACKEND_F5:
-            return _LazyF5()
-        elif backend == BACKEND_CHATTERBOX_TURBO:
-            return _LazyChatterboxTurbo()
-        elif backend == BACKEND_CHATTERBOX_ML:
-            return _LazyChatterboxMultilingual()
-        elif backend == BACKEND_INDIC_PARLER:
-            return _LazyIndicParler()
-        elif backend == BACKEND_COSYVOICE3:
-            return _LazyCosyVoice3()
-        elif backend == BACKEND_PIPER:
+        # Piper is CPU-only (no subprocess needed) — still uses its
+        # legacy in-process wrapper.
+        if backend == BACKEND_PIPER:
             return _LazyPiper()
+
+        # Look up the HARTOS ENGINE_REGISTRY spec for this backend.
+        registry_key = _BACKEND_TO_REGISTRY_KEY.get(backend)
+        if registry_key is None:
+            return None
+
+        # Check if the engine is subprocess-capable (has tool_worker_attr).
+        # CPU-only engines (luxtts, pocket_tts, espeak) have tool_module +
+        # tool_function but no worker — they run in-process via direct import.
+        reg = _get_engine_registry()
+        spec = reg.get(registry_key)
+        if spec and not spec.tool_worker_attr:
+            # In-process CPU engine — import and call directly
+            try:
+                import importlib
+                mod = importlib.import_module(spec.tool_module)
+                fn = getattr(mod, spec.tool_function)
+                return _InProcessTTSBackend(fn, registry_key)
+            except Exception as e:
+                logger.warning(f"In-process backend {backend} failed: {e}")
+                return None
+
+        # GPU/subprocess engine — runs via HARTOS RuntimeToolManager
+        try:
+            return _SubprocessTTSBackend(registry_key)
+        except Exception as e:
+            logger.warning(
+                f"Failed to create subprocess adapter for {backend}: {e}"
+            )
+            return None
+
+    def _synthesize_multilingual(self, segments, output_path=None, voice=None,
+                                  speed=1.0, **kwargs):
+        """Synthesize multi-type segments: speech, music, singing, lyrics.
+
+        Segments from language_segmenter.segment():
+          speech: {'type': 'speech', 'lang': 'ta', 'text': '...'}
+          music:  {'type': 'music',  'text': '...', 'genre': '...', 'duration': 30}
+          sing:   {'type': 'sing',   'text': '...', 'duration': 30}
+          lyrics: {'type': 'lyrics', 'text': '...'}
+
+        Routes each to the right backend, stitches all audio into one WAV.
+        Uses agent_ledger task tracking when called from an agent context —
+        tasks can be paused/resumed via the ledger.
+        """
+        import tempfile
+        import wave
+
+        # Register as ledger task if agent context exists (story agents etc.)
+        task_id = kwargs.get('task_id')
+        ledger = None
+        if task_id:
+            try:
+                from agent_ledger.core import SmartLedger, TaskStatus
+                ledger = SmartLedger.get_instance()
+            except Exception:
+                pass
+
+        wav_parts = []
+        for seg in segments:
+            seg_type = seg.get('type', 'speech')
+            text = seg.get('text', '').strip()
+            if not text:
+                continue
+
+            # Check ledger: if task was paused/cancelled, stop generating
+            if ledger and task_id:
+                try:
+                    task = ledger.get_task(task_id)
+                    if task and task.status in ('paused', 'cancelled', 'user_stopped'):
+                        logger.info(f"Multilingual synth {task.status} via ledger")
+                        break
+                except Exception:
+                    pass
+
+            tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False,
+                                              prefix=f'_tts_{seg_type}_')
+            tmp.close()
+            try:
+                result = None
+                if seg_type == 'speech':
+                    result = self._synth_speech_segment(
+                        text, seg.get('lang', 'en'), tmp.name, **kwargs)
+                elif seg_type == 'music':
+                    result = self._synth_music_segment(
+                        text, seg.get('genre', ''), seg.get('duration', 30),
+                        tmp.name)
+                elif seg_type == 'sing':
+                    result = self._synth_sing_segment(
+                        text, seg.get('duration', 30), tmp.name)
+                elif seg_type == 'lyrics':
+                    # Lyrics = singing voice synthesis of the text
+                    result = self._synth_sing_segment(text, 30, tmp.name)
+
+                if result and os.path.isfile(result) and os.path.getsize(result) > 100:
+                    wav_parts.append(result)
+                else:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
+            except Exception as e:
+                logger.warning(f"Segment synth failed ({seg_type}): {e}")
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+
+        if not wav_parts:
+            return None
+
+        # Single segment — just return it
+        if len(wav_parts) == 1:
+            if output_path:
+                import shutil
+                shutil.move(wav_parts[0], output_path)
+                return output_path
+            return wav_parts[0]
+
+        # Concatenate WAV files
+        out = output_path or tempfile.mktemp(suffix='.wav', prefix='_tts_multi_')
+        try:
+            with wave.open(wav_parts[0], 'rb') as first:
+                params = first.getparams()
+            with wave.open(out, 'wb') as outf:
+                outf.setparams(params)
+                for part in wav_parts:
+                    try:
+                        with wave.open(part, 'rb') as inp:
+                            outf.writeframes(inp.readframes(inp.getnframes()))
+                    except Exception:
+                        pass
+            for part in wav_parts:
+                try:
+                    os.unlink(part)
+                except OSError:
+                    pass
+            return out
+        except Exception as e:
+            logger.error(f"WAV concatenation failed: {e}")
+            return wav_parts[0] if wav_parts else None
+
+    def _synth_speech_segment(self, text, lang, out_path, **kwargs):
+        """Synthesize one speech segment with language-appropriate TTS engine."""
+        if lang != self._language:
+            self.set_language(lang)
+            import time as _t
+            for _ in range(20):
+                if not getattr(self, '_pending_backend', None):
+                    break
+                _t.sleep(0.25)
+
+        self._ensure_initialized()
+        inst = self._backends.get(self._active_backend)
+        if inst:
+            return inst.synthesize(text=text, output_path=out_path,
+                                   language=lang, **kwargs)
         return None
+
+    def _synth_media_segment(self, modality, text, out_path,
+                              genre='', duration=30, **kwargs):
+        """Route any non-speech segment via HARTOS generate_media + poll.
+
+        Compute-aware: checks VRAMManager before dispatching. If GPU is
+        occupied by another task, reports unavailability instead of blocking.
+        Uses agent_ledger task_id for pause/resume tracking.
+        Delegates ALL routing decisions to media_agent (which uses
+        ModelCatalog + ModelOrchestrator for capability-based selection).
+        """
+        import json as _json
+
+        # Compute-awareness: check if the required service can run
+        try:
+            from integrations.service_tools.vram_manager import vram_manager
+            gpu_info = vram_manager.detect_gpu()
+            free_gb = gpu_info.get('free_gb', 0)
+            if free_gb < 2.0 and not gpu_info.get('cuda_available', False):
+                logger.info(f"Media gen skipped: only {free_gb:.1f}GB VRAM free, "
+                            f"service may not fit alongside active models")
+        except Exception:
+            pass
+
+        try:
+            from integrations.service_tools.media_agent import (
+                generate_media, check_media_status)
+            raw = generate_media(
+                context=text, output_modality=modality,
+                input_text=text, duration=duration, style=genre)
+            result = _json.loads(raw) if isinstance(raw, str) else raw
+
+            # Completed synchronously — URL may be top-level or inside results[]
+            url = (result.get('url') or result.get('audio_url')
+                   or (result.get('results', [{}])[0].get('url')
+                       if result.get('results') else None))
+            if result.get('status') == 'completed' and url:
+                import urllib.request
+                urllib.request.urlretrieve(url, out_path)
+                return out_path
+
+            # Async — poll until done, respecting ledger pause/cancel
+            task_id = result.get('task_id') or result.get('pending_task_id')
+            ledger_task_id = kwargs.get('task_id')  # agent_ledger task
+            if task_id:
+                import time as _t
+                deadline = _t.time() + 120
+                while _t.time() < deadline:
+                    # Check ledger: paused tasks wait, cancelled tasks abort
+                    if ledger_task_id:
+                        try:
+                            from agent_ledger.core import SmartLedger
+                            ledger = SmartLedger.get_instance()
+                            ltask = ledger.get_task(ledger_task_id)
+                            if ltask:
+                                if ltask.status in ('cancelled', 'user_stopped'):
+                                    logger.info(f"Media task {task_id} stopped via ledger")
+                                    return None
+                                if ltask.status == 'paused':
+                                    _t.sleep(1)
+                                    continue  # Wait — don't poll, don't abort
+                        except Exception:
+                            pass
+                    _t.sleep(2)
+                    poll_raw = check_media_status(task_id)
+                    poll = _json.loads(poll_raw) if isinstance(poll_raw, str) else poll_raw
+                    if poll.get('status') == 'completed':
+                        dl_url = (poll.get('url') or poll.get('audio_url')
+                                  or (poll.get('results', [{}])[0].get('url')
+                                      if poll.get('results') else None))
+                        if dl_url:
+                            import urllib.request
+                            urllib.request.urlretrieve(dl_url, out_path)
+                            return out_path
+                        return None
+                    elif poll.get('status') == 'failed':
+                        logger.warning(f"Media task failed: {poll.get('error')}")
+                        return None
+        except Exception as e:
+            logger.warning(f"Media gen ({modality}) failed: {e}")
+        return None
+
+    def _synth_music_segment(self, prompt, genre, duration, out_path):
+        """Music generation — delegates to media_agent 'audio_music'."""
+        return self._synth_media_segment(
+            'audio_music', prompt, out_path, genre=genre, duration=duration)
+
+    def _synth_sing_segment(self, lyrics, duration, out_path):
+        """Singing voice — tries 'audio_music' with lyrics as prompt.
+        DiffRhythm routing handled inside media_agent via _select_audio_tool."""
+        return self._synth_media_segment(
+            'audio_music', f"Singing: {lyrics}", out_path, duration=duration)
 
     def _ensure_initialized(self):
         if not self._initialized and self.auto_init:
-            # Non-blocking: if another thread is loading, don't wait
-            self.initialize(blocking=False)
+            # Block on first init so backend is ready before synthesis.
+            # Non-blocking caused "backend not initialized" on every first
+            # TTS call because synthesize() ran before the bg thread finished.
+            self.initialize(blocking=True)
 
     @property
     def backend(self) -> str:
@@ -1038,17 +1485,52 @@ class TTSEngine:
                    text: str,
                    output_path: str | None = None,
                    voice: str | None = None,
-                   speed: float = 1.0,
+                   speed: float | None = None,
                    language: str | None = None,
                    **kwargs) -> str | None:
         """
         Synthesize text to speech.
 
+        When ``speed`` is left as None (the default), the active
+        TTS_SPEED_PROFILE multiplier is applied — fast/balanced/
+        natural/slow, read from env var or ~/.nunba/tts_config.json.
+        Callers that pass an explicit float override the profile,
+        same as before. The default profile is ``balanced`` (×1.10)
+        per the project guideline "speed > naturalness default".
+
         Checks pre-synth cache first for instant playback.
         Routes to the best engine for the given language.
+        Cancels any in-flight generation from a previous request.
         """
         if not text or not text.strip():
             return None
+
+        # Resolve the effective speed multiplier. None → profile
+        # default, explicit float → caller override. This is the ONE
+        # place the profile is consulted for TTS synth — every engine
+        # sees the same multiplier via the `speed` kwarg we forward
+        # below, so there's no per-engine drift.
+        if speed is None:
+            try:
+                from tts.speed_profile import get_default_speed
+                speed = get_default_speed()
+            except Exception:
+                speed = 1.0
+
+        # Multi-language / multi-modal segmentation: split text by script
+        # and media tags (<music>, <sing>, <lyrics>), synth each segment
+        # with the right engine, concatenate into one audio file.
+        try:
+            from tts.language_segmenter import segment
+            segments = segment(text)
+            has_media = any(s.get('type') != 'speech' for s in segments)
+            has_multi_lang = len(set(s.get('lang') for s in segments
+                                     if s.get('type') == 'speech')) > 1
+            if has_media or has_multi_lang or len(segments) > 1:
+                return self._synthesize_multilingual(
+                    segments, output_path, voice, speed, **kwargs)
+        except Exception:
+            pass  # Fallback to single-language path
 
         # Route to correct engine for language
         if language and language != self._language:
@@ -1068,32 +1550,107 @@ class TTSEngine:
 
         inst = self._backends.get(self._active_backend)
         if not inst:
-            logger.error("TTS backend not initialized")
-            return None
+            # Backend switch may be in progress — wait briefly
+            if getattr(self, '_pending_backend', None):
+                import time as _time
+                for _ in range(10):  # Wait up to 5s
+                    _time.sleep(0.5)
+                    inst = self._backends.get(self._active_backend)
+                    if inst:
+                        break
+            if not inst:
+                logger.error("TTS backend not initialized: active=%s, available=%s, pending=%s",
+                             self._active_backend, list(self._backends.keys()),
+                             getattr(self, '_pending_backend', None))
+                return None
 
-        try:
-            result = inst.synthesize(text=text, output_path=output_path,
-                                     language=self._language, **kwargs)
-            # Inline sanity check: audio duration vs text length
-            if result and os.path.isfile(result):
-                try:
-                    fsize = os.path.getsize(result)
-                    text_len = len(text.strip())
-                    # WAV: ~32KB/s at 16kHz 16-bit. If file < 0.5s for 10+ char text, it's empty/broken
-                    if text_len >= 10 and fsize < 16000:
-                        logger.warning(f"TTS output suspiciously small ({fsize}B for {text_len} chars), may be broken")
-                except Exception:
-                    pass
-            return result
-        except Exception as e:
-            logger.error(f"Synthesis failed ({self._active_backend}): {e}")
-            # ── Fallback chain: try next engines in preference order ──
-            # If the selected engine fails (missing package, CUDA error, model
-            # not downloaded), walk the preference chain and try each remaining
-            # engine. This ensures we always produce audio when possible.
-            return self._synthesize_with_fallback(
-                text, output_path, voice, self._language, **kwargs
-            )
+        # VRAM safety: delegate to VRAMManager (single source of truth).
+        # CUDA OOM can kill the ENTIRE process (C-level abort, uncatchable).
+        # When the model is ALREADY loaded on CUDA, we only need free VRAM for
+        # inference buffers (~300-500MB), not the full model load size (1.3GB).
+        # suggest_offload_mode checks against load size — wrong for hot models.
+        tool_name = self._get_vram_tool_name(self._active_backend)
+        if tool_name:
+            try:
+                from integrations.service_tools.vram_manager import vram_manager
+                already_on_cuda = getattr(inst, '_device', None) == 'cuda'
+                if already_on_cuda:
+                    # Model loaded — only need inference headroom (~0.4GB)
+                    free_gb = vram_manager.get_free_vram()
+                    vram_ok = free_gb >= 0.4
+                else:
+                    vram_ok = vram_manager.suggest_offload_mode(tool_name) != 'cpu_only'
+                if not vram_ok:
+                    logger.warning(
+                        f"VRAM insufficient for {self._active_backend} "
+                        f"({'inference' if already_on_cuda else 'load'} "
+                        f"({vram_manager.get_free_vram():.1f}GB free). CPU fallback (transient).")
+                    # Transient VRAM pressure — use Piper for THIS request only.
+                    # Do NOT permanently switch _active_backend. F5 will be
+                    # retried on next request when VRAM may be free again.
+                    return self._synthesize_with_fallback(
+                        text, output_path, voice, self._language,
+                        _transient=True, **kwargs)
+            except Exception:
+                pass
+
+        # Serialize GPU inference — PyTorch models are NOT thread-safe.
+        # Without this, concurrent calls (e.g. warm-up + chat) cause tensor
+        # corruption, CUDA state errors, or segfaults.
+        #
+        # speed is forwarded explicitly because it's declared as its own
+        # param on this method's signature — **kwargs does NOT capture
+        # named params, so without this pass-through the profile
+        # multiplier (and caller overrides) would be silently dropped.
+        with self._synth_lock:
+            try:
+                result = inst.synthesize(text=text, output_path=output_path,
+                                         voice=voice, speed=speed,
+                                         language=self._language, **kwargs)
+                if result and os.path.isfile(result):
+                    try:
+                        fsize = os.path.getsize(result)
+                        text_len = len(text.strip())
+                        if text_len >= 10 and fsize < 16000:
+                            logger.warning(f"TTS output suspiciously small ({fsize}B for {text_len} chars), may be broken")
+                    except Exception:
+                        pass
+                return result
+            except Exception as e:
+                # Transient GPU failure (CUDA OOM in subprocess, worker
+                # crash, stdout desync) is signaled by the subprocess
+                # adapter attaching `.transient = True` to the RuntimeError.
+                # In that case we want to skip the full GPU fallback chain
+                # and go straight to Piper for THIS request only — the GPU
+                # engine stays the active backend and retries next call.
+                is_transient = bool(getattr(e, 'transient', False))
+                logger.error(
+                    f"Synthesis failed ({self._active_backend}): {e} "
+                    f"[transient={is_transient}]"
+                )
+
+                if is_transient:
+                    # Subprocess already isolated the crash — don't tear
+                    # down the worker or clear CUDA cache from the parent.
+                    return self._synthesize_with_fallback(
+                        text, output_path, voice, self._language,
+                        _transient=True, **kwargs,
+                    )
+
+                # Non-transient failure: unload the failed GPU backend —
+                # its CUDA state may be corrupted. Leaving it loaded
+                # risks segfaults on subsequent CUDA calls.
+                failed_backend = self._active_backend
+                failed_inst = self._backends.pop(failed_backend, None)
+                if failed_inst and hasattr(failed_inst, 'unload_model'):
+                    try:
+                        failed_inst.unload_model()
+                    except Exception:
+                        pass
+                del failed_inst
+                _clear_cuda_cache()
+                return self._synthesize_with_fallback(
+                    text, output_path, voice, self._language, **kwargs)
 
     def _synthesize_with_fallback(self, text, output_path, voice, language, **kwargs):
         """Try remaining engines in the preference chain after the primary fails.
@@ -1102,13 +1659,22 @@ class TTSEngine:
         (e.g. ImportError for missing package, RuntimeError for CUDA).
         Walks LANG_ENGINE_PREFERENCE skipping the failed engine and any
         already-tried engines. Piper is always the last resort.
+
+        _transient=True: VRAM pressure fallback — don't permanently switch
+        _active_backend. The GPU engine will be retried on next request.
         """
+        transient = kwargs.pop('_transient', False)
         failed = self._active_backend
-        prefs = _get_lang_preference(language or 'en')
-        # Build fallback list: remaining prefs + Piper (if not already in list)
-        candidates = [b for b in prefs if b != failed]
-        if BACKEND_PIPER not in candidates:
-            candidates.append(BACKEND_PIPER)
+        if transient:
+            # VRAM pressure: skip all GPU-capable engines, go straight to Piper.
+            # Loading torch-based engines on CPU still touches CUDA internals
+            # and crashes when VRAM is exhausted.
+            candidates = [BACKEND_PIPER]
+        else:
+            prefs = _get_lang_preference(language or 'en')
+            candidates = [b for b in prefs if b != failed]
+            if BACKEND_PIPER not in candidates:
+                candidates.append(BACKEND_PIPER)
 
         for candidate in candidates:
             try:
@@ -1120,9 +1686,13 @@ class TTSEngine:
                 result = inst.synthesize(text=text, output_path=output_path,
                                          language=language, **kwargs)
                 if result:
-                    logger.info(f"Fallback succeeded: {failed} -> {candidate}")
-                    # Switch active backend so future calls skip the broken engine
-                    self._active_backend = candidate
+                    if transient:
+                        logger.info(f"Transient fallback: {failed} -> {candidate} "
+                                    f"(keeping {failed} as primary)")
+                    else:
+                        logger.info(f"Fallback succeeded: {failed} -> {candidate}")
+                        # Permanent switch — engine crashed, don't retry
+                        self._active_backend = candidate
                     return result
             except Exception as fallback_err:
                 logger.debug(f"Fallback {candidate} also failed: {fallback_err}")
@@ -1201,358 +1771,192 @@ class TTSEngine:
 # LAZY BACKEND WRAPPERS — defer heavy imports until first use
 # ════════════════════════════════════════════════════════════════════
 
-class _LazyF5:
-    """Lazy wrapper for F5-TTS. 2GB VRAM, best voice cloning quality."""
+class _SubprocessTTSBackend:
+    """Single generic adapter for every GPU TTS backend.
 
-    def __init__(self):
-        self._model = None
-        self._ref_voice = os.path.join(os.path.expanduser('~'), 'Downloads', 'Lily.mp3')
-        self._ref_text = ''  # Empty = auto-transcribe on first call, then cached by F5
+    Routes Nunba TTSEngine calls to the matching HARTOS subprocess tool
+    (f5_tts_tool, chatterbox_tool, cosyvoice_tool, indic_parler_tool).
+    CUDA OOM / DLL crashes inside the worker are contained; Nunba's
+    TTSEngine catches the RuntimeError and falls back to Piper, just
+    like the legacy `_Lazy*` classes used to via `_oom_guard`.
 
-    def _ensure_loaded(self):
-        if self._model is None:
-            from f5_tts.api import F5TTS
-            self._model = F5TTS(model='F5TTS_v1_Base', device='cuda')
+    SRP: this adapter is the ONLY integration point. Engine-specific
+    behavior (safetensors workaround, padding, sentence splitting,
+    speaker selection) lives inside the HARTOS worker modules — this
+    class contains zero engine-specific code.
 
-    def synthesize(self, text, output_path=None, language='en', **kwargs):
-        self._ensure_loaded()
-        if output_path is None:
-            import tempfile
-            output_path = tempfile.mktemp(suffix='.wav')
-        ref = kwargs.get('ref_voice', self._ref_voice)
-        self._model.infer(
-            ref_file=ref,
-            ref_text=self._ref_text,
-            gen_text=text,
-            file_wave=output_path,
-            speed=1.0,
-        )
-        return output_path
+    DRY: there are no per-engine `_Lazy*` classes anymore. One class,
+    one instance per registry entry.
+    """
 
-    def unload_model(self):
-        if self._model:
-            del self._model
-            self._model = None
-            gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
-
-
-class _LazyChatterboxTurbo:
-    """Lazy wrapper for Chatterbox Turbo. Loads model on first synthesize()."""
-
-    def __init__(self):
-        self._model = None
-        self._torchaudio = None
-        self._sr = None
-        self._ref_voice = os.path.join(os.path.expanduser('~'), 'Downloads', 'Lily.mp3')
-
-    def _ensure_loaded(self):
-        if self._model is None:
-            import torchaudio
-            from chatterbox.tts_turbo import ChatterboxTurboTTS
-            self._torchaudio = torchaudio
-            # Workaround: safetensors segfaults on sequential CUDA loads on Windows.
-            # Patch load_file to always load to CPU first, then .to(device) handles CUDA.
-            if sys.platform == 'win32':
-                import safetensors.torch as _st
-                _orig_load = _st.load_file
-                def _cpu_first_load(path, device=None):
-                    return _orig_load(path, device='cpu')
-                _st.load_file = _cpu_first_load
-                try:
-                    self._model = ChatterboxTurboTTS.from_pretrained(device="cuda")
-                finally:
-                    _st.load_file = _orig_load
-            else:
-                self._model = ChatterboxTurboTTS.from_pretrained(device="cuda")
-            self._sr = self._model.sr
-
-    def synthesize(self, text, output_path=None, language='en', **kwargs):
-        self._ensure_loaded()
-        ref = kwargs.get('ref_voice', self._ref_voice)
-        wav = self._model.generate(text, audio_prompt_path=ref)
-        # Pad 0.3s silence to prevent chopped ending
-        import torch as _t
-        pad = _t.zeros(1, int(self._sr * 0.3), dtype=wav.dtype, device=wav.device)
-        wav = _t.cat([wav, pad], dim=-1)
-        if output_path is None:
-            import tempfile
-            output_path = tempfile.mktemp(suffix='.wav')
-        self._torchaudio.save(output_path, wav, self._sr)
-        return output_path
-
-    def unload_model(self):
-        if self._model:
-            del self._model
-            self._model = None
-            gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
-
-
-class _LazyChatterboxMultilingual:
-    """Lazy wrapper for Chatterbox Multilingual."""
-
-    def __init__(self):
-        self._model = None
-        self._torchaudio = None
-        self._sr = None
-        self._ref_voice = os.path.join(os.path.expanduser('~'), 'Downloads', 'Lily.mp3')
-
-    def _ensure_loaded(self):
-        if self._model is None:
-            import torchaudio
-            from chatterbox.tts import ChatterboxMultilingualTTS
-            self._torchaudio = torchaudio
-            self._model = ChatterboxMultilingualTTS.from_pretrained(device="cuda")
-            self._sr = self._model.sr
-
-    def synthesize(self, text, output_path=None, language='en', **kwargs):
-        self._ensure_loaded()
-        ref = kwargs.get('ref_voice', self._ref_voice)
-        wav = self._model.generate(text, audio_prompt_path=ref, language_id=language)
-        if output_path is None:
-            import tempfile
-            output_path = tempfile.mktemp(suffix='.wav')
-        self._torchaudio.save(output_path, wav, self._sr)
-        return output_path
-
-    def unload_model(self):
-        if self._model:
-            del self._model
-            self._model = None
-            gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
-
-
-class _LazyIndicParler:
-    """Lazy wrapper for Indic Parler TTS. 21 Indic languages + English. ~2GB VRAM."""
-
-    # Recommended speakers per language
-    SPEAKERS = {
-        'ta': 'Jaya', 'hi': 'Divya', 'bn': 'Aditi', 'te': 'Lalitha',
-        'kn': 'Anu', 'ml': 'Anjali', 'gu': 'Neha', 'mr': 'Sunita',
-        'as': 'Sita', 'ur': 'Divya', 'ne': 'Amrita', 'or': 'Debjani',
-        'sa': 'Aryan', 'mai': 'Aditi', 'mni': 'Laishram', 'sd': 'Divya',
-        'kok': 'Sunita', 'brx': 'Maya', 'doi': 'Karan', 'sat': 'Maya',
-        'pa': 'Divya', 'en': 'Divya',
-    }
-
-    def __init__(self):
-        self._model = None
-        self._tokenizer = None
-        self._desc_tokenizer = None
-        self._device = None
-        self._sr = 44100
-
-    def _ensure_loaded(self):
-        if self._model is not None:
-            return
-        import torch
-        from parler_tts import ParlerTTSForConditionalGeneration
-        from transformers import AutoTokenizer
-        self._device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-        self._model = ParlerTTSForConditionalGeneration.from_pretrained(
-            'ai4bharat/indic-parler-tts').to(self._device)
-        self._tokenizer = AutoTokenizer.from_pretrained('ai4bharat/indic-parler-tts')
-        self._desc_tokenizer = AutoTokenizer.from_pretrained(
-            self._model.config.text_encoder._name_or_path)
-        self._sr = self._model.config.sampling_rate
-        logger.info(f"Indic Parler TTS loaded ({self._device}), sr={self._sr}")
-
-    def _get_description(self, language):
-        speaker = self.SPEAKERS.get(language, 'Divya')
-        return (
-            f"{speaker} speaks with a confident, clear and expressive voice "
-            f"at a moderate pace. The recording is of very high quality with no background noise, "
-            f"the speaker's voice is loud, clear and very close to the microphone."
-        )
-
-    def _generate_chunk(self, text, language):
-        """Generate audio for a single text chunk. Returns numpy array."""
-        description = self._get_description(language)
-        desc_inputs = self._desc_tokenizer(description, return_tensors='pt').to(self._device)
-        prompt_inputs = self._tokenizer(text, return_tensors='pt').to(self._device)
-        max_tokens = max(3000, min(8000, len(text) * 50))
-        generation = self._model.generate(
-            input_ids=desc_inputs.input_ids,
-            attention_mask=desc_inputs.attention_mask,
-            prompt_input_ids=prompt_inputs.input_ids,
-            prompt_attention_mask=prompt_inputs.attention_mask,
-            max_new_tokens=max_tokens,
-        )
-        return generation.cpu().float().numpy().squeeze()
-
-    @staticmethod
-    def _split_sentences(text):
-        """Split text at real sentence boundaries, not mid-ellipsis.
-
-        Handles: "Hey... I was waiting. Give me something." → 2 chunks.
-        Skips: "...", "..", standalone dots.
+    def __init__(self, engine_id: str):
         """
-        import re
-        protected = text.replace('...', '\x00ELLIPSIS\x00')
-        parts = re.split(r'(?<=[^\.\s])[.?!।৷]\s+', protected)
-        parts = [p.replace('\x00ELLIPSIS\x00', '...') for p in parts]
-        merged = []
-        for p in parts:
-            p = p.strip()
-            if not p:
-                continue
-            if merged and len(merged[-1]) < 20:
-                merged[-1] = merged[-1] + ' ' + p
-            else:
-                merged.append(p)
-        if len(merged) > 1 and len(merged[-1]) < 15:
-            merged[-2] = merged[-2] + ' ' + merged[-1]
-            merged.pop()
-        return merged if len(merged) > 1 else [text]
+        Args:
+            engine_id: Key in tts_router.ENGINE_REGISTRY
+                       (e.g. 'f5_tts', 'chatterbox_turbo', 'chatterbox_ml',
+                       'cosyvoice3', 'indic_parler').
+        """
+        from integrations.channels.media.tts_router import ENGINE_REGISTRY
+        spec = ENGINE_REGISTRY.get(engine_id)
+        if spec is None:
+            raise ValueError(f"Unknown TTS engine_id: {engine_id}")
+        if not spec.tool_module or not spec.tool_function or not spec.tool_worker_attr:
+            raise ValueError(
+                f"TTS engine {engine_id} is not subprocess-capable "
+                f"(missing tool_module/tool_function/tool_worker_attr)"
+            )
+        self._engine_id = engine_id
+        self._spec = spec
+        # Cache the ToolWorker instance the first time we look it up.
+        self._worker = None
+        self._synthesize_fn = None
 
-    def synthesize(self, text, output_path=None, language='hi', **kwargs):
-        self._ensure_loaded()
-        import numpy as np
-        import soundfile as sf
+    # ── Lazy resolution of the tool module ──────────────────────
 
-        # Split long text into sentences to prevent end-clipping
-        sentences = self._split_sentences(text) if len(text) > 80 else [text]
-
-        if len(sentences) == 1:
-            audio = self._generate_chunk(text, language)
-        else:
-            logger.info(f"IndicParler: splitting into {len(sentences)} chunks")
-            chunks = []
-            gap = np.zeros(int(self._sr * 0.15), dtype=np.float32)
-            for i, sent in enumerate(sentences):
-                chunk_audio = self._generate_chunk(sent, language)
-                if chunk_audio is not None and len(chunk_audio) > 0:
-                    chunks.append(chunk_audio)
-                    if i < len(sentences) - 1:
-                        chunks.append(gap)
-            audio = np.concatenate(chunks) if chunks else np.zeros(1, dtype=np.float32)
-
-        # Pad 0.5s silence to prevent chopped ending
-        pad = np.zeros(int(self._sr * 0.5), dtype=np.float32)
-        audio = np.concatenate([audio, pad])
-        # Peak-normalize to -1dB
-        peak = np.abs(audio).max()
-        if peak > 0:
-            target_peak = 10 ** (-1.0 / 20)  # -1 dB
-            audio = audio * (target_peak / peak)
-
-        if output_path is None:
-            import tempfile
-            output_path = tempfile.mktemp(suffix='.wav')
-        sf.write(output_path, audio, self._sr)
-        return output_path
-
-    def unload_model(self):
-        if self._model:
-            del self._model, self._tokenizer, self._desc_tokenizer
-            self._model = self._tokenizer = self._desc_tokenizer = None
-            gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
-
-
-class _LazyCosyVoice3:
-    """Lazy wrapper for CosyVoice3 0.5B. 9 languages, zero-shot cloning. ~4GB VRAM."""
-
-    def __init__(self):
-        self._model = None
-        self._sr = 22050
-        self._ref_voice = os.path.join(os.path.expanduser('~'), 'Downloads', 'Lily.mp3')
-
-    def _ensure_loaded(self):
-        if self._model is not None:
+    def _resolve(self):
+        """Import the HARTOS tool module and cache its exports."""
+        if self._worker is not None:
             return
-        import sys as _sys
-        cosyvoice_dir = os.path.join(os.path.expanduser('~'), 'PycharmProjects', 'CosyVoice')
-        if not os.path.isdir(cosyvoice_dir):
-            raise FileNotFoundError(f"CosyVoice not found at {cosyvoice_dir}")
-        if cosyvoice_dir not in _sys.path:
-            _sys.path.insert(0, cosyvoice_dir)
-            matcha = os.path.join(cosyvoice_dir, 'third_party', 'Matcha-TTS')
-            if os.path.isdir(matcha) and matcha not in _sys.path:
-                _sys.path.insert(0, matcha)
+        import importlib
+        mod = importlib.import_module(self._spec.tool_module)
+        worker = getattr(mod, self._spec.tool_worker_attr, None)
+        if worker is None:
+            raise RuntimeError(
+                f"{self._spec.tool_module} has no ToolWorker attribute "
+                f"{self._spec.tool_worker_attr}"
+            )
+        self._worker = worker
+        self._synthesize_fn = getattr(mod, self._spec.tool_function)
+        # NOTE: unload is ALWAYS `self._worker.stop()` — never call
+        # module-level `unload_<engine>()` helpers. Those helpers may
+        # stop multiple workers at once (e.g. `unload_chatterbox()`
+        # stops BOTH turbo and ml), which silently kills workers this
+        # adapter doesn't own. The ToolWorker-level stop is the
+        # single-variant teardown.
 
-        from cosyvoice.cli.cosyvoice import AutoModel
-        model_dir = os.path.join(cosyvoice_dir, 'pretrained_models', 'CosyVoice3-0.5B')
-        if not os.path.isdir(model_dir):
-            from huggingface_hub import snapshot_download
-            snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512',
-                              local_dir=model_dir)
-        self._model = AutoModel(model_dir=model_dir)
-        self._sr = self._model.sample_rate
-        logger.info(f"CosyVoice3 loaded, sr={self._sr}")
+    # ── Interface expected by TTSEngine.synthesize ──────────────
 
-    def synthesize(self, text, output_path=None, language='es', **kwargs):
-        self._ensure_loaded()
-        import torchaudio
+    @property
+    def _device(self) -> Optional[str]:
+        """TTSEngine reads this to decide the VRAM-inference check path.
+
+        Returns 'cuda' when the worker subprocess is alive (model is
+        actually loaded on GPU), None otherwise. TTSEngine uses this
+        to pick the fast inference-headroom VRAM check over the
+        pessimistic full-model-load check.
+        """
+        try:
+            self._resolve()
+        except Exception:
+            return None
+        return 'cuda' if self._worker.is_alive() else None
+
+    def synthesize(self, text, output_path=None, language='en', **kwargs):
+        """Route one synthesis through the subprocess worker.
+
+        Matches the interface of the old `_Lazy*.synthesize()` methods
+        exactly so TTSEngine's call sites don't need changes. On any
+        worker error (including `transient: True` crash fallback),
+        raises RuntimeError so TTSEngine's except-block falls through
+        to Piper just like before.
+
+        Forwards `speed` and any engine-specific kwargs to the public
+        tool function so behavior like F5's speed multiplier is
+        preserved after the subprocess move.
+        """
+        self._resolve()
 
         if output_path is None:
             import tempfile
             output_path = tempfile.mktemp(suffix='.wav')
 
-        # CosyVoice3 requires <|endofprompt|> token in text
-        cv3_text = f'You are a helpful assistant.<|endofprompt|>{text}'
-        ref = kwargs.get('ref_voice', self._ref_voice)
-        # Cross-lingual with reference voice
-        if ref and os.path.isfile(ref):
-            for chunk in self._model.inference_cross_lingual(
-                    cv3_text, ref, stream=False):
-                audio = chunk['tts_speech']
-                # Pad 0.3s silence to prevent chopped ending
-                import torch as _t
-                pad = _t.zeros(1, int(self._sr * 0.3), dtype=audio.dtype, device=audio.device)
-                audio = _t.cat([audio, pad], dim=-1)
-                torchaudio.save(output_path, audio, self._sr)
-                return output_path
-        else:
-            spks = self._model.list_available_spks()
-            spk = spks[0] if spks else None
-            if not spk:
-                logger.error("CosyVoice3: no speakers available for SFT")
-                return None
-            for chunk in self._model.inference_sft(
-                    cv3_text, spk, stream=False):
-                audio = chunk['tts_speech']
-                # Pad 0.3s silence to prevent chopped ending
-                import torch as _t
-                pad = _t.zeros(1, int(self._sr * 0.3), dtype=audio.dtype, device=audio.device)
-                audio = _t.cat([audio, pad], dim=-1)
-                torchaudio.save(output_path, audio, self._sr)
-                return output_path
-        return None
+        # Nunba calls pass ref_voice via kwargs — forward it as `voice`
+        # so the HARTOS worker's resolver picks it up.
+        voice = kwargs.get('ref_voice') or kwargs.get('voice')
+
+        # Build the call kwargs. speed is F5-specific but tolerated by
+        # the other public tool functions' **kwargs signatures (or
+        # filtered at the adapter boundary); we forward explicitly.
+        fn_kwargs = dict(
+            text=text,
+            language=language,
+            voice=voice,
+            output_path=output_path,
+        )
+        if 'speed' in kwargs:
+            fn_kwargs['speed'] = kwargs['speed']
+
+        try:
+            raw = self._synthesize_fn(**fn_kwargs)
+        except TypeError:
+            # Public function doesn't accept some kwarg (e.g. speed on
+            # a non-F5 engine) — retry without the extras.
+            fn_kwargs.pop('speed', None)
+            raw = self._synthesize_fn(**fn_kwargs)
+
+        # The HARTOS tool returns a JSON string. Parse it and surface
+        # errors as exceptions so TTSEngine's fallback path triggers.
+        try:
+            result = json.loads(raw)
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(
+                f"{self._engine_id}: malformed worker response: {e}"
+            )
+        if 'error' in result:
+            # Preserve the transient flag on the exception so TTSEngine's
+            # fallback chain can short-circuit straight to Piper on GPU
+            # OOM, instead of walking every other GPU engine.
+            err = RuntimeError(f"{self._engine_id}: {result['error']}")
+            err.transient = bool(result.get('transient'))  # type: ignore[attr-defined]
+            raise err
+        return result.get('path', output_path)
 
     def unload_model(self):
-        if self._model:
-            del self._model
-            self._model = None
-            gc.collect()
+        """Stop this variant's worker subprocess and release its VRAM.
+
+        Only stops the ONE worker this adapter owns. We deliberately
+        do NOT call module-level `unload_<engine>` helpers because some
+        of them (e.g. `unload_chatterbox`) stop multiple workers at once.
+        """
+        try:
+            self._resolve()
+        except Exception:
+            return
+        if self._worker is not None:
             try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
+                self._worker.stop()
+            except Exception as e:
+                logger.warning(f"{self._engine_id} stop failed: {e}")
+
+
+class _InProcessTTSBackend:
+    """Generic in-process TTS backend for CPU engines (luxtts, pocket_tts, espeak).
+
+    These engines have a tool_module + tool_function but no subprocess worker.
+    We import the function and call it directly in-process.
+    """
+
+    def __init__(self, synth_fn, engine_id: str):
+        self._fn = synth_fn
+        self._engine_id = engine_id
+
+    def synthesize(self, text, output_path=None, **kwargs):
+        try:
+            # Only pass params the HARTOS tool function accepts.
+            # Tool functions have varied signatures — don't forward
+            # unknown kwargs (voice, language, speed) that cause TypeError.
+            import inspect
+            sig = inspect.signature(self._fn)
+            accepted = set(sig.parameters.keys())
+            safe_kw = {k: v for k, v in kwargs.items() if k in accepted}
+            result = self._fn(text=text, output_path=output_path, **safe_kw)
+            return result
+        except Exception as e:
+            logger.warning(f"In-process TTS {self._engine_id} failed: {e}")
+            return None
+
+    def stop(self):
+        pass  # No subprocess to stop
 
 
 class _LazyPiper:

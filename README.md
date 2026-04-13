@@ -146,7 +146,7 @@ Nunba/
 +-- desktop/
 |   +-- splash_effects.py  # Animated splash screen
 |   +-- tray_handler.py    # System tray (Windows/Linux)
-|   +-- ai_key_vault.py    # Encrypted API key storage
+|   +-- ai_key_vault.py    # Encrypted API key stowhrage
 +-- models/
 |   +-- catalog.py         # Unified model catalog
 |   +-- orchestrator.py    # Model load/unload lifecycle

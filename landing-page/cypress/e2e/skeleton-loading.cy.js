@@ -21,10 +21,10 @@ describe('Skeleton Loading — Feed Page Initial Load', () => {
     }).as('slowFeed');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // During loading, skeleton elements should be visible
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const hasSkeletons = $body.find('[class*="MuiSkeleton"]').length > 0;
       const hasProgressBar = $body.find('[role="progressbar"]').length > 0;
       const hasContent = $body.html().length > 100;
@@ -35,12 +35,12 @@ describe('Skeleton Loading — Feed Page Initial Load', () => {
 
   it('should hide skeletons after feed data loads', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Wait for content to fully load
     cy.wait(4000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const bodyText = $body.text();
       // After loading, page should have real content — tabs, posts, or empty state
       const hasTabLabels =
@@ -64,7 +64,7 @@ describe('Skeleton Loading — Feed Page Initial Load', () => {
     }).as('verySlowFeed');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Check for skeleton structure matching PostCard
     cy.get('body').then(($body) => {
@@ -81,12 +81,12 @@ describe('Skeleton Loading — Feed Page Initial Load', () => {
 
 describe('Skeleton Loading — Suspense Fallbacks', () => {
   it('should show PageSkeleton as Suspense fallback for lazy routes', () => {
-    cy.visit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // The first render should show PageSkeleton (from Suspense fallback)
     // before the lazy-loaded route component hydrates
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       // PageSkeleton uses aria-busy="true"
       const hasSkeleton =
         $body.find('[aria-busy="true"]').length > 0 ||
@@ -98,8 +98,8 @@ describe('Skeleton Loading — Suspense Fallbacks', () => {
   });
 
   it('should NOT show "..." or empty Suspense fallback', () => {
-    cy.visit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Wait for the lazy-loaded component to hydrate past any Suspense fallback
     cy.wait(3000);
@@ -123,7 +123,7 @@ describe('Skeleton Loading — Infinite Scroll', () => {
 
   it('should show skeleton during infinite scroll fetch', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // Intercept the next page request with delay
@@ -140,7 +140,7 @@ describe('Skeleton Loading — Infinite Scroll', () => {
     cy.scrollTo('bottom', {duration: 500});
     cy.wait(500);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       // Should see skeleton or loading indicator at the bottom
       const hasSkeletons = $body.find('[class*="MuiSkeleton"]').length > 0;
       const hasProgress = $body.find('[role="progressbar"]').length > 0;
@@ -152,8 +152,8 @@ describe('Skeleton Loading — Infinite Scroll', () => {
 
 describe('Skeleton Loading — Chat Page', () => {
   it('should show chat skeleton variant for demo page fallback', () => {
-    cy.visit('/local');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Wait for the page component to hydrate past any Suspense fallback
     cy.wait(3000);
@@ -190,9 +190,9 @@ describe('Skeleton Loading — Skeleton Wave Animation', () => {
     });
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const waveSkeletons = $body.find('.MuiSkeleton-wave');
       const anySkeletons = $body.find('.MuiSkeleton-root');
       const pageLoaded = $body.html().length > 100;

@@ -17,6 +17,7 @@ import importlib
 import importlib.util
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -38,7 +39,9 @@ BACKEND_PACKAGES = {
     ],
     'indic_parler': [
         'torchaudio',
-        'parler-tts',
+        'sentencepiece',
+        'descript-audio-codec',
+        'parler-tts==0.2.2',  # 0.2.3 has DacModel.decode() API mismatch with dac 1.0
     ],
     'cosyvoice3': [
         'torchaudio',
@@ -50,6 +53,14 @@ BACKEND_PACKAGES = {
         'f5-tts',
     ],
     'piper': [],  # Bundled, no pip install needed
+    'kokoro': [
+        'kokoro',       # Main package (includes misaki phonemizer)
+        'espeakng',     # espeak-ng Python bindings (ships binary on Windows)
+    ],
+    'luxtts': [],       # CPU in-process, bundled via HARTOS
+    'pocket_tts': [
+        'pocket-tts',
+    ],
 }
 
 # pip package name → import name (for verification)
@@ -58,6 +69,12 @@ _PIP_TO_IMPORT = {
     'parler-tts': 'parler_tts',
     'f5-tts': 'f5_tts',
     'torchaudio': 'torchaudio',
+    'descript-audio-codec': 'dac',
+    'descript-audiotools': 'audiotools',
+    'tensorboard': 'tensorboard',
+    'kokoro': 'kokoro',
+    'espeakng': 'espeakng',
+    'pocket-tts': 'pocket_tts',
 }
 
 # Human-readable names for progress messages
@@ -122,16 +139,44 @@ def is_package_installed(import_name: str) -> bool:
 
 
 def is_cuda_torch() -> bool:
-    """Check if installed torch has CUDA support."""
+    """Check if CUDA torch exists — checks user site-packages first.
+
+    The frozen build ships a torch 0.0.0 stub at python-embed/ which shadows
+    the real CUDA torch at ~/.nunba/site-packages/. Check the file on disk
+    rather than importing (which would find the stub).
+    """
+    user_torch = os.path.join(get_user_site_packages(), 'torch', 'version.py')
+    if os.path.isfile(user_torch):
+        try:
+            with open(user_torch) as f:
+                content = f.read()
+            if '+cu' in content:
+                return True
+        except Exception:
+            pass
+    # Fallback: try import (works when not in frozen build)
     try:
         import torch
         return torch.cuda.is_available()
-    except ImportError:
+    except (ImportError, AttributeError):
         return False
 
 
 def get_torch_variant() -> str:
-    """Return 'cpu', 'cu124', etc. for the installed torch."""
+    """Return 'cpu', 'cu124', etc. — checks user site-packages first."""
+    user_torch = os.path.join(get_user_site_packages(), 'torch', 'version.py')
+    if os.path.isfile(user_torch):
+        try:
+            with open(user_torch) as f:
+                for line in f:
+                    if '__version__' in line and '+' in line:
+                        ver = line.split("'")[1] if "'" in line else line.split('"')[1]
+                        if '+cpu' in ver:
+                            return 'cpu'
+                        if '+cu' in ver:
+                            return ver.split('+')[1]
+        except Exception:
+            pass
     try:
         import torch
         ver = torch.__version__
@@ -147,13 +192,8 @@ def get_torch_variant() -> str:
 def has_nvidia_gpu() -> bool:
     """Check if NVIDIA GPU is available via nvidia-smi."""
     try:
-        si = None
-        cf = 0
-        if sys.platform == 'win32':
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0
-            cf = subprocess.CREATE_NO_WINDOW
+        from tts._subprocess import hidden_startupinfo
+        si, cf = hidden_startupinfo()
         result = subprocess.run(
             ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
             capture_output=True, text=True, timeout=5,
@@ -176,10 +216,24 @@ def get_user_site_packages() -> str:
 
 
 def ensure_user_site_on_path():
-    """Add ~/.nunba/site-packages/ to sys.path if not already there."""
+    """Add ~/.nunba/site-packages/ to sys.path and set up DLL directories.
+
+    Must run before any torch import — the CUDA torch installed at runtime
+    lives here, and its DLLs need to be discoverable.
+    """
     sp = get_user_site_packages()
     if sp not in sys.path:
         sys.path.insert(0, sp)
+    # Windows: add torch/lib to DLL search path for CUDA DLLs
+    if sys.platform == 'win32':
+        _torch_lib = os.path.join(sp, 'torch', 'lib')
+        if os.path.isdir(_torch_lib):
+            try:
+                os.add_dll_directory(_torch_lib)
+            except Exception:
+                pass
+            if _torch_lib not in os.environ.get('PATH', ''):
+                os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
 
 
 def _run_pip(args: list[str], progress_cb: Callable | None = None,
@@ -197,24 +251,23 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
     # instead of Program Files (which needs admin)
     user_sp = get_user_site_packages()
     if args and args[0] == 'install':
-        args = args[:1] + ['--target', user_sp] + args[1:]
+        args = args[:1] + [
+            '--target', user_sp,
+            '--no-build-isolation',  # Use system setuptools (pip's isolated build fails in frozen builds)
+        ] + args[1:]
 
     cmd = [python_exe, '-m', 'pip'] + args
     env = os.environ.copy()
     env['PYTHONNOUSERSITE'] = '1'  # Don't leak to user site-packages
+    env['SETUPTOOLS_USE_DISTUTILS'] = 'stdlib'  # Skip _distutils_hack shim (missing in frozen build)
 
     logger.info(f"Running: {' '.join(cmd)}")
     if progress_cb:
         progress_cb(f"Running pip: {' '.join(args[:4])}...")
 
     try:
-        si = None
-        cf = 0
-        if sys.platform == 'win32':
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0
-            cf = subprocess.CREATE_NO_WINDOW
+        from tts._subprocess import hidden_startupinfo
+        si, cf = hidden_startupinfo()
 
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
@@ -233,38 +286,99 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
         return False, str(e)
 
 
-def install_cuda_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
-    """Swap torch+cpu for torch+cu124 in python-embed.
+def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
+    """Install GPU-accelerated PyTorch — detects GPU type centrally via vram_manager.
 
-    This is a ~2.5GB download. Only runs if:
-    - GPU detected via nvidia-smi
-    - Current torch is +cpu variant
+    Selects the correct pip index:
+      NVIDIA → cu124 (CUDA 12.4)
+      AMD    → rocm6.2 (ROCm, Linux only)
+      None   → returns False
+
+    ~2.5GB download. Only runs if current torch is +cpu variant.
     """
-    if not has_nvidia_gpu():
-        return False, "No NVIDIA GPU detected"
+    # Central GPU detection — one source of truth
+    try:
+        from integrations.service_tools.vram_manager import vram_manager
+        gpu = vram_manager.detect_gpu()
+        gpu_type = 'nvidia' if gpu.get('cuda_available') else (
+            'amd' if gpu.get('name', '').upper().find('AMD') >= 0 or
+            gpu.get('name', '').upper().find('RADEON') >= 0 else None)
+    except Exception:
+        gpu_type = 'nvidia' if has_nvidia_gpu() else None
+
+    if not gpu_type:
+        return False, "No GPU detected"
 
     variant = get_torch_variant()
-    if variant != 'cpu':
-        return True, f"torch already has CUDA ({variant})"
+    if variant not in ('cpu', 'unknown', 'none'):
+        return True, f"torch already has GPU support ({variant})"
 
+    label = 'ROCm' if gpu_type == 'amd' else 'CUDA'
     if progress_cb:
-        progress_cb("Upgrading PyTorch to CUDA version (~2.5GB download)...")
+        progress_cb(f"Installing {label} PyTorch (~2.5GB download)...")
 
-    # Uninstall CPU torch first
-    _run_pip(['uninstall', '-y', 'torch'], progress_cb)
+    # Don't uninstall CPU torch from python-embed (read-only Program Files).
+    # Just install GPU torch to ~/.nunba/site-packages/ — it shadows the
+    # CPU stub on sys.path (app.py inserts user site at index 0).
 
-    # Install CUDA torch
+    # Install GPU torch — index URL depends on GPU vendor
+    _torch_index = ('https://download.pytorch.org/whl/rocm6.2' if gpu_type == 'amd'
+                     else 'https://download.pytorch.org/whl/cu124')
     ok, msg = _run_pip([
         'install', 'torch', 'torchaudio',
-        '--index-url', 'https://download.pytorch.org/whl/cu124',
+        '--index-url', _torch_index,
     ], progress_cb, timeout=900)
 
     if ok:
+        # Remove the stub torch (0.0.0) from python-embed so the CUDA version
+        # from ~/.nunba/site-packages is the only one Python finds
+        _embed_sp = get_embed_site_packages()
+        if _embed_sp:
+            import shutil
+            for _stub_dir in ('torch', 'torchaudio'):
+                _stub_path = os.path.join(_embed_sp, _stub_dir)
+                if os.path.isdir(_stub_path):
+                    try:
+                        _ver_file = os.path.join(_stub_path, 'version.py')
+                        _is_stub = False
+                        if os.path.isfile(_ver_file):
+                            with open(_ver_file) as _vf:
+                                _is_stub = '0.0.0' in _vf.read()
+                        if _is_stub:
+                            shutil.rmtree(_stub_path, ignore_errors=True)
+                            logger.info(f"Removed stub {_stub_dir} from python-embed")
+                    except Exception as _e:
+                        logger.debug(f"Could not remove stub {_stub_dir}: {_e}")
+
+        # Fix torch/_C directory conflict in CUDA install target too
+        # pip creates both _C.cpXYZ.pyd (the real extension) AND _C/ (stubs).
+        # The directory shadows the .pyd → "Failed to load PyTorch C extensions"
+        _user_sp = get_user_site_packages()
+        _torch_c_dir = os.path.join(_user_sp, 'torch', '_C')
+        if os.path.isdir(_torch_c_dir):
+            import shutil
+            shutil.rmtree(_torch_c_dir, ignore_errors=True)
+            logger.info("Removed torch/_C directory conflict from user site-packages")
+        _torch_c_fb = os.path.join(_user_sp, 'torch', '_C_flatbuffer')
+        if os.path.isdir(_torch_c_fb):
+            shutil.rmtree(_torch_c_fb, ignore_errors=True)
+
+        # Ensure user site-packages is on sys.path BEFORE python-embed
+        ensure_user_site_on_path()
+
+        # Add torch/lib to DLL search path (Windows — needed for CUDA DLLs)
+        _torch_lib = os.path.join(_user_sp, 'torch', 'lib')
+        if os.path.isdir(_torch_lib) and sys.platform == 'win32':
+            try:
+                os.add_dll_directory(_torch_lib)
+            except Exception:
+                pass
+            os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
+
         # Invalidate cached import checks
         _invalidate_import_cache()
 
-        # Force-reload torch in current session — the old stub (0.0.0)
-        # is cached in sys.modules and won't be replaced by importlib alone
+        # Force-reload torch in current session
         _torch_mods = [k for k in sys.modules if k == 'torch' or k.startswith('torch.')]
         for k in _torch_mods:
             del sys.modules[k]
@@ -317,7 +431,7 @@ def install_backend_packages(backend: str,
         if variant == 'cpu' and has_nvidia_gpu():
             if progress_cb:
                 progress_cb("GPU detected but torch is CPU-only — upgrading to CUDA torch first...")
-            cuda_ok, cuda_msg = install_cuda_torch(progress_cb)
+            cuda_ok, cuda_msg = install_gpu_torch(progress_cb)
             if cuda_ok:
                 # torchaudio was installed with CUDA torch
                 to_install = [p for p in to_install if p != 'torchaudio']
@@ -386,6 +500,9 @@ def install_backend_full(backend: str,
         if not pkg_ok:
             return False, pkg_msg
 
+        # Post-install patches for known compatibility issues
+        _apply_post_install_patches(backend)
+
         # Step 2: Model weights (via huggingface_hub)
         if progress_cb:
             progress_cb(f"Step 2/2: Downloading model weights for {display_name}...")
@@ -421,6 +538,31 @@ def _is_hf_model_cached(model_id: str) -> bool:
             if simple_name in entry.name.lower():
                 return True
     return False
+
+
+def _apply_post_install_patches(backend: str):
+    """Apply source patches for known package compatibility issues."""
+    if backend == 'indic_parler':
+        # parler_tts dac_wrapper calls model.decode(audio_values) but HF's
+        # DACModel.decode() expects keyword arg 'quantized_representation'.
+        user_sp = get_user_site_packages()
+        target = os.path.join(user_sp, 'parler_tts', 'dac_wrapper', 'modeling_dac.py')
+        if os.path.isfile(target):
+            try:
+                with open(target, 'r') as f:
+                    src = f.read()
+                old = 'audio_values = self.model.decode(audio_values)'
+                new = ('try:\n'
+                       '            audio_values = self.model.decode(audio_values)\n'
+                       '        except TypeError:\n'
+                       '            audio_values = self.model.decode(quantized_representation=audio_values)')
+                if old in src and 'except TypeError' not in src:
+                    src = src.replace(old, new)
+                    with open(target, 'w') as f:
+                        f.write(src)
+                    logger.info("Patched parler_tts DACModel.decode() for HF compatibility")
+            except Exception as e:
+                logger.debug(f"DAC decode patch skipped: {e}")
 
 
 def _download_model_weights(backend: str,
@@ -553,7 +695,13 @@ def get_backend_status() -> dict[str, dict]:
     for backend, packages in BACKEND_PACKAGES.items():
         missing = []
         for pkg in packages:
-            import_name = _PIP_TO_IMPORT.get(pkg, pkg.replace('-', '_'))
+            # Strip pip version spec ('parler_tts==0.6.0' → 'parler_tts')
+            # before resolving the import name. importlib.util.find_spec
+            # RAISES ModuleNotFoundError (not returns None) when the
+            # argument contains '==', so unstripped specs crash the
+            # whole /tts/engines endpoint.
+            base_pkg = re.split(r'[=<>!~\s]', pkg, 1)[0]
+            import_name = _PIP_TO_IMPORT.get(base_pkg, base_pkg.replace('-', '_'))
             if not is_package_installed(import_name):
                 missing.append(pkg)
 

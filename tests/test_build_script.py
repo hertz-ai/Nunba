@@ -81,11 +81,11 @@ class TestVersionStamping:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
             f.write('VERSION = "0.0.0"\n')
             f.flush()
-            _stamp_version_in_file(f.name, r'VERSION\s*=\s*"[^"]*"', 'VERSION = "2.0.0"')
+            _stamp_version_in_file(f.name, r'VERSION\s*=\s*"[^"]*"', 'VERSION = "0.1.0"')
         with open(f.name) as f2:
             content = f2.read()
         os.unlink(f.name)
-        assert 'VERSION = "2.0.0"' in content
+        assert 'VERSION = "0.1.0"' in content
 
     def test_stamp_idempotent(self):
         """Running stamp twice must not corrupt the file."""
@@ -93,8 +93,8 @@ class TestVersionStamping:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
             f.write('VERSION = "1.0.0"\n')
             f.flush()
-            _stamp_version_in_file(f.name, r'VERSION\s*=\s*"[^"]*"', 'VERSION = "2.0.0"')
-            _stamp_version_in_file(f.name, r'VERSION\s*=\s*"[^"]*"', 'VERSION = "2.0.0"')
+            _stamp_version_in_file(f.name, r'VERSION\s*=\s*"[^"]*"', 'VERSION = "0.1.0"')
+            _stamp_version_in_file(f.name, r'VERSION\s*=\s*"[^"]*"', 'VERSION = "0.1.0"')
         with open(f.name) as f2:
             content = f2.read()
         os.unlink(f.name)

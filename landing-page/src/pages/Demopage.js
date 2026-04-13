@@ -8,6 +8,7 @@ import connectedImg from '../assets/images/connectedImg.gif';
 import DisconnectedImg from '../assets/images/DisconnectedImg.gif';
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
+import AgentOverlay from '../components/AgentOverlay/AgentOverlay';
 import {Link as RouterLink, useNavigate, useParams, useLocation} from 'react-router-dom';
 import {
   ChevronDown,
@@ -20,11 +21,12 @@ import {
   Clock,
   ChevronLeft,
 } from 'lucide-react';
-import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL } from '../config/apiBase';
+import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL } from '../config/apiBase';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, makeMsgId } from '../utils/chatRetry';
+import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import { logger } from '../utils/logger';
 
@@ -137,6 +139,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const messagesRef = useRef(messages);
   const currentAgentRef = useRef(currentAgent);
   const handleSendRef = useRef(null); // Stable ref for queue processor
+  const handleStartRef = useRef(null); // Stable ref for auto-start mic when STT ready
   const [duration, setDuration] = useState(0);
   const [showTooltip, setShowTooltip] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -225,16 +228,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), duration);
   }, []);
 
+  const CAPABILITY_LABELS = useMemo(() => ({
+    stt: 'I can hear you now',
+    tts: 'I can speak now',
+    llm: 'Your Nunba is fully awake',
+    vlm: 'I can see you now',
+    audio_gen: 'I can compose music for you',
+    video_gen: 'I can create videos for you',
+  }), []);
   const announcedCapsRef = useRef(new Set());
   useEffect(() => {
     const startTime = Date.now();
-    const CAPABILITY_LABELS = {
-      stt: 'I can hear you now',
-      tts: 'I can speak now',
-      llm: 'Your Nunba is fully awake',
-      audio_gen: 'I can compose music for you',
-      video_gen: 'I can create videos for you',
-    };
     let pollId = null;
     const poll = async () => {
       if (Date.now() - startTime > 60000) { clearInterval(pollId); return; }
@@ -249,6 +253,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             const label = CAPABILITY_LABELS[type];
             if (label) {
               pushNotification({ type: 'success', message: label });
+            }
+            // Auto-start mic when STT is ready — voice-first UX
+            if (type === 'stt' && !isRecording && handleStartRef.current) {
+              handleStartRef.current();
             }
           }
         }
@@ -1326,6 +1334,50 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         return;
       }
 
+      // Draft-replacement: if the WAMP message carries a speculation_id,
+      // find the draft bubble and replace its content in-place instead of
+      // appending a second message. This prevents the "two bubbles" confusion.
+      if (parsed.speculation_id && extractedText) {
+        const specId = parsed.speculation_id;
+        setMessages((prev) => {
+          const idx = prev.findIndex(
+            (m) => m.speculationId === specId && m.isDraft
+          );
+          if (idx !== -1) {
+            const updated = [...prev];
+            updated[idx] = {
+              ...updated[idx],
+              content: extractedText,
+              isDraft: false,
+              source: parsed.source || 'expert',
+            };
+            return updated;
+          }
+          // No matching draft found — append normally
+          return [...prev, {
+            type: 'assistant',
+            content: extractedText,
+            source: parsed.source || 'expert',
+          }];
+        });
+        setShouldScroll(true);
+        setLoading(false);
+        setIsRequestInFlight(false);
+        return;
+      }
+
+      // TTS audio pushed from backend — play immediately
+      if (parsed.action === 'TTS' && parsed.generated_audio_url) {
+        logger.log('TTS AUDIO RECEIVED:', parsed.generated_audio_url);
+        try {
+          const audio = new Audio(parsed.generated_audio_url);
+          audio.play().catch(() => {});
+        } catch (e) {
+          logger.log('TTS audio play failed:', e);
+        }
+        return;
+      }
+
       if (Number(parsed.priority) === 49 && parsed.action === 'Thinking') {
         const traceRequestId = parsed.request_id || 'unknown';
 
@@ -1567,14 +1619,27 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
         setMessages((prev) => {
           const newMessages = [...prev, assistantMessage];
-          setAnimatingMessageIndex(1);
+          setAnimatingMessageIndex(newMessages.length - 1);
           setShouldScroll(true);
           return newMessages;
         });
 
-        // Speak the response using TTS if enabled and no audio was provided
+        // Speak + typewriter: whichever comes first — audio arrival or 5s timeout
         if (ttsEnabled && tts.isAvailable && extractedText) {
-          tts.speak(extractedText);
+          const wordCount = extractedText.split(/\s+/).length;
+          const estimatedSeconds = Math.max(2, wordCount / 2.5);
+          let typewriterStarted = false;
+          const startTypewriter = () => {
+            if (typewriterStarted) return;
+            typewriterStarted = true;
+            setDuration(estimatedSeconds);
+          };
+          // Race: audio arrival vs 5s timeout
+          const timeout = setTimeout(startTypewriter, 5000);
+          tts.speak(extractedText).then(() => {
+            clearTimeout(timeout);
+            startTypewriter();
+          });
         }
 
         setWaitingText(null);
@@ -1772,7 +1837,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         activeWorker = crossbarWorker;
         setWorker(crossbarWorker);
         initGameRealtime(crossbarWorker);
-        realtimeService.init(crossbarWorker);
+        realtimeService.init(crossbarWorker, { userId: effectiveUserId || 'guest' });
 
         if (decryptedUserId) {
           logger.log(
@@ -1780,10 +1845,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             decryptedUserId,
             requestId
           );
+          // Local-first: connect to embedded WAMP router (port 8088)
+          // when Flask backend is on localhost, otherwise use cloud router.
+          const isLocalBackend = window.location.hostname === 'localhost' ||
+            window.location.hostname === '127.0.0.1' ||
+            window.location.hostname === '0.0.0.0';
+          const wsUri = isLocalBackend ? WAMP_LOCAL_URL : WAMP_CLOUD_URL;
           crossbarWorker.postMessage({
             type: 'INIT',
             payload: {
-              wsUri: 'wss://aws_rasa.hertzai.com:8445/wss',
+              wsUri,
               userId: decryptedUserId,
               maxRetries: 8,
               retryDelay: 5000,
@@ -1793,12 +1864,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       } catch (error) {
         console.error('❌ Worker initialization error:', error);
         setConnectionStatus('Failed to Initialize');
+        // SSE must open even if crossbar worker fails — local TTS/agent events
+        // only arrive via SSE, not WAMP. Pass null worker, SSE opens immediately.
+        realtimeService.init(null, { userId: effectiveUserId || 'guest' });
       } finally {
         isInitializing = false;
       }
     };
 
-    if (decryptedUserId && !activeWorker) {
+    if (!activeWorker) {
       initializeWorker();
     }
 
@@ -1811,69 +1885,105 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     };
   }, [decryptedUserId]);
 
-  // ── Setup progress SSE listener ──────────────────────────────────────
-  // Listens for long-running setup job progress (TTS engine install, model
-  // downloads, etc.) and adds them as chat messages with SetupProgressCard.
+  // ── Realtime event subscriptions (transport-agnostic) ─────────────────
+  // All events arrive via realtimeService (WAMP primary, SSE fallback).
+  // No transport-specific code here — realtimeService handles reconnection,
+  // dedup, and guest/JWT auth internally.
+  // Redirect JS console to server log file (WebView2 has no dev tools access)
   useEffect(() => {
-    // Guard: skip SSE if no JWT — unauthenticated users would trigger a
-    // 401 reconnection storm (EventSource retries every 3s on HTTP errors
-    // with no onerror handler, freezing the UI event loop).
-    const jwt = localStorage.getItem('jwt');
-    if (!jwt) return;
-
-    const baseUrl = window.location.origin;
-    const sseUrl = `${baseUrl}/api/social/events/stream?token=${encodeURIComponent(jwt)}`;
-
-    let eventSource;
-    try {
-      eventSource = new EventSource(sseUrl);
-    } catch {
-      return; // EventSource not available
-    }
-
-    // Kill connection on auth/server errors to prevent reconnect storm
-    eventSource.onerror = () => {
-      if (eventSource.readyState === EventSource.CLOSED) return;
-      eventSource.close();
+    const _origLog = console.log;
+    const _origWarn = console.warn;
+    const _origErr = console.error;
+    const _send = (level, args) => {
+      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+      if (msg.includes('[TTS]') || msg.includes('[SSE]')) {
+        fetch('/api/jslog', { method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({level, msg}) }).catch(() => {});
+      }
     };
+    console.log = (...args) => { _origLog(...args); _send('log', args); };
+    console.warn = (...args) => { _origWarn(...args); _send('warn', args); };
+    console.error = (...args) => { _origErr(...args); _send('error', args); };
+    return () => { console.log = _origLog; console.warn = _origWarn; console.error = _origErr; };
+  }, []);
 
-    eventSource.addEventListener('setup_progress', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.type !== 'setup_progress') return;
+  useEffect(() => {
+    // TTS audio — play when received, skip stale request_ids
+    // Persistent audio element — survives across TTS events.
+    // WebView2 autoplay policy blocks new Audio().play() from async callbacks.
+    // A persistent element primed by user interaction (handleSend click) is allowed.
+    const ttsAudio = document.getElementById('nunba-tts-audio') || (() => {
+      const el = document.createElement('audio');
+      el.id = 'nunba-tts-audio';
+      el.preload = 'auto';
+      document.body.appendChild(el);
+      return el;
+    })();
 
-        setMessages((prev) => {
-          // Find existing card for this job or create new one
-          const existingIdx = prev.findIndex(
-            (m) => m.type === 'setup_progress' && m.jobType === data.job_type
-          );
-
-          if (existingIdx >= 0) {
-            // Append step to existing card
-            const updated = [...prev];
-            updated[existingIdx] = {
-              ...updated[existingIdx],
-              steps: [...updated[existingIdx].steps, data],
-              isComplete: data.message?.includes('ready to use') || data.message?.includes('Ready'),
-            };
-            return updated;
-          }
-
-          // New job — insert progress card
-          return [...prev, {
-            type: 'setup_progress',
-            jobType: data.job_type,
-            steps: [data],
-            isComplete: false,
-            timestamp: new Date(),
-          }];
+    const unsubTts = realtimeService.on('tts', (data) => {
+      console.log('[TTS] Event received:', data.generated_audio_url, 'req:', data.request_id);
+      if (data.request_id && requestIdRef.current && data.request_id !== requestIdRef.current) {
+        console.log('[TTS] Skipped stale:', data.request_id, '!= current:', requestIdRef.current);
+        return;
+      }
+      if (data.generated_audio_url) {
+        console.log('[TTS] Playing audio:', data.generated_audio_url);
+        ttsAudio.src = data.generated_audio_url;
+        // Wire to audioRef so VoiceVisualizer can animate
+        audioRef.current = ttsAudio;
+        setIsPlayingResponse(true);
+        ttsAudio.onended = () => setIsPlayingResponse(false);
+        ttsAudio.onerror = () => setIsPlayingResponse(false);
+        ttsAudio.play().then(() => {
+          console.log('[TTS] Audio playing OK');
+        }).catch((err) => {
+          console.error('[TTS] Play FAILED:', err.message);
+          setIsPlayingResponse(false);
+          const resumeAudio = () => {
+            ttsAudio.play().catch(() => {});
+            document.removeEventListener('click', resumeAudio);
+          };
+          document.addEventListener('click', resumeAudio, { once: true });
         });
-      } catch { /* ignore parse errors */ }
+      }
     });
 
-    return () => {
-      if (eventSource) eventSource.close();
-    };
+    // Setup progress — TTS engine install, model downloads
+    const unsubSetup = realtimeService.on('setup_progress', (data) => {
+      if (data.type !== 'setup_progress') return;
+      setMessages((prev) => {
+        const existingIdx = prev.findIndex(
+          (m) => m.type === 'setup_progress' && m.jobType === data.job_type
+        );
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            steps: [...updated[existingIdx].steps, data],
+            isComplete: data.message?.includes('ready to use') || data.message?.includes('Ready'),
+          };
+          return updated;
+        }
+        return [...prev, {
+          type: 'setup_progress',
+          jobType: data.job_type,
+          steps: [data],
+          isComplete: false,
+          timestamp: new Date(),
+        }];
+      });
+    });
+
+    // Capability updates — "I can see/talk/hear" when models load
+    const unsubCapability = realtimeService.on('capability_update', (data) => {
+      const label = CAPABILITY_LABELS[data.capability];
+      if (label && !announcedCapsRef.current.has(data.capability)) {
+        announcedCapsRef.current.add(data.capability);
+        pushNotification({ type: 'success', message: label });
+      }
+    });
+
+    return () => { unsubTts(); unsubSetup(); unsubCapability(); };
   }, []);
 
   useEffect(() => {
@@ -1917,12 +2027,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           localStorage.setItem('guest_name_verified', 'true');
           setGuestNameConflict(null);
         } else {
+          // Forge legendary variants — anime-style suffixes, not boring numbers
+          const _suffixes = ['zen', 'ra', 'ki', 'va', 'rin', 'ax', 'ix', 'on', 'ex', 'ith', 'ark', 'os'];
+          const _pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
           setGuestNameConflict({
-            message: `The name "${guestName}" is already taken.`,
+            taken: true,
             suggestions: data.suggestions || [
-              `${guestName}_${Math.floor(Math.random() * 999)}`,
-              `${guestName}${new Date().getFullYear()}`,
-            ],
+              `${guestName}${_pick(_suffixes)}`,
+              `${guestName}${_pick(_suffixes)}`,
+              `${guestName}${_pick(_suffixes)}`,
+            ].filter((v, i, a) => a.indexOf(v) === i), // dedupe
           });
         }
       } catch (err) {
@@ -2131,11 +2245,123 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const audioChunksRef = useRef([]);
 
   const handleStart = () => {
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
+    // Barge-in: if TTS is playing, stop it before starting mic
+    if (tts.isSpeaking) {
+      tts.stop();
+      setDuration(0);
+      setAnimatingMessageIndex(null);
+    }
 
-    if (SpeechRecognition) {
-      // ── Web Speech API path (Chrome, Edge, Windows WebView2) ──
+    // Tier 1: WebSocket streaming STT (GPU faster-whisper, real-time)
+    const _useStreamingWhisper = async () => {
+      try {
+        // Discover streaming STT WebSocket port
+        const portResp = await fetch('/voice/stt/stream-port');
+        if (!portResp.ok) return false;
+        const { url: wsUrl } = await portResp.json();
+        if (!wsUrl) return false;
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 16000,
+          },
+        });
+
+        // Connect WebSocket
+        const ws = new WebSocket(wsUrl);
+        let wsReady = false;
+        let autoSendTimer = null;
+        let fullText = '';
+
+        ws.onopen = () => { wsReady = true; };
+        ws.onmessage = (evt) => {
+          try {
+            const data = JSON.parse(evt.data);
+            if (data.text?.trim()) {
+              if (data.is_final) {
+                fullText += (fullText ? ' ' : '') + data.text.trim();
+                setInputMessage(fullText);
+                // Auto-send after 1s of silence (fast conversational flow)
+                clearTimeout(autoSendTimer);
+                autoSendTimer = setTimeout(() => {
+                  if (fullText.trim() && handleSendRef.current) {
+                    handleSendRef.current();
+                    fullText = '';
+                  }
+                }, 1000);
+              } else {
+                // Interim — show current full + interim
+                setInputMessage(fullText + (fullText ? ' ' : '') + data.text.trim());
+              }
+            }
+          } catch { /* ignore malformed messages */ }
+        };
+        ws.onerror = () => { wsReady = false; };
+
+        // Record audio and send chunks over WebSocket
+        // Use AudioWorklet or ScriptProcessor to get raw PCM
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const source = audioCtx.createMediaStreamSource(stream);
+        const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+        processor.onaudioprocess = (e) => {
+          if (!wsReady) return;
+          // Echo cancellation: don't send mic audio while TTS is playing
+          // (prevents the agent from hearing its own voice)
+          if (tts.isSpeaking || isPlayingResponse) return;
+          const float32 = e.inputBuffer.getChannelData(0);
+          // Convert float32 [-1,1] to int16 PCM
+          const pcm16 = new Int16Array(float32.length);
+          for (let i = 0; i < float32.length; i++) {
+            pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
+          }
+          ws.send(pcm16.buffer);
+        };
+
+        source.connect(processor);
+        processor.connect(audioCtx.destination);
+
+        recognitionRef.current = {
+          stop: () => {
+            // Send final control message
+            if (wsReady) {
+              try { ws.send(JSON.stringify({ control: 'final' })); } catch {}
+            }
+            processor.disconnect();
+            source.disconnect();
+            audioCtx.close();
+            stream.getTracks().forEach(t => t.stop());
+            // Wait briefly for final transcription, then close
+            setTimeout(() => {
+              ws.close();
+              clearTimeout(autoSendTimer);
+              if (fullText.trim() && handleSendRef.current) {
+                handleSendRef.current();
+                fullText = '';
+              }
+              setIsRecording(false);
+            }, 500);
+          },
+          _type: 'whisper-stream',
+        };
+        setIsRecording(true);
+        return true;
+      } catch (err) {
+        console.warn('Streaming STT failed:', err.message);
+        return false;
+      }
+    };
+
+    // Tier 2: Browser Web Speech API
+    const _useWebSpeech = () => {
+      const SpeechRecognition =
+        window.SpeechRecognition || window.webkitSpeechRecognition;
+
+      if (!SpeechRecognition) return false;
+
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
@@ -2143,63 +2369,38 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       recognition.lang = _sttLangMap[_hartLang] || _hartLang;
 
       let committedText = '';
+      let autoSendTimer = null;
 
       recognition.onresult = (event) => {
         let interim = '';
         let finalText = '';
         for (let i = 0; i < event.results.length; i++) {
           const result = event.results[i];
-          if (result.isFinal) {
-            finalText += result[0].transcript;
-          } else {
-            interim += result[0].transcript;
-          }
+          if (result.isFinal) finalText += result[0].transcript;
+          else interim += result[0].transcript;
         }
         committedText = finalText;
         setInputMessage(committedText + interim);
-      };
 
-      let autoSendTimer = null;
-      const origOnResult = recognition.onresult;
-      recognition.onresult = (event) => {
-        origOnResult(event);
         const lastResult = event.results[event.results.length - 1];
         if (lastResult.isFinal) {
           clearTimeout(autoSendTimer);
           autoSendTimer = setTimeout(() => {
-            if (committedText.trim()) {
-              if (handleSendRef.current) handleSendRef.current();
+            if (committedText.trim() && handleSendRef.current) {
+              handleSendRef.current();
               committedText = '';
             }
-          }, 1500);
+          }, 1000);
         }
       };
 
       recognition.onerror = (event) => {
         console.error('Speech recognition error', event.error);
-        // If permission denied, fall through to native mic fallback
+        // If permission denied, fall through to lower-tier fallbacks
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           setIsRecording(false);
           recognitionRef.current = null;
-          if (window.pywebview && window.pywebview.api && window.pywebview.api.native_mic_record) {
-            console.log('[STT] SpeechRecognition denied, falling back to native mic');
-            setInputMessage('Listening (5s)...');
-            setIsRecording(true);
-            window.pywebview.api.native_mic_record(5).then((result) => {
-              setIsRecording(false);
-              if (result && !result.startsWith('__ERROR__')) {
-                setInputMessage(result);
-                setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 500);
-              } else {
-                setInputMessage('');
-                console.warn('[STT] Native mic error:', result);
-              }
-            }).catch((err) => {
-              setIsRecording(false);
-              setInputMessage('');
-              console.error('[STT] Native mic call failed:', err);
-            });
-          }
+          _useMediaRecorder() || _useNativeMic();
         }
       };
 
@@ -2215,11 +2416,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       recognition.start();
       recognitionRef.current = recognition;
       setIsRecording(true);
-      return;
-    }
+      return true;
+    };
 
-    // ── MediaRecorder fallback (when getUserMedia available — Chrome, Edge, Electron, HTTPS) ──
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    // Tier 3: MediaRecorder fallback (when getUserMedia available — Chrome, Edge, Electron, HTTPS)
+    const _useMediaRecorder = () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
       navigator.mediaDevices.getUserMedia({ audio: true })
         .then((stream) => {
           audioChunksRef.current = [];
@@ -2255,14 +2457,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         })
         .catch((err) => {
           console.error('[STT] Mic access denied:', err);
+          _useNativeMic();
         });
-      return;
-    }
+      return true;
+    };
 
-    // ── Native mic fallback (pywebview JS-Python bridge) ──
+    // Tier 4: Native mic fallback (pywebview JS-Python bridge)
     // Used when getUserMedia is unavailable (macOS WKWebView over HTTP).
     // Records via Python sounddevice and transcribes via Whisper server-side.
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.native_mic_record) {
+    const _useNativeMic = () => {
+      if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.native_mic_record) return false;
       console.log('[STT] Using native pywebview mic capture');
       setInputMessage('Listening (5s)...');
       setIsRecording(true);
@@ -2280,11 +2484,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         setInputMessage('');
         console.error('[STT] Native mic call failed:', err);
       });
-      return;
-    }
+      return true;
+    };
 
-    alert('Microphone is not available. Please check System Settings > Privacy > Microphone.');
+    // Tier cascade: WebSocket streaming → Web Speech → MediaRecorder → Native mic
+    _useStreamingWhisper().then(ok => {
+      if (!ok && !_useWebSpeech() && !_useMediaRecorder() && !_useNativeMic()) {
+        alert('Microphone is not available. Please check System Settings > Privacy > Microphone.');
+      }
+    });
   };
+  handleStartRef.current = handleStart;
 
   const handleStop = () => {
     if (recognitionRef.current) {
@@ -2318,6 +2528,36 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     r.lang = _sttLangMap[_wkLang] || _wkLang;
     r.onresult = (e) => {
       const text = e.results[e.results.length - 1][0].transcript.toLowerCase().trim();
+      if (!text) return;
+
+      // Barge-in: speech detected while agent is talking
+      // Must distinguish user speech from echo (mic picking up TTS audio)
+      if (tts.isSpeaking || isPlayingResponse) {
+        // Get the last agent response text
+        const lastAgent = messages.filter(m => m.type === 'assistant').slice(-1)[0];
+        const agentText = (lastAgent?.content || '').toLowerCase();
+
+        // If the detected speech is a substring of what the agent is saying,
+        // it's echo (mic hearing the speakers), not the user — ignore it
+        const isEcho = agentText && (
+          agentText.includes(text) ||
+          text.split(' ').filter(w => w.length > 3).every(w => agentText.includes(w))
+        );
+
+        if (isEcho) return; // ignore echo
+
+        // Real user speech — barge in
+        tts.stop();
+        setDuration(0);
+        setAnimatingMessageIndex(null);
+        if (text.length > 2) {
+          setInputMessage(text);
+          setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 300);
+        }
+        return;
+      }
+
+      // Wake word: "Hey Nunba [command]"
       const wakeIdx = text.indexOf('nunba');
       if (wakeIdx >= 0) {
         const command = text.slice(wakeIdx + 5).trim();
@@ -2346,6 +2586,83 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       }
     } catch { /* clipboard not available */ }
   };
+
+  // ── Video mode: stream webcam frames to VisionService at 5 FPS ──
+  const frameStreamRef = useRef(null);
+
+  useEffect(() => {
+    if (mediaMode !== 'video') {
+      // Cleanup if switching away from video mode
+      if (frameStreamRef.current) {
+        frameStreamRef.current.stop();
+        frameStreamRef.current = null;
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const userId = decryptedUserId || localStorage.getItem('guest_name') || 'anon';
+
+    const startStreaming = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480, frameRate: 5 },
+        });
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+
+        // Connect to VisionService WebSocket (port 5460)
+        const wsPort = 5460;
+        const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.muted = true;
+        await video.play();
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 480;
+        const ctx = canvas.getContext('2d');
+
+        ws.onopen = () => {
+          // Send user_id first, then video_start
+          ws.send(userId);
+          ws.send('video_start');
+        };
+
+        // Stream frames at 5 FPS — backend discards what it can't process
+        const interval = setInterval(() => {
+          if (ws.readyState !== WebSocket.OPEN || cancelled) return;
+          ctx.drawImage(video, 0, 0, 640, 480);
+          canvas.toBlob((blob) => {
+            if (blob && ws.readyState === WebSocket.OPEN) {
+              blob.arrayBuffer().then(buf => ws.send(buf));
+            }
+          }, 'image/jpeg', 0.6); // quality 0.6 = ~20-40KB per frame
+        }, 200); // 200ms = 5 FPS
+
+        frameStreamRef.current = {
+          stop: () => {
+            clearInterval(interval);
+            try { ws.send('video_stop'); } catch {}
+            ws.close();
+            stream.getTracks().forEach(t => t.stop());
+            video.srcObject = null;
+          },
+        };
+      } catch (err) {
+        console.warn('Video frame streaming failed:', err.message);
+      }
+    };
+
+    startStreaming();
+    return () => {
+      cancelled = true;
+      if (frameStreamRef.current) {
+        frameStreamRef.current.stop();
+        frameStreamRef.current = null;
+      }
+    };
+  }, [mediaMode, decryptedUserId]);
 
   // ── Camera capture — snap frame, send as image ──
   const handleCameraCapture = async () => {
@@ -2517,6 +2834,33 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   };
 
   const handleSend = async () => {
+    // Prime TTS audio element on user gesture — required by WebView2 autoplay policy.
+    // Without this, audio.play() from async SSE callbacks is silently blocked.
+    try {
+      const ttsEl = document.getElementById('nunba-tts-audio');
+      if (ttsEl && ttsEl.paused && !ttsEl._primed) {
+        ttsEl.volume = 0;
+        ttsEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+        await ttsEl.play().catch(() => {});
+        ttsEl.volume = 1;
+        ttsEl._primed = true;
+        console.log('[TTS] Audio element primed on user gesture');
+      }
+    } catch {}
+
+    // Barge-in: stop any playing TTS when user sends a new message
+    if (tts.isSpeaking) {
+      tts.stop();
+      setDuration(0);
+      setAnimatingMessageIndex(null);
+    }
+    // Also stop F5/Piper TTS audio element (SSE-pushed audio)
+    const ttsEl = document.getElementById('nunba-tts-audio');
+    if (ttsEl && !ttsEl.paused) {
+      ttsEl.pause();
+      ttsEl.currentTime = 0;
+    }
+
     const origin = window.location.origin.toLowerCase();
     const pathname = window.location.pathname.toLowerCase();
 
@@ -2589,7 +2933,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       teacher_avatar_id: agentData?.teacher_avatar_id || null,
       conversation_id: conversationId,
       request_id: generatedRequestId,
-      prompt_id: currentAgent?.prompt_id || null,
+      prompt_id: currentAgent?.prompt_id ?? 0,
       bot_type: currentAgent?.name || '',
       create_agent: currentAgent?.create_agent || false,
       autonomous_creation: currentAgent?.autonomous_creation || false,
@@ -2655,11 +2999,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             const localResult = await chatApi.chat({
               text: inputMessage,
               user_id: effectiveUserId,
+              request_id: generatedRequestId,
               agent_id: currentAgent?.id || currentAgent?.prompt_id || 'local_assistant',
               agent_type: currentAgent?.type || 'local',
               conversation_id: conversationId,
-              video_req: false,
-              prompt_id: currentAgent?.prompt_id || null,
+              media_mode: mediaMode || 'audio',
+              prompt_id: currentAgent?.prompt_id ?? 0,
               create_agent: currentAgent?.create_agent || false,
               autonomous_creation: currentAgent?.autonomous_creation || false,
               image_url: userImage || null,
@@ -2778,6 +3123,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               pushNotification({ type: 'info', message: 'Loading tools... try again in a moment' });
             }
 
+            // LiquidActionBar: if the Navigate_App tool fired, the backend
+            // attached a ui_actions array. Republish via the window event
+            // bus so the floating bar reshuffles to surface the resolved
+            // destination first. Swallow errors so a malformed payload
+            // never breaks the chat flow.
+            if (Array.isArray(resultData.ui_actions) && resultData.ui_actions.length > 0) {
+              try {
+                window.dispatchEvent(
+                  new CustomEvent('nunba:ui_actions', { detail: resultData.ui_actions }),
+                );
+              } catch (e) {
+                logger.warn('liquid_action_bar publish failed', e);
+              }
+            }
+
             // Local backend returns 'text' field, not 'response'
             // Skip assistant message when a card already consumed the text
             const responseText = resultData.text || resultData.response;
@@ -2786,7 +3146,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               const assistantMessage = {
                 type: 'assistant',
                 content: responseText,
-                source: resultData.source || null,
+                source: resultData.source || 'langchain_local',
+                timestamp: new Date(),
+                // Draft-first: tag with speculationId so the expert
+                // response arriving via WAMP can replace this bubble
+                // instead of appending a second one.
+                ...(resultData.speculation_id && resultData.expert_pending && {
+                  speculationId: resultData.speculation_id,
+                  isDraft: true,
+                }),
               };
               setMessages((prev) => {
                 const updated = [...prev];
@@ -3506,18 +3874,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           toggleDropdown={toggleDropdown}
         />
 
-        <div className="flex flex-col min-h-screen bg-black w-full">
-          <div className="w-full flex flex-col md:flex-row-reverse flex-1">
-            {/* Chat/Messages section - Now on the left for wider screens */}
+        <div className="flex flex-col h-screen bg-black w-full overflow-hidden">
+          {/* VoiceVisualizer removed from here — lives in the media column */}
+          <div className="w-full flex flex-col md:flex-row-reverse flex-1 min-h-0">
+            {/* Media column — fixed height in portrait, sticky in landscape.
+                Does NOT scroll with chat. */}
 
             <div
               className={`${
                 !uploadedImage && !uploadedPdf && window.innerWidth > 768
-                  ? (isTextMode || (!videoUrl && !audioUrl) ? 'w-0 overflow-hidden' : 'w-[30%]')
+                  ? (isTextMode ? 'w-0 overflow-hidden' : (videoUrl || mediaMode === 'audio' ? 'w-[30%]' : 'w-0 overflow-hidden'))
                   : 'w-full'
               } ${
-                window.innerWidth <= 768 ? (isTextMode || (!videoUrl && !audioUrl) ? '' : 'h-[35vh] mb-4') : ''
-              } flex justify-center items-center transition-all duration-300`}
+                window.innerWidth <= 768 ? (isTextMode ? '' : (videoUrl || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
+              } relative flex justify-center items-center transition-all duration-300 md:sticky md:top-0 md:h-screen`}
+              style={{ overflow: 'visible' }}
             >
               {!isTextMode && (
                 <>
@@ -3541,28 +3912,32 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                           onEnded={handleMediaEnded}
                           onError={handleVideoError}
                         />
-                      ) : audioUrl ? (
-                        <div className="fixed flex flex-col justify-center items-center  p-4">
-                          <div className="flex items-center space-x-4 justify-center mt-5 px-4 py-4">
-                            <div className="w-16 h-16 rounded-full bg-gray-200 flex items-center justify-center">
-                              <button className="text-gray-700 text-xl">
-                                ▶️
-                              </button>
-                            </div>
-                          </div>
-                          <div className="mt-4 w-full max-w-md">
+                      ) : mediaMode === 'audio' ? (
+                        <>
+                          {audioUrl && (
                             <audio
                               ref={audioRef}
                               src={audioUrl}
-                              className="w-full"
                               autoPlay
                               controlsList="nodownload noplaybackrate"
                               controls={false}
                               onLoadedMetadata={handleLoadedMetadataaudio}
                               onEnded={handleMediaEnded}
+                              style={{display: 'none'}}
+                            />
+                          )}
+                          <div className={`${
+                            window.innerWidth <= 768
+                              ? 'absolute top-0 inset-x-0 h-[35vh]'
+                              : 'absolute inset-0'
+                          } flex justify-center items-center`}>
+                            <VoiceVisualizer
+                              audioRef={audioRef}
+                              isActive={isPlayingResponse || tts.isSpeaking}
+                              size={window.innerWidth <= 768 ? Math.min(window.innerWidth * 0.35, 160) : Math.min(window.innerWidth * 0.2, 200)}
                             />
                           </div>
-                        </div>
+                        </>
                       ) : null}
                     </>
                   ) : (
@@ -3657,38 +4032,88 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             </div>
 
             <div
-              className={`flex-1 w-full ${
-                !isTextMode && (videoUrl || audioUrl) && !uploadedImage && !uploadedPdf && window.innerWidth > 768
+              className={`flex-1 w-full min-h-0 ${
+                !isTextMode && videoUrl && !uploadedImage && !uploadedPdf && window.innerWidth > 768
                   ? 'md:w-[60%]'
                   : 'md:w-full'
-              } overflow-x-clip pt-10 md:pt-0`}
+              } overflow-x-clip overflow-y-auto pt-2 md:pt-0`}
             >
               {messages.length === 0 ? (
                 <>
                   {guestNameConflict && (
-                    <div className="mx-4 mt-2 p-3 rounded-lg text-sm"
-                         style={{ background: 'rgba(108,99,255,0.12)', border: '1px solid rgba(108,99,255,0.3)', color: '#c4c0ff' }}>
-                      <p className="font-semibold" style={{ color: '#a8a3ff' }}>
-                        {guestNameConflict.message}
+                    <div className="mx-4 mt-2 overflow-hidden"
+                         style={{
+                           background: 'linear-gradient(135deg, rgba(15,14,23,0.95) 0%, rgba(25,22,40,0.95) 100%)',
+                           border: '1px solid rgba(108,99,255,0.25)',
+                           borderRadius: '16px',
+                           padding: '16px 20px',
+                           boxShadow: '0 0 30px rgba(108,99,255,0.08), inset 0 1px 0 rgba(255,255,255,0.05)',
+                           backdropFilter: 'blur(20px)',
+                         }}>
+                      <div className="flex items-center gap-2 mb-3">
+                        <div style={{
+                          width: 6, height: 6, borderRadius: '50%',
+                          background: '#FF6B6B',
+                          boxShadow: '0 0 8px rgba(255,107,107,0.5)',
+                          animation: 'pulse 2s ease-in-out infinite',
+                        }} />
+                        <span style={{
+                          color: 'rgba(255,255,255,0.5)',
+                          fontSize: '0.7rem',
+                          fontFamily: '"SF Mono", "Fira Code", monospace',
+                          letterSpacing: '0.1em',
+                          textTransform: 'uppercase',
+                        }}>
+                          Name taken globally
+                        </span>
+                      </div>
+                      <p style={{
+                        color: 'rgba(255,255,255,0.4)',
+                        fontSize: '0.78rem',
+                        marginBottom: 12,
+                        fontFamily: '"SF Mono", "Fira Code", monospace',
+                      }}>
+                        Forge your identity —
                       </p>
-                      <p className="mt-1" style={{ color: '#9994d6' }}>Choose an alternative:</p>
-                      <div className="flex flex-wrap gap-2 mt-2">
+                      <div className="flex flex-wrap gap-2">
                         {guestNameConflict.suggestions.map((name) => (
                           <button
                             key={name}
                             onClick={() => handleGuestNameChange(name)}
-                            className="px-3 py-1 rounded text-xs font-medium transition-colors"
-                            style={{ background: 'rgba(108,99,255,0.2)', color: '#d0ccff' }}
-                            onMouseOver={(e) => e.target.style.background = 'rgba(108,99,255,0.35)'}
-                            onMouseOut={(e) => e.target.style.background = 'rgba(108,99,255,0.2)'}
+                            className="transition-all duration-200"
+                            style={{
+                              background: 'rgba(108,99,255,0.12)',
+                              border: '1px solid rgba(108,99,255,0.3)',
+                              borderRadius: '10px',
+                              padding: '8px 16px',
+                              color: '#c4c0ff',
+                              fontSize: '0.82rem',
+                              fontFamily: '"SF Mono", "Fira Code", monospace',
+                              fontWeight: 500,
+                              letterSpacing: '0.04em',
+                              cursor: 'pointer',
+                            }}
+                            onMouseOver={(e) => {
+                              e.target.style.background = 'rgba(108,99,255,0.25)';
+                              e.target.style.borderColor = 'rgba(108,99,255,0.6)';
+                              e.target.style.boxShadow = '0 0 16px rgba(108,99,255,0.2)';
+                              e.target.style.transform = 'translateY(-1px)';
+                            }}
+                            onMouseOut={(e) => {
+                              e.target.style.background = 'rgba(108,99,255,0.12)';
+                              e.target.style.borderColor = 'rgba(108,99,255,0.3)';
+                              e.target.style.boxShadow = 'none';
+                              e.target.style.transform = 'translateY(0)';
+                            }}
                           >
-                            {name}
+                            @{name}
                           </button>
                         ))}
                       </div>
                     </div>
                   )}
-                  <div className="h-5/6 flex items-center justify-center">
+                  <div className="fixed inset-0 flex items-center justify-center pointer-events-none" style={{zIndex: 1}}>
+                   <div className="pointer-events-auto">
                     {agentsLoading ? (
                       /* ── Loading skeleton while agents are being fetched ── */
                       <div className="text-center space-y-4 mb-1 w-full max-w-lg px-4">
@@ -3722,7 +4147,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                         )}
                       </div>
                     ) : (
-                    <div className="text-center space-y-4 mb-1">
+                    <div className="text-center space-y-4 mb-1 w-full max-w-2xl mx-auto px-4">
                       {/* Backend offline warning — only when no path forward (local_only or no internet) */}
                       {backendHealth === 'offline' && allAgents.length === 0 && (intelligencePreference === 'local_only' || !navigator.onLine) && (
                         <div className="flex items-center justify-center gap-2 mb-4 px-4 py-2 rounded-lg text-sm"
@@ -3828,6 +4253,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                       )}
                     </div>
                     )}
+                   </div>
                   </div>
                 </>
               ) : (
@@ -4059,6 +4485,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           />
         )}
       </div>}
+
+      {/* Agent UI Overlay — floating glass cards for agent-pushed components */}
+      <AgentOverlay
+        navigate={navigate}
+        onInlineChatCard={(card) => {
+          setMessages((prev) => [...prev, {
+            type: 'agent_ui',
+            component: card,
+            timestamp: new Date(),
+            sender: 'agent',
+          }]);
+        }}
+      />
     </>
   );
 };

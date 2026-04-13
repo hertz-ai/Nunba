@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>HART Voice</title>
+<style>
+*{margin:0;padding:0}
+body{background:#0A0914;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:system-ui;color:#ccc}
+canvas{background:#0A0914;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:8px}
+.row button{background:#1a1a2e;border:1px solid #333;color:#aaa;padding:6px 14px;border-radius:14px;cursor:pointer;font-size:11px}
+.row button:hover{border-color:#6C63FF;color:#ddd}
+.row button.on{background:#6C63FF;color:#fff;border-color:#6C63FF}
+#status{font-size:10px;color:#555;letter-spacing:2px;text-transform:uppercase;height:14px}
+</style>
+</head>
+<body>
+<canvas id="viz" width="400" height="400" style="width:300px;height:300px"></canvas>
+<div id="status"></div>
+<div class="row">
+  <button onclick="play('hart-voices/en/greeting.ogg',this)">Greeting</button>
+  <button onclick="play('hart-voices/en/ack_music_art.ogg',this)">Music</button>
+  <button onclick="play('hart-voices/en/ack_building_coding.ogg',this)">Code</button>
+  <button onclick="play('hart-voices/en/ack_nature_movement.ogg',this)">Nature</button>
+  <button onclick="play('hart-voices/en/ack_games_strategy.ogg',this)">Games</button>
+  <button onclick="play('hart-voices/en/reveal_intro.ogg',this)">Reveal</button>
+  <button onclick="stop()">Stop</button>
+</div>
+<audio id="audio" crossorigin="anonymous"></audio>
+<script>
+var canvas = document.getElementById('viz');
+var ctx = canvas.getContext('2d');
+var audio = document.getElementById('audio');
+var statusEl = document.getElementById('status');
+var W = canvas.width, H = canvas.height;
+var cx = W / 2, cy = H / 2;
+var audioCtx = null, analyser = null, source = null;
+var isPlaying = false, time = 0;
+var freqData = null;
+
+var bass = 0, mid = 0, treble = 0;
+var bassCur = 0, midCur = 0, trebleCur = 0;
+var dir = 1; // flips on natural speech pauses
+var wasQuiet = false; // tracks if we were in a quiet zone
+
+function connectAudio() {
+  if (source) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.8;
+    source = audioCtx.createMediaElementSource(audio);
+    source.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    freqData = new Uint8Array(analyser.frequencyBinCount);
+  } catch(e) {}
+}
+
+function play(src, btn) {
+  audio.src = src; connectAudio();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  audio.play(); isPlaying = true; statusEl.textContent = 'speaking';
+  var btns = document.querySelectorAll('.row button');
+  for (var i = 0; i < btns.length; i++) btns[i].classList.remove('on');
+  if (btn) btn.classList.add('on');
+}
+function stop() {
+  audio.pause(); audio.currentTime = 0; isPlaying = false; statusEl.textContent = '';
+  var btns = document.querySelectorAll('.row button');
+  for (var i = 0; i < btns.length; i++) btns[i].classList.remove('on');
+}
+audio.addEventListener('ended', stop);
+
+var PTS = 180;
+var outerR = new Float32Array(PTS + 1);
+
+function render() {
+  requestAnimationFrame(render);
+  time += 0.02;
+
+  if (isPlaying && analyser && freqData) {
+    analyser.getByteFrequencyData(freqData);
+    var bS = 0, mS = 0, tS = 0, len = freqData.length;
+    for (var i = 0; i < len; i++) {
+      if (i < len * 0.15) bS += freqData[i];
+      else if (i < len * 0.5) mS += freqData[i];
+      else tS += freqData[i];
+    }
+    bass = bS / (len * 0.15) / 255;
+    mid = mS / (len * 0.35) / 255;
+    treble = tS / (len * 0.5) / 255;
+  } else {
+    bass *= 0.95; mid *= 0.95; treble *= 0.95;
+  }
+
+  bassCur += (bass - bassCur) * 0.12;
+  midCur += (mid - midCur) * 0.10;
+  trebleCur += (treble - trebleCur) * 0.08;
+  var energy = bassCur * 0.5 + midCur * 0.35 + trebleCur * 0.15;
+
+  // Flip wave direction on natural speech pauses
+  if (isPlaying) {
+    if (energy < 0.03) { wasQuiet = true; }
+    else if (wasQuiet && energy > 0.08) { wasQuiet = false; dir = -dir; }
+  }
+
+  ctx.fillStyle = '#0A0914';
+  ctx.fillRect(0, 0, W, H);
+
+  var baseR = 100;
+
+  // Background glow
+  var bg = ctx.createRadialGradient(cx, cy, baseR - 10, cx, cy, baseR + 70);
+  bg.addColorStop(0, 'rgba(108,99,255,' + (0.02 + energy * 0.06).toFixed(3) + ')');
+  bg.addColorStop(1, 'rgba(10,9,20,0)');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(cx, cy, baseR + 70, 0, Math.PI * 2); ctx.fill();
+
+  // Compute outer ring radius — ALWAYS >= baseR (peaks only go outward)
+  for (var i = 0; i <= PTS; i++) {
+    var a = (i / PTS) * Math.PI * 2;
+    var d = dir;
+    // Idle breathing — visible but calm
+    var idle =
+      6 * Math.sin(2 * a + time * 0.6) +
+      4 * Math.sin(3 * a - time * 0.45) +
+      3 * Math.sin(5 * a + time * 0.7);
+    // Audio-reactive wave
+    var wave = idle +
+      bassCur   * 55 * Math.sin(2 * a + time * 1.5 * d) +
+      bassCur   * 32 * Math.sin(3 * a - time * 0.8 * d) +
+      midCur    * 40 * Math.sin(4 * a + time * 2.2 * d) +
+      midCur    * 24 * Math.sin(6 * a - time * 1.3 * d) +
+      trebleCur * 28 * Math.sin(8 * a + time * 3.0 * d) +
+      trebleCur * 16 * Math.sin(11 * a - time * 1.8 * d);
+
+    // Smooth rectifier: wave² / (|wave| + softness) — no sharp V at zero crossings
+    // Peaks stay tall, troughs become gentle hills instead of sharp folds
+    var soft = 8;
+    var rectified = (wave * wave) / (Math.abs(wave) + soft);
+    outerR[i] = baseR + rectified;
+  }
+
+  // --- Fill area between base circle and outer ring ---
+  // Draw as one filled shape: outer ring forward, then base circle backward
+  ctx.beginPath();
+  // Outer ring path (clockwise)
+  for (var i = 0; i <= PTS; i++) {
+    var a = (i / PTS) * Math.PI * 2;
+    var x = cx + Math.cos(a) * outerR[i];
+    var y = cy + Math.sin(a) * outerR[i];
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  // Base circle path (counter-clockwise to create the "hole")
+  for (var i = PTS; i >= 0; i--) {
+    var a = (i / PTS) * Math.PI * 2;
+    var x = cx + Math.cos(a) * baseR;
+    var y = cy + Math.sin(a) * baseR;
+    ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+
+  // Find actual max peak radius this frame
+  var maxPeakR = baseR;
+  for (var i = 0; i <= PTS; i++) {
+    if (outerR[i] > maxPeakR) maxPeakR = outerR[i];
+  }
+
+  // Gradient spans exactly from baseR to maxPeakR
+  // So stop 0 = at the base edge, stop 1 = at the tallest peak tip
+  if (maxPeakR > baseR + 1) {
+    var fillGrad = ctx.createRadialGradient(cx, cy, baseR, cx, cy, maxPeakR);
+    fillGrad.addColorStop(0, 'rgba(10,9,20,0)');
+    fillGrad.addColorStop(0.3, 'rgba(80,60,220,' + (0.08 + energy * 0.15).toFixed(3) + ')');
+    fillGrad.addColorStop(0.7, 'rgba(108,99,255,' + (0.15 + energy * 0.25).toFixed(3) + ')');
+    fillGrad.addColorStop(1, 'rgba(150,140,255,' + (0.25 + energy * 0.4).toFixed(3) + ')');
+    ctx.fillStyle = fillGrad;
+  } else {
+    ctx.fillStyle = 'rgba(108,99,255,0.05)';
+  }
+  ctx.fill();
+
+  // --- Outer ring neon glow ---
+  ctx.globalCompositeOperation = 'lighter';
+
+  // Bloom
+  ctx.beginPath();
+  for (var i = 0; i <= PTS; i++) {
+    var a = (i / PTS) * Math.PI * 2;
+    var x = cx + Math.cos(a) * outerR[i];
+    var y = cy + Math.sin(a) * outerR[i];
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(108,99,255,' + (0.04 + energy * 0.05).toFixed(3) + ')';
+  ctx.lineWidth = 14;
+  ctx.stroke();
+
+  // Mid glow
+  ctx.beginPath();
+  for (var i = 0; i <= PTS; i++) {
+    var a = (i / PTS) * Math.PI * 2;
+    var x = cx + Math.cos(a) * outerR[i];
+    var y = cy + Math.sin(a) * outerR[i];
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(108,99,255,' + (0.08 + energy * 0.1).toFixed(3) + ')';
+  ctx.lineWidth = 6;
+  ctx.stroke();
+
+  // Sharp edge
+  ctx.beginPath();
+  for (var i = 0; i <= PTS; i++) {
+    var a = (i / PTS) * Math.PI * 2;
+    var x = cx + Math.cos(a) * outerR[i];
+    var y = cy + Math.sin(a) * outerR[i];
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(170,165,255,' + (0.5 + energy * 0.5).toFixed(3) + ')';
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
+  // Base circle removed — gradient fill and outer ring carry the shape
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  // --- Core — breathing glow + pulsing dot ---
+  var breathe1 = Math.sin(time * 1.2) * 0.3 + Math.sin(time * 1.9) * 0.15;
+  var breathe2 = Math.sin(time * 0.8) * 0.2 + Math.cos(time * 1.4) * 0.1;
+
+  // Outer glow — breathes even when idle
+  var glowR = (8 + energy * 12 + breathe1 * 4) * 3;
+  var cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+  cg.addColorStop(0, 'rgba(200,195,255,' + (0.15 + energy * 0.5 + breathe1 * 0.08).toFixed(3) + ')');
+  cg.addColorStop(0.3, 'rgba(108,99,255,' + (0.08 + energy * 0.2 + breathe2 * 0.04).toFixed(3) + ')');
+  cg.addColorStop(0.6, 'rgba(80,60,200,' + (0.03 + energy * 0.08 + breathe1 * 0.02).toFixed(3) + ')');
+  cg.addColorStop(1, 'rgba(108,99,255,0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(cx, cy, glowR, 0, Math.PI * 2); ctx.fill();
+
+  // Inner bright core — pulses
+  var coreR = 3 + energy * 6 + breathe1 * 1.5;
+  var cg2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR);
+  cg2.addColorStop(0, 'rgba(220,215,255,' + (0.3 + energy * 0.5 + breathe2 * 0.1).toFixed(3) + ')');
+  cg2.addColorStop(0.5, 'rgba(108,99,255,' + (0.1 + energy * 0.3 + breathe1 * 0.05).toFixed(3) + ')');
+  cg2.addColorStop(1, 'rgba(108,99,255,0)');
+  ctx.fillStyle = cg2;
+  ctx.beginPath(); ctx.arc(cx, cy, coreR, 0, Math.PI * 2); ctx.fill();
+
+  // Hot dot — size breathes
+  var dotR = 1.5 + energy * 2.5 + Math.sin(time * 2.5) * 0.6;
+  ctx.fillStyle = 'rgba(255,255,255,' + (0.15 + energy * 0.7 + breathe2 * 0.1).toFixed(3) + ')';
+  ctx.beginPath(); ctx.arc(cx, cy, dotR, 0, Math.PI * 2); ctx.fill();
+}
+
+render();
+</script>
+</body>
+</html>

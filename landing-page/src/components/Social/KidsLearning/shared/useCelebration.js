@@ -1,11 +1,13 @@
 /**
  * useCelebration hook
  *
- * Encapsulates celebration overlay + progress stars state for any game template.
- * Call triggerCorrect() on right answers, triggerStreak(count) on streaks,
- * and triggerComplete(score, total) when the game ends.
+ * Encapsulates celebration state for any game template.
+ * Call triggerCorrect() on right answers, triggerWrong() on wrong,
+ * triggerStreak(count) on streaks, triggerComplete(score, total) when done.
  *
- * Returns state for both CelebrationOverlay and ProgressStars components.
+ * Returns state for InlineCelebration (within game area, per-interaction)
+ * or legacy CelebrationOverlay (full-screen). Templates should use
+ * InlineCelebration for voice games, CelebrationOverlay for touch games.
  */
 import {useState, useCallback} from 'react';
 
@@ -15,15 +17,24 @@ export default function useCelebration() {
   const [celebStreak, setCelebStreak] = useState(0);
   const [celebScore, setCelebScore] = useState(null);
   const [starsEarned, setStarsEarned] = useState(0);
+  const [celebPosition, setCelebPosition] = useState(null);
 
-  const triggerCorrect = useCallback(() => {
+  const triggerCorrect = useCallback((position) => {
     setCelebType('correct');
+    setCelebPosition(position || null);
     setCelebVisible(true);
   }, []);
 
-  const triggerStreak = useCallback((count) => {
+  const triggerWrong = useCallback((position) => {
+    setCelebType('wrong');
+    setCelebPosition(position || null);
+    setCelebVisible(true);
+  }, []);
+
+  const triggerStreak = useCallback((count, position) => {
     setCelebType('streak');
     setCelebStreak(count);
+    setCelebPosition(position || null);
     setCelebVisible(true);
   }, []);
 
@@ -33,6 +44,7 @@ export default function useCelebration() {
     setStarsEarned(stars);
     setCelebScore({correct: score, total});
     setCelebType(pct >= 0.9 ? 'perfect' : 'complete');
+    setCelebPosition(null); // complete is always centered
     setCelebVisible(true);
   }, []);
 
@@ -43,8 +55,10 @@ export default function useCelebration() {
     celebVisible,
     celebStreak,
     celebScore,
+    celebPosition,
     starsEarned,
     triggerCorrect,
+    triggerWrong,
     triggerStreak,
     triggerComplete,
     handleCelebDone,

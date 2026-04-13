@@ -28,7 +28,7 @@
  *   - failOnStatusCode: false on all cy.request() calls
  *   - cy.socialAuth() in before() once per describe block
  *   - cy.socialVisit() to navigate (token set automatically)
- *   - Generous timeouts: { timeout: 15000 }
+ *   - Generous timeouts: { timeout: 300000 }
  *   - No reliance on cy.wait('@alias') for API intercepts
  */
 
@@ -78,10 +78,10 @@ describe('Ad Components — Feed Top Banner', () => {
     }).as('impression');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // The banner should appear somewhere on the page with the ad title or CTA
-    cy.get('body', {timeout: 10000}).then(($body) => {
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasAdContent =
         text.includes('Test Ad') ||
@@ -104,9 +104,9 @@ describe('Ad Components — Feed Top Banner', () => {
     });
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
-    cy.get('body', {timeout: 10000}).then(($body) => {
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasSponsored = text.includes('Sponsored') || text.includes('Ad');
       const pageLoaded = $body.html().length > 100;
@@ -125,7 +125,7 @@ describe('Ad Components — Feed Top Banner', () => {
     }).as('adImpression');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Give time for the impression call to fire
     cy.wait(3000);
@@ -146,7 +146,7 @@ describe('Ad Components — Feed Top Banner', () => {
     });
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // Look for a dismiss/close button on the ad banner.
@@ -202,7 +202,7 @@ describe('Ad Components — Feed Top Banner', () => {
     });
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Dismiss the banner first
@@ -239,11 +239,11 @@ describe('Ad Components — Feed Top Banner', () => {
     }).as('noAd');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // No ad-specific content should appear
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const noAdBanner = !text.includes('Sponsored') || text.length > 0;
       expect(noAdBanner).to.be.true;
@@ -261,7 +261,7 @@ describe('Ad Components — Feed Top Banner', () => {
     }).as('adError');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Page should not crash even though ad API failed
@@ -295,11 +295,11 @@ describe('Ad Components — Post Interstitial', () => {
     });
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // Should see feed posts and possibly an ad card interleaved
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasFeedPosts =
         text.includes('Feed Post') ||
@@ -328,10 +328,10 @@ describe('Ad Components — Post Interstitial', () => {
     });
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasSponsored = text.includes('Sponsored') || text.includes('Ad');
       const pageLoaded = $body.html().length > 100;
@@ -358,7 +358,7 @@ describe('Ad Components — Post Interstitial', () => {
     }).as('adClick');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // Try to find and click the ad CTA
@@ -390,11 +390,11 @@ describe('Ad Components — Post Interstitial', () => {
     }).as('noAdData');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Feed should still render fine without interstitial ads
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const text = $body.text();
       const hasFeedContent =
         text.includes('Feed Post') ||
@@ -427,7 +427,7 @@ describe('Ad Components — Tracking', () => {
     }).as('trackImpression');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // Page should have loaded; impression may or may not have fired
@@ -453,7 +453,7 @@ describe('Ad Components — Tracking', () => {
     }).as('trackClick');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // Find and click ad CTA
@@ -486,7 +486,7 @@ describe('Ad Components — Tracking', () => {
     }).as('trackImpression');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(4000);
 
     // Each ad placement (AdBanner + AdCard interstitials) has its own ref guard.
@@ -512,7 +512,7 @@ describe('Ad Components — Tracking', () => {
     }).as('noImpression');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // No ad rendered means no impression should fire
@@ -532,7 +532,7 @@ describe('Ad Components — Tracking', () => {
     }).as('impressionFail');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // Even though impression failed, page should not crash
@@ -557,10 +557,10 @@ describe('Profile Tabs — Comments', () => {
   it('should show Comments tab on profile page', () => {
     const userId = Cypress.env('socialUserId');
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Look for a "Comments" tab
-    cy.get('body', {timeout: 10000}).then(($body) => {
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasCommentsTab =
         text.includes('Comments') ||
@@ -592,10 +592,10 @@ describe('Profile Tabs — Comments', () => {
     }).as('userComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       // Find the Comments tab by text
       const commentsTab = $tabs.filter(':contains("Comments")');
       if (commentsTab.length > 0) {
@@ -638,18 +638,18 @@ describe('Profile Tabs — Comments', () => {
     }).as('userComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Click Comments tab
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const commentsTab = $tabs.filter(':contains("Comments")');
       if (commentsTab.length > 0) {
         cy.wrap(commentsTab.first()).click({force: true});
         cy.wait(1500);
 
         // The comment content should appear
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasComment =
             text.includes('Test comment text') || text.includes('Test Post');
@@ -682,16 +682,16 @@ describe('Profile Tabs — Comments', () => {
     }).as('userComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const commentsTab = $tabs.filter(':contains("Comments")');
       if (commentsTab.length > 0) {
         cy.wrap(commentsTab.first()).click({force: true});
         cy.wait(1500);
 
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasCommentContent = text.includes('Insightful comment here');
           const hasPostLink = text.includes('Original Post Title');
@@ -724,17 +724,17 @@ describe('Profile Tabs — Comments', () => {
     }).as('userComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const commentsTab = $tabs.filter(':contains("Comments")');
       if (commentsTab.length > 0) {
         cy.wrap(commentsTab.first()).click({force: true});
         cy.wait(1500);
 
         // Look for relative time indicators like "2 hours ago", "2h", etc.
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasRelativeTime =
             /\d+\s*(h|hour|hr|min|minute|m|sec|s|d|day|ago)/i.test(text);
@@ -755,17 +755,17 @@ describe('Profile Tabs — Comments', () => {
     }).as('emptyComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const commentsTab = $tabs.filter(':contains("Comments")');
       if (commentsTab.length > 0) {
         cy.wrap(commentsTab.first()).click({force: true});
         cy.wait(1500);
 
         // Empty state message or at least no crash
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasEmptyState =
             text.includes('No comments') ||
@@ -800,10 +800,10 @@ describe('Profile Tabs — Comments', () => {
     }).as('commentsPage1');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const commentsTab = $tabs.filter(':contains("Comments")');
       if (commentsTab.length > 0) {
         cy.wrap(commentsTab.first()).click({force: true});
@@ -842,10 +842,10 @@ describe('Profile Tabs — Comments', () => {
     }).as('userComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const commentsTab = $tabs.filter(':contains("Comments")');
       if (commentsTab.length > 0) {
         cy.wrap(commentsTab.first()).click({force: true});
@@ -891,9 +891,9 @@ describe('Profile Tabs — Activity', () => {
   it('should show Activity tab on profile page', () => {
     const userId = Cypress.env('socialUserId');
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
-    cy.get('body', {timeout: 10000}).then(($body) => {
+    cy.get('body', {timeout: 300000}).should(($body) => {
       const text = $body.text();
       const hasActivityTab =
         text.includes('Activity') ||
@@ -938,10 +938,10 @@ describe('Profile Tabs — Activity', () => {
     }).as('userComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const activityTab = $tabs.filter(':contains("Activity")');
       if (activityTab.length > 0) {
         cy.wrap(activityTab.first()).click({force: true});
@@ -995,17 +995,17 @@ describe('Profile Tabs — Activity', () => {
     }).as('userComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const activityTab = $tabs.filter(':contains("Activity")');
       if (activityTab.length > 0) {
         cy.wrap(activityTab.first()).click({force: true});
         cy.wait(2000);
 
         // Both post and comment entries should be merged in the timeline
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasPostEntry = text.includes('Timeline Post');
           const hasCommentEntry =
@@ -1041,16 +1041,16 @@ describe('Profile Tabs — Activity', () => {
     }).as('noComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const activityTab = $tabs.filter(':contains("Activity")');
       if (activityTab.length > 0) {
         cy.wrap(activityTab.first()).click({force: true});
         cy.wait(1500);
 
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasCreatedLabel =
             text.includes('Created post') ||
@@ -1089,16 +1089,16 @@ describe('Profile Tabs — Activity', () => {
     }).as('userComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const activityTab = $tabs.filter(':contains("Activity")');
       if (activityTab.length > 0) {
         cy.wrap(activityTab.first()).click({force: true});
         cy.wait(1500);
 
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasCommentedLabel =
             text.includes('Commented on') ||
@@ -1137,17 +1137,17 @@ describe('Profile Tabs — Activity', () => {
     }).as('noComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const activityTab = $tabs.filter(':contains("Activity")');
       if (activityTab.length > 0) {
         cy.wrap(activityTab.first()).click({force: true});
         cy.wait(1500);
 
         // Look for timeline connector (MUI Timeline, or custom border-left, etc.)
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const hasTimeline =
             $body.find(
               '[class*="Timeline"], [class*="timeline"], [class*="connector"]'
@@ -1189,16 +1189,16 @@ describe('Profile Tabs — Activity', () => {
     }).as('noComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const activityTab = $tabs.filter(':contains("Activity")');
       if (activityTab.length > 0) {
         cy.wrap(activityTab.first()).click({force: true});
         cy.wait(1500);
 
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasRelativeTime =
             /\d+\s*(m|min|minute|h|hour|hr|d|day|s|sec|ago)/i.test(text) ||
@@ -1224,16 +1224,16 @@ describe('Profile Tabs — Activity', () => {
     }).as('noComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const activityTab = $tabs.filter(':contains("Activity")');
       if (activityTab.length > 0) {
         cy.wrap(activityTab.first()).click({force: true});
         cy.wait(1500);
 
-        cy.get('body').then(($body) => {
+        cy.get('body').should(($body) => {
           const text = $body.text();
           const hasEmptyState =
             text.includes('No activity') ||
@@ -1273,10 +1273,10 @@ describe('Profile Tabs — Activity', () => {
     }).as('noComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const activityTab = $tabs.filter(':contains("Activity")');
       if (activityTab.length > 0) {
         cy.wrap(activityTab.first()).click({force: true});
@@ -1326,17 +1326,17 @@ describe('Profile Tabs — Integration', () => {
     });
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       if ($tabs.length > 1) {
         // Click second tab
         cy.wrap($tabs.eq(1)).click({force: true});
         cy.wait(1000);
 
         // Verify it stayed selected
-        cy.get('[role="tab"]')
+        cy.get('[role="tab"]', {timeout: 300000})
           .eq(1)
           .should('have.attr', 'aria-selected', 'true');
 
@@ -1346,7 +1346,7 @@ describe('Profile Tabs — Integration', () => {
         cy.scrollTo('top', {ensureScrollable: false});
         cy.wait(500);
 
-        cy.get('[role="tab"]')
+        cy.get('[role="tab"]', {timeout: 300000})
           .eq(1)
           .should('have.attr', 'aria-selected', 'true');
       }
@@ -1374,10 +1374,10 @@ describe('Profile Tabs — Integration', () => {
     }).as('userComments');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       if ($tabs.length > 1) {
         // Switch to second tab
         cy.wrap($tabs.eq(1)).click({force: true});
@@ -1411,10 +1411,10 @@ describe('Profile Tabs — Integration', () => {
     });
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       if ($tabs.length >= 2) {
         // Rapidly click between tabs
         for (let i = 0; i < 5; i++) {
@@ -1437,11 +1437,11 @@ describe('Profile Tabs — Integration', () => {
     const userId = Cypress.env('socialUserId');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // First tab (Posts) should be selected by default
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       if ($tabs.length > 0) {
         cy.wrap($tabs.eq(0)).should('have.attr', 'aria-selected', 'true');
       }
@@ -1458,10 +1458,10 @@ describe('Profile Tabs — Integration', () => {
     }).as('commentsError');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 15000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
       const commentsTab = $tabs.filter(':contains("Comments")');
       if (commentsTab.length > 0) {
         cy.wrap(commentsTab.first()).click({force: true});

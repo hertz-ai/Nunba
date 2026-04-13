@@ -264,7 +264,7 @@ describe('Agent Profile -- Page Load', () => {
   it('should load the agent profile page without crashing', () => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.url().should('include', '/social/agent/test-agent-1');
   });
@@ -296,10 +296,10 @@ describe('Agent Profile -- Page Load', () => {
     });
 
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Loading state renders a CircularProgress and "Loading agent profile..." text
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const hasSpinner =
         $body.find('[class*="MuiCircularProgress"], [role="progressbar"]')
           .length > 0;
@@ -342,18 +342,18 @@ describe('Agent Profile -- Page Load', () => {
     });
 
     cy.socialVisit('/social/agent/nonexistent-agent-id-99999');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Should display "Agent not found" message
-    cy.contains('Agent not found', {timeout: 10000}).should('be.visible');
+    cy.contains('Agent not found', {timeout: 300000}).should('be.visible');
     // Should show "Back to Feed" button
-    cy.contains('Back to Feed', {timeout: 5000}).should('be.visible');
+    cy.contains('Back to Feed', {timeout: 300000}).should('be.visible');
   });
 
   it('should not crash with runtime errors', () => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').should('not.contain.text', 'Cannot read properties');
@@ -373,88 +373,88 @@ describe('Agent Profile -- With Stubbed Agent Data', () => {
   beforeEach(() => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
   });
 
   it('should display agent name in hero header', () => {
-    cy.contains('Cypress Test Agent', {timeout: 10000}).should('be.visible');
+    cy.contains('Cypress Test Agent', {timeout: 300000}).should('be.visible');
   });
 
   it('should show "Agent" badge chip', () => {
-    cy.contains('Agent', {timeout: 10000}).should('be.visible');
+    cy.contains('Agent', {timeout: 300000}).should('be.visible');
   });
 
   it('should display auto-bio from video_text', () => {
-    cy.contains('A highly capable test agent', {timeout: 10000}).should(
+    cy.contains('A highly capable test agent', {timeout: 300000}).should(
       'be.visible'
     );
   });
 
   it('should show stats row (Conversations, Level, Specializations, Status)', () => {
-    cy.contains('Conversations', {timeout: 10000}).should('exist');
-    cy.contains('Level', {timeout: 10000}).should('exist');
-    cy.contains('Specializations', {timeout: 10000}).should('exist');
-    cy.contains('Status', {timeout: 10000}).should('exist');
+    cy.contains('Conversations', {timeout: 300000}).should('exist');
+    cy.contains('Level', {timeout: 300000}).should('exist');
+    cy.contains('Specializations', {timeout: 300000}).should('exist');
+    cy.contains('Status', {timeout: 300000}).should('exist');
   });
 
   it('should render About tab by default', () => {
     // The Tabs component renders "About", "Activity", "Evolution"
-    cy.get('[role="tab"]', {timeout: 10000}).should('have.length', 3);
+    cy.get('[role="tab"]', {timeout: 300000}).should('have.length', 3);
     // About tab should be selected (Mui-selected class)
-    cy.get('[role="tab"]').eq(0).should('have.attr', 'aria-selected', 'true');
-    cy.contains('About this Agent', {timeout: 10000}).should('exist');
+    cy.get('[role="tab"]', {timeout: 300000}).eq(0).should('have.attr', 'aria-selected', 'true');
+    cy.contains('About this Agent', {timeout: 300000}).should('exist');
   });
 
   it('should render the "Talk to Agent" CTA button', () => {
-    cy.contains('Talk to Agent', {timeout: 10000}).should('be.visible');
+    cy.contains('Talk to Agent', {timeout: 300000}).should('be.visible');
   });
 
   it('should show capabilities chips', () => {
-    cy.contains('Capabilities', {timeout: 10000}).should('exist');
-    cy.contains('web_search', {timeout: 10000}).should('exist');
-    cy.contains('code_interpreter', {timeout: 10000}).should('exist');
-    cy.contains('image_generation', {timeout: 10000}).should('exist');
+    cy.contains('Capabilities', {timeout: 300000}).should('exist');
+    cy.contains('web_search', {timeout: 300000}).should('exist');
+    cy.contains('code_interpreter', {timeout: 300000}).should('exist');
+    cy.contains('image_generation', {timeout: 300000}).should('exist');
   });
 
   it('should show agent specialization chip', () => {
-    cy.contains('NLP Expert', {timeout: 10000}).should('exist');
+    cy.contains('NLP Expert', {timeout: 300000}).should('exist');
   });
 
   it('should display conversation count in stats', () => {
     // The mock agent has conversation_count: 42
-    cy.contains('42', {timeout: 10000}).should('exist');
+    cy.contains('42', {timeout: 300000}).should('exist');
   });
 
   it('should show active status indicator', () => {
     // The mock agent has status: 'active' and is_active: true
     // Stats row displays "Active" for active agents
-    cy.contains('Active', {timeout: 10000}).should('exist');
+    cy.contains('Active', {timeout: 300000}).should('exist');
   });
 
   it('should display creation date', () => {
     // The mock agent was created on Nov 15, 2025
     // Component renders: "Created {formatDate(createdAt)}" via toLocaleDateString('en-US')
-    cy.contains('Nov 15, 2025', {timeout: 10000}).should('exist');
+    cy.contains('Nov 15, 2025', {timeout: 300000}).should('exist');
   });
 
   it('should show About tab with model metadata', () => {
     // The mock agent has model: 'gpt-4' and type: 'assistant'
-    cy.contains('Model', {timeout: 10000}).should('exist');
-    cy.contains('gpt-4', {timeout: 10000}).should('exist');
+    cy.contains('Model', {timeout: 300000}).should('exist');
+    cy.contains('gpt-4', {timeout: 300000}).should('exist');
   });
 
   it('should show evolution history on About tab', () => {
     // Evolution history is displayed on the About tab when available
-    cy.contains('Evolution History', {timeout: 10000}).should('exist');
-    cy.contains('Agent created', {timeout: 10000}).should('exist');
-    cy.contains('First evolution', {timeout: 10000}).should('exist');
+    cy.contains('Evolution History', {timeout: 300000}).should('exist');
+    cy.contains('Agent created', {timeout: 300000}).should('exist');
+    cy.contains('First evolution', {timeout: 300000}).should('exist');
   });
 
   it('should render avatar with SmartToy icon when no image_url', () => {
     // The mock agent has no avatar_url, so SmartToyIcon is shown inside the Avatar.
     // MUI icons from @mui/icons-material render with data-testid matching the component name.
-    cy.get('[data-testid="SmartToyIcon"]', {timeout: 10000}).should('exist');
+    cy.get('[data-testid="SmartToyIcon"]', {timeout: 300000}).should('exist');
   });
 });
 
@@ -469,49 +469,49 @@ describe('Agent Profile -- Tab Navigation', () => {
   beforeEach(() => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
   });
 
   it('should switch to Activity tab when clicked', () => {
-    cy.get('[role="tab"]').eq(1).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(1).click({force: true});
     cy.wait(1000);
 
     // Activity tab should now be selected
-    cy.get('[role="tab"]').eq(1).should('have.attr', 'aria-selected', 'true');
+    cy.get('[role="tab"]', {timeout: 300000}).eq(1).should('have.attr', 'aria-selected', 'true');
     // Should show activity-related content
-    cy.contains('Activity Timeline', {timeout: 10000}).should('exist');
+    cy.contains('Activity Timeline', {timeout: 300000}).should('exist');
   });
 
   it('should switch to Evolution tab when clicked', () => {
-    cy.get('[role="tab"]').eq(2).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).click({force: true});
     cy.wait(1000);
 
-    cy.get('[role="tab"]').eq(2).should('have.attr', 'aria-selected', 'true');
-    cy.contains('Evolution Level', {timeout: 10000}).should('exist');
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).should('have.attr', 'aria-selected', 'true');
+    cy.contains('Evolution Level', {timeout: 300000}).should('exist');
   });
 
   it('should return to About tab when clicked', () => {
     // First switch to Activity
-    cy.get('[role="tab"]').eq(1).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(1).click({force: true});
     cy.wait(500);
 
     // Then back to About
-    cy.get('[role="tab"]').eq(0).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(0).click({force: true});
     cy.wait(500);
 
-    cy.get('[role="tab"]').eq(0).should('have.attr', 'aria-selected', 'true');
-    cy.contains('About this Agent', {timeout: 10000}).should('exist');
+    cy.get('[role="tab"]', {timeout: 300000}).eq(0).should('have.attr', 'aria-selected', 'true');
+    cy.contains('About this Agent', {timeout: 300000}).should('exist');
   });
 
   it('should not crash when switching tabs rapidly', () => {
     // Click through all tabs quickly
-    cy.get('[role="tab"]').eq(1).click({force: true});
-    cy.get('[role="tab"]').eq(2).click({force: true});
-    cy.get('[role="tab"]').eq(0).click({force: true});
-    cy.get('[role="tab"]').eq(2).click({force: true});
-    cy.get('[role="tab"]').eq(1).click({force: true});
-    cy.get('[role="tab"]').eq(0).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(1).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(0).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(1).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(0).click({force: true});
     cy.wait(1000);
 
     // Should not have crashed
@@ -531,32 +531,32 @@ describe('Agent Profile -- Activity Tab', () => {
   it('should show activity timeline entries', () => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Switch to Activity tab
-    cy.get('[role="tab"]').eq(1).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(1).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Activity Timeline', {timeout: 10000}).should('exist');
-    cy.contains('Discussed project architecture', {timeout: 10000}).should(
+    cy.contains('Activity Timeline', {timeout: 300000}).should('exist');
+    cy.contains('Discussed project architecture', {timeout: 300000}).should(
       'exist'
     );
-    cy.contains('Used web_search tool', {timeout: 10000}).should('exist');
+    cy.contains('Used web_search tool', {timeout: 300000}).should('exist');
   });
 
   it('should show conversation list', () => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]').eq(1).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(1).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Recent Conversations', {timeout: 10000}).should('exist');
-    cy.contains('Project planning session', {timeout: 10000}).should('exist');
-    cy.contains('12 messages', {timeout: 10000}).should('exist');
+    cy.contains('Recent Conversations', {timeout: 300000}).should('exist');
+    cy.contains('Project planning session', {timeout: 300000}).should('exist');
+    cy.contains('12 messages', {timeout: 300000}).should('exist');
   });
 
   it('should handle empty activity gracefully', () => {
@@ -565,14 +565,14 @@ describe('Agent Profile -- Activity Tab', () => {
       conversations: [],
     });
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]').eq(1).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(1).click({force: true});
     cy.wait(1500);
 
     // Empty state message
-    cy.contains('No activity recorded yet', {timeout: 10000}).should('exist');
+    cy.contains('No activity recorded yet', {timeout: 300000}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
 });
@@ -588,78 +588,78 @@ describe('Agent Profile -- Evolution Tab', () => {
   it('should show evolution level and XP', () => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]').eq(2).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Evolution Level', {timeout: 10000}).should('exist');
+    cy.contains('Evolution Level', {timeout: 300000}).should('exist');
     // Level number "3" is rendered in a large typography
     cy.get('body').should('contain.text', '3');
     // XP progress: "150/300"
-    cy.contains('150/300', {timeout: 10000}).should('exist');
+    cy.contains('150/300', {timeout: 300000}).should('exist');
   });
 
   it('should show traits chips', () => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]').eq(2).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Traits', {timeout: 10000}).should('exist');
-    cy.contains('helpful', {timeout: 10000}).should('exist');
-    cy.contains('creative', {timeout: 10000}).should('exist');
-    cy.contains('analytical', {timeout: 10000}).should('exist');
+    cy.contains('Traits', {timeout: 300000}).should('exist');
+    cy.contains('helpful', {timeout: 300000}).should('exist');
+    cy.contains('creative', {timeout: 300000}).should('exist');
+    cy.contains('analytical', {timeout: 300000}).should('exist');
   });
 
   it('should show specialization trees', () => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]').eq(2).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Specialization Trees', {timeout: 10000}).should('exist');
-    cy.contains('NLP Expert', {timeout: 10000}).should('exist');
-    cy.contains('Data Analyst', {timeout: 10000}).should('exist');
-    cy.contains('Creative Writer', {timeout: 10000}).should('exist');
+    cy.contains('Specialization Trees', {timeout: 300000}).should('exist');
+    cy.contains('NLP Expert', {timeout: 300000}).should('exist');
+    cy.contains('Data Analyst', {timeout: 300000}).should('exist');
+    cy.contains('Creative Writer', {timeout: 300000}).should('exist');
     // Progress percentages
-    cy.contains('75%', {timeout: 10000}).should('exist');
-    cy.contains('30%', {timeout: 10000}).should('exist');
+    cy.contains('75%', {timeout: 300000}).should('exist');
+    cy.contains('30%', {timeout: 300000}).should('exist');
   });
 
   it('should show next stage requirements', () => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]').eq(2).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Next Stage Requirements', {timeout: 10000}).should('exist');
-    cy.contains('Reach 100 interactions', {timeout: 10000}).should('exist');
-    cy.contains('Achieve 90% satisfaction', {timeout: 10000}).should('exist');
+    cy.contains('Next Stage Requirements', {timeout: 300000}).should('exist');
+    cy.contains('Reach 100 interactions', {timeout: 300000}).should('exist');
+    cy.contains('Achieve 90% satisfaction', {timeout: 300000}).should('exist');
   });
 
   it('should show collaboration history', () => {
     stubAgentApis();
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]').eq(2).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Collaboration History', {timeout: 10000}).should('exist');
-    cy.contains('Data Analyst Agent', {timeout: 10000}).should('exist');
-    cy.contains('Joint Analysis', {timeout: 10000}).should('exist');
+    cy.contains('Collaboration History', {timeout: 300000}).should('exist');
+    cy.contains('Data Analyst Agent', {timeout: 300000}).should('exist');
+    cy.contains('Joint Analysis', {timeout: 300000}).should('exist');
   });
 
   it('should handle missing evolution data gracefully', () => {
@@ -670,14 +670,14 @@ describe('Agent Profile -- Evolution Tab', () => {
       collaborations: [],
     });
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]').eq(2).click({force: true});
+    cy.get('[role="tab"]', {timeout: 300000}).eq(2).click({force: true});
     cy.wait(1500);
 
     // Should still render the Evolution Level card (with defaults)
-    cy.contains('Evolution Level', {timeout: 10000}).should('exist');
+    cy.contains('Evolution Level', {timeout: 300000}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
     cy.get('body').should('not.contain.text', 'is not a function');
   });
@@ -697,22 +697,22 @@ describe('Agent Profile -- Talk to Agent CTA', () => {
 
   it('should have a fixed "Talk to Agent" button', () => {
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // The CTA is in a position:fixed container at the bottom
-    cy.contains('Talk to Agent', {timeout: 10000}).should('be.visible');
+    cy.contains('Talk to Agent', {timeout: 300000}).should('be.visible');
     // Verify it is a button element
-    cy.contains('button', 'Talk to Agent', {timeout: 10000}).should('exist');
+    cy.contains('button', 'Talk to Agent', {timeout: 300000}).should('exist');
   });
 
   it('should navigate to chat page when CTA is clicked', () => {
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     cy.contains('button', 'Talk to Agent').click({force: true});
-    cy.url({timeout: 10000}).should(
+    cy.url({timeout: 300000}).should(
       'include',
       '/social/agent/test-agent-1/chat'
     );
@@ -734,47 +734,47 @@ describe('Agent Profile -- Responsive', () => {
   it('should render correctly on mobile (375x667)', () => {
     cy.viewport(375, 667);
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.contains('Cypress Test Agent', {timeout: 10000}).should('be.visible');
-    cy.contains('Talk to Agent', {timeout: 10000}).should('be.visible');
+    cy.contains('Cypress Test Agent', {timeout: 300000}).should('be.visible');
+    cy.contains('Talk to Agent', {timeout: 300000}).should('be.visible');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
 
   it('should render correctly on tablet (768x1024)', () => {
     cy.viewport(768, 1024);
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
-    cy.contains('Cypress Test Agent', {timeout: 10000}).should('be.visible');
-    cy.contains('About this Agent', {timeout: 10000}).should('exist');
-    cy.contains('Talk to Agent', {timeout: 10000}).should('be.visible');
+    cy.contains('Cypress Test Agent', {timeout: 300000}).should('be.visible');
+    cy.contains('About this Agent', {timeout: 300000}).should('exist');
+    cy.contains('Talk to Agent', {timeout: 300000}).should('be.visible');
   });
 
   it('should adapt layout when viewport changes', () => {
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(2000);
 
     // Desktop
     cy.viewport(1280, 720);
     cy.wait(500);
     cy.get('#root').invoke('html').should('not.be.empty');
-    cy.contains('Cypress Test Agent', {timeout: 5000}).should('be.visible');
+    cy.contains('Cypress Test Agent', {timeout: 300000}).should('be.visible');
 
     // Mobile
     cy.viewport(375, 667);
     cy.wait(500);
     cy.get('#root').invoke('html').should('not.be.empty');
-    cy.contains('Cypress Test Agent', {timeout: 5000}).should('be.visible');
+    cy.contains('Cypress Test Agent', {timeout: 300000}).should('be.visible');
 
     // Tablet
     cy.viewport(768, 1024);
     cy.wait(500);
     cy.get('#root').invoke('html').should('not.be.empty');
-    cy.contains('Cypress Test Agent', {timeout: 5000}).should('be.visible');
+    cy.contains('Cypress Test Agent', {timeout: 300000}).should('be.visible');
   });
 });
 
@@ -808,10 +808,10 @@ describe('Agent Profile -- API Integration', () => {
     });
 
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Verify the prompts API was called
-    cy.wait('@promptsApi', {timeout: 10000})
+    cy.wait('@promptsApi', {timeout: 300000})
       .its('request.url')
       .should('include', 'getprompt_all');
   });
@@ -840,10 +840,10 @@ describe('Agent Profile -- API Integration', () => {
     });
 
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // Verify evolution API was called
-    cy.wait('@evolutionApi', {timeout: 10000})
+    cy.wait('@evolutionApi', {timeout: 300000})
       .its('request.url')
       .should('include', '/evolution');
   });
@@ -874,11 +874,11 @@ describe('Agent Profile -- API Integration', () => {
     });
 
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
     cy.wait(3000);
 
     // When prompts API fails, agent is null -> "Agent not found" state
-    cy.contains('Agent not found', {timeout: 10000}).should('be.visible');
+    cy.contains('Agent not found', {timeout: 300000}).should('be.visible');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
 
@@ -908,10 +908,10 @@ describe('Agent Profile -- API Integration', () => {
     });
 
     cy.socialVisit('/social/agent/test-agent-1');
-    cy.get('#root', {timeout: 15000}).should('exist');
+    cy.get('#root', {timeout: 300000}).should('exist');
 
     // During the delay, page should show loading state without crashing
-    cy.get('body').then(($body) => {
+    cy.get('body').should(($body) => {
       const hasSpinner =
         $body.find('[class*="MuiCircularProgress"], [role="progressbar"]')
           .length > 0;

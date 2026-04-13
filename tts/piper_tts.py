@@ -133,14 +133,8 @@ class PiperTTS:
         # Check PATH
         try:
             cmd = "where" if sys.platform == "win32" else "which"
-            # Use Windows-specific flags to hide console window
-            si = None
-            cf = 0
-            if sys.platform == "win32":
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                si.wShowWindow = 0
-                cf = subprocess.CREATE_NO_WINDOW
+            from tts._subprocess import hidden_startupinfo
+            si, cf = hidden_startupinfo()
             result = subprocess.run(
                 [cmd, "piper"],
                 capture_output=True,
@@ -318,7 +312,7 @@ class PiperTTS:
             try:
                 return self._synthesize_with_module(text, output_path, model_path, speed)
             except Exception as e:
-                logger.warning(f"Module synthesis failed: {e}, trying executable")
+                logger.error(f"Module synthesis failed: {e}", exc_info=True)
 
         # Fallback to executable
         piper_exe = self._find_piper_executable()
@@ -377,14 +371,8 @@ class PiperTTS:
                 '--length_scale', str(1.0 / speed)
             ]
 
-            # Windows-specific flags to hide console window
-            si = None
-            cf = 0
-            if sys.platform == "win32":
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                si.wShowWindow = 0
-                cf = subprocess.CREATE_NO_WINDOW
+            from tts._subprocess import hidden_startupinfo
+            si, cf = hidden_startupinfo()
 
             # Pipe text to stdin
             with open(text_file) as f:

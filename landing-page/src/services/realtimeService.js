@@ -1,16 +1,18 @@
 /**
- * Real-time Event Service — Dual-transport bridge for social events.
+ * Real-time Event Service — Message-origin-agnostic, idempotent event broker.
+ *
+ * All transports feed into ONE dispatch pipeline. Components subscribe via
+ * on(eventType, callback) — they never know or care which transport delivered.
  *
  * Transport priority:
  *   1. Crossbar WAMP (central/regional) — via Web Worker, lowest latency
  *   2. Local SSE (flat/desktop) — EventSource to Flask /api/social/events/stream
  *
- * When the crossbar worker reports connected, WAMP is primary and SSE is not
- * opened.  When crossbar disconnects (or was never available), the service
- * automatically falls back to SSE against the local Flask server.
+ * Idempotency: request_id-based dedup prevents duplicate delivery when the
+ * same message arrives via both WAMP and SSE simultaneously.
  *
- * API surface is identical regardless of transport so consumers
- * (SocialContext, RealtimeContext, useMultiplayerSync) work unchanged.
+ * Guest/local mode: SSE opens without JWT using ?user_id=guest param.
+ * No transport-specific code should exist outside this file.
  */
 
 import {SOCIAL_API_URL} from '../config/apiBase';
@@ -21,6 +23,8 @@ let _eventSource = null;
 let _sseReconnectTimer = null;
 
 const SSE_RECONNECT_DELAY = 3000; // 3s retry on SSE disconnect
+const DEDUP_WINDOW_MS = 10000; // 10s dedup window
+const DEDUP_MAX_SIZE = 200; // max tracked message IDs
 
 class RealtimeService {
   constructor() {
@@ -28,64 +32,84 @@ class RealtimeService {
     this._connected = false;
     this._crossbarConnected = false;
     this._sseConnected = false;
-    this._token = null; // JWT for SSE auth
+    this._token = null; // JWT for SSE auth (null = guest mode)
+    this._userId = null; // fallback user_id for guest/local SSE
+    this._seenIds = new Map(); // request_id → timestamp (dedup)
   }
 
   /**
    * Initialize with the crossbar worker reference.
    * Called from Demopage.js after the worker is created.
+   * Also opens SSE immediately for guest/local mode (no JWT needed).
    * @param {Worker} crossbarWorker
+   * @param {Object} [opts]
+   * @param {string} [opts.userId] - user_id for guest/local SSE (no JWT)
    */
-  init(crossbarWorker) {
-    if (_worker === crossbarWorker) return;
-    _worker = crossbarWorker;
+  init(crossbarWorker, opts = {}) {
+    if (opts.userId) this._userId = opts.userId;
 
-    // Clean up old handler
-    if (_workerMessageHandler && _worker) {
-      _worker.removeEventListener('message', _workerMessageHandler);
+    // Always open SSE — even if worker is null (failed to create).
+    // Local events (TTS audio, agent UI) only arrive via SSE.
+    if (!this._sseConnected) {
+      this._openSSE();
     }
 
-    _workerMessageHandler = (e) => {
-      const {type, payload} = e.data;
+    if (crossbarWorker && _worker !== crossbarWorker) {
+      // Clean up old handler on the OLD worker before overwriting
+      const oldWorker = _worker;
+      _worker = crossbarWorker;
+      if (_workerMessageHandler && oldWorker) {
+        oldWorker.removeEventListener('message', _workerMessageHandler);
+      }
 
-      if (type === 'CONNECTION_STATUS') {
-        const isConnected = payload === 'Connected';
-        this._crossbarConnected = isConnected;
-        this._connected = isConnected || this._sseConnected;
-        this._emit(isConnected ? 'connected' : 'disconnected', {
-          connected: this._connected,
-        });
+      _workerMessageHandler = (e) => {
+        const {type, payload} = e.data;
 
-        if (isConnected) {
-          // Crossbar is primary — tear down SSE if open
-          this._closeSSE();
-        } else if (this._token) {
-          // Crossbar lost — open SSE fallback
-          this._openSSE();
+        if (type === 'CONNECTION_STATUS') {
+          const isConnected = payload === 'Connected';
+          this._crossbarConnected = isConnected;
+          this._connected = isConnected || this._sseConnected;
+          this._emit(isConnected ? 'connected' : 'disconnected', {
+            connected: this._connected,
+          });
+
+          // SSE stays open even when crossbar connects.
+          // Crossbar connects to CLOUD router (aws_rasa.hertzai.com) — handles
+          // remote events. SSE connects to LOCAL Flask — handles TTS audio,
+          // setup progress, agent UI updates from the local HARTOS backend.
+          // Both transports coexist; dedup prevents double delivery.
+          if (!this._sseConnected) {
+            this._openSSE();
+          }
         }
-      }
 
-      if (type === 'SOCIAL_EVENT' && payload) {
-        this._dispatchSocialPayload(payload);
-      }
-    };
+        if (type === 'SOCIAL_EVENT' && payload) {
+          this._dispatchSocialPayload(payload);
+        }
+      };
 
-    _worker.addEventListener('message', _workerMessageHandler);
+      _worker.addEventListener('message', _workerMessageHandler);
+    }
+
+    // Open SSE immediately if crossbar isn't connected.
+    // Guest/local mode works without JWT (uses user_id param).
+    if (!this._crossbarConnected) {
+      this._openSSE();
+    }
   }
 
   /**
    * connect(token) — called by RealtimeContext / SocialContext.
    *
-   * If crossbar is already connected, this is a no-op (crossbar handles auth
-   * via its own WAMP session).  If crossbar is NOT connected, opens the local
-   * SSE stream using the JWT token for authentication.
+   * Sets JWT for authenticated SSE. If crossbar is already connected,
+   * SSE stays closed. Otherwise opens/reconnects SSE with the token.
    */
   connect(token) {
+    const tokenChanged = token && token !== this._token;
     this._token = token || this._token;
-    if (this._crossbarConnected) return; // WAMP is primary, no SSE needed
-    if (this._token) {
-      this._openSSE();
-    }
+    if (this._crossbarConnected) return;
+    if (tokenChanged) this._closeSSE(); // force reconnect with new creds
+    this._openSSE();
   }
 
   disconnect() {
@@ -113,13 +137,21 @@ class RealtimeService {
     this._listeners.get(eventType)?.delete(callback);
   }
 
-  // ── Internal: SSE fallback ──────────────────────────────────────────
+  // ── Internal: SSE transport ─────────────────────────────────────────
 
   _openSSE() {
     if (_eventSource) return; // already open
-    if (!this._token) return;
 
-    const url = `${SOCIAL_API_URL}/events/stream?token=${encodeURIComponent(this._token)}`;
+    // Build URL: JWT if available, otherwise guest user_id param.
+    // Always use SOCIAL_API_URL (points to Flask :5000, not React dev :3000).
+    let url;
+    if (this._token) {
+      url = `${SOCIAL_API_URL}/events/stream?token=${encodeURIComponent(this._token)}`;
+    } else {
+      const uid = this._userId || 'guest';
+      url = `${SOCIAL_API_URL}/events/stream?user_id=${encodeURIComponent(uid)}`;
+    }
+
     try {
       _eventSource = new EventSource(url);
     } catch {
@@ -142,25 +174,29 @@ class RealtimeService {
       }
     };
 
-    // Named event type from backend: `event: notification\ndata: {...}`
+    // Named SSE event types from backend
     _eventSource.addEventListener('notification', (e) => {
       try {
         const payload = JSON.parse(e.data);
         this._dispatchSocialPayload({type: 'notification', ...payload});
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
+    });
+
+    _eventSource.addEventListener('setup_progress', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        this._dispatchSocialPayload({type: 'setup_progress', ...payload});
+      } catch { /* ignore */ }
     });
 
     _eventSource.onerror = () => {
       this._closeSSE();
-      // Auto-reconnect unless crossbar came back
-      if (!this._crossbarConnected && this._token) {
-        _sseReconnectTimer = setTimeout(
-          () => this._openSSE(),
-          SSE_RECONNECT_DELAY
-        );
-      }
+      // Always reconnect SSE — local events (TTS, agent UI) need it
+      // even when cloud crossbar is connected.
+      _sseReconnectTimer = setTimeout(
+        () => this._openSSE(),
+        SSE_RECONNECT_DELAY
+      );
     };
   }
 
@@ -179,10 +215,52 @@ class RealtimeService {
     }
   }
 
-  // ── Internal: dispatch ──────────────────────────────────────────────
+  // ── Internal: dispatch (transport-agnostic, idempotent) ─────────────
+
+  _isDuplicate(payload) {
+    // Explicit ID (TTS request_id, notification id, etc.)
+    let id = payload.request_id || payload.id;
+    // No explicit ID — generate content hash so identical payloads from
+    // different transports (WAMP + SSE) dedup correctly.
+    if (!id) {
+      const key = (payload.action || payload.type || '') + '|' +
+        (payload.generated_audio_url || payload.agent_id || '') + '|' +
+        (payload.message || payload.content || payload.text || '').slice(0, 100);
+      id = '_h:' + key;
+    }
+    const now = Date.now();
+    if (this._seenIds.has(id) && now - this._seenIds.get(id) < DEDUP_WINDOW_MS) {
+      return true; // seen within dedup window
+    }
+    this._seenIds.set(id, now);
+    // Evict old entries to prevent unbounded growth
+    if (this._seenIds.size > DEDUP_MAX_SIZE) {
+      const cutoff = now - DEDUP_WINDOW_MS;
+      for (const [k, ts] of this._seenIds) {
+        if (ts < cutoff) this._seenIds.delete(k);
+      }
+    }
+    return false;
+  }
 
   _dispatchSocialPayload(payload) {
-    const eventType = payload.type || payload.event_type || 'message';
+    if (this._isDuplicate(payload)) return;
+
+    // Normalize event type from any payload shape
+    let eventType = payload.type || payload.event_type || payload.action || 'message';
+
+    // TTS audio → emit as 'tts' event (regardless of transport)
+    if (payload.action === 'TTS' && payload.generated_audio_url) {
+      eventType = 'tts';
+    }
+
+    // Agent UI update → emit as 'agent.ui.update' (avoid double-fire)
+    if (payload.component_type || (payload.type && payload.agent_id && payload.type !== 'notification')) {
+      if (eventType !== 'agent.ui.update') {
+        this._emit('agent.ui.update', payload);
+      }
+    }
+
     this._emit(eventType, payload);
 
     // Also dispatch sub-type for notification events

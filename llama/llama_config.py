@@ -30,21 +30,21 @@ class ServerType:
 
 # Common LLM endpoints to scan
 KNOWN_LLM_ENDPOINTS = [
-    # Ollama
-    {"name": "Ollama", "base_url": "http://localhost:11434", "health": "/api/tags", "completions": "/api/generate", "type": "ollama"},
-    # LM Studio
-    {"name": "LM Studio", "base_url": "http://localhost:1234", "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
-    # LocalAI
-    {"name": "LocalAI", "base_url": "http://localhost:8080", "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
-    # text-generation-webui (oobabooga) — port 5000 excluded because Nunba's
-    # own Flask server runs there. Scanning it falsely detects Flask as TG-WebUI.
-    {"name": "Text Generation WebUI", "base_url": "http://localhost:7860", "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
-    # vLLM
-    {"name": "vLLM", "base_url": "http://localhost:8000", "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
-    # KoboldCpp
-    {"name": "KoboldCpp", "base_url": "http://localhost:5001", "health": "/api/v1/model", "completions": "/api/v1/generate", "type": "kobold"},
-    # Jan.ai
-    {"name": "Jan", "base_url": "http://localhost:1337", "health": "/v1/models", "completions": "/v1/chat/completions", "type": "openai"},
+    {"name": "Ollama", "base_url": "http://localhost:11434",
+     "health": "/api/tags", "completions": "/api/generate", "type": "ollama"},
+    {"name": "LM Studio", "base_url": "http://localhost:1234",
+     "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
+    {"name": "LocalAI", "base_url": "http://localhost:8080",
+     "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
+    # Port 5000 excluded — Nunba's own Flask runs there
+    {"name": "Text Generation WebUI", "base_url": "http://localhost:7860",
+     "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
+    {"name": "vLLM", "base_url": "http://localhost:8000",
+     "health": "/v1/models", "completions": "/v1/completions", "type": "openai"},
+    {"name": "KoboldCpp", "base_url": "http://localhost:5001",
+     "health": "/api/v1/model", "completions": "/api/v1/generate", "type": "kobold"},
+    {"name": "Jan", "base_url": "http://localhost:1337",
+     "health": "/v1/models", "completions": "/v1/chat/completions", "type": "openai"},
 ]
 
 
@@ -437,14 +437,19 @@ class LlamaConfig:
         # ── Human-readable message ─────────────────────────────────
         msgs = {
             'start': f'{best_preset.display_name} is ready — starting with {diag["run_mode"].upper()}.',
-            'start_cpu': f'GPU is {"occupied by another model" if diag["gpu_occupied"] else "not available for inference"}. '
-                         f'Starting {best_preset.display_name} in CPU mode.',
-            'upgrade_binary': f'GPU detected ({diag["gpu_name"] or diag["gpu_type"]}) but llama.cpp is CPU-only. Upgrading to CUDA build.',
+            'start_cpu': (
+                f'GPU is {"occupied by another model" if diag["gpu_occupied"] else "not available"}. '
+                f'Starting {best_preset.display_name} in CPU mode.'),
+            'upgrade_binary': (
+                f'GPU detected ({diag["gpu_name"] or diag["gpu_type"]}) '
+                f'but llama.cpp is CPU-only. Upgrading to CUDA build.'),
             'downgrade_model': f'{best_preset.display_name} ({best_preset.size_mb}MB) is too big for '
                                f'{diag["compute_budget_mb"]}MB budget. Selecting a smaller model.',
             'download_model': f'No suitable model found on disk. Recommend downloading '
                               f'{best_preset.display_name} ({best_preset.size_mb}MB).',
-            'download_mmproj': f'{best_preset.display_name} found but vision projector (mmproj) is missing. Downloading it.',
+            'download_mmproj': (
+                f'{best_preset.display_name} found but vision projector '
+                f'(mmproj) is missing. Downloading it.'),
             'install_binary': 'llama.cpp server not found. Installing it.',
             'download_all': 'No local LLM setup found. Need to download model and install llama.cpp.',
         }
@@ -506,17 +511,44 @@ class LlamaConfig:
             progress_callback('diagnosing', 0.05)
 
         # ── 1. Resolve model selection ─────────────────────────────
+        # Dynamic VRAM-aware: reserve VRAM for other models (TTS, STT, VLM)
+        # that will coexist on the same GPU. Pick the largest LLM that fits.
         if model_index is not None and 0 <= model_index < len(MODEL_PRESETS):
             model_idx = model_index
         elif 'downgrade_model' in diag['actions']:
-            # Current best model is too big — find the largest that fits
             model_idx = self._find_best_fitting_model(diag['compute_budget_mb'])
             logger.info(f"Downgraded model selection: {MODEL_PRESETS[model_idx].display_name} "
                         f"(fits {diag['compute_budget_mb']}MB budget)")
         else:
             model_idx = diag['best_model_index']
 
+        # VRAM coexistence: if other GPU models need VRAM (F5-TTS, whisper, VLM),
+        # reduce the LLM budget to leave room. Transparent to user — just picks
+        # the best model that fits alongside everything else.
         preset = MODEL_PRESETS[model_idx]
+        try:
+            vram_mgr = self._get_vram_manager()
+            if vram_mgr and diag.get('gpu_type') == 'nvidia':
+                total_gb = vram_mgr.get_total_vram()
+                # Estimate VRAM needed by non-LLM models that will likely load:
+                # F5-TTS (2.5GB if audio mode) is the main consumer.
+                tts_reserve_gb = 2.5  # F5 model + inference buffers
+                kv_reserve_gb = 1.5   # KV cache for 10K context
+                os_reserve_gb = 0.5   # display + OS
+                available_for_llm_mb = int((total_gb - tts_reserve_gb
+                                            - kv_reserve_gb - os_reserve_gb) * 1024)
+                if preset.size_mb > available_for_llm_mb:
+                    better_idx = self._find_best_fitting_model(available_for_llm_mb)
+                    if better_idx != model_idx:
+                        logger.info(
+                            f"VRAM coexistence: {preset.display_name} ({preset.size_mb}MB) "
+                            f"too large for {available_for_llm_mb}MB budget "
+                            f"(total={total_gb}GB - TTS={tts_reserve_gb}GB - KV={kv_reserve_gb}GB). "
+                            f"Selecting {MODEL_PRESETS[better_idx].display_name}")
+                        model_idx = better_idx
+                        preset = MODEL_PRESETS[model_idx]
+        except Exception as _e:
+            logger.debug(f"VRAM coexistence check skipped: {_e}")
 
         # ── 2. Ensure model is on disk ─────────────────────────────
         if progress_callback:
@@ -621,13 +653,13 @@ class LlamaConfig:
         started = self.start_server(model_preset=preset)
 
         # ── 8. Register VRAM allocation (so TTS/vision see the LLM's reservation) ──
+        # Canonical key 'llm' — idempotent, same key used by ModelOrchestrator
         if started and diag['run_mode'] == 'gpu':
             vm = self._get_vram_manager()
             if vm:
                 model_gb = preset.size_mb / 1024.0
-                tool_key = f'llm_{preset.display_name.replace(" ", "_").lower()}'
-                vm._allocations[tool_key] = model_gb
-                logger.info(f"Registered VRAM allocation: {tool_key} = {model_gb:.1f}GB")
+                vm._allocations['llm'] = model_gb
+                logger.info(f"Registered VRAM allocation: llm = {model_gb:.1f}GB")
 
         mode_label = 'GPU' if diag['run_mode'] == 'gpu' else 'CPU'
         if started:
@@ -672,18 +704,35 @@ class LlamaConfig:
         return best_idx
 
     def _download_mmproj_only(self, preset: ModelPreset) -> bool:
-        """Download just the vision projector (mmproj) for a model, not the model itself."""
+        """Download just the vision projector (mmproj) for a model.
+
+        Uses the same URL resolution as ``llama_installer.py:download_model``
+        (lines 991-1009) — the HF repo filename is ``preset.mmproj_source_file``
+        (e.g. ``mmproj-F16.gguf``), NOT ``preset.mmproj_file`` (which is the
+        model-specific LOCAL name like ``mmproj-Qwen3.5-0.8B-F16.gguf``).
+
+        The previous implementation was a parallel download path that used
+        ``preset.mmproj_file`` for the HF URL, which didn't exist on HuggingFace
+        (404), and also doubled the local name via a base-name injection
+        (``mmproj-Qwen3.5-0.8B-Qwen3.5-0.8B-F16.gguf``). That was the root
+        cause of T9 — the draft 0.8B started without vision because its mmproj
+        always failed to download.
+        """
         if not preset.has_vision or not preset.mmproj_file:
             return True
         try:
-            base = preset.file_name.split("-UD-")[0] if "-UD-" in preset.file_name else preset.file_name.split("-Q")[0]
-            base = base.replace('.gguf', '')
-            local_name = preset.mmproj_file.replace("mmproj-", f"mmproj-{base}-")
-            mmproj_path = self.installer.models_dir / local_name
+            mmproj_path = self.installer.models_dir / preset.mmproj_file
             if mmproj_path.exists():
                 return True
-            mmproj_url = f"https://huggingface.co/{preset.repo_id}/resolve/main/{preset.mmproj_file}"
-            logger.info(f"Downloading mmproj: {preset.mmproj_file} -> {local_name}")
+            # Also check if the installer can find it via its search paths
+            found = self.installer.get_mmproj_path(preset)
+            if found:
+                return True
+            # Download from HF — use mmproj_source_file (the actual HF filename)
+            # just like llama_installer.py:download_model does at line 997.
+            hf_name = preset.mmproj_source_file or preset.mmproj_file
+            mmproj_url = f"https://huggingface.co/{preset.repo_id}/resolve/main/{hf_name}"
+            logger.info(f"Downloading mmproj: {hf_name} -> {preset.mmproj_file}")
             self.installer.download_file_with_progress(mmproj_url, mmproj_path)
             return mmproj_path.exists()
         except Exception as e:
@@ -691,19 +740,26 @@ class LlamaConfig:
             return False
 
     def is_llm_available(self) -> bool:
-        """Check if any LLM endpoint is ready for completions (local server healthy or cloud configured)."""
+        """Check if any LLM endpoint is ready for completions.
+
+        Uses /v1/models (not just /health) to verify the model is actually
+        loaded — a healthy server with no model returns 200 on /health but
+        can't serve completions. Discovery: 2026-04-12 boot false-positive.
+        """
         if self.is_cloud_configured():
             return True
-        # Check if local server is running AND healthy (model loaded)
         try:
-            import urllib.request
+            import urllib.request, json as _json
             port = self.config.get('server_port', 8080)
             req = urllib.request.Request(
-                f'http://127.0.0.1:{port}/health',
+                f'http://127.0.0.1:{port}/v1/models',
                 method='GET'
             )
             with urllib.request.urlopen(req, timeout=2) as resp:
-                return resp.status == 200
+                if resp.status != 200:
+                    return False
+                data = _json.loads(resp.read())
+                return bool(data.get('data'))
         except Exception:
             return False
 
@@ -721,7 +777,7 @@ class LlamaConfig:
         port = self.config.get('server_port', 8080)
         try:
             req = urllib.request.Request(f'http://127.0.0.1:{port}/health', method='GET')
-            with urllib.request.urlopen(req, timeout=2) as resp:
+            with urllib.request.urlopen(req, timeout=2):
                 return True  # 200 = healthy
         except urllib.request.HTTPError:
             return True  # 500/503 = server exists, model loading
@@ -973,9 +1029,9 @@ class LlamaConfig:
                         logger.info(f"Running model: {actual_gguf}")
 
                         # Match GGUF filename to MODEL_PRESETS display name
+                        # MODEL_PRESETS is already imported at module level (line 18)
                         display_name = actual_gguf  # fallback
                         try:
-                            from llama.llama_installer import MODEL_PRESETS
                             for p in MODEL_PRESETS:
                                 if p.file_name == actual_gguf:
                                     display_name = p.display_name
@@ -1050,17 +1106,52 @@ class LlamaConfig:
             logger.info("Server process is already running")
             return True
 
-        # Get llama-server path (check system installations first to avoid downloading if user has it)
-        llama_server = self.installer.find_llama_server(check_system_first=True)
-        if not llama_server:
-            logger.error("llama-server not found. Please install llama.cpp first.")
-            return False
+        # Detect backend: zinc for AMD RDNA GPUs, llama.cpp for everything else
+        _use_zinc = self.installer.gpu_available == 'zinc'
+        if _use_zinc:
+            try:
+                from llama.zinc_installer import ZincInstaller
+                _zinc = ZincInstaller()
+                llama_server = _zinc.find_zinc_server()
+                if not llama_server:
+                    # Try to build zinc — push progress to SetupProgressCard
+                    logger.info("Zinc not installed — building for AMD GPU...")
+                    def _zinc_progress(downloaded, total, msg):
+                        logger.info(f"Zinc: {msg}")
+                        try:
+                            from integrations.social.realtime import publish_event
+                            publish_event('setup_progress', {
+                                'type': 'setup_progress',
+                                'job_type': 'zinc_amd',
+                                'status': 'loading',
+                                'message': msg,
+                                'model_name': 'Zinc (AMD Vulkan)',
+                            })
+                        except Exception:
+                            pass
+                    if _zinc.install(progress_callback=_zinc_progress):
+                        llama_server = _zinc.find_zinc_server()
+                if llama_server:
+                    logger.info(f"Using zinc (AMD Vulkan): {llama_server}")
+                else:
+                    logger.warning("Zinc build failed — falling back to llama.cpp")
+                    _use_zinc = False
+            except ImportError:
+                logger.warning("zinc_installer not available — falling back to llama.cpp")
+                _use_zinc = False
 
-        # Log whether using system or Nunba installation
-        if self.installer.is_system_installation(llama_server):
-            logger.info(f"Using existing system llama.cpp installation: {llama_server}")
-        else:
-            logger.info(f"Using Nunba-managed llama.cpp installation: {llama_server}")
+        if not _use_zinc:
+            # Get llama-server path (check system installations first)
+            llama_server = self.installer.find_llama_server(check_system_first=True)
+            if not llama_server:
+                logger.error("llama-server not found. Please install llama.cpp first.")
+                return False
+
+            # Log whether using system or Nunba installation
+            if self.installer.is_system_installation(llama_server):
+                logger.info(f"Using existing system llama.cpp installation: {llama_server}")
+            else:
+                logger.info(f"Using Nunba-managed llama.cpp installation: {llama_server}")
 
         # Get model from config (set by orchestrator via LlamaLoader or previous run).
         # Model selection is the orchestrator's job (ModelCatalog.select_best + VRAMManager).
@@ -1130,66 +1221,76 @@ class LlamaConfig:
             except Exception:
                 ctx_size = 8192  # safe default
         else:
-            ctx_size = self.config.get("context_size", 4096)
+            ctx_size = self.config.get("context_size", 8192)
 
-        cmd = [
-            llama_server,
-            "--model", model_path,
-            "--port", str(desired_port),
-            "--ctx-size", str(ctx_size),
-            "--threads", str(os.cpu_count() or 4),
-            "--host", "127.0.0.1",
-            "--jinja",  # Model's native Jinja template (respects reasoning-budget)
-            "--reasoning-format", "deepseek",  # Extract <think> into reasoning_content, content has clean answer only
-            "--reasoning-budget", "0",  # No thinking tokens — fastest inference
-        ]
+        # Cap context: 10K balances quality + VRAM for F5-TTS coexistence.
+        # KV cache cost: ~1GB per 8K for 4B, ~0.5GB per 8K for 2B.
+        ctx_size = min(ctx_size, 10240)
 
-        # Qwen3.5 models need additional flags
-        if is_qwen35:
-            cmd.extend([
-                "--temp", "0.7",
-                "--top-k", "20",
-                "--top-p", "0.95",
-                "--no-context-shift",
-            ])
+        # Cap threads to 75% of cores — leave headroom for OS + TTS
+        max_threads = max(1, int((os.cpu_count() or 4) * 0.75))
 
-        # Add GPU acceleration (only if binary supports it)
-        # Auto-enable use_gpu when binary and hardware both support it
-        if (self.installer.binary_supports_gpu and
-                self.installer.gpu_available != "none" and
-                not self.config.get("use_gpu", False)):
-            logger.info("Auto-enabling GPU: binary supports it and GPU is available")
-            self.config["use_gpu"] = True
-            self._save_config()
-
-        can_use_gpu = (
-            self.config.get("use_gpu", False) and
-            self.installer.gpu_available != "none" and
-            self.installer.binary_supports_gpu
-        )
-
-        # Add vision model flags
-        if model_preset.has_vision:
-            cmd.append("--kv-unified")
-            mmproj_path = self.installer.get_mmproj_path(model_preset)
-            if mmproj_path:
-                cmd.extend(["--mmproj", mmproj_path])
-            # CPU-only: keep vision projector on CPU to avoid offload crash
-            if not can_use_gpu:
-                cmd.append("--no-mmproj-offload")
-
-        if can_use_gpu:
-            if self.installer.gpu_available == "cuda":
-                cmd.extend(["-ngl", "99"])  # Offload all layers to GPU
-                cmd.extend(["--flash-attn", "on"])  # Flash attention for CUDA (b8200+ requires value)
-                logger.info("GPU acceleration enabled (CUDA + flash-attn)")
-            # Metal (macOS) is automatic, no flags needed
-            elif self.installer.gpu_available == "metal":
-                logger.info("GPU acceleration enabled (Metal)")
+        # Build server command — zinc uses simpler CLI than llama.cpp
+        if _use_zinc:
+            cmd = [llama_server, '-m', model_path, '-p', str(desired_port)]
+            can_use_gpu = True  # zinc is GPU-only (Vulkan)
+            logger.info(f"Zinc command: {' '.join(cmd)}")
         else:
-            if self.config.get("use_gpu", False) and not self.installer.binary_supports_gpu:
-                logger.warning("GPU requested but binary doesn't support it - using CPU")
-            logger.info("Using CPU-only mode")
+            cmd = [
+                llama_server,
+                "--model", model_path,
+                "--port", str(desired_port),
+                "--ctx-size", str(ctx_size),
+                "--threads", str(max_threads),
+                "--host", "127.0.0.1",
+                "--jinja",
+                "--reasoning-format", "deepseek",
+                "--reasoning-budget", "0",
+            ]
+
+            # Qwen3.5 models need additional flags
+            if is_qwen35:
+                cmd.extend([
+                    "--temp", "0.7",
+                    "--top-k", "20",
+                    "--top-p", "0.95",
+                    "--no-context-shift",
+                ])
+
+            # Auto-enable use_gpu when binary and hardware both support it
+            if (self.installer.binary_supports_gpu and
+                    self.installer.gpu_available != "none" and
+                    not self.config.get("use_gpu", False)):
+                logger.info("Auto-enabling GPU: binary supports it and GPU is available")
+                self.config["use_gpu"] = True
+                self._save_config()
+
+            can_use_gpu = (
+                self.config.get("use_gpu", False) and
+                self.installer.gpu_available != "none" and
+                self.installer.binary_supports_gpu
+            )
+
+            # Add vision model flags
+            if model_preset.has_vision:
+                cmd.append("--kv-unified")
+                mmproj_path = self.installer.get_mmproj_path(model_preset)
+                if mmproj_path:
+                    cmd.extend(["--mmproj", mmproj_path])
+                if not can_use_gpu:
+                    cmd.append("--no-mmproj-offload")
+
+            if can_use_gpu:
+                if self.installer.gpu_available == "cuda":
+                    cmd.extend(["-ngl", "99"])
+                    cmd.extend(["--flash-attn", "on"])
+                    logger.info("GPU acceleration enabled (CUDA + flash-attn)")
+                elif self.installer.gpu_available == "metal":
+                    logger.info("GPU acceleration enabled (Metal)")
+            else:
+                if self.config.get("use_gpu", False) and not self.installer.binary_supports_gpu:
+                    logger.warning("GPU requested but binary doesn't support it - using CPU")
+                logger.info("Using CPU-only mode")
 
         try:
             logger.info(f"Starting server on port {desired_port}: {' '.join(cmd)}")
@@ -1205,6 +1306,9 @@ class LlamaConfig:
             bin_dir = str(Path(llama_server).parent)
             env = os.environ.copy()
             env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+            # Zinc (AMD Vulkan) needs RADV cooperative matrix for RDNA4
+            if _use_zinc:
+                env["RADV_PERFTEST"] = "coop_matrix"
 
             self.server_process = subprocess.Popen(
                 cmd,
@@ -1253,14 +1357,13 @@ class LlamaConfig:
                     # Propagate LLM URL to env so HARTOS resolves the correct endpoint
                     self.api_base = f'http://127.0.0.1:{desired_port}/v1'
                     self._propagate_llm_url(self.api_base)
-                    # Register VRAM allocation with VRAMManager (shared with TTS, vision)
+                    # Register VRAM allocation — canonical key 'llm', idempotent
                     if can_use_gpu:
                         vm = self._get_vram_manager()
                         if vm:
                             model_gb = model_preset.size_mb / 1024.0
-                            tool_key = f'llm_{model_preset.display_name.replace(" ", "_").lower()}'
-                            vm._allocations[tool_key] = model_gb
-                            logger.info(f"VRAM allocation registered: {tool_key} = {model_gb:.1f}GB")
+                            vm._allocations['llm'] = model_gb
+                            logger.info(f"VRAM allocation registered: llm = {model_gb:.1f}GB")
                     # Quick benchmark — warm up the KV cache and measure t/s
                     try:
                         import urllib.request
@@ -1280,7 +1383,11 @@ class LlamaConfig:
                         _usage = _bench_resp.get("usage", {})
                         _compl_tokens = _usage.get("completion_tokens", 0)
                         _tps = _compl_tokens / max(_t1 - _t0, 0.01)
-                        logger.info(f"Quick benchmark: {_compl_tokens} tokens in {_t1 - _t0:.1f}s = {_tps:.1f} t/s ({model_preset.display_name}, {'GPU' if can_use_gpu else 'CPU'})")
+                        _mode = 'GPU' if can_use_gpu else 'CPU'
+                        logger.info(
+                            f"Quick benchmark: {_compl_tokens} tokens in "
+                            f"{_t1 - _t0:.1f}s = {_tps:.1f} t/s "
+                            f"({model_preset.display_name}, {_mode})")
                     except Exception as _bench_err:
                         logger.debug(f"Quick benchmark skipped: {_bench_err}")
                     return True
@@ -1301,6 +1408,171 @@ class LlamaConfig:
             logger.error(f"Failed to start server: {e}")
             return False
 
+    # ── Caption Server (0.8B VLM for continuous frame captioning) ──
+
+    def start_caption_server(self, port: int = 8081) -> bool:
+        """Start the 0.8B caption server alongside the main LLM server.
+
+        Lazy-started by HARTOS VisionService on first camera/screen frame.
+        Uses the same llama-server binary, model download, and mmproj
+        handling as the main server — just a smaller model on a different port.
+
+        Args:
+            port: Caption server port (default 8081, via HEVOLVE_VLM_CAPTION_PORT)
+
+        Returns:
+            True if server started and healthy
+        """
+        import os
+        port = int(os.environ.get('HEVOLVE_VLM_CAPTION_PORT', port))
+
+        # Already running?
+        if self.check_server_running(port):
+            logger.info(f"Caption server already running on port {port}")
+            return True
+
+        # Find the 0.8B preset
+        preset = None
+        for p in MODEL_PRESETS:
+            if '0.8B' in p.display_name:
+                preset = p
+                break
+        if not preset:
+            logger.error("No 0.8B model preset found")
+            return False
+
+        # Ensure model + mmproj downloaded
+        model_path = self.installer.get_model_path(preset)
+        if not model_path:
+            logger.info(f"Downloading {preset.display_name}...")
+            self.installer.download_model(preset)
+            model_path = self.installer.get_model_path(preset)
+        if not model_path:
+            logger.error(f"Caption model not found: {preset.file_name}")
+            return False
+
+        mmproj_path = None
+        if preset.has_vision and preset.mmproj_file:
+            mmproj_path = self.installer.get_mmproj_path(preset)
+            if not mmproj_path:
+                self._download_mmproj_only(preset)
+                mmproj_path = self.installer.get_mmproj_path(preset)
+
+        # Build command — same pattern as start_server but with caption-optimized flags.
+        # NOTE: the installer exposes find_llama_server(), NOT get_binary_path().
+        # The old caption path invented that method name and crashed at boot with
+        # AttributeError, which meant the draft 0.8B never came up and HARTOS's
+        # draft-first dispatcher silently fell through to the 4B main model for
+        # every request. Use the same resolver the main start_server calls.
+        binary_path = self.installer.find_llama_server(check_system_first=True)
+        if not binary_path:
+            logger.error(
+                "llama-server binary not found by installer.find_llama_server() — "
+                "draft caption server cannot start. Run the main LLM setup first "
+                "or call installer.install_llama_cpp() to provision the binary."
+            )
+            return False
+
+        cmd = [str(binary_path), "--model", str(model_path),
+               "--port", str(port), "--ctx-size", "1536",
+               "--threads", "4"]
+        if mmproj_path:
+            cmd.extend(["--mmproj", str(mmproj_path), "--kv-unified"])
+        can_use_gpu = (self.config.get("use_gpu", True) and
+                       self.installer.binary_supports_gpu)
+        if can_use_gpu:
+            if self.installer.gpu_available == "cuda":
+                cmd.extend(["-ngl", "99", "--flash-attn", "on"])
+            if mmproj_path and not can_use_gpu:
+                cmd.append("--no-mmproj-offload")
+
+        # Start
+        startupinfo = None
+        if sys.platform == 'win32':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+
+        log_path = self.config_dir / "caption_server.log"
+        try:
+            log_fh = open(log_path, 'w')
+            self._caption_process = subprocess.Popen(
+                cmd, stdout=log_fh, stderr=subprocess.STDOUT,
+                startupinfo=startupinfo)
+            self._caption_log_fh = log_fh
+
+            logger.info(f"Caption server starting: PID={self._caption_process.pid} "
+                        f"port={port} model={preset.display_name}")
+
+            # Wait for health
+            start_time = time.time()
+            while time.time() - start_time < 30:
+                time.sleep(1)
+                if self.check_server_running(port):
+                    elapsed = time.time() - start_time
+                    logger.info(f"Caption server ready on port {port} ({elapsed:.1f}s)")
+                    self._write_caption_status(True, self._caption_process.pid,
+                                               preset.display_name, port)
+                    return True
+
+            logger.warning(f"Caption server not healthy after 30s — check {log_path}")
+            return False
+        except Exception as e:
+            logger.error(f"Caption server start failed: {e}")
+            return False
+
+    def stop_caption_server(self):
+        """Stop the caption server and free GPU memory."""
+        proc = getattr(self, '_caption_process', None)
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+                logger.info(f"Caption server stopped (PID={proc.pid})")
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self._caption_process = None
+            # Close log handle
+            fh = getattr(self, '_caption_log_fh', None)
+            if fh:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+                self._caption_log_fh = None
+            self._write_caption_status(False)
+            # Release VRAM
+            vm = self._get_vram_manager()
+            if vm:
+                freed = vm._allocations.pop('vlm_caption', 0)
+                if freed:
+                    logger.info(f"Released VRAM: vlm_caption = {freed:.1f}GB")
+
+    def _write_caption_status(self, running: bool, pid: int | None = None,
+                              model: str | None = None, port: int = 8081):
+        """Write caption server status for cross-app coordination."""
+        status = {
+            "running": running,
+            "pid": pid,
+            "port": port,
+            "model": model,
+            "started_by": "Nunba",
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        for status_path in [
+            self.config_dir / "caption_server_status.json",
+            Path.home() / ".trueflow" / "caption_server_status.json",
+        ]:
+            try:
+                status_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(status_path, 'w') as f:
+                    json.dump(status, f, indent=2)
+            except Exception:
+                pass
+
     def stop_server(self):
         """Stop the llama.cpp server and release VRAM allocation."""
         if self.server_process:
@@ -1320,11 +1592,9 @@ class LlamaConfig:
                 # Release VRAM allocation so TTS/vision can reclaim the space
                 vm = self._get_vram_manager()
                 if vm:
-                    released = [k for k in list(vm._allocations) if k.startswith('llm_')]
-                    for k in released:
-                        freed = vm._allocations.pop(k, 0)
-                        if freed:
-                            logger.info(f"Released VRAM allocation: {k} = {freed:.1f}GB")
+                    freed = vm._allocations.pop('llm', 0)
+                    if freed:
+                        logger.info(f"Released VRAM allocation: llm = {freed:.1f}GB")
 
     def switch_model(self, model_index: int) -> bool:
         """

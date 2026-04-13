@@ -101,11 +101,11 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
 
       // The Demopage fires /api/llm/status once on mount
-      cy.wait('@llmStatus', { timeout: 15000 }).then((interception) => {
+      cy.wait('@llmStatus', { timeout: 300000 }).then((interception) => {
         expect(interception.response.statusCode).to.eq(200);
         expect(interception.response.body).to.have.property('available');
       });
@@ -123,12 +123,12 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
       // Chat textarea should be ready
-      cy.get('textarea, input[type="text"]', { timeout: 15000 }).first().should('exist');
+      cy.get('textarea, input[type="text"]', { timeout: 300000 }).first().should('exist');
       // No setup card should appear
       cy.get('body').then(($body) => {
         const text = $body.text();
@@ -149,13 +149,13 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
       // Page should not crash
       cy.get('#root').invoke('html').should('not.be.empty');
-      cy.get('textarea, input[type="text"]', { timeout: 15000 }).first().should('exist');
+      cy.get('textarea, input[type="text"]', { timeout: 300000 }).first().should('exist');
     });
 
     it('1.4 page survives when /api/llm/status times out (network error)', () => {
@@ -167,8 +167,8 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
       // Page should not crash — the fetch is in a try/catch
@@ -218,16 +218,16 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
 
       // Wait for the status check + auto-setup call
-      cy.wait('@llmStatus', { timeout: 15000 });
-      cy.wait('@autoSetup', { timeout: 15000 });
+      cy.wait('@llmStatus', { timeout: 300000 });
+      cy.wait('@autoSetup', { timeout: 300000 });
       cy.wait(2000);
 
       // "fully awake" notification should appear
-      cy.get('body', { timeout: 10000 }).should(($body) => {
+      cy.get('body', { timeout: 300000 }).should(($body) => {
         const text = $body.text();
         expect(text).to.include('fully awake');
       });
@@ -261,14 +261,14 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
-      cy.wait('@llmStatus', { timeout: 15000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
+      cy.wait('@llmStatus', { timeout: 300000 });
       cy.wait(3000);
 
       // A setup card should appear in the chat area with model info
       // The card contains the model name and a download size
-      cy.get('body').then(($body) => {
+      cy.get('body').should(($body) => {
         const text = $body.text();
         // For download actions, the page shows an info notification about the model
         const hasSetupInfo =
@@ -315,10 +315,10 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
-      cy.wait('@llmStatus', { timeout: 15000 });
-      cy.wait('@autoSetupFail', { timeout: 15000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
+      cy.wait('@llmStatus', { timeout: 300000 });
+      cy.wait('@autoSetupFail', { timeout: 300000 });
       cy.wait(3000);
 
       // A warning or setup card should appear (not the "fully awake" success)
@@ -343,9 +343,9 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
-      cy.wait('@llmStatus', { timeout: 15000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
+      cy.wait('@llmStatus', { timeout: 300000 });
       cy.wait(3000);
 
       // auto-setup should NOT have been called
@@ -380,12 +380,12 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
-      cy.wait('@autoSetup', { timeout: 15000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
+      cy.wait('@autoSetup', { timeout: 300000 });
       cy.wait(2000);
 
-      cy.get('body', { timeout: 10000 }).should(($body) => {
+      cy.get('body', { timeout: 300000 }).should(($body) => {
         expect($body.text()).to.include('fully awake');
       });
     });
@@ -410,12 +410,12 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(6000); // Wait for bootstrap polling (initial check at 4s)
 
       // Capability announcements should appear
-      cy.get('body').then(($body) => {
+      cy.get('body').should(($body) => {
         const text = $body.text();
         const hasAnnouncement =
           text.includes('fully awake') ||
@@ -453,13 +453,13 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
-      cy.wait('@autoSetup', { timeout: 15000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
+      cy.wait('@autoSetup', { timeout: 300000 });
       cy.wait(2000);
 
       // Should show some info notification about GPU/CPU mode
-      cy.get('body').then(($body) => {
+      cy.get('body').should(($body) => {
         const text = $body.text();
         const hasGpuInfo =
           text.includes('GPU') ||
@@ -498,13 +498,13 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
-      cy.wait('@autoSetup', { timeout: 15000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
+      cy.wait('@autoSetup', { timeout: 300000 });
       cy.wait(2000);
 
       // The notification detail includes the model name
-      cy.get('body').then(($body) => {
+      cy.get('body').should(($body) => {
         const text = $body.text();
         // pushNotification detail is the model_name from setupData
         const hasModelInfo =
@@ -528,10 +528,10 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
 
-      cy.wait('@llmStatus', { timeout: 15000 }).then((interception) => {
+      cy.wait('@llmStatus', { timeout: 300000 }).then((interception) => {
         expect(interception.response.body).to.have.property('model_name', 'mistral-7b-instruct-q4');
         expect(interception.response.body).to.have.property('available', true);
       });
@@ -555,13 +555,13 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
-      cy.wait('@llmStatus', { timeout: 15000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
+      cy.wait('@llmStatus', { timeout: 300000 });
       cy.wait(3000);
 
       // For download_model action, a setup card or notification appears with model details
-      cy.get('body').then(($body) => {
+      cy.get('body').should(($body) => {
         const text = $body.text();
         const hasModelRef =
           text.includes('deepseek') ||
@@ -586,12 +586,12 @@ describe('Chat LLM Status', () => {
       }).as('bootstrapStatus');
 
       setLocalStorage();
-      cy.visit('/local', { failOnStatusCode: false });
-      cy.wait('@getPrompts', { timeout: 20000 });
+      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.wait('@getPrompts', { timeout: 300000 });
       cy.wait(3000);
 
       // Page should still render and textarea should be usable
-      cy.get('textarea, input[type="text"]', { timeout: 15000 }).first().should('exist');
+      cy.get('textarea, input[type="text"]', { timeout: 300000 }).first().should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
   });

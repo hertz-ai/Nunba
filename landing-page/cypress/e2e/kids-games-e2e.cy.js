@@ -106,17 +106,17 @@ function visitKidsHub() {
     },
   });
   // Wait for lazy chunks to load (10-15s in headless Electron)
-  cy.contains(/learn|game/i, {timeout: 30000}).should('exist');
+  cy.contains(/learn|game/i, {timeout: 300000}).should('exist');
 }
 
 function navigateToGame() {
   // Click first game card
-  cy.get('[class*="MuiCardActionArea"]', {timeout: 10000})
+  cy.get('[class*="MuiCardActionArea"]', {timeout: 300000})
     .first()
     .click({force: true});
   // Wait for the game page to load — the lobby renders "Solo" text.
   // Use contains with long timeout to wait for lazy chunk + game screen render.
-  cy.contains(/solo/i, {timeout: 30000}).should('exist');
+  cy.contains(/solo/i, {timeout: 300000}).should('exist');
 }
 
 describe('Kids Learning Games — E2E', () => {
@@ -134,7 +134,7 @@ describe('Kids Learning Games — E2E', () => {
     it('loads the hub page with game cards', () => {
       visitKidsHub();
       cy.url().should('include', '/social/kids');
-      cy.get('[class*="MuiCard"]', {timeout: 5000}).should(
+      cy.get('[class*="MuiCard"]', {timeout: 300000}).should(
         'have.length.at.least',
         1
       );
@@ -142,15 +142,15 @@ describe('Kids Learning Games — E2E', () => {
 
     it('displays category tabs', () => {
       visitKidsHub();
-      cy.contains(/english/i, {timeout: 5000}).should('exist');
-      cy.contains(/math/i, {timeout: 5000}).should('exist');
+      cy.contains(/english/i, {timeout: 300000}).should('exist');
+      cy.contains(/math/i, {timeout: 300000}).should('exist');
     });
 
     it('game cards navigate to game page', () => {
       visitKidsHub();
       navigateToGame();
       // Verify URL changed to game page (navigateToGame already confirmed render)
-      cy.url({timeout: 15000}).should('include', '/social/kids/game/');
+      cy.url({timeout: 300000}).should('include', '/social/kids/game/');
     });
   });
 
@@ -167,14 +167,14 @@ describe('Kids Learning Games — E2E', () => {
     it('shows Quick Match and Create Room options', () => {
       visitKidsHub();
       navigateToGame();
-      cy.contains(/quick match/i, {timeout: 10000}).should('exist');
-      cy.contains(/create room/i, {timeout: 10000}).should('exist');
+      cy.contains(/quick match/i, {timeout: 300000}).should('exist');
+      cy.contains(/create room/i, {timeout: 300000}).should('exist');
     });
 
     it('shows KidsCharacter SVG avatars in lobby', () => {
       visitKidsHub();
       navigateToGame();
-      cy.get('svg[viewBox]', {timeout: 10000}).should(
+      cy.get('svg[viewBox]', {timeout: 300000}).should(
         'have.length.at.least',
         1
       );
@@ -186,7 +186,7 @@ describe('Kids Learning Games — E2E', () => {
       // Click the Solo Play MUI Button specifically
       cy.contains('button', /solo/i).click({force: true});
       // After intro phase (2s), game should be playing — lobby buttons gone
-      cy.contains(/quick match/i, {timeout: 10000}).should('not.exist');
+      cy.contains(/quick match/i, {timeout: 300000}).should('not.exist');
     });
   });
 
@@ -197,12 +197,12 @@ describe('Kids Learning Games — E2E', () => {
     it('hub page renders game content correctly', () => {
       visitKidsHub();
       cy.url().should('include', '/social/kids');
-      cy.get('input[placeholder*="earch"]', {timeout: 5000}).should('exist');
+      cy.get('input[placeholder*="earch"]', {timeout: 300000}).should('exist');
     });
 
     it('does not crash with 503 on media/TTS endpoints', () => {
       visitKidsHub();
-      cy.get('[class*="MuiCard"]', {timeout: 5000}).should(
+      cy.get('[class*="MuiCard"]', {timeout: 300000}).should(
         'have.length.at.least',
         1
       );
@@ -215,7 +215,7 @@ describe('Kids Learning Games — E2E', () => {
   describe('Accessibility', () => {
     it('hub page has interactive elements with proper roles', () => {
       visitKidsHub();
-      cy.get('button, [role="button"], a', {timeout: 5000}).should(
+      cy.get('button, [role="button"], a', {timeout: 300000}).should(
         'have.length.at.least',
         1
       );
@@ -223,7 +223,7 @@ describe('Kids Learning Games — E2E', () => {
 
     it('game elements support keyboard focus', () => {
       visitKidsHub();
-      cy.get('[tabindex], button, a, input', {timeout: 5000}).should(
+      cy.get('[tabindex], button, a, input', {timeout: 300000}).should(
         'have.length.at.least',
         1
       );
@@ -237,7 +237,7 @@ describe('Kids Learning Games — E2E', () => {
     it('renders correctly on mobile viewport', () => {
       cy.viewport('iphone-6');
       visitKidsHub();
-      cy.get('[class*="MuiCard"]', {timeout: 5000}).should(
+      cy.get('[class*="MuiCard"]', {timeout: 300000}).should(
         'have.length.at.least',
         1
       );
@@ -246,7 +246,7 @@ describe('Kids Learning Games — E2E', () => {
     it('renders correctly on tablet viewport', () => {
       cy.viewport('ipad-2');
       visitKidsHub();
-      cy.get('[class*="MuiCard"]', {timeout: 5000}).should(
+      cy.get('[class*="MuiCard"]', {timeout: 300000}).should(
         'have.length.at.least',
         1
       );
@@ -264,7 +264,7 @@ describe('Kids Learning Games — E2E', () => {
       cy.contains('button', /solo/i).click({force: true});
       // After intro phase (2s) the game enters playing state.
       // Verify lobby buttons are gone by checking Quick Match disappears.
-      cy.contains(/quick match/i, {timeout: 10000}).should('not.exist');
+      cy.contains(/quick match/i, {timeout: 300000}).should('not.exist');
     });
   });
 

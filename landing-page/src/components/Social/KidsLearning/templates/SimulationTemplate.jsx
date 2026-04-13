@@ -23,7 +23,7 @@ import {logger} from '../../../../utils/logger';
 import {Box, Typography, Card, LinearProgress, Fade, Grow} from '@mui/material';
 import {kidsColors, kidsAnimations} from '../kidsTheme';
 import {GameSounds} from '../shared/SoundManager';
-import CelebrationOverlay from '../shared/CelebrationOverlay';
+import InlineCelebration from '../shared/InlineCelebration';
 import ProgressStars from '../shared/ProgressStars';
 import useCelebration from '../shared/useCelebration';
 
@@ -527,14 +527,7 @@ export default function SimulationTemplate({config, onAnswer, onComplete}) {
       </Fade>
 
       {/* Celebration overlay */}
-      <CelebrationOverlay
-        type={celebType}
-        visible={celebVisible}
-        streakCount={celebStreak}
-        onDone={handleCelebDone}
-        starsEarned={starsEarned}
-        score={celebScore}
-      />
+      <InlineCelebration type={celebType} gameTemplate="simulation" visible={celebVisible} onDone={handleCelebDone} streakCount={celebStreak} score={celebScore} />
     </Box>
   );
 }

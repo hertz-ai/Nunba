@@ -24,7 +24,7 @@ import {
 } from '@mui/material';
 import {kidsColors, kidsAnimations} from '../kidsTheme';
 import {GameSounds} from '../shared/SoundManager';
-import CelebrationOverlay from '../shared/CelebrationOverlay';
+import InlineCelebration from '../shared/InlineCelebration';
 import ProgressStars from '../shared/ProgressStars';
 import useCelebration from '../shared/useCelebration';
 
@@ -627,14 +627,7 @@ export default function TimedRushTemplate({config, onAnswer, onComplete}) {
         </Fade>
       )}
 
-      <CelebrationOverlay
-        type={celebType}
-        visible={celebVisible}
-        streakCount={celebStreak}
-        onDone={handleCelebDone}
-        starsEarned={starsEarned}
-        score={celebScore}
-      />
+      <InlineCelebration type={celebType} gameTemplate="timed_rush" visible={celebVisible} onDone={handleCelebDone} streakCount={celebStreak} score={celebScore} />
     </Box>
   );
 }

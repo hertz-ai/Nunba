@@ -80,14 +80,17 @@ MODEL_PRESETS = [
         mmproj_file="mmproj-Qwen3-VL-2B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf"
     ),
-    # Smallest Qwen3.5 — for CPU-only / ultra-low VRAM machines
+    # Smallest Qwen3.5 — vision+text, ideal for continuous captioning
     ModelPreset(
-        "Qwen3.5-0.8B UD-Q4_K_XL",
+        "Qwen3.5-0.8B VL (Caption)",
         "unsloth/Qwen3.5-0.8B-GGUF",
         "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
         550,
-        "Smallest Qwen3.5, text-only, ~550MB, runs on anything",
-        has_vision=False
+        "Smallest VLM, ~750MB with mmproj, ~1.9 FPS captioning, runs on anything",
+        has_vision=True,
+        mmproj_file="mmproj-Qwen3.5-0.8B-F16.gguf",
+        mmproj_source_file="mmproj-F16.gguf",
+        min_build=MIN_LLAMACPP_BUILD_QWEN35
     ),
     ModelPreset(
         "Qwen3-2B Text-Only Q4_K_M",
@@ -197,7 +200,8 @@ class LlamaInstaller:
                         return "cuda"
                 except Exception:
                     pass
-                # Check for AMD ROCm via rocm-smi (Linux primarily)
+                # Check for AMD GPU via rocm-smi (Linux primarily)
+                # RDNA3/RDNA4 consumer GPUs use zinc (Vulkan), not ROCm
                 try:
                     result = subprocess.run(
                         ["rocm-smi", "--showproductname"],
@@ -205,10 +209,27 @@ class LlamaInstaller:
                         startupinfo=si, creationflags=cf
                     )
                     if result.returncode == 0 and result.stdout.strip():
-                        logger.debug(f"AMD GPU detected: {result.stdout.strip()}")
+                        gpu_name = result.stdout.strip().upper()
+                        logger.debug(f"AMD GPU detected: {gpu_name}")
+                        # RDNA3/RDNA4 consumer cards → zinc (Vulkan, no ROCm needed)
+                        # MI-series data center cards → rocm (traditional HIP/ROCm)
+                        if any(x in gpu_name for x in ['RDNA', 'RX 9', 'RX 7', 'AI PRO']):
+                            return "zinc"
                         return "rocm"
                 except Exception:
                     pass
+                # Fallback: lspci for AMD GPUs without rocm-smi
+                if "linux" in self.os_name:
+                    try:
+                        result = subprocess.run(
+                            ['lspci'], capture_output=True, text=True, timeout=5,
+                            startupinfo=si, creationflags=cf)
+                        if result.returncode == 0:
+                            for line in result.stdout.splitlines():
+                                if 'AMD' in line and ('VGA' in line or 'Display' in line):
+                                    return "zinc"  # assume consumer AMD → zinc
+                    except Exception:
+                        pass
         except Exception as e:
             logger.debug(f"GPU detection failed: {e}")
 
@@ -286,7 +307,10 @@ class LlamaInstaller:
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 si.wShowWindow = 0
                 cf = subprocess.CREATE_NO_WINDOW
-            result = subprocess.run([cmd, "llama-server"], capture_output=True, text=True, startupinfo=si, creationflags=cf)
+            result = subprocess.run(
+                [cmd, "llama-server"],
+                capture_output=True, text=True,
+                startupinfo=si, creationflags=cf)
             if result.returncode == 0 and result.stdout.strip():
                 path = result.stdout.strip().split('\n')[0]
                 logger.info(f"Found llama-server in PATH: {path}")
@@ -705,16 +729,19 @@ class LlamaInstaller:
         try:
             logger.info("Building llama.cpp from source...")
 
+            # Windows: suppress console windows
+            _cf = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+
             # Check for git
             try:
-                subprocess.run(["git", "--version"], check=True, capture_output=True)
+                subprocess.run(["git", "--version"], check=True, capture_output=True, creationflags=_cf)
             except Exception:
                 logger.error("Git not found. Please install git to build from source.")
                 return False
 
             # Check for cmake
             try:
-                subprocess.run(["cmake", "--version"], check=True, capture_output=True)
+                subprocess.run(["cmake", "--version"], check=True, capture_output=True, creationflags=_cf)
             except Exception:
                 logger.error("CMake not found. Please install CMake to build from source.")
                 return False
@@ -729,7 +756,7 @@ class LlamaInstaller:
                 ["git", "clone", "--depth", "1",
                  "https://github.com/ggml-org/llama.cpp",
                  str(self.install_dir)],
-                check=True
+                check=True, creationflags=_cf
             )
 
             # Create build directory
@@ -955,7 +982,9 @@ class LlamaInstaller:
                     if progress_callback:
                         downloaded_mb = downloaded // (1024 * 1024)
                         total_mb = total // (1024 * 1024)
-                        progress_callback(downloaded_mb, total_mb, f"Downloading model... {downloaded_mb}MB / {total_mb}MB")
+                        progress_callback(
+                            downloaded_mb, total_mb,
+                            f"Downloading model... {downloaded_mb}MB / {total_mb}MB")
 
                 self.download_file_with_progress(model_url, model_path, model_progress)
 
@@ -973,7 +1002,9 @@ class LlamaInstaller:
                         if progress_callback:
                             downloaded_mb = downloaded // (1024 * 1024)
                             total_mb = total // (1024 * 1024)
-                            progress_callback(downloaded_mb, total_mb, f"Downloading vision projector... {downloaded_mb}MB / {total_mb}MB")
+                            progress_callback(
+                                downloaded_mb, total_mb,
+                                f"Downloading vision projector... {downloaded_mb}MB / {total_mb}MB")
 
                     self.download_file_with_progress(mmproj_url, mmproj_path, mmproj_progress)
 

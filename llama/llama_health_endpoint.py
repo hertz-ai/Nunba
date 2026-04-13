@@ -59,7 +59,7 @@ class LlamaHealthWrapper:
         # Add Nunba identification
         nunba_health = {
             "managed_by": "Nunba",
-            "nunba_version": "2.0.0",
+            "nunba_version": "0.1.0",
             "wrapper_port": self.wrapper_port,
             "llama_port": self.llama_port,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -121,7 +121,7 @@ def add_health_routes(app: Flask, llama_config=None):
         try:
             info = {
                 "application": "Nunba",
-                "version": "2.0.0",
+                "version": "0.1.0",
                 "description": "A Friend, A Well Wisher, Your LocalMind",
                 "ai_capabilities": {
                     "local_llm": True,

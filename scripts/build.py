@@ -182,7 +182,13 @@ def activate_venv():
     - No --user fallback (venv site-packages is always writable)
     - No user site-packages leaking into the build
     - Reproducible builds regardless of host Python environment
+
+    On CI (NUNBA_CI=1), skip venv — deps are pre-installed by the workflow.
     """
+    if os.environ.get('NUNBA_CI'):
+        print_info("CI mode — using system Python (deps pre-installed by workflow)")
+        return sys.executable
+
     venv_dir = '.venv'
     venv_paths = ['.venv', 'venv']
 
@@ -333,6 +339,35 @@ def _stamp_version_in_file(filepath, pattern, replacement):
         print_info(f"Stamped VERSION {VERSION} into {os.path.basename(filepath)}")
         return True
     return False
+
+
+def generate_build_hashes():
+    """Generate build_hashes.json with git commit hashes of all repos.
+
+    Queried at runtime via GET /api/harthash (@HARTHASH magic word).
+    """
+    import json, datetime
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = os.path.dirname(scripts_dir)
+    repos = {
+        'nunba': project_dir,
+        'hartos': os.path.join(project_dir, '..', 'HARTOS'),
+        'hevolve_database': os.path.join(project_dir, '..', 'Hevolve_Database'),
+        'hevolveai': os.path.join(project_dir, '..', 'hevolveai'),
+    }
+    hashes = {}
+    for name, path in repos.items():
+        try:
+            r = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
+                               capture_output=True, text=True, cwd=path, timeout=5)
+            hashes[name] = r.stdout.strip() if r.returncode == 0 else 'unknown'
+        except Exception:
+            hashes[name] = 'unknown'
+    hashes['build_time'] = datetime.datetime.now().isoformat()
+    out_path = os.path.join(project_dir, 'build_hashes.json')
+    with open(out_path, 'w') as f:
+        json.dump(hashes, f, indent=2)
+    print_info(f"Build hashes: {hashes}")
 
 
 def stamp_version():
@@ -887,6 +922,27 @@ def build_windows(python_exe, app_only=False, installer_only=False):
 
     # Slim python-embed (remove pip, setuptools, tests, etc.)
     slim_python_embed()
+
+    # ── Post-build: extract missing stdlib modules from python312.zip ──
+    # cx_Freeze's lib/ often misses stdlib modules that GPU TTS backends
+    # need at runtime (unittest, email.mime.application, fileinput, etc.).
+    # Extract any .pyc from python312.zip that isn't already in lib/.
+    _zip_path = os.path.join('build', 'Nunba', 'python-embed', 'python312.zip')
+    _lib_dir = os.path.join('build', 'Nunba', 'lib')
+    if os.path.isfile(_zip_path) and os.path.isdir(_lib_dir):
+        import zipfile
+        _extracted = 0
+        with zipfile.ZipFile(_zip_path) as _zf:
+            for _zname in _zf.namelist():
+                if _zname.endswith('.pyc'):
+                    _dst = os.path.join(_lib_dir, _zname)
+                    if not os.path.exists(_dst):
+                        os.makedirs(os.path.dirname(_dst), exist_ok=True)
+                        with open(_dst, 'wb') as _f:
+                            _f.write(_zf.read(_zname))
+                        _extracted += 1
+        if _extracted:
+            print_info(f"Extracted {_extracted} missing stdlib .pyc from python312.zip to lib/")
 
     if app_only:
         return True

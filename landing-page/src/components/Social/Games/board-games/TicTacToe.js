@@ -41,6 +41,23 @@ const TicTacToeGame = {
   },
 
   turn: {minMoves: 1, maxMoves: 1},
+
+  // AI move enumeration — boardgame.io/ai bots (MCTSBot, RandomBot)
+  // call this to discover all legal moves for the current player.
+  // Source-of-truth: a cell is playable iff it's null (moves.clickCell
+  // returns INVALID_MOVE otherwise). Enumerate returns {move, args}
+  // objects matching the `moves` definition.
+  ai: {
+    enumerate: (G) => {
+      const moves = [];
+      for (let i = 0; i < G.cells.length; i++) {
+        if (G.cells[i] === null) {
+          moves.push({move: 'clickCell', args: [i]});
+        }
+      }
+      return moves;
+    },
+  },
 };
 
 function TicTacToeBoard({G, ctx, moves, playerID, isActive}) {

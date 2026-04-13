@@ -8,6 +8,16 @@ Connect to Hivemind with your friends' agents.
 import os
 import sys
 
+# PyTorch CUDA: expandable segments MUST be set before first `import torch`.
+# Frozen fixes below import langchain which can pull in torch transitively.
+# Without this, 24MB allocations fail even with 5GB free due to fragmentation.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+
+# Allow audio autoplay in WebView2 — TTS plays audio from async SSE callbacks.
+# Without this, Chrome/WebView2 autoplay policy silently blocks Audio.play().
+os.environ.setdefault('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+                       '--autoplay-policy=no-user-gesture-required')
+
 # Trace recursion in frozen builds — write to file since Win32GUI has no console
 if getattr(sys, 'frozen', False):
     sys.setrecursionlimit(2000)
@@ -85,8 +95,10 @@ _isolate_frozen_imports()
 # Program Files is read-only for non-admin. Packages installed at runtime
 # (e.g. CUDA torch, TTS engines) go to ~/.nunba/site-packages/ instead.
 _user_sp = os.path.join(os.path.expanduser('~'), '.nunba', 'site-packages')
-if os.path.isdir(_user_sp) and _user_sp not in sys.path:
+os.makedirs(_user_sp, exist_ok=True)
+if _user_sp not in sys.path:
     sys.path.insert(0, _user_sp)
+
 
 # === Single-instance guard ===
 # Prevent multiple Nunba processes (Windows auto-start + manual launch).
@@ -132,7 +144,9 @@ def _check_single_instance():
         except Exception:
             pass
 
-_check_single_instance()
+# Skip single-instance check under pytest (PYTEST_CURRENT_TEST is set by pytest)
+if not os.environ.get('PYTEST_CURRENT_TEST'):
+    _check_single_instance()
 
 # === Frozen exe stdout/stderr fix ===
 # cx_Freeze GUI exes have no console → stdout/stderr file descriptors are closed.
@@ -168,15 +182,55 @@ if getattr(sys, 'frozen', False):
         _frozen_log_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs')
     os.makedirs(_frozen_log_dir, exist_ok=True)
     try:
-        _frozen_log = open(os.path.join(_frozen_log_dir, 'frozen_debug.log'), 'w', encoding='utf-8')
+        _frozen_log = open(os.path.join(_frozen_log_dir, 'frozen_debug.log'), 'w',
+                           encoding='utf-8', buffering=1)  # line-buffered: every \n hits disk
         _atexit.register(_frozen_log.close)
         sys.stdout = _frozen_log
         sys.stderr = _frozen_log
     except OSError:
         pass  # If log dir is read-only, skip — don't crash on startup
 
+    # ── Startup tracer: log every phase until agent page is visible ──
+    # Writes to a SEPARATE file (startup_trace.log) with immediate flush.
+    # This survives crashes that kill frozen_debug.log.
+    import time as _time
+    _startup_t0 = _time.time()
+    try:
+        _trace_log = open(os.path.join(_frozen_log_dir, 'startup_trace.log'), 'w',
+                          encoding='utf-8', buffering=1)
+    except OSError:
+        import io as _tio
+        _trace_log = _tio.StringIO()
+
+    def _trace(msg):
+        try:
+            elapsed = _time.time() - _startup_t0
+            _trace_log.write(f"[{elapsed:8.3f}s] {msg}\n")
+            _trace_log.flush()
+        except Exception:
+            pass
+
+    _trace("=== Nunba startup trace ===")
+    _trace(f"argv: {sys.argv}")
+    _trace(f"frozen: {getattr(sys, 'frozen', False)}")
+    _trace(f"executable: {sys.executable}")
+    try:
+        _disk_info = os.popen('wmic logicaldisk where DeviceID="C:" get FreeSpace /value').read().strip()
+        _trace(f"disk free: {_disk_info}")
+    except Exception:
+        pass
+
+    # Make _trace available globally for other modules
+    import builtins as _builtins
+    _builtins._nunba_trace = _trace
+
+    _builtins._nunba_trace_stop = lambda: None  # no-op placeholder
+
 import os
 import sys
+
+_t = getattr(__import__('builtins'), '_nunba_trace', lambda m: None)
+_t("PATH isolation starting")
 
 # === Frozen executable PATH isolation ===
 # cx_Freeze bundles its own Python DLLs. If the user has conda, miniconda,
@@ -243,6 +297,32 @@ if getattr(sys, 'frozen', False):
     _embed_site_packages = os.path.join(_app_dir, 'python-embed', 'Lib', 'site-packages')
     if os.path.isdir(_embed_site_packages) and _embed_site_packages not in sys.path:
         sys.path.append(_embed_site_packages)
+    # Remove stale torchvision/_C.pyd from frozen lib/ — it conflicts with
+    # the real CUDA torch in user site-packages (entry point mismatch error).
+    # torch/torchvision should ONLY come from ~/.nunba/site-packages/.
+    for _stale_pkg in ('torchvision', 'torchaudio'):
+        _stale_pyd = os.path.join(_lib_dir, _stale_pkg, '_C.pyd')
+        if os.path.isfile(_stale_pyd):
+            try:
+                os.rename(_stale_pyd, _stale_pyd + '.disabled')
+            except OSError:
+                pass  # Locked or no admin — harmless, DLL won't load from renamed path
+
+    # User site-packages (~/.nunba/site-packages/) — runtime pip installs go here.
+    # INSERT at 0 so CUDA torch (if installed) shadows the 0.0.0 stub in python-embed.
+    # Verified: python-embed/python.exe loads CUDA torch correctly with this path order.
+    _user_sp = os.path.join(os.path.expanduser('~'), '.nunba', 'site-packages')
+    if os.path.isdir(_user_sp) and _user_sp not in sys.path:
+        sys.path.insert(0, _user_sp)
+    # Windows: torch needs its lib/ dir in DLL search path for CUDA DLLs
+    _torch_lib = os.path.join(_user_sp, 'torch', 'lib')
+    if os.path.isdir(_torch_lib):
+        if hasattr(os, 'add_dll_directory'):
+            try:
+                os.add_dll_directory(_torch_lib)
+            except OSError:
+                pass
+        os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
     # Win32GUI base sets sys.stdout/stderr to None, which crashes modules that
     # do sys.stdout.buffer (e.g. hart_intelligence line 6). Fix by redirecting
     # to devnull before any imports that might touch stdout.
@@ -251,18 +331,124 @@ if getattr(sys, 'frozen', False):
     if _is_stream_broken(sys.stderr):
         sys.stderr = _safe_devnull()
 
-# ── Fix langchain_classic lazy imports for frozen builds ──
-# langchain_classic uses __getattr__ + create_importer (importlib.import_module)
-# for lazy class loading. In frozen cx_Freeze builds, this mechanism fails for
-# chains/loading.py line 17: "from langchain_classic.chains import ReduceDocumentsChain".
-# Fix: pre-import the target submodule and inject the class into the parent namespace
-# so Python finds it in __dict__ directly, bypassing __getattr__.
+
+# ════════════════════════════════════════════════════════════════════
+# STATIC SPLASH — must appear BEFORE frozen fixes (which take 20+s).
+# Only needs tkinter + PIL (lightweight, bundled by cx_Freeze).
+# ════════════════════════════════════════════════════════════════════
+
+def _safe_tk_update_early(root, budget_ms=50):
+    """Pump tkinter events. Inlined here so splash can use it before frozen fixes."""
+    try:
+        if sys.platform != 'darwin':
+            root.update()
+            return
+        import _tkinter
+        import time as _t
+        deadline = _t.monotonic() + budget_ms / 1000.0
+        while _t.monotonic() < deadline:
+            if not root.tk.dooneevent(_tkinter.DONT_WAIT):
+                break
+    except Exception:
+        pass
+
+_early_splash = None
+_eroot = None
+
+if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--install-ai' not in sys.argv and '--background' not in sys.argv and '--help' not in sys.argv and '-h' not in sys.argv:
+    # DPI awareness before any Tk window
+    try:
+        import ctypes as _ct_dpi
+        _ct_dpi.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+    # macOS Tcl/Tk path fix
+    if sys.platform == 'darwin':
+        _macos_dir = os.path.dirname(sys.executable)
+        _tcl_dir = os.path.join(_macos_dir, 'share', 'tcl8.6')
+        _tk_dir = os.path.join(_macos_dir, 'share', 'tk8.6')
+        if os.path.isdir(_tcl_dir):
+            os.environ['TCL_LIBRARY'] = _tcl_dir
+        if os.path.isdir(_tk_dir):
+            os.environ['TK_LIBRARY'] = _tk_dir
+    try:
+        import tkinter as _estk
+        _eroot = _estk.Tk()
+        _eroot.withdraw()
+        _app_base = os.path.dirname(os.path.abspath(sys.executable))
+        _esp_path = os.path.join(_app_base, 'splash.png')
+        if os.path.isfile(_esp_path):
+            from PIL import Image as _ESImg, ImageTk as _ESTk
+            _es_img = _ESImg.open(_esp_path)
+            _ESW, _ESH = _es_img.size
+            if _ESW > 900 or _ESH > 560:
+                _es_img = _es_img.resize((900, 560), _ESImg.LANCZOS)
+                _ESW, _ESH = 900, 560
+            _es_top = _estk.Toplevel(_eroot)
+            _es_top.overrideredirect(True)
+            _es_top.attributes('-topmost', True)
+            _esx = (_es_top.winfo_screenwidth() - _ESW) // 2
+            _esy = (_es_top.winfo_screenheight() - _ESH) // 2
+            _es_top.geometry(f"{_ESW}x{_ESH}+{_esx}+{_esy}")
+            _es_photo = _ESTk.PhotoImage(_es_img)
+            _es_canvas = _estk.Canvas(_es_top, width=_ESW, height=_ESH,
+                                       highlightthickness=0, bd=0)
+            _es_canvas.pack(fill='both', expand=True)
+            _es_canvas.create_image(0, 0, image=_es_photo, anchor='nw')
+            _es_canvas._ref = _es_photo
+            _es_status = _estk.StringVar(value='Starting up...')
+            _es_status_id = _es_canvas.create_text(
+                _ESW // 2, _ESH - 32, text='Starting up...',
+                font=('Bahnschrift Light', 10), fill='#72757E', anchor='center')
+            def _es_on_status(*_a):
+                try:
+                    _es_canvas.itemconfig(_es_status_id, text=_es_status.get())
+                except Exception:
+                    pass
+            _es_status.trace_add('write', _es_on_status)
+            _es_bar_y = _ESH - 14
+            _es_bar_w = 220
+            _es_bar_x = (_ESW - _es_bar_w) // 2
+            _es_canvas.create_rectangle(_es_bar_x, _es_bar_y,
+                                         _es_bar_x + _es_bar_w, _es_bar_y + 3,
+                                         fill='#1A1929', outline='')
+            _es_bar_rect = _es_canvas.create_rectangle(
+                _es_bar_x, _es_bar_y, _es_bar_x + 40, _es_bar_y + 3,
+                fill='#6C63FF', outline='')
+            _es_anim = {'pos': 0, 'dir': 1}
+            def _es_animate():
+                try:
+                    _es_anim['pos'] += _es_anim['dir'] * 4
+                    if _es_anim['pos'] >= _es_bar_w - 40:
+                        _es_anim['dir'] = -1
+                    elif _es_anim['pos'] <= 0:
+                        _es_anim['dir'] = 1
+                    px = _es_bar_x + _es_anim['pos']
+                    _es_canvas.coords(_es_bar_rect, px, _es_bar_y, px + 40, _es_bar_y + 3)
+                    _es_top.after(30, _es_animate)
+                except Exception:
+                    pass
+            _es_animate()
+            _safe_tk_update_early(_eroot)
+            _eroot.after(300000, lambda: _eroot.destroy())
+            _early_splash = (_eroot, _es_top, _es_canvas, _es_status, _es_photo)
+        else:
+            _eroot.destroy()
+    except Exception:
+        _early_splash = None
+
+
+# ── Frozen build import fixes (langchain, torch, transformers) ──
+# These take 20-30s. Splash is already visible above.
+_FROZEN_FIXES_DONE = False
 if getattr(sys, 'frozen', False):
+    _trace("frozen fixes block starting")
     # Suppress ALL warnings before importing langchain/autogen — they try to write
     # to stderr which may be closed in GUI exe even after our devnull redirect.
     # flaml (via autogen) emits UserWarning, langchain emits DeprecationWarning.
     import warnings as _warnings
     _warnings.filterwarnings('ignore')
+    _trace("starting opentelemetry fix")
     # ── Fix opentelemetry.context StopIteration crash in frozen builds ──
     # cx_Freeze doesn't bundle setuptools/importlib_metadata dist-info, so
     # entry_points(group="opentelemetry_context") returns empty →
@@ -291,6 +477,7 @@ if getattr(sys, 'frozen', False):
         _otel_meta.entry_points = _patched_eps
     except Exception:
         pass
+    _trace("opentelemetry fix done, starting langchain fix")
     # ── Inject ReduceDocumentsChain placeholder into langchain_classic.chains ──
     # chains/loading.py line 17: "from langchain_classic.chains import ReduceDocumentsChain"
     # This triggers __getattr__ → create_importer → importlib.import_module →
@@ -312,20 +499,64 @@ if getattr(sys, 'frozen', False):
         del _lc_chains
     except Exception:
         pass
-    # ── Pre-guard torch to prevent circular import crash ──
-    # autogen → transformers → torch. In frozen builds (python-embed),
-    # torch can't fully initialize (missing cuda DLLs, partial .pyd files).
-    # Result: "partially initialized module 'torch' has no attribute 'autograd'"
-    # which kills the entire Tier-1 import chain (hart_intelligence → create_recipe).
-    # Fix: attempt a clean import. If it fails, replace the partially-initialized
-    # module with a stub so autogen's import doesn't crash the chain.
+    _trace("langchain fixes done, starting torch pre-guard")
+    # ── Pre-guard torch to prevent crash from broken native DLL ──
+    # autogen → transformers → torch. In frozen builds, torch_cpu.dll can
+    # segfault (0xc0000005) if CUDA DLLs are corrupted or have dependency
+    # conflicts. Python's try/except CANNOT catch C-level segfaults — the OS
+    # kills the entire process instantly (Event ID 1000 in Windows Event Viewer).
+    # Fix: test torch import in a subprocess (python-embed/python.exe) first.
+    # If the subprocess crashes, we apply the stub without ever loading the
+    # broken DLL in-process. Subprocess crash → exit code != 0 → safe fallback.
+    _torch_safe = False
     try:
-        import torch as _torch_test
-        # torch loaded OK — no fix needed (shouldn't happen in frozen, but be safe)
-        del _torch_test
-    except (ImportError, ModuleNotFoundError):
-        pass  # torch not installed at all — fine, autogen will skip it
-    except (AttributeError, OSError, RuntimeError):
+        _torch_test_exe = os.path.join(
+            os.path.dirname(os.path.abspath(sys.executable)),
+            'python-embed', 'python.exe'
+        )
+        if os.path.isfile(_torch_test_exe):
+            import subprocess as _sub_torch
+            _torch_env = os.environ.copy()
+            # Ensure user site-packages (CUDA torch) is discoverable
+            _torch_env['PYTHONPATH'] = os.pathsep.join([
+                _user_sp,
+                os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                             'python-embed', 'Lib', 'site-packages'),
+                _torch_env.get('PYTHONPATH', ''),
+            ])
+            try:
+                _tp = _sub_torch.run(
+                    [_torch_test_exe, '-c',
+                     'import torch; print(torch.__version__); '
+                     'print("cuda" if torch.cuda.is_available() else "cpu")'],
+                    capture_output=True, text=True, timeout=30,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW
+                    env=_torch_env,
+                )
+                _torch_safe = (_tp.returncode == 0)
+                if _torch_safe:
+                    _trace(f"torch subprocess OK: {_tp.stdout.strip()}")
+                else:
+                    _trace(f"torch subprocess FAILED (exit {_tp.returncode}): {_tp.stderr[:200]}")
+            except Exception as _e:
+                _trace(f"torch subprocess test error: {_e}")
+            del _sub_torch
+        else:
+            # No python-embed (dev mode) — direct import is safer (not frozen DLL issues)
+            _torch_safe = True
+    except Exception:
+        pass
+
+    if _torch_safe:
+        try:
+            import torch as _torch_test
+            del _torch_test
+        except (ImportError, ModuleNotFoundError):
+            pass
+        except (AttributeError, OSError, RuntimeError):
+            _torch_safe = False  # fall through to stub
+
+    if not _torch_safe:
         # torch partially initialized or DLL load failure — stub it out.
         # Must be comprehensive: downstream code (CLIPBackend, rl_ef, VibeVoice)
         # checks torch.Tensor, torch.no_grad, torch.float32, torch.bfloat16, etc.
@@ -398,6 +629,7 @@ if getattr(sys, 'frozen', False):
         sys.modules['torch.nn.functional'] = _torch_stub.nn.functional
         del _types, _torch_stub, _bad_torch, _TensorStub, _NoGradStub
 
+    _trace("torch pre-guard done, starting transformers fix")
     # ── Fix transformers.__init__ frozenset crash in frozen builds ──
     # transformers 5.x uses `import_structure[frozenset({})]` at line 772.
     # In cx_Freeze frozen builds, the dict keys resolve differently and the
@@ -421,6 +653,44 @@ if getattr(sys, 'frozen', False):
                     _f.write(_fixed)
     except Exception:
         pass
+
+# ── Deferred frozen fixes — run AFTER splash is shown ──
+def _run_frozen_import_fixes():
+    """Run the langchain/torch/transformers fixes that were skipped above."""
+    global _FROZEN_FIXES_DONE
+    if _FROZEN_FIXES_DONE or not getattr(sys, 'frozen', False):
+        return
+    _FROZEN_FIXES_DONE = True
+    import warnings as _warnings
+    _warnings.filterwarnings('ignore')
+    try:
+        import opentelemetry.util._importlib_metadata as _otel_meta
+        _orig_ep_fn = _otel_meta.entry_points
+        class _ContextVarsEP:
+            name = 'contextvars_context'
+            group = 'opentelemetry_context'
+            def load(self):
+                from opentelemetry.context.contextvars_context import ContextVarsRuntimeContext
+                return ContextVarsRuntimeContext
+        def _patched_eps(**kwargs):
+            if kwargs.get('group') == 'opentelemetry_context':
+                return (_ContextVarsEP(),)
+            return _orig_ep_fn(**kwargs)
+        _otel_meta.entry_points = _patched_eps
+    except Exception:
+        pass
+    try:
+        import langchain_classic.chains as _lc_chains
+        if not hasattr(_lc_chains, 'ReduceDocumentsChain'):
+            class _Stub:
+                pass
+            _lc_chains.ReduceDocumentsChain = _Stub
+        del _lc_chains
+    except Exception:
+        pass
+    # torch pre-guard already ran at module level (subprocess + stub).
+    # If _FROZEN_FIXES_DONE was False, the module-level block already handled torch.
+    # No need to re-import here — the stub or real module is already in sys.modules.
 
 # -- macOS-safe tkinter event pump --
 # On macOS, root.update() enters the Cocoa run loop and never returns when
@@ -523,106 +793,8 @@ def _load_deferred_config():
     if _llm_configured:
         os.environ.setdefault('HEVOLVE_AGENT_ENGINE_ENABLED', 'true')
 
-# ── Show static splash.png IMMEDIATELY (before any heavy imports) ──
-# flask, requests, PIL etc. take seconds to import. Show splash first.
-_early_splash = None   # (root, canvas, status_var, photo_ref)
-_eroot = None
-# Make Tkinter DPI-aware BEFORE creating any windows (early or animated).
-# Without this, Windows upscales the splash (e.g. 900x560 → 1350x840 at 150% DPI)
-# and positions it off-center.
-try:
-    import ctypes as _ct_dpi
-    _ct_dpi.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
-except Exception:
-    pass  # Linux/macOS or older Windows — no-op
-# cx_Freeze puts tcl/tk in Contents/MacOS/share/ but tkinter looks in
-# Contents/Resources/share/.  Set env vars so every Tk() call finds init.tcl.
-if getattr(sys, 'frozen', False) and sys.platform == 'darwin':
-    _macos_dir = os.path.dirname(sys.executable)
-    _tcl_dir = os.path.join(_macos_dir, 'share', 'tcl8.6')
-    _tk_dir = os.path.join(_macos_dir, 'share', 'tk8.6')
-    if os.path.isdir(_tcl_dir):
-        os.environ['TCL_LIBRARY'] = _tcl_dir
-    if os.path.isdir(_tk_dir):
-        os.environ['TK_LIBRARY'] = _tk_dir
-
-# Early splash only in frozen builds — two Tk() instances cause ghost white window
-if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--install-ai' not in sys.argv and '--background' not in sys.argv and '--help' not in sys.argv and '-h' not in sys.argv:
-    try:
-        import tkinter as _estk
-        _eroot = _estk.Tk()
-        _eroot.withdraw()  # hidden root — setup-ai wizard can use Toplevel on it
-        _app_base = os.path.dirname(os.path.abspath(
-            sys.executable if getattr(sys, 'frozen', False) else __file__))
-        _esp_path = os.path.join(_app_base, 'splash.png')
-        if os.path.isfile(_esp_path):
-            from PIL import Image as _ESImg
-            from PIL import ImageTk as _ESTk
-            _es_img = _ESImg.open(_esp_path)
-            # Scale to match animated splash size (900x560) if larger
-            _ESW, _ESH = _es_img.size
-            if _ESW > 900 or _ESH > 560:
-                _es_img = _es_img.resize((900, 560), _ESImg.LANCZOS)
-                _ESW, _ESH = 900, 560
-            # Toplevel for the splash image (centered, borderless)
-            _es_top = _estk.Toplevel(_eroot)
-            _es_top.overrideredirect(True)
-            _es_top.attributes('-topmost', True)
-            _esx = (_es_top.winfo_screenwidth() - _ESW) // 2
-            _esy = (_es_top.winfo_screenheight() - _ESH) // 2
-            _es_top.geometry(f"{_ESW}x{_ESH}+{_esx}+{_esy}")
-            _es_photo = _ESTk.PhotoImage(_es_img)
-            _es_canvas = _estk.Canvas(_es_top, width=_ESW, height=_ESH,
-                                       highlightthickness=0, bd=0)
-            _es_canvas.pack(fill='both', expand=True)
-            _es_canvas.create_image(0, 0, image=_es_photo, anchor='nw')
-            _es_canvas._ref = _es_photo
-            _es_status = _estk.StringVar(value='Starting up...')
-            # Draw status on canvas (not Label widget) so it blends with splash image
-            _es_status_id = _es_canvas.create_text(
-                _ESW // 2, _ESH - 32, text='Starting up...',
-                font=('Bahnschrift Light', 10), fill='#72757E', anchor='center')
-            def _es_on_status(*_a):
-                try:
-                    _es_canvas.itemconfig(_es_status_id, text=_es_status.get())
-                except Exception:
-                    pass
-            _es_status.trace_add('write', _es_on_status)
-            # Progress bar
-            _es_bar_y = _ESH - 14
-            _es_bar_w = 220
-            _es_bar_x = (_ESW - _es_bar_w) // 2
-            _es_canvas.create_rectangle(_es_bar_x, _es_bar_y,
-                                         _es_bar_x + _es_bar_w, _es_bar_y + 3,
-                                         fill='#1A1929', outline='')
-            _es_bar_rect = _es_canvas.create_rectangle(
-                _es_bar_x, _es_bar_y, _es_bar_x + 40, _es_bar_y + 3,
-                fill='#6C63FF', outline='')
-            _es_anim = {'pos': 0, 'dir': 1}
-
-            def _es_animate():
-                try:
-                    _es_anim['pos'] += _es_anim['dir'] * 4
-                    if _es_anim['pos'] >= _es_bar_w - 40:
-                        _es_anim['dir'] = -1
-                    elif _es_anim['pos'] <= 0:
-                        _es_anim['dir'] = 1
-                    px = _es_bar_x + _es_anim['pos']
-                    _es_canvas.coords(_es_bar_rect, px, _es_bar_y, px + 40, _es_bar_y + 3)
-                    _es_top.after(30, _es_animate)
-                except Exception:
-                    pass
-
-            _es_animate()
-            _safe_tk_update(_eroot)  # use safe pump — plain update() freezes macOS Cocoa loop
-            # Self-destruct: if splash is still alive after 5 min, something hung — kill it
-            _eroot.after(300000, lambda: _eroot.destroy())
-            # Store: (hidden_root, toplevel, canvas, status_var, photo_ref)
-            _early_splash = (_eroot, _es_top, _es_canvas, _es_status, _es_photo)
-        else:
-            _eroot.destroy()
-    except Exception:
-        _early_splash = None
+# Static splash was shown BEFORE frozen fixes (line 329).
+# _early_splash and _eroot are already set.
 
 import argparse
 import atexit
@@ -1251,39 +1423,19 @@ if getattr(args, 'setup_ai', False):
             _setup_logger.info(
                 f"--setup-ai: already configured — binary={_found_binary}, "
                 f"model={_has_model}, custom_api={_has_custom_api}, first_run=False. "
-                f"Skipping wizard, starting server directly.")
-            # Auto-start the server if not already running
-            import socket as _setup_sock
-            _setup_port = int(_sc.config.get('port', 8080))
-            _port_busy = False
-            try:
-                _ts = _setup_sock.socket(_setup_sock.AF_INET, _setup_sock.SOCK_STREAM)
-                _ts.settimeout(1)
-                _ts.connect(('127.0.0.1', _setup_port))
-                _ts.close()
-                _port_busy = True
-            except Exception:
-                pass
-            if not _port_busy:
-                try:
-                    _sc.start_server()
-                    _setup_logger.info("--setup-ai: auto-started llama.cpp server")
-                except Exception as _ase:
-                    _setup_logger.warning(f"--setup-ai: auto-start failed: {_ase}")
-            else:
-                _setup_logger.info("--setup-ai: server already running")
+                f"Skipping wizard, exiting immediately.")
+            # Don't start the server here — main Nunba.exe handles it.
+            # Starting here causes a 30s+ delay (port conflict retries)
+            # that creates a visible gap between splash screens.
             _skip_wizard = True
     except Exception as _fast_err:
         _setup_logger.debug(f"--setup-ai: fast-path check failed: {_fast_err}")
 
     if _skip_wizard:
         _setup_logger.info("--setup-ai: wizard skipped (already configured), exiting")
-        # Destroy early splash if present
-        if _early_splash:
-            try:
-                _early_splash[0].destroy()
-            except Exception:
-                pass
+        # Keep splash visible during exit — avoids visual gap between
+        # --setup-ai exit and main Nunba.exe splash creation.
+        # OS cleans up the window when the process terminates.
         sys.exit(0)
 
     _setup_logger.info("--setup-ai: starting interactive AI setup wizard")
@@ -2659,6 +2811,34 @@ def _gui_chat_loading():
 def _gui_prompts_loading():
     return jsonify([])
 
+def _ensure_page_rendered(window, port=5000):
+    """Check if WebView2 rendered the page. If black/blank, force reload.
+
+    WebView2 hidden mode loads URL but never renders. After hours hidden,
+    the DOM is empty. This detects that and reloads on show.
+    Called after any window.show() to fix the black screen.
+    """
+    if not window:
+        return
+    try:
+        _cur = window.get_current_url() or ''
+        _need_reload = not _cur or 'about:blank' in _cur or 'error' in _cur.lower()
+        if not _need_reload:
+            try:
+                _has_content = window.evaluate_js(
+                    "document.getElementById('root')?.children.length > 0"
+                )
+                if not _has_content:
+                    _need_reload = True
+            except Exception:
+                _need_reload = True
+        if _need_reload:
+            logging.getLogger(__name__).info("[SHOW] Black screen detected — reloading page")
+            window.load_url(f"http://localhost:{port}/local")
+    except Exception:
+        pass
+
+
 @gui_app.route('/api/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def _gui_api_loading(path):
     return jsonify({'loading': True, 'message': 'Nunba is waking up...'}), 503
@@ -2763,6 +2943,21 @@ def _import_main_app():
 
     # Get the Flask app instance from main.py
     flask_app = main_module.app
+
+    # Expose broadcast_sse_event on __main__ so HARTOS can find it.
+    # HARTOS does `import __main__; __main__.broadcast_sse_event(...)`.
+    # In frozen builds, __main__ is app.py, but broadcast_sse_event lives in main.py.
+    if hasattr(main_module, 'broadcast_sse_event'):
+        import __main__
+        __main__.broadcast_sse_event = main_module.broadcast_sse_event
+
+    # Start background services (TTS warm-up, vision, diarization, langchain)
+    # main.py's if __name__=='__main__' block doesn't run when imported as module
+    if hasattr(main_module, 'start_background_services'):
+        threading.Thread(
+            target=main_module.start_background_services,
+            daemon=True, name='BackgroundServices'
+        ).start()
     _startup_phase = 'main_imported'
 
     # Configure CORS properly for hevolve domains
@@ -3765,13 +3960,7 @@ def start_flask():
             global _window
             if _window:
                 _window.show()
-                # Reload if the page never loaded (background auto-start)
-                try:
-                    _cur = _window.get_current_url() or ''
-                    if not _cur or 'about:blank' in _cur or 'error' in _cur.lower():
-                        _window.load_url(f"http://localhost:{args.port}/local")
-                except Exception:
-                    pass
+                _ensure_page_rendered(_window, args.port)
             return jsonify({"success": True})
 
         @_serving_app.route('/indicator/show', methods=['GET', 'OPTIONS'])
@@ -3824,9 +4013,16 @@ def start_flask():
             """Bring the webview window to the foreground (called by duplicate instances)."""
             try:
                 if _window is not None:
+                    _window.show()  # unhide if started in background mode
                     _window.restore()
+                    # Load /local if page was never loaded (background start)
+                    try:
+                        _cur = _window.get_current_url() or ''
+                        if not _cur or 'about:blank' in _cur:
+                            _window.load_url(f"http://localhost:{args.port}/local")
+                    except Exception:
+                        pass
                     _window.on_top = True
-                    # Reset on_top after a short delay so it doesn't stay pinned
                     import threading as _thr
                     _thr.Timer(0.5, lambda: setattr(_window, 'on_top', False)).start()
                 return jsonify({"focused": True})
@@ -5165,6 +5361,17 @@ def main():
             # Don't exit - continue with normal startup
             logger.info("Continuing with normal startup despite protocol error")
 
+    # ── Resource Governor — hard OS-level caps BEFORE any heavy work ──
+    # Sets BELOW_NORMAL priority, CPU rate limit via Job Object, RAM cap.
+    # Must run before Flask/LLM so Nunba NEVER slows down the host OS.
+    try:
+        from core.resource_governor import get_governor
+        _gov = get_governor()
+        _gov.start()
+        logger.info("[STARTUP] ResourceGovernor started (enforcer active)")
+    except Exception as _gov_err:
+        logger.debug("[STARTUP] ResourceGovernor not available: %s", _gov_err)
+
     _startup_phase = 'flask_start'
     logger.info("=== STARTING FLASK SERVER ===")
     _splash_update('Starting server...')
@@ -5179,23 +5386,23 @@ def main():
         logger.error(traceback.format_exc())
 
     # Wait for Flask to be ready before proceeding to webview.
-    # On Windows auto-start the system is still booting — Flask takes longer.
+    # Uses raw socket connect (not urllib) to avoid Windows proxy/firewall
+    # issues where urllib.request can't reach localhost in frozen builds.
     _splash_update('Waiting for server...')
     _flask_ready = False
-    _max_wait = 30 if args.background else 15  # longer timeout on auto-start
-    for _attempt in range(_max_wait * 2):  # check every 0.5s
+    _max_wait = 30 if args.background else 15
+    import socket as _wait_sock
+    for _attempt in range(_max_wait * 2):
         try:
-            import urllib.request
-            _resp = urllib.request.urlopen(
-                f"http://127.0.0.1:{args.port}/cors/test", timeout=2
-            )
-            _resp.close()
+            _s = _wait_sock.socket(_wait_sock.AF_INET, _wait_sock.SOCK_STREAM)
+            _s.settimeout(1)
+            _s.connect(('127.0.0.1', args.port))
+            _s.close()
             _flask_ready = True
             logger.info(f"Flask server ready after {_attempt * 0.5:.1f}s")
             break
-        except Exception:
+        except (ConnectionRefusedError, TimeoutError, OSError):
             pass
-        # Keep splash responsive while waiting
         try:
             if _splash_root:
                 _safe_tk_update(_splash_root)
@@ -5376,6 +5583,92 @@ def main():
 
         logger.info(f"Window created: {window_width}x{window_height}, hidden={start_hidden}")
 
+        # ── Nanba Companion: floating desktop pet ──────────────────────
+        # Second pywebview window: frameless, transparent, always-on-top.
+        # Renders 3D animated character (Three.js) that talks via TTS,
+        # listens via STT, and gamifies the conversation experience.
+        _companion_window = None
+        try:
+            import ctypes as _ct
+            _screen_w = _ct.windll.user32.GetSystemMetrics(0) if sys.platform == 'win32' else 1920
+            _screen_h = _ct.windll.user32.GetSystemMetrics(1) if sys.platform == 'win32' else 1080
+            _comp_w, _comp_h = 200, 260
+            _comp_x = _screen_w - _comp_w - 30  # Bottom-right, 30px margin
+            _comp_y = _screen_h - _comp_h - 80  # Above taskbar
+
+            class CompanionAPI:
+                """Python bridge for the companion window JS."""
+                def on_companion_click(self):
+                    """User clicked the companion — toggle main window or start voice chat."""
+                    try:
+                        if _window:
+                            _window.show()
+                            _window.restore()
+                    except Exception:
+                        pass
+
+                def on_companion_dblclick(self):
+                    """User double-clicked — bring main window to front."""
+                    try:
+                        if _window:
+                            _window.show()
+                            _window.restore()
+                            _window.on_top = True
+                            time.sleep(0.3)
+                            _window.on_top = False
+                    except Exception:
+                        pass
+
+            _companion_api = CompanionAPI()
+
+            # Companion serves from the same Flask server
+            _comp_url = f"http://localhost:{args.port}/nanba-companion.html"
+
+            _companion_window = webview.create_window(
+                title='Nanba',
+                url=_comp_url,
+                width=_comp_w,
+                height=_comp_h,
+                x=_comp_x,
+                y=_comp_y,
+                resizable=False,
+                frameless=True,
+                easy_drag=True,
+                on_top=True,
+                transparent=True,
+                background_color='#00000000',
+                js_api=_companion_api,
+            )
+            logger.info("[COMPANION] Nanba companion window created at (%d, %d)",
+                        _comp_x, _comp_y)
+
+            # Wire ResourceGovernor mode changes to companion
+            def _update_companion_mode():
+                if not _companion_window:
+                    return
+                try:
+                    from core.resource_governor import get_governor
+                    mode = get_governor().get_mode()
+                    _companion_window.evaluate_js(
+                        f"window.companionAPI && window.companionAPI.setMode('{mode}')")
+                except Exception:
+                    pass
+
+            # Wire TTS events to companion (speaking animation)
+            def _on_companion_loaded():
+                try:
+                    # Set language from user preference
+                    lang = os.environ.get('HARTOS_LANG', 'en')[:2]
+                    _companion_window.evaluate_js(
+                        f"window.companionAPI && window.companionAPI.setLanguage('{lang}')")
+                except Exception:
+                    pass
+            if _companion_window:
+                _companion_window.events.loaded += _on_companion_loaded
+
+        except Exception as _comp_err:
+            logger.debug("[COMPANION] Companion window not created: %s", _comp_err)
+
         # Apply positioning after window creation
         if position_info:
             apply_window_positioning(_window, position_info)
@@ -5399,6 +5692,87 @@ def main():
             _hotkey_thread.start()
             logger.info("[STARTUP] Global hotkey listener thread started (Win+N)")
 
+        # ── React mount guard — runs for ALL modes (not just background) ──
+        # pywebview's WebView2 can suspend rAF/CSS transitions during creation,
+        # preventing React 18's createRoot from completing the initial render.
+        # This fires on the first `loaded` event and forces opacity/transitions.
+        _mount_guard_fired = [False]
+
+        def _safe_eval_js(js_code, max_retries=5):
+            """evaluate_js with retry — WebView2 may not be ready on first on_loaded."""
+            for attempt in range(max_retries):
+                try:
+                    result = _window.evaluate_js(js_code)
+                    return result
+                except Exception as e:
+                    err_msg = str(e)
+                    if 'failed to start' in err_msg.lower() or 'not ready' in err_msg.lower():
+                        delay = (attempt + 1) * 2  # 2s, 4s, 6s, 8s, 10s
+                        logger.debug(f"[EVAL_JS] Retry {attempt+1}/{max_retries} in {delay}s: {err_msg}")
+                        time.sleep(delay)
+                    else:
+                        raise  # non-recoverable error
+            logger.warning(f"[EVAL_JS] All {max_retries} retries failed")
+            return None
+
+        def _on_any_loaded():
+            if _mount_guard_fired[0]:
+                return
+            _mount_guard_fired[0] = True
+            logger.info("[MOUNT_GUARD] on_loaded fired — starting mount check")
+
+            def _mount_guard():
+                # Wait for WebView2 JS bridge to be ready
+                time.sleep(3.0)
+                logger.info("[MOUNT_GUARD] Checking React mount state...")
+                try:
+                    state = _safe_eval_js(
+                        "(function(){"
+                        "  var r = document.getElementById('root');"
+                        "  if (!r) return 'no_root';"
+                        "  if (r.children.length === 0) return 'empty';"
+                        "  return 'mounted';"
+                        "})()"
+                    )
+                    logger.info(f"[MOUNT_GUARD] Initial check: {state}")
+
+                    if state == 'mounted':
+                        # Force CSS transitions to final state (WebView2 may have suspended them)
+                        _window.evaluate_js(
+                            "(function(){"
+                            "  document.querySelectorAll('[style*=\"opacity\"]').forEach(function(el){"
+                            "    if (getComputedStyle(el).opacity === '0') {"
+                            "      el.style.transition = 'none';"
+                            "      el.style.opacity = '1';"
+                            "    }"
+                            "  });"
+                            "  var hero = document.getElementById('hero-section');"
+                            "  if (hero) { hero.style.transition = 'none'; hero.style.opacity = '1'; }"
+                            "  document.body.style.display = 'none';"
+                            "  void document.body.offsetHeight;"
+                            "  document.body.style.display = '';"
+                            "})()"
+                        )
+                        logger.info("[MOUNT_GUARD] Transitions forced, repaint done")
+                    elif state in ('empty', 'no_root', None):
+                        logger.warning(f"[MOUNT_GUARD] React not mounted ({state}) — reloading")
+                        _window.load_url(f"http://localhost:{args.port}/local")
+                        time.sleep(3.0)
+                        # Force resize to wake compositor
+                        try:
+                            w, h = _window.width, _window.height
+                            _window.resize(w + 1, h)
+                            time.sleep(0.1)
+                            _window.resize(w, h)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning(f"[MOUNT_GUARD] Check failed: {e}")
+
+            threading.Thread(target=_mount_guard, daemon=True, name='mount_guard').start()
+
+        _window.events.loaded += _on_any_loaded
+
         # In background mode, reload the page on first show — the initial load
         # may have hit Flask before it was fully ready (especially on Windows boot).
         if start_hidden:
@@ -5420,12 +5794,14 @@ def main():
                     _local_url = f"http://localhost:{args.port}/local"
                     _MAX_ATTEMPTS = 3
 
-                    # ── Wait for Flask to be ready ──
-                    import urllib.request as _ur
-                    for _ in range(15):  # poll up to 7.5s
+                    # ── Wait for Flask to be ready (raw socket, avoids proxy issues) ──
+                    import socket as _bg_sock
+                    for _ in range(15):
                         try:
-                            _r = _ur.urlopen(f"http://127.0.0.1:{args.port}/cors/test", timeout=2)
-                            _r.close()
+                            _bgs = _bg_sock.socket(_bg_sock.AF_INET, _bg_sock.SOCK_STREAM)
+                            _bgs.settimeout(1)
+                            _bgs.connect(('127.0.0.1', args.port))
+                            _bgs.close()
                             break
                         except Exception:
                             time.sleep(0.5)
@@ -5452,6 +5828,7 @@ def main():
                         logger.info(f"[BACKGROUND] Mount check #{attempt + 1}: {state}")
 
                         if state == 'mounted':
+                            _page_loaded_ok[0] = True
                             # React is up but CSS transitions (opacity, blur) may not
                             # have fired — WebView2 suspends CSS animations while hidden.
                             # Force all transition-dependent elements to their final state.
@@ -5526,7 +5903,7 @@ def main():
                 for _ri in range(_max_extra * 2):
                     try:
                         _r = _ur.urlopen(
-                            f"http://127.0.0.1:{_deferred_port}/cors/test", timeout=2)
+                            f"http://127.0.0.1:{_deferred_port}/backend/health", timeout=2)
                         _r.close()
                         logger.info(f"[DEFERRED] Flask ready after {_ri * 0.5:.1f}s extra — reloading webview")
                         time.sleep(1)  # let server fully warm up
@@ -5545,12 +5922,22 @@ def main():
             threading.Thread(target=_deferred_flask_reload, daemon=True).start()
             logger.info("[DEFERRED] Started background Flask poller for delayed reload")
 
-        # Blank-page recovery — if the webview loads but shows an error/blank page
-        # (connection refused, about:blank, or empty body), retry up to 3 times.
+        # Shared reload guard — prevents multiple recovery paths from reloading simultaneously
+        _page_loaded_ok = [False]  # set True when React mounts successfully
         _page_recovery_count = [0]
         _recovery_port = args.port
 
         def _on_loaded_recovery():
+            if _page_recovery_count[0] >= 3 or _page_loaded_ok[0]:
+                return
+            def _deferred_check():
+                time.sleep(3)
+                if _page_loaded_ok[0]:
+                    return
+                _do_recovery_check()
+            threading.Thread(target=_deferred_check, daemon=True).start()
+
+        def _do_recovery_check():
             if _page_recovery_count[0] >= 3:
                 return
             try:
@@ -5559,8 +5946,7 @@ def main():
                 is_error_url = ('about:blank' in _cur_url or 'error' in _cur_url.lower()
                                 or not _cur_url.startswith('http'))
                 # Content-level check — detect blank page even with valid URL.
-                # Check #root children count (not body length, which includes the
-                # pre-react-loader HTML and falsely passes the old <50 threshold).
+                # Check #root children count after React has had time to mount.
                 is_blank_content = False
                 if not is_error_url:
                     try:
@@ -5590,8 +5976,9 @@ def main():
 
                     threading.Thread(target=_do_reload, daemon=True).start()
                 else:
-                    # Page loaded normally — stop checking
+                    # Page loaded normally — stop all recovery paths
                     _page_recovery_count[0] = 3
+                    _page_loaded_ok[0] = True
             except Exception:
                 pass
 
@@ -5750,35 +6137,38 @@ window.addEventListener('unhandledrejection', function(e) {
 
         logger.info("Event handlers connected directly")
 
-        # Set up connectivity monitor (detects offline→local, online→cloud transitions)
-        setup_connectivity_monitor(_window, args.port)
-
-        # Apply window theme
-        if sys.platform == "win32":
-            set_window_theme_attribute(_window)
-            apply_dark_mode_to_all_windows()
-
-        # Monitor thread
-        monitor_thread = threading.Thread(target=lambda: monitor_tray_loop(), daemon=True)
-        monitor_thread.start()
-
-        # Close splash screen — main window is about to appear
-        _splash_update('Hevolve Hive Agent Runtime Ready')
+        # ── Pre-webview setup — MUST NOT crash or webview.start() never runs ──
+        # Wrap each step in try/except so a failure in theme/splash/tray
+        # doesn't prevent the webview from starting (black screen bug).
         try:
-            time.sleep(0.5)  # Brief flash so user reads the message
+            setup_connectivity_monitor(_window, args.port)
+        except Exception as _e:
+            logger.warning(f"[STARTUP] Connectivity monitor failed (non-fatal): {_e}")
+
+        try:
+            if sys.platform == "win32":
+                set_window_theme_attribute(_window)
+                apply_dark_mode_to_all_windows()
+        except Exception as _e:
+            logger.warning(f"[STARTUP] Window theme failed (non-fatal): {_e}")
+
+        try:
+            monitor_thread = threading.Thread(target=lambda: monitor_tray_loop(), daemon=True)
+            monitor_thread.start()
+        except Exception as _e:
+            logger.warning(f"[STARTUP] Monitor thread failed (non-fatal): {_e}")
+
+        try:
+            _splash_update('Hevolve Hive Agent Runtime Ready')
+            time.sleep(0.5)
             _close_splash()
         except Exception:
             pass
 
-        # Bring webview to foreground after it renders — the topmost splash
-        # just closed, so OS may focus whatever was behind it.
-        # Must happen AFTER webview.start() begins, so use the loaded event.
         if not start_hidden and _window and sys.platform == 'win32':
             def _bring_to_front():
-                """Bring window to foreground once webview has loaded."""
-                time.sleep(1)  # let webview render first frame
+                time.sleep(1)
                 try:
-                    # Use Win32 API directly — pywebview's show() can't force focus
                     hwnd = ctypes.windll.user32.FindWindowW(None, args.title)
                     if hwnd:
                         ctypes.windll.user32.SetForegroundWindow(hwnd)
@@ -5788,18 +6178,20 @@ window.addEventListener('unhandledrejection', function(e) {
             _window.events.loaded += lambda: threading.Thread(
                 target=_bring_to_front, daemon=True).start()
 
-        # Notify user via system tray when started in background (Windows auto-start)
         if start_hidden and _tray_icon:
             def _bg_tray_notify():
-                time.sleep(2)  # let tray icon fully initialize
-                notify_minimized_to_tray(
-                    _tray_icon,
-                    "Nunba is running in the background. Click the tray icon to open."
-                )
+                time.sleep(2)
+                try:
+                    notify_minimized_to_tray(
+                        _tray_icon,
+                        "Nunba is running in the background. Click the tray icon to open."
+                    )
+                except Exception:
+                    pass
             threading.Thread(target=_bg_tray_notify, daemon=True).start()
 
-        # Start webview
-        _startup_phase = 'running'  # Watchdog stops monitoring
+        # ── Start webview — THIS MUST ALWAYS BE REACHED ──
+        _startup_phase = 'running'
         logger.info("Starting webview")
 
         # Persistent storage path for WebView2 (localStorage, cookies, cache).
@@ -5832,6 +6224,50 @@ window.addEventListener('unhandledrejection', function(e) {
                         _cm.write('1')
                 except Exception:
                     pass
+
+            # Force navigation after window is visible — WebView2 sometimes drops
+            # the initial URL passed to create_window, resulting in a blank page.
+            _shown_nav_done = [False]
+            def _on_shown_navigate():
+                if _shown_nav_done[0]:
+                    return
+                _shown_nav_done[0] = True
+                try:
+                    _cur = _window.get_current_url() or ''
+                    if not _cur or 'about:blank' in _cur or _cur == initial_url:
+                        logger.info(f"[SHOWN] Forcing navigation to {initial_url}")
+                        _window.load_url(initial_url)
+                except Exception as _e:
+                    logger.debug(f"[SHOWN] Navigation check failed: {_e}")
+                # Bring window to front on first show (not always-on-top)
+                if sys.platform == 'win32':
+                    try:
+                        from ctypes import windll
+                        hwnd = (getattr(getattr(_window, 'original_window', None), 'handle', 0)
+                                or getattr(_window, 'handle', 0)
+                                or windll.user32.FindWindowW(None, args.title))
+                        if hwnd:
+                            windll.user32.SetForegroundWindow(hwnd)
+                            logger.info("[SHOWN] Window brought to foreground")
+                    except Exception as _fe:
+                        logger.debug(f"[SHOWN] SetForegroundWindow failed: {_fe}")
+            _window.events.shown += _on_shown_navigate
+
+            # Background mode: WebView2 doesn't navigate when hidden=True.
+            # Force-load the URL after webview.start() begins, with a delay.
+            # This ensures the page is loaded BEFORE the user shows the window.
+            if start_hidden:
+                def _preload_hidden_page():
+                    time.sleep(3)  # wait for webview.start() to init WebView2
+                    try:
+                        _cur = _window.get_current_url() or ''
+                        if not _cur or 'about:blank' in _cur:
+                            logger.info("[BACKGROUND] Pre-loading /local into hidden webview")
+                            _window.load_url(initial_url)
+                    except Exception as _e:
+                        logger.debug(f"[BACKGROUND] Pre-load failed: {_e}")
+                threading.Thread(target=_preload_hidden_page, daemon=True,
+                                 name='bg-preload').start()
 
             try:
                 logger.info(f"Starting webview with EdgeChromium backend, storage: {_webview_data_dir}")
@@ -6296,6 +6732,17 @@ if __name__ == "__main__":
                     logger.error(f"[STARTUP] main.py import eventually failed: {_import_error[0]}")
                 else:
                     logger.info("[STARTUP] main.py import complete (background)")
+                    # flask_app is now set — the WSGI dispatcher routes to the
+                    # full app.  But the webview may be stuck on a blank page
+                    # from when gui_app was serving (React failed to mount with
+                    # the stub backend).  Force-reload so the real app renders.
+                    try:
+                        if _window:
+                            time.sleep(2)  # let flask_app finish registering routes
+                            _window.load_url(f"http://localhost:{args.port}/local")
+                            logger.info("[STARTUP] Webview reloaded after late main.py import")
+                    except Exception as _reload_err:
+                        logger.warning(f"[STARTUP] Post-import reload failed: {_reload_err}")
             threading.Thread(target=_wait_for_import, daemon=True,
                              name='import_waiter').start()
         else:
