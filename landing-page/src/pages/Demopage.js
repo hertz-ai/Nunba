@@ -1913,7 +1913,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           updated[existingIdx] = {
             ...updated[existingIdx],
             steps: [...updated[existingIdx].steps, data],
-            isComplete: data.message?.includes('ready to use') || data.message?.includes('Ready'),
+            isComplete: data.complete || data.message?.includes('ready to use') || data.message?.includes('Ready') || data.message?.includes('failed'),
           };
           return updated;
         }
