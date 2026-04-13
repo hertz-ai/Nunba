@@ -1,4 +1,5 @@
 import React, {useState, useEffect, useCallback} from 'react';
+import DOMPurify from 'dompurify';
 import {
   Dialog,
   DialogTitle,
@@ -335,7 +336,7 @@ export default function ShareDialog({
                   }}
                 >
                   {qrSvg ? (
-                    <div dangerouslySetInnerHTML={{__html: qrSvg}} />
+                    <div dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(qrSvg)}} />
                   ) : (
                     <QrCodeIcon sx={{fontSize: 64, color: '#ccc'}} />
                   )}

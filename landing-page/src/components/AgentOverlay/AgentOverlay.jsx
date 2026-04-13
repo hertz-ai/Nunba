@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import DOMPurify from 'dompurify';
 import {
   Box, Typography, Button, IconButton, LinearProgress, TextField,
   Fade, Grow, Chip, Rating,
@@ -262,7 +263,7 @@ function MarkdownOverlay({ data }) {
     .replace(/^- (.+)$/gm, '<li>$1</li>')
     .replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
     .replace(/\n/g, '<br/>');
-  return <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.85)' }} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.85)' }} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />;
 }
 
 function MediaOverlay({ data }) {
