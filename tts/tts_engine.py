@@ -1615,9 +1615,10 @@ class TTSEngine:
         # multiplier (and caller overrides) would be silently dropped.
         with self._synth_lock:
             try:
-                result = inst.synthesize(text=text, output_path=output_path,
-                                         voice=voice, speed=speed,
-                                         language=self._language, **kwargs)
+                raw = inst.synthesize(text=text, output_path=output_path,
+                                      voice=voice, speed=speed,
+                                      language=self._language, **kwargs)
+                result = _normalize_tts_result(raw, output_path)
                 if result and os.path.isfile(result):
                     try:
                         fsize = os.path.getsize(result)
@@ -1940,6 +1941,35 @@ class _SubprocessTTSBackend:
                 logger.warning(f"{self._engine_id} stop failed: {e}")
 
 
+def _normalize_tts_result(result, fallback_path=None):
+    """Normalize any TTS return value to a file path string.
+
+    HARTOS tool functions return JSON: {"path": "...", "duration": ...}
+    Subprocess backends return parsed path (already normalized).
+    Piper returns a file path directly.
+
+    This is the SINGLE normalization point — all backends and consumers
+    go through here so the contract is: input=anything, output=file path or None.
+    """
+    if result is None:
+        return None
+    if isinstance(result, dict):
+        return result.get('path', fallback_path)
+    if isinstance(result, str):
+        if result.startswith('{'):
+            try:
+                parsed = json.loads(result)
+                if 'error' in parsed:
+                    logger.warning(f"TTS tool error: {parsed['error']}")
+                    return None
+                return parsed.get('path', fallback_path)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        # Already a file path
+        return result
+    return fallback_path
+
+
 class _InProcessTTSBackend:
     """Generic in-process TTS backend for CPU engines (luxtts, pocket_tts, espeak).
 
@@ -1961,7 +1991,7 @@ class _InProcessTTSBackend:
             accepted = set(sig.parameters.keys())
             safe_kw = {k: v for k, v in kwargs.items() if k in accepted}
             result = self._fn(text=text, output_path=output_path, **safe_kw)
-            return result
+            return _normalize_tts_result(result, output_path)
         except Exception as e:
             logger.warning(f"In-process TTS {self._engine_id} failed: {e}")
             return None

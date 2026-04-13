@@ -189,6 +189,15 @@ def _background_hartos_init():
             _hartos_initialized = True
         except Exception as _ie:
             _hartos_initialized = True  # mark done even on failure
+            # Write to file directly — logger may be silenced in frozen builds
+            try:
+                import traceback as _tb
+                _err_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs', 'hartos_init_error.log')
+                with open(_err_path, 'w') as _ef:
+                    _ef.write(f"Tier-1 import failed: {_ie}\n")
+                    _tb.print_exc(file=_ef)
+            except Exception:
+                pass
             if _BUNDLED_MODE:
                 _user_set_backend = os.environ.get('HARTOS_BACKEND_URL')
                 if _user_set_backend:
