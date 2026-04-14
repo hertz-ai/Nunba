@@ -1729,9 +1729,26 @@ def admin_models_hub_install():
         # execution in the Nunba process (full user token).  If a repo
         # has both .safetensors and .bin, safetensors is preferred and
         # we accept.  If only .bin/.pt/.pkl, refuse.
+        #
+        # `list_repo_files` is a blocking HTTPS call with NO explicit
+        # timeout in huggingface_hub (defaults to ~10s connect + TCP
+        # stall up to 75s).  Running it directly on the Flask thread
+        # can hang an admin worker for up to a minute on a network
+        # blip.  Wrap in a 5s future.result(timeout=5) and fail the
+        # admin request with 504 instead of stalling.
         try:
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FT
             from huggingface_hub import list_repo_files
-            _files = set(list_repo_files(hf_id))
+            with ThreadPoolExecutor(max_workers=1) as _ex:
+                _fut = _ex.submit(list_repo_files, hf_id)
+                try:
+                    _files = set(_fut.result(timeout=5.0))
+                except _FT:
+                    return jsonify({
+                        "error": "hf_timeout",
+                        "message": "HuggingFace Hub file listing timed out "
+                                   "after 5s — retry when network is stable",
+                    }), 504
             _has_safetensors = any(
                 f.endswith('.safetensors') for f in _files
             )
