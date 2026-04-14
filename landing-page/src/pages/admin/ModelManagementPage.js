@@ -81,7 +81,10 @@ function VRAMBar({ compute }) {
 function ModelCard({ model, onLoad, onUnload, onDownload, onSetPurpose }) {
   const isLoaded = model.loaded;
   const isDownloaded = model.downloaded;
-  const typeLabel = MODEL_TYPE_LABELS[model.model_type] || model.model_type;
+  // LLMs with vision capability are multimodal — label as MLLM
+  const typeLabel = (model.model_type === 'llm' && (model.tags || []).includes('vision'))
+    ? 'MLLM'
+    : (MODEL_TYPE_LABELS[model.model_type] || model.model_type);
   const deviceColor = DEVICE_COLORS[model.device] || '#666';
   const [dlStatus, setDlStatus] = useState(null); // {status, percent, message}
   const validPurposes = ALL_PURPOSES;
