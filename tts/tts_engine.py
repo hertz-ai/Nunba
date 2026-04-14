@@ -153,6 +153,97 @@ _INDIC_LANGS = {
     'ml', 'mni', 'mr', 'ne', 'or', 'pa', 'sa', 'sat', 'sd', 'ta', 'te', 'ur',
 }
 
+# ════════════════════════════════════════════════════════════════════
+# LANG → CAPABLE BACKENDS (defensive allowlist)
+#
+# Source of truth for "which backend can actually speak lang X?".
+# Used by _synthesize_with_fallback to REFUSE wrong-language fallback
+# (data-scientist finding 2026-04-15: Tamil users were getting
+# CosyVoice3 English mumbling when Indic Parler OOM'd, because the
+# default ladder falls through to engines that don't cover Indic).
+#
+# Conservative policy:
+#   * Indic Parler: authoritative for all 21 _INDIC_LANGS.
+#   * CosyVoice3: 9 claimed (zh/en/ja/ko/de/es/fr/it/ru) — NO Indic.
+#   * Chatterbox ML: 23 claimed — Tamil/Indic NOT verified in tests,
+#                    so excluded from Indic allowlist conservatively.
+#                    (Still allowed for its 23 claimed European/CJK langs.)
+#   * F5 / Chatterbox Turbo / Kokoro / Piper: English-only.
+# ════════════════════════════════════════════════════════════════════
+_LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
+    # English — every backend supports it
+    'en': frozenset({
+        BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_CHATTERBOX_ML,
+        BACKEND_INDIC_PARLER, BACKEND_COSYVOICE3, BACKEND_KOKORO, BACKEND_PIPER,
+    }),
+    # European / CJK — CosyVoice3 + Chatterbox ML
+    'es': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
+    'fr': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
+    'de': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
+    'it': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
+    'ja': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
+    'ko': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
+    'zh': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
+    'ru': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
+    # Extra Chatterbox-ML-only European langs
+    'pt': frozenset({BACKEND_CHATTERBOX_ML}),
+    'nl': frozenset({BACKEND_CHATTERBOX_ML}),
+    'pl': frozenset({BACKEND_CHATTERBOX_ML}),
+    'sv': frozenset({BACKEND_CHATTERBOX_ML}),
+    'da': frozenset({BACKEND_CHATTERBOX_ML}),
+    'fi': frozenset({BACKEND_CHATTERBOX_ML}),
+    'hu': frozenset({BACKEND_CHATTERBOX_ML}),
+    'el': frozenset({BACKEND_CHATTERBOX_ML}),
+    'tr': frozenset({BACKEND_CHATTERBOX_ML}),
+    'cs': frozenset({BACKEND_CHATTERBOX_ML}),
+    'ro': frozenset({BACKEND_CHATTERBOX_ML}),
+    'bg': frozenset({BACKEND_CHATTERBOX_ML}),
+    'hr': frozenset({BACKEND_CHATTERBOX_ML}),
+    'sk': frozenset({BACKEND_CHATTERBOX_ML}),
+}
+# Indic langs — ONLY Indic Parler. Chatterbox ML is excluded
+# conservatively because its Tamil/Hindi fidelity is unverified and a
+# wrong-language mumble is worse than refusing to synthesize.
+for _lang in _INDIC_LANGS:
+    _LANG_CAPABLE_BACKENDS[_lang] = frozenset({BACKEND_INDIC_PARLER})
+
+
+def _normalize_lang(lang: str | None) -> str:
+    """'en-US' / 'ta_IN' / None → 'en' / 'ta' / 'en'."""
+    if not lang:
+        return 'en'
+    return lang.replace('_', '-').split('-')[0].lower()
+
+
+def _capable_backends_for(lang: str | None) -> frozenset[str]:
+    """Return the allowlist of backends that can speak `lang`.
+    Unknown langs fall through to the English-capable set (Piper etc.)
+    rather than an empty set, matching historical behavior.
+    """
+    return _LANG_CAPABLE_BACKENDS.get(_normalize_lang(lang),
+                                     _LANG_CAPABLE_BACKENDS['en'])
+
+
+def _publish_lang_unsupported(lang: str, attempted: list[str]) -> None:
+    """Best-effort WAMP toast when no backend can speak `lang`.
+    Distinct topic from `lang_mismatch` so the frontend can show a
+    different message ("text-only — no TTS backend available") vs
+    ("audio may be wrong-language").
+    """
+    try:
+        from core.realtime import publish_async as _wamp_pub
+        _wamp_pub(
+            'com.hertzai.hevolve.tts.lang_unsupported',
+            {
+                'requested_lang': lang,
+                'attempted_backends': attempted,
+                'reason': 'no_capable_backend_fits_on_hardware',
+            },
+            timeout=0.5,
+        )
+    except Exception:
+        pass
+
 # Language → preferred engine order (first available wins).
 # Fallback-only — canonical preference is read from ModelCatalog via
 # _get_lang_preference().  Direct use of this dict is degraded-mode only.
@@ -1676,6 +1767,27 @@ class TTSEngine:
         # silently — the voice said "speaking Tamil" but the audio was
         # English mumbling.  The failure is worse than outright error
         # because the user blames the product, not the routing.
+        # HARD-REFUSE wrong-language synthesis on the PRIMARY path too.
+        # If the currently-active backend cannot speak the requested
+        # language (e.g. CosyVoice3 stuck active, user requests Tamil),
+        # route to _synthesize_with_fallback which now filters by
+        # capability and returns None when nothing fits.  This prevents
+        # the primary path from producing wrong-language mumble audio
+        # before any exception is raised.
+        try:
+            _lang_norm = _normalize_lang(self._language)
+            if (_lang_norm != 'en'
+                    and self._active_backend not in _capable_backends_for(self._language)):
+                logger.warning(
+                    f"Active backend '{self._active_backend}' cannot speak "
+                    f"lang='{self._language}' — routing through capability-gated "
+                    f"fallback chain instead of producing wrong-language audio."
+                )
+                return self._synthesize_with_fallback(
+                    text, output_path, voice, self._language, **kwargs)
+        except Exception:
+            pass
+
         try:
             _preferred = _FALLBACK_LANG_ENGINE_PREFERENCE.get(
                 (self._language or 'en').split('-')[0],
@@ -1780,6 +1892,8 @@ class TTSEngine:
         """
         transient = kwargs.pop('_transient', False)
         failed = self._active_backend
+        lang_norm = _normalize_lang(language)
+        capable = _capable_backends_for(language)
         if transient:
             # VRAM pressure: skip all GPU-capable engines, go straight to Piper.
             # Loading torch-based engines on CPU still touches CUDA internals
@@ -1790,6 +1904,27 @@ class TTSEngine:
             candidates = [b for b in prefs if b != failed]
             if BACKEND_PIPER not in candidates:
                 candidates.append(BACKEND_PIPER)
+
+        # WRONG-LANGUAGE SAFETY GATE (data-scientist 2026-04-15):
+        # Filter out backends that CANNOT speak `lang`.  Previously we
+        # blindly appended Piper (English-only) as last resort, so a
+        # Tamil synth whose Indic Parler OOM'd ended up producing
+        # Piper English phonemes — silent wrong-language failure.
+        # Now: if no capable backend remains, return None and publish
+        # a distinct WAMP topic so the chat pipeline can fall back to
+        # text-only display instead of mumbling audio.
+        if lang_norm != 'en':
+            filtered = [c for c in candidates if c in capable]
+            if not filtered:
+                logger.error(
+                    f"TTS unavailable for lang={lang_norm}: no capable "
+                    f"backend fits on this hardware. Tried {candidates}, "
+                    f"capable set {sorted(capable)}. Falling back to "
+                    f"text-only (no audio)."
+                )
+                _publish_lang_unsupported(lang_norm, candidates)
+                return None
+            candidates = filtered
 
         for candidate in candidates:
             try:
@@ -1812,6 +1947,20 @@ class TTSEngine:
             except Exception as fallback_err:
                 logger.debug(f"Fallback {candidate} also failed: {fallback_err}")
                 continue
+
+        # Exhausted the filtered candidate list without producing audio.
+        # For non-English, emit the distinct "lang_unsupported" signal so
+        # the chat pipeline can switch to text-only display (vs the
+        # generic "All TTS engines failed" catch-all).
+        if lang_norm != 'en':
+            logger.error(
+                f"TTS unavailable for lang={lang_norm}: no capable "
+                f"backend fits on this hardware. Tried {candidates}, "
+                f"capable set {sorted(capable)}. Falling back to "
+                f"text-only (no audio)."
+            )
+            _publish_lang_unsupported(lang_norm, candidates)
+            return None
 
         logger.error("All TTS engines failed — no audio produced")
         return None
