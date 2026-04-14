@@ -1592,21 +1592,25 @@ _HUB_CATEGORY_FILTERS = {
 }
 
 
-# Organizations whose models we auto-trust.  Models from orgs OUTSIDE
-# this list require `confirm_unverified=True` in the install body so the
-# user consciously takes responsibility for a third-party artifact.
-# Defense against: typosquat orgs (e.g. `aí4bharat` with Unicode í),
-# drive-by "hot on HF Hub" installs, supply-chain attacks via repos
-# packaged in pickle format.
-_TRUSTED_HF_ORGS = frozenset({
-    'google', 'microsoft', 'openai', 'meta-llama', 'mistralai',
-    'Qwen', 'ai4bharat', 'facebook', 'HuggingFaceTB', 'HuggingFaceH4',
-    'suno', 'coqui', 'hexgrad', 'SparkAudio',
-    'nvidia', 'NousResearch', 'pyannote', 'openai-community',
-    'sentence-transformers', 'BAAI', 'intfloat', 'mixedbread-ai',
-    'stabilityai', 'runwayml', 'CompVis',
-    'hertz-ai', 'HertzAI',  # our own
-})
+# Trusted-publisher list moved to runtime config (`~/.nunba/hub_allowlist.json`)
+# managed by `core.hub_allowlist`.  Operators can add/remove via the admin
+# CRUD endpoints below WITHOUT a release.  The legacy frozenset literal that
+# lived here was the friction point that pushed the field team to recommend
+# `confirm_unverified=True` instead of expanding the list — defeating the
+# entire safety gate.  Seeded defaults preserve the previous 27 entries.
+#
+# Kept as a module-level alias for backward compat with any test that
+# imports `_TRUSTED_HF_ORGS` directly.  New code MUST go through the
+# allowlist API (`get_allowlist().is_trusted(org)`) so audit + persistence
+# stay coherent.
+def _get_trusted_orgs_legacy_view():
+    """Backward-compat shim — returns the current trusted-org names as a
+    frozenset.  Snapshots the live allowlist; do NOT cache the result."""
+    from core.hub_allowlist import get_allowlist
+    return frozenset(e['org'] for e in get_allowlist().list())
+
+
+_TRUSTED_HF_ORGS = _get_trusted_orgs_legacy_view  # callable, not a set
 
 
 def _normalize_hf_id(raw: str) -> str:
@@ -1744,8 +1748,12 @@ def admin_models_hub_install():
         # Unknown orgs are allowed ONLY if the user explicitly confirms
         # they understand the supply-chain risk.  Frontend shows a red
         # "unverified publisher" banner and collects the checkbox.
+        # Allowlist is now runtime-editable via /api/admin/hub/allowlist
+        # so enterprise tenants can add internal orgs without a release.
+        from core.hub_allowlist import get_allowlist
+        _allowlist = get_allowlist()
         org = hf_id.split('/', 1)[0]
-        if org not in _TRUSTED_HF_ORGS and not confirm_unverified:
+        if not _allowlist.is_trusted(org) and not confirm_unverified:
             return jsonify({
                 "error": "unverified_org",
                 "message": (
@@ -1753,7 +1761,7 @@ def admin_models_hub_install():
                     f"If you've verified the author and repo are legitimate, "
                     f"resubmit with confirm_unverified=true."
                 ),
-                "trusted_orgs": sorted(_TRUSTED_HF_ORGS),
+                "trusted_orgs": sorted(e['org'] for e in _allowlist.list()),
             }), 403
 
         # ── Safetensors-only gate ──
@@ -3093,6 +3101,68 @@ def admin_diag_degradations():
         })
     except Exception as e:
         logging.error(f"degradations admin endpoint failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ── Trusted-publisher allowlist CRUD ─────────────────────────────────────
+# Enterprise tenants can add their internal HF org to the trusted list
+# WITHOUT a release.  Pre-refactor the list was a frozenset literal in
+# this file, which made the field team route around it (told customers
+# to pass `confirm_unverified=true` instead).  All three endpoints are
+# local-or-token gated — same gate that protects the install flow.
+
+@app.route('/api/admin/hub/allowlist', methods=['GET'])
+@require_local_or_token
+def admin_hub_allowlist_list():
+    """Return the current trusted HF org allowlist."""
+    try:
+        from core.hub_allowlist import get_allowlist
+        return jsonify({
+            'success': True,
+            'orgs': get_allowlist().list(),
+        })
+    except Exception as e:
+        logging.error(f"hub allowlist list failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/hub/allowlist', methods=['POST'])
+@require_local_or_token
+def admin_hub_allowlist_add():
+    """Add an HF org to the trusted-publisher allowlist.
+
+    Body: {org: 'acme-corp', reason: 'internal model registry'}
+    """
+    try:
+        from core.hub_allowlist import get_allowlist
+        data = request.get_json(silent=True) or {}
+        org = data.get('org', '')
+        reason = data.get('reason', '')
+        get_allowlist().add(org, reason)
+        return jsonify({'success': True, 'org': org, 'reason': reason})
+    except ValueError as ve:
+        # Validation failures land here — surface the message verbatim
+        # so the operator UI can render it.
+        return jsonify({'error': str(ve)}), 400
+    except Exception as e:
+        logging.error(f"hub allowlist add failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/hub/allowlist/<path:org>', methods=['DELETE'])
+@require_local_or_token
+def admin_hub_allowlist_remove(org):
+    """Remove an HF org from the trusted-publisher allowlist.
+
+    Idempotent — returns 200 with `removed: false` if the org wasn't
+    present, so the operator UI can call this safely on a stale list.
+    """
+    try:
+        from core.hub_allowlist import get_allowlist
+        removed = get_allowlist().remove(org)
+        return jsonify({'success': True, 'removed': removed, 'org': org})
+    except Exception as e:
+        logging.error(f"hub allowlist remove failed: {e}")
         return jsonify({'error': str(e)}), 500
 
 
