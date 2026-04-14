@@ -1534,6 +1534,202 @@ def admin_models_swap():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# HuggingFace Hub discovery  (/api/admin/models/hub/*)
+# Browse trending/top-downloaded models by category + install into catalog
+# ═══════════════════════════════════════════════════════════════════════
+
+# Map Nunba purpose → (HF pipeline_tag, library filters).  Drives what
+# shows up when user picks a category in the "Browse HuggingFace" UI tab.
+_HUB_CATEGORY_FILTERS = {
+    'llm':         {'pipeline_tag': 'text-generation', 'library': 'transformers'},
+    'draft':       {'pipeline_tag': 'text-generation', 'library': 'transformers'},
+    'vision':      {'pipeline_tag': 'image-text-to-text'},
+    'caption':     {'pipeline_tag': 'image-to-text'},
+    'tts':         {'pipeline_tag': 'text-to-speech'},
+    'stt':         {'pipeline_tag': 'automatic-speech-recognition'},
+    'diarization': {'pipeline_tag': 'voice-activity-detection'},  # pyannote tag
+    'vad':         {'pipeline_tag': 'voice-activity-detection'},
+    'embedding':   {'pipeline_tag': 'sentence-similarity'},
+    'rerank':      {'pipeline_tag': 'text-ranking'},
+    'ocr':         {'pipeline_tag': 'image-to-text'},  # OCR shows under image-to-text
+    'music':       {'pipeline_tag': 'text-to-audio'},
+    'image-gen':   {'pipeline_tag': 'text-to-image'},
+    'video-gen':   {'pipeline_tag': 'text-to-video'},
+    'translate':   {'pipeline_tag': 'translation'},
+}
+
+
+@app.route('/api/admin/models/hub/search', methods=['GET'])
+def admin_models_hub_search():
+    """Search HuggingFace Hub by Nunba task category.
+
+    Query params:
+      category:   llm|draft|vision|caption|tts|stt|diarization|vad|embedding|...
+      lang:       (optional) ISO code to filter — e.g. 'ta', 'hi', 'zh'
+      sort:       downloads (default) | trending-score | likes
+      limit:      (default 20, max 50)
+      search:     (optional) substring to match in model id
+
+    Returns top N models from HF Hub matching the filter.
+    """
+    try:
+        from huggingface_hub import list_models
+    except ImportError:
+        return jsonify({"error": "huggingface_hub not installed"}), 503
+    try:
+        category = (request.args.get('category') or 'llm').lower()
+        filt = _HUB_CATEGORY_FILTERS.get(category)
+        if not filt:
+            return jsonify({
+                "error": f"unknown category",
+                "valid": sorted(_HUB_CATEGORY_FILTERS.keys()),
+            }), 400
+        lang = request.args.get('lang')
+        sort_by = request.args.get('sort', 'downloads')
+        if sort_by not in ('downloads', 'trending-score', 'likes'):
+            sort_by = 'downloads'
+        try:
+            limit = max(1, min(50, int(request.args.get('limit', 20))))
+        except ValueError:
+            limit = 20
+        search = request.args.get('search')
+
+        kwargs = {
+            'sort': sort_by,
+            'direction': -1,  # descending
+            'limit': limit,
+            'full': False,
+        }
+        if filt.get('pipeline_tag'):
+            kwargs['pipeline_tag'] = filt['pipeline_tag']
+        if filt.get('library'):
+            kwargs['library'] = filt['library']
+        if lang:
+            kwargs['language'] = lang
+        if search:
+            kwargs['search'] = search
+
+        models = list(list_models(**kwargs))
+        # Build minimal payload — don't leak full HF metadata blobs
+        results = []
+        for m in models:
+            results.append({
+                'id': m.id,
+                'author': getattr(m, 'author', None),
+                'downloads': getattr(m, 'downloads', 0) or 0,
+                'likes': getattr(m, 'likes', 0) or 0,
+                'pipeline_tag': getattr(m, 'pipeline_tag', None),
+                'library_name': getattr(m, 'library_name', None),
+                'tags': list(getattr(m, 'tags', []) or [])[:10],
+                'created_at': getattr(m, 'created_at', None).isoformat()
+                    if getattr(m, 'created_at', None) else None,
+                'last_modified': getattr(m, 'last_modified', None).isoformat()
+                    if getattr(m, 'last_modified', None) else None,
+            })
+        return jsonify({
+            'category': category,
+            'lang': lang,
+            'count': len(results),
+            'results': results,
+        })
+    except Exception as e:
+        logging.warning(f"HF Hub search failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/models/hub/install', methods=['POST'])
+def admin_models_hub_install():
+    """Register a HuggingFace model into the Nunba catalog + download.
+
+    Body: {
+      hf_id: 'org/model-name',         # required
+      category: 'tts',                 # required — drives model_type mapping
+      purposes: ['tts', 'main'],       # optional — auto-assign in catalog
+      name: 'Friendly display name',   # optional — defaults to hf_id tail
+      languages: ['en', 'ta'],         # optional — lang_priority hint
+    }
+    """
+    if not _is_local_request():
+        return jsonify({"error": "local only"}), 403
+    try:
+        from models.catalog import ModelEntry, get_catalog
+        from models.orchestrator import get_orchestrator
+        data = request.get_json(silent=True) or {}
+        hf_id = (data.get('hf_id') or '').strip()
+        category = (data.get('category') or '').lower().strip()
+        if not hf_id or '/' not in hf_id:
+            return jsonify({"error": "hf_id must be 'org/name'"}), 400
+        if category not in _HUB_CATEGORY_FILTERS:
+            return jsonify({
+                "error": "unknown category",
+                "valid": sorted(_HUB_CATEGORY_FILTERS.keys()),
+            }), 400
+
+        # Category → model_type mapping for catalog registration
+        type_map = {
+            'llm': 'llm', 'draft': 'llm',
+            'vision': 'mllm', 'caption': 'vlm', 'grounding': 'vlm', 'ocr': 'vlm',
+            'tts': 'tts', 'stt': 'stt',
+            'diarization': 'audio', 'vad': 'audio',
+            'embedding': 'embedding', 'rerank': 'embedding',
+            'music': 'audio-gen', 'image-gen': 'image-gen',
+            'video-gen': 'video-gen', 'translate': 'llm',
+        }
+        model_type = type_map.get(category, 'llm')
+
+        # Synthesize catalog entry.  Use a safe id: strip org prefix + sanitize.
+        safe_id = f"{category}-" + hf_id.split('/', 1)[1].lower().replace('_', '-').replace('.', '-')
+        catalog = get_catalog()
+        if catalog.get(safe_id):
+            return jsonify({"error": f"already registered as '{safe_id}'"}), 409
+
+        entry_dict = {
+            'id': safe_id,
+            'name': data.get('name') or hf_id.rsplit('/', 1)[-1],
+            'model_type': model_type,
+            'provider': 'huggingface',
+            'hf_repo': hf_id,
+            'enabled': True,
+            'purposes': [p for p in (data.get('purposes') or []) if p in catalog.ALL_PURPOSES],
+            'lang_priority': data.get('languages') or [],
+            'source': 'hub-install',
+        }
+        entry = ModelEntry.from_dict(entry_dict)
+        catalog.register(entry)
+
+        # Trigger background download so user sees progress in UI.
+        import threading
+        import time
+        _download_progress[safe_id] = {
+            'status': 'downloading', 'percent': 0,
+            'message': f'Downloading {hf_id}...', 'started_at': time.time(),
+        }
+        def _bg():
+            try:
+                get_orchestrator().download(safe_id)
+                _download_progress[safe_id] = {
+                    'status': 'complete', 'percent': 100,
+                    'message': 'Downloaded', 'started_at': _download_progress[safe_id]['started_at'],
+                }
+            except Exception as e:
+                _download_progress[safe_id] = {
+                    'status': 'error', 'percent': 0,
+                    'message': str(e), 'started_at': _download_progress[safe_id]['started_at'],
+                }
+        threading.Thread(target=_bg, name=f'hub-dl-{safe_id}', daemon=True).start()
+
+        return jsonify({
+            'success': True,
+            'model_id': safe_id,
+            'hf_repo': hf_id,
+            'download_started': True,
+        })
+    except Exception as e:
+        logging.warning(f"HF Hub install failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Provider Management Admin API  (/api/admin/providers/*)
 # Exposes HARTOS ProviderRegistry + Gateway + EfficiencyMatrix
 # ═══════════════════════════════════════════════════════════════════════
