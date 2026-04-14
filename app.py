@@ -32,14 +32,25 @@ if getattr(sys, 'frozen', False):
             _max_depth[0] = _import_depth[0]
         _import_stack.append(name)
         if _import_depth[0] > 900:
-            # About to overflow — dump the chain
+            # About to overflow — dump the chain to disk before os._exit
+            # (os._exit skips atexit + stdio flush, so we must flush ourselves
+            # inside the `with` block; Python's context manager guarantees
+            # fsync-equivalent on close even before os._exit bypasses atexit).
             _dump = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs', 'import_recursion.txt')
-            os.makedirs(os.path.dirname(_dump), exist_ok=True)
-            with open(_dump, 'w') as f:
-                f.write(f'Max depth: {_max_depth[0]}\n')
-                f.write(f'Stack depth: {_import_depth[0]}\n\n')
-                for i, m in enumerate(_import_stack):
-                    f.write(f'{i}: {m}\n')
+            try:
+                os.makedirs(os.path.dirname(_dump), exist_ok=True)
+                with open(_dump, 'w') as f:
+                    f.write(f'Max depth: {_max_depth[0]}\n')
+                    f.write(f'Stack depth: {_import_depth[0]}\n\n')
+                    for i, m in enumerate(_import_stack):
+                        f.write(f'{i}: {m}\n')
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())  # ensure bytes hit disk
+                    except OSError:
+                        pass
+            except Exception:
+                pass  # if even the dump write fails, still exit cleanly below
             os._exit(99)  # Exit before stack overflow kills us
         try:
             return _orig_import(name, *args, **kwargs)
@@ -645,21 +656,35 @@ if getattr(sys, 'frozen', False):
     # frozenset({}) key is missing → KeyError at import time.
     # Fix: patch the transformers/__init__.py file in site-packages to use
     # .setdefault() instead of direct key access. This survives cx_Freeze tracing.
+    #
+    # Idempotency: on the very first boot we rewrite the file AND drop a
+    # sibling sentinel (`__init__.nunba_patched`).  On subsequent boots we
+    # look for the sentinel and skip the 200KB file read entirely — saves
+    # disk I/O and avoids contending with Windows Defender real-time
+    # scanning on every boot.
     try:
         import importlib.util as _ilu_tf
         _tf_spec = _ilu_tf.find_spec('transformers')
         if _tf_spec and _tf_spec.origin:
             _tf_init = _tf_spec.origin
-            with open(_tf_init, encoding='utf-8') as _f:
-                _tf_src = _f.read()
-            _bad_line = 'import_structure[frozenset({})].update(_import_structure)'
-            if _bad_line in _tf_src:
-                _fixed = _tf_src.replace(
-                    _bad_line,
-                    'import_structure.setdefault(frozenset({}), {}).update(_import_structure)'
-                )
-                with open(_tf_init, 'w', encoding='utf-8') as _f:
-                    _f.write(_fixed)
+            _tf_sentinel = _tf_init + '.nunba_patched'
+            if not os.path.isfile(_tf_sentinel):
+                with open(_tf_init, encoding='utf-8') as _f:
+                    _tf_src = _f.read()
+                _bad_line = 'import_structure[frozenset({})].update(_import_structure)'
+                if _bad_line in _tf_src:
+                    _fixed = _tf_src.replace(
+                        _bad_line,
+                        'import_structure.setdefault(frozenset({}), {}).update(_import_structure)',
+                    )
+                    with open(_tf_init, 'w', encoding='utf-8') as _f:
+                        _f.write(_fixed)
+                # Drop sentinel so we never re-read the 200KB file again.
+                try:
+                    with open(_tf_sentinel, 'w', encoding='utf-8') as _sf:
+                        _sf.write('patched')
+                except OSError:
+                    pass  # read-only fs — we'll re-check next boot (cheap)
     except Exception:
         pass
 
