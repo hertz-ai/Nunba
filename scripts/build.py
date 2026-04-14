@@ -678,11 +678,38 @@ def slim_python_embed():
             removed_mb += size
             print_info(f"Removed {pkg}/ ({size:.1f} MB)")
 
-    # Remove .dist-info, tests, __pycache__
+    # Packages that query importlib.metadata.version() at import time.  Keep
+    # their .dist-info folders so PackageNotFoundError doesn't surface at
+    # runtime (chatterbox-tts, cosyvoice3, etc.).  Any other .dist-info is
+    # dev-only metadata and safe to strip.
+    KEEP_DIST_INFO_FOR = {
+        'chatterbox_tts', 'chatterbox-tts',
+        'cosyvoice', 'cosyvoice3',
+        'f5_tts', 'f5-tts',
+        'indic_parler_tts', 'parler_tts',
+        'kokoro', 'pocket_tts',
+        'transformers', 'torch', 'accelerate',
+        'huggingface_hub', 'safetensors', 'tokenizers',
+        'numpy', 'regex', 'tqdm', 'pyyaml',
+    }
+
+    # Remove tests, __pycache__ always; strip .dist-info except for
+    # runtime-metadata consumers.
     for root, dirs, files in os.walk(site_packages, topdown=False):
         for d in list(dirs):
             full_path = os.path.join(root, d)
-            if d.endswith('.dist-info') or d in ('tests', 'test', '__pycache__'):
+            if d in ('tests', 'test', '__pycache__'):
+                size = _dir_size_mb(full_path)
+                shutil.rmtree(full_path, ignore_errors=True)
+                removed_mb += size
+            elif d.endswith('.dist-info'):
+                # Extract package name (e.g. 'chatterbox_tts-0.1.6.dist-info' → 'chatterbox_tts')
+                pkg_name = d.rsplit('-', 1)[0] if '-' in d[:-len('.dist-info')] else d[:-len('.dist-info')]
+                # Normalize: try both underscore and hyphen forms
+                norm = pkg_name.replace('-', '_').lower()
+                norm_h = pkg_name.replace('_', '-').lower()
+                if norm in {k.replace('-','_').lower() for k in KEEP_DIST_INFO_FOR} or norm_h in {k.replace('_','-').lower() for k in KEEP_DIST_INFO_FOR}:
+                    continue  # keep dist-info for runtime metadata
                 size = _dir_size_mb(full_path)
                 shutil.rmtree(full_path, ignore_errors=True)
                 removed_mb += size
