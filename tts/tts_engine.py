@@ -899,16 +899,45 @@ class TTSEngine:
         return self._vram_allows(backend)
 
     def _vram_allows(self, backend) -> bool:
-        """Check if VRAMManager says this backend can fit in available VRAM."""
+        """Check if VRAMManager says this backend can fit in available VRAM.
+
+        If it doesn't fit, ask ModelLifecycleManager to evict an idle model
+        (draft LLM, stale TTS, etc.) and re-probe.  This lets the user's
+        preferred language-native TTS (e.g. Indic Parler for Tamil) win
+        over falling through to Piper just because the draft LLM is
+        squatting 600MB of VRAM.
+        """
         tool_name = self._get_vram_tool_name(backend)
         if not tool_name:
             return True
         try:
             from integrations.service_tools.vram_manager import vram_manager
-            if not vram_manager.can_fit(tool_name):
-                logger.info(f"Backend {backend} blocked: "
-                            f"VRAMManager says {tool_name} won't fit")
-                return False
+            if vram_manager.can_fit(tool_name):
+                return True
+            # First probe failed.  Try swap-and-retry: evict an idle model
+            # so this one can load.  This is the VRAM-competition case:
+            # laptop GPU full because main LLM + draft + mmproj are loaded.
+            try:
+                from integrations.service_tools.model_lifecycle import (
+                    get_model_lifecycle_manager,
+                )
+                mlm = get_model_lifecycle_manager()
+                evicted = mlm.request_swap(needed_model=tool_name)
+                if evicted:
+                    logger.info(
+                        f"Backend {backend}: VRAM tight, evicted an idle "
+                        f"model to make room for {tool_name}",
+                    )
+                    # Re-probe: the eviction should have freed enough.
+                    if vram_manager.can_fit(tool_name):
+                        return True
+            except Exception as se:
+                logger.debug(f"swap-for-VRAM attempt failed: {se}")
+            logger.info(
+                f"Backend {backend} blocked: VRAMManager says "
+                f"{tool_name} won't fit (even after swap attempt)",
+            )
+            return False
         except Exception:
             pass
         return True
