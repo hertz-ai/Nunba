@@ -2167,15 +2167,13 @@ def backend_health():
         # Fall back to raw threshold if the helper errors.
         speculation_enabled = cuda_available and vram_total >= 10.0
 
-    # Tier classification — mirrors should_boot_draft thresholds exactly.
-    if not cuda_available or vram_total < 4.0:
-        gpu_tier = 'none'
-    elif vram_total >= 24.0:
-        gpu_tier = 'ultra'
-    elif vram_total >= 10.0:
-        gpu_tier = 'full'
-    else:
-        gpu_tier = 'standard'
+    # Tier classification — single source of truth in core.gpu_tier.
+    # Removed the inline 24/10/4 threshold ladder that used to live here
+    # (drifted from the frontend GpuTierBadge.jsx hard-coded copy).  Any
+    # future threshold change happens ONCE in core.gpu_tier and the
+    # frontend re-fetches via /api/v1/system/tiers.
+    from core.gpu_tier import classify as _classify_tier
+    gpu_tier = _classify_tier(vram_total, cuda_available).value
 
     return jsonify({
         'status': 'operational',
@@ -2186,6 +2184,26 @@ def backend_health():
         'vram_free_gb': round(vram_free, 2),
         'speculation_enabled': speculation_enabled,
     }), 200
+
+
+@app.route('/api/v1/system/tiers', methods=['GET'])
+def system_tiers():
+    """Return the canonical GPU tier table.
+
+    Frontend consumers (GpuTierBadge.jsx) MUST fetch this on mount instead
+    of hard-coding thresholds — that's the whole point of the refactor.
+    Public endpoint (no auth gate) because the table contains no
+    secrets and the chat UI needs it on the first render path.
+
+    Cached aggressively at the CDN/proxy via Cache-Control because the
+    table only changes when we ship a release.
+    """
+    from core.gpu_tier import tier_table
+    response = jsonify({
+        'tiers': tier_table(),
+    })
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    return response, 200
 
 def _is_private_ip(hostname):
     """Block SSRF by checking if resolved IP is private/internal."""

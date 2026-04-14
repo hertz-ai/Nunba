@@ -10,6 +10,14 @@
  * makes the root cause VISIBLE: it shows the GPU tier, explains the trade-off
  * in plain language, and points at the 10GB threshold as the unlock.
  *
+ * SINGLE-SOURCE-OF-TRUTH REFACTOR
+ * ───────────────────────────────
+ * Tier thresholds + labels USED to be hard-coded in this file (24/10/4 GB).
+ * They drifted from the backend `/backend/health` classifier silently for
+ * months.  Now both come from `core.gpu_tier` (Python module) and the
+ * frontend FETCHES the canonical table from `GET /api/v1/system/tiers` on
+ * mount.  Future threshold tweaks happen in ONE place.
+ *
  * A11Y CONTRACT
  * ─────────────
  * - Never color-alone: every tier pairs an icon + label + color.
@@ -19,10 +27,11 @@
  *
  * DATA SOURCE
  * ───────────
- * GET /backend/health — returns { gpu_tier, gpu_name, vram_total_gb,
- * vram_free_gb, speculation_enabled }. Re-polled every 60s to catch GPU
- * allocation changes (TTS loading/unloading shifts free_vram and can
- * temporarily move the speculation line even without a reboot).
+ * GET /backend/health   — dynamic (re-polled every 60s) for the GPU state itself.
+ * GET /api/v1/system/tiers — static-ish (release-cadence) for the tier table.
+ *   The tier table is fetched ONCE on mount; if it 404s we fall back to a
+ *   minimal hard-coded table so the badge still renders something useful
+ *   on cold installs where the endpoint isn't yet wired.
  */
 
 import {API_BASE_URL} from '../../config/apiBase';
@@ -35,58 +44,58 @@ import React, {useEffect, useState, useMemo} from 'react';
 
 const POLL_INTERVAL_MS = 60_000;
 
-// Tier → presentation. Color is never used alone: icon + text carry meaning too.
-const TIER_META = {
+// Per-tier presentation metadata that the BACKEND can't reasonably ship —
+// icon component + colors are pure UI concerns.  Keyed by tier name (matches
+// `core.gpu_tier.GpuTier` values: 'ultra', 'full', 'standard', 'none').
+const TIER_PRESENTATION = {
   ultra: {
-    label: 'Ultra GPU',
     bg: 'rgba(155, 148, 255, 0.18)',
     fg: '#9B94FF',
     border: 'rgba(155, 148, 255, 0.45)',
     Icon: Zap,
-    short: 'Ultra',
-    description:
-      'Ultra GPU — 24GB+ VRAM. Top speed. Can run 70B-class models locally with speculative decoding.',
   },
   full: {
-    label: 'Full GPU',
     bg: 'rgba(46, 204, 113, 0.16)',
     fg: '#2ECC71',
     border: 'rgba(46, 204, 113, 0.45)',
     Icon: Zap,
-    short: 'Full',
-    description:
-      'Full GPU — 10GB+ VRAM. Draft + main speculative decoding active. Replies are roughly 40% faster than Standard.',
   },
   standard: {
-    label: 'Standard GPU',
     bg: 'rgba(245, 166, 35, 0.16)',
     fg: '#F5A623',
     border: 'rgba(245, 166, 35, 0.45)',
     Icon: Gauge,
-    short: 'Standard',
-    description:
-      'Standard GPU — heavy model only. Upgrade to 10GB+ VRAM for about 40% faster replies (speculative decoding unlocks at 10GB to leave room for voice).',
   },
   none: {
-    label: 'CPU',
     bg: 'rgba(149, 165, 166, 0.16)',
     fg: '#95A5A6',
     border: 'rgba(149, 165, 166, 0.45)',
     Icon: Cpu,
-    short: 'CPU',
-    description:
-      'No CUDA GPU detected (or under 4GB VRAM). Chat runs on CPU — replies are slower. A 10GB+ NVIDIA GPU unlocks speculative decoding.',
   },
   unknown: {
-    label: 'GPU: checking',
     bg: 'rgba(149, 165, 166, 0.10)',
     fg: '#95A5A6',
     border: 'rgba(149, 165, 166, 0.30)',
     Icon: AlertTriangle,
-    short: '...',
-    description: 'Detecting GPU tier…',
   },
 };
+
+// Last-resort fallback if /api/v1/system/tiers is unreachable (e.g.,
+// pre-refactor backend running against a post-refactor frontend during
+// rollout).  Deliberately MINIMAL — operators should see the placeholder
+// labels and know the canonical endpoint is missing.
+const FALLBACK_TIER_TABLE = [
+  {name: 'ultra', label: 'Ultra GPU', short: 'Ultra',
+    description: 'GPU tier (label table not yet loaded from server).'},
+  {name: 'full', label: 'Full GPU', short: 'Full',
+    description: 'GPU tier (label table not yet loaded from server).'},
+  {name: 'standard', label: 'Standard GPU', short: 'Standard',
+    description: 'GPU tier (label table not yet loaded from server).'},
+  {name: 'none', label: 'CPU', short: 'CPU',
+    description: 'GPU tier (label table not yet loaded from server).'},
+  {name: 'unknown', label: 'GPU: checking', short: '...',
+    description: 'Detecting GPU tier…'},
+];
 
 function prefersReducedMotion() {
   try {
@@ -99,7 +108,49 @@ function prefersReducedMotion() {
 export default function GpuTierBadge({className = '', style = {}}) {
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(false);
+  const [tierTable, setTierTable] = useState(FALLBACK_TIER_TABLE);
   const reducedMotion = useMemo(prefersReducedMotion, []);
+
+  // ── One-shot fetch of the canonical tier table on mount ──
+  // The thresholds + labels used to be hard-coded in this file; now they
+  // come from the backend so a single edit to core.gpu_tier ships
+  // everywhere consistently.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/v1/system/tiers`, {
+          method: 'GET',
+          headers: {Accept: 'application/json'},
+          credentials: 'same-origin',
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data?.tiers)) {
+          // Append the 'unknown' presentation entry (UI-only, server doesn't ship it)
+          const withUnknown = [
+            ...data.tiers,
+            {
+              name: 'unknown',
+              label: 'GPU: checking',
+              short: '...',
+              description: 'Detecting GPU tier…',
+            },
+          ];
+          setTierTable(withUnknown);
+        }
+      } catch (_) {
+        // Keep the fallback table — log only once.
+        // eslint-disable-next-line no-console
+        console.warn(
+          'GpuTierBadge: /api/v1/system/tiers unavailable, using fallback labels'
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,8 +184,11 @@ export default function GpuTierBadge({className = '', style = {}}) {
   }, []);
 
   const tierKey = error || !health ? 'unknown' : (health.gpu_tier || 'unknown');
-  const meta = TIER_META[tierKey] || TIER_META.unknown;
-  const {Icon} = meta;
+  const tierMeta = tierTable.find((t) => t.name === tierKey)
+    || tierTable.find((t) => t.name === 'unknown')
+    || FALLBACK_TIER_TABLE[FALLBACK_TIER_TABLE.length - 1];
+  const presentation = TIER_PRESENTATION[tierKey] || TIER_PRESENTATION.unknown;
+  const {Icon} = presentation;
 
   // Build the human tooltip + aria-label. Includes concrete numbers when
   // we have them so the user can see "why" at a glance.
@@ -157,8 +211,8 @@ export default function GpuTierBadge({className = '', style = {}}) {
   })();
 
   const fullDescription = detailLine
-    ? `${meta.description} Current: ${detailLine}.`
-    : meta.description;
+    ? `${tierMeta.description} Current: ${detailLine}.`
+    : tierMeta.description;
 
   const chip = (
     <Chip
@@ -168,29 +222,29 @@ export default function GpuTierBadge({className = '', style = {}}) {
         <Icon
           size={14}
           aria-hidden="true"
-          style={{color: meta.fg, marginLeft: 4}}
+          style={{color: presentation.fg, marginLeft: 4}}
         />
       }
-      label={meta.short}
+      label={tierMeta.short}
       size="small"
       className={className}
       sx={{
         minHeight: 20,
         height: 24,
         borderRadius: '9999px', // pill — literal px to dodge MUI's 8px multiplier
-        backgroundColor: meta.bg,
-        color: meta.fg,
-        border: `1px solid ${meta.border}`,
+        backgroundColor: presentation.bg,
+        color: presentation.fg,
+        border: `1px solid ${presentation.border}`,
         fontSize: 11,
         fontWeight: 600,
         letterSpacing: 0.2,
         px: 0.5,
         '& .MuiChip-label': {
           px: 0.75,
-          color: meta.fg,
+          color: presentation.fg,
         },
         '& .MuiChip-icon': {
-          color: meta.fg,
+          color: presentation.fg,
           marginRight: '-2px',
         },
         ...style,
