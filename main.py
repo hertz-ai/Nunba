@@ -2078,6 +2078,67 @@ def watchdog_status():
         'port_in_use': _is_port_in_use(langchain_port),
     })
 
+
+@app.route('/backend/health', methods=["GET"])
+def backend_health():
+    """Return backend + GPU tier diagnostics for the chat UI badge.
+
+    Surfaces the speculation-capability boundary so 8GB-GPU laptops can SEE
+    why chat is ~1.3-2.0s slower per reply (commit 2acf21a raised the
+    draft-boot threshold from >=8GB to >=10GB VRAM to leave room for TTS).
+
+    Tier ladder (matches LlamaConfig.should_boot_draft + VRAMManager budget):
+      ultra    >= 24 GB total VRAM  (70B-class models viable)
+      full     >= 10 GB total VRAM  (draft + main speculative decoding)
+      standard  4-10 GB total VRAM  (main-only, no speculation)
+      none     no CUDA / < 4 GB     (CPU or tiny integrated GPU)
+    """
+    gpu_name = None
+    vram_total = 0.0
+    vram_free = 0.0
+    cuda_available = False
+    speculation_enabled = False
+
+    # VRAMManager is the single source of truth for GPU state (shared with
+    # TTS, vision, llama). Fall back to 'none' tier if import fails.
+    try:
+        from integrations.service_tools.vram_manager import vram_manager
+        gpu_info = vram_manager.detect_gpu() or {}
+        gpu_name = gpu_info.get('name')
+        cuda_available = bool(gpu_info.get('cuda_available'))
+        vram_total = float(vram_manager.get_total_vram() or 0.0)
+        vram_free = float(vram_manager.get_free_vram() or 0.0)
+    except Exception as e:
+        logging.debug(f"/backend/health: VRAM detection unavailable: {e}")
+
+    try:
+        from llama.llama_config import LlamaConfig
+        speculation_enabled = bool(LlamaConfig.should_boot_draft())
+    except Exception as e:
+        logging.debug(f"/backend/health: should_boot_draft unavailable: {e}")
+        # Fall back to raw threshold if the helper errors.
+        speculation_enabled = cuda_available and vram_total >= 10.0
+
+    # Tier classification — mirrors should_boot_draft thresholds exactly.
+    if not cuda_available or vram_total < 4.0:
+        gpu_tier = 'none'
+    elif vram_total >= 24.0:
+        gpu_tier = 'ultra'
+    elif vram_total >= 10.0:
+        gpu_tier = 'full'
+    else:
+        gpu_tier = 'standard'
+
+    return jsonify({
+        'status': 'operational',
+        'gpu_tier': gpu_tier,
+        'gpu_name': gpu_name,
+        'cuda_available': cuda_available,
+        'vram_total_gb': round(vram_total, 2),
+        'vram_free_gb': round(vram_free, 2),
+        'speculation_enabled': speculation_enabled,
+    }), 200
+
 def _is_private_ip(hostname):
     """Block SSRF by checking if resolved IP is private/internal."""
     try:
@@ -2928,6 +2989,111 @@ def admin_diag_thread_dump():
         })
     except Exception as e:
         logging.error(f"thread-dump admin endpoint failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ── MCP bearer-token surface for Claude Code setup UX ─────────────────────
+# Background: commit f5b99d8 added `/api/mcp/local` bearer-token auth gate
+# in HARTOS/integrations/mcp/mcp_http_bridge.py.  Pre-existing Claude Code
+# installs use the old stdio-spawn `.claude/settings.local.json` config
+# and have NO way to discover (a) the token value, (b) the new HTTP URL,
+# or (c) the JSON snippet they need to paste.  Silent 403s ensue.
+#
+# These two endpoints power the Admin → Integrations → Claude Code card
+# that shows + rotates the token.  Gated by `require_local_or_token` so
+# only the local desktop user (or a caller with the Nunba admin token)
+# can read/rotate — this is the same gate protecting `/thread-dump`.
+#
+# NOTE: `_ensure_mcp_token()` lives in HARTOS, so Nunba re-uses it
+# rather than re-implementing the path+generate logic.  Rotate has
+# to invalidate BOTH the HARTOS cache AND overwrite the file so the
+# next `/api/mcp/local` before_request hook picks the new value.
+_MCP_CONFIG_URL = 'http://localhost:5000/api/mcp/local'
+
+
+def _mcp_config_snippet(token: str) -> str:
+    """Return the JSON blob users paste into `.claude/settings.local.json`.
+
+    Kept in sync with Claude Code's http-type MCP server schema
+    (type:'http' + url + headers).  The bearer header is the SAME
+    token file Claude Code would otherwise read on its own — we
+    expose it here so non-technical users don't have to `cat` the
+    file out of `%LOCALAPPDATA%/Nunba/mcp.token`.
+    """
+    return json.dumps({
+        'mcpServers': {
+            'hartos': {
+                'type': 'http',
+                'url': _MCP_CONFIG_URL,
+                'headers': {
+                    'Authorization': f'Bearer {token}',
+                },
+            },
+        },
+    }, indent=2)
+
+
+@app.route('/api/admin/mcp/token', methods=['GET'])
+@require_local_or_token
+def admin_mcp_token_get():
+    """Return the current MCP bearer token + ready-to-paste client config.
+
+    Response:
+      {
+        token: '<bearer token from %LOCALAPPDATA%/Nunba/mcp.token>',
+        url: 'http://localhost:5000/api/mcp/local',
+        config_snippet: '<JSON blob for .claude/settings.local.json>'
+      }
+    """
+    try:
+        from integrations.mcp.mcp_http_bridge import _ensure_mcp_token
+        token = _ensure_mcp_token()
+        return jsonify({
+            'token': token,
+            'url': _MCP_CONFIG_URL,
+            'config_snippet': _mcp_config_snippet(token),
+        })
+    except Exception as e:
+        logging.error(f"mcp token admin endpoint failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/mcp/token/rotate', methods=['POST'])
+@require_local_or_token
+def admin_mcp_token_rotate():
+    """Regenerate the MCP bearer token.
+
+    Overwrites `%LOCALAPPDATA%/Nunba/mcp.token` (or `~/.nunba/mcp.token`
+    on Unix) with a fresh `secrets.token_urlsafe(32)` and invalidates
+    the in-process cache on the HARTOS module so the next
+    `/api/mcp/local` before_request hook picks the new value.
+
+    Any live Claude Code clients using the old token will start
+    getting 403s immediately — operator must re-paste the new
+    `config_snippet` into `.claude/settings.local.json`.
+    """
+    try:
+        from integrations.mcp import mcp_http_bridge as _bridge
+        import secrets as _secrets
+        new_token = _secrets.token_urlsafe(32)
+        path = _bridge._mcp_token_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(new_token)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        # Invalidate the cache so the next _ensure_mcp_token() re-reads disk.
+        _bridge._MCP_TOKEN_CACHE = new_token
+        return jsonify({
+            'token': new_token,
+            'url': _MCP_CONFIG_URL,
+            'config_snippet': _mcp_config_snippet(new_token),
+            'rotated': True,
+        })
+    except Exception as e:
+        logging.error(f"mcp token rotate endpoint failed: {e}")
         return jsonify({'error': str(e)}), 500
 
 
