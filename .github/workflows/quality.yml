@@ -262,6 +262,44 @@ jobs:
       # ── Spec sharding — split 57 specs deterministically across 4 runners ──
       # Uses Python to enumerate + sort specs, then takes every 4th one
       # starting at offset=(shard-1).  Produces a stable partition.
+      #
+      # ROUND-ROBIN IS SAFE because all specs are self-contained (verified
+      # 2026-04-15 by reviewer agent):
+      #   1. Every spec that needs auth calls `cy.socialAuth()` in its own
+      #      outer `before()` (per MEMORY.md invariant: "ONE cy.socialAuth
+      #      in outer before() per spec file").
+      #   2. `socialAuth()` generates a UNIQUE user per invocation via
+      #      `uniqueTestUser()` (timestamp + counter in cypress/support/
+      #      e2e.js) — no username collisions across specs.
+      #   3. No spec calls a `cy.task('seed:X')` — grep confirms every
+      #      `cy.task()` is `cy.task('log', …)` only (38 instances, all
+      #      logging).
+      #   4. No spec reads localStorage written by another spec — every
+      #      `localStorage.setItem()` is inside that spec's `onBeforeLoad`
+      #      hook, local to its `cy.visit()`.
+      #   5. The global `before()` in support/e2e.js only resets the
+      #      backend rate limiter — each shard runner has its own Flask
+      #      process, so the reset is runner-scoped.
+      # Specs checked (57): admin-api, admin-panel-ui, ad-profile-tabs-ui,
+      # agent-creation, agent-profile-ui, animations-ui, auth-flows,
+      # autonomous-agent-creation, autopilot-enriched-ui, backend-health,
+      # channel-setup, chat-agent-selection, chat-flow, chat-llm-status,
+      # chat-thinking-traces, content-gen-e2e, demopage-agents,
+      # distributed-goal-notifications, feed-privacy, game-hub,
+      # gamification-flows, guest-widget-flow, hartos-full-stack-demo,
+      # hive-demo-millions-of-agents, kids-games-e2e, kids-media-pipeline,
+      # landing-page, live-agent-creation, llama-infrastructure,
+      # local-chat-flow, mindstory, model-setup-bootstrap, multiplayer-lobby,
+      # navigation, nunba-core, online-offline, pywebview-background-render,
+      # realtime-events, reduced-motion, role-auth, skeleton-loading,
+      # social-api, social-auth-api, social-campaigns-ui,
+      # social-communities-ui, social-encounters-ui, social-evolution-ui,
+      # social-feed-ui, social-notifications-ui, social-pages,
+      # social-profile-ui, social-recipes-ui, social-regions-ui,
+      # social-search-ui, toast-notifications, tts-setup, user-journey,
+      # voice-pipeline.
+      # If a future spec introduces cross-spec seed data, switch to
+      # directory-based sharding (admin/**, social/**, chat/**, other/**).
       - name: Compute spec shard
         id: shard
         working-directory: landing-page
