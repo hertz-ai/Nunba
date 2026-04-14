@@ -14,13 +14,13 @@ edit THIS file only.
 import sys
 
 # =============================================================================
-# Version — the ONE place this lives
+# Version -- the ONE place this lives
 # =============================================================================
 VERSION = "0.1.0"
 PYTHON_EMBED_VERSION = "3.12.6"
 
 # =============================================================================
-# Core Dependencies (venv — cx_Freeze traced)
+# Core Dependencies (venv -- cx_Freeze traced)
 #
 # These are installed into the build venv so cx_Freeze can trace their import
 # graphs and bundle them into the frozen executable. None = latest (no pin).
@@ -56,9 +56,9 @@ CORE_DEPS = {
     "shapely": "2.1.2",
     # Build tooling
     "cx_Freeze": "8.5.3",
-    # Data — must be pip wheel (not conda) for proper DLL loading
+    # Data -- must be pip wheel (not conda) for proper DLL loading
     "numpy": "1.26.4",
-    # LangChain — ALL pinned to prevent pip backtracking
+    # LangChain -- ALL pinned to prevent pip backtracking
     "langchain-classic": "1.0.1",
     "langchain-community": "0.4.1",
     "langchain-core": "1.2.15",
@@ -93,14 +93,14 @@ CORE_DEPS = {
 }
 
 # =============================================================================
-# Embed Dependencies (python-embed — heavy ML, excluded from cx_Freeze)
+# Embed Dependencies (python-embed -- heavy ML, excluded from cx_Freeze)
 #
 # These live in python-embed/ and are loaded at runtime via sys.path injection.
 # cx_Freeze explicitly excludes torch, tensorflow, etc. to keep the frozen exe
 # small. The frozen app adds python-embed/Lib/site-packages to sys.path.
 # =============================================================================
 EMBED_DEPS = {
-    # PyTorch (CPU-only default — installed via --index-url pytorch)
+    # PyTorch (CPU-only default -- installed via --index-url pytorch)
     # CUDA variant swapped in at runtime by tts/package_installer.py if GPU detected
     "torch": "2.10.0",
     "torchaudio": "2.10.0",
@@ -128,15 +128,15 @@ EMBED_DEPS = {
     "scikit-learn": "1.7.2",
     # Tokenization
     "tiktoken": "0.12.0",
-    # LangGraph (agent orchestration — runs in python-embed context)
+    # LangGraph (agent orchestration -- runs in python-embed context)
     "langchain": "1.2.10",
     "langchain-core": "1.2.15",
     "langgraph": "1.0.8",
     "langsmith": "0.7.6",
-    # TTS engines — GPU engines auto-download models on first use
+    # TTS engines -- GPU engines auto-download models on first use
     "chatterbox-tts": None,       # Chatterbox Turbo (English, [laugh]/[chuckle])
     "parler-tts": None,           # Indic Parler (21 Indian langs + English)
-    # f5-tts and cosyvoice are NOT pip-installable — handled by package_installer
+    # f5-tts and cosyvoice are NOT pip-installable -- handled by package_installer
 }
 
 # =============================================================================
@@ -159,7 +159,7 @@ PLATFORM_DEPS = {
 }
 
 # =============================================================================
-# Torch install config (CPU-only for the build — hardware-agnostic base)
+# Torch install config (CPU-only for the build -- hardware-agnostic base)
 #
 # Ships CPU torch (~200MB) which works on any hardware. At runtime,
 # tts/package_installer.py detects NVIDIA GPU via nvidia-smi and
@@ -199,7 +199,7 @@ def get_venv_install_list(platform=None):
 def get_embed_install_list(include_torch=False):
     """Get flat list of 'pkg==ver' strings for python-embed pip install.
 
-    Torch and torchaudio are excluded by default — they need the special
+    Torch and torchaudio are excluded by default -- they need the special
     --index-url for CUDA variant and are installed separately.
     Pass include_torch=True to include them.
     """
@@ -231,7 +231,7 @@ def get_all_deps():
 
 
 def generate_requirements(output_path='requirements.txt', platform=None):
-    """Generate requirements.txt from deps.py — the single source of truth.
+    """Generate requirements.txt from deps.py -- the single source of truth.
 
     All deployment modes (dev, build, CI) use this generated file.
     """
@@ -239,7 +239,7 @@ def generate_requirements(output_path='requirements.txt', platform=None):
         platform = sys.platform
 
     lines = [
-        "# AUTO-GENERATED from scripts/deps.py — DO NOT EDIT MANUALLY",
+        "# AUTO-GENERATED from scripts/deps.py -- DO NOT EDIT MANUALLY",
         "# Regenerate: python scripts/deps.py requirements",
         f"# Nunba {VERSION} | Python Embed {PYTHON_EMBED_VERSION}",
         "",
@@ -326,7 +326,7 @@ if __name__ == "__main__":
     elif args.command == "requirements":
         generate_requirements(args.output, args.platform)
     elif args.command == "all":
-        print(f"# Nunba {VERSION} — All Dependencies")
+        print(f"# Nunba {VERSION} -- All Dependencies")
         print(f"# Python Embed: {PYTHON_EMBED_VERSION}")
         print(f"# Core: {len(CORE_DEPS)}, Embed: {len(EMBED_DEPS)}, "
               f"Platform: {sum(len(v) for v in PLATFORM_DEPS.values())}")
