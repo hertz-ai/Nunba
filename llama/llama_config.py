@@ -240,22 +240,41 @@ class LlamaConfig:
         """Whether the system has enough VRAM to run a separate draft model.
 
         Delegates entirely to VRAMManager — the single source of truth
-        for GPU state and budget decisions.  Draft (0.8B + KV ≈ 1GB)
-        only makes sense when there's headroom for both a main model
-        AND the draft simultaneously.
+        for GPU state and budget decisions.
+
+        Budget math for dual (main + draft + room for TTS):
+            main LLM (Qwen3-4B, Q4)        ~3.0 GB
+            draft LLM (Qwen3.5-0.8B, Q4)   ~1.0 GB
+            mmproj (vision projector)       ~0.3 GB
+            llama buffers + KV              ~1.5 GB
+            TTS headroom (indic_parler 2GB | cosyvoice 4GB | chatterbox 5.6GB)
+                                            2.0–5.6 GB
+            ─────────────────────────────────────
+            minimum for dual + smallest TTS  ~7.8 GB  (still fails large TTS)
+            comfortable dual + any TTS      ~10 GB
+
+        On ≤8GB laptops dual-model squeezes TTS out (Indic Parler blocked,
+        TTS falls through to Piper).  User asked: "main model shd be used
+        for draft purpose if we cannot fit two llms and tts".  So we require
+        ≥10 GB total for dual boot.  Below that, run main-only — llama-server
+        handles token generation without speculation; main LLM does all the
+        work that draft would classify (slower per-token but TTS can load).
         """
         try:
             from integrations.service_tools.vram_manager import vram_manager
-            # Draft is ~1GB.  After main LLM + KV + OS overhead, we need
-            # at least 1GB free.  On ≤6GB total the math never works.
-            free = vram_manager.get_free_vram()
             total = vram_manager.get_total_vram()
+            free = vram_manager.get_free_vram()
             gpu = vram_manager.detect_gpu()
             if not gpu.get('cuda_available'):
                 return False
-            viable = total >= 8.0 and free >= 1.0
-            logger.info(f"Draft boot decision: total={total:.0f}GB, "
-                        f"free={free:.1f}GB → {'dual' if viable else 'single'}")
+            # 10 GB total + 1 GB free lets main+draft+TTS coexist on any
+            # ladder config (even chatterbox_ml at 14 GB goes main-only
+            # anyway because it would blow even a 16 GB card with draft).
+            viable = total >= 10.0 and free >= 1.0
+            logger.info(
+                f"Draft boot decision: total={total:.0f}GB, "
+                f"free={free:.1f}GB → {'dual' if viable else 'single (main-only, frees ~1GB for TTS)'}",
+            )
             return viable
         except Exception:
             return False  # safe default — single model, no wasted startup

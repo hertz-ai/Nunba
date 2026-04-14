@@ -901,11 +901,11 @@ class TTSEngine:
     def _vram_allows(self, backend) -> bool:
         """Check if VRAMManager says this backend can fit in available VRAM.
 
-        If it doesn't fit, ask ModelLifecycleManager to evict an idle model
-        (draft LLM, stale TTS, etc.) and re-probe.  This lets the user's
-        preferred language-native TTS (e.g. Indic Parler for Tamil) win
-        over falling through to Piper just because the draft LLM is
-        squatting 600MB of VRAM.
+        If it doesn't fit, ask ModelLifecycleManager to evict an idle
+        non-LLM model (stale TTS, unused VLM worker, etc.) and re-probe.
+        Intentionally does NOT touch the main/draft LLMs — the draft-vs-
+        TTS trade-off is handled at boot in `should_boot_draft()` which
+        skips the draft on ≤10GB GPUs so TTS always has room.
         """
         tool_name = self._get_vram_tool_name(backend)
         if not tool_name:
@@ -914,28 +914,27 @@ class TTSEngine:
             from integrations.service_tools.vram_manager import vram_manager
             if vram_manager.can_fit(tool_name):
                 return True
-            # First probe failed.  Try swap-and-retry: evict an idle model
-            # so this one can load.  This is the VRAM-competition case:
-            # laptop GPU full because main LLM + draft + mmproj are loaded.
+            # Probe failed.  Try evicting an idle non-LLM model.  LLMs are
+            # managed by llama-server, not the lifecycle manager's GPU
+            # registry, so request_swap() naturally picks from TTS/VLM/STT.
             try:
                 from integrations.service_tools.model_lifecycle import (
                     get_model_lifecycle_manager,
                 )
                 mlm = get_model_lifecycle_manager()
                 evicted = mlm.request_swap(needed_model=tool_name)
-                if evicted:
+                if evicted and vram_manager.can_fit(tool_name):
                     logger.info(
                         f"Backend {backend}: VRAM tight, evicted an idle "
-                        f"model to make room for {tool_name}",
+                        f"worker to make room for {tool_name}",
                     )
-                    # Re-probe: the eviction should have freed enough.
-                    if vram_manager.can_fit(tool_name):
-                        return True
+                    return True
             except Exception as se:
                 logger.debug(f"swap-for-VRAM attempt failed: {se}")
             logger.info(
                 f"Backend {backend} blocked: VRAMManager says "
-                f"{tool_name} won't fit (even after swap attempt)",
+                f"{tool_name} won't fit (boot-time draft gating should "
+                f"have handled this on ≤10GB GPUs)",
             )
             return False
         except Exception:
