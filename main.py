@@ -3318,8 +3318,15 @@ def start_background_services():
                 except Exception:
                     pass
 
+                # Iterate backend → required-pip-package pairs.  The single
+                # source of truth is `_BACKEND_TO_REGISTRY_KEY` defined at
+                # module level in tts.tts_engine — there is no
+                # `_BACKEND_REQUIRED_IMPORTS` class attribute (an old refactor
+                # left this call site pointing at a dead name, which silently
+                # crashed boot-time TTS warmup with `AttributeError`).
                 from tts._torch_probe import check_backend_runnable
-                for _be, _imp in TTSEngine._BACKEND_REQUIRED_IMPORTS.items():
+                from tts.tts_engine import _BACKEND_TO_REGISTRY_KEY as _BACKEND_IMPORTS
+                for _be, _imp in _BACKEND_IMPORTS.items():
                     # Skip backends not in the user's language ladder
                     if _ladder_backends and _be not in _ladder_backends:
                         logging.debug(f"TTS: skipping probe of {_be} (not in {preferred_lang} ladder)")
