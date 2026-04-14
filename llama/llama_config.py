@@ -1511,9 +1511,16 @@ class LlamaConfig:
         log_path = self.config_dir / "caption_server.log"
         try:
             log_fh = open(log_path, 'w')
+            # CREATE_NO_WINDOW is required on Windows for truly headless
+            # launch of a console-subsystem binary (llama-server.exe).
+            # Without it, a cmd window briefly flashes during splash.
+            # startupinfo SW_HIDE alone is NOT enough for console apps.
+            _creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
             self._caption_process = subprocess.Popen(
                 cmd, stdout=log_fh, stderr=subprocess.STDOUT,
-                startupinfo=startupinfo)
+                startupinfo=startupinfo,
+                creationflags=_creationflags,
+            )
             self._caption_log_fh = log_fh
 
             logger.info(f"Caption server starting: PID={self._caption_process.pid} "
