@@ -16,10 +16,39 @@ env:
   PYTHON_VERSION: '3.12'
   NODE_VERSION: '20'
 
+# ── Cross-OS CI cost discipline ──
+# GitHub-hosted runner billing (public repos free; private repos billed):
+#   ubuntu-latest  = $0.008 / min   (1x baseline)
+#   windows-latest = $0.016 / min   (2x)
+#   macos-latest   = $0.080 / min   (10x)
+#
+# Matrix scope is tuned to catch platform-class bugs (wmic/WMI hangs on
+# Windows 11, osascript/mdfind gaps on macOS, POSIX-only shell idioms)
+# WITHOUT 10x-ing our monthly runner spend:
+#
+#   python-quality   → ubuntu + windows + macos  (ruff/pytest/pip-audit
+#                      are cheap: ~3 min each.  This is where platform
+#                      branches in subprocess/os.path code actually live,
+#                      so all three matter.)
+#   frontend-quality → ubuntu ONLY  (Node deps + Jest are OS-agnostic;
+#                      ESLint/prettier output is identical cross-OS.
+#                      Spending 10x on macOS here buys zero signal.)
+#   cypress-e2e      → ubuntu 4-shard (full coverage)
+#                    + windows 1-job smoke-only (catches Windows-native
+#                      path/subprocess bugs in Flask+HARTOS boot)
+#                    + macOS SKIPPED (same Chromium as Linux, 10x cost,
+#                      marginal incremental signal)
+
 jobs:
-  # ── Python: Linting + Security Scanning ──
+  # ── Python: Linting + Security Scanning (cross-OS matrix) ──
+  # Catches platform-specific bugs: wmic-style hangs on Windows,
+  # osascript/mdfind gaps on macOS, bash-only shell idioms in tests.
   python-quality:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -29,38 +58,44 @@ jobs:
 
       # Ruff: lint + security (bandit S rules = OSS Veracode SAST)
       - name: Install ruff
-        run: pip install ruff
+        run: python -m pip install ruff
 
       - name: Ruff lint (includes bandit security scan)
-        run: ruff check .
+        run: python -m ruff check .
         # HARD GATE — lint + security must pass
 
       - name: Ruff format check
-        run: ruff format --check . || true  # Advisory — auto-format differences are not blocking
+        run: python -m ruff format --check .
+        continue-on-error: true  # Advisory — auto-format differences are not blocking
 
       # pytest: Backend unit tests (mocked — no running servers required)
       - name: Install test dependencies
-        run: pip install pytest pytest-html flask requests
+        run: python -m pip install pytest pytest-html flask requests
 
       - name: Run backend tests
-        run: python -m pytest tests/ -v --tb=short --html=test-report.html --self-contained-html
+        run: python -m pytest tests/ -v --tb=short --html=test-report-${{ matrix.os }}.html --self-contained-html
         # HARD GATE — test failures block merge
 
       - name: Upload pytest report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-report
-          path: test-report.html
+          name: pytest-report-${{ matrix.os }}
+          path: test-report-${{ matrix.os }}.html
 
       # pip-audit: dependency vulnerability scanner (OSS Snyk equivalent)
       - name: Dependency vulnerability scan
         run: |
-          pip install pip-audit
-          pip-audit -r requirements.txt --desc 2>&1 || true
+          python -m pip install pip-audit
+          pip-audit -r requirements.txt --desc || true
+        shell: bash
         continue-on-error: true  # Advisory — high/critical CVEs tracked manually
 
   # ── Frontend: Linting + Jest Unit Tests + Dependency Audit ──
+  # INTENTIONALLY ubuntu-only. Node + npm + Jest behave identically
+  # across OSes for this codebase; running the matrix here would cost
+  # 13x more runner minutes ($0.008 → $0.104 per push) for zero new
+  # signal. Cross-OS frontend bugs (if any) surface in cypress-e2e-windows.
   frontend-quality:
     runs-on: ubuntu-latest
     defaults:
@@ -107,7 +142,7 @@ jobs:
         run: npm audit --audit-level=high 2>&1 || true
         continue-on-error: true  # Advisory — tracked manually for high/critical
 
-  # ── Cypress E2E Tests (sharded across 4 parallel runners) ──
+  # ── Cypress E2E Tests (sharded across 4 parallel ubuntu runners) ──
   # Full-stack: Flask backend (port 5000) + React dev server (port 3000).
   # HARTOS is pip-installed. SQLite for DB (no external services needed).
   #
@@ -273,3 +308,171 @@ jobs:
       - name: Stop Flask backend
         if: always()
         run: kill $(cat /tmp/flask.pid) 2>/dev/null || true
+
+  # ── Cypress E2E (Windows smoke) ──
+  # SINGLE non-sharded job on windows-latest running ONLY smoke-level
+  # specs.  Windows runners are 2x cost AND Cypress is ~3x slower on
+  # Windows (no chromium sandbox reuse, slower filesystem).  Running
+  # the full 4-shard matrix here would cost ~24x the ubuntu baseline.
+  # Smoke-only keeps the signal we need (catches native-path /
+  # subprocess / WMI-class bugs in Flask+HARTOS boot on Windows) at
+  # manageable cost (~15 min × $0.016 = $0.24 / run).
+  #
+  # macOS Cypress: intentionally skipped. Same Chromium engine as
+  # Linux, 10x runner cost, no macOS-specific frontend surface area.
+  cypress-e2e-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout HARTOS
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/HARTOS
+          path: _deps/HARTOS
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
+        continue-on-error: true
+
+      - name: Checkout HevolveAI
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/HevolveAI
+          path: _deps/hevolveai
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
+        continue-on-error: true
+
+      - name: Checkout Hevolve_Database
+        uses: actions/checkout@v4
+        with:
+          repository: hertz-ai/Hevolve_Database
+          path: _deps/Hevolve_Database
+          token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
+        continue-on-error: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: landing-page/package-lock.json
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt || echo "Some deps failed (expected on Windows)"
+          for dep_dir in _deps/Hevolve_Database _deps/hevolveai _deps/HARTOS; do
+            if [ -f "$dep_dir/pyproject.toml" ] || [ -f "$dep_dir/setup.py" ]; then
+              echo "Installing $(basename $dep_dir) from source..."
+              python -m pip install --no-deps "$dep_dir" || echo "  (failed, continuing)"
+            fi
+          done
+        continue-on-error: true
+
+      - name: Start Flask backend (Windows)
+        shell: bash
+        run: |
+          python main.py --port 5000 &
+          echo $! > flask.pid
+        env:
+          NUNBA_BIND_HOST: '127.0.0.1'
+          NUNBA_DISABLE_TTS: '1'
+          NUNBA_CI: '1'
+
+      - name: Wait for Flask backend
+        shell: bash
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:5000/health > /dev/null 2>&1; then
+              echo "Flask is ready (attempt $i)"
+              break
+            fi
+            echo "Waiting for Flask... (attempt $i)"
+            sleep 2
+          done
+          curl -sf http://localhost:5000/health || echo "Flask health check non-200 (may still work)"
+
+      - name: Install frontend dependencies
+        working-directory: landing-page
+        run: npm ci --legacy-peer-deps
+
+      - name: Build React (production)
+        working-directory: landing-page
+        run: npx react-app-rewired build
+        env:
+          CI: 'false'
+          DISABLE_ESLINT_PLUGIN: 'true'
+          NODE_OPTIONS: '--max-old-space-size=4096'
+
+      # Smoke spec selection: prefer cypress/e2e/smoke/*.cy.js if it
+      # exists; otherwise fall back to the single lightest existing
+      # spec (landing_page.cy.js — smallest surface, fastest signal).
+      - name: Compute smoke spec
+        id: smoke
+        working-directory: landing-page
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob, os
+          smoke = sorted(glob.glob('cypress/e2e/smoke/*.cy.js'))
+          if not smoke:
+              # Fallback: lightest known spec
+              fallbacks = [
+                  'cypress/e2e/landing_page.cy.js',
+                  'cypress/e2e/smoke.cy.js',
+                  'cypress/e2e/health.cy.js',
+              ]
+              for f in fallbacks:
+                  if os.path.exists(f):
+                      smoke = [f]
+                      break
+          if not smoke:
+              # Last resort: first spec alphabetically (still deterministic)
+              all_specs = sorted(glob.glob('cypress/e2e/**/*.cy.js', recursive=True))
+              smoke = all_specs[:1]
+          spec_arg = ','.join(smoke)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'spec_pattern={spec_arg}\n')
+          print(f'Windows smoke: {len(smoke)} spec(s)')
+          for s in smoke: print(f'  {s}')
+          PY
+
+      - name: Cypress E2E (Windows smoke)
+        uses: cypress-io/github-action@v6
+        with:
+          working-directory: landing-page
+          install: false
+          wait-on: http://localhost:5000
+          wait-on-timeout: 120
+          browser: chrome
+          spec: ${{ steps.smoke.outputs.spec_pattern }}
+          config: baseUrl=http://localhost:5000,video=false
+          record: false
+        env:
+          CI: true
+
+      - name: Upload Cypress screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-screenshots-windows-smoke
+          path: landing-page/cypress/screenshots/
+
+      - name: Upload Cypress reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-reports-windows-smoke
+          path: landing-page/cypress/reports/
+
+      - name: Stop Flask backend
+        if: always()
+        shell: bash
+        run: |
+          if [ -f flask.pid ]; then
+            kill "$(cat flask.pid)" 2>/dev/null || true
+          fi
