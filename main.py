@@ -1617,7 +1617,7 @@ def admin_models_hub_search():
         filt = _HUB_CATEGORY_FILTERS.get(category)
         if not filt:
             return jsonify({
-                "error": f"unknown category",
+                "error": "unknown category",
                 "valid": sorted(_HUB_CATEGORY_FILTERS.keys()),
             }), 400
         lang = request.args.get('lang')
