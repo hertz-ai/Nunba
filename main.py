@@ -3174,11 +3174,24 @@ def start_background_services():
             if _can_preload:
                 import tempfile as _tf
                 _test_path = os.path.join(_tf.gettempdir(), '_nunba_tts_warmup.wav')
+                # Use a short phrase in the user's own language.  Passing the
+                # English string "test" to Tamil/Hindi/etc. engines produces
+                # broken audio or crashes (no phonemes for Latin letters).
+                _WARMUP_PHRASES = {
+                    'en': 'hello', 'ta': 'வணக்கம்', 'hi': 'नमस्ते',
+                    'bn': 'হ্যালো', 'gu': 'નમસ્તે', 'kn': 'ನಮಸ್ಕಾರ',
+                    'ml': 'നമസ്കാരം', 'mr': 'नमस्कार', 'te': 'నమస్కారం',
+                    'pa': 'ਸਤ ਸ੍ਰੀ ਅਕਾਲ', 'ur': 'ہیلو',
+                    'zh': '你好', 'ja': 'こんにちは', 'ko': '안녕하세요',
+                    'es': 'hola', 'fr': 'bonjour', 'de': 'hallo',
+                    'it': 'ciao', 'pt': 'olá', 'ru': 'привет', 'ar': 'مرحبا',
+                }
+                _warmup_text = _WARMUP_PHRASES.get(preferred_lang, 'hello')
                 try:
-                    engine.synthesize("test", output_path=_test_path, language=preferred_lang)
+                    engine.synthesize(_warmup_text, output_path=_test_path, language=preferred_lang)
                     if os.path.exists(_test_path):
                         os.unlink(_test_path)
-                    logging.info("TTS warm-up: F5 pre-loaded on GPU — first response will be fast")
+                    logging.info(f"TTS warm-up: engine pre-loaded with {preferred_lang!r} phrase")
                 except Exception as _se:
                     logging.info(f"TTS warm-up: pre-load skipped ({_se}) — first response uses Piper")
 
