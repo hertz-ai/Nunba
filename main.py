@@ -3178,10 +3178,12 @@ def admin_hub_allowlist_remove(org):
 # only the local desktop user (or a caller with the Nunba admin token)
 # can read/rotate — this is the same gate protecting `/thread-dump`.
 #
-# NOTE: `_ensure_mcp_token()` lives in HARTOS, so Nunba re-uses it
-# rather than re-implementing the path+generate logic.  Rotate has
-# to invalidate BOTH the HARTOS cache AND overwrite the file so the
-# next `/api/mcp/local` before_request hook picks the new value.
+# NOTE: token I/O lives in HARTOS — Nunba uses the PUBLIC contract
+# `from integrations.mcp import get_mcp_token, rotate_mcp_token`.  The
+# previous implementation reached into the private `_ensure_mcp_token`
+# + `_MCP_TOKEN_CACHE` poke + `_mcp_token_path()` direct-file-write,
+# which silently broke any time HARTOS renamed an internal symbol.
+# rotate_mcp_token() handles HARTOS_MCP_TOKEN env-pinning gracefully.
 _MCP_CONFIG_URL = 'http://localhost:5000/api/mcp/local'
 
 
@@ -3220,8 +3222,11 @@ def admin_mcp_token_get():
       }
     """
     try:
-        from integrations.mcp.mcp_http_bridge import _ensure_mcp_token
-        token = _ensure_mcp_token()
+        # Use the PUBLIC HARTOS API — was reaching into the private
+        # underscore-prefix `_ensure_mcp_token` which coupled Nunba's
+        # release cadence to HARTOS internal naming.
+        from integrations.mcp import get_mcp_token
+        token = get_mcp_token()
         return jsonify({
             'token': token,
             'url': _MCP_CONFIG_URL,
@@ -3247,19 +3252,15 @@ def admin_mcp_token_rotate():
     `config_snippet` into `.claude/settings.local.json`.
     """
     try:
-        from integrations.mcp import mcp_http_bridge as _bridge
-        import secrets as _secrets
-        new_token = _secrets.token_urlsafe(32)
-        path = _bridge._mcp_token_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(new_token)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
-        # Invalidate the cache so the next _ensure_mcp_token() re-reads disk.
-        _bridge._MCP_TOKEN_CACHE = new_token
+        # PUBLIC HARTOS API — replaces the previous reach into private
+        # `_mcp_token_path()` + direct file write + private cache poke
+        # (`_MCP_TOKEN_CACHE = new_token`).  HARTOS now owns the rotation
+        # mechanism end-to-end; Nunba just calls the contract.
+        # rotate_mcp_token() also handles HARTOS_MCP_TOKEN env-var pinning
+        # gracefully (no-ops with a warning instead of overwriting an
+        # operator-controlled secret).
+        from integrations.mcp import rotate_mcp_token
+        new_token = rotate_mcp_token()
         return jsonify({
             'token': new_token,
             'url': _MCP_CONFIG_URL,
