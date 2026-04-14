@@ -1572,6 +1572,67 @@ def main():
     print(f"\nNunba Desktop App Build Script v{VERSION}", flush=True)
     print(f"Platform: {plat.system()} {plat.machine()}\n", flush=True)
 
+    # ── Pre-flight resource check ────────────────────────────────────
+    # A mid-build `pip install hart-backend` with [Errno 28] No space
+    # left on device or `WinError 1455 paging file too small` leaves
+    # python-embed partially populated, site-packages corrupt, and the
+    # installer in a non-reproducible state.  Fail loud *before* we
+    # start, not 20 minutes in after eight wheels downloaded.
+    if args.mode != 'clean':
+        import shutil as _shutil_pf
+        import tempfile as _tf_pf
+        _free_gb_cwd = _shutil_pf.disk_usage(project_dir).free / (1 << 30)
+        _free_gb_tmp = _shutil_pf.disk_usage(_tf_pf.gettempdir()).free / (1 << 30)
+        _MIN_DISK_GB = 20  # conservative: torch wheel + python-embed + build/
+        if _free_gb_cwd < _MIN_DISK_GB:
+            sys.exit(
+                f"[PREFLIGHT] Refusing to build: CWD drive has only "
+                f"{_free_gb_cwd:.1f}GB free (need {_MIN_DISK_GB}GB). "
+                f"Clear %TEMP%\\pip-* and ~/.cache/pip then retry.",
+            )
+        if _free_gb_tmp < _MIN_DISK_GB:
+            sys.exit(
+                f"[PREFLIGHT] Refusing to build: %TEMP% drive has only "
+                f"{_free_gb_tmp:.1f}GB free (need {_MIN_DISK_GB}GB). "
+                f"pip uses it for build isolation (pip-build-env-*).",
+            )
+        # RAM check — WinError 1455 paging file too small is a commit-
+        # limit issue, not disk.  Require 8GB available committed.
+        try:
+            import psutil as _psutil_pf
+            _avail_gb = _psutil_pf.virtual_memory().available / (1 << 30)
+            if _avail_gb < 4:
+                print(
+                    f"[PREFLIGHT] Warning: only {_avail_gb:.1f}GB RAM "
+                    f"available; git clone --filter and torch wheel "
+                    f"build may OOM.  Recommend closing apps.",
+                    flush=True,
+                )
+        except ImportError:
+            pass  # psutil not installed — skip soft check
+        # Stale pip-build-env cleanup — prevents cumulative %TEMP% bloat
+        try:
+            import glob as _glob_pf
+            _stale = _glob_pf.glob(
+                os.path.join(_tf_pf.gettempdir(), 'pip-build-env-*'),
+            ) + _glob_pf.glob(
+                os.path.join(_tf_pf.gettempdir(), 'pip-ephem-wheel-cache-*'),
+            )
+            _freed = 0
+            for _d in _stale:
+                try:
+                    _shutil_pf.rmtree(_d, ignore_errors=True)
+                    _freed += 1
+                except Exception:
+                    pass
+            if _freed:
+                print(
+                    f"[PREFLIGHT] Cleared {_freed} stale pip-build-env dirs",
+                    flush=True,
+                )
+        except Exception:
+            pass
+
     # Clean mode
     if args.mode == 'clean':
         clean_build()
