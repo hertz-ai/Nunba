@@ -3009,24 +3009,10 @@ def start_background_services():
             from tts._torch_probe import check_cuda_available
             _cuda_ok = check_cuda_available()
 
-            # Import TTSEngine class first (just the class, not get_tts_engine singleton)
-            # so we can prime its cache BEFORE it constructs the engine
-            from tts.tts_engine import TTSEngine
-            if _cuda_ok:
-                TTSEngine._import_check_cache['_torch_cuda'] = True
-                logging.info("TTS: CUDA torch verified via subprocess — GPU TTS enabled")
-                # Probe each GPU backend so the compiled .pyc's _can_run_backend
-                # sees them in cache and skips the poisoned in-process import
-                from tts._torch_probe import check_backend_runnable
-                for _be, _imp in TTSEngine._BACKEND_REQUIRED_IMPORTS.items():
-                    if check_backend_runnable(_be, _imp):
-                        TTSEngine._import_check_cache[_imp] = True
-                        logging.info(f"TTS: backend {_be} ({_imp}) verified runnable")
-            # NOW create the engine — cache is primed, _can_run_backend will find entries
-            from tts.tts_engine import get_tts_engine
-            engine = get_tts_engine()
-
-            # Read user's preferred language from HART onboarding
+            # Read user's preferred language BEFORE probing backends — only probe
+            # engines that appear in this language's ladder.  Avoids installing F5
+            # (voice-cloning) for users who speak English/Tamil/Hindi and don't
+            # need it.
             preferred_lang = 'en'
             try:
                 import json as _json
@@ -3037,6 +3023,41 @@ def start_background_services():
                         preferred_lang = _json.load(_f).get('language', 'en')
             except Exception:
                 pass
+
+            # Import TTSEngine class first (just the class, not get_tts_engine singleton)
+            # so we can prime its cache BEFORE it constructs the engine
+            from tts.tts_engine import TTSEngine
+            if _cuda_ok:
+                TTSEngine._import_check_cache['_torch_cuda'] = True
+                logging.info("TTS: CUDA torch verified via subprocess — GPU TTS enabled")
+                # Filter backends to only those in this language's ladder.
+                _ladder_engines = set()
+                try:
+                    from integrations.channels.media.tts_router import LANG_ENGINE_PREFERENCE
+                    _ladder_engines = set(LANG_ENGINE_PREFERENCE.get(preferred_lang, []))
+                except Exception:
+                    pass
+                # Map engine_id → backend name (same as in TTSEngine._BACKEND_TO_REGISTRY_KEY)
+                _ladder_backends = set()
+                try:
+                    for _eid in _ladder_engines:
+                        # engine_id like 'chatterbox_turbo' → backend 'chatterbox_turbo'
+                        _ladder_backends.add(_eid)
+                except Exception:
+                    pass
+
+                from tts._torch_probe import check_backend_runnable
+                for _be, _imp in TTSEngine._BACKEND_REQUIRED_IMPORTS.items():
+                    # Skip backends not in the user's language ladder
+                    if _ladder_backends and _be not in _ladder_backends:
+                        logging.debug(f"TTS: skipping probe of {_be} (not in {preferred_lang} ladder)")
+                        continue
+                    if check_backend_runnable(_be, _imp):
+                        TTSEngine._import_check_cache[_imp] = True
+                        logging.info(f"TTS: backend {_be} ({_imp}) verified runnable")
+            # NOW create the engine — cache is primed, _can_run_backend will find entries
+            from tts.tts_engine import get_tts_engine
+            engine = get_tts_engine()
 
             # If GPU detected but CUDA torch not installed, install it NOW
             # (blocking) so GPU TTS works on first launch. Shows progress via
