@@ -423,39 +423,51 @@ def install_backend_packages(backend: str,
         if not is_package_installed(import_name):
             to_install.append(pkg)
 
-    if not to_install:
+    display_name = BACKEND_DISPLAY_NAMES.get(backend, backend)
+
+    # CUDA torch gate — runs BEFORE the "all packages installed" early
+    # return.  Previously this check was gated by 'torchaudio in
+    # to_install', but torchaudio's .py files often pre-exist in
+    # python-embed/ so find_spec() reports True and torchaudio is NOT
+    # in to_install — even when CUDA torch is entirely missing.  That
+    # turned "all packages reported installed" into a false positive
+    # for GPU backends and CUDA torch upgrade never ran on a fresh
+    # machine.  Now we ask is_cuda_torch() directly — single source of
+    # truth for "is CUDA torch present?" — and the check runs before
+    # the to_install short-circuit.
+    needs_gpu = backend not in ('piper',)
+    cuda_torch_was_installed = False
+    if needs_gpu and has_nvidia_gpu() and not is_cuda_torch():
+        if progress_cb:
+            progress_cb("GPU detected but CUDA torch missing — installing CUDA torch first (~2.5GB)...")
+        cuda_ok, cuda_msg = install_gpu_torch(progress_cb)
+        if cuda_ok:
+            cuda_torch_was_installed = True
+            # install_gpu_torch installs torch + torchaudio together
+            to_install = [p for p in to_install if p != 'torchaudio']
+        else:
+            logger.warning(f"CUDA torch install failed: {cuda_msg}")
+            # Continue — caller decides how to handle a still-CPU torch.
+
+    if not to_install and not cuda_torch_was_installed:
         return True, f"All packages for {backend} already installed"
 
-    display_name = BACKEND_DISPLAY_NAMES.get(backend, backend)
-    if progress_cb:
+    if to_install and progress_cb:
         progress_cb(f"Installing packages for {display_name}: {', '.join(to_install)}")
 
-    # Check if we need CUDA torch first
-    needs_gpu = backend not in ('piper',)
+    # torchaudio install for the case where CUDA torch was already
+    # present (or no GPU) but torchaudio itself is genuinely missing.
     if needs_gpu and 'torchaudio' in to_install:
-        # torchaudio must match torch version — install via pytorch index
         variant = get_torch_variant()
-        if variant == 'cpu' and has_nvidia_gpu():
-            if progress_cb:
-                progress_cb("GPU detected but torch is CPU-only — upgrading to CUDA torch first...")
-            cuda_ok, cuda_msg = install_gpu_torch(progress_cb)
-            if cuda_ok:
-                # torchaudio was installed with CUDA torch
-                to_install = [p for p in to_install if p != 'torchaudio']
-            else:
-                logger.warning(f"CUDA torch install failed: {cuda_msg}")
-                # Continue with CPU — torchaudio will work but no GPU acceleration
-        elif 'torchaudio' in to_install:
-            # Install torchaudio matching current torch
-            if variant == 'cpu':
-                idx_url = 'https://download.pytorch.org/whl/cpu'
-            else:
-                idx_url = f'https://download.pytorch.org/whl/{variant}'
-            ok, msg = _run_pip([
-                'install', 'torchaudio', '--index-url', idx_url,
-            ], progress_cb)
-            if ok:
-                to_install = [p for p in to_install if p != 'torchaudio']
+        if variant == 'cpu':
+            idx_url = 'https://download.pytorch.org/whl/cpu'
+        else:
+            idx_url = f'https://download.pytorch.org/whl/{variant}'
+        ok, msg = _run_pip([
+            'install', 'torchaudio', '--index-url', idx_url,
+        ], progress_cb)
+        if ok:
+            to_install = [p for p in to_install if p != 'torchaudio']
 
     # Install remaining packages
     if to_install:

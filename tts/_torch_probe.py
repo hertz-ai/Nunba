@@ -141,6 +141,16 @@ def check_backend_runnable(backend: str, import_name: str) -> bool:
         _backend_cache[backend] = False
         return False
 
+    # Guard: if torch/lib doesn't exist (CUDA torch never installed),
+    # the subprocess would crash on os.add_dll_directory before it
+    # could even attempt the import.  Return False cleanly so the
+    # caller routes to install instead of seeing a FileNotFoundError
+    # in probe_<backend>.err every probe call.  Mirrors the guard at
+    # check_cuda_available() above — single behavior for both probes.
+    if not os.path.isdir(_tlib):
+        _backend_cache[backend] = False
+        return False
+
     try:
         r = _run_in_embed(
             'import sys,os;'

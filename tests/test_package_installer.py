@@ -390,7 +390,13 @@ class TestInstallBackendPackages:
         assert 'No packages needed' in msg
 
     def test_all_already_installed(self):
-        with patch.object(pi, 'is_package_installed', return_value=True):
+        # Also stub is_cuda_torch=True so the GPU-backend CUDA-torch
+        # gate (added 2026-04-16) doesn't try to install CUDA torch
+        # on top of "all packages already installed".  Without this
+        # stub, the test would only pass on a machine that genuinely
+        # has CUDA torch installed.
+        with patch.object(pi, 'is_package_installed', return_value=True), \
+             patch.object(pi, 'is_cuda_torch', return_value=True):
             ok, msg = pi.install_backend_packages('f5')
             assert ok is True
             assert 'already installed' in msg

@@ -1068,14 +1068,31 @@ class TTSEngine:
                 logger.debug(f"Auto-install for '{backend}' already in progress, skipping")
                 return False
 
-            # Quick check — maybe packages landed since last cache refresh
+            # Single source of truth for "is this backend already runnable?":
+            # the same subprocess probe _can_run_backend() consults.  Earlier
+            # versions used importlib.util.find_spec() here, which only checks
+            # if the .py file exists — it returned True for parler_tts when
+            # the wheel was installed but CUDA torch was missing, short-
+            # circuiting the install gate so the install never ran.  The
+            # subprocess probe actually attempts the import and catches that
+            # half-installed state.  Keeping both gates on the same probe
+            # eliminates the disagreement.
             required_pkg = self._get_required_package(backend)
             if required_pkg:
-                import importlib.util
-                if importlib.util.find_spec(required_pkg) is not None:
-                    TTSEngine._import_check_cache.pop(required_pkg, None)
-                    logger.info(f"Packages for '{backend}' already importable after cache refresh")
-                    return True
+                try:
+                    from tts._torch_probe import check_backend_runnable
+                    # Bypass the cache here — _can_run_backend may have cached
+                    # False from a prior probe attempt, but we want the live
+                    # answer at install-decision time (state may have changed
+                    # since boot, e.g. CUDA torch finished installing).
+                    from tts import _torch_probe as _tp
+                    _tp._backend_cache.pop(backend, None)
+                    if check_backend_runnable(backend, required_pkg):
+                        TTSEngine._import_check_cache[required_pkg] = True
+                        logger.info(f"Packages for '{backend}' already runnable — skipping install")
+                        return True
+                except Exception as _probe_err:
+                    logger.debug(f"Auto-install probe error for '{backend}': {_probe_err} — proceeding to install")
 
             TTSEngine._auto_install_pending.add(backend)
 
