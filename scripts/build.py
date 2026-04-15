@@ -819,20 +819,86 @@ def build_windows(python_exe, app_only=False, installer_only=False):
             except Exception as e:
                 print_warn(f"Failed to remove {item_path}: {e}")
 
-    # Auto-create python-embed if missing (GPU TTS/STT/VLM need it)
+    # Auto-create / refresh python-embed.
+    #
+    # Two invalidation gates — BOTH had to be added (2026-04-16) because
+    # the original "only rebuild if dir missing" check turned every
+    # EMBED_DEPS edit into a silent no-op: the `regex` pin landed in
+    # deps.py (commits 481f25a, 31e480e, 0c6274f) but the stale snapshot
+    # from an earlier build kept being reused, so every Indic Parler
+    # load failed with `ModuleNotFoundError: No module named 'regex'`.
+    #
+    #   Gate A (hash): compare compute_embed_deps_hash() against the
+    #   hash stored in python-embed.hash — mismatch triggers a full
+    #   rebuild.  Any addition / removal / version bump in EMBED_DEPS
+    #   flips the hash.
+    #
+    #   Gate B (presence): even on hash match, verify every package
+    #   has a directory under site-packages and top-up any missing
+    #   ones.  Survives the case where someone slimmed the snapshot
+    #   manually or a prior build's slim step deleted too much.
+    from deps import compute_embed_deps_hash, missing_embed_packages, get_embed_install_list
     embed_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'python-embed')
-    if not os.path.isdir(embed_src) or not os.listdir(embed_src):
-        print_header("Creating python-embed (first time — downloads ~2GB)")
-        rebuild_script = os.path.join('scripts', 'rebuild_python_embed.py')
+    hash_file = embed_src + '.hash'
+    current_hash = compute_embed_deps_hash()
+    stored_hash = None
+    if os.path.isfile(hash_file):
+        try:
+            with open(hash_file, 'r', encoding='utf-8') as _hf:
+                stored_hash = _hf.read().strip()
+        except OSError:
+            stored_hash = None
+
+    _needs_full_rebuild = (
+        not os.path.isdir(embed_src)
+        or not os.listdir(embed_src)
+        or stored_hash != current_hash
+    )
+    rebuild_script = os.path.join('scripts', 'rebuild_python_embed.py')
+
+    if _needs_full_rebuild:
+        _reason = ('missing' if not os.path.isdir(embed_src) or not os.listdir(embed_src)
+                    else f'EMBED_DEPS hash changed ({stored_hash} -> {current_hash})')
+        print_header(f"Rebuilding python-embed ({_reason})")
         if os.path.isfile(rebuild_script):
-            if not run_command([python_exe, rebuild_script],
-                               "Building python-embed from scratch..."):
+            if run_command([python_exe, rebuild_script],
+                            "Building python-embed from scratch..."):
+                # Stamp the new hash so subsequent builds skip the rebuild
+                try:
+                    with open(hash_file, 'w', encoding='utf-8') as _hf:
+                        _hf.write(current_hash)
+                    print_info(f"Wrote python-embed.hash = {current_hash}")
+                except OSError as _e:
+                    print_warn(f"Failed to write {hash_file}: {_e}")
+            else:
                 print_warn("python-embed creation failed — TTS/STT/VLM features will be unavailable")
                 print_warn("You can run 'python scripts/rebuild_python_embed.py' manually later")
         else:
             print_warn("rebuild_python_embed.py not found — skipping python-embed")
     else:
-        print_info(f"python-embed exists ({embed_src})")
+        print_info(f"python-embed exists and hash matches ({embed_src}, {current_hash})")
+
+    # Gate B — presence check for each EMBED_DEPS package.  Fires even
+    # when the hash matched, because a slim step or manual edit can
+    # remove a directory without bumping the hash.  Top up just the
+    # missing packages via an incremental pip install — no full rebuild.
+    _embed_sp = os.path.join(embed_src, 'Lib', 'site-packages')
+    if os.path.isdir(_embed_sp):
+        _missing = missing_embed_packages(_embed_sp)
+        if _missing:
+            print_header(f"Topping up {len(_missing)} missing embed package(s): {_missing}")
+            # Resolve pinned specs for just the missing names
+            _all_specs = get_embed_install_list(include_torch=True)
+            _by_name = {spec.split('==', 1)[0].lower(): spec for spec in _all_specs}
+            _missing_specs = [_by_name[n.lower()] for n in _missing if n.lower() in _by_name]
+            if _missing_specs:
+                _embed_py = os.path.join(embed_src, 'python.exe' if sys.platform == 'win32' else 'bin/python')
+                if os.path.isfile(_embed_py):
+                    run_command(
+                        [_embed_py, '-m', 'pip', 'install', *_missing_specs,
+                         '--no-warn-script-location', '--no-deps'],
+                        "Installing missing embed packages",
+                    )
 
     print_header("Building Nunba executable with cx_Freeze")
 

@@ -256,6 +256,72 @@ def get_torch_spec():
     return "torch"
 
 
+# =============================================================================
+# python-embed invalidation helpers
+#
+# build.py preserves python-embed/ across builds (it's a ~2GB snapshot).
+# Without an invalidation trigger, any EMBED_DEPS addition (e.g. pinning
+# `regex`, `tqdm`, `pyyaml`) never propagates — a stale snapshot from a
+# previous build is reused forever.  That caused the Indic Parler
+# `ModuleNotFoundError: No module named 'regex'` regression three times.
+#
+# Two layers of defense:
+#   1. Hash gate: if EMBED_DEPS changes, invalidate the snapshot.
+#   2. Presence gate: even if hash matches, verify every EMBED_DEPS
+#      package has a directory in site-packages and top-up any that
+#      don't.  Survives the case where someone manually touched
+#      python-embed but didn't bump the hash.
+# =============================================================================
+
+def compute_embed_deps_hash() -> str:
+    """Stable hash of EMBED_DEPS content.
+
+    Used by build.py as the invalidation key for python-embed/.  Any
+    addition, removal, or version bump in EMBED_DEPS changes the hash,
+    which triggers a rebuild.  Independent of dict ordering.
+    """
+    import hashlib
+    payload = '\n'.join(f'{k}=={v}' for k, v in sorted(EMBED_DEPS.items()))
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
+
+
+# Package name → site-packages directory name.  Most packages use
+# name.replace('-', '_'), but a few normalize differently.  List only
+# the exceptions; fall back to the default mapping for everything else.
+_EMBED_DIR_EXCEPTIONS = {
+    'pyyaml': 'yaml',
+    'faiss-cpu': 'faiss',
+    'opencv-python': 'cv2',
+    'scikit-learn': 'sklearn',
+    'huggingface_hub': 'huggingface_hub',
+    'sentence-transformers': 'sentence_transformers',
+    'langchain-core': 'langchain_core',
+    'tiktoken': 'tiktoken',
+}
+
+
+def embed_package_dir_name(pkg_name: str) -> str:
+    """Map a pip package name to its import/site-packages directory name."""
+    return _EMBED_DIR_EXCEPTIONS.get(pkg_name, pkg_name.replace('-', '_'))
+
+
+def missing_embed_packages(site_packages_dir: str) -> list[str]:
+    """Return list of EMBED_DEPS package names whose install directory
+    is absent from the given site-packages path.
+
+    Used after the hash gate as a belt-and-braces check: catches cases
+    where the snapshot has the right hash but a prior slim step or
+    manual edit removed a package directory.
+    """
+    import os
+    missing = []
+    for name in EMBED_DEPS:
+        dir_name = embed_package_dir_name(name)
+        if not os.path.isdir(os.path.join(site_packages_dir, dir_name)):
+            missing.append(name)
+    return missing
+
+
 def get_all_deps():
     """Get combined dict of all deps for auditing."""
     all_deps = {}
