@@ -294,24 +294,23 @@ build_exe_options = {
         "routes.chatbot_routes",  # Chatbot routes module
         "routes.kids_media_routes",  # Kids media generation routes
 
-        # core.* shared utilities (architect refactor — unify 3
-        # duplicate implementations into canonical helpers).  These
-        # MUST be declared explicitly because cx_Freeze only sees
-        # them through runtime `import __main__; __main__._nunba_...`
-        # builtin-registration chains, which the tracer can't follow.
-        # Omitting them caused `ModuleNotFoundError: No module named
-        # 'core.diag'` at boot in the 2026-04-15 frozen build.
+        # core.* shared utilities (architect refactor — unify
+        # duplicate implementations into canonical helpers).  MUST be
+        # declared explicitly: cx_Freeze only sees modules through
+        # static `import` statements, and `core.diag` publishes itself
+        # on `builtins._nunba_dump_threads` at runtime — a pattern the
+        # tracer can't follow.  Omitting caused `ModuleNotFoundError:
+        # No module named 'core.diag'` at boot on 2026-04-15.
+        # HARTOS core.* modules (http_pool, port_registry, realtime,
+        # agent_tools, platform_paths, constants) live in the HARTOS
+        # package tree and are picked up via the separate "Including
+        # core package" (HARTOS) trace — do NOT list them here, they'd
+        # collide with Nunba's own (smaller) core/ namespace.
         "core",
         "core.diag",            # unified thread-stack dumper
         "core.optional_import", # logged graceful degradation
         "core.gpu_tier",        # GPU tier classification (single source)
         "core.hub_allowlist",   # HF org allowlist (runtime-editable)
-        "core.platform_paths",  # platform-aware data/log dirs
-        "core.constants",       # SUPPORTED_LANG_DICT etc.
-        "core.agent_tools",     # agent tools registry
-        "core.http_pool",       # pooled HTTP session
-        "core.port_registry",   # port allocation service
-        "core.realtime",        # WAMP publish_async
 
         "uvicorn",
         "fastapi",
