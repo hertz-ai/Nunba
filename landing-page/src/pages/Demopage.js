@@ -769,6 +769,46 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             setCurrentAgent(savedAgent);
             const savedMessages = loadMessagesFromStorage(savedAgent.prompt_id);
             if (savedMessages.length > 0) setMessages(savedMessages);
+          } else {
+            // Orphan-chat recovery: savedAgentId is valid but the
+            // agent isn't in allAgents (server sync failed, backend
+            // minted a new guest user before the idempotent fix, or
+            // the agent was deleted server-side).  If we still have
+            // localStorage chat for it, synthesize a ghost agent so
+            // the user can see their conversation and decide whether
+            // to keep going or switch.  The stored chat payload has
+            // agentName metadata — use that for the label.
+            try {
+              const stored = localStorage.getItem(`chat_messages_${savedAgentId}`);
+              if (stored) {
+                const parsed = JSON.parse(stored);
+                const orphanMessages = Array.isArray(parsed?.messages) ? parsed.messages : [];
+                if (orphanMessages.length > 0) {
+                  const ghost = {
+                    prompt_id: Number(savedAgentId),
+                    id: `orphan_${savedAgentId}`,
+                    name: parsed.agentName || 'Previous Session',
+                    type: 'orphan',
+                    _isOrphan: true,
+                    lastUpdated: parsed.lastUpdated,
+                  };
+                  logger.log(
+                    `Recovered orphan chat for agent ${savedAgentId} ` +
+                    `("${ghost.name}", ${orphanMessages.length} messages)`
+                  );
+                  allAgents.push(ghost);
+                  setAllAgents([...allAgents]);
+                  setCurrentAgent(ghost);
+                  setMessages(orphanMessages);
+                  // Skip the "default agent" fallback below so we
+                  // don't clobber the ghost we just restored.
+                  return;
+                }
+              }
+            } catch (orphanErr) {
+              console.warn('Orphan chat recovery failed:', orphanErr.message);
+            }
+            logger.log(`Saved agent ${savedAgentId} not found and no orphan chat — falling back to default`);
           }
         } else if (savedAgentId && !/^\d+$/.test(savedAgentId)) {
           console.warn('Clearing invalid active_agent_id:', savedAgentId);
