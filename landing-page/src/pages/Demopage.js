@@ -28,6 +28,7 @@ import autobahn from 'autobahn';
 import { classifyError, getBackoff, makeMsgId } from '../utils/chatRetry';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
+import { getStableDeviceId } from '../utils/deviceId';
 import { logger } from '../utils/logger';
 
 // NewHome is only loaded when user is not logged in (landing page)
@@ -165,16 +166,24 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     (async () => {
       try {
         logger.log('[GUEST] Token missing — auto-refreshing with stored name:', guestName);
-        const deviceId = localStorage.getItem('device_id') || guestUserId;
+        // Hardware-derived device_id via /status so the backend can
+        // return our EXISTING guest User (idempotent) instead of
+        // minting a new user_id — preserves prompt_id→chat linkage
+        // in localStorage.  See HARTOS guest_register idempotent fix.
+        const deviceId = await getStableDeviceId();
         const res = await authApi.guestRegister({
           guest_name: guestName,
           device_id: deviceId,
         });
-        const { user, token: newToken } = res.data;
+        const { user, token: newToken, existing } = res.data;
         localStorage.setItem('access_token', newToken);
         localStorage.setItem('guest_user_id', user.id);
         localStorage.setItem('social_user_id', user.id);
-        logger.log('[GUEST] Token refreshed successfully');
+        logger.log(
+          existing
+            ? '[GUEST] Token refreshed — same user, chat preserved'
+            : '[GUEST] New guest user created (first-time device)',
+        );
       } catch {
         logger.log('[GUEST] Auto-refresh failed — will show login modal on next action');
       }
