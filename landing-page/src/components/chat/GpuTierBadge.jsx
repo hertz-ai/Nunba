@@ -210,9 +210,26 @@ export default function GpuTierBadge({className = '', style = {}}) {
     return parts.join(' · ');
   })();
 
+  // Cohort-aware description: if speculation IS running on a standard-
+  // tier GPU, the default "upgrade to 10GB for speculation" tooltip is
+  // wrong — the cohort fast-path (English + Kokoro/Piper, commit
+  // 12c9304) already unlocked it.  Replace with the correct rationale.
+  const effectiveDescription = (() => {
+    if (!health || error) return tierMeta.description;
+    if (tierKey === 'standard' && health.speculation_enabled) {
+      return (
+        'Standard GPU with speculative decoding active via the '
+        + 'cohort fast-path (English + Kokoro/Piper TTS fit in 8GB). '
+        + 'Upgrading to 10GB+ VRAM unlocks speculation for any '
+        + 'language / voice combination.'
+      );
+    }
+    return tierMeta.description;
+  })();
+
   const fullDescription = detailLine
-    ? `${tierMeta.description} Current: ${detailLine}.`
-    : tierMeta.description;
+    ? `${effectiveDescription} Current: ${detailLine}.`
+    : effectiveDescription;
 
   const chip = (
     <Chip
