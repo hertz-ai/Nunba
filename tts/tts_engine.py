@@ -147,11 +147,12 @@ _FALLBACK_ENGINE_CAPABILITIES = {
     },
 }
 
-# All 21 Indic languages supported by Indic Parler TTS
-_INDIC_LANGS = {
-    'as', 'bn', 'brx', 'doi', 'gu', 'hi', 'kn', 'kok', 'mai',
-    'ml', 'mni', 'mr', 'ne', 'or', 'pa', 'sa', 'sat', 'sd', 'ta', 'te', 'ur',
-}
+# Indic languages — canonical set lives in core.constants.INDIC_LANGS.
+# HARTOS is always pip-installed alongside Nunba (per dependency chain
+# in MEMORY.md), so the import is guaranteed; no defensive fallback
+# needed.  Keeping the local alias `_INDIC_LANGS` for in-file
+# readability at the 2 iteration sites below.
+from core.constants import INDIC_LANGS as _INDIC_LANGS  # noqa: F401
 
 # ════════════════════════════════════════════════════════════════════
 # LANG → CAPABLE BACKENDS (defensive allowlist)

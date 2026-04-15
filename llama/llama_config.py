@@ -251,20 +251,18 @@ class LlamaConfig:
 
     @staticmethod
     def _read_preferred_lang() -> str:
-        """Read the user's preferred language from ~/Documents/Nunba/data/hart_language.json.
+        """Read the user's preferred language via the canonical resolver.
 
-        Returns 'en' on any failure — matches the default used by main.py
-        when the file is missing (first-run before LightYourHART).
+        Delegates to `core.user_lang.get_preferred_lang()` which handles
+        precedence (file → env → node_identity → 'en') with mtime-based
+        caching.  Previously this method inlined its own file read —
+        fixed as part of the 2026-04-15 language-source consolidation.
         """
         try:
-            hart_lang_file = os.path.join(
-                os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'hart_language.json')
-            if os.path.exists(hart_lang_file):
-                with open(hart_lang_file) as f:
-                    return json.load(f).get('language', 'en') or 'en'
+            from core.user_lang import get_preferred_lang
+            return get_preferred_lang()
         except Exception:
-            pass
-        return 'en'
+            return 'en'
 
     @staticmethod
     def _read_active_tts() -> str | None:
