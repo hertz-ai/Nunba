@@ -5374,7 +5374,8 @@ def main():
     # on disk shows exactly where the process died, even on SIGKILL /
     # Job Object termination where no exception handler runs.
     def _phase(name):
-        nonlocal _startup_phase
+        # _startup_phase is module-global (declared in main's `global` line)
+        global _startup_phase
         _startup_phase = name
         logger.info(f"[STARTUP-PHASE] {name}")
         for _h in logger.handlers:
