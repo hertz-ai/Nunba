@@ -64,6 +64,57 @@ if getattr(sys, 'frozen', False):
         import builtins
         builtins.__import__ = _trace_import
 
+def _preload_pycparser_from_lib_src():
+    """Load pycparser from lib_src BEFORE any other frozen import path.
+
+    Root cause (Stage-B Symptom #1, 2026-04-16):
+    cx_Freeze's .pyc bundle of pycparser + cffi's lazy invocation of
+    pycparser at parse time produce a dual-copy situation. The earlier
+    fix inside _load_pywebview `del sys.modules[pycparser.*]` ran
+    AFTER autobahn/cffi had already pulled pycparser from the .pyc
+    bundle, leaving behind stale references to the old pycparser.c_ast.
+    When the lib_src copy later loads, Node.__subclasses__() misses
+    entries bound to the old module -> KeyError on 'c_ast'.
+
+    Fix: force the lib_src copy of pycparser into sys.modules BEFORE
+    any cffi / autobahn import can pull the .pyc copy. This runs at
+    app.py import time, well before _isolate_frozen_imports / main.py.
+
+    Bundle-safe: if lib_src/pycparser doesn't exist (dev tree), this
+    is a silent no-op — the dev-tree pycparser from site-packages
+    is used.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        app_dir = os.path.dirname(os.path.abspath(sys.executable))
+        lib_src = os.path.join(app_dir, "lib_src")
+        pycparser_dir = os.path.join(lib_src, "pycparser")
+        if not os.path.isdir(pycparser_dir):
+            return
+        # Put lib_src on sys.path BEFORE any bundled .pyc location.
+        if lib_src not in sys.path:
+            sys.path.insert(0, lib_src)
+        # Evict any half-loaded pycparser from the .pyc bundle (should
+        # be empty this early, but defense-in-depth). NEVER do this
+        # later — once cffi has a reference, you get dual-copy.
+        _stale = [k for k in list(sys.modules)
+                  if k == "pycparser" or k.startswith("pycparser.")]
+        for _k in _stale:
+            sys.modules.pop(_k, None)
+        # Import pycparser + c_ast eagerly so the single canonical copy
+        # is bound in sys.modules before any caller (autobahn, cffi,
+        # cryptography) touches it.
+        import pycparser  # noqa: F401
+        import pycparser.c_ast  # noqa: F401
+        import pycparser.c_parser  # noqa: F401
+    except Exception:
+        # Catch-all: a broken pycparser load should NOT crash the exe.
+        # Downstream cffi imports will fall back to the .pyc bundle and
+        # the operator sees the specific error in their own log.
+        pass
+
+
 def _isolate_frozen_imports():
     if not getattr(sys, "frozen", False):
         return
@@ -100,6 +151,7 @@ def _isolate_frozen_imports():
         if os.path.isdir(p) and p not in sys.path:
             sys.path.insert(0, p)
 
+_preload_pycparser_from_lib_src()
 _isolate_frozen_imports()
 
 # === User-writable site-packages (runtime pip installs go here) ===
@@ -850,29 +902,30 @@ def get_webview():
     global pywebview
     if pywebview is None:
         if sys.platform == 'win32':
-            # Fix pycparser circular import by loading from source files
-            # In frozen apps, .pyc files cause circular import issues
-            # Source .py files in lib_src handle this correctly
+            # NOTE (Stage-B Symptom #1, 2026-04-16): the pycparser-from-
+            # lib_src preload now runs at app.py top (see
+            # _preload_pycparser_from_lib_src above), BEFORE any cffi /
+            # autobahn / cryptography import can pull the bundled .pyc
+            # copy. Doing the sys.modules dance here (after those modules
+            # already imported pycparser) produced a dual-copy situation:
+            # stale references in cffi's Parser vs fresh references in
+            # the replaced pycparser.c_ast -> KeyError on c_ast lookup.
+            # This block is kept as a diagnostic no-op so future readers
+            # understand the history without re-introducing the bug.
             try:
-                app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
-                lib_src = os.path.join(app_dir, 'lib_src')
-
-                if os.path.exists(lib_src) and getattr(sys, 'frozen', False):
-                    # Remove any cached pycparser imports
-                    mods_to_remove = [k for k in list(sys.modules.keys()) if k == 'pycparser' or k.startswith('pycparser.')]
-                    for mod in mods_to_remove:
-                        del sys.modules[mod]
-
-                    # Add lib_src to beginning of sys.path so source files are found first
-                    if lib_src not in sys.path:
-                        sys.path.insert(0, lib_src)
-                        logging.getLogger('NunbaGUI').info(f"Added lib_src to path: {lib_src}")
-
-                    # Now import pycparser from source
-                    import pycparser
-                    logging.getLogger('NunbaGUI').info(f"Loaded pycparser from: {pycparser.__file__}")
+                import pycparser as _pp_already
+                _pp_loc = getattr(_pp_already, '__file__', '<none>') or '<none>'
+                if 'lib_src' not in _pp_loc:
+                    logging.getLogger('NunbaGUI').warning(
+                        f"pycparser loaded from non-lib_src location: {_pp_loc} — "
+                        f"preload at app.py top did not run or lib_src missing"
+                    )
+                else:
+                    logging.getLogger('NunbaGUI').info(
+                        f"pycparser already loaded from lib_src: {_pp_loc}"
+                    )
             except Exception as e:
-                logging.getLogger('NunbaGUI').warning(f"pycparser source load failed: {e}")
+                logging.getLogger('NunbaGUI').warning(f"pycparser introspection failed: {e}")
 
             # Now try to set up .NET runtime
             try:
