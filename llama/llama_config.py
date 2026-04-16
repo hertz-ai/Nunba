@@ -1669,7 +1669,20 @@ class LlamaConfig:
 
         log_path = self.config_dir / "caption_server.log"
         try:
-            log_fh = open(log_path, 'w')
+            # APPEND mode — caption-server (0.8B draft) restarts across
+            # bundle updates, crashes, idle-evictions.  Truncating on
+            # each spawn erased the prior crash's log, which is exactly
+            # when a human needed it.  Root-cause class: truncate-on-
+            # restart log loss.  See Stage-A Symptom #8, 2026-04-16.
+            log_fh = open(log_path, 'a')
+            try:
+                import datetime as _cap_dt
+                log_fh.write(
+                    f"\n===== caption_server session {_cap_dt.datetime.now().isoformat()} =====\n"
+                )
+                log_fh.flush()
+            except Exception:
+                pass
             # CREATE_NO_WINDOW is required on Windows for truly headless
             # launch of a console-subsystem binary (llama-server.exe).
             # Without it, a cmd window briefly flashes during splash.

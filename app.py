@@ -1071,7 +1071,20 @@ if getattr(args, 'validate', False):
     except Exception:
         _val_log_dir = _base  # build dir during post-build (writable)
     _val_log_path = os.path.join(_val_log_dir, 'validate.log')
-    _val_log = open(_val_log_path, 'w', encoding='utf-8')
+    # APPEND mode — preserves multi-run history.  `--validate` runs can
+    # happen multiple times (first-run check, post-install verify, dev
+    # smoke).  Truncating each time erased evidence from the previous
+    # run at the moment the next run crashed, which is exactly when we
+    # needed the history.  Same root-cause class as frozen_debug.log.
+    _val_log = open(_val_log_path, 'a', encoding='utf-8')
+    try:
+        import datetime as _val_dt
+        _val_log.write(
+            f"\n===== validate.log session {_val_dt.datetime.now().isoformat()} =====\n"
+        )
+        _val_log.flush()
+    except Exception:
+        pass
 
     def _vprint(msg):
         for _out in (sys.stdout, sys.stderr, _val_log):
