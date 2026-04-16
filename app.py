@@ -5317,6 +5317,13 @@ def main():
 
     _startup_phase = 'main_entered'
     logger.info("=== MAIN FUNCTION STARTED ===")
+    # Extend startup_trace.log through the full webview lifecycle.
+    # _trace is module-level (defined in the frozen-fixes block); it
+    # writes to startup_trace.log with immediate flush and survives
+    # crashes that kill the buffered gui_app.log.  Previously _trace
+    # stopped at "torch pre-guard done" — the most dangerous startup
+    # phase (Flask → webview → React mount) had no crash-proof log.
+    _trace("main() entered")
     logger.info(f"Thread ID: {threading.current_thread().ident}")
     logger.info(f"Process ID: {os.getpid()}")
     logger.info(f"Sidebar mode: {args.sidebar}")
@@ -5351,14 +5358,17 @@ def main():
     # up to ResourceEnforcer then vanished.  Deferring the memory cap to
     # after webview.start() means the spike is allowed during startup but
     # capped during steady-state runtime.
+    _trace("resource_governor starting")
     _gov = None
     try:
         from core.resource_governor import get_governor
         _gov = get_governor()
         _gov.start(defer_memory_limit=True)
         logger.info("[STARTUP] ResourceGovernor started (priority + CPU active, memory cap deferred)")
+        _trace("resource_governor started (memory deferred)")
     except Exception as _gov_err:
         logger.debug("[STARTUP] ResourceGovernor not available: %s", _gov_err)
+        _trace(f"resource_governor failed: {_gov_err}")
 
     # ── Phase logging helper — flush after each step so the log file
     # on disk shows exactly where the process died, even on SIGKILL /
@@ -5372,6 +5382,7 @@ def main():
                 _h.flush()
 
     _phase('flask_start')
+    _trace("flask_start")
     logger.info("=== STARTING FLASK SERVER ===")
     _splash_update('Starting server...')
     # Start Flask server in a separate thread with error handling
@@ -5478,6 +5489,7 @@ def main():
     logger.info(f"Initial URL: {initial_url}")
 
     _phase('webview_init')
+    _trace("webview_init — about to load pywebview")
     logger.info("Starting WebView window")
     try:
         initialize_indicator(args.port)
@@ -5516,6 +5528,7 @@ def main():
         webview = get_webview()
         _wv_elapsed = time.time() - _wv_start
         logger.info(f"[STARTUP] pywebview loaded successfully in {_wv_elapsed:.1f}s")
+        _trace(f"pywebview loaded in {_wv_elapsed:.1f}s")
 
         # Create window with conditional hidden status and frameless design
         _window = webview.create_window(
@@ -5534,6 +5547,7 @@ def main():
         )
 
         logger.info(f"Window created: {window_width}x{window_height}, hidden={start_hidden}")
+        _trace(f"window created {window_width}x{window_height} hidden={start_hidden}")
 
         # ── Activate deferred memory cap ──
         # Safe now: the heavy import spike is over, webview is created,
@@ -6198,10 +6212,13 @@ window.addEventListener('unhandledrejection', function(e) {
 
             try:
                 logger.info(f"Starting webview with EdgeChromium backend, storage: {_webview_data_dir}")
+                _trace("webview.start(edgechromium) — blocking until window closes")
                 webview.start(gui='edgechromium', storage_path=_webview_data_dir, private_mode=False)
                 logger.info("Successfully started with EdgeChromium backend")
+                _trace("webview.start returned (window closed)")
             except Exception as e:
                 logger.error(f"EdgeChromium backend failed: {str(e)}")
+                _trace(f"webview.start FAILED: {e}")
                 # Show error message to user
                 try:
                     import ctypes
@@ -6825,6 +6842,8 @@ if __name__ == "__main__":
         logger.error(f"Error message: {str(e)}")
         logger.error("Full traceback:")
         logger.error(traceback.format_exc())
+        _trace(f"CRASHED: {type(e).__name__}: {e}")
+        _trace(traceback.format_exc())
 
         # Create a visible error log if something went wrong at startup
         try:
