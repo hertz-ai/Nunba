@@ -1108,34 +1108,52 @@ class TTSEngine:
 
                 ok, result = install_backend_full(backend, progress_cb=progress)
                 if ok:
-                    # Verify the backend ACTUALLY runs — pip success !=
-                    # runtime success.  dac/sentencepiece/CUDA torch may
-                    # still be missing even after pip reports "installed".
-                    required_pkg = self._get_required_package(backend)
-                    if required_pkg:
-                        try:
-                            from tts._torch_probe import check_backend_runnable
-                            from tts import _torch_probe as _tp
-                            _tp._backend_cache.pop(backend, None)  # clear stale cache
-                            TTSEngine._import_check_cache.pop(required_pkg, None)
-                            actually_works = check_backend_runnable(backend, required_pkg)
-                        except Exception:
-                            actually_works = False
-                    else:
-                        actually_works = True
+                    # Verified-signal gate: "Ready" only fires after a
+                    # REAL synthesis through the same code path the
+                    # user's first chat message hits produces audio of
+                    # non-trivial size.  Pip success, import success,
+                    # and worker spawn are all proxy signals — they've
+                    # lied repeatedly (dac/sentencepiece/CUDA torch
+                    # missing, model weights absent, runtime stub torch,
+                    # DLL path unresolved).  Audio bytes on disk is the
+                    # only signal that cannot lie.
+                    # See tts/verified_ready.py for the full contract.
+                    try:
+                        from tts.verified_ready import verify_backend_synth
+                        if progress:
+                            progress(f"{backend} installed — testing synthesis...")
+                        verdict = verify_backend_synth(
+                            self, backend, lang=self._language,
+                            timeout_s=180,
+                        )
+                    except Exception as _verify_err:
+                        logger.error(f"[auto-install] '{backend}' verifier crashed: "
+                                     f"{_verify_err}")
+                        # Verifier itself failing IS a failure — don't
+                        # fall back to a shallow check. That's how the
+                        # original lie got in.
+                        from tts.verified_ready import Result as _VR
+                        verdict = _VR(ok=False, n_bytes=0,
+                                      err=f"verifier crash: {_verify_err}",
+                                      elapsed_s=0.0)
 
-                    if actually_works:
-                        logger.info(f"[auto-install] '{backend}' installed AND verified runnable")
+                    if verdict.ok:
+                        logger.info(f"[auto-install] '{backend}' verified: "
+                                    f"{verdict.n_bytes} bytes audio in "
+                                    f"{verdict.elapsed_s:.1f}s")
                         if progress:
-                            progress(f"{backend} ready!")
+                            progress(f"{backend} ready — "
+                                     f"{verdict.n_bytes // 1024} KB test audio produced")
                     else:
-                        logger.warning(f"[auto-install] '{backend}' pip succeeded but runtime "
-                                       f"probe FAILED — backend not usable. Missing deps?")
+                        logger.warning(f"[auto-install] '{backend}' pip succeeded but "
+                                       f"SYNTHESIS FAILED: {verdict.err} "
+                                       f"(elapsed={verdict.elapsed_s:.1f}s)")
                         if progress:
-                            progress(f"{backend} installed but not yet usable — missing runtime deps")
+                            progress(f"{backend} installed but synthesis failed: "
+                                     f"{verdict.err[:80]}")
                         with TTSEngine._auto_install_lock:
                             TTSEngine._auto_install_failed.add(backend)
-                        ok = False  # so the completion event reflects failure
+                        ok = False  # completion event reflects the truth
                 else:
                     logger.warning(f"[auto-install] '{backend}' install failed: {result}")
                     if progress:

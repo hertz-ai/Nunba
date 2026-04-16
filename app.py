@@ -192,8 +192,13 @@ if getattr(sys, 'frozen', False):
     except ImportError:
         _frozen_log_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs')
     os.makedirs(_frozen_log_dir, exist_ok=True)
+    # APPEND mode: a `--validate` or second launch must NOT erase the
+    # trace of the primary `--background` autostart (see memory of
+    # 2026-04-16 restart debug — both traces opened in 'w' truncated each
+    # other, so the post-restart evidence was unrecoverable 10 min later).
+    # A run-separator banner distinguishes consecutive runs.
     try:
-        _frozen_log = open(os.path.join(_frozen_log_dir, 'frozen_debug.log'), 'w',
+        _frozen_log = open(os.path.join(_frozen_log_dir, 'frozen_debug.log'), 'a',
                            encoding='utf-8', buffering=1)  # line-buffered: every \n hits disk
         _atexit.register(_frozen_log.close)
         sys.stdout = _frozen_log
@@ -207,7 +212,7 @@ if getattr(sys, 'frozen', False):
     import time as _time
     _startup_t0 = _time.time()
     try:
-        _trace_log = open(os.path.join(_frozen_log_dir, 'startup_trace.log'), 'w',
+        _trace_log = open(os.path.join(_frozen_log_dir, 'startup_trace.log'), 'a',
                           encoding='utf-8', buffering=1)
     except OSError:
         import io as _tio
@@ -221,6 +226,13 @@ if getattr(sys, 'frozen', False):
         except Exception:
             pass
 
+    try:
+        import datetime as _dt
+        _trace_log.write(f"\n\n======== {_dt.datetime.now().isoformat(timespec='seconds')} "
+                         f"PID={os.getpid()} ========\n")
+        _trace_log.flush()
+    except Exception:
+        pass
     _trace("=== Nunba startup trace ===")
     _trace(f"argv: {sys.argv}")
     _trace(f"frozen: {getattr(sys, 'frozen', False)}")
