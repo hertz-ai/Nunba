@@ -168,7 +168,10 @@ if _user_sp not in sys.path:
 # Check if port 5000 is already bound by another Nunba — if so, bring it
 # to focus (via /api/focus) and exit immediately.
 def _check_single_instance():
-    if '--validate' in sys.argv or '--install-ai' in sys.argv or '--setup-ai' in sys.argv:
+    if ('--validate' in sys.argv
+            or '--install-ai' in sys.argv
+            or '--setup-ai' in sys.argv
+            or '--acceptance-test' in sys.argv):
         return  # utility modes always run
     _port = 5000
     for a in sys.argv:
@@ -438,7 +441,7 @@ def _safe_tk_update_early(root, budget_ms=50):
 _early_splash = None
 _eroot = None
 
-if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--install-ai' not in sys.argv and '--background' not in sys.argv and '--help' not in sys.argv and '-h' not in sys.argv:
+if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--acceptance-test' not in sys.argv and '--install-ai' not in sys.argv and '--background' not in sys.argv and '--help' not in sys.argv and '-h' not in sys.argv:
     # DPI awareness before any Tk window
     try:
         import ctypes as _ct_dpi
@@ -819,7 +822,7 @@ def _load_deferred_config():
         pass
 
     # ── Encrypted AI key vault: load cloud API keys into env vars ──
-    if '--validate' not in sys.argv:
+    if '--validate' not in sys.argv and '--acceptance-test' not in sys.argv:
         try:
             from desktop.ai_key_vault import AIKeyVault as _AIKeyVault
             _vault = _AIKeyVault.get_instance()
@@ -1074,6 +1077,7 @@ parser.add_argument("--y", help="window Y position", type=int)
 parser.add_argument("--install-ai", help="download AI components (llama binary + model) and exit", action="store_true", dest="install_ai")
 parser.add_argument("--setup-ai", help="interactive AI setup - scan for existing endpoints and let user choose", action="store_true", dest="setup_ai")
 parser.add_argument("--validate", help="test-import all bundled modules and exit (post-build smoke test)", action="store_true")
+parser.add_argument("--acceptance-test", help="run the acceptance harness against the frozen bundle and exit (gates installer packaging)", action="store_true", dest="acceptance_test")
 
 # Parse args with error handling - default to visible mode
 try:
@@ -1095,6 +1099,7 @@ except Exception as e:
         install_ai = False
         setup_ai = False
         validate = False
+        acceptance_test = False
         sidebar = False
         sidebar_side = 'right'
         sidebar_width = 480
@@ -1364,6 +1369,211 @@ if getattr(args, 'validate', False):
         _vprint("\n  All modules bundled correctly. Build is good.\n")
         _val_log.close()
         os._exit(0)  # os._exit skips Py_Finalize — prevents 0xC0000005 in Win32GUI
+
+# ── --acceptance-test: Stage-B gate for the installer packager ──
+# Runs AFTER cx_Freeze produced build/Nunba/ but BEFORE Inno Setup
+# wraps it. Every Stage-A + Stage-B symptom fix is asserted against
+# the frozen bundle. Non-zero exit blocks installer packaging.
+#
+# Contract (each assertion is a one-line verified-signal check):
+#   Symptom #1 — app.py defines _preload_pycparser_from_lib_src AND
+#                it runs before _isolate_frozen_imports (static).
+#   Symptom #3 — integrations.service_tools.vram_manager.allocate
+#                returns False on oversize claim (dynamic import).
+#   Symptom #4 — core.verified_llm.is_llm_inference_verified importable.
+#   Symptom #5 — hart_intelligence_entry imports
+#                core.user_lang.get_preferred_lang (static).
+#   Symptom #7 — tts.package_installer.install_gpu_torch contains
+#                D: drive fallback code path (static).
+#   Symptom #8 — app.py opens validate.log in 'a' mode (static).
+#   Symptom #10 — integrations.service_tools.whisper_tool exposes
+#                 get_whisper_last_error AND imports CircuitBreaker.
+#
+# Each check logs [OK] / [FAIL] and contributes to the exit code.
+# Written to ~/Documents/Nunba/logs/acceptance.log + stdout so the
+# build script can parse.
+if getattr(args, 'acceptance_test', False):
+    _ac_fails = []
+    _ac_ok = []
+
+    try:
+        from core.platform_paths import get_log_dir as _get_ac_log_dir
+        _ac_log_dir = _get_ac_log_dir()
+    except ImportError:
+        _ac_log_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs')
+    try:
+        os.makedirs(_ac_log_dir, exist_ok=True)
+    except Exception:
+        pass
+    _ac_log_path = os.path.join(_ac_log_dir, 'acceptance.log')
+    try:
+        _ac_log = open(_ac_log_path, 'a', encoding='utf-8')
+    except OSError:
+        import io as _ac_io
+        _ac_log = _ac_io.StringIO()
+
+    try:
+        import datetime as _ac_dt
+        _ac_log.write(
+            f"\n===== acceptance session {_ac_dt.datetime.now().isoformat()} =====\n"
+        )
+        _ac_log.flush()
+    except Exception:
+        pass
+
+    def _acp(msg):
+        print(msg)
+        try:
+            _ac_log.write(msg + '\n')
+            _ac_log.flush()
+        except Exception:
+            pass
+
+    def _check(name, ok, detail=""):
+        if ok:
+            _ac_ok.append(name)
+            _acp(f"  [OK]   {name}{'  — ' + detail if detail else ''}")
+        else:
+            _ac_fails.append((name, detail))
+            _acp(f"  [FAIL] {name}  — {detail}")
+
+    _acp(f"\n{'=' * 60}")
+    _acp("NUNBA ACCEPTANCE TEST — Stage-A + Stage-B symptom coverage")
+    _acp(f"{'=' * 60}")
+
+    # Symptom #1 — pycparser preload helper exists + runs before isolate.
+    try:
+        _ac_app_path = os.path.abspath(__file__) if '__file__' in dir() else 'app.py'
+        _ac_src = ''
+        for _candidate in (_ac_app_path,
+                           os.path.join(os.path.dirname(
+                               os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__)),
+                               'app.py')):
+            if os.path.isfile(_candidate):
+                with open(_candidate, 'r', encoding='utf-8') as _af:
+                    _ac_src = _af.read()
+                break
+        _pre_idx = _ac_src.find('_preload_pycparser_from_lib_src()')
+        _iso_idx = _ac_src.find('_isolate_frozen_imports()')
+        _check('symptom_1_pycparser_preload_declared',
+               'def _preload_pycparser_from_lib_src(' in _ac_src,
+               'app.py must define _preload_pycparser_from_lib_src')
+        _check('symptom_1_preload_runs_before_isolate',
+               _pre_idx > 0 and _iso_idx > _pre_idx,
+               f'preload_idx={_pre_idx} isolate_idx={_iso_idx}')
+    except Exception as _e:
+        _check('symptom_1_pycparser_preload_declared', False, f'exception: {_e}')
+
+    # Symptom #3 — VRAMManager.allocate refuses oversize claim.
+    try:
+        from integrations.service_tools.vram_manager import VRAMManager, VRAM_BUDGETS
+        _vm = VRAMManager()
+        VRAM_BUDGETS['_accept_test_10gb'] = (10.0, 9.0)
+        try:
+            _original_detect = _vm.detect_gpu
+            _vm.detect_gpu = lambda: {'name': 'mock', 'total_gb': 8.0,
+                                      'free_gb': 8.0, 'cuda_available': True}
+            _ok = (not _vm.allocate('_accept_test_10gb'))
+            _check('symptom_3_vram_refuses_oversize', _ok,
+                   'allocate must return False on 10GB claim vs 8GB GPU')
+        finally:
+            VRAM_BUDGETS.pop('_accept_test_10gb', None)
+            try:
+                _vm.detect_gpu = _original_detect
+            except Exception:
+                pass
+    except Exception as _e:
+        _check('symptom_3_vram_refuses_oversize', False, f'exception: {_e}')
+
+    # Symptom #4 — core.verified_llm importable with expected API.
+    try:
+        from core.verified_llm import (
+            is_llm_inference_verified, verify_llm,
+        )
+        _check('symptom_4_verified_llm_importable', True,
+               'is_llm_inference_verified + verify_llm present')
+    except Exception as _e:
+        _check('symptom_4_verified_llm_importable', False, f'import failed: {_e}')
+
+    # Symptom #5 — hart_intelligence_entry has the preferred_lang fallback.
+    try:
+        import importlib.util as _acil
+        _spec = _acil.find_spec('hart_intelligence_entry')
+        _has_fallback = False
+        if _spec and _spec.origin and os.path.isfile(_spec.origin):
+            with open(_spec.origin, 'r', encoding='utf-8') as _hf:
+                _hsrc = _hf.read()
+            _has_fallback = (
+                'from core.user_lang import get_preferred_lang' in _hsrc
+                and "data.get('preferred_lang', 'en')" not in _hsrc
+            )
+        _check('symptom_5_preferred_lang_fallback_active',
+               _has_fallback,
+               'hart_intelligence_entry.chat must call get_preferred_lang as fallback')
+    except Exception as _e:
+        _check('symptom_5_preferred_lang_fallback_active', False, f'exception: {_e}')
+
+    # Symptom #7 — tts.package_installer contains D: fallback.
+    try:
+        import importlib.util as _acil
+        _ts = _acil.find_spec('tts.package_installer')
+        _has_d_fallback = False
+        if _ts and _ts.origin and os.path.isfile(_ts.origin):
+            with open(_ts.origin, 'r', encoding='utf-8') as _tf:
+                _tsrc = _tf.read()
+            _has_d_fallback = (
+                'No space left' in _tsrc
+                and "'D:\\\\'" in _tsrc.replace('"', "'")
+            )
+        _check('symptom_7_cuda_d_drive_fallback_present',
+               _has_d_fallback,
+               'install_gpu_torch must have D: ENOSPC fallback path')
+    except Exception as _e:
+        _check('symptom_7_cuda_d_drive_fallback_present', False, f'exception: {_e}')
+
+    # Symptom #8 — validate.log opens in 'a' mode (not 'w').
+    try:
+        _ok8 = "'validate.log'" in _ac_src and "_val_log_path, 'a'" in _ac_src
+        _check('symptom_8_validate_log_append_mode', _ok8,
+               "validate.log must open in 'a' mode, not 'w'")
+    except Exception as _e:
+        _check('symptom_8_validate_log_append_mode', False, f'exception: {_e}')
+
+    # Symptom #10 — whisper_tool has circuit-breaker API.
+    try:
+        from integrations.service_tools.whisper_tool import (
+            get_whisper_last_error,
+            _whisper_load_breaker,
+            _whisper_load_backoff,
+        )
+        _check('symptom_10_whisper_backoff_api',
+               get_whisper_last_error() is None
+               and _whisper_load_breaker is not None
+               and _whisper_load_backoff is not None,
+               'get_whisper_last_error + breaker + backoff present')
+    except Exception as _e:
+        _check('symptom_10_whisper_backoff_api', False, f'exception: {_e}')
+
+    _acp(f"\n{'=' * 60}")
+    _acp(f"  Passed: {len(_ac_ok)}, Failed: {len(_ac_fails)}")
+    if _ac_fails:
+        _acp("")
+        _acp("  *** ACCEPTANCE FAILURES — installer packaging must be blocked ***")
+        for _n, _d in _ac_fails:
+            _acp(f"    - {_n}: {_d}")
+        _acp("")
+        try:
+            _ac_log.close()
+        except Exception:
+            pass
+        os._exit(1)
+    else:
+        _acp("\n  All acceptance checks pass. Bundle is ready for installer packaging.\n")
+        try:
+            _ac_log.close()
+        except Exception:
+            pass
+        os._exit(0)
 
 # Configure logging — use explicit FileHandler instead of basicConfig alone.
 # basicConfig is a no-op if root already has handlers (e.g. when imported from

@@ -1124,6 +1124,32 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         if _extracted:
             print_info(f"Extracted {_extracted} missing stdlib .pyc from python312.zip to lib/")
 
+    # ── Acceptance gate — Stage-B from 2026-04-16 orchestrator run ──
+    # Runs the built Nunba.exe with --acceptance-test against the
+    # freshly frozen bundle. If any Stage-A or Stage-B fix is missing
+    # from the packaged artifacts, the installer step is blocked so
+    # operators never ship a known-broken bundle.
+    _built_exe = os.path.join('build', 'Nunba', 'Nunba.exe')
+    if os.path.isfile(_built_exe):
+        print_header("Acceptance test — verifying built bundle")
+        _ac_ok = run_command(
+            [_built_exe, '--acceptance-test'],
+            "Running Nunba --acceptance-test...",
+            check=False,
+        )
+        if not _ac_ok:
+            print_error(
+                "Acceptance test FAILED — blocking installer packaging. "
+                "See ~/Documents/Nunba/logs/acceptance.log for details."
+            )
+            return False
+        print_info("Acceptance test PASSED")
+    else:
+        print_warn(
+            f"Nunba.exe not found at {_built_exe} — acceptance test skipped. "
+            "cx_Freeze build likely failed earlier."
+        )
+
     if app_only:
         return True
 
