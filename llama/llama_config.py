@@ -895,12 +895,32 @@ class LlamaConfig:
     def is_llm_available(self) -> bool:
         """Check if any LLM endpoint is ready for completions.
 
-        Uses /v1/models (not just /health) to verify the model is actually
-        loaded — a healthy server with no model returns 200 on /health but
-        can't serve completions. Discovery: 2026-04-12 boot false-positive.
+        Delegates to `core.verified_llm.is_llm_inference_verified` which
+        issues a real /v1/chat/completions probe and asserts non-empty
+        content. This replaces the older /v1/models shallow check —
+        /v1/models can report a loaded catalog entry even when inference
+        is broken.
+
+        Symptom class: shallow-signal health check (see HARTOS Stage-A
+        Symptom #4 from 2026-04-16 master-orchestrator run).
         """
         if self.is_cloud_configured():
             return True
+        try:
+            from core.verified_llm import is_llm_inference_verified
+        except ImportError:
+            # Fallback to the legacy /v1/models probe if HARTOS core
+            # isn't importable (shouldn't happen in bundled mode but
+            # defense-in-depth for dev-tree edge cases).
+            return self._is_llm_available_legacy()
+        port = self.config.get('server_port', 8080)
+        return is_llm_inference_verified(
+            url=f'http://127.0.0.1:{port}',
+            timeout=5.0,
+        )
+
+    def _is_llm_available_legacy(self) -> bool:
+        """Legacy shallow-signal probe (kept only for HARTOS-missing edge case)."""
         try:
             import json as _json
             import urllib.request
