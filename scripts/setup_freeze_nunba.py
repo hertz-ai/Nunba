@@ -375,6 +375,26 @@ build_exe_options = {
         # wandb is pulled transitively by autogen → flaml; never used
         # at runtime and adds ~60MB of .exe + proto files to the build.
         "wandb", "wandb_core",
+        # Heavy transitive deps not used at runtime (~229MB total):
+        # pandas: 37M (only chromadb.utils.results optional formatting)
+        # sklearn: 30M (only HevolveAI latent_transfer, excluded above)
+        # sympy: 29M (transitive, unused)
+        # onnxruntime: 36M (transitive via langchain)
+        # faiss: 24M + faiss_cpu: 50M libs (transitive, chromadb optional)
+        # kubernetes: 18M (chromadb distributed mode, not enabled)
+        # grpc: 12M (chromadb/OpenTelemetry optional)
+        # lief: 12M (binary analysis, unknown transitive)
+        # bitsandbytes: 166M (HevolveAI optional GPU accelerator)
+        "pandas", "pandas.tests",
+        "sklearn", "sklearn.tests",
+        "sympy", "sympy.tests",
+        "onnxruntime",
+        "faiss", "faiss_cpu",
+        "kubernetes",
+        "grpc", "grpcio",
+        "lief",
+        "bitsandbytes",
+        "posthog",  # analytics (chromadb optional)
         "IPython", "jupyter", "notebook",
         "pandas.tests", "PIL.tests",
         "setuptools", "distutils",
