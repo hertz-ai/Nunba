@@ -5338,18 +5338,40 @@ def main():
             # Don't exit - continue with normal startup
             logger.info("Continuing with normal startup despite protocol error")
 
-    # ── Resource Governor — hard OS-level caps BEFORE any heavy work ──
-    # Sets BELOW_NORMAL priority, CPU rate limit via Job Object, RAM cap.
-    # Must run before Flask/LLM so Nunba NEVER slows down the host OS.
+    # ── Resource Governor — priority + CPU caps NOW, memory cap DEFERRED ──
+    # Sets BELOW_NORMAL priority and CPU rate limit immediately so Nunba
+    # doesn't hog the CPU during the heavy boot phase.  The RAM cap is
+    # DEFERRED to after webview creation because the import chain for
+    # main.py (autogen → flaml → llmlingua → torch stub → transformers +
+    # 96 expert agents + Flask blueprints) briefly spikes memory past the
+    # 9.8GB Job Object limit at boot time.  Windows terminates the process
+    # instantly on Job Object violation — no exception, no log, no
+    # webview.  This was the cause of the "autostart after restart fails
+    # to mount React in pywebview" bug (2026-04-16): the process logged
+    # up to ResourceEnforcer then vanished.  Deferring the memory cap to
+    # after webview.start() means the spike is allowed during startup but
+    # capped during steady-state runtime.
+    _gov = None
     try:
         from core.resource_governor import get_governor
         _gov = get_governor()
-        _gov.start()
-        logger.info("[STARTUP] ResourceGovernor started (enforcer active)")
+        _gov.start(defer_memory_limit=True)
+        logger.info("[STARTUP] ResourceGovernor started (priority + CPU active, memory cap deferred)")
     except Exception as _gov_err:
         logger.debug("[STARTUP] ResourceGovernor not available: %s", _gov_err)
 
-    _startup_phase = 'flask_start'
+    # ── Phase logging helper — flush after each step so the log file
+    # on disk shows exactly where the process died, even on SIGKILL /
+    # Job Object termination where no exception handler runs.
+    def _phase(name):
+        nonlocal _startup_phase
+        _startup_phase = name
+        logger.info(f"[STARTUP-PHASE] {name}")
+        for _h in logger.handlers:
+            if hasattr(_h, 'flush'):
+                _h.flush()
+
+    _phase('flask_start')
     logger.info("=== STARTING FLASK SERVER ===")
     _splash_update('Starting server...')
     # Start Flask server in a separate thread with error handling
@@ -5365,6 +5387,7 @@ def main():
     # Wait for Flask to be ready before proceeding to webview.
     # Uses raw socket connect (not urllib) to avoid Windows proxy/firewall
     # issues where urllib.request can't reach localhost in frozen builds.
+    _phase('flask_wait')
     _splash_update('Waiting for server...')
     _flask_ready = False
     _max_wait = 30 if args.background else 15
@@ -5390,7 +5413,7 @@ def main():
         logger.warning("Flask server did not respond within timeout — will retry after webview opens")
 
     # Start Hevolve Database service
-    _startup_phase = 'database'
+    _phase('database')
     _splash_update('Loading database...')
     logger.info("=== STARTING DATABASE SERVICE ===")
 
@@ -5414,6 +5437,7 @@ def main():
     # here are used for create_window() (initial guess) and will be corrected
     # in apply_window_positioning()'s on_loaded callback which re-queries
     # screen dimensions in pywebview's DPI context.
+    _phase('window_calc')
     perfect_calc = calculate_perfect_right_dock()
     window_width = perfect_calc['width']
     window_height = perfect_calc['height']
@@ -5453,7 +5477,7 @@ def main():
     initial_url = f"http://localhost:{args.port}/local"
     logger.info(f"Initial URL: {initial_url}")
 
-    _startup_phase = 'webview_init'
+    _phase('webview_init')
     logger.info("Starting WebView window")
     try:
         initialize_indicator(args.port)
@@ -5510,6 +5534,16 @@ def main():
         )
 
         logger.info(f"Window created: {window_width}x{window_height}, hidden={start_hidden}")
+
+        # ── Activate deferred memory cap ──
+        # Safe now: the heavy import spike is over, webview is created,
+        # steady-state RAM usage should be well under the cap.
+        if _gov is not None:
+            try:
+                _gov.apply_memory_limit()
+                logger.info("[STARTUP] ResourceGovernor memory cap now active")
+            except Exception as _mem_err:
+                logger.debug("[STARTUP] Memory cap failed: %s", _mem_err)
 
         # ── Nanba Companion: floating desktop pet ──────────────────────
         # Second pywebview window: frameless, transparent, always-on-top.

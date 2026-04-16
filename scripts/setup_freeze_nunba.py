@@ -372,6 +372,9 @@ build_exe_options = {
         # (torch, transformers) are bundled via python-embed, not cx_Freeze
         "embodied_ai", "hevolveai",
         "matplotlib", "scipy", "numpy.tests",
+        # wandb is pulled transitively by autogen → flaml; never used
+        # at runtime and adds ~60MB of .exe + proto files to the build.
+        "wandb", "wandb_core",
         "IPython", "jupyter", "notebook",
         "pandas.tests", "PIL.tests",
         "setuptools", "distutils",
