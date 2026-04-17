@@ -41,13 +41,28 @@ def verify_llm(endpoint: str = "http://127.0.0.1:8080",
     try:
         from core.verified_llm import verify_llm as _hartos_verify  # type: ignore
         r = _hartos_verify(endpoint=endpoint, prompt=prompt, timeout_s=timeout_s)
-        # Normalize to our Result shape if HARTOS's differs.
-        if hasattr(r, "content"):
+        # HARTOS returns either a dict (dict API) or a dataclass.
+        # Normalize to our Result shape in either case.  HARTOS uses
+        # `elapsed_ms` (int milliseconds); convert to seconds.
+        if isinstance(r, dict):
+            return Result(
+                ok=bool(r.get("ok", False)),
+                content=str(r.get("content_snippet") or r.get("content") or ""),
+                err=str(r.get("reason") or r.get("err") or ""),
+                elapsed_s=float(r.get("elapsed_ms", 0) or 0) / 1000.0,
+            )
+        # Dataclass-style HARTOS Result (defensive against future API).
+        if hasattr(r, "content") or hasattr(r, "ok"):
+            _ms = getattr(r, "elapsed_ms", None)
+            _s = getattr(r, "elapsed_s", None)
+            elapsed_s = (
+                float(_s) if _s is not None else float(_ms) / 1000.0 if _ms is not None else 0.0
+            )
             return Result(
                 ok=bool(getattr(r, "ok", False)),
-                content=getattr(r, "content", "") or "",
-                err=getattr(r, "err", "") or "",
-                elapsed_s=float(getattr(r, "elapsed_s", 0.0) or 0.0),
+                content=str(getattr(r, "content", "") or ""),
+                err=str(getattr(r, "reason", "") or getattr(r, "err", "") or ""),
+                elapsed_s=elapsed_s,
             )
     except Exception:
         pass
