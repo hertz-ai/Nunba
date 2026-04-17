@@ -29,3 +29,24 @@ Implemented:
   Batch-A (15): J01 J02 J18 J19 J20 J53 J54 J55 J56 J57 J61 J66 J67 J69 J99
   Batch-B (15): J60 J65 J71 J72 J73 J75 J78 J79 J80 J82 J83 J84 J85 J88 J89
   Batch-C (12): J03..J14 (as a single parametrised file), plus J17 J52 J92 J93 J94 J95 J96 J97 J98 J74
+
+## Phase-6 (J100-J199) SKIP additions
+
+| J-ID | Short name | Reason skipped |
+|---|---|---|
+| J103 | Guest→login conversation preserved | GAP — no `/api/memory/migrate` endpoint; only localStorage bridge today. PRODUCT_MAP §COMBINATIONS. |
+| J105 | LLM context window overflow → summarize | GAP — semantic summariser hook referenced but window-overflow branch uses truncation only. |
+| J106 | SSE reconnect w/ Last-Event-ID | GAP — main.py:2561 SSE stream has no per-event ID persistence; only "live from now". |
+| J114 | Tanglish mixed codepoints per-segment TTS | GAP — per-segment TTS splitter absent; whole string synthesised by first-char rule. |
+| J123 | Depth-3 hive query fusion | GAP — `fuse_responses` / `hive_mind_query` routine absent; only `backtrace_semantic` exists and that's memory-depth not query-fusion. |
+| J135 | Guest conversation persists across webview close+reopen | CI:no — IndexedDB + WebView2 UserData, desktop-only. |
+| J137 | Uninstall+reinstall scroll anchor | CI:no — installer + webview UserData, desktop-only. |
+| J153 | PyInstaller freeze missing module | CI:no — freeze-only; cx_Freeze packages[] audited by build script, not by pytest. |
+| J165 | Image proxy DNS rebind (TOCTOU) | GAP — main.py:2238 resolves ONCE for validation then re-resolves for fetch; no pinned-IP connector. Test written as RED (Phase-6 architect-flagged LIKELY-BREAK row) — kept live in suite but expected to flag until remediation lands. |
+| J168 | Admin PDF upload with embedded JS | GAP — no explicit PDF-JS stripper; relies on viewer non-execution. Partial/environment-dependent; skipped. |
+| J179 | Single-instance guard | CI:no — desktop-only, second-launch ping to /api/focus and window-raise via app.py tray. |
+| J180 | Tray quit while chat mid-stream | CI:no — desktop-only tray; host-level port scan for zombies. |
+| J189 | SQLite flat → MySQL regional migration | GAP — no live migration tool; operators export+import manually today. |
+| J194 | Agentic plan spans tier promote | CI:no — tier promote uses `os.execv`; would abort pytest runner. |
+
+Every other J100-J199 row is implemented under `tests/journey/test_J1xx_*.py`.

@@ -842,4 +842,550 @@ audio bytes ≥ 2048. CI: partial.
    implementation is intertwined with `challenge_model()`.
 
 ────────────────────────────────────────────────────────────────────────────
+## USER JOURNEYS — COMBINATIONS (J100-J199)
+
+Each row follows the same citation discipline as J01-J99: every
+combination names at least one `file:line` anchor so phase-6 test
+generation can drive the real path. GAP rows note missing surface.
+
+### Multi-turn conversation state (J100-J112)
+
+- **J100 · English→Tamil language switch mid-session** · Pre: user
+  sends `en` turn hits `/chat` (chatbot_routes.py), draft dispatch
+  returns; turn N+1 body has `language=ta`. Steps: turn1 → assert
+  draft used (speculative_dispatcher.py:179); turn2 → assert
+  draft-skip fires because `ta` is in NON_LATIN_SCRIPT_LANGS
+  (speculative_dispatcher.py:236-238) and 4B main handles it;
+  `hart_language.json` rewritten via `set_preferred_lang`
+  (user_lang.py:170). Verifiable: response2 contains Tamil Unicode
+  codepoints; no 0.8B log for turn2. Owner: HARTOS speculative_
+  dispatcher + core.user_lang. CI: yes. Depends on: J01, J03.
+- **J101 · Agent A → Agent B switch, no message bleed** · Pre: two
+  agents registered in `agent_data/`. Steps: POST /chat
+  {active_agent_id:A} turn → POST /chat {active_agent_id:B} turn
+  (landing-page uses localStorage `active_agent_id`, main.py chat
+  propagates). Verify: Agent B's prompt used for turn2 (no residual
+  system-prompt from A); per-agent memory isolation via
+  MemoryGraph author filter (memory_graph.py). Owner: chatbot_routes
+  + hart_intelligence_entry.py:4741 `get_ans`. CI: yes. Depends on:
+  J19, J01.
+- **J102 · Agentic multi-step plan with tool calls** · Pre: agent
+  with autogen tier3. Steps: user→goal → agent_daemon._tick picks
+  up (agent_daemon.py:81) → parallel_dispatch fans 2+ tools
+  (agent_daemon.py:119-140) → each emits `goal.tool.result` → final
+  `goal.completed`. Verify: ledger shows N tool rows; WAMP
+  `goal.progress` received. Owner: agent_engine/agent_daemon +
+  parallel_dispatch. CI: partial. Depends on: J19, J20.
+- **J103 · Guest→login conversation preserved** · Pre: guest sends
+  N messages under user_id='guest' (hart_intelligence_entry.py:2352
+  default). Steps: /api/social/auth/login → on success, frontend
+  merges `guest` MemoryGraph rows into authenticated user via
+  POST /api/memory/migrate. Verify: recent memory list contains
+  prior guest turns under new user_id. [GAP — explicit
+  `/api/memory/migrate` endpoint absent; today frontend keeps a
+  localStorage bridge only, server-side migration unimplemented].
+  Depends on: J71.
+- **J104 · Tool call chain: remember → recall → inference uses it** ·
+  Steps: MCP `remember {content:"My dog is Max"}` → later
+  `/chat "what is my dog's name?"` → hart_intelligence_entry includes
+  recall hit via `memory_context`. Verify: response contains "Max";
+  MemoryGraph rank>0 on recall. Owner: integrations/channels/memory
+  + agent_memory_tools. CI: yes. Depends on: J71, J72.
+- **J105 · LLM context window overflow → summarize → continue** ·
+  Pre: conversation > 32k tokens. Steps: hart_intelligence_entry
+  detects length near `LLAMA_CONTEXT` (llama_config.py), invokes
+  summarizer; next turn accepts summary prefix. Verify: log shows
+  "context compacted"; reply is coherent. [GAP — summariser hook
+  referenced by docs but the window-overflow branch reuses
+  truncation, no semantic compact; mark partial].
+- **J106 · Interrupt mid-stream → reconnect → partial response
+  recovered** · Pre: SSE /api/social/events/stream open. Steps:
+  client closes during token stream → reconnects with
+  `Last-Event-ID`. Verify: resumed stream carries from last id.
+  [GAP — SSE stream (main.py:2561) does NOT persist per-event IDs
+  across reconnect; only "live from now" semantics]. Owner: main.py
+  SSE.
+- **J107 · Expert delegation while draft already responded** · Pre:
+  draft says `delegate:"local"` (speculative_dispatcher.py:179-260).
+  Steps: draft reply arrives SSE event 1; expert reply arrives as
+  event 2 via background expert task. Verify: 2 messages in UI, both
+  tagged with distinct model_id (world_model_bridge.record_interaction).
+  Owner: speculative_dispatcher + world_model_bridge. CI: yes.
+  Depends on: J01.
+- **J108 · Casual_conv switches to full-tool agentic in same session
+  ** · Pre: default-agent chat with `casual_conv=True`
+  (hart_intelligence_entry.py:3245-3325). Steps: turn 1 "hi" →
+  draft path; turn 2 "create a Python script that..." → draft
+  `delegate='local'` → expert goes full-LangChain (casual_conv
+  flips to False via goal detection). Verify: turn2 response has
+  tool-call trace; turn1 had none. Owner: hart_intelligence_entry.
+  CI: partial. Depends on: J101.
+- **J109 · Visual context + chat combo** · Steps: open
+  `/webcam_ws` (port 5459) → 3-frame deque populated → /chat "what
+  do you see?" → parse_visual_context reads Redis frame, POSTs to
+  MiniCPM → caption injected into prompt. Verify: reply references
+  a visible object; WS has >0 frames seen. Owner: video.py +
+  parse_visual_context tool. CI: partial. Depends on: J77.
+- **J110 · Multi-turn with draft model evict/reload** · Pre: draft
+  evicted by ResourceGovernor OOM policy (resource_governor.py:469).
+  Steps: turn 1 draft → OOM → evict → turn 2 should reload draft
+  before draft-first dispatch. Verify: log
+  `model_lifecycle.reload_draft`; latency spike on turn2 (cold).
+  Owner: resource_governor + model_lifecycle. CI: partial.
+  Depends on: J01.
+- **J111 · Mid-session agent prompt edit** · Steps: edit agent's
+  `agent_prompt` via `/custom_gpt` PUT (chatbot_routes.py) → next
+  turn. Verify: turn2 system prompt contains new text; prior
+  history survives (memory not wiped). Owner: chatbot_routes +
+  agent_data JSON. CI: yes. Depends on: J19.
+- **J112 · Two tabs, one user, interleaved chats** · Pre: same user
+  has Nunba webview + admin tab. Steps: tab1 posts /chat while tab2
+  posts /chat within 500ms. Verify: both receive distinct
+  `prompt_id`s (speculative_dispatcher.py `prompt_id`); no cross-
+  tab SSE leak (SSE filters on user topic). Owner: main.py SSE +
+  WAMP realtime.py. CI: partial.
+
+### Cross-language + TTS matrix combos (J113-J122)
+
+- **J113 · Tamil chat then request "translate to English"** · Steps:
+  /chat "vanakkam" with lang=ta → /chat "translate to English".
+  Verify: turn2 reply Latin only; TTS on reply uses piper-en
+  (tts_engine.py:1724). Owner: tts + hart_intelligence_entry. CI:
+  yes. Depends on: J03.
+- **J114 · Tanglish mixed codepoints in one reply** · Steps: /chat
+  with lang=ta-mix body. Verify: response contains both Latin a-z
+  AND Tamil \\u0b80-\\u0bff. TTS should route per-segment (indic
+  for Tamil, piper for English). Owner: tts_engine + splitter.
+  [GAP — per-segment TTS splitter not yet present; whole string
+  synthesised by single engine picked by first-char rule].
+- **J115 · TTS engine mid-flight swap on failure** · Pre: engine
+  ladder = [indic_parler, piper]. Steps: first synth raises in
+  indic_parler (mocked) → tts_engine.py:1042 _try_auto_install or
+  ladder fallback uses piper. Verify: audio ≥ 2048 bytes; log
+  shows engine=piper fallback. Owner: tts_engine. CI: yes with
+  mock. Depends on: J02, J67.
+- **J116 · Language auto-detect overrides stored preference** · Pre:
+  hart_language.json = 'en'. Steps: user types "வணக்கம்" → user_lang
+  request_override path (user_lang.py:110 get_preferred_lang
+  accepts request_override). Verify: draft-skip fires despite stored
+  'en'; reply Tamil. Owner: core.user_lang. CI: yes. Depends on: J03.
+- **J117 · Per-agent language override vs global** · Pre: agentA
+  metadata `preferred_lang=ta`; global='en'. Steps: /chat
+  active_agent_id=A. Verify: 4B main used (draft-skip); reply Tamil.
+  Owner: chatbot_routes + speculative_dispatcher. CI: yes. Depends
+  on: J101, J116.
+- **J118 · TTS while chat streaming** · Steps: streaming reply
+  tokens → on each sentence-boundary, TTS submit-async (api in
+  api_tts.py) → audio chunks fed to webview. Verify: first audio
+  within 1s of first token; no race between synth calls. Owner:
+  tts engine + SSE. CI: partial. Depends on: J02, J99.
+- **J119 · Non-English STT → English reply + English TTS** · Steps:
+  whisper transcribes Hindi audio → /chat with text+lang=hi →
+  reply forced lang='en'. Verify: STT text has Devanagari; reply
+  Latin; TTS piper-en. Owner: verified_stt.py + tts_engine.py. CI:
+  partial.
+- **J120 · Engine add then immediate synth** · Steps:
+  /tts/setup-engine {engine:"kokoro"} (J67) → /tts/synth with
+  engine=kokoro. Verify: audio ≥ 2048 bytes, engine matches.
+  Owner: tts_engine. CI: yes. Depends on: J67.
+- **J121 · VLM caption + TTS read-out** · Steps: camera frame →
+  MiniCPM caption → /tts/quick {caption}. Verify: both stages
+  emit events; final audio non-empty. Owner: vlm + tts. CI:
+  partial. Depends on: J77, J60.
+- **J122 · TTS for a 2KB reply doesn't lock engine for concurrent
+  request** · Pre: two users. Steps: user A submits long TTS; user
+  B submits short TTS. Verify: TTS queue (tts_engine queues) honors
+  both; B completes before A's tail. Owner: tts_engine +
+  VRAM-manager (resource_governor gpu_allowed). CI: partial.
+
+### Hive 3-level combinations (J123-J134)
+
+- **J123 · Depth-3 hive query fusion** · Steps: /chat with
+  `intelligence_preference=hive_preferred` → speculative_dispatcher
+  `dispatch_draft_first` returns delegate='hive' → PeerLink send on
+  channel 0x05 (peer_link/channels.py:64) → peer queries peer-of-
+  peer. Verify: response has origin chain of 3 hops. [GAP — explicit
+  `fuse_responses` / `hive_mind_query` routine still missing; the
+  backtrace_semantic(depth=5) (memory_graph.py:412) is closest
+  surface but semantic not query-fusion; partial].
+- **J124 · FederatedAggregator epoch crosses benchmark publish** ·
+  Pre: epoch timer ticks (federated_aggregator.py:215 `tick`) while
+  hive_benchmark_prover is emitting a challenge
+  (hive_benchmark_prover.py:2604). Verify: aggregator snapshot
+  includes the new benchmark row; no dedup race. Owner: federated_
+  aggregator + hive_benchmark_prover. CI: partial.
+- **J125 · Cross-user E2E encrypted offload with reality-ground
+  check** · Pre: two users on private channel 0x01. Steps: UserA
+  /api/distributed/tasks/announce → UserB claim (api.py:209) →
+  execute → submit with signed result. Verify: payload on wire
+  non-plaintext; reality-grounding delta <= threshold; verify_task
+  returns True. Owner: distributed_agent + agent-ledger-opensource.
+  CI: yes with stub. Depends on: J62, J63.
+- **J126 · Peer offline mid-task → reclaimed by another claim** ·
+  Steps: A claims task → crashes → coordinator_backends.py:78
+  `reclaim_stale_tasks` expires lock → B claims → finishes. Verify:
+  task has 2 attempt records; final result from B. Owner:
+  coordinator_backends. CI: yes.
+- **J127 · Benchmark challenge with model ensemble** · Steps: POST
+  /api/hive/benchmarks/challenge with multiple model_ids →
+  challenge_model loops (hive_benchmark_prover.py:2604); leaderboard
+  updates per model. Verify: N rows in benchmark_result; ranking
+  order stable. Owner: hive_benchmark_prover. CI: yes. Depends
+  on: J65.
+- **J128 · Gossip channel loses a peer → federation recovers** ·
+  Steps: PeerLink subscriber drops; host_registry.py:105
+  `_purge_stale` evicts after 2 min; next aggregate ignores it.
+  Verify: purged logs; subsequent aggregate includes only live
+  peers. Owner: host_registry + federated_aggregator. CI: yes.
+- **J129 · Hive-signal spark + gamification balance across 2 users**
+  · Steps: userA high-value signal (hive_signal_bridge.py:353) →
+  userB sees shared gamification event. Verify: both wallets
+  reflect spark; leaderboard deltas match. Owner: hive_signal_
+  bridge + social gamification. CI: yes. Depends on: J78.
+- **J130 · Depth-3 signature verification chain** · Steps: each hop
+  signs its reply (agent-ledger signer). Verify at root: all 3
+  signatures valid, tamper on middle hop detected (returns verify
+  False). Owner: agent-ledger-opensource.backends. CI: partial.
+- **J131 · Hive node tier promote mid-inference** · Pre: flat node.
+  Steps: HEVOLVE_RESTART_REQUESTED fires during chat stream
+  (main.py:2911). Verify: in-flight stream completes on the old
+  process; new process assumes new tier. Owner: main.py watchdog.
+  CI: partial. Depends on: J81.
+- **J132 · Fleet-command sent while target is busy with chat** ·
+  Steps: fleet_command.py:525 dispatches; target node has active
+  /chat. Verify: message queued; processed after current turn;
+  events channel emits both `received` and `executed`. Owner:
+  fleet_command. CI: yes. Depends on: J82.
+- **J133 · PeerLink NAT-traversal failure → fallback to relay** ·
+  Steps: peer_link/nat.py punch fails → link.py:244 send uses
+  relay path. Verify: send returns True; relay logged. Owner:
+  peer_link/nat + link. CI: partial.
+- **J134 · Hive task dispatch with >1 candidate picker** · Steps:
+  MCP create_hive_task (J89) with `min_peers=2` → 2 peers claim
+  → votes combined. Verify: final result is consensus; each peer
+  has claim row. Owner: distributed_agent + MCP. CI: partial.
+  Depends on: J89.
+
+### Memory + restore + persistence (J135-J144)
+
+- **J135 · Guest conversation persists across webview close+reopen**
+  · Pre: Windows, WebView2 UserData preserved at
+  `%LOCALAPPDATA%/Nunba/WebView2`. Steps: guest chats → close
+  webview → reopen. Verify: SPA renders prior turns from IndexedDB;
+  no server round-trip needed. Owner: landing-page chat context +
+  webview. CI: no (desktop). Depends on: J01.
+- **J136 · Logged-in user: localStorage + server memory merged** ·
+  Steps: SPA loads → fetch /api/memory/recent → merge with
+  localStorage → render. Verify: no duplicate memory rendered;
+  relevance rank stable. Owner: landing-page chat + memory_graph.
+  CI: yes.
+- **J137 · Uninstall+reinstall with WebView2 UserData retained →
+  auto-scroll to last turn per agent** · Pre: uninstaller leaves
+  UserData. Steps: reinstall → open → landing-page reads
+  `active_agent_id` and scroll anchor from IndexedDB. Verify:
+  last-visible message scrolled into view. Owner: landing-page +
+  webview. CI: no.
+- **J138 · MemoryGraph FTS5 recall >100 memories, relevance-ranked
+  ** · Pre: 100 remember tool calls. Steps: recall with semantic
+  query. Verify: result ordered by bm25 rank, not insertion;
+  top-5 semantically matches. Owner: memory_graph.py FTS5. CI:
+  yes.
+- **J139 · Memory TTL / privacy wipe with forward-secrecy check**
+  · Steps: /api/memory/<id> DELETE → subsequent inference does NOT
+  cite deleted fact. Verify: /chat "recall X" misses X; MemoryGraph
+  row gone; embedding evicted from cache. Owner: memory_graph +
+  cache_loaders.py. CI: yes. Depends on: J73.
+- **J140 · Backtrace chain crosses agent boundary** · Pre: memory
+  `m1` owned by agentA, `m2` linked by agentB. Steps: backtrace_
+  memory from m2 (memory_graph.py:412). Verify: returns chain
+  including m1 only if author ACL allows; else empty. Owner:
+  memory_graph ACL. CI: yes. Depends on: J72.
+- **J141 · Memory write+read while FedAggregator embeds in the
+  background** · Steps: remember tool fires while aggregate_
+  embeddings (federated_aggregator.py:685) runs. Verify: no SQLite
+  locked; both complete; FTS5 row contains new memory. Owner:
+  memory_graph SQLite WAL + aggregator. CI: partial.
+- **J142 · Corrupt memory_graph.db recovered gracefully** · Pre:
+  truncate .db mid-file. Steps: boot Nunba. Verify: main.py init
+  logs `degradation:memory_graph` into registry (J80) but chat
+  still boots; recall returns empty. Owner: memory_graph init.
+  CI: partial.
+- **J143 · Memory backtrace depth bound honored** · Steps: call
+  backtrace with depth=100 on 10-chain. Verify: returns 10, not
+  infinite loop; elapsed <50ms. Owner: memory_graph.py:412.
+  CI: yes.
+- **J144 · Cross-topology memory sync flat → regional** · Pre:
+  flat node has 50 memories. Steps: promote to regional →
+  federated_aggregator aggregate_embeddings pushes. Verify: central
+  aggregator has same count from this node. Owner: federated_
+  aggregator. CI: partial. Depends on: J131.
+
+### Install / offline / degradation (J145-J154)
+
+- **J145 · AI installer partial success: LLM ok, TTS fail** · Steps:
+  run `--install-ai` with TTS install step mocked to fail. Verify:
+  exit code non-zero OR UI shows per-component status; LLM server
+  bootable; /api/admin/diag/degradations lists `tts_installer`.
+  Owner: desktop/ai_installer + degradation registry. CI: partial.
+  Depends on: J66, J80.
+- **J146 · Offline boot with cached models only** · Pre: remove
+  network; HF cache populated. Steps: Nunba boot. Verify:
+  HF_HUB_OFFLINE=1 (main.py:31); /chat succeeds; no outbound
+  sockets (capture with pcap). Owner: main.py + llama_config. CI:
+  yes. Depends on: J69.
+- **J147 · Disk full (ENOSPC) mid-install → graceful rollback** ·
+  Pre: emulate via quota. Steps: install_gpu_torch (tts/package_
+  installer.py:430) hits ENOSPC mid-extract. Verify: fallback path
+  fires (app.py:1636); no partial `torch/` dir left; degradation
+  registry entry. Owner: package_installer + app.py. CI: partial.
+- **J148 · CUDA torch missing → CPU inference + audible TTS** ·
+  Pre: uninstall torch. Steps: /chat + /tts/synth. Verify: chat
+  works via llama-cpp CPU; piper CPU path synths audio. Owner:
+  llama_config + tts_engine. CI: yes.
+- **J149 · GPU OOM mid-session → ResourceGovernor evicts + retries
+  CPU** · Pre: small VRAM emulation. Steps: /chat with long
+  context. Verify: torch CUDA OOM caught; model_lifecycle evicts
+  draft; next call succeeds on CPU. Owner: resource_governor.py:
+  469 + model_lifecycle. CI: partial.
+- **J150 · Provider key rotated mid-call → gateway retries next-
+  best** · Pre: 2 providers in gateway (providers/). Steps: start
+  /chat via groq; revoke key via /api/admin/providers/groq/api-key
+  DELETE (main.py:1978); provider returns 401. Verify: gateway
+  retries next-ranked (main.py:2039 stats reflect); final reply
+  non-empty. Owner: integrations/gateway. CI: yes. Depends on: J74,
+  J75.
+- **J151 · HF_HUB_OFFLINE forced → installer ladder reorders to
+  local-only** · Steps: set HF_HUB_OFFLINE=1; click auto-setup.
+  Verify: only local-GGUF candidates considered; hub_allowlist not
+  called; /api/llm/status stays healthy. Owner: llama_config +
+  main.py:31. CI: yes.
+- **J152 · Plugin missing → optional_import graceful** · Pre:
+  remove `autogen_agentchat`. Steps: boot. Verify:
+  core/optional_import.py registers degradation; Tier3 flow
+  produces clear error not crash. Owner: optional_import +
+  degradation registry. CI: yes.
+- **J153 · PyInstaller freeze lacks a new module** · Steps:
+  simulate missing runtime module from cx_Freeze packages[]. Verify:
+  app.py path-isolation fallback (app.py:697-702 partial-torch
+  stub pattern) or clear ModuleNotFoundError. Owner: scripts/
+  setup_freeze_nunba.py + app.py. CI: no (freeze-only).
+- **J154 · Install on D:\ (NUNBA_DATA_DIR)** · Pre: set
+  NUNBA_DATA_DIR=D:\Nunba. Steps: boot. Verify: get_data_dir()
+  returns D:\Nunba (platform_paths.py:30-43); torch under D:;
+  CUDA optional. Owner: core.platform_paths. CI: partial. Depends
+  on: J68.
+
+### Concurrency + race (J155-J164)
+
+- **J155 · 2 simultaneous /chat requests same user** · Steps:
+  concurrent POST /chat from same user_id. Verify: each has own
+  prompt_id; both complete; no SSE cross-talk; memory rows have
+  distinct ids. Owner: chatbot_routes + speculative_dispatcher.
+  CI: yes.
+- **J156 · Admin swaps active model while chat mid-stream** ·
+  Steps: start long /chat → /api/admin/models/swap (main.py:1522).
+  Verify: in-flight completes on old llama-server; next request
+  uses new model. Owner: main.py swap + llama_config. CI: partial.
+- **J157 · Camera + chat + TTS all firing** · Steps: webcam WS
+  open, /chat streaming, /tts/quick in same second. Verify: no
+  audio underrun in TTS; Redis frame counter > 0; GPU share honors
+  ResourceGovernor lock. Owner: resource_governor + audio pipeline.
+  CI: partial.
+- **J158 · Two users same channel adapter concurrent inbound** ·
+  Steps: 2 WebSocket inbounds on channel_bindings adapter for same
+  channel_id. Verify: both routed to agent; no row lost; per-user
+  context isolated. Owner: integrations/channels + api_channels.
+  py:61. CI: yes. Depends on: J52.
+- **J159 · WAMP flood 100 events in 5s none dropped** · Steps:
+  subscriber opens ws://:8088/ws → publisher posts 100 events via
+  /publish (main.py:2491). Verify: subscriber receives 100 within
+  7s. Owner: crossbar + wamp_router. CI: yes. Depends on: J96.
+- **J160 · Simultaneous `remember` writes with FTS5** · Steps: 50
+  parallel MCP remember calls. Verify: all 50 rows present; no
+  `database is locked`; WAL size sane. Owner: memory_graph SQLite
+  WAL. CI: yes.
+- **J161 · Parallel agent_daemon tick + manual dispatch** · Steps:
+  daemon tick while user POSTs /coding/execute. Verify: no lock
+  conflict; both produce distinct ledger rows. Owner: agent_daemon
+  + coding_agent. CI: yes. Depends on: J88.
+- **J162 · Hot-reload chatbot_routes while /chat active** · Steps:
+  reload blueprint (dev-only) while request mid-flight. Verify:
+  active request not killed; new route-set live for next. Owner:
+  chatbot_routes. CI: no (dev).
+- **J163 · Two Provider retries overlap** · Steps: two /chat both
+  fail primary; both retry secondary. Verify: gateway semaphore
+  honored (stats show sequential); leaderboard not double-
+  decremented. Owner: integrations/gateway + providers. CI:
+  partial.
+- **J164 · Post+comment+vote race on same post** · Steps: within
+  200ms POST vote + POST comment + edit post. Verify: all 3
+  persisted; WAMP ordering preserved by posted_at. Owner:
+  integrations/social. CI: yes. Depends on: J53, J54, J55.
+
+### Security / SSRF / escape (J165-J174)
+
+- **J165 · Image proxy DNS rebind (TOCTOU)** · Pre: attacker
+  hostname resolves to public once (for _is_private_ip check) then
+  127.x on the real fetch. Steps: /api/image-proxy?url=attacker.
+  Verify: MUST return 4xx/5xx not 200. [GAP — main.py:2238 only
+  resolves ONCE for validation then again for requests.get; no
+  pinned-IP fetch; TOCTOU possible. Owner: main.py image_proxy].
+- **J166 · WAMP subscribe with spoofed user_id** · Steps: client
+  requests /api/wamp/ticket (main.py:2535), mints for self, then
+  subscribes to `chat.social.<someone-else>`. Verify: router
+  refuses or returns empty topic; ticket-auth binds topic to
+  issuer's user_id. Owner: wamp_router + realtime.py:118.
+  CI: yes.
+- **J167 · MCP token rotation mid-session** · Steps: call MCP tool
+  with tokenA → rotate via /api/admin/mcp/token/rotate (main.py:
+  3259) → same client call → gets 401 → client re-fetches
+  /api/admin/mcp/token (main.py:3231) → success. Verify: no data
+  leak on 401; rotation logged. Owner: mcp bridge. CI: yes.
+- **J168 · Admin upload PDF with embedded JS sanitized** · Steps:
+  upload PDF containing JS OpenAction. Verify: sanitizer strips
+  JS; downstream renderer shows no alert; DOMPurify on any HTML
+  extracted. Owner: integrations/admin upload + landing-page
+  DOMPurify. [GAP — explicit PDF-JS stripper not present; relies
+  on non-execution in viewer. Mark partial.]
+- **J169 · Hub install from non-allowlisted org refused** · Steps:
+  POST /api/admin/models/hub/install {repo:"eviloss/gguf"}. Verify:
+  403 with org name; main.py:1773 `is_trusted` returns False;
+  trusted_orgs list attached. Owner: core.hub_allowlist. CI: yes.
+- **J170 · File-scheme SSRF** · Steps: /api/image-proxy?url=file://
+  /etc/passwd. Verify: 400 "Only http/https URLs" (main.py:2266).
+  CI: yes.
+- **J171 · data-scheme SSRF** · Steps: url=data:text/html,<script>.
+  Verify: 400 same guard. CI: yes.
+- **J172 · javascript-scheme SSRF** · Steps: url=javascript:alert.
+  Verify: 400. CI: yes.
+- **J173 · /publish bridge with untrusted remote origin** · Steps:
+  POST /publish from non-loopback. Verify: 403 (main.py:2491 guarded
+  by @require_local_or_token). Owner: main.py. CI: yes.
+- **J174 · Guardrails hash tamper** · Steps: mutate hive_guardrails.
+  py contents; call /api/harthash (main.py:1192). Verify: hash
+  differs from expected; admin alarm. Owner: GUARDRAILS + main.py.
+  CI: yes.
+
+### User-journey drift / edge (J175-J184)
+
+- **J175 · Kids: teacher broadcasts to 5 students, all audio plays
+  ** · Steps: /api/kids/fleet-command (kids_game_recommendation.py:
+  506) → events channel (0x06) → 5 listeners → each plays TTS.
+  Verify: 5 receipts; each synth ≥ 2048 bytes. Owner: kids +
+  fleet_command + tts. CI: partial. Depends on: J85, J60.
+- **J176 · Agent persona edit → next turn uses new persona** ·
+  Covered by J111 behaviorally; extended here to check WAMP
+  `agent.updated` event. Verify: subscribers get update; SPA re-
+  renders badge. Owner: agent_engine + crossbar. CI: yes.
+- **J177 · Onboarding aborted mid-flow → resumable** · Steps:
+  /api/onboarding/start (:21) → /advance partial → kill process →
+  reopen. Verify: /status shows partial state; /advance resumes at
+  last step. Owner: hart_onboarding. CI: yes. Depends on: J61.
+- **J178 · Payment failure → subscription NOT upgraded** · Steps:
+  mock provider returns 402 → frontend handler does NOT flip
+  access_tier. Verify: `/api/social/auth/me` still prior tier.
+  Owner: social/auth. CI: yes.
+- **J179 · Single-instance guard: launch twice** · Steps: launch
+  Nunba.exe; while running launch again. Verify: second process
+  exits 0 after pinging /api/focus (app.py:245-249); first window
+  raised via api_focus (app.py:4469-4486). Owner: app.py. CI: no
+  (desktop).
+- **J180 · Tray quit while chat mid-stream** · Steps: chat streaming
+  → tray Quit. Verify: stream aborted cleanly; no zombie on :5000
+  :8080 :8081 :8088. Owner: desktop/tray + llama_config. CI: no
+  (desktop). Depends on: J70.
+- **J181 · Language switched but agent has per-agent override** ·
+  Covered by J117 but adds: UI shows agent badge in new language
+  glyph set. Owner: landing-page i18n. CI: yes.
+- **J182 · Guest hits admin URL** · Steps: /admin/* as guest.
+  Verify: RoleGuard in AdminLayout redirects to /login; 403 on
+  admin API if attempted. Owner: landing-page RoleGuard + admin_bp
+  before_request. CI: yes.
+- **J183 · Onboarding language vs profile language conflict** ·
+  Steps: onboarding sets lang=ta; user edits profile to en later.
+  Verify: set_preferred_lang (user_lang.py:170) is single writer;
+  no stale values. Owner: core.user_lang. CI: yes.
+- **J184 · Kids mode while mainstream chat active** · Steps: admin
+  enables kids mode (filters chat + tools); user continues chat.
+  Verify: subsequent /chat filters NSFW; existing stream unaffected.
+  Owner: kids_media + hive_guardrails. CI: partial.
+
+### Tier / topology transitions (J185-J194)
+
+- **J185 · flat → regional promote, channel bindings survive** ·
+  Steps: tier promotion (main.py:2911 watcher) → re-exec. Verify:
+  channel_bindings table intact (api_channels.py:61 store); MCP
+  token regenerated OR preserved per rotation policy. Owner:
+  main.py + api_channels. CI: partial. Depends on: J81, J52.
+- **J186 · regional → central promote, peer ledger replicates** ·
+  Steps: node becomes central → host_registry re-bootstraps;
+  agent-ledger entries replicated to central DB. Verify: ledger
+  row-count matches pre-promote on both sides. Owner: host_
+  registry + agent-ledger-opensource. CI: partial.
+- **J187 · Node config restore after crash** · Pre: kill -9.
+  Steps: restart. Verify: agent_daemon resumes pending goals from
+  ledger; no duplicate dispatch; ResourceGovernor resumes MODE_
+  ACTIVE. Owner: agent_daemon.py:81 + resource_governor.py:469.
+  CI: partial.
+- **J188 · Tier downgrade: central → regional** · Steps: manual
+  demote. Verify: aggregator stops emitting central-only metrics;
+  federated_aggregator.tick gracefully enters regional mode;
+  /api/v1/system/tiers reports new tier. Owner: federated_
+  aggregator + main.py:2216. CI: partial.
+- **J189 · SQLite flat → MySQL regional migration** · Steps: set
+  HEVOLVE_DB_URL=mysql://. Verify: hevolve_database engine swaps;
+  existing tables recreated in MySQL; no data loss if migrator
+  ran. [GAP — live migration tool not present; today operator
+  exports+imports; mark no.]
+- **J190 · Crossbar restart while WAMP clients connected** ·
+  Steps: kill crossbar → it restarts → clients auto-reconnect.
+  Verify: subscribers resubscribe within 5s; tickets re-minted via
+  main.py:2535. Owner: wamp_router + crossbar. CI: partial.
+- **J191 · Peer joins mid-aggregate epoch** · Steps: aggregator
+  tick window open; new peer announces. Verify: included in NEXT
+  epoch, not this one; no double-count. Owner: federated_
+  aggregator.py:215. CI: yes.
+- **J192 · Flat node with no hive available** · Steps: hive
+  endpoints unreachable. Verify: dispatch_draft_first delegate=
+  'hive' degrades to 'local'; degradation registry lists
+  `peer_link`. Owner: speculative_dispatcher + degradation. CI:
+  yes.
+- **J193 · Central admin pushes guardrail update → propagates** ·
+  Steps: central updates hive_guardrails → fleet_command push
+  (fleet_command.py:525) → flat node /api/harthash differs. Verify:
+  hash updated; admin notified. Owner: fleet_command + GUARDRAILS.
+  CI: partial. Depends on: J82, J174.
+- **J194 · Agentic plan spans tier promote** · Steps: long goal
+  dispatched pre-promote; promote happens mid-plan. Verify: agent_
+  daemon resumes plan in new tier; goal ledger consistent. Owner:
+  agent_daemon + tier watcher. CI: no.
+
+### Auto-evolve + journey-engine combos (J195-J199)
+
+- **J195 · Auto-evolve mid-iteration paused then resumed** · Steps:
+  POST /api/social/experiments/auto-evolve → POST pause-evolve →
+  iterate once manually → POST resume-evolve. Verify: iteration
+  history contiguous; no duplicate scoring. Owner: auto_evolve.py
+  + autoresearch_loop. CI: yes. Depends on: J20.
+- **J196 · Journey engine: user abandons mid-journey** · Steps:
+  journey_engine (integrations/agent_engine/journey_engine.py)
+  starts a 5-step path → user closes app at step 3 → reopen.
+  Verify: resume at step 3; partial-completion logged. Owner:
+  journey_engine. CI: partial.
+- **J197 · AutoEvolve → democratic vote → constitutional filter
+  drops a hypothesis** · Pre: hypothesis violates GUARDRAILS.
+  Steps: vote tally → filter. Verify: rejected hypothesis NOT
+  dispatched; stored with reason. Owner: auto_evolve.py. CI: yes.
+- **J198 · Coding agent loop: execute → fail → fix → re-execute**
+  · Steps: /coding/execute with broken tool call → tool_router
+  returns error → agent retries with fix → success. Verify: 2
+  attempt rows in ledger; final result non-empty. Owner: coding_
+  daemon + tool_router. CI: yes. Depends on: J88.
+- **J199 · Kids game + auto-evolve combo** · Steps: kids game
+  produces learning signal → auto_evolve iterates difficulty.
+  Verify: next session recommends harder template; benchmark row
+  captured. Owner: kids + auto_evolve. CI: partial. Depends on:
+  J59, J20.
+
+────────────────────────────────────────────────────────────────────────────
 End of PRODUCT_MAP.md

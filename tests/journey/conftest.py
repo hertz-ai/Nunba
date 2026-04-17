@@ -20,9 +20,12 @@ suite.
 from __future__ import annotations
 
 import os
+import socket
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 import pytest
 
@@ -135,3 +138,163 @@ def mcp_client(nunba_flask_app) -> _MCPClient:
             assert r.get("success") is True
     """
     return _MCPClient(nunba_flask_app)
+
+
+# ── Combination-journey fixtures (Phase 6) ──────────────────────────
+
+
+@pytest.fixture
+def dual_user(nunba_flask_app) -> dict:
+    """Return two distinct user identities + bearer tokens.
+
+    For CI we cannot rely on a real registered account; instead we
+    synthesise two user_ids with a distinct bearer-header value each.
+    Every test using this fixture drives the real Flask app; any
+    auth gate that demands a real JWT will surface as a 401/403
+    which the test accepts as a documented contract state.
+    """
+    import uuid
+    a = f"j-user-a-{uuid.uuid4().hex[:6]}"
+    b = f"j-user-b-{uuid.uuid4().hex[:6]}"
+    return {
+        "a": {"user_id": a, "token": f"Bearer test-token-{a}"},
+        "b": {"user_id": b, "token": f"Bearer test-token-{b}"},
+    }
+
+
+class _WAMPSubscriber:
+    """In-process WAMP subscription buffer.
+
+    Since the real crossbar router may not be reachable in CI, this
+    subscriber uses the nunba SSE event stream (main.py:2561) as the
+    event observation surface — /publish POSTs are fanned out to SSE
+    subscribers by the same realtime dispatcher.
+    """
+
+    def __init__(self, flask_client):
+        self._c = flask_client
+        self.received: list[dict] = []
+        self._stop = threading.Event()
+        self._t: threading.Thread | None = None
+
+    def start(self, topic: str, timeout: float = 3.0) -> None:
+        """Open a brief SSE read so the event bus knows a subscriber
+        exists.  Non-blocking; stores any events in `received`."""
+        def _reader():
+            try:
+                resp = self._c.get(
+                    "/api/social/events/stream",
+                    headers={"Accept": "text/event-stream"},
+                    buffered=False,
+                )
+                if resp.status_code != 200:
+                    return
+                deadline = time.monotonic() + timeout
+                for line in resp.response:  # type: ignore
+                    if self._stop.is_set() or time.monotonic() > deadline:
+                        break
+                    try:
+                        text = line.decode("utf-8", "replace") if isinstance(line, bytes) else line
+                    except Exception:
+                        continue
+                    if text.startswith("data: "):
+                        try:
+                            import json as _json
+                            self.received.append(_json.loads(text[6:]))
+                        except Exception:
+                            self.received.append({"_raw": text})
+            except Exception:
+                return
+
+        self._t = threading.Thread(target=_reader, daemon=True, name="wamp-sub")
+        self._t.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._t is not None:
+            self._t.join(timeout=2)
+
+
+@pytest.fixture
+def wamp_subscriber(nunba_flask_app) -> Iterator[_WAMPSubscriber]:
+    """Start an in-process subscriber against the SSE event stream.
+
+    Journey tests can poll `subscriber.received` after firing an
+    action; `stop()` is called automatically at teardown.
+    """
+    sub = _WAMPSubscriber(nunba_flask_app)
+    yield sub
+    sub.stop()
+
+
+@pytest.fixture
+def disk_full_simulator(monkeypatch) -> Callable[[], None]:
+    """Monkey-patch `shutil.disk_usage` to report no free bytes.
+
+    Returns a callable; invoking it activates the ENOSPC simulation.
+    Useful for J147 install-under-ENOSPC and any test that needs to
+    prove a graceful-fail-on-no-disk path.
+    """
+    import shutil
+    from collections import namedtuple
+    _U = namedtuple("usage", "total used free")
+
+    def _activate() -> None:
+        def _fake_disk_usage(_path):
+            return _U(total=1_000_000_000, used=1_000_000_000, free=0)
+        monkeypatch.setattr(shutil, "disk_usage", _fake_disk_usage, raising=False)
+
+    return _activate
+
+
+@pytest.fixture
+def dns_rebind_mocker(monkeypatch) -> Callable[[list[str]], None]:
+    """Flip socket.gethostbyname between scripted IPs on each call.
+
+    Used by J165 to simulate DNS TOCTOU: first resolve returns a
+    public IP (passes the _is_private_ip guard), subsequent resolves
+    return 127.x.x.x (the attacker payload).
+    """
+    def _activate(ip_sequence: list[str]) -> None:
+        seq = list(ip_sequence)
+        idx = {"i": 0}
+
+        def _fake_gethostbyname(host: str) -> str:
+            i = idx["i"]
+            idx["i"] = min(i + 1, len(seq) - 1)
+            return seq[i] if seq else "127.0.0.1"
+
+        monkeypatch.setattr(socket, "gethostbyname", _fake_gethostbyname, raising=False)
+
+    return _activate
+
+
+@pytest.fixture
+def network_partition(monkeypatch) -> Callable[[list[int] | None], None]:
+    """Block outbound socket.connect on designated ports.
+
+    Default ports: 443, 80, 8080 (HF hub, HTTP providers, llama).
+    Raises ConnectionError so CUT's error-handling path is exercised.
+    """
+    real_connect = socket.socket.connect
+
+    def _activate(ports: list[int] | None = None) -> None:
+        blocked = set(ports or [443, 80, 8080])
+
+        def _fake_connect(self, address, *a, **kw):
+            try:
+                host, port = address[0], address[1]
+            except Exception:
+                return real_connect(self, address, *a, **kw)
+            # Always allow loopback — Flask test client, mock servers
+            if host in ("127.0.0.1", "localhost", "::1"):
+                return real_connect(self, address, *a, **kw)
+            if port in blocked:
+                raise ConnectionError(
+                    f"network partition: {host}:{port} blocked"
+                )
+            return real_connect(self, address, *a, **kw)
+
+        monkeypatch.setattr(socket.socket, "connect", _fake_connect, raising=False)
+
+    return _activate
