@@ -26,7 +26,7 @@ const sxStyles = {
 export default function DiscoverPotential() {
   const ParallaxImage = () => (
     <Parallax className="custom-class" y={[-0, 20]} tagOuter="figure">
-      <img src="/essentials_1.svg" className="crowd-bg rellax" />
+      <img src="/essentials_1.svg" className="crowd-bg rellax" alt="" />
     </Parallax>
   );
 

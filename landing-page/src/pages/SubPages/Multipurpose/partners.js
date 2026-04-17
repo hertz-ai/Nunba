@@ -123,12 +123,11 @@ class Partners extends Component {
                           <Grid item xs={12}>
                             <img
                               src="/MS_Startups_Celebration_Badge_Dark.png"
-                              height={120}
-                            ></img>
+                              height={120} alt="" ></img>
                           </Grid>
 
                           <Grid item xs={12}>
-                            <img src="/nvidia inception.png" height={150}></img>
+                            <img src="/nvidia inception.png" height={150} alt="" ></img>
                           </Grid>
                         </Grid>
                       </div>

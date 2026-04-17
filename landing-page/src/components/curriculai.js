@@ -135,16 +135,16 @@ const Curriculai = (props) => {
   const rellax = new Rellax('.rellax');
   const ParallaxImage = () => (
     <Parallax className="custom-class" y={[-0, 20]} tagOuter="figure">
-      <img src="/essentials_1.svg" className="crowd-bg rellax" />
+      <img src="/essentials_1.svg" className="crowd-bg rellax" alt="" />
     </Parallax>
   );
 
   return (
     <div>
       {/* <div className="box"></div> */}
-      <img src="/essentials_2.svg" className="crowd rellax" />
+      <img src="/essentials_2.svg" className="crowd rellax" alt="" />
       <section className="sec1">
-        {/* <img src="http://orig08.deviantart.net/5704/f/2014/053/6/5/free_space_galaxy_texture_by_lyshastra-d77gh18.jpg" className="crowd rellax" /> */}
+        {/* <img src="http://orig08.deviantart.net/5704/f/2014/053/6/5/free_space_galaxy_texture_by_lyshastra-d77gh18.jpg" className="crowd rellax" alt="" /> */}
         {/* <br/>
           <br/>
           <br/>
@@ -187,12 +187,12 @@ const Curriculai = (props) => {
         </div>
       </section>
       <Parallax speed="-2.9">
-        <img src="/guitar.png" className="guitar rellax" />
+        <img src="/guitar.png" className="guitar rellax" alt="" />
       </Parallax>
 
-      <img src="/guitar.png" className="guitar rellax" data-rellax-speed="10" />
+      <img src="/guitar.png" className="guitar rellax" data-rellax-speed="10" alt="" />
       <ParallaxImage />
-      <img src="/essentials_2.svg" className="crowd rellax" />
+      <img src="/essentials_2.svg" className="crowd rellax" alt="" />
 
       <section className="sec2">
         <center>
@@ -223,7 +223,7 @@ const Curriculai = (props) => {
       <section className="sec3">
         <Parallax speed="-.1">
           {/* <div className="red"></div> */}
-          <img src="/guitar.png" className="guitar rellax" />
+          <img src="/guitar.png" className="guitar rellax" alt="" />
         </Parallax>
       </section>
 
