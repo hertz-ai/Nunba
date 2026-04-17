@@ -60,12 +60,42 @@ export function getAgentPalette(seed) {
   return AVATAR_PALETTES[Math.abs(hash) % AVATAR_PALETTES.length];
 }
 
-const STORAGE_KEY = (agentId) => `nunba_chat_${agentId || 'default'}`;
+// Storage key scoped to (userId, agentId) so guest vs logged-in +
+// multiple users on the same machine don't bleed conversation state
+// into each other.  Guest falls back to 'guest' namespace, which
+// persists across webview close+reopen for same-machine users.
+const STORAGE_KEY = (userId, agentId) =>
+  `nunba_chat_${userId || 'guest'}_${agentId || 'default'}`;
 const MAX_STORED = 50;
 
-function loadMessages(agentId) {
+// One-shot migration for users upgrading from the old single-key scheme
+// (`nunba_chat_<agentId>`) — copy old value into the new (guest, agentId)
+// bucket so existing conversations aren't lost.  Runs idempotently.
+function _migrateLegacyKeys() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY(agentId));
+    if (localStorage.getItem('nunba_chat_migrated_v2')) return;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith('nunba_chat_')) continue;
+      if (k.startsWith('nunba_chat_guest_')) continue;
+      // Already new-scheme keys contain two underscores after 'nunba_chat_'
+      const rest = k.slice('nunba_chat_'.length);
+      if (rest.includes('_')) continue;
+      const newKey = `nunba_chat_guest_${rest || 'default'}`;
+      if (!localStorage.getItem(newKey)) {
+        localStorage.setItem(newKey, localStorage.getItem(k));
+      }
+    }
+    localStorage.setItem('nunba_chat_migrated_v2', '1');
+  } catch {
+    /* quota / access */
+  }
+}
+
+function loadMessages(userId, agentId) {
+  try {
+    _migrateLegacyKeys();
+    const raw = localStorage.getItem(STORAGE_KEY(userId, agentId));
     if (!raw) return [];
     const msgs = JSON.parse(raw);
     // Clean up stale in-flight statuses from previous sessions
@@ -78,10 +108,10 @@ function loadMessages(agentId) {
     return [];
   }
 }
-function saveMessages(agentId, msgs) {
+function saveMessages(userId, agentId, msgs) {
   try {
     localStorage.setItem(
-      STORAGE_KEY(agentId),
+      STORAGE_KEY(userId, agentId),
       JSON.stringify(msgs.slice(-MAX_STORED))
     );
   } catch {
@@ -215,19 +245,22 @@ export default function NunbaChatProvider({children}) {
     return () => window.removeEventListener('nunba:selectAgent', handler);
   }, [availableAgents, switchAgent, setIsExpanded]);
 
-  // Load messages when agent changes
+  // Load messages when agent OR user changes.
+  // Scope: (userId, agentKey) — guest and logged-in share the webview
+  // localStorage but get separate buckets so a user logging in mid-session
+  // doesn't inherit the prior guest's messages (and vice versa).
   useEffect(() => {
     const agentKey = currentAgent?.prompt_id || 'default';
-    setMessages(loadMessages(agentKey));
+    setMessages(loadMessages(userId, agentKey));
     conversationIdRef.current = uuidv4();
     currentAgentRef.current = agentKey;
-  }, [currentAgent]);
+  }, [currentAgent, userId]);
 
   // Persist messages on change
   useEffect(() => {
     const agentKey = currentAgent?.prompt_id || 'default';
-    if (messages.length > 0) saveMessages(agentKey, messages);
-  }, [messages, currentAgent]);
+    if (messages.length > 0) saveMessages(userId, agentKey, messages);
+  }, [messages, currentAgent, userId]);
 
   // Dismiss persistence
   const dismiss = useCallback(() => {
@@ -492,11 +525,11 @@ export default function NunbaChatProvider({children}) {
     setMessages([]);
     conversationIdRef.current = uuidv4();
     try {
-      localStorage.removeItem(STORAGE_KEY(agentKey));
+      localStorage.removeItem(STORAGE_KEY(userId, agentKey));
     } catch (err) {
       console.error('localStorage clearMessages failed:', err);
     }
-  }, [currentAgent]);
+  }, [currentAgent, userId]);
 
   const value = {
     isExpanded,
