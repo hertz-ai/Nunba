@@ -49,31 +49,96 @@ def _extract_tts_backends() -> tuple[list[str], list[str]]:
 
 
 def _extract_model_catalog_ids() -> list[str]:
-    """Enumerate auto-installable model ids across types (TTS / LLM /
-    STT / VLM / audio / video) as a deterministic curated set.
+    """Enumerate auto-installable model ids from the LIVE catalog,
+    with AST fallback, with hard-coded fallback last.
 
-    Source of truth for tests that must parametrise over "every model
-    type". Not derived from free-text grep (which produces noise) —
-    curated to match ModelCatalog canonical ids. When a new model lands
-    it must be added here so the generic-auto-install tests cover it.
+    Order of preference:
+      1. Call ModelCatalog.list_all() — picks up anything a populator
+         (including an agentic one) added at runtime.
+      2. AST-scan all *.py files under HARTOS/integrations/service_tools
+         and Nunba/models for `ModelEntry(id='…')`, `register(id='…')`,
+         `add_entry(id='…')` — picks up anything landed in source but
+         not yet loaded into the catalog instance.
+      3. Hard-coded minimal set so CI without HARTOS still runs.
+
+    When a new model (Qwen3.6 35B A3B MOE, Gemma 4, ...) is added to
+    the catalog by any route, tests parametrise over it automatically —
+    no edit to this file or any test required.
     """
-    # TTS backends — re-use _extract_tts_backends.
-    _tts_all, _tts_auto = _extract_tts_backends()
-    ids = set(_tts_auto)
-    # Non-TTS model types — matches model_catalog.py canonical ids.
-    ids.update({
-        "llm-qwen3-4b",
-        "llm-qwen3-0.8b-draft",
-        "llm-qwen3.5-4b-vl",
-        "stt-whisper-base",
-        "stt-whisper-small",
-        "stt-whisper-medium",
-        "vlm-minicpm-v2",
-        "vlm-qwen3.5-4b-vl",
-        "audio_gen-acestep",
-        "audio_gen-diffrhythm",
-        "video_gen-ltx2",
-    })
+    ids: set[str] = set()
+
+    # 1) Live catalog — most authoritative.
+    try:
+        from integrations.service_tools.model_catalog import get_catalog  # noqa: PLC0415
+        cat = get_catalog()
+        if hasattr(cat, "list_all"):
+            for entry in cat.list_all():
+                eid = getattr(entry, "id", None)
+                if eid:
+                    ids.add(eid)
+        elif hasattr(cat, "list_by_type"):
+            # Iterate every known type enum.
+            try:
+                from integrations.service_tools.model_catalog import ModelType  # noqa: PLC0415
+                for mt in ModelType:
+                    for entry in cat.list_by_type(mt):
+                        eid = getattr(entry, "id", None)
+                        if eid:
+                            ids.add(eid)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 2) AST fallback — discover declared entries without importing
+    #    heavy deps.  Scans both repos.
+    scan_roots: list[Path] = []
+    hartos = PROJECT_ROOT.parent / "HARTOS"
+    if hartos.exists():
+        scan_roots.append(hartos / "integrations" / "service_tools")
+        scan_roots.append(hartos / "integrations" / "channels" / "media")
+    scan_roots.append(PROJECT_ROOT / "models")
+
+    id_patterns = [
+        # ModelEntry(id='...'), register(id='...'), add_entry(id='...')
+        re.compile(r"(?:ModelEntry|register|add_entry|upsert|add)\s*\([^)]*?\bid\s*=\s*['\"]([a-zA-Z0-9][a-zA-Z0-9_\-.]*)['\"]",
+                   re.DOTALL),
+        # `id='llm-xxx'` in kwargs on its own line (defensive).
+        re.compile(r"\bid\s*=\s*['\"]((?:llm|vlm|stt|tts|audio_gen|video_gen|mllm)-[a-zA-Z0-9_\-.]+)['\"]"),
+    ]
+    for root in scan_roots:
+        if not root.exists():
+            continue
+        for p in root.rglob("*.py"):
+            try:
+                src = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            for pat in id_patterns:
+                for match in pat.finditer(src):
+                    candidate = match.group(1)
+                    # Filter obvious non-model ids (type names, flags).
+                    if len(candidate) < 3 or candidate in ("true", "false"):
+                        continue
+                    ids.add(candidate)
+
+    # 3) Add TTS backends — each auto-installable engine is a model
+    #    the test parametrisation must cover.
+    _all, auto = _extract_tts_backends()
+    ids.update(auto)
+
+    # 4) Last-resort minimal set.  Only used on CI where neither the
+    #    catalog nor source trees are available.
+    if not ids:
+        ids = {
+            "llm-qwen3-4b", "llm-qwen3-0.8b-draft", "llm-qwen3.5-4b-vl",
+            "stt-whisper-medium",
+            "vlm-minicpm-v2",
+            "audio_gen-acestep",
+            "video_gen-ltx2",
+            "chatterbox_turbo", "indic_parler",
+        }
+
     return sorted(ids)
 
 
