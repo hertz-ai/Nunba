@@ -298,8 +298,23 @@ def ensure_user_site_on_path():
 
 
 def _run_pip(args: list[str], progress_cb: Callable | None = None,
-             timeout: int = 600) -> tuple[bool, str]:
+             timeout: int = 900,
+             stall_timeout: int = 120,
+             heartbeat_s: int = 20) -> tuple[bool, str]:
     """Run pip with --target ~/.nunba/site-packages/ for user-writable installs.
+
+    Streams pip stdout line-by-line, firing `progress_cb` with a status
+    message every `heartbeat_s` seconds so the UI sees forward motion
+    instead of a frozen "Step 1/2" card.
+
+    Two independent deadlines:
+      - `stall_timeout` (default 120s): aborts if pip produces NO output
+        for that long. Catches stuck DNS, stuck mirrors, dead connection.
+        Slow-downloading-but-progressing installs are not killed.
+      - `timeout` (default 900s = 15 min): absolute wall-clock ceiling.
+        Legitimate big installs (torch, parler_tts) can approach this
+        on slow connections; short enough that a user never sees a card
+        stuck for longer than the worst-case real install.
 
     Uses python-embed/python.exe -m pip but targets the user-writable
     ~/.nunba/site-packages/ directory instead of Program Files.
@@ -315,34 +330,99 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
         args = args[:1] + [
             '--target', user_sp,
             '--no-build-isolation',  # Use system setuptools (pip's isolated build fails in frozen builds)
+            '--progress-bar', 'off',  # Line-based output for streaming parse
         ] + args[1:]
 
     cmd = [python_exe, '-m', 'pip'] + args
     env = os.environ.copy()
     env['PYTHONNOUSERSITE'] = '1'  # Don't leak to user site-packages
     env['SETUPTOOLS_USE_DISTUTILS'] = 'stdlib'  # Skip _distutils_hack shim (missing in frozen build)
+    env['PYTHONUNBUFFERED'] = '1'  # Stream stdout immediately — no buffering
 
     logger.info(f"Running: {' '.join(cmd)}")
     if progress_cb:
         progress_cb(f"Running pip: {' '.join(args[:4])}...")
 
+    import threading
+    import time as _time
+
     try:
         from tts._subprocess import hidden_startupinfo
         si, cf = hidden_startupinfo()
 
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
-            env=env, startupinfo=si, creationflags=cf,
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=env,
+            startupinfo=si, creationflags=cf,
         )
-        if proc.returncode == 0:
+
+        # Shared state between the drain thread and the main body.
+        state = {
+            'last_line_t': _time.monotonic(),
+            'last_beat_t': _time.monotonic(),
+            'lines': [],
+            'current_pkg': '',
+        }
+
+        def _drain():
+            assert proc.stdout is not None
+            for raw in proc.stdout:
+                line = raw.rstrip()
+                if not line:
+                    continue
+                state['last_line_t'] = _time.monotonic()
+                state['lines'].append(line)
+                # Heuristic: pip "Collecting <pkg>" / "Downloading <file>"
+                low = line.lower()
+                if low.startswith('collecting '):
+                    state['current_pkg'] = line.split(None, 1)[1].split('<')[0].strip()
+                elif low.startswith('downloading '):
+                    state['current_pkg'] = line
+            proc.stdout.close()
+
+        drain = threading.Thread(target=_drain, daemon=True, name='pip-drain')
+        drain.start()
+
+        t0 = _time.monotonic()
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                break
+            now = _time.monotonic()
+            # Heartbeat: tell the UI something is still happening.
+            if progress_cb and (now - state['last_beat_t']) >= heartbeat_s:
+                pkg = state['current_pkg'] or 'packages'
+                progress_cb(f"pip: {pkg} (elapsed {int(now - t0)}s)")
+                state['last_beat_t'] = now
+            # Stall detection: no stdout line for stall_timeout seconds.
+            if (now - state['last_line_t']) >= stall_timeout:
+                proc.kill()
+                drain.join(timeout=2)
+                msg = (f"pip stalled — no output for {stall_timeout}s "
+                       f"after '{state['current_pkg'] or 'startup'}'. "
+                       f"Check network / mirror.")
+                if progress_cb:
+                    progress_cb(msg)
+                return False, msg
+            # Absolute wall-clock ceiling.
+            if (now - t0) >= timeout:
+                proc.kill()
+                drain.join(timeout=2)
+                msg = f"pip timed out after {timeout}s"
+                if progress_cb:
+                    progress_cb(msg)
+                return False, msg
+            _time.sleep(0.5)
+
+        drain.join(timeout=2)
+        out = "\n".join(state['lines'])
+        if rc == 0:
             # Ensure the target dir is on sys.path NOW (not just next restart)
             ensure_user_site_on_path()
-            return True, proc.stdout
+            return True, out
         else:
-            logger.error(f"pip failed: {proc.stderr}")
-            return False, proc.stderr
-    except subprocess.TimeoutExpired:
-        return False, f"pip timed out after {timeout}s"
+            logger.error(f"pip failed (rc={rc}): {out[-800:]}")
+            return False, out
     except Exception as e:
         return False, str(e)
 

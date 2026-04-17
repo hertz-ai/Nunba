@@ -386,7 +386,27 @@ export default function NunbaChatProvider({children}) {
   // Listen for backend-pushed TTS audio via SSE/WAMP (com.hertzai.pupit.{userId}).
   // Same pattern as Android's onEventPupitVideo → settingVideoResponse → play.
   // Stale-request guard: only play audio matching latestRequestIdRef.
+  //
+  // WebView2 / Chrome autoplay policy rejects new Audio().play() from async
+  // SSE callbacks that aren't within a user-gesture window. The prior impl
+  // swallowed the rejection with `.catch(() => {})` — no log, no UI
+  // indication, user hears nothing. Ported the Demopage.js:1918-1950
+  // workaround here: persistent <audio id="nunba-tts-audio"> element, loud
+  // error logging, and a one-shot document-level click handler that resumes
+  // playback on the next user gesture.
   useEffect(() => {
+    // Persistent audio element primed by prior user interactions.
+    // When the React tree first mounts inside a user gesture (typing a
+    // message and pressing send), the element is "activated" and can
+    // later play async audio from SSE callbacks.
+    const ttsAudio = document.getElementById('nunba-tts-audio') || (() => {
+      const el = document.createElement('audio');
+      el.id = 'nunba-tts-audio';
+      el.preload = 'auto';
+      document.body.appendChild(el);
+      return el;
+    })();
+
     const handleTTSPush = (payload) => {
       const data = payload?.data || payload;
       if (data?.action !== 'TTS' || !data?.generated_audio_url) return;
@@ -397,25 +417,36 @@ export default function NunbaChatProvider({children}) {
         return;
       }
 
-      // Play the pushed audio file directly — same as Android's processVideoQueue.
-      // Uses a simple Audio element; the existing useTTS hook doesn't have a
-      // play-from-url method, but the pattern is identical to _speakServer's
-      // audioRef.current.src = url; audioRef.current.play();
-      try {
-        const audio = new Audio(data.generated_audio_url);
-        audio.play().catch(() => {});
-      } catch {
-        // Autoplay blocked — user will see text, can replay manually
-      }
+      // Reuse the persistent element instead of new Audio() — the latter
+      // is born "un-activated" and autoplay always rejects.
+      console.log('[TTS] Event received:', data.generated_audio_url,
+                  'req:', data.request_id);
+      ttsAudio.src = data.generated_audio_url;
+      ttsAudio.play().then(() => {
+        console.log('[TTS] Audio playing OK');
+      }).catch((err) => {
+        console.error('[TTS] Play FAILED (autoplay blocked or network):',
+                      err && err.message);
+        // One-shot resume on next user gesture — replay the rejected audio
+        // once the user clicks anywhere. Avoids the silent-drop class of
+        // failure the prior catch(() => {}) produced.
+        const resumeAudio = () => {
+          ttsAudio.play().catch(() => {});
+          document.removeEventListener('click', resumeAudio);
+        };
+        document.addEventListener('click', resumeAudio, { once: true });
+      });
     };
 
     // Subscribe to both SSE event types and crossbar worker messages
     realtimeService.on('pupit', handleTTSPush);
     realtimeService.on('message', handleTTSPush); // SSE generic messages
+    realtimeService.on('tts', handleTTSPush);     // Demopage-style topic
 
     return () => {
       realtimeService.off('pupit', handleTTSPush);
       realtimeService.off('message', handleTTSPush);
+      realtimeService.off('tts', handleTTSPush);
     };
   }, [tts]);
 
