@@ -380,9 +380,26 @@ class LlamaConfig:
                 return True
 
             # Everyone else: main-only.
+            #
+            # Draft skip-gate: non-Latin-script langs (all Indic, CJK,
+            # Arabic, etc.) skip the draft model entirely.  The 0.8B
+            # draft is English-dominant and produces garbled speculative
+            # tokens for those scripts, forcing main-model rejection on
+            # every turn and wiping out the latency win.  Constant lives
+            # in core.constants.NON_LATIN_SCRIPT_LANGS per the DRY fix
+            # from an earlier session.
+            _skip_draft_langs = None
+            try:
+                from core.constants import NON_LATIN_SCRIPT_LANGS as _skip_draft_langs
+            except Exception:
+                pass
+            _should_skip_draft = (
+                (_skip_draft_langs is not None and lang in _skip_draft_langs)
+                or lang != 'en'
+            )
             reason = (
                 'vram_below_8gb' if total < 8.0
-                else 'cohort_indic_or_large_tts' if lang != 'en' or (
+                else 'cohort_indic_or_large_tts' if _should_skip_draft or (
                     active_tts not in LlamaConfig._SMALL_TTS_ENGINES)
                 else 'free_vram_too_low'
             )

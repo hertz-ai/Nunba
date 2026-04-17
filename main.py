@@ -3855,16 +3855,30 @@ def start_background_services():
             # engines that appear in this language's ladder.  Avoids installing F5
             # (voice-cloning) for users who speak English/Tamil/Hindi and don't
             # need it.
-            preferred_lang = 'en'
+            #
+            # SINGLE source of truth: core.user_lang.get_preferred_lang().
+            # The prior default-then-read pattern was responsible for the
+            # "Chatterbox Turbo auto-installed for a Tamil user" bug — when
+            # hart_language.json was 'ta' but warmup started before the file
+            # existed (first boot) OR before set_language() had a chance to
+            # flip, the 'en' default won and the English ladder installed.
             try:
-                import json as _json
-                _hart_lang_file = os.path.join(
-                    os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'hart_language.json')
-                if os.path.exists(_hart_lang_file):
-                    with open(_hart_lang_file) as _f:
-                        preferred_lang = _json.load(_f).get('language', 'en')
+                from core.user_lang import get_preferred_lang
+                preferred_lang = get_preferred_lang() or 'en'
             except Exception:
-                pass
+                # Final fallback only if core.user_lang isn't importable
+                # (e.g. standalone main.py harness). Keeps old behavior as
+                # a backstop, never as the primary path.
+                preferred_lang = 'en'
+                try:
+                    import json as _json
+                    _hart_lang_file = os.path.join(
+                        os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'hart_language.json')
+                    if os.path.exists(_hart_lang_file):
+                        with open(_hart_lang_file) as _f:
+                            preferred_lang = _json.load(_f).get('language', 'en')
+                except Exception:
+                    pass
 
             # Import TTSEngine class first (just the class, not get_tts_engine singleton)
             # so we can prime its cache BEFORE it constructs the engine
@@ -3873,12 +3887,28 @@ def start_background_services():
                 TTSEngine._import_check_cache['_torch_cuda'] = True
                 logging.info("TTS: CUDA torch verified via subprocess — GPU TTS enabled")
                 # Filter backends to only those in this language's ladder.
+                #
+                # Empty-ladder fallback: an unknown `preferred_lang` (e.g.
+                # user set 'xx' by mistake) would otherwise produce an
+                # empty set → the _ladder_backends filter becomes a no-op
+                # AND every backend gets probed/installed (the opposite of
+                # the intended lang-scoped install).  Fallback to a
+                # deterministic minimal set so the worst case is "piper
+                # CPU only" rather than "install-everything".
                 _ladder_engines = set()
                 try:
                     from integrations.channels.media.tts_router import LANG_ENGINE_PREFERENCE
                     _ladder_engines = set(LANG_ENGINE_PREFERENCE.get(preferred_lang, []))
                 except Exception:
                     pass
+                if not _ladder_engines:
+                    # Minimal fallback: Piper is bundled, always runnable.
+                    logging.warning(
+                        "TTS: no ladder for lang=%r — falling back to minimal "
+                        "backend set ['piper'] instead of probing every backend",
+                        preferred_lang,
+                    )
+                    _ladder_engines = {'piper'}
                 # Map engine_id → backend name (same as in TTSEngine._BACKEND_TO_REGISTRY_KEY)
                 _ladder_backends = set()
                 try:
