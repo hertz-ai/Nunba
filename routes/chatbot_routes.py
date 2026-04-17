@@ -1975,7 +1975,19 @@ def chat_route():
     autonomous_creation = data.get('autonomous_creation', False) or data.get('autonomous', False)
     agentic_execute = data.get('agentic_execute', False)
     agentic_plan = data.get('agentic_plan', None)
-    preferred_lang = data.get('preferred_lang', 'en')
+    # preferred_lang: honor the body, then fall back to the canonical
+    # persisted reader (hart_language.json via core.user_lang).
+    # Bare default 'en' forced English TTS + bypassed the draft-skip
+    # gate for Tamil users whose frontend omits the field.
+    _req_lang = data.get('preferred_lang') or data.get('language')
+    if _req_lang:
+        preferred_lang = _req_lang.strip()
+    else:
+        try:
+            from core.user_lang import get_preferred_lang
+            preferred_lang = get_preferred_lang() or 'en'
+        except Exception:
+            preferred_lang = 'en'
 
     if not text.strip():
         return jsonify({'error': 'Text is required'}), 400
