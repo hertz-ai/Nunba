@@ -34,13 +34,19 @@ def test_f1_critical_log_append_mode(logname, project_root):
         r"open\s*\([^)]*" + re.escape(logname) + r"[^)]*,\s*['\"]w['\"]",
         re.DOTALL,
     )
+    # rglob is recursive; for ~1M files (venv+site-packages+backup) it
+    # takes minutes.  Exclude EVERY vendored/generated path up front.
+    _SKIP = (
+        ".venv", "venv", "venv310", "venv311", "venv312",
+        "python-embed", "python-embed-310-backup",
+        "__pycache__", "build", "node_modules", ".git",
+        "site-packages", ".pytest_cache",
+    )
     for root in (project_root, project_root.parent / "HARTOS"):
         if not root.exists():
             continue
         for p in root.rglob("*.py"):
-            # Skip generated / vendored
-            if any(s in p.parts for s in (".venv", "python-embed",
-                                          "__pycache__", "build")):
+            if any(s in p.parts for s in _SKIP):
                 continue
             try:
                 t = p.read_text(encoding="utf-8", errors="ignore")
