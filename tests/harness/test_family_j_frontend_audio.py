@@ -11,24 +11,50 @@ pytestmark = pytest.mark.integration
 
 
 def test_j1_local_route_wires_on_audio_ready(project_root):
-    """FAILS if the /local chat route's SentencePipeline isn't bound
-    to a React audio element via an SSE callback.
+    """FAILS if no React source handles audio-ready SSE events.
+
+    The canonical production pattern in this project is:
+      SSE/WAMP → {action: 'TTS', generated_audio_url: '/tts/audio/...'}
+      React    → listener reads generated_audio_url → <audio>.play()
+    This test tolerates legacy names (onAudioReady etc.) but primarily
+    asserts the real production symbol 'generated_audio_url' is handled
+    in at least one React file, and the handler actually writes it to
+    an audio element (otherwise the value is read and discarded).
     """
     fe = project_root / "landing-page" / "src"
     if not fe.exists():
         pytest.skip("landing-page absent")
-    # Look for SentencePipeline / on_audio_ready wiring in React.
-    hits = []
-    for p in fe.rglob("*.js"):
-        try:
-            t = p.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            continue
-        if "onAudioReady" in t or "on_audio_ready" in t or "audioReady" in t:
-            hits.append(p.name)
-    assert hits, (
+    # Scan both .js and .jsx — NunbaChatProvider is .jsx.
+    extensions = ("*.js", "*.jsx")
+    subscribers = []
+    plays_audio = False
+    for pattern in extensions:
+        for p in fe.rglob(pattern):
+            try:
+                t = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            is_subscriber = (
+                "generated_audio_url" in t
+                or "onAudioReady" in t
+                or "on_audio_ready" in t
+                or "audioReady" in t
+            )
+            if is_subscriber:
+                subscribers.append(p.name)
+                # Same file must actually invoke audio playback — a
+                # subscriber that reads the URL and drops it is the
+                # original defect class.
+                if (".play()" in t) or ("new Audio(" in t) or ("audioRef" in t):
+                    plays_audio = True
+    assert subscribers, (
         "no React file subscribes to audio-ready events on /local; "
         "SentencePipeline produces audio that the UI never plays"
+    )
+    assert plays_audio, (
+        f"React files reference audio-ready events ({subscribers}) but "
+        f"NONE invoke .play() / new Audio() / audioRef — the URL is "
+        f"read and dropped, so the user hears silence"
     )
 
 

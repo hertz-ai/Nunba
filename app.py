@@ -165,8 +165,58 @@ if _user_sp not in sys.path:
 
 # === Single-instance guard ===
 # Prevent multiple Nunba processes (Windows auto-start + manual launch).
-# Check if port 5000 is already bound by another Nunba — if so, bring it
-# to focus (via /api/focus) and exit immediately.
+#
+# Two-layer guard:
+#   Layer 1 — atomic OS-level lock on ~/.nunba/nunba.lock (msvcrt.locking
+#             on Windows, fcntl.flock on POSIX).  Two instances cannot
+#             both hold the lock; losing the race → exit.  This is the
+#             REAL race-proof gate.
+#   Layer 2 — best-effort ping of the existing instance's /api/focus so
+#             the losing instance brings the running window to front
+#             before exiting (nicer UX than "just exit silently").
+#
+# Previous impl was Layer-2 only (connect-to-port → exit).  Under racy
+# autostart both instances saw port free, both ran, both bound → port
+# conflict or worse, 2 Flask apps writing the same SQLite DB.
+_NUNBA_LOCK_HANDLE = None  # kept alive for process lifetime
+
+
+def _acquire_instance_lock():
+    """Return True iff this process is the first Nunba.  Handle stays
+    open for the life of the process so the OS keeps the lock."""
+    global _NUNBA_LOCK_HANDLE
+    try:
+        _lock_dir = os.path.join(os.path.expanduser('~'), '.nunba')
+        os.makedirs(_lock_dir, exist_ok=True)
+        _lock_path = os.path.join(_lock_dir, 'nunba.lock')
+    except OSError:
+        return True  # can't even create lockfile — don't block startup
+    try:
+        _fd = open(_lock_path, 'a+b')
+    except OSError:
+        return True
+    try:
+        if sys.platform == 'win32':
+            import msvcrt
+            try:
+                msvcrt.locking(_fd.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                _fd.close()
+                return False
+        else:
+            import fcntl
+            try:
+                fcntl.flock(_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                _fd.close()
+                return False
+    except Exception:
+        _fd.close()
+        return True  # platform missing lock primitive — fall through
+    _NUNBA_LOCK_HANDLE = _fd
+    return True
+
+
 def _check_single_instance():
     if ('--validate' in sys.argv
             or '--install-ai' in sys.argv
@@ -187,28 +237,20 @@ def _check_single_instance():
                     _port = int(sys.argv[idx + 1])
                 except ValueError:
                     pass
-    import socket as _sock
-    _s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+
+    # Layer 1 — atomic file lock.  Can't race.
+    if _acquire_instance_lock():
+        return  # first instance, nothing more to do
+
+    # Lock held by another Nunba → best-effort ping its /api/focus,
+    # then exit.  This is purely UX; the lock has already decided.
     try:
-        _s.settimeout(1)
-        _s.connect(('127.0.0.1', _port))
-        _s.close()
-        # Port is in use — another instance is running.
-        # Try to tell it to show its window, then exit.
-        try:
-            import urllib.request as _ur
-            _ur.urlopen(f'http://127.0.0.1:{_port}/api/focus', timeout=2).close()
-        except Exception:
-            pass
-        print(f"Nunba is already running on port {_port}. Exiting duplicate instance.")
-        sys.exit(0)
-    except (TimeoutError, ConnectionRefusedError, OSError):
-        pass  # Port is free — we are the first instance
-    finally:
-        try:
-            _s.close()
-        except Exception:
-            pass
+        import urllib.request as _ur
+        _ur.urlopen(f'http://127.0.0.1:{_port}/api/focus', timeout=2).close()
+    except Exception:
+        pass
+    print(f"Nunba is already running on port {_port}. Exiting duplicate instance.")
+    sys.exit(0)
 
 # Skip single-instance check under pytest / coverage instrumentation.
 #   PYTEST_CURRENT_TEST — set by pytest (per-test, not at collection)
