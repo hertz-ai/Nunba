@@ -1141,6 +1141,14 @@ class TTSEngine:
                         logger.info(f"[auto-install] '{backend}' verified: "
                                     f"{verdict.n_bytes} bytes audio in "
                                     f"{verdict.elapsed_s:.1f}s")
+                        # Clear any prior failed-mark for this backend.
+                        # Without this, a transient failure (network blip,
+                        # probe timeout) permanently disables the backend
+                        # even after a later successful install.
+                        # See tests/harness/test_family_b_tts_auto_install.py::
+                        # test_b7_failed_cleared_on_success for the contract.
+                        with TTSEngine._auto_install_lock:
+                            TTSEngine._auto_install_failed.discard(backend)
                         if progress:
                             progress(f"{backend} ready — "
                                      f"{verdict.n_bytes // 1024} KB test audio produced")

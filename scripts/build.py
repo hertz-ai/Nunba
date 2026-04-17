@@ -549,6 +549,11 @@ def build_react_landing_page():
         return True
 
     print_header("Building React landing-page")
+    # Unconditional `npm run build` — no mtime heuristic, no
+    # "if _stale" guard.  Stale landing-page/build/ has shipped twice
+    # in this session; every build run rebuilds the React bundle so the
+    # installer always reflects HEAD.
+    print_info("React bundle: running `npm run build` unconditionally.")
 
     # Install npm packages
     npm_cmd = 'npm.cmd' if IS_WINDOWS else 'npm'
@@ -939,6 +944,28 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         return False
 
     print_info(f"Build successful: {exe_path}")
+
+    # Record build provenance: write the current git HEAD sha into
+    # build/Nunba/BUILD_INFO.txt so a stale/reused build dir can be
+    # detected (compare stored sha vs `git rev-parse HEAD`).  Without
+    # this, the installer that ships out of build/ cannot be traced
+    # to a specific source commit (see 2026-04-16 session: a Nunba.exe
+    # built 24 minutes before a critical fix shipped and the stale
+    # binary hid the fix for hours).
+    try:
+        import datetime as _bi_dt
+        _head = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip() or 'unknown'
+        _bi_path = os.path.join('build', 'Nunba', 'BUILD_INFO.txt')
+        with open(_bi_path, 'w', encoding='utf-8') as _bi:
+            _bi.write(f"BUILD_SHA={_head}\n")
+            _bi.write(f"BUILD_TIME={_bi_dt.datetime.utcnow().isoformat(timespec='seconds')}Z\n")
+            _bi.write(f"BUILD_PLATFORM={sys.platform}\n")
+        print_info(f"Wrote {_bi_path} (sha={_head[:12]})")
+    except Exception as _bi_err:
+        print_warn(f"Could not write BUILD_INFO.txt: {_bi_err}")
 
     # -- Sync HARTOS source into python-embed --
     # The source python-embed/ is a snapshot that may contain stale HARTOS

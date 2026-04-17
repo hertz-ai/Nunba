@@ -623,6 +623,23 @@ def after_request(response):
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    # Content-Security-Policy — desktop app only talks to its own
+    # Flask origin + localhost llama-server (:8080/:8082) + VisionService
+    # (:5460) + crossbar (:8088). `unsafe-inline` is required because
+    # CRA's runtime and MUI emotion inject inline styles; migrating to
+    # nonce/hash CSP is a separate, larger task. blob: covers generated
+    # audio URLs used for synthesized TTS playback.
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob: https:; "
+        "media-src 'self' blob: data:; "
+        "connect-src 'self' http://localhost:* ws://localhost:* wss://localhost:*; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
 
     return response
 
