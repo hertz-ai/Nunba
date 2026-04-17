@@ -119,7 +119,7 @@ def verify_backend_synth(engine, backend: str,
     This function NEVER raises. All failure modes land in `err`.
     """
     text = _pick_test_phrase(backend, lang)
-    logger.info("verified_ready: probing backend=%s lang=%s text=%r",
+    logger.info("verified_synth: probing backend=%s lang=%s text=%r",
                 backend, lang, text)
 
     # Reserve a temp file path up front so the timeout path can clean up.
@@ -194,9 +194,9 @@ def verify_backend_synth(engine, backend: str,
         elapsed_s=elapsed,
     )
     if ok:
-        logger.info("verified_ready: backend=%s PASS (%d bytes in %.1fs)",
+        logger.info("verified_synth: backend=%s PASS (%d bytes in %.1fs)",
                     backend, result.n_bytes, elapsed)
     else:
-        logger.warning("verified_ready: backend=%s FAIL — %s (elapsed=%.1fs)",
+        logger.warning("verified_synth: backend=%s FAIL — %s (elapsed=%.1fs)",
                        backend, result.err or "no error captured", elapsed)
     return result

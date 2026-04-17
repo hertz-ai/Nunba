@@ -112,7 +112,7 @@ def test_k5_verify_backend_synth_has_default_timeout(project_root, source_text):
     """Regression guard — the verifier MUST keep its timeout. Removing
     it would reintroduce the hung-test class of bug one level up.
     """
-    src = source_text(project_root / "tts" / "verified_ready.py")
+    src = source_text(project_root / "tts" / "verified_synth.py")
     assert "timeout_s: int = " in src or "timeout_s:int=" in src.replace(" ", ""), (
         "verify_backend_synth default timeout removed — hang surface "
         "reopens, user sees stuck Ready card"

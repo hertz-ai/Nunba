@@ -63,7 +63,7 @@ class _RealishEngine:
 
 def test_real_synth_passes():
     """Real synth → bytes > min → ok=True."""
-    from tts.verified_ready import verify_backend_synth
+    from tts.verified_synth import verify_backend_synth
     engine = _RealishEngine()
     verdict = verify_backend_synth(engine, 'piper', lang='en', timeout_s=10)
     assert verdict.ok, f"expected pass, got err={verdict.err!r}"
@@ -98,7 +98,7 @@ class _SilentFailureEngine:
 
 def test_silent_failure_caught():
     """0-byte audio → ok=False. Precisely the class of lie we're fixing."""
-    from tts.verified_ready import verify_backend_synth
+    from tts.verified_synth import verify_backend_synth
     engine = _SilentFailureEngine()
     verdict = verify_backend_synth(engine, 'fake', lang='en', timeout_s=10)
     assert not verdict.ok, "expected fail on empty audio, got PASS"
@@ -124,7 +124,7 @@ class _CrashEngine:
 
 def test_exception_caught():
     """Backend raises → ok=False with err, NEVER crashes caller."""
-    from tts.verified_ready import verify_backend_synth
+    from tts.verified_synth import verify_backend_synth
     engine = _CrashEngine()
     verdict = verify_backend_synth(engine, 'crash', lang='en', timeout_s=10)
     assert not verdict.ok
@@ -152,7 +152,7 @@ class _HangEngine:
 
 def test_timeout_caught():
     """Synth hangs > timeout → ok=False with timed-out err."""
-    from tts.verified_ready import verify_backend_synth
+    from tts.verified_synth import verify_backend_synth
     engine = _HangEngine()
     verdict = verify_backend_synth(engine, 'hang', lang='en', timeout_s=2)
     assert not verdict.ok

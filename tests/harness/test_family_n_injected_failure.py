@@ -33,7 +33,7 @@ def test_n2_offline_hf_surfaces_clear_error(project_root, source_text):
     silent fallback instead of a user-visible 'model couldn't download'.
     """
     candidates = [
-        project_root / "tts" / "verified_ready.py",
+        project_root / "tts" / "verified_synth.py",
         project_root / "tts" / "tts_engine.py",
         project_root / "tts" / "package_installer.py",
     ]

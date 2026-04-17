@@ -20,7 +20,7 @@ def test_c1_verified_signal_probe_for_every_model_type(project_root):
     a verified-signal probe per type.
     """
     required = {
-        "tts":       project_root / "tts" / "verified_ready.py",
+        "tts":       project_root / "tts" / "verified_synth.py",
         # These are expected in HARTOS — live suite covers the full set.
         # The unit test here just asserts the TTS verifier is present as
         # the template.  Adding a sibling for each type is Phase 5 work.

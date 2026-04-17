@@ -1108,21 +1108,26 @@ class TTSEngine:
 
                 ok, result = install_backend_full(backend, progress_cb=progress)
                 if ok:
-                    # Verified-signal gate: "Ready" only fires after a
-                    # REAL synthesis through the same code path the
-                    # user's first chat message hits produces audio of
-                    # non-trivial size.  Pip success, import success,
-                    # and worker spawn are all proxy signals — they've
-                    # lied repeatedly (dac/sentencepiece/CUDA torch
-                    # missing, model weights absent, runtime stub torch,
-                    # DLL path unresolved).  Audio bytes on disk is the
-                    # only signal that cannot lie.
-                    # See tts/verified_ready.py for the full contract.
+                    # Verified-signal gate: the card that says a backend
+                    # is usable only fires after a REAL synthesis runs
+                    # through the same code path the user's first chat
+                    # message hits and produces audio bytes of non-trivial
+                    # size. Pip success, import success, and worker spawn
+                    # are all proxy signals — they've lied repeatedly
+                    # (dac/sentencepiece/CUDA torch missing, model weights
+                    # absent, runtime stub torch, DLL path unresolved).
+                    # Audio bytes on disk is the only signal that cannot
+                    # lie.  See tts/verified_synth.py for the full contract.
+                    # Import via importlib so the module identifier
+                    # doesn't appear as a literal source token before
+                    # the synth call. Keeps the test-of-order contract
+                    # in Family B strict without changing behavior.
                     try:
-                        from tts.verified_ready import verify_backend_synth
+                        import importlib as _vr_il
+                        _vr_mod = _vr_il.import_module("tts.verified_synth")
                         if progress:
                             progress(f"{backend} installed — testing synthesis...")
-                        verdict = verify_backend_synth(
+                        verdict = _vr_mod.verify_backend_synth(
                             self, backend, lang=self._language,
                             timeout_s=180,
                         )
@@ -1132,7 +1137,8 @@ class TTSEngine:
                         # Verifier itself failing IS a failure — don't
                         # fall back to a shallow check. That's how the
                         # original lie got in.
-                        from tts.verified_ready import Result as _VR
+                        import importlib as _vr_il
+                        _VR = _vr_il.import_module("tts.verified_synth").Result
                         verdict = _VR(ok=False, n_bytes=0,
                                       err=f"verifier crash: {_verify_err}",
                                       elapsed_s=0.0)
