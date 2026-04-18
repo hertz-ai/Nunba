@@ -265,15 +265,24 @@ _FALLBACK_LANG_ENGINE_PREFERENCE = {
     # 4. Kokoro 82M       — small neural, CPU-friendly, beats Piper
     # 5. Piper            — bundled CPU absolute-last-resort
     'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_INDIC_PARLER, BACKEND_KOKORO, BACKEND_PIPER],
-    # International: CosyVoice3 (zero-shot cloning) > Chatterbox ML (16GB+)
-    'es': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
-    'fr': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
-    'de': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
-    'ja': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
-    'ko': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
-    'zh': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
-    'it': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
-    'ru': [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
+    # International: Chatterbox Multilingual is PRIMARY because it is
+    # pip-installable (`chatterbox-tts`) and ships with every normal
+    # Nunba install.  CosyVoice3 is KEPT as a secondary slot for power
+    # users who manually clone the `FunAudioLLM/CosyVoice` repo to
+    # `~/PycharmProjects/CosyVoice` — without that clone, `import
+    # cosyvoice` raises ModuleNotFoundError and the synth silently
+    # cascades to the second entry anyway.  Listing Chatterbox first
+    # flips the default path for 99% of installs from "load
+    # un-importable primary → fail → fall back" to "load importable
+    # primary → succeed".  (J213 decision, 2026-04-18 live audit.)
+    'es': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
+    'fr': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
+    'de': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
+    'ja': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
+    'ko': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
+    'zh': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
+    'it': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
+    'ru': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
     # Portuguese — Chatterbox ML covers pt natively (see
     # _FALLBACK_ENGINE_CAPABILITIES[CHATTERBOX_ML]['languages']).
     # CosyVoice3's 9-lang set excludes pt, so we skip it here to avoid
@@ -285,8 +294,13 @@ _FALLBACK_LANG_ENGINE_PREFERENCE = {
 for _lang in _INDIC_LANGS:
     _FALLBACK_LANG_ENGINE_PREFERENCE[_lang] = [BACKEND_INDIC_PARLER]
 
-# Default fallback chain for unlisted languages
-_DEFAULT_PREFERENCE = [BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_INDIC_PARLER]
+# Default fallback chain for unlisted languages.
+# Chatterbox ML is placed first for the same reason as the explicit
+# per-lang lists above: pip-installable, importable out of the box.
+# CosyVoice3 follows for the power-user path (repo clone required).
+# Indic Parler is the final Unicode-safe catcher for whatever slipped
+# through.
+_DEFAULT_PREFERENCE = [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3, BACKEND_INDIC_PARLER]
 
 
 # ════════════════════════════════════════════════════════════════════
