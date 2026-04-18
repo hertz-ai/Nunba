@@ -2258,6 +2258,142 @@ def admin_models_hub_install():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/admin/models/manifest/export', methods=['GET'])
+def admin_models_manifest_export():
+    """Export the user's hub-installed model set as a portable manifest.
+
+    Today each user manually installs models one-by-one via the HF hub
+    UI — there's no way to reproduce "my working model set" on another
+    machine.  This endpoint serialises every catalog entry whose
+    `source == 'hub-install'` into a JSON blob that admin_models_manifest_import
+    can replay.  Seeded presets and manually-registered entries are
+    intentionally excluded (they reproduce via the app version, not
+    via a manifest).
+
+    Response shape:
+        {
+          "manifest_version": 1,
+          "exported_at": "<iso>",
+          "entries": [
+            {"hf_id": "...", "category": "...", "purposes": [...],
+             "languages": [...], "name": "..."},
+            ...
+          ]
+        }
+    """
+    if not _is_local_request():
+        return jsonify({"error": "local only"}), 403
+    try:
+        from datetime import datetime as _dt
+
+        from models.catalog import get_catalog
+        catalog = get_catalog()
+        entries = []
+        for entry in catalog.list_all():
+            if getattr(entry, 'source', '') != 'hub-install':
+                continue
+            entries.append({
+                'hf_id': getattr(entry, 'hf_repo', '') or '',
+                # Derive category back from safe_id prefix (e.g. 'tts-…')
+                # or fall back to model_type.
+                'category': (entry.id.split('-', 1)[0]
+                             if '-' in entry.id
+                             else entry.model_type),
+                'name': entry.name,
+                'purposes': list(entry.purposes or []),
+                'languages': list(entry.languages or []),
+            })
+        return jsonify({
+            'manifest_version': 1,
+            'exported_at': _dt.utcnow().isoformat() + 'Z',
+            'entries': entries,
+        })
+    except Exception as e:
+        logging.warning(f"manifest export failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/models/manifest/import', methods=['POST'])
+def admin_models_manifest_import():
+    """Replay a manifest produced by /manifest/export on this machine.
+
+    For each entry, re-run the existing admin_models_hub_install flow
+    so every one of the 4 supply-chain gates is applied fresh (trusted
+    org / safetensors / homoglyph / file-probe) — there is NO bypass.
+    This guarantees that a manifest from a malicious peer cannot
+    smuggle in an unverified repo just because it's in "import" mode.
+
+    Body: {"manifest": {manifest_version, entries: [...]},
+           "confirm_unverified": bool  # passed through to each install}
+
+    Response:
+        {success, attempted: N, succeeded: [...], failed: [{hf_id, reason}, ...]}
+    """
+    if not _is_local_request():
+        return jsonify({"error": "local only"}), 403
+    try:
+        body = request.get_json(silent=True) or {}
+        manifest = body.get('manifest') or {}
+        entries = manifest.get('entries') or []
+        confirm_unverified = bool(body.get('confirm_unverified'))
+        if not isinstance(entries, list) or not entries:
+            return jsonify({"error": "manifest.entries must be a non-empty list"}), 400
+
+        # Re-dispatch each entry through admin_models_hub_install via
+        # Flask's test_client so all gates fire identically — no
+        # duplicated gate logic, no parallel code path.
+        succeeded = []
+        failed = []
+        with app.test_client() as client:
+            for e in entries:
+                hf_id = (e.get('hf_id') or '').strip()
+                category = (e.get('category') or '').lower().strip()
+                if not hf_id or not category:
+                    failed.append({'hf_id': hf_id, 'reason': 'missing hf_id/category'})
+                    continue
+                payload = {
+                    'hf_id': hf_id,
+                    'category': category,
+                    'name': e.get('name'),
+                    'purposes': e.get('purposes') or [],
+                    'languages': e.get('languages') or [],
+                    'confirm_unverified': confirm_unverified,
+                }
+                # test_client hits the live route — preserves every
+                # gate (trusted-org, safetensors, homoglyph, file-probe,
+                # capability seeding, load probe, optional challenge).
+                r = client.post(
+                    '/api/admin/models/hub/install',
+                    json=payload,
+                    headers={
+                        # Preserve the local-only gate by forwarding
+                        # the requesting client's remote addr context.
+                        'X-Forwarded-For': request.remote_addr or '127.0.0.1',
+                    },
+                )
+                if r.status_code == 200:
+                    succeeded.append(hf_id)
+                else:
+                    try:
+                        err = r.get_json() or {}
+                    except Exception:
+                        err = {}
+                    failed.append({
+                        'hf_id': hf_id,
+                        'status': r.status_code,
+                        'reason': err.get('error') or err.get('message') or 'install failed',
+                    })
+        return jsonify({
+            'success': True,
+            'attempted': len(entries),
+            'succeeded': succeeded,
+            'failed': failed,
+        })
+    except Exception as e:
+        logging.warning(f"manifest import failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Provider Management Admin API  (/api/admin/providers/*)
 # Exposes HARTOS ProviderRegistry + Gateway + EfficiencyMatrix
