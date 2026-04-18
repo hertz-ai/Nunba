@@ -955,6 +955,121 @@ def api_admin_chat_config_put():
         logging.error("chat-config PUT failed: %s", e)
         return jsonify({'error': 'update_failed', 'message': str(e)}), 500
 
+
+# ─── Chat-Sync (Track C: cross-device restore, opt-in) ──────────────
+# Requires: (a) signed-in JWT and (b) cloud_sync_enabled=true in the
+# admin chat settings. Both gates MUST pass; a stray JWT alone isn't
+# enough. See desktop/chat_sync.py for the persistence contract.
+
+def _chat_sync_resolve_uid():
+    """Return (uid, err_response_or_None).
+
+    Extracts the user id from Bearer token, gates on
+    cloud_sync_enabled, and uniformly returns a 401/403 tuple on
+    failure. Call sites only need to check the error slot:
+
+        uid, err = _chat_sync_resolve_uid()
+        if err: return err
+    """
+    # Gate 1: cloud_sync_enabled
+    try:
+        from desktop.chat_settings import get_chat_settings
+        if not get_chat_settings().cloud_sync_enabled:
+            return None, (jsonify({
+                'error': 'sync_disabled',
+                'message': 'Enable cloud sync in admin settings first.',
+            }), 403)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("chat-sync cloud_sync_enabled probe failed: %s", e)
+        # Fail-closed: if we can't confirm the toggle is on, don't sync
+        return None, (jsonify({'error': 'sync_probe_failed'}), 500)
+
+    # Gate 2: JWT → user_id
+    auth = request.headers.get('Authorization', '')
+    if not auth.startswith('Bearer '):
+        return None, (jsonify({'error': 'unauthorized'}), 401)
+    token = auth[7:].strip()
+    try:
+        from integrations.social.auth import decode_jwt
+        payload = decode_jwt(token)
+        uid = payload.get('user_id') if isinstance(payload, dict) else None
+    except Exception:
+        return None, (jsonify({'error': 'unauthorized'}), 401)
+    if not uid:
+        return None, (jsonify({'error': 'unauthorized'}), 401)
+    return str(uid), None
+
+
+@app.route('/api/chat-sync/push', methods=['POST'])
+def api_chat_sync_push():
+    """Merge the caller's chat-bucket into the server-side store.
+
+    Body: ``{"buckets": {agent_key: {"messages":[...],
+    "updated_at": ms_epoch}}, "updated_at": ms_epoch}``.
+
+    Returns the merged blob so the client can update its local
+    ``updated_at`` after the round-trip.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.chat_sync import push as _push
+        body = request.get_json(silent=True) or {}
+        merged = _push(uid, body)
+        return jsonify(merged), 200
+    except ValueError as ve:
+        return jsonify({'error': 'invalid_payload', 'message': str(ve)}), 400
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync push failed for %s: %s", uid, e)
+        return jsonify({'error': 'push_failed'}), 500
+
+
+@app.route('/api/chat-sync/pull', methods=['GET'])
+def api_chat_sync_pull():
+    """Return the stored chat-bucket for the authenticated user.
+
+    Shape: same as push-merge output. An empty dict (``{"buckets":
+    {}, "updated_at": 0}``) is returned when the user has never
+    pushed — the frontend should treat that as "no cloud copy".
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.chat_sync import pull as _pull
+        return jsonify(_pull(uid)), 200
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync pull failed for %s: %s", uid, e)
+        return jsonify({'error': 'pull_failed'}), 500
+
+
+@app.route('/api/chat-sync/forget', methods=['DELETE'])
+def api_chat_sync_forget():
+    """Delete the server-side chat-bucket for the authenticated
+    user. Intended for 'Forget me on all devices' flows.
+
+    Belt-and-suspenders: requires ``{"confirm": true}`` just like
+    DELETE /api/guest-id does.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    if not body.get('confirm'):
+        return jsonify({
+            'error': 'confirm_required',
+            'message': 'Body must include {"confirm": true}.',
+        }), 400
+    try:
+        from desktop.chat_sync import forget as _forget
+        deleted = _forget(uid)
+        return jsonify({'deleted': bool(deleted)}), 200
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync forget failed for %s: %s", uid, e)
+        return jsonify({'error': 'forget_failed'}), 500
+
+
 def get_embedded_python_path():
     """Get the path to the embedded Python executable"""
     if getattr(sys, 'frozen', False):
