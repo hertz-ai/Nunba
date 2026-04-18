@@ -331,6 +331,7 @@ build_exe_options = {
         "desktop.platform_utils",  # Platform utilities
         "tts.piper_tts",  # Piper TTS for CPU text-to-speech
         "tts.package_installer",  # Runtime TTS package installer
+        "tts.backend_venv",  # Per-backend venv infra (Track A)
         "tts.tts_engine",  # Unified TTS engine (auto-selects GPU/CPU backend)
         "tts.tts_handshake",  # First-run voice-check handshake (gates Ready banner)
         "tts.verified_synth",  # Verified-signal gate (consumed by tts_handshake + _bg_install)
