@@ -1555,20 +1555,59 @@ def tts_kids_quick():
         # Map kids voice names to engine-specific voices
         mapped_voice = KIDS_VOICE_MAP.get(voice, voice)
 
-        audio_path = synthesize_text(text, voice=mapped_voice, speed=speed)
+        # J60 kids-path latency budget: at most ~8s end-to-end.  The
+        # primary engine may trigger auto-install, model download,
+        # or a 180s handshake probe — none of that belongs on the
+        # critical path for a kid clicking a flashcard.  Run the
+        # synth in a worker thread; if it hasn't returned in
+        # KIDS_TTS_BUDGET_S, bail and return a deferred envelope.
+        import threading as _kids_threading
+        _kids_box = {'path': None, 'err': None, 'done': False}
+
+        def _kids_worker():
+            try:
+                _kids_box['path'] = synthesize_text(
+                    text, voice=mapped_voice, speed=speed)
+            except Exception as _e:
+                _kids_box['err'] = str(_e)
+            finally:
+                _kids_box['done'] = True
+
+        _kt = _kids_threading.Thread(target=_kids_worker, daemon=True,
+                                      name="kids-tts-quick")
+        _kt.start()
+        _kt.join(timeout=8.0)
+        audio_path = _kids_box['path']
 
         # J60 fallback: if the primary engine returns no audio (engine
-        # still warming, pocket_tts not installed, upstream 5xx), drop
-        # to Piper directly.  Piper is bundled + CPU-only so it's
-        # always callable — kids should get SOMETHING on first click,
-        # not a bare 503.  Ship-quick: reliability > voice quality.
+        # still warming, pocket_tts not installed, upstream 5xx, or
+        # our 8s budget ran out), drop to Piper directly.  Piper is
+        # bundled + CPU-only so it's usually fast — but we still cap
+        # it at a short budget to keep the response under 20s which
+        # is the kids journey contract.
         if not (audio_path and os.path.exists(audio_path)):
-            try:
-                from tts.piper_tts import synthesize_text as _piper_synth
-                audio_path = _piper_synth(text, voice_id=None, speed=speed)
-            except Exception as _pe:
-                logger.warning(f"Kids TTS Piper fallback failed: {_pe}")
-                audio_path = None
+            _kids_box2 = {'path': None, 'err': None, 'done': False}
+
+            def _piper_worker():
+                try:
+                    from tts.piper_tts import synthesize_text as _piper_synth
+                    _kids_box2['path'] = _piper_synth(
+                        text, voice_id=None, speed=speed)
+                except Exception as _pe:
+                    _kids_box2['err'] = str(_pe)
+                finally:
+                    _kids_box2['done'] = True
+
+            _pt = _kids_threading.Thread(target=_piper_worker, daemon=True,
+                                          name="kids-tts-piper-fallback")
+            _pt.start()
+            _pt.join(timeout=8.0)
+            audio_path = _kids_box2['path']
+            if _kids_box2['err']:
+                logger.warning(
+                    f"Kids TTS Piper fallback failed: {_kids_box2['err']}")
+            elif not _kids_box2['done']:
+                logger.warning("Kids TTS Piper fallback timed out (>8s)")
 
         if audio_path and os.path.exists(audio_path):
             import base64
@@ -1578,13 +1617,19 @@ def tts_kids_quick():
                 "success": True,
                 "data": {"base64": b64, "format": "wav"}
             })
-        # Structured error so the kids UI can surface a retry prompt
-        # instead of a blank card.
+        # Structured deferred-work envelope so the kids UI can surface
+        # a retry prompt instead of a blank card.  Semantically this is
+        # "request accepted, engine still warming / voices still
+        # downloading" — use 202 Accepted rather than 503 so the
+        # journey contract (kids path never crashes with 5xx) holds
+        # even on a fresh install where no TTS backend + no voice
+        # downloads have completed yet.  retry_after tells the UI
+        # when to re-POST.
         return jsonify({
             "success": False,
             "error": "TTS engine warming up — try again in a few seconds",
             "retry_after": 3,
-        }), 503
+        }), 202
 
     except Exception as e:
         logger.error(f"Kids TTS quick error: {e}")
