@@ -202,18 +202,133 @@ def real_piper_engine(piper_voice_path):
 # Nunba Flask app — boot real app via test_client, not subprocess
 # ───────────────────────────────────────────────────────────────
 
+class _LiveHTTPAdapter:
+    """Adapter that quacks like Flask `test_client` but hits a live
+    HTTP server.  Used when `NUNBA_LIVE_URL` is set (or :5189 is
+    responding to /status) — avoids the autogen import deadlock that
+    `import main` triggers on Windows.
+
+    Surface: `.get(path)`, `.post(path, json=..., headers=..., data=...)`,
+    `.delete(path, headers=...)`.  Each returns `_Resp` with
+    `.status_code`, `.get_json(silent=True)`, `.get_data(as_text=bool)`,
+    `.headers`.  Matches everything the journey tests touch.
+    """
+
+    def __init__(self, base_url: str, timeout: float = 30.0):
+        # 30 s default — real /chat under cold-start can legitimately
+        # take ~18-22 s while llama-server boots; 8 s was cutting into
+        # real work and producing spurious FAILs.  The `NUNBA_LIVE_TIMEOUT`
+        # env var lets operators stretch this further for slower hardware.
+        import os
+        import requests
+        env_to = os.environ.get("NUNBA_LIVE_TIMEOUT")
+        if env_to:
+            try:
+                timeout = float(env_to)
+            except ValueError:
+                pass
+        self._s = requests.Session()
+        self._base = base_url.rstrip("/")
+        self._timeout = timeout
+        self.config = {"TESTING": True}
+
+    def _url(self, path: str) -> str:
+        if path.startswith("http"):
+            return path
+        if not path.startswith("/"):
+            path = "/" + path
+        return f"{self._base}{path}"
+
+    def _wrap(self, r):
+        class _Resp:
+            def __init__(self, real):
+                self._r = real
+                self.status_code = real.status_code
+                self.headers = dict(real.headers)
+
+            def get_json(self, silent: bool = False, **_):
+                try:
+                    return self._r.json()
+                except Exception:
+                    return None
+
+            def get_data(self, as_text: bool = False):
+                return self._r.text if as_text else self._r.content
+        return _Resp(r)
+
+    def get(self, path, **kw):
+        kw.setdefault("timeout", self._timeout)
+        return self._wrap(self._s.get(self._url(path), **kw))
+
+    def post(self, path, json=None, headers=None, data=None, **kw):
+        kw.setdefault("timeout", self._timeout)
+        return self._wrap(self._s.post(
+            self._url(path), json=json, headers=headers, data=data, **kw,
+        ))
+
+    def put(self, path, json=None, headers=None, data=None, **kw):
+        kw.setdefault("timeout", self._timeout)
+        return self._wrap(self._s.put(
+            self._url(path), json=json, headers=headers, data=data, **kw,
+        ))
+
+    def delete(self, path, headers=None, **kw):
+        kw.setdefault("timeout", self._timeout)
+        return self._wrap(self._s.delete(self._url(path), headers=headers, **kw))
+
+
+def _pick_live_base_url() -> str | None:
+    """Return a live Flask base URL if one is reachable, else None.
+
+    Priority order:
+      1. Explicit `NUNBA_LIVE_URL` env var (any tier, any port).
+      2. Default journey harness port :5189 (Phase-A spawn).
+      3. The operator's production :5000 Nunba desktop instance.
+    """
+    import requests
+    candidates = []
+    env_url = os.environ.get("NUNBA_LIVE_URL")
+    if env_url:
+        candidates.append(env_url.rstrip("/"))
+    candidates.extend([
+        "http://localhost:5189",
+        "http://localhost:5000",
+    ])
+    seen = set()
+    for url in candidates:
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            r = requests.get(f"{url}/status", timeout=2.5)
+            if r.status_code == 200:
+                return url
+        except Exception:
+            continue
+    return None
+
+
 @pytest.fixture
 def nunba_flask_app(isolated_nunba_home, monkeypatch):
-    """Boot the real main.py Flask app as a test_client.
+    """Return a Flask-test-client-shaped handle to the Nunba app.
 
-    Heavy imports (HARTOS, torch, transformers) are skipped via env
-    flags so CI without those deps can still run. Tests that require
-    a specific subsystem request the appropriate deeper fixture.
+    Strategy:
+      1. If a live Flask is reachable (NUNBA_LIVE_URL, :5189, or :5000),
+         return a `_LiveHTTPAdapter` — skips `import main` entirely.
+         Avoids the autogen import deadlock on Windows.
+      2. Otherwise fall back to in-process `app.test_client()` by
+         importing main, preserving the legacy path for environments
+         without a running daemon.
     """
     monkeypatch.setenv("NUNBA_DISABLE_TTS_WARMUP", "1")
     monkeypatch.setenv("NUNBA_DISABLE_LLAMA_AUTOSTART", "1")
     monkeypatch.setenv("NUNBA_DISABLE_HARTOS_INIT", "1")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "1")
+
+    live_url = _pick_live_base_url()
+    if live_url:
+        yield _LiveHTTPAdapter(live_url)
+        return
 
     try:
         import main
