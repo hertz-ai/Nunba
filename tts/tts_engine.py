@@ -1298,11 +1298,23 @@ class TTSEngine:
         If the new backend isn't loaded yet, starts loading in a background
         thread. The current backend stays active until the new one is ready —
         no thread starvation, no request blocking.
+
+        J214 (2026-04-18 live audit): the newly-selected backend is
+        pinned against idle-sweep eviction via
+        ``set_pressure_evict_only(True)``.  Any prior active backend
+        is unpinned first.  Without this, the HARTOS idle-timeout
+        sweep (phase 7 of ``ModelLifecycleManager._tick``) would
+        happily reclaim VRAM from Indic Parler after ~10min of silent
+        reading, forcing a cold reload when the user resumes their
+        Tamil conversation — the exact warmth-is-wasted bug the J214
+        gap named.
         """
         if language == self._language:
             return
+        prev_backend = self._active_backend
         self._language = language
         new_backend = self._select_backend_for_language(language)
+        self._pin_active_tts_backend(prev_backend, new_backend)
         if new_backend != self._active_backend:
             if new_backend in self._backends:
                 # Already loaded — switch immediately
@@ -1327,6 +1339,65 @@ class TTSEngine:
                 import threading
                 threading.Thread(target=_bg_switch, daemon=True,
                                 name=f'tts-switch-{new_backend}').start()
+
+    def _pin_active_tts_backend(self, prev_backend: str | None,
+                                new_backend: str) -> None:
+        """Flip ``pressure_evict_only`` on the HARTOS lifecycle manager.
+
+        Prev backend (if any, and distinct from new) gets unpinned so
+        its idle timeout resumes; new backend gets pinned so the
+        passive idle sweep won't evict it while it's the user's active
+        voice.  VRAM-pressure eviction still applies — this is NOT
+        ``pinned=True``; the backend still yields when the machine
+        genuinely needs the memory.
+
+        No-op when:
+          * the ModelLifecycleManager isn't importable (isolated test
+            env, or a pre-HARTOS build),
+          * the backend has no VRAM tool name (Piper is CPU-only,
+            nothing to track),
+          * ``prev`` and ``new`` are the same (same-lang re-call).
+        """
+        if prev_backend == new_backend:
+            return
+        try:
+            from integrations.service_tools.model_lifecycle import (
+                get_model_lifecycle_manager,
+            )
+        except Exception as e:
+            # Running standalone / without HARTOS installed — the pin
+            # is a no-op but the TTS engine still functions.  Log at
+            # DEBUG so noisy boots don't pollute the log.
+            logger.debug(f"J214: lifecycle manager unavailable ({e}); "
+                         f"skipping TTS pin flip")
+            return
+        try:
+            mgr = get_model_lifecycle_manager()
+        except Exception as e:
+            logger.debug(f"J214: lifecycle manager init failed ({e})")
+            return
+
+        if prev_backend:
+            prev_tool = self._get_vram_tool_name(prev_backend)
+            if prev_tool:
+                try:
+                    mgr.set_pressure_evict_only(prev_tool, False)
+                    logger.info(
+                        f"J214: unpinned prev TTS {prev_tool!r} "
+                        f"(idle eviction re-enabled)")
+                except Exception as e:
+                    logger.warning(f"J214: unpin {prev_tool!r} failed: {e}")
+
+        new_tool = self._get_vram_tool_name(new_backend)
+        if new_tool:
+            try:
+                result = mgr.set_pressure_evict_only(new_tool, True)
+                logger.info(
+                    f"J214: pinned active TTS {new_tool!r} "
+                    f"(pressure_evict_only=True, tracked="
+                    f"{result.get('tracked')})")
+            except Exception as e:
+                logger.warning(f"J214: pin {new_tool!r} failed: {e}")
 
     def _switch_backend(self, new_backend):
         """Switch to a new backend, unloading the old one if needed."""
