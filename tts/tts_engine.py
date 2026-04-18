@@ -803,6 +803,57 @@ class SentencePipeline:
 # We need ThreadPoolExecutor for the pipeline
 from concurrent.futures import ThreadPoolExecutor
 
+# ────────────────────────────────────────────────────────────────────
+# Venv-quarantined backend probes (Track B, Phase 6)
+# ────────────────────────────────────────────────────────────────────
+#
+# Backends listed in tts.package_installer.BACKEND_VENV_PACKAGES live
+# inside their own virtualenv and are NEVER importable from the main
+# Nunba interpreter. Any "is this backend runnable?" probe must ask
+# the venv (via backend_venv.is_venv_healthy) rather than the main
+# process (via _torch_probe.check_backend_runnable).
+#
+# These two helpers are the single source of truth for "venv or
+# main-interp?" and "runnable check". Callers in TTSEngine._can_run_backend
+# and TTSEngine._try_auto_install_backend both go through them.
+
+
+def _is_venv_backend(backend: str) -> bool:
+    """True iff this backend is installed into its own venv."""
+    try:
+        from tts.package_installer import BACKEND_VENV_PACKAGES
+        return backend in BACKEND_VENV_PACKAGES
+    except Exception:
+        return False
+
+
+def _probe_backend_runnable(backend: str, required_pkg: str) -> bool:
+    """Single-call probe: is this backend runnable right now?
+
+    Dispatches to the right probe for the backend's install topology:
+      - venv-quarantined → backend_venv.is_venv_healthy(b, required_pkg)
+      - main-interp      → _torch_probe.check_backend_runnable(b, required_pkg)
+
+    Returns False on any probe error (never raises) — the caller can
+    choose to retry install rather than propagate an exception.
+    """
+    try:
+        if _is_venv_backend(backend):
+            from tts.backend_venv import is_venv_healthy
+            return is_venv_healthy(backend, required_pkg)
+        from tts._torch_probe import check_backend_runnable
+        return check_backend_runnable(backend, required_pkg)
+    except Exception:
+        # Fallback to find_spec if probe unavailable (dev mode, no
+        # python-embed, no venv). Conservative — err on "not runnable"
+        # rather than a false positive that masks an install error.
+        try:
+            import importlib.util
+            return importlib.util.find_spec(required_pkg) is not None
+        except Exception:
+            return False
+
+
 # ════════════════════════════════════════════════════════════════════
 # MAIN TTS ENGINE — multi-engine routing + pre-synth
 # ════════════════════════════════════════════════════════════════════
@@ -954,19 +1005,20 @@ class TTSEngine:
         # ── Software check: is the required package actually importable? ──
         # Uses subprocess probe (python-embed) to avoid stub torch poisoning.
         # find_spec only checks if the .py exists, not if imports succeed.
+        #
+        # Venv-quarantined backends (Track B, Phase 6): for backends in
+        # BACKEND_VENV_PACKAGES, the package lives in a dedicated venv
+        # at ~/Documents/Nunba/data/venvs/<backend>/ and is NEVER
+        # importable from the main interpreter. The probe must go
+        # through backend_venv.is_venv_healthy instead.
         required_pkg = self._get_required_package(backend)
         if required_pkg:
-            if required_pkg not in TTSEngine._import_check_cache:
-                try:
-                    from tts._torch_probe import check_backend_runnable
-                    TTSEngine._import_check_cache[required_pkg] = check_backend_runnable(backend, required_pkg)
-                except Exception:
-                    # Fallback to find_spec if probe unavailable (dev mode)
-                    import importlib.util
-                    TTSEngine._import_check_cache[required_pkg] = (
-                        importlib.util.find_spec(required_pkg) is not None
-                    )
-            if not TTSEngine._import_check_cache[required_pkg]:
+            cache_key = f'venv:{backend}' if _is_venv_backend(backend) else required_pkg
+            if cache_key not in TTSEngine._import_check_cache:
+                TTSEngine._import_check_cache[cache_key] = _probe_backend_runnable(
+                    backend, required_pkg,
+                )
+            if not TTSEngine._import_check_cache[cache_key]:
                 logger.debug(f"Backend {backend} skipped: '{required_pkg}' not runnable")
                 return False
 
@@ -1113,11 +1165,16 @@ class TTSEngine:
                     # False from a prior probe attempt, but we want the live
                     # answer at install-decision time (state may have changed
                     # since boot, e.g. CUDA torch finished installing).
-                    from tts import _torch_probe as _tp
-                    from tts._torch_probe import check_backend_runnable
-                    _tp._backend_cache.pop(backend, None)
-                    if check_backend_runnable(backend, required_pkg):
-                        TTSEngine._import_check_cache[required_pkg] = True
+                    #
+                    # Venv-quarantined backends go through backend_venv.
+                    # is_venv_healthy (the venv's python exe is the only
+                    # place the package is importable).
+                    if not _is_venv_backend(backend):
+                        from tts import _torch_probe as _tp
+                        _tp._backend_cache.pop(backend, None)
+                    if _probe_backend_runnable(backend, required_pkg):
+                        cache_key = f'venv:{backend}' if _is_venv_backend(backend) else required_pkg
+                        TTSEngine._import_check_cache[cache_key] = True
                         logger.info(f"Packages for '{backend}' already runnable — skipping install")
                         return True
                 except Exception as _probe_err:
