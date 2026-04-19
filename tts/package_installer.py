@@ -111,6 +111,14 @@ BACKEND_DISPLAY_NAMES = {
     'cosyvoice3': 'CosyVoice3 (9 international languages)',
     'f5': 'F5-TTS (voice cloning)',
     'piper': 'Piper TTS (CPU fallback)',
+    # Added after Kokoro landed + pocket_tts was promoted from Piper
+    # alias to its own backend + luxtts was kept for frozen-HARTOS
+    # compat. Keeping the keyspace aligned with BACKEND_PACKAGES is
+    # enforced by TestConstants.test_display_names_match_backends —
+    # a missing entry here previously crashed that test every CI run.
+    'kokoro': 'Kokoro 82M (CPU/GPU, multilingual)',
+    'luxtts': 'LuxTTS (CPU, English voice-clone)',
+    'pocket_tts': 'Pocket TTS (CPU, English voice-clone)',
 }
 
 # Lock to prevent concurrent installs (in-process)
