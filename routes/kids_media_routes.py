@@ -23,6 +23,20 @@ from flask import jsonify, request, send_file
 
 logger = logging.getLogger(__name__)
 
+# Module-level handles for the two things tests want to substitute via
+# `patch.object(routes.kids_media_routes, 'adapter'|'req', <mock>)`
+# OR `patch('routes.kids_media_routes.req.get', <mock>)`.
+#
+# `req` is eagerly bound to the requests module so the dotted-attribute
+# patch form works (you can't `patch.attr` on a None placeholder).
+# requests is a leaf dep with no circular risk at this module's import.
+#
+# `adapter` stays None by default — routes.hartos_backend_adapter pulls
+# in HARTOS integrations and can cause circular-import timing issues if
+# imported here; the function body lazy-imports on first real call.
+import requests as req  # noqa: E402
+adapter = None  # type: ignore[assignment]
+
 # Lazy imports to avoid circular deps at module level
 _tts_synthesize = None
 _tts_available = False
@@ -159,8 +173,13 @@ def _generate_image_via_agent(prompt, user_id, style='cartoon'):
     This ensures guardrails, logging, and cultural wisdom apply.
     """
     try:
-        import routes.hartos_backend_adapter as adapter
-        result = adapter.chat(
+        # Honour module-level `adapter` override (tests do
+        # `patch.object(routes.kids_media_routes, 'adapter', <mock>)`);
+        # fall back to the real lazy import in production.
+        _adapter = adapter
+        if _adapter is None:
+            import routes.hartos_backend_adapter as _adapter
+        result = _adapter.chat(
             text=f"Generate a children's educational illustration: {prompt}. Style: {style}. Return only the image URL.",
             user_id=user_id or 'system',
             media_request=True,
@@ -188,7 +207,8 @@ def _generate_image_via_agent(prompt, user_id, style='cartoon'):
 
 def _download_and_cache(url, cache_path, timeout=30):
     """Download a URL and save to disk cache."""
-    import requests as req
+    # `req` is the module-level requests binding — tests patch it (or
+    # its .get) to substitute a mock client.
     try:
         resp = req.get(url, timeout=timeout, stream=True)
         resp.raise_for_status()
