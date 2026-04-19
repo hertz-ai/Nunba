@@ -6,7 +6,7 @@
 > system does end-to-end and how to verify it.
 >
 > When claims here disagree with code, code wins — but please update
-> this map in the same PR. See `CLAUDE.md` Gate 2 (DRY) before copying
+> this map in the same PR. See the repo root's AI-agent-guidance doc, Gate 2 (DRY), before copying
 > any table into another document.
 
 ---
@@ -48,7 +48,7 @@ Hevolve (web SPA) ── REST / WAMP ──▶ HARTOS regional/central (hevolve.
 Hevolve_React_Native ── native Java WAMP ──▶ HARTOS regional/central
 ```
 
-Nunba **must not** own its own `core/`, `integrations/`, `security/`, or `models/` packages — those live in HARTOS and are imported through `site-packages`. Namespace collision under cx_Freeze silently hides whichever `__init__.py` loads second (see `CLAUDE.md` Gate 6 and `memory/feedback_frozen_build_pitfalls.md`).
+Nunba **must not** own its own `core/`, `integrations/`, `security/`, or `models/` packages — those live in HARTOS and are imported through `site-packages`. Namespace collision under cx_Freeze silently hides whichever `__init__.py` loads second (see the repo root's AI-agent-guidance doc, Gate 6, and `memory/feedback_frozen_build_pitfalls.md`).
 
 ### 1.3 Topology tiers
 
@@ -368,7 +368,7 @@ VLM: MiniCPM. Local :9890 is tried before cloud `azurekong.hertzai.com:8000/mini
 
 ### 5.1 Master key exclusion
 
-`HEVOLVE_MASTER_PRIVATE_KEY` is a kill switch for the distributed intelligence. It is held by human stewards, inaccessible to AI. Claude Code **MUST NEVER** read, print, or derive this key. See `HARTOS/CLAUDE.md` § Master Key - AI Exclusion Zone.
+`HEVOLVE_MASTER_PRIVATE_KEY` is a kill switch for the distributed intelligence. It is held by human stewards, inaccessible to AI. Any AI agent **MUST NEVER** read, print, or derive this key. See the HARTOS root AI-agent-guidance doc, § Master Key - AI Exclusion Zone.
 
 ### 5.2 3-tier role system
 
@@ -396,7 +396,7 @@ Four supply-chain gates on `/api/admin/models/hub/install`:
 
 ### 5.4 MCP bearer auth
 
-HARTOS MCP HTTP bridge at `/api/mcp/local/*`. Bearer token stored at `%LOCALAPPDATA%/Nunba/mcp.token` (Windows). Claude Code MCP config uses `type: "http"` + `url`, not `command`/`args` — Claude Code is a pure MCP client, it MUST NEVER spawn or host an MCP server.
+HARTOS MCP HTTP bridge at `/api/mcp/local/*`. Bearer token stored at `%LOCALAPPDATA%/Nunba/mcp.token` (Windows). External MCP client configs use `type: "http"` + `url`, not `command`/`args` — such clients are pure MCP consumers, they MUST NEVER spawn or host an MCP server locally.
 
 ### 5.5 Hive guardrails
 
@@ -865,24 +865,24 @@ Security: JWT auth on media routes via `_get_user_id_from_request()`, path-trave
 
 ---
 
-### J15 — MCP client (Claude Code) → Nunba bearer auth → tool invocation
+### J15 — External MCP client → Nunba bearer auth → tool invocation
 
-**Precondition:** Nunba running locally. Claude Code installed.
+**Precondition:** Nunba running locally. An external MCP-capable client installed (any IDE or agent that speaks MCP over HTTP).
 
 **Steps:**
-1. User configures Claude Code `.mcp.json` with `type: "http"`, `url: "http://localhost:5000/api/mcp/local/"`, `headers: {Authorization: "Bearer <token>"}`. Token lives in `%LOCALAPPDATA%/Nunba/mcp.token`.
-2. Open Claude Code.
+1. User configures the MCP client's `.mcp.json` with `type: "http"`, `url: "http://localhost:5000/api/mcp/local/"`, `headers: {Authorization: "Bearer <token>"}`. Token lives in `%LOCALAPPDATA%/Nunba/mcp.token`.
+2. Open the MCP client.
 3. Invoke a tool that calls an HARTOS capability (e.g., `hart.memory.recall`).
 
 **Expected observables:**
 - Nunba accepts the bearer token (or rejects with 401 if mismatched).
 - MCP tool call logged in `logs/server.log`.
 - Result streamed back.
-- Claude Code does NOT spawn a server process — it's a pure client. Check there's no `command`/`args` in the config (`feedback_claude_code_mcp_client_only.md`).
+- The client does NOT spawn a server process — it must act as a pure HTTP client. Check there's no `command`/`args` in the config (see `memory/feedback_mcp_client_only.md`).
 
 **Fail signals:**
 - 401 → token mismatch; regenerate via admin diag.
-- Claude Code spawns a server → wrong config type; MUST be `type: "http"` + `url`.
+- Client spawns a server → wrong config type; MUST be `type: "http"` + `url`.
 - Tool invocation blocked by CORS → `/api/mcp/local` CORS headers missing.
 
 **Cross-repo touchpoints:** Nunba `routes/hartos_backend_adapter.py`, HARTOS MCP bridge.
@@ -1077,7 +1077,7 @@ docker compose down -v
 
 ## 10. Change Protocol Reminders
 
-All work on this ecosystem follows the 10-gate Change Protocol in `CLAUDE.md`. Short version:
+All work on this ecosystem follows the 10-gate Change Protocol in the repo root's AI-agent-guidance doc. Short version:
 
 | Gate | Blocking | Purpose |
 |---|---|---|
@@ -1090,7 +1090,7 @@ All work on this ecosystem follows the 10-gate Change Protocol in `CLAUDE.md`. S
 | 6 | ✓ | cx_Freeze Bundle Accounting — every new runtime-imported module in `scripts/setup_freeze_nunba.py` `packages[]` |
 | 7 |  | Multi-OS / Multi-Topology — Windows/macOS/Linux, flat/regional/central; no `os.popen`, all network calls with timeouts |
 | 8 |  | Review Perspectives — architect, reviewer, ciso, sre, perf, product, test-generator |
-| 9 |  | Commit Discipline — atomic, conventional-commits, no `Co-Authored-By: Claude`, no `--no-verify` |
+| 9 |  | Commit Discipline — atomic, conventional-commits, no AI co-author trailers, no `--no-verify` |
 
 ### 10.1 Canonical homes (the canonical constants / helpers)
 
@@ -1124,7 +1124,7 @@ Static review agents do NOT catch cx_Freeze bundling issues. The only defense is
 - `memory/feedback_verify_imports.md` — `ast.parse` is syntax-only
 - `memory/feedback_no_coauthor.md` — commit-message hygiene
 - `memory/feedback_orchestrator_instructions.md` — master orchestrator operating rules
-- `memory/feedback_claude_code_mcp_client_only.md` — Claude Code never hosts MCP; pure client
+- `memory/feedback_mcp_client_only.md` — external MCP clients are pure HTTP consumers; never host the server
 - `memory/project_full_architecture.md` — richer 5-project architecture narrative
 - `memory/project_ecosystem_map.md` — quick project-path map
 - `memory/crossbar-realtime.md` — full WAMP wiring details
