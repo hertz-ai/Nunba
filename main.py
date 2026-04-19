@@ -2190,15 +2190,42 @@ def admin_models_hub_install():
                 try:
                     _entry = get_orchestrator().load(safe_id)
                     if _entry is not None:
-                        validated = True
+                        # ── Capability probe ────────────────────────
+                        # Beyond "subprocess started", actually send a
+                        # canned modality-specific input and require a
+                        # plausible response before claiming validated.
+                        # VLMLoader.validate → 32×32 JPEG caption,
+                        # TTSLoader.validate → synth a fixed phrase,
+                        # STTLoader.validate → transcribe TTS output,
+                        # LlamaLoader.validate → canned prompt complete.
+                        # Default base returns (True, 'no probe defined')
+                        # so loaders without an override don't gate.
+                        _cap_ok, _cap_reason = True, 'no probe'
                         try:
-                            from models.catalog import get_catalog as _get_cat
-                            _e = _get_cat().get(safe_id)
-                            if _e is not None:
-                                _e.capabilities['install_validated'] = True
-                        except Exception as _ce:
-                            logging.debug(
-                                f"[hub-install] capability flip skipped: {_ce}")
+                            _orch = get_orchestrator()
+                            _loader = _orch._loaders.get(_entry.model_type)
+                            if _loader is not None:
+                                _cap_ok, _cap_reason = _loader.validate(_entry)
+                        except Exception as _ve:
+                            _cap_ok = False
+                            _cap_reason = f'validate() raised: {_ve}'
+
+                        if _cap_ok:
+                            validated = True
+                            validate_reason = _cap_reason
+                            try:
+                                from models.catalog import get_catalog as _get_cat
+                                _e = _get_cat().get(safe_id)
+                                if _e is not None:
+                                    _e.capabilities['install_validated'] = True
+                            except Exception as _ce:
+                                logging.debug(
+                                    f"[hub-install] capability flip skipped: {_ce}")
+                        else:
+                            validate_reason = f'capability probe failed: {_cap_reason}'
+                            logging.info(
+                                f"[hub-install] {safe_id} loaded but "
+                                f"capability probe failed: {_cap_reason}")
                     else:
                         validate_reason = 'loader returned None'
                 except Exception as _le:

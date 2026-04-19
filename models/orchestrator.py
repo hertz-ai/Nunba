@@ -475,6 +475,47 @@ class VLMLoader(ModelLoader):
         except Exception:
             return False
 
+    def validate(self, entry: ModelEntry) -> tuple:
+        """Canned VLM probe: describe a 32×32 red JPEG in ≤20 words.
+
+        Proves the full path works end-to-end: catalog entry →
+        VisionService → MiniCPM subprocess (or lightweight backend) →
+        description string.  A healthy VLM returns non-empty text.
+
+        Deterministic input (solid-red 32×32 JPEG, fixed prompt) so
+        repeated install validations give comparable signals.
+        Runs in-process, no network egress — respects the privacy
+        boundary (no user PII, no telemetry).  Times out at 10s
+        (VisionService._describe_frame sets the HTTP timeout itself).
+        """
+        svc = self._get_service()
+        if svc is None:
+            return (False, 'VisionService unavailable')
+        try:
+            from PIL import Image
+            import io
+            buf = io.BytesIO()
+            Image.new('RGB', (32, 32), color=(220, 40, 40)).save(buf, format='JPEG')
+            jpeg_bytes = buf.getvalue()
+        except Exception as e:
+            return (False, f'canned JPEG build failed: {e}')
+
+        try:
+            desc = svc._describe_frame(
+                '__install_validation__',
+                jpeg_bytes,
+                prompt='describe this image in 5 words',
+            )
+        except Exception as e:
+            return (False, f'describe_frame raised: {e}')
+
+        if not desc or not str(desc).strip():
+            return (False, 'empty description from VLM')
+        logger.info(
+            f"VLM validate OK for {entry.id}: {str(desc)[:60]!r}"
+        )
+        return (True, f'caption: {str(desc)[:60]}')
+
 
 # ── Singleton (shared with HARTOS module) ─────────────────────────
 _loaders_registered = False
