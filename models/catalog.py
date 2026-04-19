@@ -194,6 +194,27 @@ def _register_nunba_populators(catalog: ModelCatalog):
     _populators_registered = True
 
 
+def _enforce_nunba_business_rules(catalog: ModelCatalog) -> None:
+    """Apply Nunba-owned business rules AFTER all populators have run.
+
+    HARTOS is upstream; its populators (e.g. MakeItTalk TTS, the 11
+    sherpa/faster-whisper STT variants) don't know Nunba's local-first
+    tagging convention and ship entries without ``'local'`` in their
+    tag list. Nunba is the desktop shell that surfaces these models to
+    end users, so the user-facing taxonomy is OWNED here — we normalise
+    in a single pass over every entry rather than force every HARTOS
+    populator to import Nunba conventions.
+
+    The invariant is enforced as a test (`test_has_local_tag`) against
+    every entry the catalog exposes.
+    """
+    for entry in catalog.list_all():
+        tags = list(entry.tags or [])
+        if 'local' not in tags:
+            tags.append('local')
+            entry.tags = tags
+
+
 def get_catalog() -> ModelCatalog:
     """Get or create the global ModelCatalog singleton.
 
@@ -203,6 +224,7 @@ def get_catalog() -> ModelCatalog:
     """
     if _hartos_mod._catalog_instance is not None:
         _register_nunba_populators(_hartos_mod._catalog_instance)
+        _enforce_nunba_business_rules(_hartos_mod._catalog_instance)
         return _hartos_mod._catalog_instance
 
     with _hartos_mod._catalog_lock:
@@ -217,7 +239,9 @@ def get_catalog() -> ModelCatalog:
                         fn(inst)
                     except Exception:
                         pass
+            _enforce_nunba_business_rules(inst)
             _hartos_mod._catalog_instance = inst
         else:
             _register_nunba_populators(_hartos_mod._catalog_instance)
+            _enforce_nunba_business_rules(_hartos_mod._catalog_instance)
     return _hartos_mod._catalog_instance
