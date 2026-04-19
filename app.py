@@ -1601,8 +1601,8 @@ if getattr(args, 'acceptance_test', False):
         else:
             # Post-freeze: verify behavioral equivalents.
             try:
-                from core.user_lang import get_preferred_lang as _gpl
                 import hart_intelligence_entry as _hie  # noqa: F401
+                from core.user_lang import get_preferred_lang as _gpl
                 _has_fallback = callable(_gpl)
                 _check('symptom_5_preferred_lang_fallback_active',
                        _has_fallback,
