@@ -99,6 +99,28 @@ if [ "${NUNBA_LIVE:-0}" = "1" ]; then
         --timeout=600 --timeout-method=thread
 fi
 
+# ── 4b. HARTOS regression suite — runs the sibling repo's own tests
+#       against the SAME coverage accumulator.  Nunba's coverage totals
+#       only include code paths Nunba tests exercise; HARTOS ships a
+#       separate test suite that hits core.*, integrations.*,
+#       security.*, and every non-Nunba entry point.  Running them
+#       here (with --cov-append) merges HARTOS runtime coverage into
+#       our final number and catches cross-repo regressions before a
+#       HARTOS release lands.
+#
+#       Gated by NUNBA_SKIP_HARTOS_TESTS so local dev can turn it off
+#       (the suite needs HARTOS test deps that aren't always present).
+#       CI always runs it when ../HARTOS/tests/ exists.
+if [ "${NUNBA_SKIP_HARTOS_TESTS:-0}" != "1" ] && [ -d ../HARTOS/tests ]; then
+    run_tier "pytest HARTOS regression" \
+        $PYTEST ../HARTOS/tests \
+        --cov=../HARTOS/core --cov=../HARTOS/integrations --cov=../HARTOS/security \
+        --cov-append -v --tb=short --rootdir ../HARTOS \
+        --timeout=300 --timeout-method=thread \
+        -m "not live and not gpu and not slow" \
+        --ignore=../HARTOS/tests/live --ignore=../HARTOS/tests/gpu
+fi
+
 # ── 5. Cypress — ALWAYS RUN (unless explicitly disabled).  This drives
 #      hundreds of real backend routes via the React UI; without it the
 #      Python coverage number is a huge under-count.  Flask runs under
