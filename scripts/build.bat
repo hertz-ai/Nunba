@@ -4,11 +4,21 @@ REM  Nunba Desktop App - Build Script (Windows)
 REM  Delegates to build.py for all build logic.
 REM ============================================================
 REM  Usage:
-REM    build.bat              - Full build (exe + installer)
-REM    build.bat app          - Build executable only
-REM    build.bat installer    - Build installer only (requires existing build)
-REM    build.bat clean        - Clean build artifacts
-REM    build.bat --skip-deps  - Skip dependency installation
+REM    build.bat                      - Full build (exe + installer)
+REM    build.bat app                  - Build executable only
+REM    build.bat installer            - Build installer only (requires existing build)
+REM    build.bat clean                - Clean build artifacts
+REM    build.bat --skip-deps          - Skip dependency installation
+REM    build.bat --skip-acceptance    - Skip the --acceptance-test gate after freeze.
+REM                                     (equivalent: NUNBA_SKIP_ACCEPTANCE=1)
+REM                                     Live tee log: ~/Documents/Nunba/logs/build_acceptance.log
+REM    build.bat --strict-acceptance  - Restore build-breaker mode (fail/timeout blocks
+REM                                     installer packaging). Default is non-strict:
+REM                                     failure prints a WARN and continues.
+REM                                     (equivalent: NUNBA_STRICT_ACCEPTANCE=1)
+REM
+REM  Args are pass-through: all flags above (and any future ones) go straight to
+REM  scripts\build.py via ARGS=%*.
 REM ============================================================
 
 setlocal
