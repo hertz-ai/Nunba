@@ -26,9 +26,16 @@ def test_j154_data_dir_env_honored(isolated_nunba_home, monkeypatch):
     custom.mkdir()
     monkeypatch.setenv("NUNBA_DATA_DIR", str(custom))
     try:
+        import core.platform_paths as _pp
         from core.platform_paths import get_data_dir
     except Exception as e:
         pytest.skip(f"core.platform_paths not importable: {e}")
+    # get_data_dir caches on first call (_cached_data_dir) for
+    # performance — any earlier call in the test session (e.g. at
+    # conftest import time) pins the answer, and later monkeypatch
+    # of NUNBA_DATA_DIR is ignored. Reset the cache so this test
+    # actually exercises the env-var override.
+    monkeypatch.setattr(_pp, '_cached_data_dir', None, raising=False)
     dd = Path(get_data_dir())
     assert dd == custom, f"expected {custom}, got {dd}"
 
