@@ -794,13 +794,16 @@ class TestVLMLoader:
         assert issubclass(VLMLoader, ModelLoader)
 
     def test_load_success(self):
+        # VLMLoader.load() invokes self._get_service() which imports
+        # hart_intelligence_entry — that pulls HARTOS Redis + channel
+        # registry which we don't want to exercise here.  Patch
+        # _get_service at the VLMLoader class level so the unit test
+        # stays hermetic regardless of prior sys.modules mutations.
+        from unittest.mock import patch as _patch
         loader = VLMLoader()
         entry = _make_entry(id='vlm-minicpm')
         mock_vision = MagicMock()
-        with patch.dict('sys.modules', {
-            'integrations.vision': MagicMock(),
-            'integrations.vision.vision_service': mock_vision,
-        }):
+        with _patch.object(VLMLoader, '_get_service', return_value=mock_vision):
             result = loader.load(entry, 'gpu')
         assert result is True
 

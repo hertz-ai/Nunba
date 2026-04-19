@@ -48,10 +48,21 @@ from tts.tts_engine import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # 0. Pure-data assertions on the allowlist itself (cheap sanity)
 # ---------------------------------------------------------------------------
-def test_tamil_allowlist_only_indic_parler():
-    """Tamil must route ONLY to Indic Parler.  CosyVoice3 and
-    Chatterbox ML are conservatively excluded."""
-    assert _LANG_CAPABLE_BACKENDS['ta'] == frozenset({BACKEND_INDIC_PARLER})
+def test_tamil_allowlist_prefers_indic_parler():
+    """Tamil routing MUST include Indic Parler (authoritative 21-Indic
+    TTS) as the primary backend.  Chatterbox ML is allowed as a local
+    fallback (see tts_engine.py lines 291-304 comment) so a broken
+    Indic Parler import doesn't demote the user to text-only.
+    CosyVoice3 must STILL be excluded — it doesn't speak any Indic
+    language.
+    """
+    allowed = _LANG_CAPABLE_BACKENDS['ta']
+    from tts.tts_engine import BACKEND_COSYVOICE3
+    assert BACKEND_INDIC_PARLER in allowed, \
+        "indic_parler missing from Tamil allowlist"
+    assert BACKEND_COSYVOICE3 not in allowed, \
+        "cosyvoice3 must not be in any Indic-lang allowlist"
+    # Chatterbox ML is allowed but not required.
 
 
 def test_english_allowlist_includes_piper():
