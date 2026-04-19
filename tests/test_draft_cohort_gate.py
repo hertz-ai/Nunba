@@ -25,11 +25,22 @@ import pytest
 
 
 # ── Fake VRAM plumbing (installed once per test via fixtures) ────────────
+#
+# IMPORTANT:  every method the real VRAMManager exposes must ALSO exist
+# on this fake — even if it's a stub — because the fake gets written
+# into ``sys.modules['integrations.service_tools.vram_manager']`` and
+# any test that runs after this one (alphabetically: test_kids_media,
+# test_model_resilience, etc.) can observe the fake via the module
+# cache.  A missing method shows up as an AttributeError at the
+# downstream test's point of use, not here — which is a nightmare to
+# debug.  Keep this surface wider than strictly needed by the cohort
+# gate itself so the bleed is harmless.
 class _FakeVRAM:
     def __init__(self, total_gb: float, free_gb: float, cuda: bool = True):
         self._total = total_gb
         self._free = free_gb
         self._cuda = cuda
+        self._allocations: dict = {}
 
     def get_total_vram(self) -> float:
         return self._total
@@ -42,7 +53,25 @@ class _FakeVRAM:
                 'name': 'FakeGPU', 'total_gb': self._total}
 
     def get_allocations(self) -> dict:
-        return {}
+        return dict(self._allocations)
+
+    def get_allocations_display(self) -> list:
+        # Real VRAMManager returns a list of dicts for the /diag UI.
+        # Empty list is a legitimate "no current allocations" response.
+        return []
+
+    def allocate(self, name: str, vram_gb: float, device: str = 'cuda:0') -> bool:
+        # Always-succeed stub — the cohort gate never calls allocate,
+        # but downstream tests that inherit this fake via sys.modules
+        # should see a no-op that leaves the fake in a consistent state.
+        self._allocations[name] = {'vram_gb': vram_gb, 'device': device}
+        return True
+
+    def free(self, name: str) -> bool:
+        return self._allocations.pop(name, None) is not None
+
+    def refresh_gpu_info(self) -> None:
+        return None
 
 
 def _install_fake_vram(total_gb: float, free_gb: float,
@@ -57,6 +86,28 @@ def _install_fake_vram(total_gb: float, free_gb: float,
     mod.vram_manager = _FakeVRAM(total_gb=total_gb, free_gb=free_gb, cuda=cuda)
     sys.modules['integrations.service_tools.vram_manager'] = mod
     service_tools.vram_manager = mod
+
+
+@pytest.fixture(autouse=True)
+def _restore_vram_module_after_each_test():
+    """Clean up sys.modules so the fake VRAM doesn't bleed into other test
+    files.  Before this fixture existed, alphabetically-later files
+    (test_kids_media_routes, test_model_resilience, test_tts_*) were
+    inheriting this fake and crashing on missing methods or stale state.
+    """
+    saved_mods = {
+        k: sys.modules.get(k) for k in (
+            'integrations',
+            'integrations.service_tools',
+            'integrations.service_tools.vram_manager',
+        )
+    }
+    yield
+    for k, v in saved_mods.items():
+        if v is None:
+            sys.modules.pop(k, None)
+        else:
+            sys.modules[k] = v
 
 
 @pytest.fixture
