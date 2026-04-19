@@ -77,7 +77,12 @@ jobs:
         # (parses mkdocs.yml) and tests/test_scripts_and_main that touch
         # YAML config — missing it triggers ModuleNotFoundError in 3+
         # tests with zero production impact, just test scaffolding.
-        run: python -m pip install pytest pytest-html pytest-timeout pyyaml flask requests
+        # pillow (PIL) is transitively imported by routes.chatbot_routes
+        # via main.py — 23 tests in test_scripts_and_main fail collection
+        # with ModuleNotFoundError: No module named 'PIL' without it.
+        # flask-cors is explicitly required by main.py — its test
+        # scaffolding imports the Flask app factory which calls CORS(app).
+        run: python -m pip install pytest pytest-html pytest-timeout pyyaml pillow flask flask-cors requests
 
       # Install HARTOS (hart-backend) so `from core.*` / `from
       # integrations.*` imports in Nunba's tests resolve.  Without
