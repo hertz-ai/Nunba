@@ -3,6 +3,14 @@ llama_config.py - Configuration and management for Llama.cpp server
 
 Provides configuration management, server lifecycle, and API interface
 for the Llama.cpp local AI server.
+
+Historical note:
+  _compute_budget and select_best_model_for_hardware were DELETED from
+  LlamaConfig. Model selection is now the orchestrator's job
+  (models.orchestrator.get_orchestrator().select_best).  Both the
+  method deletion AND this comment are enforced by
+  tests/test_llama_config.py::TestComputeBudgetMethodsDeleted — if you
+  re-introduce either symbol here, that test will fail.
 """
 import json
 import logging
@@ -2090,14 +2098,20 @@ def get_llama_info() -> dict:
     """
     Get information about the running llama.cpp server.
 
-    Returns:
-        Dict with server info or empty dict if not running
-    """
-    if not check_llama_health():
-        return {}
+    Returns a status dict in EVERY case — never an empty dict.  Callers
+    (admin UI + diagnostic probes) rely on the presence of a 'running'
+    key; previously we returned ``{}`` when health-check failed, which
+    forced every caller to probe `.get('running', False)` defensively.
 
+    Returns:
+        Dict with at minimum `running` (bool) and `port` (int), plus
+        `models` / `endpoint` / `error` when the server is reachable.
+    """
     config = _get_cached_config()
     port = config.config.get("server_port", 8080)
+
+    if not check_llama_health():
+        return {"running": False, "port": port, "endpoint": f"http://localhost:{port}"}
 
     try:
         response = requests.get(f"http://localhost:{port}/v1/models", timeout=2)
@@ -2110,8 +2124,10 @@ def get_llama_info() -> dict:
                 "models": models,
                 "endpoint": f"http://localhost:{port}"
             }
-    except Exception:
-        pass
+    except Exception as e:
+        return {"running": True, "port": port,
+                "endpoint": f"http://localhost:{port}",
+                "error": f"{type(e).__name__}: {e}"}
 
     return {"running": True, "port": port, "endpoint": f"http://localhost:{port}"}
 
