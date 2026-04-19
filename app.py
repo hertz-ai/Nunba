@@ -218,6 +218,14 @@ def _acquire_instance_lock():
 
 
 def _check_single_instance():
+    # Same pytest/coverage/explicit-override skip the module-load guard
+    # does — but enforced INSIDE the function too, so direct callers
+    # (e.g. test_first_call_does_not_crash) don't end up calling
+    # sys.exit(0) and getting their pytest run interrupted.
+    _test_env_keys = ('PYTEST_CURRENT_TEST', 'PYTEST_DISABLE_PLUGIN_AUTOLOAD',
+                      'COVERAGE_RUN', 'NUNBA_SKIP_SINGLE_INSTANCE')
+    if any(os.environ.get(_k) for _k in _test_env_keys):
+        return
     if ('--validate' in sys.argv
             or '--install-ai' in sys.argv
             or '--setup-ai' in sys.argv
@@ -3264,12 +3272,20 @@ def _gui_cors_test():
     return jsonify({'success': True, 'message': 'CORS is working correctly'})
 
 @gui_app.route('/backend/health')
+@gui_app.route('/health')
 def _gui_health():
+    # Respond on both /health (where most clients probe) and
+    # /backend/health (where Nunba's own frontend probes) — both paths
+    # return the same "we're still booting, real Flask coming up" stub.
     return jsonify({'healthy': True, 'local': {'available': False}, 'loading': True,
                     'message': 'Nunba is waking up...'})
 
-@gui_app.route('/chat', methods=['POST'])
+@gui_app.route('/chat', methods=['GET', 'POST'])
 def _gui_chat_loading():
+    # Accept both GET and POST during the boot window.  The real /chat
+    # endpoint (registered by main.py's Flask app once it's up) is POST,
+    # but clients that GET /chat during boot should still get a friendly
+    # "loading" JSON instead of a 405 Method Not Allowed.
     return jsonify({
         'text': 'Loading tools... try again in a moment.',
         'source': 'loading', 'loading': True,
