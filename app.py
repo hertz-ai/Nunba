@@ -623,27 +623,65 @@ if getattr(sys, 'frozen', False):
     except Exception:
         pass
     _trace("opentelemetry fix done, starting langchain fix")
+    # ── ADVISORY: cut-off diagnostics ──
+    # If startup_trace.log ends at "starting langchain fix", the import below
+    # is either (a) still running (9-60s is normal on first boot after reboot
+    # or on cold DLL cache) or (b) genuinely stuck. Do NOT assume infinite-loop
+    # without evidence — the sub-traces below report elapsed-time watchdogs
+    # every 10s. Other logs to inspect for additional context:
+    #   ~/Documents/Nunba/logs/frozen_debug.log   — stderr/stdout warnings & errors
+    #   ~/Documents/Nunba/logs/server.log         — waitress/HARTOS activity
+    #   ~/Documents/Nunba/logs/langchain.log      — langchain INFO emissions
+    #   ~/Documents/Nunba/logs/hartos_init_error.log — Tier-1 adapter import errors
+    #   ~/Documents/Nunba/logs/build_acceptance.log  — (build-time) live tee of --acceptance-test
+    _trace("  ADVISORY: if this is the last trace line, check other logs in ~/Documents/Nunba/logs/")
+    _trace("    frozen_debug.log / server.log / langchain.log / hartos_init_error.log")
+    _trace("    Expected duration: 9-60s on cold cache; watchdog emits every 10s below.")
     # ── Inject ReduceDocumentsChain placeholder into langchain_classic.chains ──
     # chains/loading.py line 17: "from langchain_classic.chains import ReduceDocumentsChain"
-    # This triggers __getattr__ → create_importer → importlib.import_module →
-    # combine_documents/reduce.py → base.py → langchain_text_splitters →
-    # transformers → torch (from python-embed) → circular import crash.
-    #
-    # Fix: inject a lightweight placeholder into chains.__dict__ so Python finds it
-    # without calling __getattr__. The real ReduceDocumentsChain is only used by
-    # _load_reduce_documents_chain() — a chain-loading function never called in
-    # Nunba's chat flow.
+    # The chains package uses create_importer + __getattr__ lookup, so `hasattr`
+    # would TRIGGER the full import chain (combine_documents/reduce.py →
+    # langchain_text_splitters → transformers → torch). We only IMPORT the package
+    # here; the subsequent assignment writes directly to __dict__ to bypass any
+    # __getattr__/__setattr__ hook.
+    import threading as _lc_threading
+    import time as _lc_time
+    _lc_start = _lc_time.time()
+    _lc_done_flag = [False]
+    def _lc_watchdog():
+        """Emit a trace line every 10s while langchain fix is in progress."""
+        while not _lc_done_flag[0]:
+            _lc_time.sleep(10.0)
+            if _lc_done_flag[0]:
+                break
+            try:
+                _trace(f"  langchain fix still running at {_lc_time.time()-_lc_start:.1f}s — not a hang yet")
+            except Exception:
+                pass
+    _lc_wd = _lc_threading.Thread(target=_lc_watchdog, daemon=True, name="lc_fix_watchdog")
+    _lc_wd.start()
     try:
+        _trace("  [1/4] importing langchain_classic.chains (expected <1s, but can be slow on cold cache)")
         import langchain_classic.chains as _lc_chains
-        if not hasattr(_lc_chains, 'ReduceDocumentsChain'):
+        _trace(f"  [2/4] import completed at {_lc_time.time()-_lc_start:.3f}s")
+        # Write stub directly via __dict__ — skips __getattr__ probe.
+        if 'ReduceDocumentsChain' not in _lc_chains.__dict__:
             class _ReduceDocumentsChainStub:
                 """Frozen-build placeholder — real class requires transformers→torch."""
                 pass
-            _lc_chains.ReduceDocumentsChain = _ReduceDocumentsChainStub
+            _lc_chains.__dict__['ReduceDocumentsChain'] = _ReduceDocumentsChainStub
             del _ReduceDocumentsChainStub
+            _trace(f"  [3/4] stub installed into __dict__ at {_lc_time.time()-_lc_start:.3f}s")
+        else:
+            _trace(f"  [3/4] ReduceDocumentsChain already in __dict__ — no stub needed at {_lc_time.time()-_lc_start:.3f}s")
         del _lc_chains
-    except Exception:
-        pass
+        _trace(f"  [4/4] langchain fix OK at {_lc_time.time()-_lc_start:.3f}s")
+    except Exception as _lc_e:
+        _trace(f"  langchain fix exception at {_lc_time.time()-_lc_start:.3f}s: {type(_lc_e).__name__}: {_lc_e}")
+    finally:
+        _lc_done_flag[0] = True
+        # watchdog thread is daemon — will exit on next sleep tick
+        del _lc_threading, _lc_time, _lc_watchdog, _lc_wd, _lc_start, _lc_done_flag
     _trace("langchain fixes done, starting torch pre-guard")
     # ── Pre-guard torch to prevent crash from broken native DLL ──
     # autogen → transformers → torch. In frozen builds, torch_cpu.dll can
@@ -805,15 +843,39 @@ def _run_frozen_import_fixes():
         _otel_meta.entry_points = _patched_eps
     except Exception:
         pass
+    # Deferred-path langchain fix — same pattern as module-level (watchdog + __dict__).
+    # ADVISORY on cut-off: if a trace stops here, see also:
+    #   ~/Documents/Nunba/logs/frozen_debug.log, server.log, langchain.log, hartos_init_error.log
+    import threading as _lc_threading_d
+    import time as _lc_time_d
+    _lc_start_d = _lc_time_d.time()
+    _lc_done_d = [False]
+    def _lc_watchdog_d():
+        while not _lc_done_d[0]:
+            _lc_time_d.sleep(10.0)
+            if _lc_done_d[0]:
+                break
+            try:
+                _t_mod = getattr(__import__('builtins'), '_nunba_trace', None)
+                if _t_mod:
+                    _t_mod(f"  [deferred] langchain fix still running at {_lc_time_d.time()-_lc_start_d:.1f}s")
+            except Exception:
+                pass
+    _lc_wd_d = _lc_threading_d.Thread(target=_lc_watchdog_d, daemon=True, name="lc_fix_watchdog_deferred")
+    _lc_wd_d.start()
     try:
         import langchain_classic.chains as _lc_chains
-        if not hasattr(_lc_chains, 'ReduceDocumentsChain'):
+        # __dict__ write skips __getattr__ probe (the real hazard).
+        if 'ReduceDocumentsChain' not in _lc_chains.__dict__:
             class _Stub:
                 pass
-            _lc_chains.ReduceDocumentsChain = _Stub
+            _lc_chains.__dict__['ReduceDocumentsChain'] = _Stub
         del _lc_chains
     except Exception:
         pass
+    finally:
+        _lc_done_d[0] = True
+        del _lc_threading_d, _lc_time_d, _lc_watchdog_d, _lc_wd_d, _lc_start_d, _lc_done_d
     # torch pre-guard already ran at module level (subprocess + stub).
     # If _FROZEN_FIXES_DONE was False, the module-level block already handled torch.
     # No need to re-import here — the stub or real module is already in sys.modules.
