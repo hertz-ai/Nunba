@@ -19,6 +19,7 @@ from models.orchestrator import (
     TTSLoader,
     VLMLoader,
     _entry_to_preset,
+    _levenshtein,
     _register_loaders,
     get_orchestrator,
 )
@@ -494,6 +495,294 @@ class TestSTTLoader:
         with patch.dict('sys.modules', {'tts.package_installer': None}):
             result = loader.download(entry)
         assert result is False
+
+    # ── validate() — L1.3 round-trip STT probe ───────────────────────
+    def _stub_validate_env(self, *, transcript_json='', transcribe_raises=None,
+                           synth_return='path', synth_raises=None,
+                           greetings=None):
+        """Wire mocked core.constants, tts.tts_engine, and whisper_tool into
+        sys.modules so STTLoader.validate exercises the real round-trip
+        logic (Levenshtein + punctuation normalization) against a
+        controllable TTS+STT surface.
+
+        ``synth_return`` controls what ``engine.synthesize`` returns:
+            - 'path': returns the wav_path argument (default — file exists)
+            - None:   simulates a synth that produced no audio
+            - 'missing': returns a path that doesn't exist on disk
+        ``transcript_json`` is the raw JSON string whisper_transcribe
+        returns, OR an Exception instance if ``transcribe_raises`` is set.
+        """
+        import os
+
+        # Mocked TTS engine that actually creates the wav file on synth
+        # so the `os.path.exists` gate in validate() passes.
+        engine = MagicMock()
+        def _fake_synth(text, output_path, language=None, **kw):
+            if synth_raises:
+                raise synth_raises
+            if synth_return == 'path':
+                # Touch the file so os.path.exists returns True
+                with open(output_path, 'wb') as f:
+                    f.write(b'RIFF\x00\x00\x00\x00WAVE')
+                return output_path
+            if synth_return == 'missing':
+                # Return a path that doesn't exist
+                return os.path.join(
+                    os.path.dirname(output_path), 'does_not_exist.wav'
+                )
+            return None  # synth_return == 'none' / None
+        engine.synthesize = MagicMock(side_effect=_fake_synth)
+
+        mock_tts_engine = MagicMock()
+        mock_tts_engine.get_tts_engine = MagicMock(return_value=engine)
+
+        mock_whisper_tool = MagicMock()
+        if transcribe_raises:
+            mock_whisper_tool.whisper_transcribe = MagicMock(
+                side_effect=transcribe_raises
+            )
+        else:
+            mock_whisper_tool.whisper_transcribe = MagicMock(
+                return_value=transcript_json
+            )
+
+        mock_core_constants = MagicMock()
+        mock_core_constants.GREETINGS = greetings or {
+            'en': "Hey, I'm Nunba. Can you hear me?",
+        }
+
+        return engine, mock_whisper_tool, {
+            'tts.tts_engine': mock_tts_engine,
+            'integrations.service_tools.whisper_tool': mock_whisper_tool,
+            'core.constants': mock_core_constants,
+        }
+
+    def test_validate_exact_match_passes(self):
+        """Byte-identical transcript → (True, ratio 0.00)."""
+        import json
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        transcript = json.dumps({
+            'text': "Hey, I'm Nunba. Can you hear me?",
+            'language': 'en',
+        })
+        _, _, modules = self._stub_validate_env(transcript_json=transcript)
+        with patch.dict('sys.modules', modules):
+            ok, reason = loader.validate(entry)
+        assert ok is True
+        assert 'Lev=0/' in reason
+        assert 'ratio 0.00' in reason
+
+    def test_validate_whisper_punctuation_drift_still_passes(self):
+        """Whisper drops the '?' and the apostrophe — that's within tolerance."""
+        import json
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        transcript = json.dumps({
+            'text': 'Hey Im Nunba Can you hear me',
+            'language': 'en',
+        })
+        _, _, modules = self._stub_validate_env(transcript_json=transcript)
+        with patch.dict('sys.modules', modules):
+            ok, reason = loader.validate(entry)
+        assert ok is True, reason
+        # After normalisation, exp="hey im nunba can you hear me",
+        # act="hey im nunba can you hear me" → Lev=0 (punctuation is stripped).
+        assert 'Lev=0/' in reason
+
+    def test_validate_minor_word_substitution_passes(self):
+        """Whisper mis-hears 'Nunba' → 'Namba' — 2 edits out of ~26 chars."""
+        import json
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        transcript = json.dumps({
+            'text': "Hey, I'm Namba. Can you hear me?",
+            'language': 'en',
+        })
+        _, _, modules = self._stub_validate_env(transcript_json=transcript)
+        with patch.dict('sys.modules', modules):
+            ok, reason = loader.validate(entry)
+        assert ok is True, reason
+        # 2 substitutions (u→a, n→m): ratio ≈ 2/27 ≈ 0.07
+        assert 'Lev=2/' in reason
+
+    def test_validate_over_threshold_fails(self):
+        """Transcript is unrelated gibberish → ratio > 0.4 → fail."""
+        import json
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        transcript = json.dumps({
+            'text': 'The quick brown fox jumps over a lazy dog',
+            'language': 'en',
+        })
+        _, _, modules = self._stub_validate_env(transcript_json=transcript)
+        with patch.dict('sys.modules', modules):
+            ok, reason = loader.validate(entry)
+        assert ok is False
+        assert 'ratio' in reason
+        # The reported ratio should exceed 0.4
+        import re
+        m = re.search(r'ratio (\d+\.\d+)', reason)
+        assert m and float(m.group(1)) > 0.4
+
+    def test_validate_empty_transcript_fails(self):
+        """Whisper returns empty text → hard fail, not soft-pass."""
+        import json
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        transcript = json.dumps({'text': '', 'language': 'en'})
+        _, _, modules = self._stub_validate_env(transcript_json=transcript)
+        with patch.dict('sys.modules', modules):
+            ok, reason = loader.validate(entry)
+        assert ok is False
+        assert 'empty transcript' in reason
+
+    def test_validate_whisper_error_payload_fails(self):
+        """Whisper returns {'error': '...'} → hard fail with that message."""
+        import json
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        transcript = json.dumps({'error': 'model file missing'})
+        _, _, modules = self._stub_validate_env(transcript_json=transcript)
+        with patch.dict('sys.modules', modules):
+            ok, reason = loader.validate(entry)
+        assert ok is False
+        assert 'model file missing' in reason
+
+    def test_validate_transcribe_raises_fails(self):
+        """whisper_transcribe blowing up → (False, 'whisper_transcribe raised: ...')."""
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        _, _, modules = self._stub_validate_env(
+            transcribe_raises=RuntimeError('ctranslate2 segfault'),
+        )
+        with patch.dict('sys.modules', modules):
+            ok, reason = loader.validate(entry)
+        assert ok is False
+        assert 'whisper_transcribe raised' in reason
+        assert 'ctranslate2 segfault' in reason
+
+    def test_validate_soft_pass_when_tts_unavailable(self):
+        """TTS module missing → STT probe soft-passes (True), not fails."""
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        # Stub core.constants + whisper_tool, leave tts.tts_engine unset.
+        mock_whisper_tool = MagicMock()
+        mock_core_constants = MagicMock()
+        mock_core_constants.GREETINGS = {'en': "Hey, I'm Nunba. Can you hear me?"}
+
+        import builtins
+        real_import = builtins.__import__
+
+        def _broken(name, *a, **kw):
+            if name == 'tts.tts_engine':
+                raise ImportError('tts package missing')
+            return real_import(name, *a, **kw)
+
+        modules = {
+            'integrations.service_tools.whisper_tool': mock_whisper_tool,
+            'core.constants': mock_core_constants,
+        }
+        with patch.dict('sys.modules', modules), \
+             patch.object(builtins, '__import__', _broken):
+            ok, reason = loader.validate(entry)
+        assert ok is True
+        assert 'soft-pass' in reason
+        assert 'TTS module unavailable' in reason
+
+    def test_validate_soft_pass_when_synth_returns_none(self):
+        """engine.synthesize → None (no audio): soft-pass, not hard fail."""
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        _, _, modules = self._stub_validate_env(
+            synth_return=None, transcript_json='{}',
+        )
+        with patch.dict('sys.modules', modules):
+            ok, reason = loader.validate(entry)
+        assert ok is True
+        assert 'soft-pass' in reason
+
+    def test_validate_soft_pass_when_synth_raises(self):
+        """engine.synthesize raising: soft-pass (TTS engine broken, not STT)."""
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        _, _, modules = self._stub_validate_env(
+            synth_raises=RuntimeError('piper binary missing'),
+            transcript_json='{}',
+        )
+        with patch.dict('sys.modules', modules):
+            ok, reason = loader.validate(entry)
+        assert ok is True
+        assert 'soft-pass' in reason
+        assert 'piper binary missing' in reason
+
+    def test_validate_cleans_up_tempfile(self):
+        """The tempfile synth wrote is deleted regardless of pass/fail."""
+        import json
+        loader = STTLoader()
+        entry = _make_entry(id='stt-whisper', model_type='stt')
+        # Capture the path that synthesize was called with.
+        captured = {}
+        engine = MagicMock()
+        def _synth(text, output_path, language=None, **kw):
+            captured['path'] = output_path
+            with open(output_path, 'wb') as f:
+                f.write(b'RIFF')
+            return output_path
+        engine.synthesize = MagicMock(side_effect=_synth)
+
+        mock_tts_engine = MagicMock(get_tts_engine=MagicMock(return_value=engine))
+        mock_whisper_tool = MagicMock(
+            whisper_transcribe=MagicMock(
+                return_value=json.dumps({'text': "Hey, I'm Nunba. Can you hear me?"})
+            ),
+        )
+        mock_core_constants = MagicMock(
+            GREETINGS={'en': "Hey, I'm Nunba. Can you hear me?"},
+        )
+        modules = {
+            'tts.tts_engine': mock_tts_engine,
+            'integrations.service_tools.whisper_tool': mock_whisper_tool,
+            'core.constants': mock_core_constants,
+        }
+        with patch.dict('sys.modules', modules):
+            loader.validate(entry)
+
+        import os
+        assert captured.get('path')
+        assert not os.path.exists(captured['path']), (
+            'probe tempfile should be cleaned up after validate()'
+        )
+
+
+# ── _levenshtein helper (L1.3) ───────────────────────────────────────
+
+class TestLevenshtein:
+    def test_equal_strings_zero_distance(self):
+        assert _levenshtein('hello', 'hello') == 0
+
+    def test_empty_both_zero(self):
+        assert _levenshtein('', '') == 0
+
+    def test_empty_one_returns_other_length(self):
+        assert _levenshtein('', 'kitten') == 6
+        assert _levenshtein('sitting', '') == 7
+
+    def test_single_substitution(self):
+        assert _levenshtein('cat', 'car') == 1
+
+    def test_single_insertion(self):
+        assert _levenshtein('cat', 'cart') == 1
+
+    def test_single_deletion(self):
+        assert _levenshtein('cart', 'cat') == 1
+
+    def test_classic_kitten_sitting(self):
+        # The canonical textbook example — 3 edits.
+        assert _levenshtein('kitten', 'sitting') == 3
+
+    def test_order_independent(self):
+        assert _levenshtein('abc', 'xyz') == _levenshtein('xyz', 'abc')
 
 
 # ===========================================================================
