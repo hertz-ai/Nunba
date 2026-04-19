@@ -33,7 +33,7 @@ def test_j88_coding_execute_reachable(nunba_flask_app):
         pytest.skip("/coding/execute not mounted")
     body = resp.get_data(as_text=True)
     assert not (resp.status_code >= 500 and not body.strip()), (
-        f"/coding/execute emitted empty 5xx"
+        "/coding/execute emitted empty 5xx"
     )
 
 

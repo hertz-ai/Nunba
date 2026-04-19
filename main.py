@@ -2424,14 +2424,90 @@ def admin_models_manifest_import():
 # ═══════════════════════════════════════════════════════════════════════
 # Provider Management Admin API  (/api/admin/providers/*)
 # Exposes HARTOS ProviderRegistry + Gateway + EfficiencyMatrix
+#
+# Every endpoint below routes the "is the provider integration actually
+# loaded?" check through core.optional_import so silent failures (missing
+# openai / anthropic wheel, bad import chain, stale python-embed snapshot)
+# land in /api/admin/diag/degradations.  Previously each endpoint had an
+# inline `except ImportError: return 503` that swallowed the reason —
+# operators had no way to tell "is my OpenAI key wrong" apart from "did
+# the openai wheel fail to install in the frozen build".  The helpers
+# below return (module, None) on success or (None, 503_response) on
+# failure; caller unpacks and either short-circuits or proceeds.
 # ═══════════════════════════════════════════════════════════════════════
+
+def _providers_registry():
+    """Resolve integrations.providers.registry via optional_import.
+
+    Returns:
+        (module, None) on success so caller can call mod.get_registry().
+        (None, (jsonify(...), 503)) on import failure — caller returns
+        the tuple directly so Flask emits the 503 and the degradation is
+        recorded in /api/admin/diag/degradations.
+    """
+    from core.optional_import import optional_import
+    mod = optional_import(
+        'integrations.providers.registry',
+        reason='Provider admin API — registry CRUD',
+    )
+    if mod is None:
+        return None, (jsonify({'error': 'Provider gateway not available'}), 503)
+    return mod, None
+
+
+def _providers_gateway():
+    """Resolve integrations.providers.gateway via optional_import (same
+    contract as _providers_registry — see its docstring)."""
+    from core.optional_import import optional_import
+    mod = optional_import(
+        'integrations.providers.gateway',
+        reason='Provider admin API — runtime dispatch / stats',
+    )
+    if mod is None:
+        return None, (jsonify({'error': 'Provider gateway not available'}), 503)
+    return mod, None
+
+
+def _providers_matrix():
+    """Resolve integrations.providers.efficiency_matrix via optional_import
+    (same contract as _providers_registry)."""
+    from core.optional_import import optional_import
+    mod = optional_import(
+        'integrations.providers.efficiency_matrix',
+        reason='Provider admin API — efficiency leaderboard',
+    )
+    if mod is None:
+        return None, (jsonify({'error': 'Efficiency matrix not available'}), 503)
+    return mod, None
+
+
+def _wamp_mod():
+    """Resolve the embedded wamp_router module via optional_import.
+
+    Same (module, None) / (None, error_response) contract as the provider
+    helpers.  Routes a failed wamp_router import (missing file, port-
+    conflict during module-init, circular import) into the degradations
+    registry — previously every WAMP HTTP bridge / status / ticket call
+    would silently 503 with no operator signal.
+    """
+    from core.optional_import import optional_import
+    mod = optional_import(
+        'wamp_router',
+        reason='Embedded WAMP v2 router (realtime push bridge)',
+    )
+    if mod is None:
+        return None, (jsonify({'error': 'WAMP router not available'}), 503)
+    return mod, None
+
 
 @app.route('/api/admin/providers', methods=['GET'])
 def admin_providers_list():
     """List all providers with status, model count, and capabilities."""
+    mod, err = _providers_registry()
+    if err:
+        return err
     try:
-        from integrations.providers.registry import get_registry
-        reg = get_registry()
+        reg = mod.get_registry()
         category = request.args.get('category', '')
         ptype = request.args.get('type', '')  # api, affiliate, local
 
@@ -2459,50 +2535,59 @@ def admin_providers_list():
                 'avg_latency_ms': p.avg_latency_ms,
             })
         return jsonify({'success': True, 'providers': result})
-    except ImportError:
-        return jsonify({'error': 'Provider gateway not available'}), 503
+    except Exception as e:
+        logging.warning(f"admin_providers_list runtime error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/admin/providers/<provider_id>', methods=['GET'])
 def admin_providers_get(provider_id):
     """Get full provider details including all models and pricing."""
+    mod, err = _providers_registry()
+    if err:
+        return err
     try:
-        from integrations.providers.registry import get_registry
-        reg = get_registry()
+        reg = mod.get_registry()
         p = reg.get(provider_id)
         if not p:
             return jsonify({'error': 'Provider not found'}), 404
         data = p.to_dict()
         data['api_key_set'] = p.has_api_key()
         return jsonify({'success': True, 'provider': data})
-    except ImportError:
-        return jsonify({'error': 'Provider gateway not available'}), 503
+    except Exception as e:
+        logging.warning(f"admin_providers_get runtime error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/admin/providers/<provider_id>/api-key', methods=['POST'])
 def admin_providers_set_key(provider_id):
     """Set or update API key for a provider."""
+    mod, err = _providers_registry()
+    if err:
+        return err
     try:
-        from integrations.providers.registry import get_registry
         data = request.get_json(force=True)
         api_key = data.get('api_key', '')
         if not api_key:
             return jsonify({'error': 'api_key required'}), 400
-        reg = get_registry()
+        reg = mod.get_registry()
         success = reg.set_api_key(provider_id, api_key)
         if not success:
             return jsonify({'error': 'Provider not found or no env_key configured'}), 404
         return jsonify({'success': True})
-    except ImportError:
-        return jsonify({'error': 'Provider gateway not available'}), 503
+    except Exception as e:
+        logging.warning(f"admin_providers_set_key runtime error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/admin/providers/<provider_id>/api-key', methods=['DELETE'])
 def admin_providers_remove_key(provider_id):
     """Remove API key for a provider."""
+    mod, err = _providers_registry()
+    if err:
+        return err
     try:
-        from integrations.providers.registry import get_registry
-        reg = get_registry()
+        reg = mod.get_registry()
         p = reg.get(provider_id)
         if not p or not p.env_key:
             return jsonify({'error': 'Provider not found'}), 404
@@ -2510,16 +2595,19 @@ def admin_providers_remove_key(provider_id):
         p.api_key_set = False
         reg.save()
         return jsonify({'success': True})
-    except ImportError:
-        return jsonify({'error': 'Provider gateway not available'}), 503
+    except Exception as e:
+        logging.warning(f"admin_providers_remove_key runtime error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/admin/providers/<provider_id>/test', methods=['POST'])
 def admin_providers_test(provider_id):
     """Test provider connection with a simple request."""
+    mod, err = _providers_gateway()
+    if err:
+        return err
     try:
-        from integrations.providers.gateway import get_gateway
-        gw = get_gateway()
+        gw = mod.get_gateway()
         result = gw.generate(
             'Say "hello" in one word.',
             model_type='llm',
@@ -2534,8 +2622,6 @@ def admin_providers_test(provider_id):
             'cost_usd': result.cost_usd,
             'error': result.error,
         })
-    except ImportError:
-        return jsonify({'error': 'Provider gateway not available'}), 503
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -2543,60 +2629,73 @@ def admin_providers_test(provider_id):
 @app.route('/api/admin/providers/<provider_id>/enable', methods=['POST'])
 def admin_providers_enable(provider_id):
     """Enable or disable a provider."""
+    mod, err = _providers_registry()
+    if err:
+        return err
     try:
-        from integrations.providers.registry import get_registry
         data = request.get_json(force=True)
         enabled = data.get('enabled', True)
-        reg = get_registry()
+        reg = mod.get_registry()
         p = reg.get(provider_id)
         if not p:
             return jsonify({'error': 'Provider not found'}), 404
         p.enabled = enabled
         reg.save()
         return jsonify({'success': True, 'enabled': p.enabled})
-    except ImportError:
-        return jsonify({'error': 'Provider gateway not available'}), 503
+    except Exception as e:
+        logging.warning(f"admin_providers_enable runtime error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/admin/providers/gateway/stats', methods=['GET'])
 def admin_providers_gateway_stats():
     """Get gateway usage stats: total cost, requests, recent activity."""
+    mod, err = _providers_gateway()
+    if err:
+        return err
     try:
-        from integrations.providers.gateway import get_gateway
-        return jsonify({'success': True, **get_gateway().get_stats()})
-    except ImportError:
-        return jsonify({'error': 'Provider gateway not available'}), 503
+        return jsonify({'success': True, **mod.get_gateway().get_stats()})
+    except Exception as e:
+        logging.warning(f"admin_providers_gateway_stats runtime error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/admin/providers/efficiency/leaderboard', methods=['GET'])
 def admin_providers_leaderboard():
     """Get efficiency leaderboard — ranked by speed, quality, cost."""
+    mod, err = _providers_matrix()
+    if err:
+        return err
     try:
-        from integrations.providers.efficiency_matrix import get_matrix
         model_type = request.args.get('model_type', 'llm')
         sort_by = request.args.get('sort_by', 'efficiency')
-        entries = get_matrix().get_leaderboard(model_type, sort_by)
+        matrix = mod.get_matrix()
+        entries = matrix.get_leaderboard(model_type, sort_by)
         from dataclasses import asdict
         return jsonify({
             'success': True,
             'leaderboard': [asdict(e) for e in entries[:20]],
-            'summary': get_matrix().get_matrix_summary(),
+            'summary': matrix.get_matrix_summary(),
         })
-    except ImportError:
-        return jsonify({'error': 'Efficiency matrix not available'}), 503
+    except Exception as e:
+        logging.warning(f"admin_providers_leaderboard runtime error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/admin/providers/capabilities', methods=['GET'])
 def admin_providers_capabilities():
     """Get capabilities summary: what model types Nunba can serve right now."""
+    mod, err = _providers_registry()
+    if err:
+        return err
     try:
-        from integrations.providers.registry import get_registry
         return jsonify({
             'success': True,
-            'capabilities': get_registry().get_capabilities_summary(),
+            'capabilities': mod.get_registry().get_capabilities_summary(),
         })
-    except ImportError:
-        return jsonify({'error': 'Provider registry not available'}), 503
+    except Exception as e:
+        logging.warning(f"admin_providers_capabilities runtime error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -3139,10 +3238,17 @@ def wamp_http_bridge():
     Accepts POST with JSON body: {topic: str, args: list, kwargs: dict}
     Publishes into the embedded WAMP router so all WebSocket subscribers receive it.
     This replaces the Crossbar.io HTTP Bridge Service for local/bundled mode.
+
+    Import failures land in /api/admin/diag/degradations via _wamp_mod —
+    previously a missing wamp_router.py (bundle drift, port-conflict
+    during module import) would silently 503 every realtime publish with
+    no hint to the operator.
     """
+    wmod, err = _wamp_mod()
+    if err:
+        return err
     try:
-        from wamp_router import is_running, publish_local
-        if not is_running():
+        if not wmod.is_running():
             return jsonify({'error': 'WAMP router not running'}), 503
         data = request.get_json(silent=True) or {}
         topic = data.get('topic', '')
@@ -3156,10 +3262,8 @@ def wamp_http_bridge():
                 args = [json.loads(args)]
             except (json.JSONDecodeError, TypeError):
                 args = [args]
-        publish_local(topic, args, kwargs)
+        wmod.publish_local(topic, args, kwargs)
         return jsonify({'id': None}), 200
-    except ImportError:
-        return jsonify({'error': 'WAMP router not available'}), 503
     except Exception as e:
         logging.warning(f"WAMP HTTP bridge error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -3169,11 +3273,15 @@ def wamp_http_bridge():
 @require_local_or_token
 def wamp_router_status():
     """Return embedded WAMP router health and statistics."""
-    try:
-        from wamp_router import get_stats
-        return jsonify(get_stats())
-    except ImportError:
+    wmod, err = _wamp_mod()
+    if err:
+        # Preserve prior response shape for the /api/wamp/status endpoint
+        # (frontend expects {running, error} not {error}).
         return jsonify({'running': False, 'error': 'module not available'}), 503
+    try:
+        return jsonify(wmod.get_stats())
+    except Exception as e:
+        return jsonify({'running': False, 'error': str(e)}), 500
 
 
 @app.route('/api/wamp/ticket')
@@ -3185,10 +3293,14 @@ def wamp_ticket():
     requests with a valid API token can get the WAMP ticket.
     Returns empty ticket when auth is not required (localhost mode).
     """
+    wmod, _err = _wamp_mod()
+    if wmod is None:
+        # Preserve prior contract: empty ticket on unavailability (frontend
+        # falls back to LAN mode w/o auth). Degradation already recorded.
+        return jsonify({'ticket': ''})
     try:
-        from wamp_router import get_wamp_ticket
-        return jsonify({'ticket': get_wamp_ticket()})
-    except ImportError:
+        return jsonify({'ticket': wmod.get_wamp_ticket()})
+    except Exception:
         return jsonify({'ticket': ''})
 
 

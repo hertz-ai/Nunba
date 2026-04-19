@@ -16,6 +16,7 @@ rewritten (or at least not corrupted) after turn 2.
 from __future__ import annotations
 
 import json
+
 import pytest
 
 pytestmark = pytest.mark.journey

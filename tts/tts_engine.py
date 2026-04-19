@@ -44,6 +44,92 @@ BACKEND_PIPER = "piper"
 BACKEND_NONE = "none"
 
 # ════════════════════════════════════════════════════════════════════
+# Global TTS tempo knob. Default is "balanced" per the project
+# guideline "speed > naturalness default". Resolution order:
+#   1. TTS_SPEED_PROFILE env var
+#   2. ~/.nunba/tts_config.json  speed_profile field  (admin UI pin)
+#   3. _DEFAULT_SPEED_PROFILE
+# Invalid values fall through so a typo never breaks synth. The
+# resolved profile is cached; _set_profile writes atomically and
+# invalidates the cache so the next synth picks up the change.
+# ════════════════════════════════════════════════════════════════════
+
+_SPEED_PROFILES = {'fast': 1.25, 'balanced': 1.10, 'natural': 1.00, 'slow': 0.90}
+_DEFAULT_SPEED_PROFILE = 'balanced'
+_cached_speed_profile: str | None = None
+
+
+def _read_speed_profile_from_disk() -> str | None:
+    try:
+        cfg_path = Path.home() / '.nunba' / 'tts_config.json'
+        if not cfg_path.is_file():
+            return None
+        with cfg_path.open(encoding='utf-8') as fp:
+            data = json.load(fp)
+        val = data.get('speed_profile')
+        if isinstance(val, str) and val.lower() in _SPEED_PROFILES:
+            return val.lower()
+    except Exception as e:
+        logger.debug(f"tts_config.json read skipped: {e}")
+    return None
+
+
+def _get_current_speed_profile() -> str:
+    global _cached_speed_profile
+    if _cached_speed_profile is not None:
+        return _cached_speed_profile
+    env_val = os.environ.get('TTS_SPEED_PROFILE', '').strip().lower()
+    if env_val in _SPEED_PROFILES:
+        _cached_speed_profile = env_val
+        return _cached_speed_profile
+    disk_val = _read_speed_profile_from_disk()
+    if disk_val:
+        _cached_speed_profile = disk_val
+        return _cached_speed_profile
+    _cached_speed_profile = _DEFAULT_SPEED_PROFILE
+    return _cached_speed_profile
+
+
+def _get_default_speed() -> float:
+    return _SPEED_PROFILES[_get_current_speed_profile()]
+
+
+def _set_speed_profile(name: str) -> bool:
+    """Pin a profile to ~/.nunba/tts_config.json atomically and
+    invalidate the cache. Returns False on invalid name or I/O error."""
+    global _cached_speed_profile
+    name_l = (name or '').strip().lower()
+    if name_l not in _SPEED_PROFILES:
+        return False
+    try:
+        cfg_dir = Path.home() / '.nunba'
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_path = cfg_dir / 'tts_config.json'
+        data = {}
+        if cfg_path.is_file():
+            try:
+                with cfg_path.open(encoding='utf-8') as fp:
+                    data = json.load(fp) or {}
+            except Exception:
+                data = {}
+        data['speed_profile'] = name_l
+        tmp = cfg_path.with_suffix('.json.tmp')
+        with tmp.open('w', encoding='utf-8') as fp:
+            json.dump(data, fp, indent=2)
+        os.replace(tmp, cfg_path)
+        _cached_speed_profile = name_l
+        logger.info(f"TTS speed profile set to '{name_l}' (×{_SPEED_PROFILES[name_l]})")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to persist TTS speed profile: {e}")
+        return False
+
+
+def _invalidate_speed_cache() -> None:
+    global _cached_speed_profile
+    _cached_speed_profile = None
+
+# ════════════════════════════════════════════════════════════════════
 # FALLBACK ENGINE CAPABILITIES — degraded-mode fallback only.
 #
 # This matrix is used ONLY when ModelCatalog is unavailable
@@ -1904,10 +1990,10 @@ class TTSEngine:
 
         When ``speed`` is left as None (the default), the active
         TTS_SPEED_PROFILE multiplier is applied — fast/balanced/
-        natural/slow, read from env var or ~/.nunba/tts_config.json.
-        Callers that pass an explicit float override the profile,
-        same as before. The default profile is ``balanced`` (×1.10)
-        per the project guideline "speed > naturalness default".
+        natural/slow. Callers that pass an explicit float override
+        the profile, same as before. The default profile is
+        ``balanced`` (×1.10) per the project guideline "speed >
+        naturalness default".
 
         Checks pre-synth cache first for instant playback.
         Routes to the best engine for the given language.
@@ -1916,17 +2002,8 @@ class TTSEngine:
         if not text or not text.strip():
             return None
 
-        # Resolve the effective speed multiplier. None → profile
-        # default, explicit float → caller override. This is the ONE
-        # place the profile is consulted for TTS synth — every engine
-        # sees the same multiplier via the `speed` kwarg we forward
-        # below, so there's no per-engine drift.
         if speed is None:
-            try:
-                from tts.speed_profile import get_default_speed
-                speed = get_default_speed()
-            except Exception:
-                speed = 1.0
+            speed = _get_default_speed()
 
         # Multi-language / multi-modal segmentation: split text by script
         # and media tags (<music>, <sing>, <lyrics>), synth each segment

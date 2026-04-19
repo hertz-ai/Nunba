@@ -24,8 +24,9 @@ import socket
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 import pytest
 
@@ -50,7 +51,6 @@ from conftest import (  # type: ignore  # noqa: E402,F401
     real_piper_engine,
     wait_for_port,
 )
-
 
 # ── journey marker ─────────────────────────────────────────────────
 
