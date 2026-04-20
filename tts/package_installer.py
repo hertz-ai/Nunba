@@ -78,6 +78,21 @@ BACKEND_PACKAGES = {
 # quarantined here. Other backends can be migrated as their pins drift.
 BACKEND_VENV_PACKAGES = {
     'indic_parler': [
+        # Pre-pin tqdm + colorama FIRST.  Without this, pip's resolver
+        # backtracks through every historical colorama version
+        # (0.4.x → 0.3.x → 0.2.x → 0.1.15) when it later installs
+        # parler-tts's transitive chain:
+        #     parler-tts 0.2.2 → transformers 4.46.1 → tqdm >=4.27
+        #     → colorama (unconstrained)
+        # colorama 0.1.15 has neither setup.py nor pyproject.toml and
+        # explodes the install with:
+        #     "does not appear to be a Python project"
+        # Pinning modern versions up front keeps the resolver out of
+        # the backtrack tarpit. Witnessed user-facing failure:
+        #     "Indic Parler TTS unavailable — using fallback voice engine"
+        # Root-caused from ~/Documents/Nunba/logs/venv_indic_parler.log.
+        'colorama>=0.4.6',
+        'tqdm>=4.65',
         'transformers==4.46.1',   # parler-tts 0.2.2 requires <4.47
         'torch',                   # CPU-ish fallback; replaced by CUDA if GPU
         'torchaudio',
