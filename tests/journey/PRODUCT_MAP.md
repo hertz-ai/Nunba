@@ -172,11 +172,12 @@ All under `/api/social/*` unless noted. Source: `integrations/social/*.py`.
 ~120 endpoints across channels CRUD, queue/commands/automation, identity,
 plugins, sessions, metrics, config. Admin/api.py:225–2260.
 
-### 1.10 HARTOS distributed-agent API
-`POST /api/distributed/tasks/announce` (api.py:90), `/available` (:156),
-`/hosts` (:181), `/hosts/register` (:190), `/claim` (:207),
-`/<task_id>/submit` (:232), `/verify` (:253), `/goals` (:272),
-`/<goal_id>/progress` (:303), `/baselines` (:317), `/status` (:334).
+### 1.10 HARTOS distributed-agent API (12 endpoints)
+`POST /api/distributed/tasks/announce` (api.py:176), `/available` (:242),
+`/hosts` (:267), `/hosts/register` (:276), `/claim` (:293),
+`/<task_id>/submit` (:318), `/verify` (:339), `/goals` (:358),
+`/<goal_id>/progress` (:389), `/baselines` (:403), `/status` (:420),
+`/delegations/recent` (:436).
 
 ### 1.11 Hive signal bridge + flask_integration
 `GET /api/hive/signals/stats`, `/feed`, `POST /classify`
@@ -184,10 +185,11 @@ plugins, sessions, metrics, config. Admin/api.py:225–2260.
 `POST /channels/send` (flask_integration.py:423,427).
 
 ### 1.12 Agent engine + content-gen + learning + commercial + marketplace
-`/api/marketing/products*`, `/api/goals*`, `/api/agent-engine/*`, and ~80
-more content/learning/marketplace/commercial routes (agent_engine/api.py,
-api_content_gen.py, api_learning.py, commercial_api.py,
-build_distribution.py, app_marketplace.py, rl_ef_endpoints.py).
+`/api/marketing/products*`, `/api/goals*`, `/api/agent-engine/*`, totalling
+76 routes across 7 blueprints (agent_engine/api.py=30, api_content_gen.py=6,
+api_learning.py=9, commercial_api.py=8, build_distribution.py=4,
+app_marketplace.py=13, hive_benchmark_prover.py=6). The earlier
+rl_ef_endpoints blueprint was removed — its routes are no longer wired.
 
 ### 1.13 Standalone HARTOS (hart_intelligence_entry.py)
 Key surfaces: `/api/instructions/*` (755-847); `/api/credentials/*`
@@ -246,7 +248,7 @@ Registered in mcp_http_bridge.py via `_register_tool` at 302, 725–861.
 | dispatch_hive_tasks | Dispatch pending | Emits hive.task.dispatched | 858 |
 | hive_signal_stats | Channel signals | Read-only | 859 |
 | hive_signal_feed | Recent signals | Read-only | 860 |
-| seed_goals | Seed bootstrap agents | Writes up to 47 goal rows | 861 |
+| seed_goals | Seed bootstrap agents | Writes up to 51 goal rows (SEED_BOOTSTRAP_GOALS in goal_seeding.py) | 861 |
 
 Input schemas at `GET /tools/list`; dispatch at `POST /tools/execute`
 with body `{"tool": <name>, "arguments": {...}}`.
@@ -379,12 +381,14 @@ Audio-gen: acestep_tool, diffrhythm_tool.
 ## 7  Agent creation pipeline (Tier-1/2/3)
 
 Tier-1 (built-in): `seed_bootstrap_goals` during first-boot
-(mcp_http_bridge.py:835-848; 47 agents).
+(mcp_http_bridge.py:835-848; 51 agents — see SEED_BOOTSTRAP_GOALS in
+`integrations/agent_engine/goal_seeding.py:18`).
 
 Tier-2 (user-created):
   1. `POST /api/social/agents` (social_bp, api.py:32)
-  2. `agent_evolution_service.create_evolution_tree` (:99-124)
-  3. Status = `draft` → visible at `/social/agents`.
+  2. Status = `draft` → visible at `/social/agents`.
+  (No dedicated evolution-tree constructor — `AgentEvolution` rows are
+  inserted ad-hoc during `/evolve`, not by a create_evolution_tree method.)
 
 Tier-3 (auto-evolve):
   1. `start_auto_evolve` tool OR `POST /api/social/agents/evolve`
@@ -470,8 +474,12 @@ tags auto_evolve + thought_experiment.
 Stages (:6-17):
   1. GATHER candidates (democratic selection)
   2. FILTER — ConstitutionalFilter (`_constitutional_filter` :219)
-  3. VOTE — weighted tally (human + agent)
-  4. DISPATCH — `parallel_dispatch.dispatch_parallel_tasks` (:39)
+  3. VOTE — weighted tally (human + agent); candidates must clear a
+     **2/3 super-majority** of the DECISIVE (non-abstain) weight
+     (`SUPER_MAJORITY` threshold at :38-39, computed at :263-267).
+  4. DISPATCH — `parallel_dispatch.dispatch_parallel_tasks` (:39) —
+     fully wired (post-Batch-3 fix); fans approved candidates to the
+     daemon in parallel, not sequentially.
   5. ITERATE — agent-native (no orchestrator loop)
 
 Events: `auto_evolve.{no_candidates,none_approved,dispatching,started}`
@@ -634,7 +642,7 @@ audio bytes ≥ 2048. CI: partial.
   `/download/status`. Outcomes: queued → downloading → ready; catalog
   entry exists; `catalog.*` WAMP. CI: yes with mock HF.
 - **J18 · Tier-1 builtin seed** · MCP tool `seed_goals`
-  (mcp_http_bridge.py:835). Outcomes: `{seeded:47,status:"ok"}`; 47 rows
+  (mcp_http_bridge.py:835). Outcomes: `{seeded:51,status:"ok"}`; 51 rows
   in social DB. CI: yes.
 - **J19 · Tier-2 agent via SPA** · pre: logged in. Steps: SPA
   `/social/agents` → `POST /api/social/agents`. Outcomes: Agent row

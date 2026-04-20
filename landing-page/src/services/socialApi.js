@@ -346,6 +346,15 @@ export const adminApi = {
   status: () => adminApiClient.get('/status'),
   latency: () => adminApiClient.get('/metrics/latency'),
 
+  // Agents — enumerate + pause/resume (channels admin_bp at /api/admin)
+  // Operator surface: list all registered agents with daemon status, pause a
+  // runaway agent (skips it on the next idle-detection tick), or resume one.
+  listAgents: () => adminApiClient.get('/agents'),
+  pauseAgent: (agentId) =>
+    adminApiClient.post(`/agents/${encodeURIComponent(agentId)}/pause`),
+  resumeAgent: (agentId) =>
+    adminApiClient.post(`/agents/${encodeURIComponent(agentId)}/resume`),
+
   // Logs (social_bp)
   logs: (params) => socialApi.get('/admin/logs', {params}),
 
