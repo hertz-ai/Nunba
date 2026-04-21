@@ -1056,6 +1056,17 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # loads _C.pyd → needs torch_cpu.dll → DLL loader recurses → crash.
             ("chatterbox-tts", "chatterbox-tts", "chatterbox", []),
             ("parler-tts", "parler-tts", "parler_tts", []),
+            # descript-audio-codec ships the top-level `dac` package that
+            # parler_tts.dac_wrapper imports via `from dac.model import DAC`.
+            # Without this, indic_parler crashes at load with:
+            #     ModuleNotFoundError: No module named 'dac'
+            # Witnessed user-facing failure 2026-04-21 in
+            # integrations/service_tools/gpu_worker.py when running
+            # indic_parler_tool._load() from the bundled python-embed.
+            # parler_tts's own setup.py pins this as a dep but cx_Freeze's
+            # --target install at bundle time doesn't resolve transitives
+            # for ALL paths; explicit addition here keeps the bundle sound.
+            ("descript-audio-codec", "descript-audio-codec", "dac", []),
             # STT — CTranslate2 bundles platform-specific CUDA runtime
             ("faster-whisper", "faster-whisper", "faster_whisper", []),
             ("ctranslate2", "ctranslate2", "ctranslate2", []),

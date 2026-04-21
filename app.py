@@ -238,6 +238,54 @@ if _user_sp not in sys.path:
     sys.path.insert(0, _user_sp)
 
 
+# ══════════════════════════════════════════════════════════════════════
+# Background preload of heavy imports (sqlalchemy + dependencies)
+# ══════════════════════════════════════════════════════════════════════
+# Witnessed 2026-04-21: _bg_import thread stuck 31+s inside
+#   main.py → integrations.social.models → sqlalchemy.__init__
+# sqlalchemy cold-import is 3-5s on SSD, 30s+ on 99%-full disk with AV
+# scanning every .py.  The watchdog flags 'stuck' at 20s, which wasn't
+# accurate — the import was progressing, just slowly.
+#
+# Kick off sqlalchemy (and other known-heavy imports) on a background
+# thread RIGHT NOW, before any synchronous import of main.py kicks in.
+# By the time `_bg_import` reaches `from sqlalchemy import ...`, the
+# module is already in sys.modules cache and the import returns in
+# microseconds.
+#
+# Lists heavy roots only; transitive imports ride along for free.
+def _preload_heavy_imports_async():
+    """Fire-and-forget preload of slow cold-import modules."""
+    try:
+        import threading
+
+        def _warm():
+            _targets = (
+                'sqlalchemy',            # ~3-30s cold
+                'sqlalchemy.engine',     # slowest submodule
+                'sqlalchemy.sql',
+                'autobahn',              # WAMP client, ~1s
+                'autobahn.asyncio',
+            )
+            for _name in _targets:
+                try:
+                    __import__(_name)
+                except Exception:
+                    pass  # defensive: bundle may not include every
+                          # target; skip rather than crash preload
+
+        t = threading.Thread(
+            target=_warm, name='_preload_heavy', daemon=True,
+        )
+        t.start()
+    except Exception:
+        # If threading itself is broken, defer to the slow path.
+        pass
+
+
+_preload_heavy_imports_async()
+
+
 # === Single-instance guard ===
 # Prevent multiple Nunba processes (Windows auto-start + manual launch).
 #
