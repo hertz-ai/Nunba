@@ -24,7 +24,7 @@ import {
   Clock,
   ChevronLeft,
 } from 'lucide-react';
-import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
+import { BOOK_PARSING_URL, UPLOAD_FILE_URL, UPLOAD_NATIVE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
@@ -2984,7 +2984,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         let autoSendTimer = null;
         let fullText = '';
 
-        ws.onopen = () => { wsReady = true; };
+        ws.onopen = () => {
+          wsReady = true;
+          // Send language config so Whisper doesn't auto-detect
+          const hartLang = localStorage.getItem('hart_language') || 'en';
+          ws.send(JSON.stringify({ type: 'config', language: hartLang }));
+        };
         ws.onmessage = (evt) => {
           try {
             const data = JSON.parse(evt.data);
@@ -3011,7 +3016,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         // Record audio and send chunks over WebSocket
         // Use AudioWorklet or ScriptProcessor to get raw PCM
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        // Note: WKWebView on macOS may ignore sampleRate constraint and
+        // give hardware rate (48kHz). We resample to 16kHz before sending.
+        const TARGET_RATE = 16000;
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_RATE });
+        const actualRate = audioCtx.sampleRate;
+        const needsResample = actualRate !== TARGET_RATE;
         const source = audioCtx.createMediaStreamSource(stream);
         const processor = audioCtx.createScriptProcessor(4096, 1, 1);
 
@@ -3020,7 +3030,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           // Echo cancellation: don't send mic audio while TTS is playing
           // (prevents the agent from hearing its own voice)
           if (tts.isSpeaking || isPlayingResponse) return;
-          const float32 = e.inputBuffer.getChannelData(0);
+          let float32 = e.inputBuffer.getChannelData(0);
+
+          // Resample if AudioContext gave a different rate than 16kHz
+          if (needsResample) {
+            const ratio = actualRate / TARGET_RATE;
+            const newLen = Math.round(float32.length / ratio);
+            const resampled = new Float32Array(newLen);
+            for (let i = 0; i < newLen; i++) {
+              resampled[i] = float32[Math.round(i * ratio)];
+            }
+            float32 = resampled;
+          }
+
           // Convert float32 [-1,1] to int16 PCM
           const pcm16 = new Int16Array(float32.length);
           for (let i = 0; i < float32.length; i++) {
@@ -3330,6 +3352,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setDuration(duration);
   };
   const handlePdfSelect = async (event) => {
+    // Use native file picker when running inside pywebview (macOS WKWebView)
+    if (window.pywebview && window.pywebview.api) {
+      try {
+        const filePath = await window.pywebview.api.native_file_pick('pdf');
+        if (!filePath) return;
+        const fileName = filePath.split('/').pop();
+        setPdfFile({ name: fileName });
+        const response = await fetch(UPLOAD_NATIVE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath, user_id: decryptedUserId, request_id: uuidv4() }),
+        });
+        if (response.ok) {
+          const result = await response.json();
+          setRequestId(result.request_id);
+          setpdfFileUrl(result.file_url);
+        } else {
+          console.error('Failed to upload PDF:', response.status);
+        }
+      } catch (error) {
+        console.error('Error during PDF upload process:', error);
+      }
+      return;
+    }
+
     const file = event.target.files[0];
 
     if (!file) {
@@ -3390,6 +3437,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   const handleImageSelect = async (event) => {
+    // Use native file picker when running inside pywebview (macOS WKWebView)
+    if (window.pywebview && window.pywebview.api) {
+      setIsImageUploading(true);
+      try {
+        const filePath = await window.pywebview.api.native_file_pick('image');
+        if (!filePath) { setIsImageUploading(false); return; }
+        const response = await fetch(UPLOAD_NATIVE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath, user_id: decryptedUserId, request_id: uuidv4() }),
+        });
+        if (response.ok) {
+          const result = await response.json();
+          setUserImage(result.file_url);
+        } else {
+          console.error('Failed to upload image:', response.status);
+        }
+      } catch (error) {
+        console.error('Error uploading image:', error);
+      } finally {
+        setIsImageUploading(false);
+      }
+      return;
+    }
+
     const file = event.target.files[0];
 
     if (file) {
