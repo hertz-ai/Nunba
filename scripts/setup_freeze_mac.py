@@ -416,6 +416,20 @@ info_plist = f"""<?xml version="1.0" encoding="UTF-8"?>
     <string>Nunba uses the camera for vision-based features.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Nunba uses speech recognition to understand your voice commands.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+    <key>LSEnvironment</key>
+    <dict>
+        <key>HEVOLVE_VLM_ENDPOINT_URL</key>
+        <string>http://127.0.0.1:8080</string>
+    </dict>
 </dict>
 </plist>
 """

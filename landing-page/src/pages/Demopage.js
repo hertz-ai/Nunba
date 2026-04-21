@@ -2755,41 +2755,44 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         });
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
 
-        // Connect to VisionService WebSocket (port 5460)
-        const wsPort = 5460;
-        const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+        // POST JPEG frames to the Flask server's /api/vision/frame endpoint
+        // at 5 FPS.  Same-origin HTTP is the one transport that works on
+        // WebView2 (Windows), WKWebView (macOS) and WebKitGTK (Linux) —
+        // WKWebView in particular rejects cross-port ws:// from a
+        // localhost-secure-context page as "mixed content" with no
+        // WKPreference / ATS escape hatch.  Keeping HTTP on every OS
+        // preserves a single frontend path.  VisionService's background
+        // description loop picks frames straight out of its FrameStore,
+        // identical to the WebSocket route.
         const video = document.createElement('video');
         video.srcObject = stream;
         video.muted = true;
+        video.playsInline = true;
         await video.play();
 
         const canvas = document.createElement('canvas');
         canvas.width = 640;
         canvas.height = 480;
         const ctx = canvas.getContext('2d');
+        const frameUrl = `/api/vision/frame?user_id=${encodeURIComponent(userId)}&channel=camera`;
 
-        ws.onopen = () => {
-          // Send user_id first, then video_start
-          ws.send(userId);
-          ws.send('video_start');
-        };
-
-        // Stream frames at 5 FPS — backend discards what it can't process
         const interval = setInterval(() => {
-          if (ws.readyState !== WebSocket.OPEN || cancelled) return;
+          if (cancelled) return;
           ctx.drawImage(video, 0, 0, 640, 480);
           canvas.toBlob((blob) => {
-            if (blob && ws.readyState === WebSocket.OPEN) {
-              blob.arrayBuffer().then(buf => ws.send(buf));
-            }
+            if (!blob || cancelled) return;
+            fetch(frameUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/octet-stream' },
+              body: blob,
+              keepalive: true,
+            }).catch(() => { /* best-effort: next frame retries */ });
           }, 'image/jpeg', 0.6); // quality 0.6 = ~20-40KB per frame
         }, 200); // 200ms = 5 FPS
 
         frameStreamRef.current = {
           stop: () => {
             clearInterval(interval);
-            try { ws.send('video_stop'); } catch {}
-            ws.close();
             stream.getTracks().forEach(t => t.stop());
             video.srcObject = null;
           },

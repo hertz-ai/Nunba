@@ -667,13 +667,69 @@ def get_description(user_id):
     return None
 
 
+_VISION_SERVICE_CACHE = [None]
+
+
 def _get_vision_service():
-    """Lazy accessor for the global VisionService instance."""
-    import sys
-    main_mod = sys.modules.get('__main__')
-    if main_mod and hasattr(main_mod, '_vision_service'):
-        return main_mod._vision_service
+    """Lazy accessor for the running VisionService singleton.
+
+    cx_Freeze on macOS mounts ``main.py`` under an opaque module name that
+    neither ``__main__`` nor ``main`` matches, so reading the module-level
+    global via ``sys.modules`` returns None.  Fall back to ``gc``: find
+    any live ``VisionService`` instance in the heap.  Safe because
+    ``_start_vision_service`` only ever creates one.
+    """
+    cached = _VISION_SERVICE_CACHE[0]
+    if cached is not None:
+        return cached
+    try:
+        import gc
+        from integrations.vision.vision_service import VisionService
+    except Exception:
+        return None
+    for _obj in gc.get_objects():
+        if isinstance(_obj, VisionService):
+            _VISION_SERVICE_CACHE[0] = _obj
+            return _obj
     return None
+
+
+def vision_frame_ingest():
+    """POST /api/vision/frame?user_id=...&channel=camera|screen, body = JPEG bytes.
+
+    Cross-platform canonical transport for SPA-sourced camera / screen
+    frames.  Reuses the same frame-store API that VisionService's
+    WebSocket handler calls (`store.put_frame` / `store.put_screen_frame`)
+    — the background `_description_loop` then picks the frames up, runs
+    them through the active vision backend (Qwen3-VL / MiniCPM /
+    lightweight), and records visual context exactly as the WebSocket
+    path does.
+
+    HTTP is used instead of WebSocket because WKWebView (macOS) rejects
+    `ws://` from the secure-context localhost page with a hard-coded
+    `SecurityError: The operation is insecure` that no WKPreference or
+    App Transport Security key unlocks.  HTTP fetch to the same Flask
+    origin has no such gate and behaves identically on WebView2 / WKWebView
+    / WebKitGTK — single frontend path for every OS, not a Mac fallback.
+    """
+    svc = _get_vision_service()
+    if svc is None or not getattr(svc, 'store', None):
+        return jsonify({'ok': False, 'error': 'vision_service_unavailable'}), 503
+    user_id = str(request.args.get('user_id') or
+                  request.headers.get('X-User-Id') or 'anon')
+    channel = (request.args.get('channel') or 'camera').lower()
+    frame_bytes = request.get_data() or b''
+    if not frame_bytes:
+        return jsonify({'ok': False, 'error': 'empty_frame'}), 400
+    try:
+        if channel == 'screen':
+            svc.store.put_screen_frame(user_id, frame_bytes)
+        else:
+            svc.store.put_frame(user_id, frame_bytes)
+        return ('', 204)
+    except Exception as _e:
+        logger.warning(f"vision_frame_ingest error: {_e}")
+        return jsonify({'ok': False, 'error': str(_e)[:120]}), 500
 
 
 def create_sessions(user_id, teacher_avatar_id, data, data_keys):
@@ -3701,6 +3757,8 @@ def register_routes(app):
                      methods=["POST"], endpoint="tts_handshake_retry_api")
     app.add_url_rule("/api/tts/handshake/switch", view_func=tts_handshake_switch,
                      methods=["POST"], endpoint="tts_handshake_switch_api")
+    app.add_url_rule("/api/vision/frame", view_func=vision_frame_ingest,
+                     methods=["POST"], endpoint="vision_frame_ingest")
 
     # Kids Learning TTS routes (called by kidsLearningApi.js TTSManager)
     app.route("/api/social/tts/quick", methods=["POST"])(tts_kids_quick)

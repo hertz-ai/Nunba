@@ -1291,6 +1291,14 @@ def get_webview():
                         config.setMediaTypesRequiringUserActionForPlayback_(0)
                         config.preferences().setValue_forKey_(True, 'mediaDevicesEnabled')
                         config.preferences().setValue_forKey_(False, 'mediaCaptureRequiresSecureConnection')
+                        # Allow ws:// to 127.0.0.1:5460 (VisionService) and
+                        # other same-host plain-HTTP connections from the
+                        # localhost-served React SPA.  WKWebView treats
+                        # localhost as a secure context, so without this
+                        # preference the ws:// upgrade throws "The operation
+                        # is insecure" and the video-conversation frame
+                        # stream never connects.
+                        config.preferences().setValue_forKey_(True, 'allowRunningInsecureContent')
                     except Exception:
                         pass
 
