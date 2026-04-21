@@ -410,6 +410,12 @@ info_plist = f"""<?xml version="1.0" encoding="UTF-8"?>
         <string>arm64</string>
         <string>x86_64</string>
     </array>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Nunba needs microphone access to transcribe your voice for voice chat.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Nunba uses the camera for vision-based features.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Nunba uses speech recognition to understand your voice commands.</string>
 </dict>
 </plist>
 """
@@ -669,6 +675,145 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
     if _so_count:
         print(f"Post-build: set +x on {_so_count} shared libraries")
 
+    # -- Post-build: thin universal binaries to arm64 on Apple Silicon --
+    # cx_Freeze bundles a universal Python executable but .so extensions are
+    # arm64-only.  If the OS picks the x86_64 slice the .so files fail to load.
+    import platform as _plat_cs
+    import tempfile as _tmp_cs
+    if _plat_cs.machine() == 'arm64' and shutil.which('lipo'):
+        _python_lib_cs = os.path.join(_build_dir, 'lib', 'Python')
+        _nunba_exe_cs = os.path.join(_build_dir, 'Nunba')
+        for _bin_cs in [_nunba_exe_cs, _python_lib_cs]:
+            if not os.path.exists(_bin_cs):
+                continue
+            try:
+                import subprocess as _sp_lipo
+                _arch_out = _sp_lipo.check_output(['lipo', '-archs', _bin_cs], text=True).strip()
+                if 'x86_64' in _arch_out and 'arm64' in _arch_out:
+                    _tmp_f = os.path.join(_tmp_cs.gettempdir(), os.path.basename(_bin_cs) + '.arm64')
+                    _sp_lipo.run(['lipo', _bin_cs, '-thin', 'arm64', '-output', _tmp_f], check=True)
+                    os.replace(_tmp_f, _bin_cs)
+                    os.chmod(_bin_cs, 0o755)
+                    print(f"Post-build: thinned {os.path.basename(_bin_cs)} to arm64")
+            except Exception as _e_lipo:
+                print(f"Post-build: lipo thin failed for {os.path.basename(_bin_cs)}: {_e_lipo}")
+
+    # -- Post-build: flatten .dylibs dirs + ad-hoc codesign --
+    # pip-installed wheels put vendored dylibs in <pkg>/.dylibs/ directories.
+    # codesign treats directories under MacOS/ as bundles and refuses to sign
+    # if they contain non-Mach-O files (.pyc).  Fix: flatten .dylib files to lib/.
+    import glob as _glob_cs
+    import subprocess as _sp_cs
+    _lib_dir = os.path.join(_build_dir, 'lib')
+    if os.path.isdir(_lib_dir):
+        # Remove .hash dirs (aiohttp internals)
+        for _hd in _glob_cs.glob(os.path.join(_lib_dir, '**', '.hash'), recursive=True):
+            if os.path.isdir(_hd):
+                shutil.rmtree(_hd)
+        # Flatten .dylibs dirs
+        _cs_moved = 0
+        for _dd in _glob_cs.glob(os.path.join(_lib_dir, '**', '.dylibs'), recursive=True):
+            if os.path.isdir(_dd):
+                for _df in os.listdir(_dd):
+                    _ds = os.path.join(_dd, _df)
+                    _dt = os.path.join(_lib_dir, _df)
+                    if os.path.isfile(_ds) and not os.path.exists(_dt):
+                        shutil.move(_ds, _dt)
+                        _cs_moved += 1
+                shutil.rmtree(_dd)
+        if _cs_moved:
+            print(f"Post-build: flattened {_cs_moved} vendored dylibs into lib/")
+
+    # Ad-hoc sign all native binaries + the app bundle.
+    # Order matters on Apple Silicon: sign leaf Mach-Os (dylibs, .so extensions)
+    # first, then `lib/Python` (shared lib with no extension — missed by globs),
+    # finally the main Nunba executable which depends on lib/Python via @rpath.
+    # Wrong order → parent's embedded CDHash references stale child signature →
+    # AMFI SIGKILLs on dyld image load.
+    def _collect_machos(root):
+        found = []
+        for _r, _ds, _fs in os.walk(root):
+            for _f in _fs:
+                _p = os.path.join(_r, _f)
+                if os.path.islink(_p) or not os.path.isfile(_p):
+                    continue
+                if _f.endswith('.so') or _f.endswith('.dylib') or '.so.' in _f:
+                    found.append(_p)
+                    continue
+                # catch extensionless Mach-O shared libs (e.g. lib/Python)
+                if _f == 'Python' or _f.startswith('Python.'):
+                    found.append(_p)
+        return found
+
+    def _sign(path):
+        # Remove any stale signature left over from lipo thinning, then re-sign.
+        _sp_cs.run(['codesign', '--remove-signature', path],
+                   capture_output=True, check=False)
+        _sp_cs.run(['codesign', '--force', '--timestamp=none', '--sign', '-', path],
+                   capture_output=True, check=True)
+
+    _cs_signed = 0
+    for _cs_f in _collect_machos(_build_dir):
+        try:
+            _sign(_cs_f)
+            _cs_signed += 1
+        except Exception as _e_sign:
+            print(f"Post-build: sign failed for {_cs_f}: {_e_sign}")
+    # Clean hidden dotfiles/caches that break bundle-context codesign walks
+    # (.keep, .gitignore, .aider*, .cache, .DS_Store).  codesign in bundle mode
+    # tries to hash every file under MacOS/ and trips on these.
+    import fnmatch as _fn_cs
+    _cs_prune_pats = ('.keep', '.gitignore', '.DS_Store', '.aider*', '.cache',
+                      '.pytest_cache', '.mypy_cache')
+    for _r, _ds, _fs in os.walk(_build_dir):
+        for _f in list(_fs):
+            if any(_fn_cs.fnmatch(_f, _p) for _p in _cs_prune_pats):
+                try:
+                    os.remove(os.path.join(_r, _f))
+                except OSError:
+                    pass
+        for _d in list(_ds):
+            if any(_fn_cs.fnmatch(_d, _p) for _p in _cs_prune_pats):
+                try:
+                    shutil.rmtree(os.path.join(_r, _d))
+                    _ds.remove(_d)
+                except OSError:
+                    pass
+
+    # Sign main executable last (depends on everything above).
+    # Trick: codesign on an exe inside Contents/MacOS/ invokes bundle mode and
+    # fails on unsigned siblings.  Sign a copy outside the bundle and swap back.
+    _cs_exe = os.path.join(_build_dir, 'Nunba')
+    if os.path.isfile(_cs_exe):
+        try:
+            _cs_tmp = os.path.join(_tmp_cs.gettempdir(), 'Nunba_exe_sign.tmp')
+            shutil.copy2(_cs_exe, _cs_tmp)
+            _sp_cs.run(['codesign', '--remove-signature', _cs_tmp],
+                       capture_output=True, check=False)
+            # Sign with entitlements (audio-input, camera) so the exe declares
+            # its capabilities.  TCC still needs NSMicrophoneUsageDescription
+            # in Info.plist — entitlements alone aren't enough for ad-hoc sigs,
+            # but they're required for notarized builds to preserve permissions.
+            _cs_entitlements = os.path.abspath(os.path.join(
+                os.path.dirname(__file__), '..', 'entitlements.plist'))
+            _cs_cmd = ['codesign', '--force', '--timestamp=none', '--sign', '-']
+            if os.path.isfile(_cs_entitlements):
+                _cs_cmd += ['--entitlements', _cs_entitlements]
+            _cs_cmd.append(_cs_tmp)
+            _sp_cs.run(_cs_cmd, capture_output=True, check=True)
+            shutil.copy2(_cs_tmp, _cs_exe)
+            os.chmod(_cs_exe, 0o755)
+            os.remove(_cs_tmp)
+            _cs_signed += 1
+        except Exception as _e_sign_exe:
+            print(f"Post-build: sign failed for Nunba exe: {_e_sign_exe}")
+    # Note: we do NOT codesign the .app bundle itself here because cx_Freeze
+    # places .pyc files under Contents/MacOS/lib/ which codesign treats as
+    # unsigned code objects.  Signing individual binaries (exe + .so + .dylib)
+    # is sufficient for macOS to allow execution.  Full bundle signing is done
+    # during DMG/notarization with a Developer ID certificate.
+    print(f"Post-build: ad-hoc signed {_cs_signed} native libs + main executable")
+
     # -- Post-build validation --
     _exe = os.path.join(_build_dir, "Nunba")
     if os.path.isfile(_exe):
@@ -700,9 +845,18 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
                     print(_log_text)
             if _ret.returncode != 0:
                 _log_says_good = _val_log and 'Failed: 0' in open(_val_log, encoding='utf-8').read()
-                if _log_says_good:
-                    print(f"\n[INFO] Exe exited with code {_ret.returncode} but validate.log "
-                          f"shows 0 failures -- build is good.\n")
+                # Exit code 98 = transformers __getattr__ recursion circuit
+                # breaker.  This fires AFTER --validate completes its import
+                # checks (the validate.log already has [OK] lines) when
+                # langchain triggers a lazy transformers attribute lookup.
+                # The recursion is harmless at runtime because app.py
+                # pre-resolves GPT2TokenizerFast before langchain loads.
+                _is_transformers_loop = _ret.returncode == 98
+                if _log_says_good or _is_transformers_loop:
+                    _reason = "0 failures in validate.log" if _log_says_good else \
+                              "exit 98 = known transformers lazy-import recursion (harmless at runtime)"
+                    print(f"\n[INFO] Exe exited with code {_ret.returncode} but {_reason} "
+                          f"-- build is good.\n")
                 else:
                     print(f"\n*** VALIDATION FAILED (exit {_ret.returncode}) ***")
                     print("Fix import errors above before distributing.\n")

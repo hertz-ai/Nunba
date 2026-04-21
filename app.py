@@ -101,11 +101,79 @@ if getattr(sys, 'frozen', False):
     _import_stack = []
     _orig_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
 
+    # Write EVERY import entry to a file — tail shows the last-reached module
+    # when the process hangs or crashes.  Line-buffered so even a kill -9 leaves
+    # the trace on disk.
+    _imp_log_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs', 'import_trace.log')
+    try:
+        os.makedirs(os.path.dirname(_imp_log_path), exist_ok=True)
+        _imp_log = open(_imp_log_path, 'w', encoding='utf-8', buffering=1)
+    except OSError:
+        _imp_log = None
+
+    # Circuit breaker: detect runaway re-imports of the same module
+    # (transformers 5.x has a known bug that re-imports convert_slow_tokenizer
+    # 60M+ times in cx_Freeze).  After N consecutive identical imports at the
+    # same depth, raise ImportError to break the caller's loop.
+    _last_name = [None]
+    _last_depth = [0]
+    _consec = [0]
+    _CIRCUIT_LIMIT = 5000
+
     def _trace_import(name, *args, **kwargs):
         _import_depth[0] += 1
         if _import_depth[0] > _max_depth[0]:
             _max_depth[0] = _import_depth[0]
         _import_stack.append(name)
+        # Skip circuit-breaker counter for already-loaded modules — an
+        # `__import__` call for a cached module is just a sys.modules lookup
+        # and doesn't indicate runaway recursion.  Without this guard, legit
+        # hot-loop heartbeat imports (e.g., HARTOS resource_governor pulling
+        # security.node_watchdog every 5s tick) falsely trip the breaker.
+        _already_loaded = name in sys.modules
+        if not _already_loaded and name == _last_name[0] and _import_depth[0] == _last_depth[0]:
+            _consec[0] += 1
+            if _consec[0] > _CIRCUIT_LIMIT:
+                # Capture state BEFORE doing anything that might re-enter
+                # _trace_import — `import traceback`, `os.path.join`, etc. all
+                # call __import__, which resets _consec/_last_name to garbage.
+                _cb_consec = _consec[0]
+                _cb_depth = _import_depth[0]
+                _cb_name = name
+                _cb_stack = list(_import_stack[-30:])
+                # Walk Python frames directly (no traceback module — re-enters).
+                _frames = []
+                _f = sys._getframe(1)
+                while _f is not None and len(_frames) < 60:
+                    _co = _f.f_code
+                    _frames.append(f"  {_co.co_filename}:{_f.f_lineno} in {_co.co_name}")
+                    _f = _f.f_back
+                _dump_path = '/tmp/nunba_import_loop_traceback.txt'
+                try:
+                    _fd = os.open(_dump_path,
+                                  os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+                    _msg = (f"CIRCUIT BREAKER: {_cb_name} repeated {_cb_consec}x"
+                            f" at depth {_cb_depth}\n\n"
+                            f"=== Python call stack (innermost first) ===\n"
+                            + "\n".join(_frames) +
+                            f"\n\n=== Import stack (last 30) ===\n")
+                    for _i, _m in enumerate(_cb_stack):
+                        _msg += f"{_i}: {_m}\n"
+                    os.write(_fd, _msg.encode('utf-8', 'replace'))
+                    os.fsync(_fd)
+                    os.close(_fd)
+                except Exception:
+                    pass
+                os._exit(98)
+        else:
+            _last_name[0] = name
+            _last_depth[0] = _import_depth[0]
+            _consec[0] = 0
+        if _imp_log is not None:
+            try:
+                _imp_log.write(f"{_import_depth[0]:3d} ENTER {name}\n")
+            except Exception:
+                pass
         if _import_depth[0] > 900:
             # About to overflow — dump the chain to disk before os._exit
             # (os._exit skips atexit + stdio flush, so we must flush ourselves
@@ -132,6 +200,11 @@ if getattr(sys, 'frozen', False):
         finally:
             _import_stack.pop()
             _import_depth[0] -= 1
+            if _imp_log is not None:
+                try:
+                    _imp_log.write(f"{_import_depth[0]:3d} LEAVE {name}\n")
+                except Exception:
+                    pass
 
     if hasattr(__builtins__, '__import__'):
         __builtins__.__import__ = _trace_import
@@ -449,6 +522,10 @@ import os
 import sys
 
 _t = getattr(__import__('builtins'), '_nunba_trace', lambda m: None)
+# In dev (non-frozen) mode, _trace was never defined — provide a no-op so
+# the rest of app.py can call it unconditionally.
+if '_trace' not in dir():
+    _trace = _t  # noqa: F811
 _t("PATH isolation starting")
 
 # === Frozen executable PATH isolation ===
@@ -905,6 +982,47 @@ if getattr(sys, 'frozen', False):
     # No runtime file I/O needed.  Kept as a one-line trace point so boot
     # telemetry stays aligned with the old timeline.
 
+    # ── Patch transformers/utils/import_utils.py hasattr-recursion bug ──
+    # _LazyModule.__getattr__ calls `hasattr(transformers_module, candidate_name)`
+    # which re-enters __getattr__ and infinite-loops on cx_Freeze macOS builds.
+    # Replace with vars() __dict__ lookup that doesn't trigger __getattr__.
+    try:
+        import importlib.util as _ilu_iu
+        _iu_spec = _ilu_iu.find_spec('transformers.utils.import_utils')
+        if _iu_spec and _iu_spec.origin:
+            _iu_path = _iu_spec.origin
+            with open(_iu_path, encoding='utf-8') as _f:
+                _iu_src = _f.read()
+            _iu_bad = 'if transformers_module and hasattr(transformers_module, candidate_name):\n                                        base_tokenizer_class = getattr(transformers_module, candidate_name)'
+            _iu_good = ('_td = vars(transformers_module) if transformers_module else {}\n'
+                        '                                    if candidate_name in _td:\n'
+                        '                                        base_tokenizer_class = _td[candidate_name]')
+            if _iu_bad in _iu_src:
+                with open(_iu_path, 'w', encoding='utf-8') as _f:
+                    _f.write(_iu_src.replace(_iu_bad, _iu_good))
+    except Exception:
+        pass
+
+    # ── Pre-resolve transformers.GPT2TokenizerFast (cx_Freeze macOS hang fix) ──
+    # transformers 5.x replaces sys.modules['transformers'] with a _LazyModule
+    # whose __getattr__ has a recursion bug when used from inside cx_Freeze on
+    # macOS: langchain_core.language_models.base does `from transformers import
+    # GPT2TokenizerFast`, the lazy lookup falls into convert_slow_tokenizer
+    # repeatedly (60M+ iterations observed) and the process hangs.
+    # Windows/Linux frozen builds don't exhibit this — scope to macOS only.
+    if sys.platform == 'darwin':
+        try:
+            import transformers as _tf_pre  # triggers LazyModule install
+            from transformers.models.gpt2.tokenization_gpt2_fast import (
+                GPT2TokenizerFast as _GPT2TF_pre,
+            )
+            try:
+                object.__setattr__(_tf_pre, 'GPT2TokenizerFast', _GPT2TF_pre)
+            except Exception:
+                _tf_pre.GPT2TokenizerFast = _GPT2TF_pre
+        except Exception:
+            pass
+
 # ── Deferred frozen fixes — run AFTER splash is shown ──
 def _run_frozen_import_fixes():
     """Run the langchain/torch/transformers fixes that were skipped above."""
@@ -1177,6 +1295,34 @@ def get_webview():
                         pass
 
                 _cocoa.BrowserView.__init__ = _patched_init
+
+                # Add requestMediaCapturePermission delegate to BrowserDelegate.
+                # WKWebView silently denies getUserMedia() unless the delegate
+                # implements this method and calls decisionHandler(grant).
+                # Uses classAddMethod with explicit signature — Category-based
+                # registration was observed to destabilize the AppKit/WKWebView
+                # bootstrap in the frozen bundle (process exited silently
+                # between "Event handlers connected" and "Starting webview").
+                import objc as _objc
+
+                _delegate_cls = _cocoa.BrowserView.BrowserDelegate
+                _sel_name = (
+                    b'webView:requestMediaCapturePermissionForOrigin:'
+                    b'initiatedByFrame:type:decisionHandler:'
+                )
+                if not _delegate_cls.instancesRespondToSelector_(_sel_name):
+                    # WKPermissionDecisionGrant = 1; signature v@:@@@q@? maps to
+                    # self + _cmd (implicit) + webview + origin + frame + NSInteger + block.
+                    def _grant_media(self, webview, origin, frame, media_type, handler):
+                        handler(1)
+
+                    _imp = _objc.selector(
+                        _grant_media,
+                        selector=_sel_name,
+                        signature=b'v@:@@@q@?',
+                    )
+                    _objc.classAddMethod(_delegate_cls, _sel_name, _imp)
+
                 logging.getLogger('NunbaGUI').info("[MEDIA] Patched WKWebView for media capture + autoplay")
             except Exception as _patch_err:
                 logging.getLogger('NunbaGUI').warning(f"[MEDIA] WKWebView patch skipped: {_patch_err}")
@@ -6276,6 +6422,29 @@ def main():
                     logger.error(f"[NATIVE-MIC] Error: {e}")
                     return f'__ERROR__:{e}'
 
+            def native_file_pick(self, accept='image'):
+                """Open native macOS file picker via pywebview.
+                accept: 'image', 'pdf', or 'any'.
+                Returns file path string or empty string if cancelled."""
+                try:
+                    wv = get_webview()
+                    windows = wv.windows
+                    if not windows:
+                        return ''
+                    win = windows[0]
+                    result = win.create_file_dialog(
+                        wv.OPEN_DIALOG,
+                        allow_multiple=False,
+                    )
+                    if result and len(result) > 0:
+                        path = result[0]
+                        logger.info(f"[NATIVE-FILE] Picked: {path}")
+                        return str(path)
+                    return ''
+                except Exception as e:
+                    logger.error(f"[NATIVE-FILE] Error: {e}")
+                    return ''
+
         _native_api = NunbaNativeApi()
 
         # Create window with conditional hidden status and frameless design
@@ -7615,6 +7784,9 @@ if __name__ == "__main__":
             try:
                 _import_main_app()
             except BaseException as e:
+                import traceback as _tb
+                logger.error(f"[STARTUP] main.py import exception: {type(e).__name__}: {e}")
+                logger.error(f"[STARTUP] main.py import traceback:\n{''.join(_tb.format_exception(e))}")
                 _import_error[0] = e
 
         _import_thread = threading.Thread(target=_bg_import, daemon=True,

@@ -1791,7 +1791,10 @@ def voice_transcribe():
         audio_file.save(tmp.name)
         tmp.close()
 
-        from integrations.service_tools.whisper_tool import whisper_transcribe
+        from integrations.service_tools.whisper_tool import (
+            _faster_whisper_transcribe,
+            whisper_transcribe,
+        )
         # STT language resolution (fix for 2026-04-15 Romanised-Tamil
         # regression, caused by prior fix 07da0fb):
         #
@@ -1812,10 +1815,24 @@ def voice_transcribe():
         # while not forcing English on opportunistic multilingual use.
         _pref_lang = request.form.get('preferred_lang') or request.args.get('preferred_lang')
         _should_hint = bool(_pref_lang) and _pref_lang.split('-')[0].lower() not in ('', 'en', 'auto')
-        result = json.loads(
-            whisper_transcribe(tmp.name, language=_pref_lang) if _should_hint
-            else whisper_transcribe(tmp.name)
-        )
+        # Preferred path: in-process faster-whisper call.  Avoids the
+        # ToolWorker subprocess, which can't start under cx_Freeze on macOS
+        # (frozen binary has no `-m module` entry — single-instance guard
+        # re-fires and the worker exits 0 before the model loads).
+        _in_proc = None
+        try:
+            _in_proc = _faster_whisper_transcribe(
+                tmp.name, language=_pref_lang if _should_hint else None
+            )
+        except Exception as _fw_err:
+            logger.warning(f"In-process faster-whisper failed, falling back: {_fw_err}")
+        if _in_proc:
+            result = json.loads(_in_proc)
+        else:
+            result = json.loads(
+                whisper_transcribe(tmp.name, language=_pref_lang) if _should_hint
+                else whisper_transcribe(tmp.name)
+            )
 
         # Sync STT model state with catalog on first successful transcribe
         try:

@@ -80,9 +80,13 @@ export default function useSpeechRecognition(config = {}) {
           ws.send(JSON.stringify({type: 'config', language: lang}));
 
           // Set up audio streaming via AudioContext + ScriptProcessor
+          // Note: WKWebView may ignore sampleRate and give hardware rate
+          const TARGET_RATE = 16000;
           const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: 16000,
+            sampleRate: TARGET_RATE,
           });
+          const actualRate = audioCtx.sampleRate;
+          const needsResample = actualRate !== TARGET_RATE;
           const source = audioCtx.createMediaStreamSource(stream);
           // ScriptProcessor is deprecated but widely supported; AudioWorklet
           // requires a separate file which complicates bundling
@@ -90,7 +94,17 @@ export default function useSpeechRecognition(config = {}) {
 
           processor.onaudioprocess = (e) => {
             if (ws.readyState === WebSocket.OPEN) {
-              const inputData = e.inputBuffer.getChannelData(0);
+              let inputData = e.inputBuffer.getChannelData(0);
+              // Resample to 16kHz if AudioContext gave a different rate
+              if (needsResample) {
+                const ratio = actualRate / TARGET_RATE;
+                const newLen = Math.round(inputData.length / ratio);
+                const resampled = new Float32Array(newLen);
+                for (let i = 0; i < newLen; i++) {
+                  resampled[i] = inputData[Math.round(i * ratio)];
+                }
+                inputData = resampled;
+              }
               // Convert float32 to int16 PCM
               const pcm16 = new Int16Array(inputData.length);
               for (let i = 0; i < inputData.length; i++) {

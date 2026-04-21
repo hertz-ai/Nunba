@@ -239,7 +239,13 @@ const ChatInputBar = ({
         )}
 
         <button
-          onClick={() => document.getElementById('fileInput').click()}
+          onClick={() => {
+            if (window.pywebview && window.pywebview.api) {
+              handleImageSelect({target: {files: []}});
+            } else {
+              document.getElementById('fileInput').click();
+            }
+          }}
           className="text-gray-400 hover:text-gray-600 p-1"
           aria-label="Upload image"
         >
@@ -247,7 +253,13 @@ const ChatInputBar = ({
         </button>
 
         <button
-          onClick={() => document.getElementById('pdfInput').click()}
+          onClick={() => {
+            if (window.pywebview && window.pywebview.api) {
+              handlePdfSelect({target: {files: []}});
+            } else {
+              document.getElementById('pdfInput').click();
+            }
+          }}
           className="text-gray-400 hover:text-gray-600 p-1"
           aria-label="Upload PDF"
         >

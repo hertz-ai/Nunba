@@ -1462,29 +1462,16 @@ def build_macos(python_exe, app_only=False, installer_only=False):
             shutil.copytree(_macos_share, _resources_share)
             print_info("Copied tcl/tk scripts to Contents/Resources/share/")
 
-        # -- Thin universal binaries to arm64 on Apple Silicon --
-        # cx_Freeze bundles a universal Python executable but .so extensions are
-        # arm64-only.  If the OS picks the x86_64 slice the .so files fail to
-        # load.  Thinning both the launcher and libPython forces arm64.
-        import platform as _plat
-        import tempfile
-        if _plat.machine() == 'arm64' and shutil.which('lipo'):
-            _python_lib = os.path.join(app_path, 'Contents', 'MacOS', 'lib', 'Python')
-            for _bin in [exe_path, _python_lib]:
-                if not os.path.exists(_bin):
-                    continue
-                try:
-                    _arch_out = subprocess.check_output(['lipo', '-archs', _bin], text=True).strip()
-                    if 'x86_64' in _arch_out and 'arm64' in _arch_out:
-                        _tmp = os.path.join(tempfile.gettempdir(), os.path.basename(_bin) + '.arm64')
-                        subprocess.run(['lipo', _bin, '-thin', 'arm64', '-output', _tmp], check=True)
-                        # Sign in temp location (avoids codesign treating it as bundle root)
-                        subprocess.run(['codesign', '--force', '--sign', '-', _tmp], check=True)
-                        os.replace(_tmp, _bin)
-                        os.chmod(_bin, 0o755)
-                        print_info(f"Thinned to arm64 + re-signed: {os.path.basename(_bin)}")
-                except Exception as _e:
-                    print_warn(f"lipo thin failed for {os.path.basename(_bin)}: {_e}")
+        # NOTE: lipo thinning of Nunba + lib/Python is handled by
+        # setup_freeze_mac.py's post-build hook.  Running it again here
+        # would cause double-lipo and stale sigs.
+
+        # NOTE: .dylibs flattening and ad-hoc codesign are handled by
+        # setup_freeze_mac.py's post-build hook.  Duplicating the sign here
+        # (without --remove-signature first) leaves stale CDHashes on .so files
+        # and dyld rejects them at load time with
+        #   "code signature not valid for use in process: Trying to load an unsigned library"
+        # Leave signing to setup_freeze_mac.py.
 
         print_info(f"Build successful: {app_path}")
 
@@ -1593,6 +1580,8 @@ def sign_macos():
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
     <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
 </dict>
 </plist>''')
