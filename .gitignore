@@ -166,3 +166,4 @@ tests/coverage/phase5_*
 # nyc / istanbul JS outputs
 landing-page/coverage/
 landing-page/.nyc_output/
+.backups/
