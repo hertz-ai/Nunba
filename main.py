@@ -5097,31 +5097,35 @@ def start_background_services():
                 except Exception:
                     pass
 
-                # Iterate backend → required-pip-package pairs.  The single
-                # source of truth is `_BACKEND_TO_REGISTRY_KEY` defined at
-                # module level in tts.tts_engine — there is no
-                # `_BACKEND_REQUIRED_IMPORTS` class attribute (an old refactor
-                # left this call site pointing at a dead name, which silently
-                # crashed boot-time TTS warmup with `AttributeError`).
-                # Use the venv-aware dispatcher, NOT the raw python-embed probe.
-                # check_backend_runnable always probes the main interpreter —
-                # for venv-quarantined backends (indic_parler) the target
-                # module (parler_tts) lives in its own venv and is never
-                # importable from python-embed, so the raw probe silently
-                # reports "not runnable" even after a clean install. The
-                # dispatcher at _probe_backend_runnable routes those to
-                # backend_venv.is_venv_healthy which probes inside the venv.
+                # Prime TTSEngine._import_check_cache using the SAME
+                # probe + cache-key schema that _can_run_backend uses, so
+                # the warm-up result is actually consumed at request time.
+                #
+                # Source of truth: TTSEngine._get_required_package(backend)
+                # derives the import name from HARTOS ENGINE_REGISTRY —
+                # e.g. chatterbox_turbo → 'chatterbox' (NOT the registry
+                # key 'chatterbox_turbo'), indic_parler → 'parler_tts'
+                # (NOT 'indic_parler'). Using _BACKEND_TO_REGISTRY_KEY
+                # values here was double-wrong: (a) registry keys are
+                # bridge IDs not import names, and (b) the cache key the
+                # dispatcher looks up is f'venv:{backend}' for venv
+                # backends, so even a passing probe would leave the
+                # cache miss in place.
                 from tts.tts_engine import (
-                    _BACKEND_TO_REGISTRY_KEY as _BACKEND_IMPORTS,
+                    _BACKEND_TO_REGISTRY_KEY,
+                    _is_venv_backend,
                     _probe_backend_runnable,
                 )
-                for _be, _imp in _BACKEND_IMPORTS.items():
-                    # Skip backends not in the user's language ladder
+                for _be in _BACKEND_TO_REGISTRY_KEY:
                     if _ladder_backends and _be not in _ladder_backends:
                         logging.debug(f"TTS: skipping probe of {_be} (not in {preferred_lang} ladder)")
                         continue
+                    _imp = TTSEngine._get_required_package(_be)
+                    if not _imp:
+                        continue  # backend has no pip dep (piper/espeak) — skip probe
                     if _probe_backend_runnable(_be, _imp):
-                        TTSEngine._import_check_cache[_imp] = True
+                        _cache_key = f'venv:{_be}' if _is_venv_backend(_be) else _imp
+                        TTSEngine._import_check_cache[_cache_key] = True
                         logging.info(f"TTS: backend {_be} ({_imp}) verified runnable")
             # NOW create the engine — cache is primed, _can_run_backend will find entries
             from tts.tts_engine import get_tts_engine
