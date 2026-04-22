@@ -2949,6 +2949,11 @@ def chat_route():
                 _needs_tools = bool(langchain_prompt_id or create_agent
                                     or agentic_execute or agentic_plan
                                     or autonomous_creation)
+                logger.info(
+                    f"hevolve_chat dispatch: media_mode={media_mode} "
+                    f"text[:160]={text[:160]!r} "
+                    f"conv_id={conversation_id} casual={not _needs_tools}"
+                )
                 result = hevolve_chat(
                     text=text,
                     user_id=str(user_id),

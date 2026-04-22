@@ -503,6 +503,29 @@ except Exception:
     # backends (chatterbox_ml / indic_parler).  No regression.
     pass
 
+# ── Piper capability registration ───────────────────────────────────
+# Piper is the portable CPU-only backend that works identically on
+# Windows / macOS / Linux with no GPU and no system-voice dependency.
+# Every language in tts/piper_tts.py:LANG_TO_VOICE gets BACKEND_PIPER
+# added to its capable set, so select_backend_for_lang can pick Piper
+# without the rest of the fallback chain (indic_parler VRAM contention,
+# WKWebView SpeechSynthesis "operation not supported") ever firing.
+# Source of truth for the actual voice file is LANG_TO_VOICE in
+# piper_tts.py — keep the two lists in sync.
+try:
+    from tts.piper_tts import LANG_TO_VOICE as _PIPER_LANG_TO_VOICE
+    for _plang in _PIPER_LANG_TO_VOICE:
+        _bare = _plang.split('_')[0]
+        for _key in (_plang, _bare):
+            _existing = _LANG_CAPABLE_BACKENDS.get(_key, frozenset())
+            _LANG_CAPABLE_BACKENDS[_key] = _existing | {BACKEND_PIPER}
+except Exception:
+    # Piper module not importable at definition time — the fallback
+    # chain in _synthesize_with_fallback still tries Piper by default
+    # for 'en', so English audio isn't broken.  Other languages will
+    # fall through to their non-Piper backends (chatterbox_ml etc.).
+    pass
+
 
 def _normalize_lang(lang: str | None) -> str:
     """'en-US' / 'ta_IN' / None → 'en' / 'ta' / 'en'."""

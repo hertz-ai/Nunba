@@ -190,7 +190,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   }, []);
 
   const [shouldScroll, setShouldScroll] = useState(false);
-  const [loading, setLoading] = useState(true);
+  // Initialize false so the send button isn't disabled at boot.  The original
+  // `true` was vestigial (no render spinner keyed on it); the queue/drain
+  // effects at lines ~526 and ~539 are gated on messageQueue.length first, so
+  // an initial-false value doesn't change their behavior.  `setLoading(true)`
+  // still fires inside handleSend for every real request, which is what
+  // ChatInputBar's send-button disabled state now keys on.
+  const [loading, setLoading] = useState(false);
   const [messageQueue, setMessageQueue] = useState([]); // Queue for messages sent while loading or while local engine is booting
   const lastMessageSentAtRef = useRef(0); // Timestamp of last sent message
   // Bounded auto-retry counter for boot-window "Loading tools" fallbacks —
@@ -3200,16 +3206,24 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         if (isEcho) return; // ignore echo
 
-        // Real user speech — barge in
+        // Real user speech — barge in (but only if not just after a manual send;
+        // the mic often catches the user's own voice as they type+say the same
+        // thing, producing a duplicate auto-send)
         tts.stop();
         setDuration(0);
         setAnimatingMessageIndex(null);
-        if (text.length > 2) {
+        if (text.length > 2 && Date.now() - lastMessageSentAtRef.current >= 2000) {
           setInputMessage(text);
           setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 300);
         }
         return;
       }
+
+      // Cooldown window after a manual send — the mic often picks up the
+      // user re-saying the text they just typed, or room noise, and
+      // immediately auto-fires a duplicate send.  Suppress for 2s after
+      // any manual send.
+      if (Date.now() - lastMessageSentAtRef.current < 2000) return;
 
       // Wake word: "Hey Nunba [command]"
       const wakeIdx = text.indexOf('nunba');
@@ -3255,7 +3269,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }
 
     let cancelled = false;
-    const userId = decryptedUserId || localStorage.getItem('guest_name') || 'anon';
+    // Must match the user_id sent by /chat (effectiveUserId) so VisionService
+    // frames land in the same FrameStore bucket the chat pipeline looks up.
+    // Previously used decryptedUserId || guest_name, which produced the
+    // display name (e.g. Serene.Purple.Monisha) while chat was sending the
+    // guest UUID — descriptions were stored under one id and queried under
+    // another, so the LLM received no visual context.
+    const userId = effectiveUserId || localStorage.getItem('guest_user_id') || 'guest';
 
     const startStreaming = async () => {
       try {
@@ -3316,7 +3336,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         frameStreamRef.current = null;
       }
     };
-  }, [mediaMode, decryptedUserId]);
+  }, [mediaMode, effectiveUserId]);
 
   // ── Camera capture — snap frame, send as image ──
   const handleCameraCapture = async () => {
@@ -3541,15 +3561,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const handleSend = async () => {
     // Prime TTS audio element on user gesture — required by WebView2 autoplay policy.
     // Without this, audio.play() from async SSE callbacks is silently blocked.
+    // Fire-and-forget: a stray `await` here blocks the rest of handleSend
+    // long enough for the user to click send again (UI hasn't updated yet),
+    // which produces a double-dispatch at the same millisecond.  The priming
+    // only needs to happen inside the user gesture stack — the promise
+    // resolving later is irrelevant.
     try {
       const ttsEl = document.getElementById('nunba-tts-audio');
       if (ttsEl && ttsEl.paused && !ttsEl._primed) {
         ttsEl.volume = 0;
         ttsEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
-        await ttsEl.play().catch(() => {});
-        ttsEl.volume = 1;
-        ttsEl._primed = true;
-        console.log('[TTS] Audio element primed on user gesture');
+        ttsEl.play().then(() => {
+          ttsEl.volume = 1;
+          ttsEl._primed = true;
+          console.log('[TTS] Audio element primed on user gesture');
+        }).catch(() => {});
       }
     } catch {}
 
@@ -3587,10 +3613,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
     if (!inputMessage.trim() && !fileUrl && !userImage) return;
     // Queue message when:
-    //   - A previous request is in flight (loading) AND it's been less than
-    //     10s since the last sent message (existing throttle behavior); OR
+    //   - A previous user-initiated request is in flight (loading) AND it's
+    //     been less than 10s since that message (existing throttle
+    //     behavior); OR
     //   - The local engine reports not-ready (engineReady=false) AND we're
     //     still within the boot-grace window after mount.
+    //
+    // Require a real prior send (lastMessageSentAtRef > 0) on the `loading`
+    // branch so the initial `loading=true` state — which covers
+    // onboarding/prompt-fetch/auth phases, not an actual chat in flight —
+    // can't trap the user's first click in the queue.  Any implicit send
+    // (STT auto-submit, onboarding handshake) that set `loading` without
+    // recording a user message will not match this guard, so the user's
+    // first real click proceeds normally.
     //
     // engineReady is realtime-reconciled (hooks/useLocalEngineReady.js), NOT
     // sticky-true: on a box whose llama.cpp needs a GPU-binary upgrade,
@@ -3602,7 +3637,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     const timeSinceLastMsg = Date.now() - lastMessageSentAtRef.current;
     const withinEngineBootGrace =
       Date.now() - chatMountAtRef.current < ENGINE_BOOT_GRACE_MS;
-    if ((loading && timeSinceLastMsg < 10000) || (!engineReady && withinEngineBootGrace)) {
+    if (
+      (loading && lastMessageSentAtRef.current > 0 && timeSinceLastMsg < 10000) ||
+      (!engineReady && withinEngineBootGrace)
+    ) {
       setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
       setInputMessage('');
       return;
@@ -3640,6 +3678,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setMessages((prevMessages) => [...prevMessages, userMessage]);
     setLoading(true);
     lastMessageSentAtRef.current = Date.now();
+    // Force-clear the textarea DOM value immediately.  React's controlled
+    // rerender is enough in theory, but WKWebView occasionally ignores the
+    // rerender when another source (wake-listener, STT) writes to the same
+    // value in the same tick.  Direct DOM clear is belt-and-suspenders.
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+    }
     setShouldScroll(true);
     setWaitingText(null);
     logger.log('agentdata', agentData);
@@ -5294,6 +5339,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             inputMessage={inputMessage}
             setInputMessage={setInputMessage}
             isAuthenticated={isAuthenticated}
+            loading={loading}
             ttsEnabled={ttsEnabled}
             setTtsEnabled={setTtsEnabled}
             isRecording={isRecording}
