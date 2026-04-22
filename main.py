@@ -5103,14 +5103,24 @@ def start_background_services():
                 # `_BACKEND_REQUIRED_IMPORTS` class attribute (an old refactor
                 # left this call site pointing at a dead name, which silently
                 # crashed boot-time TTS warmup with `AttributeError`).
-                from tts._torch_probe import check_backend_runnable
-                from tts.tts_engine import _BACKEND_TO_REGISTRY_KEY as _BACKEND_IMPORTS
+                # Use the venv-aware dispatcher, NOT the raw python-embed probe.
+                # check_backend_runnable always probes the main interpreter —
+                # for venv-quarantined backends (indic_parler) the target
+                # module (parler_tts) lives in its own venv and is never
+                # importable from python-embed, so the raw probe silently
+                # reports "not runnable" even after a clean install. The
+                # dispatcher at _probe_backend_runnable routes those to
+                # backend_venv.is_venv_healthy which probes inside the venv.
+                from tts.tts_engine import (
+                    _BACKEND_TO_REGISTRY_KEY as _BACKEND_IMPORTS,
+                    _probe_backend_runnable,
+                )
                 for _be, _imp in _BACKEND_IMPORTS.items():
                     # Skip backends not in the user's language ladder
                     if _ladder_backends and _be not in _ladder_backends:
                         logging.debug(f"TTS: skipping probe of {_be} (not in {preferred_lang} ladder)")
                         continue
-                    if check_backend_runnable(_be, _imp):
+                    if _probe_backend_runnable(_be, _imp):
                         TTSEngine._import_check_cache[_imp] = True
                         logging.info(f"TTS: backend {_be} ({_imp}) verified runnable")
             # NOW create the engine — cache is primed, _can_run_backend will find entries
