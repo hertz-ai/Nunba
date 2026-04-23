@@ -18,6 +18,19 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 os.environ.setdefault('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
                        '--autoplay-policy=no-user-gesture-required')
 
+# Frozen pywebview builds detach stdio after the window attaches. Any later
+# StreamHandler.emit then raises ValueError("I/O operation on closed file"),
+# and Handler.handleError tries to write the traceback to the same closed
+# sys.stderr — an infinite cascade that took down hart_generate, waitress,
+# and the autobahn component in the 2026-04-23 onboarding log. Setting
+# logging.raiseExceptions=False turns handleError into a no-op: the single
+# failed emit is swallowed cleanly instead of spiralling. Gated to frozen
+# builds so dev runs still surface genuine logging config errors.
+if getattr(sys, 'frozen', False):
+    import logging as _logging_boot
+    _logging_boot.raiseExceptions = False
+    del _logging_boot
+
 # ── Frozen-build code-hash short-circuit (2026-04-19) ──
 # `security.node_integrity.compute_code_hash` recursively walks every .py
 # file under the HARTOS install root to produce a SHA-256 manifest.  In a

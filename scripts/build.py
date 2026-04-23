@@ -1941,7 +1941,7 @@ def main():
         # let installs fail halfway through (witnessed 2026-04-21,
         # FreeSpace=4.3GB during a partial build that left python-embed
         # corrupt and required full rebuild).
-        _MIN_DISK_GB = 10.0
+        _MIN_DISK_GB = 7.0
         if _free_gb_cwd < _MIN_DISK_GB:
             sys.exit(
                 f"[PREFLIGHT] Refusing to build: CWD drive has only "
