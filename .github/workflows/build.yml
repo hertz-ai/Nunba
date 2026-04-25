@@ -219,7 +219,9 @@ jobs:
           # Always create .pth as belt-and-suspenders (editable installs can silently break)
           if [ -d "_deps/Hevolve_Database/sql" ]; then
             SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
-            HEVOLVE_DB_PATH=$(cd _deps/Hevolve_Database && pwd)
+            # Use Python to resolve the path — pwd returns /d/... on Windows Git Bash
+            # which Python can't resolve. os.path.abspath always returns a native OS path.
+            HEVOLVE_DB_PATH=$(python -c "import os; print(os.path.abspath('_deps/Hevolve_Database'))")
             echo "$HEVOLVE_DB_PATH" > "$SITE_PKG/hevolve_database.pth"
             echo "Added Hevolve_Database to Python path via .pth: $HEVOLVE_DB_PATH"
             python -c "import sql; print('sql OK:', sql.__file__)"
@@ -388,7 +390,7 @@ jobs:
           fi
           if [ -d "_deps/Hevolve_Database/sql" ]; then
             SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
-            HEVOLVE_DB_PATH=$(cd _deps/Hevolve_Database && pwd)
+            HEVOLVE_DB_PATH=$(python -c "import os; print(os.path.abspath('_deps/Hevolve_Database'))")
             echo "$HEVOLVE_DB_PATH" > "$SITE_PKG/hevolve_database.pth"
             echo "Added Hevolve_Database to Python path via .pth: $HEVOLVE_DB_PATH"
             python -c "import sql; print('sql OK:', sql.__file__)"
