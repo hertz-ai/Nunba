@@ -322,13 +322,42 @@ end).  Build queue:
    actually renders correct data on a running stack requires Cypress
    E2E coverage in `landing-page/cypress/e2e/` OR manual stack-up.
 
-2. **Android (Hevolve_React_Native) parity is UNVERIFIABLE here.**
-   MEMORY.md cites `C:\Users\sathi\StudioProjects\Hevolve_React_Native`
-   as the RN sibling repo.  That path is NOT on the disk for this
-   session.  The community-context EncountersPage may have an Android
-   counterpart that is missing one or more of the J-rows traced
-   above; cannot audit without the repo.  **No "Android works"
-   claim is appropriate from this trace alone.**
+2. **Android (Hevolve_React_Native) parity audit — 2026-04-25**.
+   Repo found at `C:\Users\sathi\StudioProjects\Hevolve_React_Native`.
+   Direct trace produced these findings for the **community-context
+   encounters** screen `components/CommunityView/screens/EncountersScreen.js`:
+
+   * **Tab order**: Android = `Nearby Now / Missed Connections /
+     Discovery / My Posts`.  Web = `Nearby Now / Missed Connections /
+     Discovery / History`.  Tab 3 differs: Android shows the user's
+     own missed-connection posts (`myMissed`); web shows past
+     acknowledged encounters + bond_level (`list({acknowledged:true})`
+     + `bonds`).  Different features, intentional UX divergence.
+
+   * **Render branches** (`grep activeTab === N` in EncountersScreen.js):
+     only `activeTab === 1` (line 85) and `activeTab === 3` (line 87)
+     have explicit handler branches.  Tab 0 works via the reactive
+     useLocationPing state; **Tab 2 "Discovery" has NO render branch
+     and NO encountersApi call.**
+
+   * **RN encountersApi missing methods** (`services/socialApi.js:110-142`):
+     `list`, `getWith`, `acknowledge`, `suggestions`, `bonds`,
+     `nearby` are all absent compared to the web SPA's
+     `services/socialApi.js:185-221`.
+
+   * **CONFIRMED ANDROID BREAK**: Tab 2 "Discovery" is DEAD on Android.
+     User taps it → no API call → no render → empty screen.  The
+     web SPA Discovery tab works (calls `suggestions` + renders
+     EncounterCard with `acknowledge` accept-button).  Fix requires:
+     (a) adding `suggestions` + `acknowledge` to RN's encountersApi,
+     (b) adding an `activeTab === 2` render branch with a
+     RN-equivalent of `EncounterCard`.
+
+   * **No BLE encounter UI on Android** (confirmed via grep —
+     no `bleEncounterApi`, no `/api/social/encounter/discoverable`
+     consumer, no `/api/social/encounter/sighting` consumer).
+     This is expected — the BLE feature is new; Android side
+     awaits the BLE native module shipped in #407.
 
 3. **api_tracker.py:1012 also registers `/encounters` GET.**  Whether
    this duplicates the gamification_bp registration depends on
