@@ -14,6 +14,7 @@ import ProximityBanner from '../shared/ProximityBanner';
 import ProximityMatchCard from '../shared/ProximityMatchCard';
 import useLocationPing from '../shared/useLocationPing';
 import BleMatchCard from './shared/BleMatchCard';
+import DiscoverableTogglePanel from './shared/DiscoverableTogglePanel';
 
 import AddIcon from '@mui/icons-material/Add';
 import MapIcon from '@mui/icons-material/Map';
@@ -195,6 +196,15 @@ export default function EncountersPage() {
       <Typography variant="h5" sx={{ fontWeight: 700, mb: 2 }}>
         Encounters
       </Typography>
+
+      {/* F1 GREENLIT (master-orchestrator aa3ead1) — discoverable consent
+          surface mounts ABOVE the tab bar so it's visible across every tab,
+          including BLE Matches.  See
+          components/Social/Encounters/shared/DiscoverableTogglePanel.jsx
+          for mission-anchor documentation. */}
+      <Box sx={{ mb: 2 }}>
+        <DiscoverableTogglePanel />
+      </Box>
 
       <Tabs
         value={tab}
