@@ -788,6 +788,12 @@ function initCrossbar({
         `com.hertzai.pupit.${userId}`,
         `com.hertzai.hevolve.analogy.${userId}`,
         `com.hertzai.hevolve.chat.${userId}`,
+        // Cross-device sync (U1-U8): HARTOS persists every chat turn
+        // and publishes on `<CHAT_TOPIC_NEW>.<user_id>` so peer devices
+        // can mirror without polling.  See HARTOS core/constants.py
+        // CHAT_TOPIC_NEW + integrations/social/chat_messages.publish_new.
+        // Provider-side dedup by msg_id is owned by NunbaChatProvider.
+        `com.hertzai.hevolve.chat.new.${userId}`,
         `com.hertzai.hevolve.${userId}`,
         `com.hertzai.bookparsing.${userId}`,
         `com.hertzai.hevolve.social.${userId}`,
