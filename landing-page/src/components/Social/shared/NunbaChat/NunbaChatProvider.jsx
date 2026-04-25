@@ -9,13 +9,16 @@ import {NUNBA_CAMERA_CONSENT} from '../../../../constants/events';
 import {useSocial} from '../../../../contexts/SocialContext';
 import useCameraFrameStream from '../../../../hooks/useCameraFrameStream';
 import {useTTS} from '../../../../hooks/useTTS';
-import realtimeService from '../../../../services/realtimeService';
+import realtimeService, {
+  subscribeChatNew,
+} from '../../../../services/realtimeService';
 import {chatApi} from '../../../../services/socialApi';
 import {
   classifyError,
   getBackoff,
   makeMsgId,
 } from '../../../../utils/chatRetry';
+import {getStableDeviceId} from '../../../../utils/deviceId';
 
 import React, {
   createContext,
@@ -922,6 +925,83 @@ export default function NunbaChatProvider({children}) {
       realtimeService.off('tts', handleTTSPush);
     };
   }, [tts]);
+
+  // ── Cross-device sync (U5) ─────────────────────────────────────────
+  // Subscribe to remote chat.new events.  This effect is the EXCLUSIVE
+  // writer for messages that originated on OTHER devices.
+  //
+  // No-parallel-paths invariant:
+  //   * Local-device messages are written by sendMessage's optimistic
+  //     setMessages (line ~738) and /chat-response setMessages (line
+  //     ~795).  Those two stay as the sole writer for THIS device's
+  //     turns.
+  //   * Remote-device messages are written EXCLUSIVELY by this effect.
+  //
+  // The filter is `event.device_id === local_device_id` → drop.  The
+  // server publishes chat.new for every persisted turn regardless of
+  // origin, so this device's own turns echo back on WAMP shortly after
+  // /chat returns; without the filter we'd double-render every local
+  // turn.  Defense in depth: msg_id-based dedup inside setMessages
+  // catches re-deliveries (worker reconnect, bootstrap-pull racing
+  // with a live event).
+  useEffect(() => {
+    if (!userId) return undefined;
+    let mounted = true;
+    let unsub = null;
+    let localDeviceId = null;
+    (async () => {
+      try {
+        localDeviceId = await getStableDeviceId();
+      } catch (err) {
+        console.warn('chat.new: getStableDeviceId failed:', err);
+      }
+      if (!mounted) return;
+      // Fail-safe: without a local device id, we can't distinguish
+      // own-device echoes from remote messages.  msg_id-only dedup
+      // is INSUFFICIENT here — the local /chat HTTP write path uses
+      // a frontend-generated `messageId` (chatRetry.makeMsgId) while
+      // the chat.new event carries the server's ULID `msg_id`; the
+      // two id schemes never overlap, so no amount of msg_id dedup
+      // would catch the double-render.  Refusing to subscribe is
+      // strictly better than rendering every local turn twice.
+      if (!localDeviceId) {
+        console.warn(
+          'chat.new: skipping subscription — no local device id ' +
+          '(cross-device sync degraded; local /chat path still works).',
+        );
+        return;
+      }
+      unsub = subscribeChatNew((event) => {
+        if (!event || typeof event !== 'object') return;
+        if (event.device_id === localDeviceId) return;
+        const msgId = event.msg_id;
+        const role = event.role;
+        const content = event.content;
+        if (!msgId || !role || typeof content !== 'string') return;
+        const ts = event.created_at
+          ? Date.parse(event.created_at) || Date.now()
+          : Date.now();
+        setMessages((prev) => {
+          if (prev.some((m) => m.messageId === msgId)) return prev;
+          return [
+            ...prev,
+            {
+              role,
+              text: content,
+              ts,
+              messageId: msgId,
+              status: 'synced',
+              sourceDevice: event.device_id || 'remote',
+            },
+          ];
+        });
+      });
+    })();
+    return () => {
+      mounted = false;
+      if (unsub) unsub();
+    };
+  }, [userId]);
 
   const clearMessages = useCallback(() => {
     const agentKey = currentAgent?.prompt_id || 'default';

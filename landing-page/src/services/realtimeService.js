@@ -426,6 +426,61 @@ export function subscribeTtsLangEvents(callback) {
   return () => _ttsLangListeners.delete(callback);
 }
 
+// ── chat.new (cross-device sync, U5) ──────────────────────────────
+// HARTOS publishes <CHAT_TOPIC_NEW>.<user_id> on every persisted chat
+// turn (see HARTOS integrations/social/chat_messages.publish_new).
+// The web worker already subscribes (crossbarWorker.js topics list);
+// here we filter its generic DATA_RECEIVED postMessage by sourceTopic
+// and surface it as a typed subscriber callback.
+//
+// IMPORTANT — no-parallel-paths invariant for callers:
+// the LOCAL device's own /chat HTTP turns ALSO produce chat.new
+// events (server-side persist publishes regardless of origin).
+// Callers MUST drop events whose `device_id` matches their local
+// device id; otherwise messages will appear twice (once from the
+// optimistic /chat-response write path, once from this WAMP path).
+// NunbaChatProvider.jsx is the canonical consumer + filter site.
+
+const _chatNewListeners = new Set();
+let _chatNewWorkerHandler = null;
+
+function _ensureChatNewWorker() {
+  if (_chatNewWorkerHandler || !_worker) return;
+  _chatNewWorkerHandler = (e) => {
+    const {type, payload} = e.data || {};
+    if (type !== 'DATA_RECEIVED' || !payload) return;
+    const {sourceTopic, data} = payload;
+    if (
+      typeof sourceTopic !== 'string' ||
+      !sourceTopic.startsWith('com.hertzai.hevolve.chat.new.')
+    ) {
+      return;
+    }
+    _chatNewListeners.forEach((cb) => {
+      try {
+        cb(data);
+      } catch (err) {
+        console.warn('chat.new event handler error:', err);
+      }
+    });
+  };
+  _worker.addEventListener('message', _chatNewWorkerHandler);
+}
+
+/**
+ * Subscribe to chat.new WAMP events.  Callback receives the persisted
+ * ChatMessage row dict: `msg_id`, `request_id`, `device_id`, `user_id`,
+ * `role`, `content`, `lang`, `attachments`, `created_at`.
+ *
+ * @param {(event: object) => void} callback
+ * @returns {Function} unsubscribe
+ */
+export function subscribeChatNew(callback) {
+  _ensureChatNewWorker();
+  _chatNewListeners.add(callback);
+  return () => _chatNewListeners.delete(callback);
+}
+
 // Singleton
 const realtimeService = new RealtimeService();
 export default realtimeService;
