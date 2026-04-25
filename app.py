@@ -8,6 +8,25 @@ Connect to Hivemind with your friends' agents.
 import os
 import sys
 
+# Block user site-packages for every subprocess, unconditionally.
+# Rationale (2026-04-25 incident): a stale hevolve_backend-0.0.1.dev339
+# wheel had dropped a partial ``core/`` package at
+# ``%APPDATA%\Roaming\Python\Python312\site-packages\core`` two months
+# earlier.  Python's default sys.path puts that user-site AHEAD of
+# python-embed's own site-packages AND the freeze-bundled top-level
+# ``core/``, so ``import core`` bound to the 7-submodule stale copy
+# and every ``from core.gpu_tier import ...`` in main.py raised
+# ModuleNotFoundError in the running installed Nunba.exe.
+#
+# ``_isolate_frozen_imports()`` below scrubs sys.path correctly, but
+# it runs AFTER torch pre-warm and pycparser preload — so setting
+# PYTHONNOUSERSITE here (module top, before anything else) guarantees
+# every subprocess spawned from ANY point in app.py inherits the
+# user-site block, even if spawned before _isolate_frozen_imports()
+# fires.  The current interpreter's sys.path is still fixed by
+# _isolate_frozen_imports; this is purely a belt for children.
+os.environ.setdefault('PYTHONNOUSERSITE', '1')
+
 # PyTorch CUDA: expandable segments MUST be set before first `import torch`.
 # Frozen fixes below import langchain which can pull in torch transitively.
 # Without this, 24MB allocations fail even with 5GB free due to fragmentation.

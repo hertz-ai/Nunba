@@ -363,6 +363,11 @@ build_exe_options = {
         "desktop.chat_settings",  # Admin-controlled restore policy/scope (J207)
         "desktop.chat_sync",  # Cross-device chat-history sync (function-local
                               # import in main.py:1079/1102/1127 — tracer misses)
+        "desktop.file_sync",  # U9: WhatsApp-style cross-device attachments.
+                              # Imported function-local in main.py /api/chat-sync/files/*
+                              # handlers; tracer misses the same way chat_sync does.
+        "desktop.memory_sync",  # U10: agent memory-graph cross-device replication.
+                              # Function-local import in main.py /api/memory-sync/*.
         "wamp_router",  # Embedded WAMP/Crossbar router. Imported via
                         # optional_import in main.py:2585 + statically at
                         # 3298, 4813.  include_files copies the .py via the

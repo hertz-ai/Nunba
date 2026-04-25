@@ -1192,6 +1192,235 @@ def api_chat_sync_forget():
         return jsonify({'error': 'forget_failed'}), 500
 
 
+# ─── Chat-Sync cursor-pull (U4: canonical ChatMessage replay) ───────
+# Unlike /api/chat-sync/pull (bucket blob), this endpoint returns the
+# HARTOS ConversationEntry rows that landed via the chat hot path
+# (hart_intelligence_entry._chat_reply → chat_messages.persist).  A
+# fresh device that just signed in pulls ?since=0 to rebuild history;
+# a subscribed device uses chat.new WAMP instead and never calls this
+# at all.  Returns 501 if HARTOS is absent.
+@app.route('/api/chat-sync/pull-since', methods=['GET'])
+def api_chat_sync_pull_since():
+    """Cursor-pull of ConversationEntry rows for the authenticated user.
+
+    Query params:
+      since — integer cursor; returns rows with id > since (default 0)
+      limit — cap, bounded by CHAT_CURSOR_PULL_MAX_ROWS (default 500)
+      channel_type — filter to 'chat' / 'web' / etc. (optional)
+      agent_id — filter to one agent (optional)
+
+    Response:
+      {'messages': [...], 'next_cursor': <int>}
+      next_cursor = max(id) across returned rows, or the input since
+      when nothing new was found.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from integrations.social import chat_messages as _cm
+    except ImportError:
+        return jsonify({
+            'error': 'hartos_missing',
+            'message': 'HARTOS chat_messages unavailable (pip not installed).',
+        }), 501
+    try:
+        since_raw = request.args.get('since', '0')
+        since = int(since_raw) if since_raw.isdigit() else 0
+    except (TypeError, ValueError):
+        since = 0
+    try:
+        limit_raw = request.args.get('limit')
+        limit = int(limit_raw) if limit_raw and limit_raw.isdigit() else None
+    except (TypeError, ValueError):
+        limit = None
+    channel_type = request.args.get('channel_type') or None
+    agent_id = request.args.get('agent_id') or None
+    try:
+        msgs = _cm.pull_since(
+            uid, since,
+            limit=limit,
+            channel_type=channel_type,
+            agent_id=agent_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync pull-since failed for %s: %s", uid, e)
+        return jsonify({'error': 'pull_failed'}), 500
+    next_cursor = since
+    for m in msgs:
+        try:
+            next_cursor = max(next_cursor, int(m.get('id') or 0))
+        except (TypeError, ValueError):
+            continue
+    return jsonify({'messages': msgs, 'next_cursor': next_cursor}), 200
+
+
+# ─── File-Sync (U9: WhatsApp-style cross-device attachments) ────────
+@app.route('/api/chat-sync/files/push', methods=['POST'])
+def api_chat_sync_files_push():
+    """Upload a binary for cross-device replication.
+
+    multipart/form-data with a single file field 'file'.  Optional
+    form fields: device_id.  Response: {file_id, sha256, size, name, mime}.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    up = request.files.get('file')
+    if up is None:
+        return jsonify({'error': 'missing_file'}), 400
+    try:
+        from desktop.file_sync import store as _store
+    except ImportError:
+        return jsonify({'error': 'file_sync_unavailable'}), 501
+    try:
+        meta = _store(
+            uid,
+            up.stream,
+            name=up.filename or 'file',
+            mime=up.mimetype or 'application/octet-stream',
+            device_id=request.form.get('device_id'),
+        )
+        return jsonify(meta), 200
+    except ValueError as ve:
+        return jsonify({'error': 'invalid_payload', 'message': str(ve)}), 400
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync files push failed for %s: %s", uid, e)
+        return jsonify({'error': 'push_failed'}), 500
+
+
+@app.route('/api/chat-sync/files/pull', methods=['GET'])
+def api_chat_sync_files_pull():
+    """Fetch a previously-pushed blob by file_id (SHA256 hex).
+
+    ?file_id=<sha256>  → returns the bytes with the recorded mime.
+    ?since=<ms>        → returns a JSON list of file metadata modified
+                         after since_ms (for cursor enumeration).
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.file_sync import fetch as _fetch, list_since as _list
+    except ImportError:
+        return jsonify({'error': 'file_sync_unavailable'}), 501
+
+    file_id = request.args.get('file_id')
+    if file_id:
+        data, meta = _fetch(uid, file_id)
+        if data is None or meta is None:
+            return jsonify({'error': 'not_found'}), 404
+        from io import BytesIO
+        return send_file(
+            BytesIO(data),
+            mimetype=meta.get('mime') or 'application/octet-stream',
+            as_attachment=False,
+            download_name=meta.get('name') or 'file',
+            max_age=0,
+        )
+
+    try:
+        since_raw = request.args.get('since', '0')
+        since_ms = int(since_raw) if since_raw.isdigit() else 0
+    except (TypeError, ValueError):
+        since_ms = 0
+    try:
+        limit_raw = request.args.get('limit')
+        limit = int(limit_raw) if limit_raw and limit_raw.isdigit() else 200
+    except (TypeError, ValueError):
+        limit = 200
+    return jsonify({'files': _list(uid, since_ms, limit=limit)}), 200
+
+
+@app.route('/api/chat-sync/files/usage', methods=['GET'])
+def api_chat_sync_files_usage():
+    """Return {'bytes': n, 'files': n, 'quota_bytes': n} for this user."""
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.file_sync import usage as _usage
+    except ImportError:
+        return jsonify({'error': 'file_sync_unavailable'}), 501
+    try:
+        return jsonify(_usage(uid)), 200
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync files usage failed for %s: %s", uid, e)
+        return jsonify({'error': 'usage_failed'}), 500
+
+
+@app.route('/api/chat-sync/files/<file_id>', methods=['DELETE'])
+def api_chat_sync_files_delete(file_id):
+    """Remove one blob + sidecar.  Returns {'deleted': bool}."""
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.file_sync import delete as _delete
+    except ImportError:
+        return jsonify({'error': 'file_sync_unavailable'}), 501
+    try:
+        return jsonify({'deleted': bool(_delete(uid, file_id))}), 200
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync files delete failed for %s: %s", uid, e)
+        return jsonify({'error': 'delete_failed'}), 500
+
+
+# ─── Memory-Sync (U10: agent memory-graph replication) ──────────────
+@app.route('/api/memory-sync/pull', methods=['GET'])
+def api_memory_sync_pull():
+    """Export memory_graph rows modified since ?since=<ms>.
+
+    Response: {'items': [...], 'links': [...], 'cursor': <ms>}.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.memory_sync import export as _export
+    except ImportError:
+        return jsonify({'error': 'memory_sync_unavailable'}), 501
+    try:
+        since_raw = request.args.get('since', '0')
+        since_ms = int(since_raw) if since_raw.isdigit() else 0
+    except (TypeError, ValueError):
+        since_ms = 0
+    try:
+        limit_raw = request.args.get('limit')
+        limit = int(limit_raw) if limit_raw and limit_raw.isdigit() else 500
+    except (TypeError, ValueError):
+        limit = 500
+    try:
+        return jsonify(_export(uid, since_ms, limit=limit)), 200
+    except Exception as e:  # noqa: BLE001
+        logging.error("memory-sync pull failed for %s: %s", uid, e)
+        return jsonify({'error': 'pull_failed'}), 500
+
+
+@app.route('/api/memory-sync/push', methods=['POST'])
+def api_memory_sync_push():
+    """Import a batch exported from another device.
+
+    Body: the shape returned by GET /api/memory-sync/pull.
+    Response: {'imported_items': n, 'skipped_items': n, 'imported_links': n}.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.memory_sync import import_batch as _import
+    except ImportError:
+        return jsonify({'error': 'memory_sync_unavailable'}), 501
+    try:
+        body = request.get_json(silent=True) or {}
+        return jsonify(_import(uid, body)), 200
+    except ValueError as ve:
+        return jsonify({'error': 'invalid_payload', 'message': str(ve)}), 400
+    except Exception as e:  # noqa: BLE001
+        logging.error("memory-sync push failed for %s: %s", uid, e)
+        return jsonify({'error': 'push_failed'}), 500
+
+
 def get_embedded_python_path():
     """Get the path to the embedded Python executable"""
     if getattr(sys, 'frozen', False):
