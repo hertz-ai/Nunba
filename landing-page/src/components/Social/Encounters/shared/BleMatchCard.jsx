@@ -102,6 +102,10 @@ export default function BleMatchCard({
         <Box sx={{display: 'flex', alignItems: 'center', gap: 1.5}}>
           <Avatar
             // No `src` — avatar-only by design (no photos).
+            // a11y: WCAG 1.1.1 — the {initial} glyph is one character;
+            // screen readers would otherwise just announce a letter
+            // with no context.  aria-label gives meaningful framing.
+            aria-label={`Avatar for user ${otherUserId}`}
             sx={{
               width: {xs: 48, md: 56},
               height: {xs: 48, md: 56},
@@ -131,6 +135,8 @@ export default function BleMatchCard({
 
           {viewerHasSent && (
             <Chip
+              // a11y: role="status" so SR announces as live-region update.
+              role="status"
               label="Icebreaker sent"
               size="small"
               color="success"
@@ -139,6 +145,7 @@ export default function BleMatchCard({
           )}
           {viewerHasDeclined && (
             <Chip
+              role="status"
               label="Declined"
               size="small"
               variant="outlined"
@@ -147,6 +154,7 @@ export default function BleMatchCard({
           )}
           {otherStatus === 'sent' && !viewerHasSent && (
             <Chip
+              role="status"
               label="They said hi"
               size="small"
               color="primary"
