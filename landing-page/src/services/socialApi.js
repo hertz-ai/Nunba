@@ -220,6 +220,73 @@ export const encountersApi = {
     }),
 };
 
+// --- BLE physical-world Encounter feature ---
+// Distinct surface from `encountersApi` above (which serves the
+// community/post co-presence table); this wraps /api/social/encounter/*
+// (singular).  See PRODUCT_MAP J200-J215 for the full flow trace.
+//
+// Each method returns a Promise<AxiosResponse>; callers consume
+// `.data.data` for the success payload and `.data.error` for failures.
+export const bleEncounterApi = {
+  // J200, J201 — discoverable consent + state
+  getDiscoverable: () => socialApi.get('/encounter/discoverable'),
+  setDiscoverable: ({
+    enabled,
+    age_claim_18,
+    ttl_sec,
+    face_visible,
+    avatar_style,
+    vibe_tags,
+  }) =>
+    socialApi.post('/encounter/discoverable', {
+      enabled: !!enabled,
+      age_claim_18: !!age_claim_18,
+      ttl_sec: ttl_sec || undefined,
+      face_visible: !!face_visible,
+      avatar_style: avatar_style || 'studio_ghibli',
+      vibe_tags: vibe_tags || [],
+    }),
+
+  // J200 — phone registers current rotating pubkey
+  registerPubkey: (pubkey) =>
+    socialApi.post('/encounter/register-pubkey', {pubkey}),
+
+  // J203 — sighting → swipe-card payload
+  reportSighting: ({peer_pubkey, rssi_peak, dwell_sec, lat, lng}) =>
+    socialApi.post('/encounter/sighting', {
+      peer_pubkey,
+      rssi_peak,
+      dwell_sec,
+      lat,
+      lng,
+    }),
+
+  // J204, J205 — like/dislike; mutual returns match_id
+  swipe: (sighting_id, decision) =>
+    socialApi.post('/encounter/swipe', {sighting_id, decision}),
+
+  // J204 — list mutual matches (one-sided likes never returned)
+  listMatches: () => socialApi.get('/encounter/matches'),
+
+  // J211 — map pins for matches the user has kept visible
+  listMapPins: () => socialApi.get('/encounter/map-pins'),
+
+  // J207 — generate draft for user-approval surface
+  draftIcebreaker: (match_id) =>
+    socialApi.post('/encounter/icebreaker/draft', {match_id}),
+
+  // J209, J210 — final user-approval / decline tap
+  approveIcebreaker: (match_id, text) =>
+    socialApi.post('/encounter/icebreaker/approve', {match_id, text}),
+  declineIcebreaker: (match_id, reason) =>
+    socialApi.post('/encounter/icebreaker/decline', {match_id, reason}),
+
+  // WAMP topic constants (single-source via server response so the
+  // frontend never hard-codes them — the server's WAMP_TOPICS dict
+  // is the authority)
+  topics: () => socialApi.get('/encounter/topics'),
+};
+
 // --- Agent Evolution ---
 export const evolutionApi = {
   get: (agentId) => socialApi.get(`/agents/${agentId}/evolution`),
