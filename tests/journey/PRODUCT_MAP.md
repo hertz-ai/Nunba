@@ -1396,4 +1396,233 @@ generation can drive the real path. GAP rows note missing surface.
   J59, J20.
 
 ────────────────────────────────────────────────────────────────────────────
+## USER JOURNEYS — ENCOUNTER + CROSS-DEVICE SYNC (J200-J215)
+
+Added 2026-04-25.  Cites the encounter feature shipped in this session
+(HARTOS commits 1350c38 → 7110905 + Hevolve_Database 12f314e + Nunba
+e83212fb → 31cd096e).  Same citation discipline as J01-J199 — every
+step names a `file:line` anchor.
+
+### Discoverable consent + rotating-pubkey lifecycle
+
+- **J200 · User toggles discoverable=ON, peer can sight** ·
+  Pre: 18+, opted-in.  Steps: SPA `POST /api/social/encounter/
+  discoverable {enabled:true, age_claim_18:true, ttl_sec≤14400,
+  vibe_tags:[…]}` (encounter_api.py:set_discoverable, route
+  registered at /api/social via encounter_bp).  Server: 24h
+  sliding-window toggle-count check
+  (encounter_api.py:set_discoverable @ pref.toggle_count_24h vs
+  C.ENCOUNTER_DISCOVERABLE_MAX_TOGGLES_24H), age-claim gate
+  (`if enable and not age_claim → 403`), upserts DiscoverablePref
+  row (sql/models.py:2057 / _models_local.py:993).  Phone calls
+  `POST /encounter/register-pubkey {pubkey}` once it rotates;
+  the pubkey lands on `discoverable_prefs.current_pubkey` (the
+  reverse-lookup index used by sightings).  Outcome:
+  `GET /discoverable` returns enabled=true + remaining_sec ≤ TTL;
+  another user's `POST /sighting` resolves the peer through
+  `current_pubkey`.  Owner: HARTOS encounter_api + Hevolve_Database
+  DiscoverablePref.  CI: yes (test_encounter_api 23 cases +
+  test_encounter_privacy 8 cases).
+
+- **J201 · Discoverable auto-off when TTL elapses** ·
+  Pre: discoverable=ON.  Steps: clock advances past
+  `pref.expires_at`; subsequent `POST /sighting` against this
+  peer hits the `peer_pref.expires_at < now` guard
+  (encounter_api.py:report_sighting).  Outcome: 404 with the
+  neutral `peer not discoverable` message (no leak about why).
+  Owner: encounter_api.  CI: yes
+  (test_encounter_privacy.py:test_discoverable_auto_off_after_
+  ttl_blocks_sighting — seeds DiscoverablePref with expires_at
+  in the past, hits real /sighting handler).
+
+- **J202 · Pubkey rotation breaks correlation across windows** ·
+  Pre: peer registered pk_old, then rotates to pk_new.  Steps:
+  `POST /sighting peer_pubkey=pk_old` after rotation.  Outcome:
+  404 — no DiscoverablePref row carries pk_old anymore (the
+  rotation OVERWRITES `current_pubkey`).  Sighting on pk_new
+  resolves.  Owner: encounter_api.register_pubkey
+  (encounter_api.py overwrite branch).  CI: yes
+  (test_encounter_privacy.py:test_old_pubkey_no_longer_
+  resolves_after_rotation).
+
+### Sighting → swipe-card → match
+
+- **J203 · Phone reports BLE sighting, server returns swipe-card** ·
+  Pre: J200 + peer pubkey registered.  Steps: phone (RN — pending
+  J213) calls `POST /encounter/sighting {peer_pubkey, rssi_peak,
+  dwell_sec, lat, lng}`.  Server: encounter_api.report_sighting
+  (encounter_api.py) → DiscoverablePref lookup by current_pubkey
+  → self-sighting reject → enabled+TTL check → INSERT
+  EncounterSighting row (sql/models.py:2087 / _models_local.py:
+  1037) with sighted_at + expires_at = now+24h.  Returns
+  `{sighting_id, peer_anon_id, avatar_style, vibe_tags,
+  face_visible, expires_at}`.  Outcome: HTTP 200 with
+  swipe-card payload; sighting row visible.  Owner:
+  encounter_api + EncounterSighting.  CI: yes
+  (test_encounter_api.py:test_sighting_returns_swipe_card).
+
+- **J204 · Mutual-like creates BLE match in canonical encounters
+  table** · Pre: two reciprocal sightings within
+  ENCOUNTER_MATCH_WINDOW_SEC.  Steps: A `POST /swipe
+  {sighting_id, decision:'like'}` → server checks reciprocal
+  EncounterSighting rows by (peer_uid, viewer_uid, swipe='like',
+  sighted_at within ±window) (encounter_api.py:swipe).  When
+  found, INSERT into the canonical `encounters` table with
+  `context_type='ble'`, `context_id=sha1(s1+s2)[:32]`, lat/lng
+  midpoint, `payload={icebreaker_a:{status:pending,…},
+  icebreaker_b:{…}, map_pin_visible:true}`, bond_level=1,
+  is_mutual_aware=true (sql/models.py:2025-2042 extended cols).
+  Outcome: `match_id` returned to BOTH sides; one-sided likes
+  return `match_id:null`.  Owner: encounter_api.  CI: yes
+  (test_encounter_api.py:test_mutual_like_creates_match,
+  test_one_sided_like_never_leaks_to_other_user,
+  test_encounter_privacy.py:test_sightings_outside_match_
+  window_do_not_match).
+
+- **J205 · One-sided like never leaks to the likee** ·
+  Privacy invariant.  Steps: A swipes 'like'; B never swipes
+  OR swipes 'dislike'.  Verify: B's `GET /matches` is `[]`
+  (encounter_api.list_matches filters `context_type='ble'`
+  AND viewer ∈ (user_a, user_b) — and no BLE encounters row
+  was created without mutual).  B's `POST /swipe dislike`
+  response is the SAME shape as A's; field-set never carries
+  `peer_liked` / `liked_by` / `was_liked`.  Owner:
+  encounter_api response shape.  CI: yes (explicit
+  field-disjoint assertion in test_encounter_api.py:435-455).
+
+- **J206 · Sighting auto-expires; swipe returns 410** ·
+  Pre: sighting older than 24h.  Steps: `POST /swipe` against
+  expired `sighting_id`.  Server: `if sighting.expires_at <
+  now → return _err('sighting expired', 410)`
+  (encounter_api.py:swipe).  Owner: encounter_api.  CI: yes
+  (test_encounter_privacy.py:test_swipe_on_expired_sighting_410).
+
+### Icebreaker drafting + approval
+
+- **J207 · Icebreaker drafted on edge, served via /draft** ·
+  Pre: J204 mutual match.  Steps: SPA `POST /encounter/
+  icebreaker/draft {match_id}` →
+  encounter_api.icebreaker_draft (encounter_api.py) calls
+  icebreaker_service.draft_icebreaker(match_id, viewer_uid,
+  g.db, cloud_consent_check=_has_cloud_drafting_consent)
+  (icebreaker_service.py:draft_icebreaker).  Server: pulls
+  peer + viewer DiscoverablePref vibe_tags, picks shared tag
+  (overlap → peer-first → viewer-first → None), runs
+  optional `llm_callback` (LLM falls back to deterministic
+  template on raise/empty/non-string), trims to
+  ENCOUNTER_DRAFT_MAX_CHARS sentence-aware.  Returns
+  `{draft, alt_drafts[2], rationale, length, shared_tag,
+  source ∈ {template,llm}}`.  Owner: HARTOS
+  icebreaker_service + encounter_api.  CI: yes
+  (test_icebreaker_service.py 19 cases including topology
+  consent gate; test_encounter_api.py:test_icebreaker_draft_
+  returns_payload).
+
+- **J208 · Central topology refuses draft without consent** ·
+  Pre: HARTOS process running with HEVOLVE_NODE_TIER=central
+  + master key.  Steps: SPA `POST /draft` from a user without
+  cloud_capability UserConsent row.  Server:
+  draft_icebreaker checks topology=='central' → calls
+  `cloud_consent_check(viewer_uid)` →
+  `_has_cloud_drafting_consent` queries UserConsent for
+  consent_type='cloud_capability' + scope IN
+  ('*', 'encounter_icebreaker') + granted=true +
+  revoked_at IS NULL → no row → returns False →
+  PermissionError → encounter_api.icebreaker_draft maps
+  to 403.  Outcome: 403 with `cloud_capability` in error
+  message.  Owner: icebreaker_service topology gate +
+  encounter_api consent lookup + UserConsent
+  (sql/models.py table + _models_local.py:3093).  CI: yes
+  (test_icebreaker_service.py:test_central_topology_*
+  6 cases).
+
+- **J209 · User approves draft; icebreaker_a/b status flips
+  to sent** · Steps: SPA `POST /icebreaker/approve
+  {match_id, text}` → encounter_api.icebreaker_approve →
+  resolves which side via _icebreaker_side_for(match, uid)
+  → mutates `match.payload['icebreaker_a'|'b']` →
+  flag_modified(match, 'payload') → commit.  Outcome: 200
+  with status='sent'; `match_id` future approve calls 409.
+  Owner: encounter_api.  CI: yes
+  (test_encounter_api.py:test_icebreaker_approve_happy_path
+  + test_icebreaker_length_cap + test_encounter_privacy.py:
+  test_icebreaker_approve_after_decline_409).
+
+- **J210 · Decline records reason for agent learn-from-decline** ·
+  Steps: SPA `POST /icebreaker/decline {match_id, reason}` →
+  side flipped to 'declined' in payload + decline_reason
+  recorded.  Owner: encounter_api.  CI: yes
+  (test_encounter_api.py:test_icebreaker_decline_records_
+  reason).
+
+### Map pins + portrait arrangement
+
+- **J211 · Match-pin appears on map; one-sided likes never
+  produce a pin** · Steps: SPA `GET /encounter/map-pins` →
+  encounter_api.map_pins filters `context_type='ble'` AND
+  viewer ∈ (a,b) AND lat/lng IS NOT NULL AND
+  payload.map_pin_visible.  Outcome: list of `{match_id,
+  lat, lng, matched_at}`.  Owner: encounter_api.  CI: yes
+  (test_encounter_privacy.py:test_map_pins_skip_unmatched_
+  pairs).
+
+- **J212 · Portrait auto-arrange respects face_visible
+  consent** · Pre: user gallery in local data dir.  Steps:
+  call portrait_service.arrange_portraits(gallery,
+  face_visible_consent=False, max_picks=6)
+  (portrait_service.py:arrange_portraits).  Server: drops
+  filenames matching FACE_HINT_TOKENS
+  (selfie/portrait/mugshot), default scorer = mtime,
+  adjacent-similar suppression by filename root,
+  deferred-similar tail to fill max_picks.  Outcome: ordered
+  list[PortraitChoice(path, score, reason)] ≤ max_picks.
+  Owner: HARTOS portrait_service.  CI: yes
+  (test_portrait_service.py 14 cases).
+
+### Cross-device chat sync (U5 — see also U7/U8)
+
+- **J213 · SPA subscribes to chat.new on connect** · Pre:
+  user logged in.  Steps: web worker connects to crossbar
+  → registers ticket → subscribes to topic list including
+  `com.hertzai.hevolve.chat.new.<userId>`
+  (landing-page/src/pages/crossbarWorker.js:790-797).
+  Worker forwards messages via DATA_RECEIVED postMessage
+  (handleTopicData posts with sourceTopic preserved).
+  Outcome: ws subscription active; messages on this topic
+  hit handleTopicData.  Owner: crossbarWorker.js.  CI:
+  partial (worker is browser-only; manual e2e).
+
+- **J214 · realtimeService bridges chat.new to provider** ·
+  Steps: realtimeService._chatNewWorkerHandler filters
+  DATA_RECEIVED by `sourceTopic.startsWith('com.hertzai.
+  hevolve.chat.new.')` → emits to subscribers via
+  subscribeChatNew callback (landing-page/src/services/
+  realtimeService.js:subscribeChatNew).  Owner:
+  realtimeService.  CI: partial.
+
+- **J215 · NunbaChatProvider single-writer dedup for
+  remote-device messages** · Pre: getStableDeviceId resolves.
+  Steps: provider mounts → useEffect resolves
+  localDeviceId via utils/deviceId.getStableDeviceId →
+  subscribeChatNew(callback) → callback drops events where
+  `event.device_id === localDeviceId` (echoes of the local
+  /chat write path) → for remote events, calls
+  handleRemoteMessage which dedups by msg_id and appends
+  via setMessages with status='synced', sourceDevice=
+  event.device_id (NunbaChatProvider.jsx:handleRemoteMessage
+  + chat.new useEffect + cloud-pull useEffect).  The SAME
+  handleRemoteMessage handles backfill from
+  `GET /api/chat-sync/pull-since?since=<cursor>` on login
+  with per-user cursor in localStorage
+  `nunba_chat_sync_cursor_<userId>`.  Outcome: peer-device
+  messages mirror live; offline-window backfill on
+  reconnect; no double-render of own turns; idempotent on
+  re-delivery.  Owner: NunbaChatProvider + crossbarWorker
+  + realtimeService + main.py:1202 /api/chat-sync/pull-since.
+  CI: needs Cypress 3-device — see #389.  Single-writer
+  invariant: every (device_id, msg_id) tuple has exactly
+  ONE writer (sendMessage's setMessages for local turns;
+  handleRemoteMessage for remote turns).
+
+────────────────────────────────────────────────────────────────────────────
 End of PRODUCT_MAP.md
