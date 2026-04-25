@@ -380,14 +380,10 @@ build_exe_options = {
         "routes.hartos_backend_adapter",  # Backend adapter (single-file module)
         "numpy",
         "jose",  # python-jose — JWT handling (HARTOS social auth)
-        # hevolve-database SQL package (pip-installed, full tree for cx_Freeze)
-        "sql",
-        "sql.crud",
-        "sql.models",
-        "sql.database",
-        "sql.schemas",
-        "sql.otp",
-        "sql.bookparsing",
+        # hevolve-database SQL package (optional — omitted if not installed)
+        *( ["sql", "sql.crud", "sql.models", "sql.database",
+            "sql.schemas", "sql.otp", "sql.bookparsing"]
+           if __import__("importlib.util", fromlist=["find_spec"]).find_spec("sql") else [] ),
         # HARTOS runtime deps (top-level imports in helper.py / hart_intelligence)
         "aiohttp",
         "dotenv",

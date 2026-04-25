@@ -249,14 +249,10 @@ build_exe_options = {
         "routes.hartos_backend_adapter",
         "numpy",
         "jose",
-        # hevolve-database SQL package
-        "sql",
-        "sql.crud",
-        "sql.models",
-        "sql.database",
-        "sql.schemas",
-        "sql.otp",
-        "sql.bookparsing",
+        # hevolve-database SQL package (optional — omitted if not installed)
+        *( ["sql", "sql.crud", "sql.models", "sql.database",
+            "sql.schemas", "sql.otp", "sql.bookparsing"]
+           if __import__("importlib.util", fromlist=["find_spec"]).find_spec("sql") else [] ),
         # HARTOS runtime deps
         "aiohttp",
         "dotenv",
