@@ -287,6 +287,44 @@ export const bleEncounterApi = {
   topics: () => socialApi.get('/encounter/topics'),
 };
 
+// --- User Consent (W0c F3) — JWT-authed, append-only ---
+// Wraps HARTOS integrations/social/consent_api.py (`/api/social/consent*`).
+// Append-only invariants enforced server-side: every grant is a NEW row;
+// revoke flips revoked_at on the most-recent active row but never rewrites
+// granted_at.  See HARTOS consent_api.py docstring (commit f05a396).
+//
+// IMPORTANT (DRY guard): NEVER call /api/consent/<user_id>/* — that is the
+// LEGACY upsert surface in consent_service.py whose CONSENT_TYPES allowlist
+// pre-dates 'cloud_capability'.  Only `/api/social/consent` is correct.
+export const consentApi = {
+  // POST /api/social/consent — APPEND a new row (grant)
+  grant: ({consent_type, scope, agent_id, metadata}) =>
+    socialApi.post('/consent', {
+      consent_type,
+      scope,
+      agent_id,
+      metadata,
+    }),
+
+  // POST /api/social/consent/revoke — set revoked_at on the active row
+  revoke: ({consent_type, scope, agent_id}) =>
+    socialApi.post('/consent/revoke', {
+      consent_type,
+      scope,
+      agent_id,
+    }),
+
+  // GET /api/social/consent — list (newest-first by granted_at)
+  list: ({consent_type, active_only} = {}) => {
+    const params = {};
+    if (consent_type !== undefined) params.consent_type = consent_type;
+    if (active_only !== undefined) {
+      params.active_only = active_only ? 'true' : 'false';
+    }
+    return socialApi.get('/consent', {params});
+  },
+};
+
 // --- Agent Evolution ---
 export const evolutionApi = {
   get: (agentId) => socialApi.get(`/agents/${agentId}/evolution`),
