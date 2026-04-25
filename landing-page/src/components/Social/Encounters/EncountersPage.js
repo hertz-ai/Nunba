@@ -1,6 +1,10 @@
+import BleMatchCard from './shared/BleMatchCard';
+import DiscoverableTogglePanel from './shared/DiscoverableTogglePanel';
+import IcebreakerDraftSheet from './shared/IcebreakerDraftSheet';
+
 import { useSocial } from '../../../contexts/SocialContext';
-import { bleEncounterApi, encountersApi } from '../../../services/socialApi';
 import { subscribeEncounterMatch } from '../../../services/realtimeService';
+import { bleEncounterApi, encountersApi } from '../../../services/socialApi';
 import { socialTokens } from '../../../theme/socialTokens';
 import { animFadeInUp, animFadeInScale } from '../../../utils/animations';
 import EmptyState from '../shared/EmptyState';
@@ -13,8 +17,6 @@ import MissedConnectionMapView from '../shared/MissedConnectionMapView';
 import ProximityBanner from '../shared/ProximityBanner';
 import ProximityMatchCard from '../shared/ProximityMatchCard';
 import useLocationPing from '../shared/useLocationPing';
-import BleMatchCard from './shared/BleMatchCard';
-import DiscoverableTogglePanel from './shared/DiscoverableTogglePanel';
 
 import AddIcon from '@mui/icons-material/Add';
 import MapIcon from '@mui/icons-material/Map';
@@ -149,16 +151,30 @@ export default function EncountersPage() {
     };
   }, [loadBleMatches]);
 
+  // F2 IcebreakerDraftSheet — single modal instance lifted to this
+  // page (Option b from the F2 brief): one DOM modal, one WAMP
+  // subscription (the modal subscribes itself), per-match dismiss
+  // filtered server-side by match.id.  See
+  // components/Social/Encounters/shared/IcebreakerDraftSheet.jsx for
+  // mission-anchor enforcement (AI never sends, edit-before-send,
+  // WAMP filter by match_id, 24h expiry surface).
+  const [currentIcebreakerMatch, setCurrentIcebreakerMatch] = useState(null);
+
   const handleSendIcebreaker = (match) => {
-    // F2 (IcebreakerDraftSheet modal) will wire here to mount + run the
-    // full draftIcebreaker → approveIcebreaker / declineIcebreaker flow.
-    // Until then we surface a placeholder console event so e2e probes
-    // can verify the trigger fires.
-    if (typeof window !== 'undefined' && window.console) {
-      // eslint-disable-next-line no-console
-      console.log('[encounters] icebreaker requested for match', match?.id);
-    }
+    setCurrentIcebreakerMatch(match);
   };
+
+  const handleIcebreakerClose = useCallback(() => {
+    setCurrentIcebreakerMatch(null);
+  }, []);
+
+  const handleIcebreakerSent = useCallback(() => {
+    // After the user approves, refresh the BLE match list so
+    // BleMatchCard re-renders with the updated icebreaker_*_status
+    // (the WAMP echo also refreshes via the subscribeEncounterMatch
+    // path above; this is a belt-and-suspenders fetch).
+    loadBleMatches();
+  }, [loadBleMatches]);
 
   const handleHideMatch = (match) => {
     // F2 follow-up will call /encounter/map-pins toggle.  Placeholder
@@ -417,6 +433,21 @@ export default function EncountersPage() {
           )}
         </Box>
       )}
+
+      {/* F2 IcebreakerDraftSheet — single modal instance for the page.
+          Opened via BleMatchCard.onIcebreaker -> handleSendIcebreaker
+          which sets currentIcebreakerMatch state.  The modal owns the
+          WAMP subscription (filtered by match.id) and the
+          draft/approve/decline flow.  Mounted outside any tab branch
+          so the modal stays visible if the user switches tabs while a
+          draft is open. */}
+      <IcebreakerDraftSheet
+        open={!!currentIcebreakerMatch}
+        match={currentIcebreakerMatch}
+        viewer={currentUser}
+        onClose={handleIcebreakerClose}
+        onSent={handleIcebreakerSent}
+      />
     </>
   );
 }
