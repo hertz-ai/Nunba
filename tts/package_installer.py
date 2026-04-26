@@ -838,7 +838,11 @@ def install_backend_packages(backend: str,
     #
     # If the deep probe surfaces a ModuleNotFoundError for an
     # un-declared transitive, install it + retry.  Bounded so a
-    # genuinely broken upstream doesn't loop forever.
+    # genuinely broken upstream doesn't loop forever — when the loop
+    # gives up (3 iterations or non-ModuleNotFound failure mode), the
+    # central error_advice handler files an AgentGoal so an autogen
+    # agent can take over investigation (alternate package versions,
+    # upstream-issue search, alternate engines).
     if all_ok:
         deep_ok, healed = _self_heal_missing_transitives(
             backend, progress_cb=progress_cb,
@@ -850,6 +854,35 @@ def install_backend_packages(backend: str,
             )
         if not deep_ok:
             all_ok = False
+            # Hand off to the central error advice fan-out so an
+            # autogen agent can investigate beyond the deterministic
+            # loop.  Uses the existing crash_reporter (Sentry capture)
+            # + GoalManager.create_goal pipeline; no parallel paths.
+            try:
+                from core.error_advice import handle_exception
+                handle_exception(
+                    RuntimeError(
+                        f"deterministic self-heal exhausted for {backend} "
+                        f"after installing {healed}; deep probe still fails"
+                    ),
+                    category='tts.install.self_heal_exhausted',
+                    severity='high',
+                    agent_remediation=True,
+                    context={
+                        'backend': backend,
+                        'display_name': display_name,
+                        'attempted_packages': packages,
+                        'healed_during_loop': healed,
+                        'probe_err_file': os.path.join(
+                            os.path.expanduser('~'),
+                            'Documents', 'Nunba', 'logs',
+                            f'probe_{backend}.err',
+                        ),
+                    },
+                )
+            except Exception:
+                # Never let observability break the install path
+                pass
 
     if all_ok and progress_cb:
         progress_cb(f"{display_name} packages installed successfully")
