@@ -632,6 +632,7 @@ jobs:
           APPRUN
           chmod +x Nunba.AppDir/AppRun
 
+          mkdir -p Output
           ARCH=x86_64 ./appimagetool-x86_64.AppImage Nunba.AppDir Output/Nunba-x86_64.AppImage
         env:
           ARCH: x86_64
