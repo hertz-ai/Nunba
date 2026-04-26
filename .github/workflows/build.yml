@@ -234,6 +234,7 @@ jobs:
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           NUNBA_CI: '1'
+          HEVOLVE_REPO_TOKEN: ${{ secrets.HEVOLVE_REPO_TOKEN }}
 
       - name: Sign Nunba.exe (Azure Trusted Signing)
         if: ${{ !inputs.skip_signing }}
@@ -403,6 +404,7 @@ jobs:
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           NUNBA_CI: '1'
+          HEVOLVE_REPO_TOKEN: ${{ secrets.HEVOLVE_REPO_TOKEN }}
 
       - name: Import Apple signing certificate
         if: ${{ !inputs.skip_signing }}
@@ -569,6 +571,7 @@ jobs:
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           NUNBA_CI: '1'
+          HEVOLVE_REPO_TOKEN: ${{ secrets.HEVOLVE_REPO_TOKEN }}
 
       - name: E2E smoke test (start server, hit health endpoint)
         run: |
