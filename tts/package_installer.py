@@ -82,86 +82,139 @@ _LEGACY_BACKEND_PACKAGES_FALLBACK = {
 }
 
 
-def _build_backend_packages_from_hartos() -> dict:
-    """Read HARTOS's ENGINE_REGISTRY and project it into Nunba's
-    legacy {backend_id: [pip_specs...]} shape, applying the name
-    aliases above and adding bundled-only backends.
+def _hartos_engine_registry() -> dict:
+    """Single-call import of HARTOS's ENGINE_REGISTRY with a
+    well-defined empty-dict fallback on import error.
 
-    Returns the legacy fallback dict on any import error so Nunba's
-    install path keeps working even if the sibling repo isn't mounted
-    (cx_Freeze tracer edge case)."""
+    cx_Freeze can occasionally land Nunba into a state where
+    integrations/* isn't yet on sys.path (build phase, partial install).
+    The HARTOS-derived dicts below all degrade gracefully when this
+    function returns {} — install paths use the legacy fallback dict,
+    which keeps onboarding functional but drifts."""
     try:
         from integrations.channels.media.tts_router import ENGINE_REGISTRY
-    except Exception as exc:  # noqa: BLE001 — broad on purpose; any
-                              # failure here means HARTOS isn't reachable
-                              # and we MUST keep onboarding functional.
+        return dict(ENGINE_REGISTRY)
+    except Exception as exc:  # noqa: BLE001 — broad on purpose
         logger.warning(
             "HARTOS tts_router import failed; falling back to legacy "
-            "BACKEND_PACKAGES dict (engine drift risk). reason=%s", exc,
+            "engine dicts (engine drift risk). reason=%s", exc,
         )
+        return {}
+
+
+def _build_backend_packages_from_hartos() -> dict:
+    """{backend_id: [pip_specs...]} for engines that install into the
+    MAIN interpreter (install_target == 'main').
+
+    Skips engines routed elsewhere (venv / bundled / cloud / git_clone)
+    so a caller that does `pip install BACKEND_PACKAGES[backend]`
+    against a venv'd engine doesn't accidentally contaminate the main
+    interpreter with parler/chatterbox deps.
+
+    Includes Nunba-side aliases (chatterbox_multilingual, f5) for
+    legacy callers + the bundled-only entries (piper, luxtts) so the
+    keyspace covers what every existing Nunba caller expects.
+
+    Empty `[]` for venv / bundled / cloud / git_clone engines —
+    callers iterating BACKEND_PACKAGES see them but get a no-op
+    install plan, matching the prior Nunba behavior for indic_parler."""
+    registry = _hartos_engine_registry()
+    if not registry:
         return dict(_LEGACY_BACKEND_PACKAGES_FALLBACK)
 
     out: dict[str, list[str]] = {}
+    for engine_id, spec in registry.items():
+        target = getattr(spec, 'install_target', 'main')
+        # Engines that DON'T install into the main interpreter still
+        # appear here (with an empty plan) for keyspace compatibility
+        # with existing Nunba callers iterating the dict.  The
+        # install_backend_packages() router below uses install_target
+        # to decide what install path to actually take.
+        if target == 'main':
+            out[engine_id] = list(spec.pip_install_plan)
+        else:
+            out[engine_id] = []
 
-    # First pass: every engine HARTOS knows about, keyed by its HARTOS
-    # name with its install plan as a fresh list (so callers can mutate
-    # without leaking back into the registry).
-    for engine_id, spec in ENGINE_REGISTRY.items():
-        out[engine_id] = list(spec.pip_install_plan)
-
-    # Second pass: add Nunba-side aliases for any engine that has a
-    # legacy name still in use across Nunba's codebase.
     for nunba_name, hartos_name in _NUNBA_TO_HARTOS_BACKEND.items():
         if hartos_name in out:
             out[nunba_name] = list(out[hartos_name])
 
-    # Third pass: bundled-only backends Nunba ships natively.  Piper
-    # voices live in python-embed; luxtts is provided by the HARTOS
-    # docker image.  Both have empty install plans but must appear so
-    # callers iterating BACKEND_PACKAGES see the full engine surface.
     for engine_id in _BUNDLED_ONLY_BACKENDS:
         out.setdefault(engine_id, [])
 
     return out
 
 
+def _build_backend_venv_packages_from_hartos() -> dict:
+    """{backend_id: [pip_specs...]} for engines that install into their
+    OWN private venv (install_target == 'venv').
+
+    Mirrors HARTOS's TTSEngineSpec.pip_install_plan for venv engines,
+    so the Nunba-side BACKEND_VENV_PACKAGES literal goes away and the
+    install plan + venv-routing decision both live in HARTOS.
+
+    Falls back to a hand-maintained dict (currently parler-only) when
+    HARTOS isn't importable, same as BACKEND_PACKAGES does."""
+    registry = _hartos_engine_registry()
+    if not registry:
+        # Hand-maintained venv plan as fallback.  Kept minimal — only
+        # parler today, matching the prior Nunba state.
+        return {
+            'indic_parler': [
+                'colorama>=0.4.6', 'tqdm>=4.65',
+                'transformers==4.46.1',
+                'torch', 'torchaudio',
+                'sentencepiece', 'descript-audio-codec',
+                'parler-tts==0.2.2', 'soundfile',
+                _HF_HUB_PIN,
+            ],
+        }
+
+    out: dict[str, list[str]] = {}
+    for engine_id, spec in registry.items():
+        target = getattr(spec, 'install_target', 'main')
+        if target == 'venv':
+            out[engine_id] = list(spec.pip_install_plan)
+    return out
+
+
 BACKEND_PACKAGES = _build_backend_packages_from_hartos()
 
-# Backends that live in their OWN venv under ~/Documents/Nunba/data/venvs/
-# (see tts/backend_venv.py). Each venv's dep set is independent and may
+# Backends routed into their OWN venv under ~/Documents/Nunba/data/venvs/
+# (see tts/backend_venv.py).  Each venv's dep set is independent and may
 # pin conflicting transformers / torch versions without contaminating
 # the main interpreter or each other.
 #
-# Track B, Phase 6: parler-tts 0.2.2 + transformers 4.46.1 can't coexist
-# with the main interpreter's transformers 5.1.0, so Indic Parler is
-# quarantined here. Other backends can be migrated as their pins drift.
-BACKEND_VENV_PACKAGES = {
-    'indic_parler': [
-        # Pre-pin tqdm + colorama FIRST.  Without this, pip's resolver
-        # backtracks through every historical colorama version
-        # (0.4.x → 0.3.x → 0.2.x → 0.1.15) when it later installs
-        # parler-tts's transitive chain:
-        #     parler-tts 0.2.2 → transformers 4.46.1 → tqdm >=4.27
-        #     → colorama (unconstrained)
-        # colorama 0.1.15 has neither setup.py nor pyproject.toml and
-        # explodes the install with:
-        #     "does not appear to be a Python project"
-        # Pinning modern versions up front keeps the resolver out of
-        # the backtrack tarpit. Witnessed user-facing failure:
-        #     "Indic Parler TTS unavailable — using fallback voice engine"
-        # Root-caused from ~/Documents/Nunba/logs/venv_indic_parler.log.
-        'colorama>=0.4.6',
-        'tqdm>=4.65',
-        'transformers==4.46.1',   # parler-tts 0.2.2 requires <4.47
-        'torch',                   # CPU-ish fallback; replaced by CUDA if GPU
-        'torchaudio',
-        'sentencepiece',
-        'descript-audio-codec',
-        'parler-tts==0.2.2',       # 0.2.3 has DacModel.decode() API mismatch
-        'soundfile',
-        'huggingface_hub>=0.27.0,<0.29.0',
-    ],
-}
+# Source of truth lives in HARTOS — TTSEngineSpec.install_target='venv'
+# selects an engine for venv routing, and TTSEngineSpec.pip_install_plan
+# is the plan that lands in the venv.  This dict is now derived state.
+#
+# Today only `indic_parler` qualifies (parler-tts 0.2.2 hard-pins
+# transformers<4.47, conflicts with main's 5.1.0).  Migrating
+# chatterbox / cosyvoice / f5 / kokoro / omnivoice into their own
+# venvs is a follow-up task per engine — flip install_target='venv'
+# in HARTOS *only after* the matching tts/<engine>_worker.py file
+# lands in Nunba (mirroring tts/indic_parler_worker.py), otherwise
+# the synth dispatch can't reach the engine inside its venv.
+BACKEND_VENV_PACKAGES = _build_backend_venv_packages_from_hartos()
+
+
+def get_install_target(backend: str) -> str:
+    """Return the install_target string ('main' | 'venv' | 'bundled' |
+    'cloud' | 'git_clone') HARTOS declares for this backend.
+
+    Defaults to 'main' if the engine isn't in HARTOS's ENGINE_REGISTRY
+    (matches the dataclass default; preserves Nunba's prior behavior
+    for any legacy backend ID a caller might still address)."""
+    registry = _hartos_engine_registry()
+    spec = registry.get(backend)
+    if spec is None:
+        # Resolve through Nunba alias map before giving up (e.g.
+        # 'chatterbox_multilingual' -> 'chatterbox_ml').
+        canonical = _NUNBA_TO_HARTOS_BACKEND.get(backend)
+        if canonical:
+            spec = registry.get(canonical)
+    return getattr(spec, 'install_target', 'main') if spec is not None else 'main'
 
 # pip package name → import name (for verification)
 _PIP_TO_IMPORT = {
