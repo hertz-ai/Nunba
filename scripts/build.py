@@ -1105,12 +1105,31 @@ def build_windows(python_exe, app_only=False, installer_only=False):
             ['git', 'rev-parse', 'HEAD'],
             capture_output=True, text=True, check=False,
         ).stdout.strip() or 'unknown'
+        # Also stamp the HARTOS-side HEAD so bundle-drift between
+        # Nunba and HARTOS source can be detected at runtime (see
+        # 2026-04-25 incident: HARTOS commits 52fe902 + 76f99dee
+        # landed but python-embed shipped pre-rebase HARTOS files,
+        # silently violating the consent append-only invariant in
+        # the installed .exe).  The local-sibling HARTOS path is the
+        # canonical dev source per build.py:34, 432, 622.
+        _hartos_dir = _local_hartos_path() if '_local_hartos_path' in dir() else \
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'HARTOS')
+        _hartos_head = 'unknown'
+        try:
+            if os.path.isdir(_hartos_dir):
+                _hartos_head = subprocess.run(
+                    ['git', '-C', _hartos_dir, 'rev-parse', 'HEAD'],
+                    capture_output=True, text=True, check=False,
+                ).stdout.strip() or 'unknown'
+        except Exception:
+            pass
         _bi_path = os.path.join('build', 'Nunba', 'BUILD_INFO.txt')
         with open(_bi_path, 'w', encoding='utf-8') as _bi:
             _bi.write(f"BUILD_SHA={_head}\n")
+            _bi.write(f"HARTOS_SHA={_hartos_head}\n")
             _bi.write(f"BUILD_TIME={_bi_dt.datetime.utcnow().isoformat(timespec='seconds')}Z\n")
             _bi.write(f"BUILD_PLATFORM={sys.platform}\n")
-        print_info(f"Wrote {_bi_path} (sha={_head[:12]})")
+        print_info(f"Wrote {_bi_path} (nunba={_head[:12]} hartos={_hartos_head[:12]})")
     except Exception as _bi_err:
         print_warn(f"Could not write BUILD_INFO.txt: {_bi_err}")
 
