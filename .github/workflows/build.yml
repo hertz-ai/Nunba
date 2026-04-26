@@ -190,6 +190,29 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      # Configure git so anything the build script clones from
+      # github.com (private siblings, pip git+https URLs, cx_Freeze
+      # extras) authenticates with HEVOLVE_REPO_TOKEN instead of
+      # prompting for credentials and dying with
+      #   fatal: could not read Username for 'https://github.com'
+      # GIT_TERMINAL_PROMPT=0 is the belt-and-suspenders: even if
+      # the rewrite misses a URL shape, git fails fast with a clear
+      # error instead of hanging on /dev/tty.
+      - name: Configure git credentials for github.com clones
+        shell: bash
+        env:
+          HEVOLVE_REPO_TOKEN: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+        run: |
+          if [ -n "$HEVOLVE_REPO_TOKEN" ]; then
+            git config --global \
+              "url.https://x-access-token:${HEVOLVE_REPO_TOKEN}@github.com/.insteadOf" \
+              "https://github.com/"
+            echo "[git] github.com clones will use HEVOLVE_REPO_TOKEN"
+          else
+            echo "::warning::HEVOLVE_REPO_TOKEN not set; private-repo clones from github.com will fail"
+          fi
+          echo "GIT_TERMINAL_PROMPT=0" >> $GITHUB_ENV
+
       - name: Install Python dependencies + sibling repos
         shell: bash
         run: |
@@ -377,6 +400,21 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
+      # See build-windows for the rationale on this step.
+      - name: Configure git credentials for github.com clones
+        env:
+          HEVOLVE_REPO_TOKEN: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+        run: |
+          if [ -n "$HEVOLVE_REPO_TOKEN" ]; then
+            git config --global \
+              "url.https://x-access-token:${HEVOLVE_REPO_TOKEN}@github.com/.insteadOf" \
+              "https://github.com/"
+            echo "[git] github.com clones will use HEVOLVE_REPO_TOKEN"
+          else
+            echo "::warning::HEVOLVE_REPO_TOKEN not set; private-repo clones from github.com will fail"
+          fi
+          echo "GIT_TERMINAL_PROMPT=0" >> $GITHUB_ENV
+
       - name: Install Python dependencies + sibling repos
         run: |
           pip install --upgrade pip
@@ -528,6 +566,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libfuse2 desktop-file-utils
+
+      # See build-windows for the rationale on this step.
+      - name: Configure git credentials for github.com clones
+        env:
+          HEVOLVE_REPO_TOKEN: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+        run: |
+          if [ -n "$HEVOLVE_REPO_TOKEN" ]; then
+            git config --global \
+              "url.https://x-access-token:${HEVOLVE_REPO_TOKEN}@github.com/.insteadOf" \
+              "https://github.com/"
+            echo "[git] github.com clones will use HEVOLVE_REPO_TOKEN"
+          else
+            echo "::warning::HEVOLVE_REPO_TOKEN not set; private-repo clones from github.com will fail"
+          fi
+          echo "GIT_TERMINAL_PROMPT=0" >> $GITHUB_ENV
 
       - name: Install Python dependencies + sibling repos
         run: |
