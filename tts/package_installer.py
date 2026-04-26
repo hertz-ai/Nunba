@@ -28,45 +28,104 @@ from pathlib import Path
 logger = logging.getLogger('NunbaTTSInstaller')
 
 # huggingface_hub 0.29+ removes is_offline_mode needed by transformers <5.x
+# Re-exported from here for any caller that depends on the constant; the
+# canonical pin lives in HARTOS's tts_router._HF_HUB_PIN now.
 _HF_HUB_PIN = 'huggingface_hub>=0.27.0,<0.29.0'
 
-# Backend → pip packages needed (in install order)
-BACKEND_PACKAGES = {
-    'chatterbox_turbo': [
-        _HF_HUB_PIN,
-        'torchaudio',
-        'chatterbox-tts',
-    ],
-    'chatterbox_multilingual': [
-        _HF_HUB_PIN,
-        'torchaudio',
-        'chatterbox-tts',
-    ],
-    # Indic Parler lives in its OWN venv (see BACKEND_VENV_PACKAGES
-    # below) because parler-tts==0.2.2 needs transformers<4.47, while
-    # the main interpreter is pinned to transformers 5.1.0 for
-    # chatterbox_ml / f5 / cosyvoice. Track B, Phase 6 refactor.
-    'indic_parler': [],
-    'cosyvoice3': [
-        'torchaudio',
-        # cosyvoice is NOT pip-installable — needs cloned repo
-        # Model weights downloaded separately via huggingface_hub
-    ],
-    'f5': [
-        'torchaudio',
-        'f5-tts',
-    ],
-    'piper': [],  # Bundled, no pip install needed
-    'kokoro': [
-        _HF_HUB_PIN,
-        'kokoro',       # Main package (includes misaki phonemizer)
-        'espeakng',     # espeak-ng Python bindings (ships binary on Windows)
-    ],
-    'luxtts': [],       # CPU in-process, bundled via HARTOS
-    'pocket_tts': [
-        'pocket-tts',
-    ],
+# ─── Backend → pip packages needed (in install order) ──────────────────
+#
+# The actual install plan for each engine is OWNED BY HARTOS via
+# TTSEngineSpec.pip_install_plan in
+# integrations/channels/media/tts_router.py.  HARTOS already declares
+# required_package + tool_module per engine; the install plan belongs
+# alongside that knowledge so adding a new engine doesn't require
+# parallel edits in two repos that drift.
+#
+# This module re-exports the same dict shape Nunba's existing callers
+# expect ({backend_id: [pip_specs...]}), populated from HARTOS at
+# import time, plus a thin name-alias layer for the two engines that
+# Nunba historically called by different names (chatterbox_multilingual
+# vs chatterbox_ml; f5 vs f5_tts) and the bundled-only engines that
+# don't appear in HARTOS's registry (piper, luxtts).
+#
+# If the HARTOS import fails (cx_Freeze tracer edge case where the
+# sibling repo isn't yet mounted), we fall back to the legacy hardcoded
+# dict — the user-visible behaviour stays the same instead of erroring
+# at module-load.
+
+# Nunba-side aliases for legacy backend names (Nunba_id -> HARTOS_id).
+# Drop entry if HARTOS gets renamed; add entry if Nunba's UI keeps
+# calling an engine by an old name for back-compat.
+_NUNBA_TO_HARTOS_BACKEND = {
+    'chatterbox_multilingual': 'chatterbox_ml',
+    'f5':                      'f5_tts',
 }
+
+# Backends Nunba ships bundled (piper voices in python-embed, luxtts
+# in HARTOS image) — no pip install needed; keys must still appear in
+# BACKEND_PACKAGES so callers iterating it see the full surface.
+_BUNDLED_ONLY_BACKENDS = ('piper', 'luxtts')
+
+# Legacy hardcoded plan — used as fallback ONLY when HARTOS import
+# fails at module load.  The HARTOS-owned plan is the source of truth
+# whenever the import succeeds (almost always).
+_LEGACY_BACKEND_PACKAGES_FALLBACK = {
+    'chatterbox_turbo':        [_HF_HUB_PIN, 'torchaudio', 'chatterbox-tts', 'librosa', 'soundfile'],
+    'chatterbox_multilingual': [_HF_HUB_PIN, 'torchaudio', 'chatterbox-tts', 'librosa', 'soundfile'],
+    'indic_parler':            [],
+    'cosyvoice3':              [],
+    'f5':                      ['torchaudio', 'f5-tts'],
+    'piper':                   [],
+    'kokoro':                  [_HF_HUB_PIN, 'kokoro', 'espeakng'],
+    'luxtts':                  [],
+    'pocket_tts':              ['pocket-tts'],
+}
+
+
+def _build_backend_packages_from_hartos() -> dict:
+    """Read HARTOS's ENGINE_REGISTRY and project it into Nunba's
+    legacy {backend_id: [pip_specs...]} shape, applying the name
+    aliases above and adding bundled-only backends.
+
+    Returns the legacy fallback dict on any import error so Nunba's
+    install path keeps working even if the sibling repo isn't mounted
+    (cx_Freeze tracer edge case)."""
+    try:
+        from integrations.channels.media.tts_router import ENGINE_REGISTRY
+    except Exception as exc:  # noqa: BLE001 — broad on purpose; any
+                              # failure here means HARTOS isn't reachable
+                              # and we MUST keep onboarding functional.
+        logger.warning(
+            "HARTOS tts_router import failed; falling back to legacy "
+            "BACKEND_PACKAGES dict (engine drift risk). reason=%s", exc,
+        )
+        return dict(_LEGACY_BACKEND_PACKAGES_FALLBACK)
+
+    out: dict[str, list[str]] = {}
+
+    # First pass: every engine HARTOS knows about, keyed by its HARTOS
+    # name with its install plan as a fresh list (so callers can mutate
+    # without leaking back into the registry).
+    for engine_id, spec in ENGINE_REGISTRY.items():
+        out[engine_id] = list(spec.pip_install_plan)
+
+    # Second pass: add Nunba-side aliases for any engine that has a
+    # legacy name still in use across Nunba's codebase.
+    for nunba_name, hartos_name in _NUNBA_TO_HARTOS_BACKEND.items():
+        if hartos_name in out:
+            out[nunba_name] = list(out[hartos_name])
+
+    # Third pass: bundled-only backends Nunba ships natively.  Piper
+    # voices live in python-embed; luxtts is provided by the HARTOS
+    # docker image.  Both have empty install plans but must appear so
+    # callers iterating BACKEND_PACKAGES see the full engine surface.
+    for engine_id in _BUNDLED_ONLY_BACKENDS:
+        out.setdefault(engine_id, [])
+
+    return out
+
+
+BACKEND_PACKAGES = _build_backend_packages_from_hartos()
 
 # Backends that live in their OWN venv under ~/Documents/Nunba/data/venvs/
 # (see tts/backend_venv.py). Each venv's dep set is independent and may
@@ -118,22 +177,30 @@ _PIP_TO_IMPORT = {
     'pocket-tts': 'pocket_tts',
 }
 
-# Human-readable names for progress messages
+# Human-readable names for progress messages.  Must cover the full
+# keyspace of BACKEND_PACKAGES (which now includes HARTOS-canonical
+# names like chatterbox_ml + f5_tts + omnivoice + espeak + makeittalk
+# in addition to Nunba's legacy keys), enforced by
+# TestConstants.test_display_names_match_backends.
 BACKEND_DISPLAY_NAMES = {
-    'chatterbox_turbo': 'Chatterbox Turbo (English, expressive)',
+    # Legacy Nunba names (kept for the UI surface)
+    'chatterbox_turbo':        'Chatterbox Turbo (English, expressive)',
     'chatterbox_multilingual': 'Chatterbox Multilingual (23 languages)',
-    'indic_parler': 'Indic Parler TTS (21 Indian languages + English)',
-    'cosyvoice3': 'CosyVoice3 (9 international languages)',
-    'f5': 'F5-TTS (voice cloning)',
-    'piper': 'Piper TTS (CPU fallback)',
-    # Added after Kokoro landed + pocket_tts was promoted from Piper
-    # alias to its own backend + luxtts was kept for frozen-HARTOS
-    # compat. Keeping the keyspace aligned with BACKEND_PACKAGES is
-    # enforced by TestConstants.test_display_names_match_backends —
-    # a missing entry here previously crashed that test every CI run.
-    'kokoro': 'Kokoro 82M (CPU/GPU, multilingual)',
-    'luxtts': 'LuxTTS (CPU, English voice-clone)',
-    'pocket_tts': 'Pocket TTS (CPU, English voice-clone)',
+    'indic_parler':            'Indic Parler TTS (21 Indian languages + English)',
+    'cosyvoice3':              'CosyVoice3 (9 international languages)',
+    'f5':                      'F5-TTS (voice cloning)',
+    'piper':                   'Piper TTS (CPU fallback)',
+    'kokoro':                  'Kokoro 82M (CPU/GPU, multilingual)',
+    'luxtts':                  'LuxTTS (CPU, English voice-clone)',
+    'pocket_tts':              'Pocket TTS (CPU, English voice-clone)',
+    # HARTOS-canonical names exposed via BACKEND_PACKAGES — same
+    # display strings as their Nunba aliases so users see one name
+    # whichever entry-point the request hits.
+    'chatterbox_ml':           'Chatterbox Multilingual (23 languages)',
+    'f5_tts':                  'F5-TTS (voice cloning)',
+    'omnivoice':               'OmniVoice (646 languages, voice clone)',
+    'espeak':                  'eSpeak NG (CPU last-resort fallback)',
+    'makeittalk':              'MakeItTalk (cloud, English)',
 }
 
 # Lock to prevent concurrent installs (in-process)

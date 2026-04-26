@@ -919,15 +919,43 @@ class TestGetRecommendedBackends:
 class TestConstants:
 
     def test_backend_packages_keys(self):
-        # Kokoro (82M CPU/GPU TTS), luxtts (frozen-HARTOS compat), and
-        # pocket_tts (promoted from Piper alias to first-class backend)
-        # were added after this test was authored.  Keep the full current
-        # set here so the assertion stays meaningful — a new backend
-        # failing to register a package list should still trip this.
-        expected = {'chatterbox_turbo', 'chatterbox_multilingual',
-                    'indic_parler', 'cosyvoice3', 'f5', 'piper',
-                    'kokoro', 'luxtts', 'pocket_tts'}
-        assert set(pi.BACKEND_PACKAGES.keys()) == expected
+        # The legacy Nunba-side keyspace MUST stay covered (the UI +
+        # chatbot routes still address engines by these names).  Other
+        # entries — chatterbox_ml, f5_tts, omnivoice, espeak,
+        # makeittalk — flow through from HARTOS's ENGINE_REGISTRY now
+        # that BACKEND_PACKAGES is built from there at module load.
+        # Kept as subset-rather-than-equality so adding a HARTOS
+        # engine doesn't require a parallel test edit (the new
+        # source-of-truth lives in HARTOS/integrations/channels/media/
+        # tts_router.py::ENGINE_REGISTRY).
+        legacy_required = {'chatterbox_turbo', 'chatterbox_multilingual',
+                           'indic_parler', 'cosyvoice3', 'f5', 'piper',
+                           'kokoro', 'luxtts', 'pocket_tts'}
+        keys = set(pi.BACKEND_PACKAGES.keys())
+        missing = legacy_required - keys
+        assert not missing, f"BACKEND_PACKAGES dropped legacy keys: {missing}"
 
     def test_display_names_match_backends(self):
-        assert set(pi.BACKEND_DISPLAY_NAMES.keys()) == set(pi.BACKEND_PACKAGES.keys())
+        # Every BACKEND_PACKAGES key must have a display name (used in
+        # progress callbacks).  Keep as subset check — extra display
+        # entries are harmless (forward-compat for engines added before
+        # they ship a HARTOS spec).
+        backend_keys = set(pi.BACKEND_PACKAGES.keys())
+        display_keys = set(pi.BACKEND_DISPLAY_NAMES.keys())
+        missing = backend_keys - display_keys
+        assert not missing, f"BACKEND_DISPLAY_NAMES missing entries for: {missing}"
+
+    def test_chatterbox_install_plan_includes_librosa(self):
+        # Regression: probe_chatterbox_turbo.err showed
+        #   chatterbox/tts.py:4 import librosa -> ModuleNotFoundError
+        # because chatterbox-tts on PyPI omits librosa from
+        # install_requires even though it imports it unconditionally.
+        # The HARTOS-side install plan MUST list librosa so a fresh
+        # desktop install of chatterbox is actually synth-functional.
+        for engine in ('chatterbox_turbo', 'chatterbox_multilingual',
+                       'chatterbox_ml'):
+            plan = pi.BACKEND_PACKAGES.get(engine, [])
+            assert 'librosa' in plan, (
+                f"{engine}.pip_install_plan missing librosa — install would "
+                f"silently leave chatterbox unable to synthesize. plan={plan}"
+            )
