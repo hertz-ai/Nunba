@@ -827,10 +827,135 @@ def install_backend_packages(backend: str,
             all_ok = False
             logger.warning(f"Package {pkg} ({import_name}) not importable after install")
 
+    # Deep self-heal probe — runs the SAME subprocess import that
+    # _torch_probe uses at runtime, so a chatterbox-style failure
+    # (top-level `import chatterbox` succeeds → `from .tts import
+    # ChatterboxTTS` blows up on missing `import librosa` because the
+    # upstream package omits it from install_requires) gets caught
+    # HERE, on the install screen, instead of 5 minutes later when the
+    # user actually tries to talk and verified_synth reports
+    # "synthesize returned no path" with no recovery path.
+    #
+    # If the deep probe surfaces a ModuleNotFoundError for an
+    # un-declared transitive, install it + retry.  Bounded so a
+    # genuinely broken upstream doesn't loop forever.
+    if all_ok:
+        deep_ok, healed = _self_heal_missing_transitives(
+            backend, progress_cb=progress_cb,
+        )
+        if healed:
+            logger.info(
+                f"Self-heal installed transitive deps for {backend}: {healed} "
+                f"— add these to HARTOS pip_install_plan to skip this loop next time"
+            )
+        if not deep_ok:
+            all_ok = False
+
     if all_ok and progress_cb:
         progress_cb(f"{display_name} packages installed successfully")
 
     return all_ok, f"{'All' if all_ok else 'Some'} packages installed for {backend}"
+
+
+# ── Generic transitive-dep self-heal ──────────────────────────────────
+#
+# Catches the chatterbox-librosa class of failure: upstream package
+# imports a runtime dep that isn't in its install_requires.  Pip
+# completes "successfully", top-level `find_spec` returns True, but
+# the deep import chain blows up.  This loop runs the same deep probe
+# the runtime uses (subprocess `import <required_pkg>`), parses the
+# probe's already-written ~/Documents/Nunba/logs/probe_<backend>.err
+# for ModuleNotFoundError, pip-installs the missing module, retries.
+#
+# Pure SRP: this function does ONE thing — find + install the
+# transitive deps that the engine's runtime import chain reveals.  No
+# duplicated install logic (uses _run_pip), no duplicated probe logic
+# (uses _torch_probe.check_backend_runnable), no parallel cache (uses
+# _invalidate_import_cache).
+_MISSING_MODULE_RE = re.compile(
+    r"ModuleNotFoundError:\s+No module named ['\"]([^'\"]+)['\"]"
+)
+
+
+def _self_heal_missing_transitives(
+    backend: str,
+    max_iter: int = 3,
+    progress_cb: Callable | None = None,
+) -> tuple[bool, list[str]]:
+    """Run the runtime deep-import probe; if it fails on a
+    ModuleNotFoundError, install the missing module and retry.
+
+    Returns (deep_probe_ok, [packages_installed_during_heal]).
+    deep_probe_ok=False means the engine STILL won't work — caller
+    should mark backend as failed.
+    """
+    # Resolve the required_package from HARTOS's spec.  No-op for
+    # engines that don't declare one (espeak / piper / makeittalk —
+    # the bundled / cloud paths).
+    registry = _hartos_engine_registry()
+    spec = registry.get(backend) or registry.get(
+        _NUNBA_TO_HARTOS_BACKEND.get(backend, ''),
+    )
+    required_pkg = getattr(spec, 'required_package', None) if spec else None
+    if not required_pkg:
+        return True, []  # nothing to probe; treat as healthy
+
+    try:
+        from tts._torch_probe import check_backend_runnable
+    except Exception:
+        return True, []  # probe unavailable in dev mode — treat as healthy
+
+    err_file = os.path.join(
+        os.path.expanduser('~'), 'Documents', 'Nunba', 'logs',
+        f'probe_{backend}.err',
+    )
+
+    healed: list[str] = []
+    for iteration in range(max_iter):
+        _invalidate_import_cache()
+        if check_backend_runnable(backend, required_pkg):
+            return True, healed
+
+        # Deep probe failed — read the error file the probe just wrote
+        if not os.path.isfile(err_file):
+            return False, healed
+        try:
+            with open(err_file) as _ef:
+                err_text = _ef.read()
+        except Exception:
+            return False, healed
+
+        m = _MISSING_MODULE_RE.search(err_text)
+        if not m:
+            # Different kind of failure (e.g., DLL not found, runtime
+            # error in __init__) — can't auto-heal; bail.
+            return False, healed
+        missing = m.group(1).split('.')[0]  # heal at top-level only
+
+        if missing in healed:
+            # Already installed it this run, probe still fails — circular
+            # or the install lied; stop looping.
+            return False, healed
+
+        if progress_cb:
+            progress_cb(
+                f"Auto-healing {backend}: deep probe needs '{missing}' — installing..."
+            )
+        ok, msg = _run_pip(['install', missing], progress_cb)
+        if not ok:
+            logger.warning(
+                f"Self-heal pip install of '{missing}' for {backend} failed: {msg}"
+            )
+            return False, healed
+        healed.append(missing)
+        # Loop re-runs deep probe
+
+    # Exhausted max_iter — treat as failed
+    logger.warning(
+        f"Self-heal for {backend} hit max_iter={max_iter} after installing "
+        f"{healed}; deep probe still fails"
+    )
+    return False, healed
 
 
 def install_backend_full(backend: str,
