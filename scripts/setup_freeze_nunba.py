@@ -28,6 +28,50 @@ try:
             print("Patched transformers/__init__.py: frozenset fix applied")
 except Exception as _e:
     print(f"WARNING: Could not patch transformers: {_e}")
+
+# ── Defang transformers' packages_distributions() module-load scan ──
+# transformers/utils/import_utils.py:45 does
+#     PACKAGE_DISTRIBUTION_MAPPING = importlib.metadata.packages_distributions()
+# at module-import time, with NO guard.  packages_distributions() walks
+# every *.dist-info/METADATA in site-packages and accesses
+# `dist.metadata['Name']`.  If ANY one dist-info is corrupt (METADATA
+# missing or being concurrently rewritten by pip), this raises
+# KeyError('Name') → transformers fails to import → langchain →
+# hart_intelligence → Tier-1 HARTOS dies → agent daemon never starts →
+# Admin Agent Dashboard shows empty.
+#
+# Regression 2026-04-26: a transient corrupt dist-info killed Tier-1 init
+# at boot; the dashboard stayed empty for the rest of the process
+# lifetime because Tier-1 init is one-shot and transformers' module-level
+# globals are populated only once.
+#
+# The patch wraps that single line in a try/except that falls back to an
+# empty mapping.  Auto-docstring lookups against the empty mapping return
+# best-effort generic distribution-name guesses — strictly worse than the
+# canonical map but vastly better than a hard crash that takes down the
+# entire HARTOS Tier-1.
+try:
+    import importlib.util as _ilu_iu
+    _iu_spec = _ilu_iu.find_spec('transformers.utils.import_utils')
+    if _iu_spec and _iu_spec.origin:
+        with open(_iu_spec.origin, encoding='utf-8') as _f:
+            _iu_src = _f.read()
+        _iu_bad = 'PACKAGE_DISTRIBUTION_MAPPING = importlib.metadata.packages_distributions()'
+        _iu_good = (
+            'try:\n'
+            '    PACKAGE_DISTRIBUTION_MAPPING = importlib.metadata.packages_distributions()\n'
+            'except Exception:\n'
+            '    # Corrupt dist-info / pip race — degrade gracefully so the\n'
+            '    # whole HARTOS Tier-1 import does not crash on a single bad METADATA.\n'
+            '    PACKAGE_DISTRIBUTION_MAPPING = {}'
+        )
+        if _iu_bad in _iu_src and _iu_good not in _iu_src:
+            _iu_src = _iu_src.replace(_iu_bad, _iu_good)
+            with open(_iu_spec.origin, 'w', encoding='utf-8') as _f:
+                _f.write(_iu_src)
+            print("Patched transformers/utils/import_utils.py: packages_distributions() guarded")
+except Exception as _e2:
+    print(f"WARNING: Could not patch transformers import_utils: {_e2}")
 import py_compile
 
 # hevolveai/embodied_ai pull in torch/transformers which cause cx_Freeze
@@ -294,17 +338,14 @@ build_exe_options = {
         "routes.chatbot_routes",  # Chatbot routes module
         "routes.kids_media_routes",  # Kids media generation routes
 
-        # core.* — architect-refactor modules (diag, optional_import,
-        # gpu_tier, hub_allowlist) now live in HARTOS core/ alongside
-        # the canonical infrastructure (http_pool, port_registry,
-        # realtime, agent_tools, platform_paths, constants).  Nunba
-        # NO LONGER has its own core/ directory — the previous split
-        # caused a namespace-package collision (Nunba core/ lacked
-        # __init__.py, HARTOS core/ has one → whichever loaded first
-        # won, hiding the other's modules at runtime).  HARTOS core/
-        # is picked up via the "Including core package" trace above,
-        # so no explicit packages list is needed here — cx_Freeze
-        # bundles everything in the package tree automatically.
+        # core / integrations / security are HARTOS packages.  They are
+        # NOT listed here on purpose — see the matching excludes[] entry
+        # below for the SRP rationale.  TL;DR: they're bundled at the
+        # install ROOT via include_files (lines ~709-730) for the main
+        # exe, AND in python-embed/Lib/site-packages/ for subprocesses.
+        # cx_Freeze must NOT also produce a partial copy in lib/ — that
+        # third location is the shadow that has caused four production
+        # outages (2026-04-21, -24, -25, -26).  See excludes[] below.
 
         "uvicorn",
         "fastapi",
@@ -409,6 +450,36 @@ build_exe_options = {
     "zip_includes": [],
     "build_exe": "build/Nunba",
     "excludes": [
+        # ── HARTOS packages: SRP single-source-of-truth ─────────────
+        # core / integrations / security live at the install ROOT (via
+        # include_files at ~line 709-730) for the main exe runtime, AND
+        # in python-embed/Lib/site-packages/ for subprocess runtime.
+        # Those are TWO legitimate locations — different runtime
+        # contexts (cx_Freeze exe vs python-embed subprocess).
+        #
+        # cx_Freeze's static import tracer wants to ALSO bundle these
+        # into lib/<pkg>/.  That third copy is a parallel path: lib/
+        # sits earlier on sys.path than the install-root for the main
+        # exe, so a partial lib/<pkg>/ shadows the canonical full copy
+        # and the .exe crashes with ModuleNotFoundError on any
+        # function-local `from core.X import Y` the tracer missed.
+        #
+        # Every prior shadow incident (2026-04-21 dev .venv, -24
+        # bundle's own lib stripped, -25 stale user site-packages, -26
+        # partial lib/core/) was a different VARIANT of this same
+        # parallel-path failure.  Each was patched by adding sys.path-
+        # scrubbing logic in app.py — symptomatic, not root-cause.
+        # Excluding here is the SRP fix: cx_Freeze stops trying to be
+        # the bundler for HARTOS code, leaving include_files (top-
+        # level) and pip install (python-embed) as the only two paths.
+        "core", "core.*",
+        "integrations", "integrations.*",
+        "security", "security.*",
+        # agent_ledger / hevolveai / hevolve_database are also HARTOS-
+        # adjacent packages bundled via include_files / python-embed,
+        # not lib/.  Same SRP principle.
+        "agent_ledger", "agent_ledger.*",
+        "hevolve_database", "hevolve_database.*",
         "unittest", "test", "tests",
         "shapely.plotting", "shapely.tests",
         # Exclude large unnecessary packages

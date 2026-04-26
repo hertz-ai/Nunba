@@ -152,13 +152,26 @@ _hartos_initialized = False
 # was removed 2026-04-19 to avoid a confusing duplicate definition.
 
 
-def _background_hartos_init():
-    """Import HARTOS in background thread. Runs at module load, not on first chat."""
+def _attempt_hartos_init():
+    """One attempt at importing HARTOS.  Returns True on success, False on failure.
+
+    Split out from `_background_hartos_init` so the outer driver can retry
+    transient failures (e.g. corrupt dist-info during pip activity, network
+    flake during HF model warmup) without making each attempt a separate
+    background thread.
+
+    DOES NOT mark `_hartos_initialized = True` on failure — the retry loop
+    decides when to give up so a transient error stops cascading into
+    "Tier-1 dead for the rest of the process lifetime."  See 2026-04-26
+    incident: a one-shot KeyError from transformers' packages_distributions
+    scan left the agent daemon dead and the admin dashboard empty until
+    process restart.
+    """
     global _hartos_backend_available, _hevolve_app, _active_tier, _hartos_initialized
 
     with _hartos_init_lock:
         if _hartos_initialized:
-            return
+            return True
         try:
             from hart_intelligence import app as hevolve_app
             _hartos_backend_available = True
@@ -195,8 +208,10 @@ def _background_hartos_init():
 
             logger.info("  Thinking trace capture: ACTIVE")
             _hartos_initialized = True
+            return True
         except Exception as _ie:
-            _hartos_initialized = True  # mark done even on failure
+            # Don't mark _hartos_initialized = True here — let the retry
+            # driver decide.  Final-attempt failure path below sets it.
             # Write to file directly — logger may be silenced in frozen builds.
             # Hardening:
             #   * O_NOFOLLOW + O_CREAT + 0o600 → same-user malware cannot
@@ -259,6 +274,62 @@ def _background_hartos_init():
             else:
                 _active_tier = "Tier-2 (HTTP proxy to port 6777)"
                 logger.info(f"BACKEND ADAPTER: Tier-1 unavailable — Tier-2 proxy ({_ie})")
+            return False
+
+
+# Retry schedule for transient Tier-1 import failures.  Total budget is
+# ~15 min: 60s + 120s + 240s + 480s before giving up and committing to
+# Tier-2/Tier-3 fallback.  Each attempt is a full import re-try; failures
+# clear langchain/transformers from sys.modules so a transient corrupt
+# dist-info or pip race has a chance to resolve before the next attempt.
+_HARTOS_INIT_BACKOFF_SCHEDULE = (60, 120, 240, 480)
+
+
+def _background_hartos_init():
+    """Driver: try HARTOS import, retry on transient failures with backoff.
+
+    Replaces the previous one-shot init that left Tier-1 dead for the
+    process lifetime if a single transient error fired during boot.
+    Each attempt:
+      1. Calls `_attempt_hartos_init()` (returns True on success).
+      2. If success → done, _hartos_initialized was set inside attempt.
+      3. If failure → wait `_HARTOS_INIT_BACKOFF_SCHEDULE[i]` seconds and retry.
+      4. After all attempts exhausted, mark `_hartos_initialized = True`
+         to commit to Tier-2/Tier-3 (no more retries until next restart).
+    """
+    global _hartos_initialized
+
+    if _attempt_hartos_init():
+        return
+
+    for _i, _wait in enumerate(_HARTOS_INIT_BACKOFF_SCHEDULE):
+        logger.info(f"BACKEND ADAPTER: Tier-1 retry in {_wait}s "
+                    f"(attempt {_i + 2}/{len(_HARTOS_INIT_BACKOFF_SCHEDULE) + 1})")
+        time.sleep(_wait)
+
+        # Evict half-loaded modules so the next attempt is a fresh import.
+        # The transformers / langchain / hart_intelligence chain is the
+        # one that actually crashed; clearing it lets the retry pick up
+        # any pip activity or filesystem self-heal that happened in the
+        # backoff window.
+        for _stale in list(sys.modules):
+            if _stale.startswith(('hart_intelligence', 'langchain_classic',
+                                   'transformers')):
+                sys.modules.pop(_stale, None)
+
+        # Allow re-attempt: clear the lock-guarded done flag so the
+        # next _attempt_hartos_init() actually runs the body.
+        with _hartos_init_lock:
+            _hartos_initialized = False
+
+        if _attempt_hartos_init():
+            return
+
+    # All attempts failed — commit to fallback for the rest of this process.
+    with _hartos_init_lock:
+        _hartos_initialized = True
+    logger.warning("BACKEND ADAPTER: Tier-1 retry budget exhausted — "
+                   "committed to Tier-2/Tier-3 fallback for the rest of this session")
 
 
 # ── HARTOS import lifecycle — EXPLICIT KICKOFF ONLY ──
