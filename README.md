@@ -233,9 +233,39 @@ After install, the **AI Setup Wizard** detects your GPU + VRAM and pulls the rig
 | 31 messaging-platform adapters | ✅ | ❌ | ✅ 6 platforms | external |
 | 15-provider universal gateway | ✅ smart routing | ❌ | ✅ multi-provider | ❌ (single-vendor) |
 | Cross-device sync (desktop / web / RN) | ✅ canonical ChatMessage | ❌ | ❌ | account sync |
+| **AutoEconomy — your agent compounds value for *you*** | ✅ agent_ledger, spark budget, user-owned | ❌ | ❌ | ❌ — value flows *to* the vendor |
+| **Earn from lending compute** (peer-witnessed) | ✅ 70 % witnessed / 50 % unwitnessed | ❌ | ❌ | ❌ |
+| **Revenue split — 90 % returns to contributors** | ✅ structural | n/a | n/a | 0 % (vendor keeps it all) |
+| **Anti-oligarchy reward scaling** (no entity > 5 % influence) | ✅ logarithmic, +20 % diversity bonus | ❌ | ❌ | ❌ |
+| **Hivemind as economic coordinator** (matches GPU supply ↔ demand) | ✅ idle Tokyo GPU serves Berlin inference | ❌ | ❌ | ❌ |
+| **Audit-compute-dominance invariant** (auditors > audited compute) | ✅ mathematical, network-enforced | ❌ | ❌ | n/a |
 | Open mission: *amplify humans, never concentrate power* | ✅ load-bearing in code | n/a | n/a | n/a |
 
-Hermes Agent is the closest analogue and an excellent project — Nunba's auto-evolve loop is the next layer up: the *agent itself* evolves under a constitutional filter, federated to your Hive, with monotonic-vs-baseline guarantees.
+Hermes Agent is the closest analogue on the *technical* axis and an excellent project — but Nunba + HART OS is the only stack where running it makes you an economic participant, not just a tool user. Ollama / LM Studio / Hermes / OpenAI all leave you with the same wallet you started with. **HART OS is built so every cycle of compute, every witnessed ad, every learning delta you contribute, flows 90 % back to you and the people who made the network smarter.** The auto-evolve loop is not just self-improvement — it's *value compounding inside the user's install*, structurally bounded so it can never concentrate.
+
+---
+
+## AutoEconomy — the Hive's business model is yours
+
+**The auto-evolve loop's *purpose* is to compound user-owned economic value.** Every other "AI app" extracts value from you — your data trains their models, your engagement sells their ads, your subscription pays their margin. HART OS inverts that: the install on your machine is a *business that runs for you*, bounded by the same 33 constitutional rules that bound the agent.
+
+How the value flows back:
+
+| Mechanism | What happens | Your share |
+|---|---|---|
+| **Compute lending** | Idle GPU on your machine serves inference for someone in another timezone, witnessed by peer nodes. | **70 %** witnessed / 50 % unwitnessed |
+| **Regional node hosting** | Run a HART OS regional node for your office / family / community → earn from traffic you enable. | **70 %+** of the witnessed pool |
+| **Auto-evolve contribution** | The auto-evolve loop on your install proposes an improvement that gets adopted by the Hive (constitutionally filtered, monotonic-vs-baseline gated). The `agent_ledger` records your share. | proportional, paid in spark + revenue |
+| **Idea Engine** | You propose a Thought Experiment, the community pledges compute, results federate back. Successful experiments yield agent recipes that you co-own. | proportional |
+| **Ad service** | Peer-witnessed ad impressions (no fraud, no surveillance — just verifiable views) fund the network. | **90 %** to contributors, 10 % to platform |
+
+**Anti-oligarchy by construction.** Logarithmic reward scaling means a Raspberry Pi user has the same voice as a GPU rack. No entity can hold more than **5 % influence weight**. **+20 % diversity bonus** when contribution comes from underrepresented geographies. The combined audit compute on any single node must always exceed that node's own compute — *the network self-enforces compute democracy as a mathematical invariant, not a policy*.
+
+**The agent's incentive points at you, not at the vendor.** `agent_ledger` budgets `spark_spent` per goal; the constitutional filter rejects any optimization that would extract value upward instead of distributing it; the auto-evolve loop's `commit_improvement` gate (RSI-2) requires monotonic improvement against *your* baseline before federation. There is no "engagement" metric to optimize, no dark pattern to monetize — those are constitutionally banned at the code level.
+
+This is what makes Nunba's tagline truthful: *A Friend, A Well Wisher, Your LocalMind.* Not a chatbot, not a SaaS funnel — an economic participant on your side of the table.
+
+> Source: [`memory/auto-evolve.md`](https://github.com/hertz-ai/HARTOS/blob/main/docs/auto-evolve.md), [`project_autoeconomy.md`](https://github.com/hertz-ai/HARTOS), [`hive_guardrails.py`](https://github.com/hertz-ai/HARTOS/blob/main/security/hive_guardrails.py), and the economics section of the [HART OS README](https://github.com/hertz-ai/HARTOS#the-economics-a-positive-sum-world).
 
 ---
 
