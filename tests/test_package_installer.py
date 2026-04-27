@@ -810,6 +810,163 @@ class TestChatterboxClassRegression:
                 f"got '{actual}'.  _PIP_TO_IMPORT lost the entry."
             )
 
+    # ── Bug classes the chatterbox cycle didn't hit but the same code
+    #    path could on a different engine.  Each pins a behaviour
+    #    self-heal MUST honour: bail cleanly on un-parseable errors,
+    #    don't loop on the same module twice, don't pretend success
+    #    when pip itself fails. ──
+
+    def test_self_heal_bails_on_dll_load_error(self):
+        """Some upstream packages fail with `OSError: [WinError 126]
+        DLL load failed` (missing system DLL) instead of
+        ModuleNotFoundError.  The self-heal regex only matches
+        ModuleNotFoundError; on a DLL error it must bail cleanly
+        (return False) and route to error_advice/agent remediation —
+        NOT loop trying to pip-install a phantom 'WinError'."""
+        from io import StringIO
+
+        def fake_open_dll_err(*args, **kwargs):
+            return StringIO(
+                "Traceback...\n"
+                "OSError: [WinError 126] The specified module could not "
+                "be found. Error loading 'opencv_world.dll' or one of its "
+                "dependencies.\n"
+            )
+
+        with patch.object(pi, 'is_package_installed', return_value=True), \
+             patch.object(pi, 'is_cuda_torch', return_value=True), \
+             patch.object(pi, '_run_pip', return_value=(True, 'ok')) as mock_pip, \
+             patch('tts._torch_probe.check_backend_runnable', return_value=False), \
+             patch('tts._torch_probe._resolve_paths', return_value=True), \
+             patch('os.path.isfile', return_value=True), \
+             patch('builtins.open', side_effect=fake_open_dll_err):
+            ok, msg = pi.install_backend_packages('chatterbox_turbo')
+
+        assert ok is False, (
+            "Self-heal must NOT report success on DLL-load failure"
+        )
+        # Should not have made any pip install calls (no
+        # ModuleNotFoundError to parse → no missing module to install)
+        pip_install_calls = [
+            c for c in mock_pip.call_args_list
+            if 'install' in (c.args[0] if c.args else [])
+        ]
+        # mock_pip might be called for cuda torch upstream; just assert
+        # no library-name pip install fired during self-heal
+        for c in pip_install_calls:
+            args = c.args[0]
+            # Check no 'WinError' / 'opencv_world.dll' got
+            # parsed-then-installed (would mean regex broke)
+            assert 'WinError' not in args, (
+                f"Self-heal tried to pip-install 'WinError' — regex too "
+                f"loose. pip args: {args}"
+            )
+
+    def test_self_heal_does_not_loop_on_same_module_twice(self):
+        """If pip-install of the missing module SUCCEEDS but the next
+        deep probe STILL surfaces the same module name (e.g. install
+        landed in wrong site-packages, or post-install patches
+        broke the module), self-heal must detect the loop and bail —
+        not spend max_iter pip-installing the same package."""
+        from io import StringIO
+
+        def always_missing_librosa(*args, **kwargs):
+            return StringIO(
+                "Traceback...\n"
+                "ModuleNotFoundError: No module named 'librosa'\n"
+            )
+
+        with patch.object(pi, 'is_package_installed', return_value=True), \
+             patch.object(pi, 'is_cuda_torch', return_value=True), \
+             patch.object(pi, '_run_pip', return_value=(True, 'ok')) as mock_pip, \
+             patch('tts._torch_probe.check_backend_runnable', return_value=False), \
+             patch('tts._torch_probe._resolve_paths', return_value=True), \
+             patch('os.path.isfile', return_value=True), \
+             patch('builtins.open', side_effect=always_missing_librosa):
+            ok, msg = pi.install_backend_packages('chatterbox_turbo')
+
+        # librosa was installed once during the early-return self-heal,
+        # then the loop must detect "same module twice" and bail
+        installed = [
+            item for c in mock_pip.call_args_list for item in c.args[0]
+        ]
+        librosa_count = installed.count('librosa')
+        assert librosa_count == 1, (
+            f"Self-heal must install librosa exactly once when the "
+            f"deep probe keeps reporting the same missing module. "
+            f"Got {librosa_count} install attempts: {installed}"
+        )
+        assert ok is False, (
+            "Self-heal must report failure when looped on same module"
+        )
+
+    def test_self_heal_propagates_pip_failure_in_loop(self):
+        """If pip itself fails during self-heal (network down, wheel
+        compile error, --target permission denied), the loop must
+        not pretend the install succeeded.  Returns False, no second
+        retry on the failed package."""
+        from io import StringIO
+
+        def first_call_then_succeed(args, *_a, **_kw):
+            # First pip install (for librosa) fails; nothing else
+            return (False, 'compile failed: no MSVC')
+
+        def fake_open(*args, **kwargs):
+            return StringIO(
+                "Traceback...\n"
+                "ModuleNotFoundError: No module named 'librosa'\n"
+            )
+
+        with patch.object(pi, 'is_package_installed', return_value=True), \
+             patch.object(pi, 'is_cuda_torch', return_value=True), \
+             patch.object(pi, '_run_pip', side_effect=first_call_then_succeed), \
+             patch('tts._torch_probe.check_backend_runnable', return_value=False), \
+             patch('tts._torch_probe._resolve_paths', return_value=True), \
+             patch('os.path.isfile', return_value=True), \
+             patch('builtins.open', side_effect=fake_open):
+            ok, msg = pi.install_backend_packages('chatterbox_turbo')
+
+        assert ok is False, (
+            "Self-heal must report failure when pip install of the "
+            "missing transitive itself fails"
+        )
+
+    def test_git_clone_engine_probe_skips_quietly_when_not_cloned(self):
+        """install_target='git_clone' engines (e.g. cosyvoice3) have
+        no pip path.  When the package isn't yet cloned + installed,
+        the deep probe must short-circuit cleanly — no err file
+        rewrite, no log spam every boot — instead of running
+        `import cosyvoice` and writing the same ModuleNotFoundError
+        to probe_<backend>.err on every probe call."""
+        from tts import _torch_probe as _tp
+        # Clean cache + resolve_paths stub
+        _tp._backend_cache.clear()
+
+        # Patch HARTOS spec to mark cosyvoice3 as git_clone (mirrors
+        # the real ENGINE_REGISTRY entry)
+        class _FakeSpec:
+            install_target = 'git_clone'
+
+        fake_registry = {'cosyvoice3': _FakeSpec()}
+        # Ensure find_spec returns None (package not installed)
+        with patch('tts._torch_probe._resolve_paths', return_value=True), \
+             patch('os.path.isdir', return_value=True), \
+             patch.dict(
+                 sys.modules,
+                 {'integrations.channels.media.tts_router':
+                      type(sys)('fake_tts_router')},
+             ):
+            sys.modules['integrations.channels.media.tts_router'].ENGINE_REGISTRY = fake_registry
+            with patch('importlib.util.find_spec', return_value=None) as fs, \
+                 patch('builtins.open', side_effect=AssertionError(
+                     "err file written for git_clone engine — should be silent"
+                 )):
+                ok = _tp.check_backend_runnable('cosyvoice3', 'cosyvoice')
+
+        assert ok is False, "git_clone engine probe must report False when not cloned"
+        # find_spec should have been queried (the guard's check)
+        fs.assert_called()
+
     # ── Composition test: all five bugs in one install ──
 
     def test_chained_self_heal_handles_multiple_missing_transitives(self):
