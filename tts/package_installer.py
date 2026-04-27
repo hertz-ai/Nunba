@@ -217,17 +217,38 @@ def get_install_target(backend: str) -> str:
     return getattr(spec, 'install_target', 'main') if spec is not None else 'main'
 
 # pip package name → import name (for verification)
+#
+# Required when the PyPI distribution name doesn't map cleanly to the
+# Python import name via the default `dash→underscore` rule
+# _canonical_import_name applies.  Without an entry here the verify
+# step asks `find_spec('<wrong_name>')`, returns False on a perfectly
+# successful install, and reports "Some packages installed for
+# <backend>" → user sees "<engine> setup failed".
+#
+# How to add a new entry:
+#   1. The pip name is whatever appears in the HARTOS pip_install_plan
+#      (e.g. 'resemble-perth')
+#   2. The import name is what `import X` would actually use (e.g.
+#      `perth`).  Find this by running `python -c "import perth;
+#      print(perth.__file__)"` after the package installs, OR by
+#      checking the package's source layout on PyPI / GitHub
+#      (top-level dir under src/ or the project root).
 _PIP_TO_IMPORT = {
-    'chatterbox-tts': 'chatterbox',
-    'parler-tts': 'parler_tts',
-    'f5-tts': 'f5_tts',
-    'torchaudio': 'torchaudio',
-    'descript-audio-codec': 'dac',
-    'descript-audiotools': 'audiotools',
-    'tensorboard': 'tensorboard',
-    'kokoro': 'kokoro',
-    'espeakng': 'espeakng',
-    'pocket-tts': 'pocket_tts',
+    'chatterbox-tts':        'chatterbox',
+    'parler-tts':            'parler_tts',
+    'f5-tts':                'f5_tts',
+    'torchaudio':            'torchaudio',
+    'descript-audio-codec':  'dac',
+    'descript-audiotools':   'audiotools',
+    'tensorboard':           'tensorboard',
+    'kokoro':                'kokoro',
+    'espeakng':              'espeakng',
+    'pocket-tts':            'pocket_tts',
+    'resemble-perth':        'perth',     # ResembleAI watermark lib —
+                                          # PyPI dist=resemble-perth
+                                          # but `import perth` (no
+                                          # `resemble_` prefix in the
+                                          # source layout)
 }
 
 # Human-readable names for progress messages.  Must cover the full
