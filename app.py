@@ -8,6 +8,48 @@ Connect to Hivemind with your friends' agents.
 import os
 import sys
 
+# ── Defang importlib.metadata.packages_distributions() before transformers ──
+# (Mirror of HARTOS hart_intelligence_entry.py:21-52 — installed here too
+# because Nunba's frozen entry point is app.py, NOT hart_intelligence_entry.py,
+# so the HARTOS-side patch never fires in the desktop bundle.)
+#
+# transformers/utils/import_utils.py:45 calls
+#     PACKAGE_DISTRIBUTION_MAPPING = importlib.metadata.packages_distributions()
+# at module-import time, with NO guard.  The function walks every
+# *.dist-info/METADATA visible on sys.path and accesses
+# `dist.metadata['Name']`.  ANY corrupt dist-info (METADATA missing,
+# Name: header malformed, pip rewriting it concurrently, OR a bundle
+# shipping a corrupt file from a freeze-time interrupted install)
+# raises KeyError('Name') → transformers crashes its module-load →
+# langchain crashes → every code path that touches them dies.
+#
+# Witnessed cascade on the 2026-04-26 user log: Nunba's bundle ships
+# python-embed/Lib/site-packages/transformers-5.1.0.dist-info/METADATA
+# as 31KB of whitespace (no Name: header) — likely an interrupted pip
+# install during the freeze step that got baked into every installer.
+# The agent_daemon's tick path lazily triggers transformers
+# evaluation; the unguarded `packages_distributions()` blew up every
+# 30-second tick: "Agent daemon tick error (state reset): 'Name'".
+# Result: Admin Agent Dashboard sat empty for the entire process
+# lifetime because the daemon never completed a tick cleanly.
+#
+# Monkey-patch applies BEFORE any langchain/transformers reach this
+# interpreter so the swap takes effect for the import-time call.
+import importlib.metadata as _md_safe
+_orig_pd = getattr(_md_safe, 'packages_distributions', None)
+if _orig_pd is not None and not getattr(_orig_pd, '_hartos_guarded', False):
+    def _safe_packages_distributions():
+        try:
+            return _orig_pd()
+        except Exception:
+            # Best-effort fallback: empty mapping.  Auto-docstring
+            # lookups against {} return generic guesses (worse than the
+            # real lookup but nonfatal — the daemon tick stays alive).
+            return {}
+    _safe_packages_distributions._hartos_guarded = True
+    _md_safe.packages_distributions = _safe_packages_distributions
+del _md_safe
+
 # Block user site-packages for every subprocess, unconditionally.
 # Rationale (2026-04-25 incident): a stale hevolve_backend-0.0.1.dev339
 # wheel had dropped a partial ``core/`` package at

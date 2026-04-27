@@ -1108,6 +1108,101 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
     else:
         print(f"Post-build: all .pyc files verified (magic={_expected_magic.hex()})")
 
+
+# ── Post-build: verify dist-info METADATA integrity ──
+# (2026-04-27 regression — chatterbox debug session)
+# Witnessed: a freeze that shipped python-embed/Lib/site-packages/
+# transformers-5.1.0.dist-info/METADATA as 31 KB of pure whitespace
+# (no `Name:` header).  Likely cause: an interrupted pip install
+# during a prior freeze step left the file half-written, and the
+# next build's `shutil.copytree` faithfully copied the corruption
+# into the installer.  Every subsequent Nunba install carried the
+# same broken file.
+#
+# Runtime impact: Python's importlib.metadata.packages_distributions()
+# walks every dist-info/METADATA and reads `dist.metadata['Name']`.
+# Any METADATA without a `Name:` header raises KeyError('Name').
+# transformers calls this at module-load time → langchain transitive →
+# whole agent stack falls over.  In the Nunba bundle the daemon's
+# tick path triggered transformers re-evaluation every 30 s, logging
+# "Agent daemon tick error (state reset): 'Name'" repeatedly while
+# the Admin Agent Dashboard sat empty.
+#
+# Two-layer protection:
+#   - Runtime: app.py (top) installs a packages_distributions
+#     monkey-patch that swallows the KeyError.
+#   - Build-time (this hook): scan EVERY dist-info METADATA the
+#     bundle is about to ship.  Fail the build if any are corrupt
+#     so a broken file never reaches a user installer in the first
+#     place.  The runtime patch is belt-and-suspenders; this is
+#     the suspenders.
+#
+# Failure mode:
+#   - METADATA file missing entirely  → fail build
+#   - METADATA file present but `Name:` header missing → fail build
+#   (Both cases reproduce the runtime KeyError.)
+if 'build' in sys.argv or 'build_exe' in sys.argv:
+    _build_dir_meta = os.path.abspath(build_exe_options["build_exe"])
+    _embed_sp_check = os.path.join(
+        _build_dir_meta, "python-embed", "Lib", "site-packages",
+    )
+    if os.path.isdir(_embed_sp_check):
+        _bad_meta: list[tuple[str, str]] = []  # (dist_info_dir, reason)
+        for _entry in os.listdir(_embed_sp_check):
+            _full = os.path.join(_embed_sp_check, _entry)
+            if not (os.path.isdir(_full) and _entry.endswith('.dist-info')):
+                continue
+            _meta_file = os.path.join(_full, 'METADATA')
+            if not os.path.isfile(_meta_file):
+                _bad_meta.append((_entry, 'METADATA file missing'))
+                continue
+            try:
+                with open(_meta_file, encoding='utf-8', errors='replace') as _fh:
+                    _has_name_header = False
+                    for _line in _fh:
+                        # Multi-line continuation lines start with whitespace;
+                        # the header's first occurrence is what matters.
+                        if _line.startswith('Name:'):
+                            _has_name_header = True
+                            break
+                        # Bail at first blank line — headers end before body
+                        if _line.strip() == '':
+                            break
+                if not _has_name_header:
+                    _bad_meta.append(
+                        (_entry, 'no Name: header in METADATA'),
+                    )
+            except OSError as _exc:
+                _bad_meta.append((_entry, f'read error: {_exc}'))
+        if _bad_meta:
+            print(
+                f"[BUILD FAILURE] {len(_bad_meta)} dist-info METADATA file(s) "
+                f"are corrupt — Nunba runtime will hit "
+                f"KeyError('Name') in importlib.metadata."
+                f"packages_distributions().  Reproduces the 2026-04-26 "
+                f"agent-daemon tick-error cascade.  Refusing to ship a "
+                f"broken installer."
+            )
+            for _di, _reason in _bad_meta:
+                print(f"  {_di}  →  {_reason}")
+            print(
+                "  Fix: rebuild python-embed (delete + recreate) or "
+                "reinstall the affected packages with "
+                "`pip install --target python-embed/Lib/site-packages "
+                "--force-reinstall --no-deps <pkg>`."
+            )
+            sys.exit(1)
+        else:
+            _total_meta = sum(
+                1 for _e in os.listdir(_embed_sp_check)
+                if _e.endswith('.dist-info')
+            )
+            print(
+                f"Post-build: all {_total_meta} dist-info/METADATA files "
+                f"verified (Name: header present, packages_distributions "
+                f"won't blow up at runtime)"
+            )
+
 # ── Pre-copy: install TTS packages into python-embed ──
 # GPU TTS backends need pip packages in python-embed's site-packages.
 # python-embed's own pip is broken (distutils-precedence.pth), so we use
