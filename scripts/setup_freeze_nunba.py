@@ -866,12 +866,198 @@ def get_directory_hash(directory):
                 pass
     return hash_obj.hexdigest()
 
-# python-embed is copied via shutil.copytree in the post-build step (not
-# cx_Freeze include_files) because cx_Freeze doesn't reliably copy
-# dot-prefixed directories like .libs/ which contain critical DLLs.
+# ── Source python-embed integrity scan ─────────────────────────────
+# Witnessed regression (2026-04-27): a prior pip install --target into
+# python-embed/Lib/site-packages got interrupted (Ctrl-C / OOM /
+# antivirus quarantine), leaving transformers/.../t3.py written with
+# NULL bytes in the middle.  The .py was a stable hash from then on,
+# so SHA-based skip-copy below kept saying "source unchanged, skipping
+# copy" forever — the corruption persisted across every rebuild and
+# every Nunba installer shipped the same broken file.  Users hit
+# `SyntaxError: source code string cannot contain null bytes` on
+# `from transformers import ...` for weeks.
+#
+# Fix: validate the SOURCE python-embed BEFORE the hash check.  Same
+# checks as the post-build validator (METADATA Name: header, .py null
+# bytes), applied to the SOURCE so corruption is caught before it gets
+# hashed-as-canonical.  Failing here also short-circuits the
+# skip-copy logic — operator must fix the source before any further
+# build can succeed.
+def _validate_python_embed_source() -> list[tuple[str, str]]:
+    """Scan source python-embed/Lib/site-packages for known
+    corruption patterns the cx_Freeze copy would propagate.
+    Returns [(path, reason), ...] for every bad file found."""
+    bad: list[tuple[str, str]] = []
+    sp = os.path.join("python-embed", "Lib", "site-packages")
+    if not os.path.isdir(sp):
+        return bad
+    # Pass 1: dist-info METADATA must have a `Name:` header before
+    # the body delimiter (matches what packages_distributions reads).
+    for entry in os.listdir(sp):
+        full = os.path.join(sp, entry)
+        if not (os.path.isdir(full) and entry.endswith('.dist-info')):
+            continue
+        meta = os.path.join(full, 'METADATA')
+        if not os.path.isfile(meta):
+            bad.append((full, 'METADATA file missing'))
+            continue
+        try:
+            with open(meta, encoding='utf-8', errors='replace') as fh:
+                has_name = False
+                for line in fh:
+                    if line.startswith('Name:'):
+                        has_name = True
+                        break
+                    if line.strip() == '':
+                        break
+            if not has_name:
+                bad.append((meta, 'no Name: header in METADATA'))
+        except OSError as exc:
+            bad.append((meta, f'read error: {exc}'))
+    # Pass 2: .py files with NULL bytes (reproduces the cycle-7
+    # transformers/.../t3.py SyntaxError).  Only the first 64 KB of
+    # each file is scanned — a NULL anywhere in the parsed prefix is
+    # enough to break Python's compiler.  Capping the read keeps the
+    # scan O(N_files × 64KB) instead of O(total_python_embed_bytes)
+    # which would be minutes on a hot site-packages.
+    for root, _dirs, files in os.walk(sp):
+        for fn in files:
+            if not fn.endswith('.py'):
+                continue
+            fp = os.path.join(root, fn)
+            try:
+                with open(fp, 'rb') as fh:
+                    chunk = fh.read(64 * 1024)
+                if b'\x00' in chunk:
+                    bad.append((fp, 'NULL bytes found in .py source'))
+            except OSError as exc:
+                bad.append((fp, f'read error: {exc}'))
+    return bad
+
+
+def _autorepair_corrupt_packages(corruption: list[tuple[str, str]]) -> int:
+    """Auto-repair corrupt python-embed packages by deleting the package
+    dir + pip-installing it again with --force-reinstall.  Mirrors the
+    repair recipe a human would run, but inline so `python scripts/
+    build.py` self-corrects without operator intervention.
+
+    Returns the number of packages successfully repaired.  Skips
+    packages we can't safely auto-repair (sibling repos with no PyPI
+    name — those are handled by the dedicated sibling-deps loop
+    further down) and packages whose pip name we can't infer from
+    the dist dir name."""
+    import subprocess as _sp
+    import shutil as _shutil
+
+    sp = os.path.join("python-embed", "Lib", "site-packages")
+    by_pkg: dict[str, int] = {}
+    for fp, _reason in corruption:
+        try:
+            rel = os.path.relpath(fp, sp)
+            pkg_dir = rel.split(os.sep)[0]
+            by_pkg[pkg_dir] = by_pkg.get(pkg_dir, 0) + 1
+        except Exception:
+            pass
+
+    # Sibling repos are handled by the explicit re-install loop below
+    # — don't double-repair them here (would race the loop's own
+    # delete + pip install).
+    _SIBLING_NAMES = {
+        'hart-backend', 'hart_backend', 'hartos',
+        'hevolveai',
+        'hevolve-database', 'hevolve_database',
+        'agent-ledger', 'agent_ledger',
+    }
+
+    repaired = 0
+    for pkg_dir in sorted(by_pkg.keys()):
+        # Derive the pip distribution name from the directory name.
+        # `.dist-info` / `.egg-info` carry it as a `<name>-<version>`
+        # prefix.  Plain package dirs just use the dir name.
+        _pip_name = pkg_dir
+        for _suf in ('.dist-info', '.egg-info'):
+            if _pip_name.endswith(_suf):
+                # `transformers-5.1.0.dist-info` → `transformers`
+                _pip_name = _pip_name[: -len(_suf)].rsplit('-', 1)[0]
+                break
+        if _pip_name.lower() in _SIBLING_NAMES:
+            print(
+                f"  python-embed: {pkg_dir} corrupt — skipping autorepair "
+                f"(handled by sibling-deps loop below)"
+            )
+            continue
+        # Step 1: rm -rf the corrupt dir (pip --force-reinstall alone
+        # can leave stray files from the broken install behind)
+        _full = os.path.join(sp, pkg_dir)
+        try:
+            _shutil.rmtree(_full)
+        except Exception as _exc:
+            print(
+                f"  python-embed: failed to remove {pkg_dir}: {_exc} — "
+                f"skipping autorepair"
+            )
+            continue
+        # Step 2: pip install --target <python-embed sp> --force-reinstall
+        # --no-deps <pip_name>.  --no-deps because the bundle already
+        # carries every required transitive; we only want to repair
+        # this one corrupt package without unbounded re-resolution.
+        print(f"  python-embed: autorepair pip-install {_pip_name}...")
+        _r = _sp.run(
+            [sys.executable, "-m", "pip", "install",
+             "--target", sp, "--force-reinstall", "--no-deps",
+             "--no-build-isolation", "--quiet", _pip_name],
+            capture_output=True, text=True, timeout=600,
+        )
+        if _r.returncode == 0:
+            print(f"  python-embed: {_pip_name} repaired OK")
+            repaired += 1
+        else:
+            print(
+                f"  python-embed: {_pip_name} repair FAILED: "
+                f"{(_r.stderr or _r.stdout or '')[:200]}"
+            )
+    return repaired
+
+
 _skip_python_embed_copy = False
 current_python_embed_hash = None
 if os.path.exists("python-embed"):
+    _src_corruption = _validate_python_embed_source()
+    if _src_corruption:
+        print(
+            f"[python-embed] {len(_src_corruption)} corrupt file(s) detected "
+            f"in source — auto-repairing.  The skip-copy logic below would "
+            f"otherwise lock the corruption into every future build "
+            f"(witnessed: cycle-7 transformers NULL-byte t3.py persisted "
+            f"across reinstalls for weeks)."
+        )
+        for fp, reason in _src_corruption[:10]:
+            print(f"  {fp}  →  {reason}")
+        if len(_src_corruption) > 10:
+            print(f"  ... and {len(_src_corruption) - 10} more")
+        _repaired = _autorepair_corrupt_packages(_src_corruption)
+        print(f"[python-embed] autorepair pass: {_repaired} package(s) "
+              f"reinstalled")
+        # Re-validate after repair — if anything still corrupt, FAIL
+        # so the operator sees what couldn't be fixed (e.g. a sibling
+        # repo whose .py was nulled, or a package pip can't reach
+        # because the index is offline).
+        _src_corruption = _validate_python_embed_source()
+        if _src_corruption:
+            print(
+                f"[BUILD FAILURE] {len(_src_corruption)} file(s) STILL "
+                f"corrupt after autorepair — refusing to ship."
+            )
+            for fp, reason in _src_corruption[:30]:
+                print(f"  {fp}  →  {reason}")
+            print()
+            print("  Manual repair recipe (run from the Nunba repo root):")
+            print("    rm -rf python-embed/Lib/site-packages/<bad-pkg>")
+            print("    pip install --target python-embed/Lib/site-packages \\")
+            print("        --force-reinstall --no-deps <pip-name>")
+            sys.exit(1)
+        print("[python-embed] post-repair: source clean, proceeding")
+
     current_python_embed_hash = get_directory_hash("python-embed")
     build_dir = build_exe_options["build_exe"]
     hash_file = os.path.join(build_dir, "python-embed.hash")
@@ -883,7 +1069,8 @@ if os.path.exists("python-embed"):
         _old_src_hash = _hash_lines[0] if _hash_lines else ''
         _old_dest_hash = _hash_lines[1] if len(_hash_lines) > 1 else _old_src_hash
         if _old_src_hash == current_python_embed_hash:
-            # Source unchanged — check if dest matches what we built last time
+            # Source unchanged AND validated clean — check if dest
+            # matches what we built last time.
             dest_hash = get_directory_hash(dest_embed)
             if dest_hash == _old_dest_hash:
                 _skip_python_embed_copy = True
@@ -1229,9 +1416,17 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                 os.path.isfile(os.path.join(_sib_path, 'setup.py'))
             ):
                 print(f"python-embed: re-installing {_pkg_name} from {_sib_dir}...")
+                # --force-reinstall: pip's default skips files that
+                # appear satisfied — but a partial-write from a prior
+                # interrupted install can leave a corrupt .py that
+                # still appears "installed".  Forcing reinstall
+                # overwrites byte-for-byte, so the cycle-7 NULL-byte
+                # transformers/.../t3.py class of bug self-heals on
+                # every freeze build instead of being silently
+                # propagated by hash-equal source.
                 _r = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "--no-deps",
-                     "--no-build-isolation",
+                     "--no-build-isolation", "--force-reinstall",
                      "--target", _embed_sp, "--upgrade", _sib_path],
                     capture_output=True, text=True, timeout=900)
                 if _r.returncode == 0:
