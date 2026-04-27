@@ -621,6 +621,250 @@ class TestInstallBackendPackages:
             assert 'Failed' in msg
 
 
+# ════════════════════════════════════════════════════════════════════════
+# CHATTERBOX-CLASS REGRESSION SUITE
+# ────────────────────────────────────────────────────────────────────────
+# Five real production failures landed across five push cycles before
+# the chatterbox install path stayed green.  Every one of them is now
+# pinned by a test below — re-running this class catches the same
+# bug shape on any future engine added to BACKEND_PACKAGES /
+# HARTOS pip_install_plan.
+#
+# Bug log (chronological, each one shipped + later regressed):
+#   Cycle 1  HARTOS 8b9ac84:  missing transitive `librosa` (chatterbox-tts
+#            omits it from install_requires).  Pip succeeds, top-level
+#            find_spec True, deep import dies.
+#   Cycle 2  Nunba 7b4d2df0:  self-heal loop catches it — but stale
+#            _torch_probe._backend_cache returns False forever, loop
+#            spins.  Fixed in 418bf0e1.
+#   Cycle 3  Nunba 418bf0e1:  cache cleared — but install_backend_packages
+#            takes the early-return path at "all installed" before
+#            self-heal runs.  Fixed in acfd55a0.
+#   Cycle 4  HARTOS c553d31:  add `resemble-perth` (second un-declared
+#            transitive, found same way).  Now reaches verify.
+#   Cycle 5  Nunba 07fdb7c6:  PyPI dist `resemble-perth` ≠ import name
+#            `perth`; alias map needed updating.
+#
+# Each test below names the cycle it pins.  Don't delete a test even
+# if its underlying bug looks impossible to recur — the whole class
+# exists to catch the NEXT engine's variant of the same shape.
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestChatterboxClassRegression:
+    """Pins the five real failure modes the chatterbox install path
+    revealed.  See the class-banner comment above for the bug log."""
+
+    def setup_method(self):
+        # Each test starts from a clean cache — the bugs in cycles 2/3
+        # were specifically about cache leakage between install
+        # attempts, so isolation matters.
+        try:
+            from tts import _torch_probe as _tp
+            _tp._backend_cache.clear()
+        except Exception:
+            pass
+        pi._installing.clear()
+
+    # ── Cycle 1 + 4 (missing transitive — librosa-class) ──
+
+    def test_self_heal_catches_missing_transitive(self):
+        """install_backend_packages must catch a missing transitive
+        dep that pip didn't pull (chatterbox-tts → librosa pattern).
+
+        Setup: pip is happy with the listed packages; deep probe
+        fails on `import librosa`.  Self-heal should pip-install
+        librosa and re-probe.  Pinned by the librosa fix (cycle 1)
+        AND by the self-heal loop itself (cycle 2)."""
+        # Top-level find_spec returns True for everything (pip
+        # claims success), but deep probe fails on missing librosa
+        probe_calls = {'n': 0}
+
+        def fake_deep_probe(backend, import_name):
+            probe_calls['n'] += 1
+            return probe_calls['n'] >= 2  # passes after 1 self-heal iter
+
+        def fake_resolve_paths():
+            return True  # simulate frozen build
+
+        # Write a fake probe error file the self-heal will read
+        import tempfile
+        err_dir = tempfile.mkdtemp()
+
+        def fake_open_err(*args, **kwargs):
+            from io import StringIO
+            return StringIO(
+                "Traceback...\n"
+                "ModuleNotFoundError: No module named 'librosa'\n"
+            )
+
+        with patch.object(pi, 'is_package_installed', return_value=True), \
+             patch.object(pi, 'is_cuda_torch', return_value=True), \
+             patch.object(pi, '_run_pip', return_value=(True, 'ok')) as mock_pip, \
+             patch('tts._torch_probe.check_backend_runnable',
+                   side_effect=fake_deep_probe), \
+             patch('tts._torch_probe._resolve_paths',
+                   side_effect=fake_resolve_paths), \
+             patch('os.path.isfile', return_value=True), \
+             patch('builtins.open', side_effect=fake_open_err):
+            ok, msg = pi.install_backend_packages('chatterbox_turbo')
+
+        assert ok is True, f"Self-heal failed to recover: {msg}"
+        # Self-heal must have called pip for the missing transitive
+        pip_args = [c.args[0] for c in mock_pip.call_args_list]
+        librosa_installed = any(
+            'librosa' in args for args in pip_args
+        )
+        assert librosa_installed, (
+            f"Self-heal didn't pip-install librosa. pip calls: {pip_args}"
+        )
+
+    # ── Cycle 2 (cache pollution between probes) ──
+
+    def test_invalidate_import_cache_clears_torch_probe_cache(self):
+        """_invalidate_import_cache must clear ALL three caches —
+        TTSEngine + importlib + _torch_probe._backend_cache.  The
+        chatterbox-spinning bug was specifically about
+        _torch_probe._backend_cache being missed — pre-install
+        probe set it to False, post-install probe returned the
+        cached False forever, self-heal looped on the stale value."""
+        from tts import _torch_probe as _tp
+        _tp._backend_cache['chatterbox_turbo'] = False
+        _tp._backend_cache['kokoro'] = False
+
+        pi._invalidate_import_cache()
+
+        assert 'chatterbox_turbo' not in _tp._backend_cache, (
+            "_torch_probe._backend_cache NOT cleared by "
+            "_invalidate_import_cache — chatterbox cycle-2 bug regressed"
+        )
+        assert 'kokoro' not in _tp._backend_cache
+
+    # ── Cycle 3 (early-return path skipped self-heal) ──
+
+    def test_self_heal_runs_on_all_already_installed_path(self):
+        """When pip-level verify says 'all installed' but the deep
+        probe would fail (a partial install from a prior crashed
+        attempt has chatterbox-tts on disk WITHOUT librosa), the
+        self-heal must still run.  This was the bug in cycle 3 —
+        the early-return at line 789 of install_backend_packages
+        bypassed the self-heal entirely."""
+        # to_install becomes empty (everything reported installed)
+        deep_probe_calls = {'n': 0}
+
+        def fake_deep_probe(backend, import_name):
+            deep_probe_calls['n'] += 1
+            return False  # always fails — should trigger self-heal
+
+        with patch.object(pi, 'is_package_installed', return_value=True), \
+             patch.object(pi, 'is_cuda_torch', return_value=True), \
+             patch.object(pi, '_run_pip', return_value=(True, 'ok')), \
+             patch('tts._torch_probe.check_backend_runnable',
+                   side_effect=fake_deep_probe), \
+             patch('tts._torch_probe._resolve_paths', return_value=True), \
+             patch('os.path.isfile', return_value=False):
+            # No probe err file → self-heal returns False after first probe
+            ok, msg = pi.install_backend_packages('chatterbox_turbo')
+
+        assert deep_probe_calls['n'] >= 1, (
+            "Deep probe was NEVER called on the all-already-installed "
+            "early-return path — chatterbox cycle-3 bug regressed"
+        )
+
+    # ── Cycle 5 (PyPI name ≠ import name) ──
+
+    def test_canonical_import_name_aliases_resemble_perth_to_perth(self):
+        """resemble-perth installs but `import perth` (no `resemble_`
+        prefix in the source layout).  If _PIP_TO_IMPORT loses the
+        alias, verify checks `find_spec('resemble_perth')` (default
+        dash→underscore) → False → install reports failure on a
+        successful pip install.  Cycle-5 regression guard."""
+        assert pi._canonical_import_name('resemble-perth') == 'perth', (
+            "resemble-perth must alias to 'perth' (cycle-5 chatterbox bug). "
+            "_PIP_TO_IMPORT is the right place to add the alias."
+        )
+
+    def test_canonical_import_name_aliases_match_pip_dist_real_imports(self):
+        """Every alias in _PIP_TO_IMPORT must use the REAL import
+        name (verified via `python -c "import X"` post-install OR
+        the package's source layout on PyPI).  This test pins the
+        full alias map so a refactor that drops or mistypes an
+        entry fails loudly here instead of silently in production.
+
+        Add a new line for any future engine added to
+        BACKEND_PACKAGES whose pip dist name differs from its
+        importable Python module."""
+        expected = {
+            'chatterbox-tts':       'chatterbox',
+            'parler-tts':           'parler_tts',
+            'f5-tts':               'f5_tts',
+            'descript-audio-codec': 'dac',
+            'descript-audiotools':  'audiotools',
+            'pocket-tts':           'pocket_tts',
+            'resemble-perth':       'perth',
+        }
+        for pip_name, expected_import in expected.items():
+            actual = pi._canonical_import_name(pip_name)
+            assert actual == expected_import, (
+                f"Alias drift for {pip_name}: expected '{expected_import}', "
+                f"got '{actual}'.  _PIP_TO_IMPORT lost the entry."
+            )
+
+    # ── Composition test: all five bugs in one install ──
+
+    def test_chained_self_heal_handles_multiple_missing_transitives(self):
+        """Chatterbox-tts hides TWO transitives (librosa + perth) in
+        succession.  Self-heal loop must catch the first, re-probe,
+        catch the second, re-probe again, succeed.  Bounded at
+        max_iter=3 so this completes in 2 iterations + 1 final
+        success probe.
+
+        Composes the cycle-1 (missing transitive) + cycle-2 (cache
+        cleared between iterations) bug fixes.  If either regresses
+        this test fails."""
+        # First probe: librosa missing.
+        # Second probe (after self-heal pip-installs librosa):
+        #   perth missing.
+        # Third probe (after self-heal pip-installs perth): success.
+        probe_seq = ['librosa', 'perth', None]
+        probe_calls = {'n': 0}
+
+        def fake_deep_probe(backend, import_name):
+            return probe_seq[probe_calls['n']] is None
+
+        def write_err_file(*args, **kwargs):
+            idx = probe_calls['n']
+            probe_calls['n'] += 1
+            from io import StringIO
+            missing = probe_seq[idx] if idx < len(probe_seq) else None
+            if missing is None:
+                return StringIO('')
+            return StringIO(
+                f"Traceback...\nModuleNotFoundError: No module named '{missing}'\n"
+            )
+
+        with patch.object(pi, 'is_package_installed', return_value=True), \
+             patch.object(pi, 'is_cuda_torch', return_value=True), \
+             patch.object(pi, '_run_pip', return_value=(True, 'ok')) as mock_pip, \
+             patch('tts._torch_probe.check_backend_runnable',
+                   side_effect=fake_deep_probe), \
+             patch('tts._torch_probe._resolve_paths', return_value=True), \
+             patch('os.path.isfile', return_value=True), \
+             patch('builtins.open', side_effect=write_err_file):
+            ok, msg = pi.install_backend_packages('chatterbox_turbo')
+
+        assert ok is True, (
+            f"Chained self-heal failed across 2 missing transitives: {msg}"
+        )
+        installed = [
+            item for c in mock_pip.call_args_list for item in c.args[0]
+        ]
+        assert 'librosa' in installed and 'perth' in installed, (
+            f"Self-heal must install both librosa AND perth. "
+            f"Installed: {installed}"
+        )
+
+
 # ========================== install_backend_full ==========================
 
 class TestInstallBackendFull:
