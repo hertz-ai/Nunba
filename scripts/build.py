@@ -482,34 +482,19 @@ def _stamp_version_in_file(filepath, pattern, replacement):
     return False
 
 
-def generate_build_hashes():
-    """Generate build_hashes.json with git commit hashes of all repos.
-
-    Queried at runtime via GET /api/harthash (@HARTHASH magic word).
-    """
-    import datetime
-    import json
-    scripts_dir = os.path.dirname(os.path.abspath(__file__))
-    project_dir = os.path.dirname(scripts_dir)
-    repos = {
-        'nunba': project_dir,
-        'hartos': os.path.join(project_dir, '..', 'HARTOS'),
-        'hevolve_database': os.path.join(project_dir, '..', 'Hevolve_Database'),
-        'hevolveai': os.path.join(project_dir, '..', 'hevolveai'),
-    }
-    hashes = {}
-    for name, path in repos.items():
-        try:
-            r = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
-                               capture_output=True, text=True, cwd=path, timeout=5)
-            hashes[name] = r.stdout.strip() if r.returncode == 0 else 'unknown'
-        except Exception:
-            hashes[name] = 'unknown'
-    hashes['build_time'] = datetime.datetime.now().isoformat()
-    out_path = os.path.join(project_dir, 'build_hashes.json')
-    with open(out_path, 'w') as f:
-        json.dump(hashes, f, indent=2)
-    print_info(f"Build hashes: {hashes}")
+# NOTE: A `generate_build_hashes()` function used to live here that
+# wrote a `build_hashes.json` next to the project root.  It was DEAD
+# CODE — never called from any build phase, and the file never got
+# included in the cx_Freeze bundle.  Meanwhile the build's actual
+# version stamp is `BUILD_INFO.txt` (written further down in this
+# file: search `_bi_path = os.path.join('build', 'Nunba',
+# 'BUILD_INFO.txt')`).  Keeping the dead function around led
+# main.py::harthash to read the never-shipped JSON and surface
+# `unknown` for the version even on a successfully-built install.
+#
+# Removed 2026-04-27.  /api/harthash now reads BUILD_INFO.txt as the
+# source of truth (with build_hashes.json as a legacy fallback for
+# pre-removal installs); see main.py:harthash for the read order.
 
 
 def stamp_version():
