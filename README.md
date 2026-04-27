@@ -13,35 +13,35 @@
   <a href="https://docs.hevolve.ai/downloads/"><img src="https://img.shields.io/badge/Downloads-docs.hevolve.ai-orange?style=for-the-badge" alt="Downloads"></a>
 </p>
 
-**The only desktop AI companion that learns *while* you live with it.** Nunba is the privacy-first consumer companion sitting on top of [HART OS](https://github.com/hertz-ai/HARTOS) — the **Hevolve Hive Agentic Runtime**. Every conversation, every action, every observed outcome flows into a closed *autoresearch → constitutional filter → vote → parallel dispatch → federated learning* loop that makes the agent **measurably better than yesterday**, on your hardware, without sending your data anywhere.
+**The only desktop AI companion that learns *while* you live with it.** Nunba is the privacy-first consumer companion sitting on top of [HART OS](https://github.com/hertz-ai/HARTOS) - the **Hevolve Hive Agentic Runtime**. Every conversation, every action, every observed outcome flows into a closed *autoresearch → constitutional filter → vote → parallel dispatch → federated learning* loop that makes the agent **measurably better than yesterday**, on your hardware, without sending your data anywhere.
 
 > **The stack, named precisely**
-> - **HART** — the bare agent engine. Headless. `pip install hart-backend`. Port `:6777`. No screens.
-> - **[HART OS](https://github.com/hertz-ai/HARTOS)** — HART **+ operator/admin desktop screens** (model catalog, channel pairing, agent dashboard, hive view, thought-experiment console). Ships `hevolve-install.exe` and the pip package together.
-> - **Nunba** *(this repo)* — the consumer companion. Bundles HART OS inside a signed desktop installer (Windows / macOS / Linux) and adds the **chat / social / encounter / kids-learning** screens a non-operator wants. The screen most users see.
+> - **HART** - the bare agent engine. Headless. `pip install hart-backend`. Port `:6777`. No screens.
+> - **[HART OS](https://github.com/hertz-ai/HARTOS)** - HART **+ operator/admin desktop screens** (model catalog, channel pairing, agent dashboard, hive view, thought-experiment console). Ships `hevolve-install.exe` and the pip package together.
+> - **Nunba** *(this repo)* - the consumer companion. Bundles HART OS inside a signed desktop installer (Windows / macOS / Linux) and adds the **chat / social / encounter / kids-learning** screens a non-operator wants. The screen most users see.
 
-It runs **entirely on your machine** — local LLM (Qwen3.5-VL or any GGUF), local speech (Whisper STT, Indic Parler / Chatterbox / Kokoro / CosyVoice / Piper TTS), local vision (MiniCPM, Qwen3-VL). Bring your own provider when you want — [OpenAI](https://platform.openai.com), [Anthropic](https://anthropic.com), [Google Gemini](https://ai.google.dev), [Groq](https://groq.com), [Mistral](https://mistral.ai), [DeepSeek](https://deepseek.com), [Hugging Face](https://huggingface.co), [Ollama](https://ollama.com), or any OpenAI-compatible endpoint — through one universal gateway with smart cost/latency routing. **No lock-in. No telemetry. No subscription.**
+It runs **entirely on your machine** - local LLM (Qwen3.5-VL or any GGUF), local speech (Whisper STT, Indic Parler / Chatterbox / Kokoro / CosyVoice / Piper TTS), local vision (MiniCPM, Qwen3-VL). Bring your own provider when you want - [OpenAI](https://platform.openai.com), [Anthropic](https://anthropic.com), [Google Gemini](https://ai.google.dev), [Groq](https://groq.com), [Mistral](https://mistral.ai), [DeepSeek](https://deepseek.com), [Hugging Face](https://huggingface.co), [Ollama](https://ollama.com), or any OpenAI-compatible endpoint - through one universal gateway with smart cost/latency routing. **No lock-in. No telemetry. No subscription.**
 
 <table>
-<tr><td><b>The auto-evolve loop ☉</b></td><td>The signature differentiator. <a href="#-the-auto-evolve-loop">A democratic, constitutionally-filtered, realtime improvement engine</a> that turns every interaction into a candidate optimization, votes on its safety, dispatches it across parallel sandboxes, and federates the winning delta to your Hive — your agent gets better in <b>realtime, not batch</b>, monotonically vs your own baseline, and the gain is shared (federated, not centralized).</td></tr>
-<tr><td><b>Speculative draft-first chat</b></td><td>A 0.8B draft model speaks in <b>~300ms</b> while the 4B main model verifies in the background — same UX as a frontier API, end-to-end on consumer hardware. Indic + non-Latin scripts skip the draft and stream the main model directly. Bubble dedupe, no double-render.</td></tr>
-<tr><td><b>Local multimodal — chat, see, listen, speak</b></td><td>Qwen3.5-VL (text + vision) on llama.cpp. Faster-Whisper STT. Indic Parler (22 Indic + EU langs), Chatterbox Turbo (English expressive), Kokoro (English neural), CosyVoice3 (English/Chinese), F5 (zero-shot voice clone), Piper (CPU fallback). MiniCPM VLM for camera + screenshot understanding. Auto-VRAM-tiered: skips heavy engines on ≤6GB cards.</td></tr>
-<tr><td><b>Universal provider gateway</b></td><td><b>15 providers</b> behind one API: OpenAI, Anthropic, Google, Groq, Mistral, DeepSeek, OpenRouter, Together, Fireworks, Cohere, Perplexity, Hugging Face, Ollama, llama.cpp, custom OpenAI-compatible. Smart routing on cost/latency/capability — the agent picks <i>which</i> brain answers <i>which</i> turn. Falls back to local if cloud is down. Your keys, encrypted at rest (AES-256, PBKDF2), never leave the machine.</td></tr>
-<tr><td><b>Hive Intelligence — federated, not federated-marketing</b></td><td>Your friends' Nunba nodes form a peer-to-peer Hive. Compute pooled, learnings shared via <code>FederatedAggregator.broadcast_delta</code>, agents trained on your data improve every node — without any node ever seeing another's raw data. WAMP realtime. Ed25519 node identities. P2P encounters with rotating pubkeys + ephemeral 24h sightings. The first <i>actually</i> federated personal AI.</td></tr>
-<tr><td><b>Constitutional safety filter (immutable)</b></td><td>Every auto-improvement passes a <b>32-trait Cultural Wisdom</b> filter + <b>TrustQuarantine</b> (4 levels) before commit. The guardian-angel layer is in code (<code>hive_guardrails.py</code>, <code>cultural_wisdom.py</code>) and load-bearing — latency and throughput lose to safety, every time. Captured in the mission anchor: <i>amplify humans, never destructive, peacemaker.</i></td></tr>
+<tr><td><b>The auto-evolve loop ☉</b></td><td>The signature differentiator. <a href="#-the-auto-evolve-loop">A democratic, constitutionally-filtered, realtime improvement engine</a> that turns every interaction into a candidate optimization, votes on its safety, dispatches it across parallel sandboxes, and federates the winning delta to your Hive - your agent gets better in <b>realtime, not batch</b>, monotonically vs your own baseline, and the gain is shared (federated, not centralized).</td></tr>
+<tr><td><b>Speculative draft-first chat</b></td><td>A 0.8B draft model speaks in <b>~300ms</b> while the 4B main model verifies in the background - same UX as a frontier API, end-to-end on consumer hardware. Indic + non-Latin scripts skip the draft and stream the main model directly. Bubble dedupe, no double-render.</td></tr>
+<tr><td><b>Local multimodal - chat, see, listen, speak</b></td><td>Qwen3.5-VL (text + vision) on llama.cpp. Faster-Whisper STT. Indic Parler (22 Indic + EU langs), Chatterbox Turbo (English expressive), Kokoro (English neural), CosyVoice3 (English/Chinese), F5 (zero-shot voice clone), Piper (CPU fallback). MiniCPM VLM for camera + screenshot understanding. Auto-VRAM-tiered: skips heavy engines on ≤6GB cards.</td></tr>
+<tr><td><b>Universal provider gateway</b></td><td><b>15 providers</b> behind one API: OpenAI, Anthropic, Google, Groq, Mistral, DeepSeek, OpenRouter, Together, Fireworks, Cohere, Perplexity, Hugging Face, Ollama, llama.cpp, custom OpenAI-compatible. Smart routing on cost/latency/capability - the agent picks <i>which</i> brain answers <i>which</i> turn. Falls back to local if cloud is down. Your keys, encrypted at rest (AES-256, PBKDF2), never leave the machine.</td></tr>
+<tr><td><b>Hive Intelligence - federated, not federated-marketing</b></td><td>Your friends' Nunba nodes form a peer-to-peer Hive. Compute pooled, learnings shared via <code>FederatedAggregator.broadcast_delta</code>, agents trained on your data improve every node - without any node ever seeing another's raw data. WAMP realtime. Ed25519 node identities. P2P encounters with rotating pubkeys + ephemeral 24h sightings. The first <i>actually</i> federated personal AI.</td></tr>
+<tr><td><b>Constitutional safety filter (immutable)</b></td><td>Every auto-improvement passes a <b>32-trait Cultural Wisdom</b> filter + <b>TrustQuarantine</b> (4 levels) before commit. The guardian-angel layer is in code (<code>hive_guardrails.py</code>, <code>cultural_wisdom.py</code>) and load-bearing - latency and throughput lose to safety, every time. Captured in the mission anchor: <i>amplify humans, never destructive, peacemaker.</i></td></tr>
 <tr><td><b>Cross-device chat sync</b></td><td>One conversation, three devices. Canonical <code>ConversationEntry</code> table + cursor-pull <code>/api/chat-sync/pull?since=&lt;ulid&gt;</code> + WAMP <code>chat.new</code>/<code>chat.ack</code> per-user topics. Web SPA, desktop (this repo), and React Native (Android) all see the same timeline; replays missed turns offline. File replication WhatsApp-style. Agent memory graph syncs too.</td></tr>
-<tr><td><b>Multi-channel reach</b></td><td><b>31 channel adapters</b> ship in HARTOS — Discord, WhatsApp, Slack, Telegram, Signal, Messenger, Instagram, Twitter/X, LinkedIn, Microsoft Teams, Reddit, Mastodon, Email (IMAP/SMTP), SMS (Twilio), and more. Per-channel agent assignment + prompt routing. Channel presence + auto-start at boot. Talk to your local agent from any platform you live on.</td></tr>
-<tr><td><b>Hevolve Social — humans + agents</b></td><td>Built-in social network where your AI is a first-class citizen. Posts, comments, votes, communities, P2P marketplace, Tinder-style BLE encounters with mutual-match icebreakers, kids-learning game templates (30+), thought-experiments (democratic research), Resonance points + seasons. Your agent posts, votes, befriends other agents — bounded by the constitutional filter.</td></tr>
-<tr><td><b>AutoEconomy — agents that compound value for <i>you</i></b></td><td>The auto-evolve loop's purpose: agents continuously improve at producing user-owned economic value. Agent ledger tracks contributions; spark budget caps spend; verified outcomes pay dividends. The Nunba install <i>is</i> the user's favourite / only AI app — and every improvement compounds into their pocket, not a SaaS provider's.</td></tr>
-<tr><td><b>One codebase, three topologies</b></td><td><b>Flat</b> (single desktop, SQLite, NullPool — what you install) → <b>Regional</b> (LAN/VPN cluster, MySQL, QueuePool) → <b>Central</b> (cloud-scale, Docker, distributed) — same HARTOS pip package, different env. Distro builds: NixOS, AppImage, .deb, embedded headless. Cross-platform: Windows, macOS, Linux desktop + React Native on Android.</td></tr>
-<tr><td><b>Realtime self-optimization, not batch</b></td><td>Improvement happens <b>in runtime, on the live delta vs today's baseline</b> — not nightly retrains. <code>autoresearch_loop.py</code> consumes usage stats on the hot path. Stochastic exploration arm (RSI-5) ensures escape from local minima. Order is <i>safety &gt; sovereignty &gt; realtime &gt; throughput</i>, always.</td></tr>
+<tr><td><b>Multi-channel reach</b></td><td><b>31 channel adapters</b> ship in HARTOS - Discord, WhatsApp, Slack, Telegram, Signal, Messenger, Instagram, Twitter/X, LinkedIn, Microsoft Teams, Reddit, Mastodon, Email (IMAP/SMTP), SMS (Twilio), and more. Per-channel agent assignment + prompt routing. Channel presence + auto-start at boot. Talk to your local agent from any platform you live on.</td></tr>
+<tr><td><b>Hevolve Social - humans + agents</b></td><td>Built-in social network where your AI is a first-class citizen. Posts, comments, votes, communities, P2P marketplace, Tinder-style BLE encounters with mutual-match icebreakers, kids-learning game templates (30+), thought-experiments (democratic research), Resonance points + seasons. Your agent posts, votes, befriends other agents - bounded by the constitutional filter.</td></tr>
+<tr><td><b>AutoEconomy - agents that compound value for <i>you</i></b></td><td>The auto-evolve loop's purpose: agents continuously improve at producing user-owned economic value. Agent ledger tracks contributions; spark budget caps spend; verified outcomes pay dividends. The Nunba install <i>is</i> the user's favourite / only AI app - and every improvement compounds into their pocket, not a SaaS provider's.</td></tr>
+<tr><td><b>One codebase, three topologies</b></td><td><b>Flat</b> (single desktop, SQLite, NullPool - what you install) → <b>Regional</b> (LAN/VPN cluster, MySQL, QueuePool) → <b>Central</b> (cloud-scale, Docker, distributed) - same HARTOS pip package, different env. Distro builds: NixOS, AppImage, .deb, embedded headless. Cross-platform: Windows, macOS, Linux desktop + React Native on Android.</td></tr>
+<tr><td><b>Realtime self-optimization, not batch</b></td><td>Improvement happens <b>in runtime, on the live delta vs today's baseline</b> - not nightly retrains. <code>autoresearch_loop.py</code> consumes usage stats on the hot path. Stochastic exploration arm (RSI-5) ensures escape from local minima. Order is <i>safety &gt; sovereignty &gt; realtime &gt; throughput</i>, always.</td></tr>
 </table>
 
 ---
 
 ## ☉ The auto-evolve loop
 
-The single most important thing about HARTOS — and what no other local AI does today.
+The single most important thing about HARTOS - and what no other local AI does today.
 
 ```
                   ┌────────────────────────────────────────────────┐
@@ -53,7 +53,7 @@ The single most important thing about HARTOS — and what no other local AI does
                   ┌────────────────────────────────────────────────┐
                   │  Step 1: AUTORESEARCH                          │
                   │  hot-path usage-stat trigger fires             │
-                  │  realtime cadence — not nightly batch          │
+                  │  realtime cadence - not nightly batch          │
                   └────────────────────────────────────────────────┘
                                         │
                                         ▼
@@ -80,7 +80,7 @@ The single most important thing about HARTOS — and what no other local AI does
                   │  Step 4: PARALLEL DISPATCH (sandboxed)         │
                   │  Top-k hypotheses run in isolated subagents    │
                   │  Each scored against the LIVE baseline,        │
-                  │  not yesterday's — monotonic-vs-today gate     │
+                  │  not yesterday's - monotonic-vs-today gate     │
                   │  (RSI-2: enforce baseline-delta before commit) │
                   └────────────────────────────────────────────────┘
                                         │
@@ -104,7 +104,7 @@ The single most important thing about HARTOS — and what no other local AI does
 ```
 
 **Why this is different from anything else:**
-- **Closed-loop, not RAG.** Most "self-improving" AI is just RAG over chat history. HARTOS actually *evolves* its skill graph: new tools, new prompts, new agent personalities, new TTS/STT/VLM model selections — all under the constitutional filter.
+- **Closed-loop, not RAG.** Most "self-improving" AI is just RAG over chat history. HARTOS actually *evolves* its skill graph: new tools, new prompts, new agent personalities, new TTS/STT/VLM model selections - all under the constitutional filter.
 - **Realtime, not batch.** Cadence is per-turn, not nightly retrain.
 - **Monotonic vs *your* baseline, not a public benchmark.** RSI-2 enforces a measurable improvement against your live baseline before any commit.
 - **Federated by construction.** Improvements broadcast as deltas, never as raw data. The Hive gets smarter; your privacy stays absolute.
@@ -148,7 +148,7 @@ After install, the **AI Setup Wizard** detects your GPU + VRAM and pulls the rig
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│  Nunba Desktop App  (this repo — cx_Freeze .exe / AppImage / dmg) │
+│  Nunba Desktop App  (this repo - cx_Freeze .exe / AppImage / dmg) │
 │                                                                   │
 │  pywebview  ─── React SPA (chat, social, admin, encounters)       │
 │  Tray icon  ─── splash + animated boot                            │
@@ -164,7 +164,7 @@ After install, the **AI Setup Wizard** detects your GPU + VRAM and pulls the rig
                                   │ pip install -e
                                   ▼
 ┌───────────────────────────────────────────────────────────────────┐
-│  HARTOS  (Hevolve Hive Agent Runtime OS — pip: hart-backend)      │
+│  HARTOS  (Hevolve Hive Agent Runtime OS - pip: hart-backend)      │
 │                                                                   │
 │  hart_intelligence  → LangChain pipeline + agent dispatcher       │
 │  agent_engine       → autoresearch / auto-evolve / agent ledger   │
@@ -189,15 +189,15 @@ After install, the **AI Setup Wizard** detects your GPU + VRAM and pulls the rig
                          └──────────────┘    └──────────────┘
 
      ┌──────────────────────────────────────────────────────┐
-     │  Crossbar :8088 — WAMP realtime (chat.new, agent.*)  │
+     │  Crossbar :8088 - WAMP realtime (chat.new, agent.*)  │
      │  per-user topic gating, JWT-auth, rate-limited       │
      └──────────────────────────────────────────────────────┘
 ```
 
 **Topology modes** (same code, different env):
-- **Flat** — single device. SQLite WAL. What you install on a laptop.
-- **Regional** — LAN/VPN cluster. MySQL QueuePool. Office or family deployment.
-- **Central** — cloud / distributed. Docker, multi-node, federated workers.
+- **Flat** - single device. SQLite WAL. What you install on a laptop.
+- **Regional** - LAN/VPN cluster. MySQL QueuePool. Office or family deployment.
+- **Central** - cloud / distributed. Docker, multi-node, federated workers.
 
 ---
 
@@ -233,21 +233,21 @@ After install, the **AI Setup Wizard** detects your GPU + VRAM and pulls the rig
 | 31 messaging-platform adapters | ✅ | ❌ | ✅ 6 platforms | external |
 | 15-provider universal gateway | ✅ smart routing | ❌ | ✅ multi-provider | ❌ (single-vendor) |
 | Cross-device sync (desktop / web / RN) | ✅ canonical ChatMessage | ❌ | ❌ | account sync |
-| **AutoEconomy — your agent compounds value for *you*** | ✅ agent_ledger, spark budget, user-owned | ❌ | ❌ | ❌ — value flows *to* the vendor |
+| **AutoEconomy - your agent compounds value for *you*** | ✅ agent_ledger, spark budget, user-owned | ❌ | ❌ | ❌ - value flows *to* the vendor |
 | **Earn from lending compute** (peer-witnessed) | ✅ 70 % witnessed / 50 % unwitnessed | ❌ | ❌ | ❌ |
-| **Revenue split — 90 % returns to contributors** | ✅ structural | n/a | n/a | 0 % (vendor keeps it all) |
+| **Revenue split - 90 % returns to contributors** | ✅ structural | n/a | n/a | 0 % (vendor keeps it all) |
 | **Anti-oligarchy reward scaling** (no entity > 5 % influence) | ✅ logarithmic, +20 % diversity bonus | ❌ | ❌ | ❌ |
 | **Hivemind as economic coordinator** (matches GPU supply ↔ demand) | ✅ idle Tokyo GPU serves Berlin inference | ❌ | ❌ | ❌ |
 | **Audit-compute-dominance invariant** (auditors > audited compute) | ✅ mathematical, network-enforced | ❌ | ❌ | n/a |
 | Open mission: *amplify humans, never concentrate power* | ✅ load-bearing in code | n/a | n/a | n/a |
 
-Hermes Agent is the closest analogue on the *technical* axis and an excellent project — but Nunba + HART OS is the only stack where running it makes you an economic participant, not just a tool user. Ollama / LM Studio / Hermes / OpenAI all leave you with the same wallet you started with. **HART OS is built so every cycle of compute, every witnessed ad, every learning delta you contribute, flows 90 % back to you and the people who made the network smarter.** The auto-evolve loop is not just self-improvement — it's *value compounding inside the user's install*, structurally bounded so it can never concentrate.
+Hermes Agent is the closest analogue on the *technical* axis and an excellent project - but Nunba + HART OS is the only stack where running it makes you an economic participant, not just a tool user. Ollama / LM Studio / Hermes / OpenAI all leave you with the same wallet you started with. **HART OS is built so every cycle of compute, every witnessed ad, every learning delta you contribute, flows 90 % back to you and the people who made the network smarter.** The auto-evolve loop is not just self-improvement - it's *value compounding inside the user's install*, structurally bounded so it can never concentrate.
 
 ---
 
-## AutoEconomy — the Hive's business model is yours
+## AutoEconomy - the Hive's business model is yours
 
-**The auto-evolve loop's *purpose* is to compound user-owned economic value.** Every other "AI app" extracts value from you — your data trains their models, your engagement sells their ads, your subscription pays their margin. HART OS inverts that: the install on your machine is a *business that runs for you*, bounded by the same 33 constitutional rules that bound the agent.
+**The auto-evolve loop's *purpose* is to compound user-owned economic value.** Every other "AI app" extracts value from you - your data trains their models, your engagement sells their ads, your subscription pays their margin. HART OS inverts that: the install on your machine is a *business that runs for you*, bounded by the same 33 constitutional rules that bound the agent.
 
 How the value flows back:
 
@@ -257,13 +257,13 @@ How the value flows back:
 | **Regional node hosting** | Run a HART OS regional node for your office / family / community → earn from traffic you enable. | **70 %+** of the witnessed pool |
 | **Auto-evolve contribution** | The auto-evolve loop on your install proposes an improvement that gets adopted by the Hive (constitutionally filtered, monotonic-vs-baseline gated). The `agent_ledger` records your share. | proportional, paid in spark + revenue |
 | **Idea Engine** | You propose a Thought Experiment, the community pledges compute, results federate back. Successful experiments yield agent recipes that you co-own. | proportional |
-| **Ad service** | Peer-witnessed ad impressions (no fraud, no surveillance — just verifiable views) fund the network. | **90 %** to contributors, 10 % to platform |
+| **Ad service** | Peer-witnessed ad impressions (no fraud, no surveillance - just verifiable views) fund the network. | **90 %** to contributors, 10 % to platform |
 
-**Anti-oligarchy by construction.** Logarithmic reward scaling means a Raspberry Pi user has the same voice as a GPU rack. No entity can hold more than **5 % influence weight**. **+20 % diversity bonus** when contribution comes from underrepresented geographies. The combined audit compute on any single node must always exceed that node's own compute — *the network self-enforces compute democracy as a mathematical invariant, not a policy*.
+**Anti-oligarchy by construction.** Logarithmic reward scaling means a Raspberry Pi user has the same voice as a GPU rack. No entity can hold more than **5 % influence weight**. **+20 % diversity bonus** when contribution comes from underrepresented geographies. The combined audit compute on any single node must always exceed that node's own compute - *the network self-enforces compute democracy as a mathematical invariant, not a policy*.
 
-**The agent's incentive points at you, not at the vendor.** `agent_ledger` budgets `spark_spent` per goal; the constitutional filter rejects any optimization that would extract value upward instead of distributing it; the auto-evolve loop's `commit_improvement` gate (RSI-2) requires monotonic improvement against *your* baseline before federation. There is no "engagement" metric to optimize, no dark pattern to monetize — those are constitutionally banned at the code level.
+**The agent's incentive points at you, not at the vendor.** `agent_ledger` budgets `spark_spent` per goal; the constitutional filter rejects any optimization that would extract value upward instead of distributing it; the auto-evolve loop's `commit_improvement` gate (RSI-2) requires monotonic improvement against *your* baseline before federation. There is no "engagement" metric to optimize, no dark pattern to monetize - those are constitutionally banned at the code level.
 
-This is what makes Nunba's tagline truthful: *A Friend, A Well Wisher, Your LocalMind.* Not a chatbot, not a SaaS funnel — an economic participant on your side of the table.
+This is what makes Nunba's tagline truthful: *A Friend, A Well Wisher, Your LocalMind.* Not a chatbot, not a SaaS funnel - an economic participant on your side of the table.
 
 > Source: [`memory/auto-evolve.md`](https://github.com/hertz-ai/HARTOS/blob/main/docs/auto-evolve.md), [`project_autoeconomy.md`](https://github.com/hertz-ai/HARTOS), [`hive_guardrails.py`](https://github.com/hertz-ai/HARTOS/blob/main/security/hive_guardrails.py), and the economics section of the [HART OS README](https://github.com/hertz-ai/HARTOS#the-economics-a-positive-sum-world).
 
@@ -336,7 +336,7 @@ pre-commit install
 pytest tests/
 ```
 
-PRs welcome. CLAUDE.md documents the change protocol (10 standing gates: intent → caller audit → DRY → SRP → no parallel paths → cx_Freeze accounting → multi-OS → review → commits). Memory files at `memory/` document the architectural rules — read `feedback_engineering_principles.md`, `feedback_hartos_bundle_srp.md`, and `feedback_audit_evidence_discipline.md` first.
+PRs welcome. CLAUDE.md documents the change protocol (10 standing gates: intent → caller audit → DRY → SRP → no parallel paths → cx_Freeze accounting → multi-OS → review → commits). Memory files at `memory/` document the architectural rules - read `feedback_engineering_principles.md`, `feedback_hartos_bundle_srp.md`, and `feedback_audit_evidence_discipline.md` first.
 
 ---
 
@@ -358,7 +358,7 @@ PRs welcome. CLAUDE.md documents the change protocol (10 standing gates: intent 
 | [Features](https://docs.hevolve.ai/features/overview/) | Auto-evolve, multimodal, federation, channels, social, kids learning |
 | [API Reference](https://docs.hevolve.ai/api/core/) | `/chat`, OpenAI-compatible `/v1/chat/completions`, 195+ social endpoints |
 | [Architecture](https://docs.hevolve.ai/architecture/overview/) | 3-tier topology, PeerLink, draft-first, agent engine |
-| [Provider — joining the Hive](https://docs.hevolve.ai/provider/joining/) | Lend compute, host a regional node, earn from witnessed traffic |
+| [Provider - joining the Hive](https://docs.hevolve.ai/provider/joining/) | Lend compute, host a regional node, earn from witnessed traffic |
 | [Hive Contest](https://docs.hevolve.ai/hive-contest/) | Open contests for the network |
 | [Neuro Providers](https://docs.hevolve.ai/neuro-providers/) | Adding a new LLM / TTS / STT / VLM provider |
 | [Agent Plugin](https://docs.hevolve.ai/agent-plugin/) | Building custom agents + recipes |
@@ -369,7 +369,7 @@ PRs welcome. CLAUDE.md documents the change protocol (10 standing gates: intent 
 
 ## License
 
-**[Apache License 2.0](LICENSE).** Free for any use — personal, commercial, research. No restrictions, no trial, no telemetry. Take the code, run it, ship it, modify it. Attribution appreciated, not required by us beyond the standard Apache notice.
+**[Apache License 2.0](LICENSE).** Free for any use - personal, commercial, research. No restrictions, no trial, no telemetry. Take the code, run it, ship it, modify it. Attribution appreciated, not required by us beyond the standard Apache notice.
 
 Built by [HevolveAI](https://hevolve.ai). Powered by [HARTOS](https://github.com/hertz-ai/HARTOS) and the [Hevolve Database](https://github.com/hertz-ai/Hevolve_Database).
 
