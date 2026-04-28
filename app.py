@@ -5771,32 +5771,45 @@ def start_flask():
             _worker_threads = 128
 
         try:
-            # Hypercorn pre-check: it installs signal handlers in
-            # `worker_serve`, which only work in the main thread.  When
-            # start_flask runs in the NunbaGUI worker thread (every
-            # desktop boot — main thread is bound to pywebview),
-            # hypercorn raises `ValueError: signal only works in main
-            # thread of the main interpreter`.  On Windows the asyncio
-            # policy can also raise `NotImplementedError` from
-            # `add_signal_handler` even on the main thread.  Skip the
-            # attempt entirely in those cases so we don't pay the
-            # asyncio-import cost or pollute the log with a boot-error
-            # traceback that's expected.  Re-raised as ImportError so
-            # the existing waitress fallback below catches it.
+            # Hypercorn's `worker_serve` installs SIGINT / SIGTERM /
+            # SIGBREAK handlers via `signal.signal()`.  That call only
+            # works in the main thread; from a worker thread it raises
+            # `ValueError: signal only works in main thread of the main
+            # interpreter`.  On Windows the asyncio policy first tries
+            # `loop.add_signal_handler` (raises NotImplementedError on
+            # ProactorEventLoop), then falls back to `signal.signal`
+            # which then raises ValueError -> hypercorn aborts.
+            #
+            # In a desktop GUI app the signal handlers are dead code
+            # anyway: pywebview owns the main thread, the user shuts
+            # down via the tray icon / window-close callback (which
+            # routes through `desktop.tray_handler`), and POSIX signals
+            # never fire on a frozen Win32 GUI app.  So patch
+            # `signal.signal` to silently no-op when called from a
+            # non-main thread — hypercorn's signal-install becomes a
+            # no-op, and the rest of `worker_serve` proceeds normally.
+            #
+            # Scope: the patch is applied BEFORE hypercorn imports and
+            # is intentionally left in place for the lifetime of the
+            # process (hypercorn never returns from `serve`; no other
+            # call site needs the original behaviour).
             import threading as _th_check
-            _is_main_thread = (
-                _th_check.current_thread() is _th_check.main_thread()
-            )
-            _force_waitress = (
-                os.environ.get('NUNBA_FORCE_WAITRESS', '').strip().lower()
-                in ('1', 'true', 'yes')
-            )
-            if (not _is_main_thread) or _force_waitress:
+            import signal as _sig_patch
+            if _th_check.current_thread() is not _th_check.main_thread():
+                _orig_signal_signal = _sig_patch.signal
+                def _silent_signal(signum, handler):
+                    try:
+                        return _orig_signal_signal(signum, handler)
+                    except (ValueError, OSError):
+                        # Non-main-thread or unavailable signum on this
+                        # platform — degrade to the default disposition.
+                        return _sig_patch.SIG_DFL
+                _silent_signal._hartos_thread_safe = True  # marker for tests
+                _sig_patch.signal = _silent_signal
                 logger.info(
-                    f"Skipping Hypercorn (main_thread={_is_main_thread}, "
-                    f"force_waitress={_force_waitress}) — using Waitress directly"
+                    "Patched signal.signal to no-op outside main thread "
+                    "(hypercorn signal-handler install will silently skip)"
                 )
-                raise ImportError("hypercorn-skipped-by-pre-check")
 
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
