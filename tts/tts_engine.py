@@ -969,6 +969,23 @@ class TTSEngine:
         self._synth_lock = threading.Lock()  # GPU backends are not thread-safe
         self._pending_backend = None  # backend being loaded in background
 
+        # Per-session backend health tracking (Fix B, 2026-04-28).
+        # Without these counters the ladder gets pinned on the first
+        # entry forever — chatterbox raises, _synthesize_with_fallback
+        # walks through, and the next request goes RIGHT back to
+        # chatterbox because nothing remembered it just exploded.
+        # Counter resets on successful synth; demotion is session-local
+        # only (cleared on process restart) so a transient VRAM-pressure
+        # window doesn't permanently disable the user's preferred GPU
+        # engine across reboots.
+        self._consecutive_failures: dict[str, int] = {}
+        self._demoted_backends: set[str] = set()
+        # 3 strikes is the same threshold the model_lifecycle.py
+        # eviction guard uses — keep it consistent across the codebase
+        # so failures observed by either subsystem trip a single,
+        # well-understood circuit.
+        self._failure_threshold = 3
+
         # Hardware info (detected lazily)
         self.gpu_info = None
         self.has_gpu = False
@@ -1407,6 +1424,50 @@ class TTSEngine:
         import importlib.util
         return importlib.util.find_spec(required_pkg) is None
 
+    # ── Per-backend health tracking (Fix B, 2026-04-28) ─────────────
+    # The ladder used to wedge on the first preference forever: any
+    # transient or hard failure inside chatterbox would flow into
+    # _synthesize_with_fallback, but on the NEXT call _active_backend
+    # was reset to chatterbox again because nothing remembered the
+    # previous failure. These three helpers + the demoted-set check in
+    # _select_backend_for_language are the circuit breaker.
+
+    def _record_backend_failure(self, backend: str) -> None:
+        """Increment consecutive-failure counter; demote at threshold.
+
+        Piper is exempt — it is the canonical CPU last-resort and
+        demoting it would leave the engine with no backend. If Piper
+        keeps failing the right answer is to surface that to the user
+        (text-only fallback), not to silently eject it.
+        """
+        if not backend or backend == BACKEND_PIPER or backend == BACKEND_NONE:
+            return
+        n = self._consecutive_failures.get(backend, 0) + 1
+        self._consecutive_failures[backend] = n
+        if n >= self._failure_threshold and backend not in self._demoted_backends:
+            self._demoted_backends.add(backend)
+            logger.warning(
+                f"TTS backend '{backend}' DEMOTED for this session "
+                f"after {n} consecutive failures — ladder will skip it. "
+                f"Reset on next successful synth."
+            )
+
+    def _record_backend_success(self, backend: str) -> None:
+        """Clear the per-backend failure counter on a successful synth.
+
+        A demoted backend can't get here (it never gets called once
+        skipped), so demotion is session-sticky until process restart.
+        That's deliberate: an engine that failed 3 times in a row is
+        almost always broken in a way that won't fix itself mid-session
+        (missing weights, bad CUDA driver, OOM with steady GPU load).
+        Don't waste user latency probing it again.
+        """
+        if backend and self._consecutive_failures.get(backend):
+            self._consecutive_failures[backend] = 0
+
+    def _is_demoted(self, backend: str) -> bool:
+        return backend in self._demoted_backends
+
     def _select_backend_for_language(self, language='en') -> str:
         """Select the best TTS backend for a language.
 
@@ -1415,11 +1476,21 @@ class TTSEngine:
         runnable engine is always selected — not the one with the highest
         catalog score (which favors previously-loaded engines over better ones).
 
+        Demoted backends (3+ consecutive failures this session) are
+        skipped so the ladder actually advances after repeated failures
+        instead of wedging on the first preference forever.
+
         Auto-installs missing backends in background via TTSLoader.download().
         """
         self._ensure_hw_detected()
         prefs = _get_lang_preference(language)
         for backend in prefs:
+            if self._is_demoted(backend):
+                logger.info(
+                    f"Backend {backend} skipped: demoted this session "
+                    f"({self._consecutive_failures.get(backend, 0)} failures)"
+                )
+                continue
             if self._can_run_backend(backend):
                 logger.info(f"Selected backend '{backend}' for language '{language}' (quality-ordered)")
                 return backend
@@ -2179,6 +2250,10 @@ class TTSEngine:
                             logger.warning(f"TTS output suspiciously small ({fsize}B for {text_len} chars), may be broken")
                     except Exception:
                         pass
+                    # Real audio produced — clear the failure counter
+                    # so a one-off transient error doesn't accumulate
+                    # into a session-permanent demotion.
+                    self._record_backend_success(self._active_backend)
                 return result
             except Exception as e:
                 # Transient GPU failure (CUDA OOM in subprocess, worker
@@ -2192,6 +2267,25 @@ class TTSEngine:
                     f"Synthesis failed ({self._active_backend}): {e} "
                     f"[transient={is_transient}]"
                 )
+                # Surface the FULL traceback to the per-backend sidecar
+                # log so the actual exception (FileNotFoundError on
+                # missing weights, WorkerCrash on CUDA OOM, ImportError
+                # on missing pip dep, etc.) is recoverable for triage.
+                # Without this, the engine's fallback chain swallows the
+                # underlying error and only the generic "Synthesis
+                # failed" line above survives — useless for triage.
+                try:
+                    from tts.verified_synth import _surface_backend_exception
+                    _surface_backend_exception(self._active_backend, e)
+                except Exception:
+                    pass
+                # Non-transient = the engine is broken in a way that
+                # won't self-heal mid-request. Count it against the
+                # demotion threshold. Transient = one-off CUDA OOM or
+                # subprocess crash; do NOT count those because the
+                # engine usually recovers next call.
+                if not is_transient:
+                    self._record_backend_failure(self._active_backend)
 
                 if is_transient:
                     # Subprocess already isolated the crash — don't tear
@@ -2264,6 +2358,12 @@ class TTSEngine:
             candidates = filtered
 
         for candidate in candidates:
+            # Skip already-demoted backends so the fallback chain doesn't
+            # waste cycles re-trying engines we've already proved broken
+            # this session.
+            if self._is_demoted(candidate):
+                logger.debug(f"Fallback skipping demoted backend {candidate}")
+                continue
             try:
                 if candidate not in self._backends:
                     self._backends[candidate] = self._create_backend(candidate)
@@ -2280,9 +2380,22 @@ class TTSEngine:
                         logger.info(f"Fallback succeeded: {failed} -> {candidate}")
                         # Permanent switch — engine crashed, don't retry
                         self._active_backend = candidate
+                    self._record_backend_success(candidate)
                     return result
             except Exception as fallback_err:
                 logger.debug(f"Fallback {candidate} also failed: {fallback_err}")
+                # Record failure + surface the traceback so the sidecar
+                # log captures EVERY backend that failed in this chain,
+                # not just the primary.  Demotion only kicks in for
+                # non-transient errors; subprocess crashes flagged
+                # `transient=True` shouldn't count against the budget.
+                try:
+                    from tts.verified_synth import _surface_backend_exception
+                    _surface_backend_exception(candidate, fallback_err)
+                except Exception:
+                    pass
+                if not bool(getattr(fallback_err, 'transient', False)):
+                    self._record_backend_failure(candidate)
                 continue
 
         # Exhausted the filtered candidate list without producing audio.

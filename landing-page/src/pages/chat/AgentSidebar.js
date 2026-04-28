@@ -414,32 +414,12 @@ const AgentSidebar = ({
             </button>
           </div>
 
-          <div className="justify-self-center">
-            <a
-              href="https://azurekong.hertzai.com/mkt-aws/examples/daf7beee-7HevolveAI_Agent_Companion_Setup_2.exe"
-              download
-              className="
-        bg-gradient-to-r from-blue-500 to-green-500
-        text-white
-        border border-gray-600
-        rounded-lg
-        px-3 py-2
-        text-sm
-        focus:outline-none
-        focus:ring-2
-        focus:ring-blue-500
-        focus:border-transparent
-        hover:bg-gray-700
-        transition-colors
-        cursor-pointer
-        min-w-[120px]
-        inline-block
-        text-center
-      "
-            >
-              Install Windows Agent Companion
-            </a>
-          </div>
+          {/* "Install Windows Agent Companion" button removed 2026-04-28:
+              Nunba IS the companion app — surfacing a download link to a
+              separate "HevolveAI Agent Companion Setup" .exe from inside
+              Nunba (or from any sidebar that ships in Nunba's React
+              bundle) is confusing.  Cloud-side desktop discovery now
+              flows through the Nunba downloads page. */}
 
           {/* Google Play & Companion (hidden on /local) */}
           {!isLocalRoute && (

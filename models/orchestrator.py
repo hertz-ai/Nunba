@@ -12,6 +12,7 @@ The singleton is shared with HARTOS so that both
 """
 
 import logging
+import sys
 
 # Access the HARTOS module for shared singleton management
 import integrations.service_tools.model_orchestrator as _hartos_mod
@@ -707,13 +708,41 @@ class VLMLoader(ModelLoader):
             entry.error = str(e)
 
     def is_loaded(self, entry: ModelEntry) -> bool:
-        """Live probe: is the VisionService actually running?"""
-        try:
-            import hart_intelligence_entry as _hie
-            svc = _hie.get_vision_service()
-            return bool(svc is not None and getattr(svc, '_running', False))
-        except Exception:
-            return False
+        """Live probe: is the VisionService actually running?
+
+        Side-effect-free: reads any already-imported module's attribute
+        directly via ``sys.modules``.  We MUST NOT do
+        ``import hart_intelligence_entry`` here — that import has heavy
+        side effects (loads HARTOS ``security/__init__.py`` which
+        unconditionally pings Redis with no connect-timeout, hanging
+        the request thread for ~21s on Windows when Redis is absent —
+        the bug that left ``/admin/models`` spinning forever).
+
+        The intent of a probe is read-only.  We also avoid calling
+        ``integrations.vision.get_vision_service()`` because it
+        lazy-instantiates the service.  We only return True when a
+        VisionService has *already* been created and is marked running.
+        """
+        # Prefer hart_intelligence_entry's module-level _vision_service
+        # if the module is already imported (no fresh import).
+        hie = sys.modules.get('hart_intelligence_entry')
+        if hie is not None:
+            svc = getattr(hie, '_vision_service', None)
+            if svc is None:
+                # Bundled mode stashes it on __main__.
+                main_mod = sys.modules.get('__main__')
+                if main_mod is not None:
+                    svc = getattr(main_mod, '_vision_service', None)
+            if svc is not None:
+                return bool(getattr(svc, '_running', False))
+        # Fallback: direct singleton in integrations.vision (still no
+        # lazy-instantiate — only read existing module-level var).
+        vmod = sys.modules.get('integrations.vision')
+        if vmod is not None:
+            svc = getattr(vmod, '_vision_service_singleton', None)
+            if svc is not None:
+                return bool(getattr(svc, '_running', False))
+        return False
 
     def validate(self, entry: ModelEntry) -> tuple:
         """Canned VLM probe: describe a 32×32 red JPEG in ≤20 words.

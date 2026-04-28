@@ -198,141 +198,21 @@ if getattr(sys, 'frozen', False):
         # The hartos-init thread will re-attempt and surface a clearer error.
         pass
 
-    # ── Pre-warm the HARTOS heavy chain in a BACKGROUND thread
-    # (2026-04-28, splash-window pre-warm extension v2) ──
-    #
-    # Truth-grounded from server.log thread dumps showing 5+ worker
-    # threads wedged simultaneously on transformers / langchain /
-    # autogen imports while flask_wait stuck 169s+:
-    #
-    #   Thread-25 _send_loop      → from transformers import GPT2TokenizerFast
-    #                               (transformers _LazyModule.__getattr__
-    #                               recurses 1446-deep on hasattr())
-    #   Thread-23 _background_loop → from create_recipe import → autogen → llmlingua → nltk
-    #   peerlink-telemetry        → from crossbar_server import → reuse_recipe → autogen
-    #   social-init               → langchain_classic.schema → langchain_core
-    #
-    # CRITICAL ORDER NOTE (regression v1 was synchronous and blocked
-    # splash creation for 30s+, leaving a black screen): this pre-warm
-    # MUST run in a background thread so the main thread proceeds
-    # straight to splash creation.  Worker threads (Flask serve,
-    # social-init, peer_discovery, etc.) spawn ~5-15s into main() —
-    # by then the pre-warm thread either already populated
-    # sys.modules or is far enough along that worker threads serialize
-    # behind it cleanly via Python's per-module import lock (one
-    # waiter, not N).  No explicit Event needed: the import-lock
-    # itself is the synchronization primitive.
-    #
-    # Why threaded works for THIS chain (not for torch above):
-    # torch needs sync pre-warm because its __init__ does reentrant
-    # imports of torch.autograd / torch.nested that race with our
-    # _trace_import wrapper (see torch comment block above).  The
-    # transformers / langchain / autogen / hart_intelligence chain
-    # doesn't have that property — once any thread completes the
-    # import, every subsequent caller in any thread gets the cached
-    # module via sys.modules in microseconds.
-    def _prewarm_hartos_chain():
-        # SPECIAL CASE: transformers.GPT2TokenizerFast.
-        #
-        # Truth-grounded from server.log:6418-6439 thread dump
-        # (2026-04-28 16:18, hartos-prewarm thread id=17320):
-        #
-        #   hartos-prewarm
-        #     app.py:264  in _prewarm_hartos_chain
-        #     transformers/utils/import_utils.py:2215  __getattr__
-        #       -> recurses 1465 deep on hasattr() then 21 deep on
-        #          AttributeError raise
-        #
-        # `_LazyModule.__getattr__` does `hasattr(transformers_module,
-        # candidate_name)` which itself calls `__getattr__` again on
-        # the not-yet-loaded attribute -> ~1500-frame recursion that
-        # holds the `transformers` import lock for ~3 minutes on a
-        # cold disk.  Pre-warm doing `getattr(transformers,
-        # 'GPT2TokenizerFast', None)` was the trigger.
-        #
-        # Fix: import the underlying submodule directly and bind the
-        # attribute on `transformers` BEFORE any lazy lookup fires.
-        # Once `transformers.GPT2TokenizerFast` exists in __dict__,
-        # `hasattr()` short-circuits at the dict and never calls
-        # __getattr__.  Every downstream import (langchain_core.
-        # language_models.base does `from transformers import
-        # GPT2TokenizerFast`, etc.) gets the bound attribute
-        # immediately, no recursion.
-        try:
-            import transformers as _tf_prewarm
-            from transformers.models.gpt2.tokenization_gpt2_fast import (
-                GPT2TokenizerFast as _GPT2TokenizerFast_direct,
-            )
-            # Bind on the parent module so subsequent
-            # `from transformers import GPT2TokenizerFast` is a
-            # plain dict lookup, not a _LazyModule.__getattr__ call.
-            if not hasattr(_tf_prewarm, '__dict__') or \
-                    'GPT2TokenizerFast' not in _tf_prewarm.__dict__:
-                _tf_prewarm.__dict__['GPT2TokenizerFast'] = (
-                    _GPT2TokenizerFast_direct
-                )
-        except Exception:
-            # If the direct import path doesn't exist (transformers
-            # version moved the symbol), fall through.  Worker threads
-            # will hit the lazy path and pay the recursion once; bad
-            # but not fatal.
-            pass
-
-        _prewarm_modules = [
-            # transformers — top-level import only.  GPT2TokenizerFast
-            # is already bound directly above, no attribute trigger.
-            ('transformers', None),
-            # langchain — base for hart_intelligence_entry's first heavy
-            ('langchain_core.language_models.base', None),
-            ('langchain_classic.llms', None),
-            ('langchain_classic.schema', None),
-            # autogen — pulls llmlingua -> nltk transitively
-            ('autogen', None),
-            # HARTOS top-level
-            ('helper', None),
-            ('create_recipe', None),
-            ('reuse_recipe', None),
-            ('hart_intelligence_entry', None),
-            ('hart_intelligence', None),
-        ]
-        import importlib as _il_pw
-        import time as _t_pw
-        _t_start = _t_pw.monotonic()
-        for _modname, _attr in _prewarm_modules:
-            _ti = _t_pw.monotonic()
-            try:
-                _mod = _il_pw.import_module(_modname)
-                if _attr is not None:
-                    getattr(_mod, _attr, None)
-            except Exception as _pw_err:
-                try:
-                    import logging as _log_pw
-                    _log_pw.getLogger(__name__).warning(
-                        "Pre-warm %s failed (%.2fs): %s: %s",
-                        _modname,
-                        _t_pw.monotonic() - _ti,
-                        type(_pw_err).__name__, _pw_err,
-                    )
-                except Exception:
-                    pass
-        try:
-            import logging as _log_pw_d
-            _log_pw_d.getLogger(__name__).info(
-                "HARTOS heavy-chain pre-warm complete in %.1fs (%d modules)",
-                _t_pw.monotonic() - _t_start,
-                len(_prewarm_modules),
-            )
-        except Exception:
-            pass
-
-    import threading as _th_pw
-    _pw_thread = _th_pw.Thread(
-        target=_prewarm_hartos_chain,
-        name='hartos-prewarm',
-        daemon=True,
-    )
-    _pw_thread.start()
-    del _th_pw, _pw_thread
+    # ── No HARTOS heavy-chain pre-warm here ──
+    # The deferred init lives in `routes.hartos_backend_adapter`.
+    # `start_hartos_init_background()` (called from `main.py`
+    # `_deferred_social_init`) spawns the `hartos-init` thread AFTER
+    # Flask is ready; chat falls through to Tier-3 (llama.cpp) until
+    # Tier-1 is up.  Importing the heavy chain (transformers / langchain
+    # / autogen / hart_intelligence / helper / create_recipe /
+    # reuse_recipe) at module-load time races with that thread on
+    # `transformers`'s per-module import lock and triggers the
+    # `_LazyModule.__getattr__` ~1500-frame recursion documented at
+    # `routes/hartos_backend_adapter.py:41-49`.  The 2026-04-28 prewarm
+    # regression and its three follow-up "fixes" all trace back to
+    # ignoring that comment.  Regression guard:
+    # `tests/test_no_eager_hartos_imports.py` AST-fails on any
+    # module-level import of those packages from `app.py`.
 
 # Trace recursion in frozen builds — write to file since Win32GUI has no console
 if getattr(sys, 'frozen', False):
@@ -1138,7 +1018,12 @@ if getattr(sys, 'frozen', False):
     _lc_wd.start()
     try:
         _trace("  [1/4] importing langchain_classic.chains (expected <1s, but can be slow on cold cache)")
-        import langchain_classic.chains as _lc_chains
+        # Eager: pre-installs a `ReduceDocumentsChain` stub into
+        # `langchain_classic.chains.__dict__` BEFORE the hartos-init thread
+        # starts, so HARTOS's later access goes to our stub and never pulls
+        # the real class (which transitively loads torch).  Direct
+        # `__dict__` write — no `_LazyModule.__getattr__` trigger.
+        import langchain_classic.chains as _lc_chains  # allow:eager-hartos-import
         _trace(f"  [2/4] import completed at {_lc_time.time()-_lc_start:.3f}s")
         # Write stub directly via __dict__ — skips __getattr__ probe.
         if 'ReduceDocumentsChain' not in _lc_chains.__dict__:
@@ -2236,7 +2121,10 @@ if getattr(args, 'acceptance_test', False):
         else:
             # Post-freeze: verify behavioral equivalents.
             try:
-                import hart_intelligence_entry as _hie  # noqa: F401
+                # Eager only inside `--validate` / `--acceptance-test` /
+                # `--diag` CLI branches — normal boot path doesn't enter
+                # this block (see top-level CLI flag check in app.py).
+                import hart_intelligence_entry as _hie  # noqa: F401  # allow:eager-hartos-import
                 from core.user_lang import get_preferred_lang as _gpl
                 _has_fallback = callable(_gpl)
                 _check('symptom_5_preferred_lang_fallback_active',

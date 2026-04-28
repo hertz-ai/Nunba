@@ -62,6 +62,16 @@ def _run_in_embed(code: str, extra_argv: list = None, timeout: int = 15) -> subp
         code: Python code string (paths come via sys.argv, not interpolated)
         extra_argv: Additional args passed as sys.argv[3:]
         timeout: Subprocess timeout in seconds
+
+    PYTHONNOUSERSITE=1 mirrors the install path in package_installer._run_pip:
+    without it, the user's SYSTEM Python (e.g. Python 3.12 at
+    %APPDATA%/Roaming/Python/Python312/site-packages) leaks into
+    python-embed's sys.path.  That leak loads the WRONG transformers /
+    chatterbox / numpy and surfaces as a fake "ModuleNotFoundError"
+    for s3tokenizer / einops — pip dutifully heals the named symbol,
+    but the next probe still picks up the leaked package and fails
+    again.  Endless heal cycle.  Set it once here; same env shape as
+    every other subprocess in this codebase.
     """
     if not _resolve_paths() or not _embed_py:
         raise RuntimeError("python-embed not available")
@@ -70,11 +80,14 @@ def _run_in_embed(code: str, extra_argv: list = None, timeout: int = 15) -> subp
     if extra_argv:
         cmd.extend(extra_argv)
 
+    env = os.environ.copy()
+    env['PYTHONNOUSERSITE'] = '1'
+
     from tts._subprocess import hidden_startupinfo
     si, cf = hidden_startupinfo()
     return subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout,
-        startupinfo=si, creationflags=cf,
+        env=env, startupinfo=si, creationflags=cf,
     )
 
 

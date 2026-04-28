@@ -348,6 +348,18 @@ build_exe_options = {
         # outages (2026-04-21, -24, -25, -26).  See excludes[] below.
 
         "uvicorn",
+        # Hypercorn + its h11/h2/wsproto/priority dep chain.  Listed
+        # explicitly because cx_Freeze's tracer often misses
+        # dynamically-imported worker classes (asyncio worker etc.).
+        # All five packages are pure-Python wheels (no native compile),
+        # safe to bundle on every platform.
+        "hypercorn",
+        "wsproto",
+        "h11",
+        "h2",
+        "hpack",
+        "hyperframe",
+        "priority",
         "fastapi",
         "pydantic",
         "sqlalchemy",
@@ -1665,6 +1677,14 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # Installing full torch here causes stack overflow: torch.__init__
             # loads _C.pyd → needs torch_cpu.dll → DLL loader recurses → crash.
             ("chatterbox-tts", "chatterbox-tts", "chatterbox", []),
+            # Piper — canonical CPU-only TTS baseline.  ~30MB, no
+            # transformers / torch / CUDA needed.  Bundled so the ladder
+            # ALWAYS has a working last-resort engine when every GPU
+            # backend fails (chatterbox VRAM-rejected, F5 missing, etc).
+            # Without this, `tts.piper_tts._init_piper` logs
+            # "piper-tts not installed" inside the bundled exe and the
+            # whole TTS pipeline ends up at "No TTS engine available".
+            ("piper-tts", "piper-tts", "piper", []),
             ("parler-tts", "parler-tts", "parler_tts", []),
             # descript-audio-codec ships the top-level `dac` package that
             # parler_tts.dac_wrapper imports via `from dac.model import DAC`.

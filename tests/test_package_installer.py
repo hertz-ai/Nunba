@@ -1421,3 +1421,141 @@ class TestConstants:
                 f"{engine}.pip_install_plan missing librosa — install would "
                 f"silently leave chatterbox unable to synthesize. plan={plan}"
             )
+
+    def test_chatterbox_install_plan_excludes_omegaconf_chain(self):
+        # Regression (2026-04-28): a previous attempt added the full
+        # chatterbox-tts==0.1.7 requires_dist (omegaconf + conformer +
+        # diffusers + ...) to the install plan.  That triggered pip's
+        # parallel-builds path; one transitive (antlr4-python3-runtime
+        # ==4.9.*, sdist only on PyPI, pinned by omegaconf) needed a
+        # source build, raced against the other 5 parallel builds, and
+        # aborted the whole pip call with
+        #   BackendUnavailable: Cannot import 'setuptools.build_meta'
+        # rc=2, NO transitive installed, fallback to Piper.
+        # _self_heal_missing_transitives handles them one-at-a-time
+        # AFTER the chatterbox-tts top-level install — single-package
+        # mode never triggers the race.  Keep the plan minimal.
+        for engine in ('chatterbox_turbo', 'chatterbox_multilingual',
+                       'chatterbox_ml'):
+            plan = pi.BACKEND_PACKAGES.get(engine, [])
+            for forbidden in ('omegaconf', 'conformer', 'diffusers',
+                              'spacy-pkuseg', 'antlr4-python3-runtime'):
+                assert forbidden not in plan, (
+                    f"{engine}.pip_install_plan must NOT include "
+                    f"{forbidden!r} — see comment block in HARTOS "
+                    f"tts_router._CHATTERBOX_PIP_PLAN.  Self-heal "
+                    f"installs it later one-at-a-time, avoiding the "
+                    f"parallel-build setuptools race. plan={plan}"
+                )
+
+
+class TestProbeIsolation:
+    """Pin the PYTHONNOUSERSITE invariant for the deep-probe subprocess.
+
+    Regression (2026-04-27): probe in tts/_torch_probe.py:_run_in_embed
+    inherited the parent process env, leaking the user's SYSTEM Python
+    user-site into python-embed's sys.path.  On a machine with Python
+    3.12 installed system-wide, that meant an incompatible
+    `transformers` (or any other shared dep) was loaded ahead of the
+    bundled one.  The probe surfaced the resulting crash as a fake
+    "ModuleNotFoundError: s3tokenizer", auto-heal pip-installed the
+    named symbol into ~/.nunba/site-packages, and the next probe
+    re-loaded the leaked `transformers` and crashed again — endless
+    cycle, blocked request thread, "Chatterbox Turbo Failed" UI loop.
+    """
+
+    def test_probe_subprocess_disables_user_site(self):
+        from unittest.mock import patch, MagicMock
+        from tts import _torch_probe as tp
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured['env'] = kwargs.get('env')
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = 'OK'
+            r.stderr = ''
+            return r
+
+        with patch.object(tp.subprocess, 'run', side_effect=fake_run):
+            with patch.object(tp, '_resolve_paths', return_value=True), \
+                 patch.object(tp, '_embed_py', 'python.exe'), \
+                 patch.object(tp, '_usp', 'C:/usp'), \
+                 patch.object(tp, '_tlib', 'C:/tlib'):
+                tp._run_in_embed('print("ok")')
+
+        env = captured['env']
+        assert env is not None, (
+            "_run_in_embed must pass env= to subprocess.run; without it, "
+            "the system Python user-site leaks into python-embed sys.path"
+        )
+        assert env.get('PYTHONNOUSERSITE') == '1', (
+            f"PYTHONNOUSERSITE must be '1', got {env.get('PYTHONNOUSERSITE')!r} "
+            f"— without this, %APPDATA%/Roaming/Python/Python3xx/site-packages "
+            f"leaks into python-embed and fakes 'missing transitive' errors"
+        )
+
+
+class TestRunPipEnv:
+    """Pin the env-var contract for `_run_pip` subprocess.
+
+    Regression (2026-04-28): every chatterbox install on the user's
+    bundle failed with `BackendUnavailable: Cannot import
+    'setuptools.build_meta'` while pip was building omegaconf 2.3.0 ->
+    antlr4-python3-runtime==4.9.3 from sdist (no wheel exists on PyPI
+    for that version).
+
+    Root cause: `_run_pip` set `SETUPTOOLS_USE_DISTUTILS='stdlib'` to
+    "skip the _distutils_hack shim".  But Python 3.12 removed
+    `distutils` from the stdlib entirely — setuptools relies on
+    `_distutils_hack` to alias `distutils -> setuptools._distutils`.
+    Forcing 'stdlib' suppresses that hack -> setuptools.__init__.py
+    line 9 does `import distutils.core` -> ModuleNotFoundError -> pip's
+    PEP 517 build subprocess can't import setuptools.build_meta -> any
+    sdist build crashes.
+
+    A/B reproduced 2026-04-28 against the user's installed bundle:
+    - WITHOUT the env var: `Successfully installed antlr4-...-4.9.3`
+    - WITH the env var:    `BackendUnavailable: Cannot import 'setuptools.build_meta'`
+
+    This test pins the fix so a future "let's try setting it again"
+    regression is caught at unit-test time, not on the user's bundle.
+    """
+
+    def test_run_pip_does_not_force_setuptools_stdlib_distutils(self):
+        from unittest.mock import patch, MagicMock
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured['env'] = kwargs.get('env')
+            proc = MagicMock()
+            proc.stdout = iter([])
+            proc.poll.return_value = 0
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc
+
+        with patch.object(pi.subprocess, 'Popen', side_effect=fake_popen), \
+             patch.object(pi, 'get_embed_python', return_value='python.exe'), \
+             patch.object(pi, 'get_user_site_packages', return_value='C:/usp'):
+            try:
+                pi._run_pip(['install', 'antlr4-python3-runtime==4.9.3'])
+            except Exception:
+                pass  # we only care about env, not exit path
+
+        env = captured.get('env')
+        assert env is not None, (
+            "_run_pip must pass env= to subprocess.Popen so the bundled "
+            "Python doesn't inherit a polluted parent env"
+        )
+        assert env.get('PYTHONNOUSERSITE') == '1', (
+            f"PYTHONNOUSERSITE must be '1', got {env.get('PYTHONNOUSERSITE')!r}"
+        )
+        assert 'SETUPTOOLS_USE_DISTUTILS' not in env, (
+            f"SETUPTOOLS_USE_DISTUTILS must NOT be set, got "
+            f"{env.get('SETUPTOOLS_USE_DISTUTILS')!r}.  Setting it to 'stdlib' "
+            f"breaks setuptools on Python 3.12 (no stdlib distutils) and "
+            f"causes BackendUnavailable on every sdist build (e.g. omegaconf "
+            f"-> antlr4-python3-runtime==4.9.3, no wheel on PyPI).  See "
+            f"server.log timestamp 2026-04-28 17:28 for the original failure."
+        )

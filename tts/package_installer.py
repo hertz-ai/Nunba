@@ -70,8 +70,16 @@ _BUNDLED_ONLY_BACKENDS = ('piper', 'luxtts')
 # fails at module load.  The HARTOS-owned plan is the source of truth
 # whenever the import succeeds (almost always).
 _LEGACY_BACKEND_PACKAGES_FALLBACK = {
-    'chatterbox_turbo':        [_HF_HUB_PIN, 'torchaudio', 'chatterbox-tts', 'librosa', 'soundfile'],
-    'chatterbox_multilingual': [_HF_HUB_PIN, 'torchaudio', 'chatterbox-tts', 'librosa', 'soundfile'],
+    # Mirrors HARTOS _CHATTERBOX_PIP_PLAN — chatterbox-tts upstream
+    # omits multiple runtime imports from install_requires.  See
+    # HARTOS tts_router.py for the full list of transitives the
+    # self-heal loop covers single-package-at-a-time at runtime
+    # (omegaconf / conformer / diffusers / s3tokenizer / einops
+    # surface in that order on a fresh install; not pre-installed
+    # together because of the --no-build-isolation parallel-build
+    # race observed 2026-04-28).
+    'chatterbox_turbo':        [_HF_HUB_PIN, 'torchaudio', 'chatterbox-tts', 'librosa', 'soundfile', 'resemble-perth'],
+    'chatterbox_multilingual': [_HF_HUB_PIN, 'torchaudio', 'chatterbox-tts', 'librosa', 'soundfile', 'resemble-perth'],
     'indic_parler':            [],
     'cosyvoice3':              [],
     'f5':                      ['torchaudio', 'f5-tts'],
@@ -534,7 +542,21 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
     cmd = [python_exe, '-m', 'pip'] + args
     env = os.environ.copy()
     env['PYTHONNOUSERSITE'] = '1'  # Don't leak to user site-packages
-    env['SETUPTOOLS_USE_DISTUTILS'] = 'stdlib'  # Skip _distutils_hack shim (missing in frozen build)
+    # NOTE: do NOT set SETUPTOOLS_USE_DISTUTILS='stdlib'.  Python 3.12
+    # removed `distutils` from the stdlib entirely; setuptools relies on
+    # `_distutils_hack` to alias `distutils` -> `setuptools._distutils`.
+    # Forcing 'stdlib' suppresses that hack -> `import distutils.core` in
+    # setuptools.__init__.py raises ModuleNotFoundError -> pip's PEP 517
+    # build subprocess crashes with `BackendUnavailable: Cannot import
+    # 'setuptools.build_meta'` on every sdist (e.g. omegaconf 2.3.0 ->
+    # antlr4-python3-runtime==4.9.3, which has no wheel on PyPI).  Was
+    # added 2026-03-31 (zinc installer commit) on the assumption that
+    # _distutils_hack was missing from python-embed; in practice
+    # `_distutils_hack` is in ~/.nunba/site-packages from prior installs
+    # AND/OR setuptools 82 bundles its own equivalent at
+    # `setuptools/_distutils`.  Letting setuptools pick its own distutils
+    # source works on Python 3.10/3.11/3.12 alike.  Regression guarded by
+    # tests/test_package_installer.py::TestRunPipEnv.
     env['PYTHONUNBUFFERED'] = '1'  # Stream stdout immediately — no buffering
 
     logger.info(f"Running: {' '.join(cmd)}")
@@ -614,13 +636,99 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
 
         drain.join(timeout=2)
         out = "\n".join(state['lines'])
+
+        # Persist FULL pip output to a per-package log file so a
+        # post-mortem (carets, full Python tracebacks, transitive
+        # dep error chains) survives the logger's line-width truncation.
+        # Without this, an rc!=0 pip run shows only the last ~800 chars
+        # in gui_app.log — which often clips the actual error and shows
+        # only the SyntaxError-indicator carets (`^^^^^^^...`), leaving
+        # nothing actionable to debug from.  See Apr 2026 chatterbox
+        # omegaconf rc=2 incident.
+        try:
+            _log_dir = os.path.join(
+                os.path.expanduser('~'), 'Documents', 'Nunba', 'logs',
+            )
+            os.makedirs(_log_dir, exist_ok=True)
+            # File name keys on the FIRST positional pip arg after
+            # the install/uninstall verb that isn't a flag — usually
+            # the package name.  Falls back to 'pip' if we can't tell.
+            _arg_name = 'pip'
+            for _a in args:
+                if not _a.startswith('-') and _a not in (
+                    'install', 'uninstall', '--target', '--index-url',
+                    '--no-build-isolation', '--progress-bar', 'off',
+                    '-U', '--upgrade', '--no-deps', user_sp,
+                ):
+                    # Strip version specifier so the file name stays
+                    # filesystem-safe (no '<', '>', '=' on Windows).
+                    _arg_name = re.split(r'[<>=!~]', _a, maxsplit=1)[0]
+                    _arg_name = _arg_name.replace('/', '_').replace('\\', '_')
+                    break
+            _pip_log = os.path.join(
+                _log_dir, f'pip_{_arg_name}.log',
+            )
+            with open(_pip_log, 'w', encoding='utf-8') as _pf:
+                _pf.write(f"# pip rc={rc}\n# cmd: {' '.join(cmd)}\n\n")
+                _pf.write(out)
+        except Exception:
+            _pip_log = None
+
+        # ENOSPC detection — disk full anywhere along the install
+        # mid-flight.  Pip's exit code is rc=2 in this case but the
+        # message is buried in the middle of the dep-resolver output;
+        # surface a dedicated string the caller can branch on.
+        out_low = out.lower()
+        is_enospc = ('no space left' in out_low
+                     or 'enospc' in out_low
+                     or 'errno 28' in out_low
+                     or '0x80070070' in out_low)  # Windows: not enough space
+
+        # "Successfully installed <pkgs>" is pip's positive-result
+        # line — when present it means the packages DID land on disk
+        # even if pip exited rc!=0 due to a post-install dep-resolver
+        # warning or build-system noise.  Without this rescue, a
+        # successful install + a non-fatal rc=2 looks identical to the
+        # caller, who then aborts the entire heal loop.  Captured
+        # 2026-04-28 (chatterbox omegaconf: rc=2 from dep-conflict
+        # warnings even though omegaconf landed on disk just fine).
+        success_line = None
+        for _line in state['lines']:
+            if _line.startswith('Successfully installed '):
+                success_line = _line
+                break
+
         if rc == 0:
             # Ensure the target dir is on sys.path NOW (not just next restart)
             ensure_user_site_on_path()
             return True, out
+
+        # rc != 0 below — but check if pip nonetheless reported
+        # successful install of the target packages.
+        if success_line and not is_enospc:
+            ensure_user_site_on_path()
+            logger.warning(
+                "pip exited rc=%d but reported success line: %s "
+                "(treating as installed; full log: %s)",
+                rc, success_line, _pip_log or '(disabled)',
+            )
+            return True, out
+
+        # Honest failure — log the FULL output (not just last 800 chars)
+        # via the per-package file path, plus the tail in the in-memory
+        # log for the operator's first glance.
+        _log_hint = f' (full output: {_pip_log})' if _pip_log else ''
+        if is_enospc:
+            logger.error(
+                "pip failed (rc=%d, ENOSPC — disk full)%s. Tail:\n%s",
+                rc, _log_hint, out[-1500:],
+            )
         else:
-            logger.error(f"pip failed (rc={rc}): {out[-800:]}")
-            return False, out
+            logger.error(
+                "pip failed (rc=%d)%s. Tail:\n%s",
+                rc, _log_hint, out[-1500:],
+            )
+        return False, out
     except Exception as e:
         return False, str(e)
 
@@ -692,8 +800,29 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
             logger.info("CUDA torch installed to D: drive successfully")
 
     if ok:
-        # Remove the stub torch (0.0.0) from python-embed so the CUDA version
-        # from ~/.nunba/site-packages is the only one Python finds
+        # Remove ANY torch from python-embed so the CUDA version from
+        # ~/.nunba/site-packages is the one and only torch on sys.path.
+        #
+        # Was previously gated on `version == '0.0.0'` (stub-only) — but
+        # cx_Freeze bundles the dev .venv's REAL torch (e.g. v2.10.0+cpu)
+        # into python-embed at build time, NOT a 0.0.0 stub.  The check
+        # never fired, both real torches stayed on sys.path, and Python
+        # tripped the partial-init / circular-import detector when one
+        # torch's __init__.py finished while a transitive resolved a
+        # submodule from the other version.  Validate.log symptom:
+        #   AttributeError: partially initialized module 'torch'
+        #   has no attribute 'autograd' (most likely due to a circular
+        #   import)
+        # cascading across helper, autogen, create_recipe, reuse_recipe,
+        # gather_agentdetails, lifecycle_hooks → SKIPped the deep
+        # health check → masked Tier-1 failure for weeks.
+        #
+        # When we reach this branch, install_gpu_torch() returned True,
+        # meaning the CUDA torch is verifiably installed in ~/.nunba.
+        # That makes ~/.nunba canonical — python-embed's torch is stale
+        # by definition and MUST go.  For users without GPU,
+        # install_gpu_torch never runs, so this branch is skipped and
+        # python-embed/torch stays as the only torch.
         _embed_sp = get_embed_site_packages()
         if _embed_sp:
             import shutil
@@ -701,16 +830,12 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
                 _stub_path = os.path.join(_embed_sp, _stub_dir)
                 if os.path.isdir(_stub_path):
                     try:
-                        _ver_file = os.path.join(_stub_path, 'version.py')
-                        _is_stub = False
-                        if os.path.isfile(_ver_file):
-                            with open(_ver_file) as _vf:
-                                _is_stub = '0.0.0' in _vf.read()
-                        if _is_stub:
-                            shutil.rmtree(_stub_path, ignore_errors=True)
-                            logger.info(f"Removed stub {_stub_dir} from python-embed")
+                        shutil.rmtree(_stub_path, ignore_errors=True)
+                        logger.info(
+                            f"Removed bundled {_stub_dir} from python-embed "
+                            f"(CUDA torch in ~/.nunba is canonical)")
                     except Exception as _e:
-                        logger.debug(f"Could not remove stub {_stub_dir}: {_e}")
+                        logger.debug(f"Could not remove {_stub_dir}: {_e}")
 
         # Fix torch/_C directory conflict in CUDA install target too
         # pip creates both _C.cpXYZ.pyd (the real extension) AND _C/ (stubs).
@@ -1089,8 +1214,32 @@ def _self_heal_missing_transitives(
             )
         ok, msg = _run_pip(pip_args, progress_cb)
         if not ok:
+            # Pip exited non-zero — but the package may STILL have
+            # landed on disk before the failure (post-install dep
+            # check, target-dir warning, harmless rc=2 from upstream
+            # `Successfully installed` is now rescued in _run_pip
+            # itself, but a hard rc=2 mid-write can still leave the
+            # missing module importable).  Re-run the deep probe one
+            # extra time before giving up; if the missing module is
+            # now resolvable, the next iteration of the outer loop
+            # will pick up whatever NEW transitive surfaces.
+            _invalidate_import_cache()
+            if check_backend_runnable(backend, required_pkg):
+                logger.info(
+                    "Self-heal: pip rc!=0 for '%s' but deep probe now "
+                    "passes — treating as healed.", missing,
+                )
+                healed.append(heal_key)
+                return True, healed
+            # Probe still fails AND pip failed — log the FULL message
+            # so future runs aren't blind to the carets-only line that
+            # used to leak through the logger's width truncation.
+            _msg_tail = msg[-1500:] if len(msg) > 1500 else msg
             logger.warning(
-                f"Self-heal pip install of '{missing}' for {backend} failed: {msg}"
+                "Self-heal pip install of '%s' for %s failed (full "
+                "output trimmed to last 1500 chars; see "
+                "~/Documents/Nunba/logs/pip_%s.log for full):\n%s",
+                missing, backend, missing, _msg_tail,
             )
             return False, healed
         healed.append(heal_key)

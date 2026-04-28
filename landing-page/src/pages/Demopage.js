@@ -4355,24 +4355,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
       {/* ── Top-right toolbar: hidden when embedded in AgentChatPage ── */}
       {!embeddedMode && <div className="absolute top-1 right-2 z-50 flex items-center gap-1.5 flex-wrap justify-end">
-        {/* Install / Launch companion (desktop only) */}
-        {screenWidth >= 768 && !companionStatus.isInstalled && !isLocalRoute && (
-          <a
-            href="https://azurekong.hertzai.com/mkt-aws/examples/daf7beee-7HevolveAI_Agent_Companion_Setup_2.exe"
-            download
-            className="bg-gradient-to-r from-blue-500 to-green-500 text-white border border-gray-600 rounded-lg px-2 py-1 text-xs hover:brightness-110 transition-all inline-block text-center whitespace-nowrap"
-          >
-            Install Companion
-          </a>
-        )}
-        {screenWidth >= 768 && companionStatus.isInstalled && !companionStatus.isRunning && !isLocalRoute && (
-          <a
-            href="hevolveai://launch?action=show"
-            className="bg-gradient-to-r from-green-500 to-blue-500 text-white border border-gray-600 rounded-lg px-2 py-1 text-xs hover:brightness-110 transition-all inline-block text-center whitespace-nowrap"
-          >
-            Launch Companion
-          </a>
-        )}
+        {/* Install / Launch Companion buttons removed 2026-04-28:
+            Nunba IS the companion app — pointing users to a separate
+            "HevolveAI Agent Companion .exe" or `hevolveai://` launcher
+            from inside Nunba (or from cloud Hevolve, which now points
+            people at Nunba directly) is misleading.  Cloud-side desktop
+            app discovery now flows through the Nunba downloads page. */}
 
         {/* Intelligence preference toggle + backend health */}
         <div className="flex items-center gap-1.5 flex-shrink-0">

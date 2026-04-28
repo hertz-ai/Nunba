@@ -31,6 +31,14 @@ CORE_DEPS = {
     "flask-cors": "6.0.2",
     "werkzeug": "3.1.5",
     "waitress": "3.0.2",
+    # Hypercorn = primary ASGI server (matches HARTOS sibling).  Single
+    # config / single binary across desktop bundle and central Docker.
+    # Lifts thread-per-connection cost on idle keep-alive (waitress
+    # holds a worker for every connection regardless of activity);
+    # lets the dashboard/health/admin polls drain even while a slow
+    # /tts/setup-engine pip install or LLM inference is in flight.
+    # Waitress kept above as a safe fallback.
+    "hypercorn": "0.17.3",
     # Desktop GUI -- pywebview + pyautogui need a windowing system at
     # IMPORT time (Quartz on macOS, Win32 on Windows, X11/Wayland on
     # Linux).  Headless Linux CI runners (no DISPLAY) USED TO fail on
