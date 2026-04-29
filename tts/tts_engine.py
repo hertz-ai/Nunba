@@ -41,6 +41,12 @@ BACKEND_INDIC_PARLER = "indic_parler"
 BACKEND_COSYVOICE3 = "cosyvoice3"
 BACKEND_KOKORO = "kokoro"
 BACKEND_PIPER = "piper"
+# Mid-VRAM coverage tier (1–3 GB) — added 2026-04-29 to fill the
+# 38-language coverage gap below the 4–14 GB heavy clone engines.
+# Each maps via _BACKEND_TO_REGISTRY_KEY to a HARTOS engine spec.
+BACKEND_MELOTTS = "melotts"
+BACKEND_XTTS_V2 = "xtts_v2"
+BACKEND_MMS_TTS = "mms_tts"
 BACKEND_NONE = "none"
 
 # ════════════════════════════════════════════════════════════════════
@@ -231,6 +237,66 @@ _FALLBACK_ENGINE_CAPABILITIES = {
         'sample_rate': 22050,
         'quality': 'medium',
     },
+    # ── Mid-VRAM coverage tier (1–3 GB) ─────────────────────────
+    # These three engines fill the gap so every SUPPORTED_LANG_DICT
+    # code has at least one engine with vram_gb≤3.0 in its
+    # _FALLBACK_LANG_ENGINE_PREFERENCE ladder.  Capabilities mirror
+    # the canonical HARTOS ENGINE_REGISTRY (single source of truth
+    # at runtime via _get_engine_capabilities → ModelCatalog).
+    BACKEND_MELOTTS: {
+        'name': 'MeloTTS (myshell-ai)',
+        'vram_gb': 1.5,
+        'languages': {'en', 'es', 'fr', 'zh', 'ja', 'ko'},
+        'paralinguistic': [],
+        'emotion_tags': [],
+        'voice_cloning': False,
+        'streaming': False,
+        'sample_rate': 24000,
+        'quality': 'high',
+    },
+    BACKEND_XTTS_V2: {
+        'name': 'XTTS-v2 (Coqui)',
+        'vram_gb': 2.5,
+        'languages': {
+            'en', 'es', 'fr', 'de', 'it', 'pt', 'pl', 'tr', 'ru', 'nl',
+            'cs', 'ar', 'zh', 'hu', 'ko', 'ja', 'hi',
+        },
+        'paralinguistic': [],
+        'emotion_tags': [],
+        'voice_cloning': True,
+        'streaming': False,
+        'sample_rate': 24000,
+        'quality': 'high',
+    },
+    BACKEND_MMS_TTS: {
+        'name': 'MMS-TTS (Meta VITS)',
+        'vram_gb': 1.0,
+        'languages': {
+            # Roman-script + non-Roman (with uroman) — same set as the
+            # HARTOS spec.  Keeping symmetry with that registry; if the
+            # catalog isn't loaded yet, fallback selection still routes
+            # to mms_tts as the universal coverage engine.
+            'en', 'es', 'fr', 'de', 'it', 'pt', 'pl', 'tr', 'ru', 'nl',
+            'cs', 'hu', 'sv', 'fi', 'el', 'ro', 'bg', 'uk', 'cy', 'is',
+            'zh', 'ja', 'ko', 'vi', 'th', 'id', 'ms', 'km', 'lo', 'my',
+            'hi', 'bn', 'ta', 'te', 'mr', 'gu', 'kn', 'ml', 'pa', 'or',
+            'ne', 'as', 'sd', 'sa', 'ur', 'si',
+            'ar', 'fa', 'he', 'sw',
+            # Additional codes in core.constants.SUPPORTED_LANG_DICT.
+            # MMS-TTS upstream ships per-language VITS checkpoints for
+            # 1100+ langs (Pratap et al., Meta, 2023); these are within
+            # that catalogue and supported by the mms_tts_tool wrapper.
+            'lv',  # Latvian
+            'sr',  # Serbian
+            'ks',  # Kashmiri
+        },
+        'paralinguistic': [],
+        'emotion_tags': [],
+        'voice_cloning': False,
+        'streaming': False,
+        'sample_rate': 16000,
+        'quality': 'medium',
+    },
 }
 
 # Indic languages — canonical set lives in core.constants.INDIC_LANGS.
@@ -262,31 +328,63 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
     'en': frozenset({
         BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_CHATTERBOX_ML,
         BACKEND_INDIC_PARLER, BACKEND_COSYVOICE3, BACKEND_KOKORO, BACKEND_PIPER,
+        BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS,
     }),
-    # European / CJK — CosyVoice3 + Chatterbox ML
-    'es': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'fr': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'de': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'it': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'ja': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'ko': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'zh': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'ru': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    # Extra Chatterbox-ML-only European langs
-    'pt': frozenset({BACKEND_CHATTERBOX_ML}),
-    'nl': frozenset({BACKEND_CHATTERBOX_ML}),
-    'pl': frozenset({BACKEND_CHATTERBOX_ML}),
-    'sv': frozenset({BACKEND_CHATTERBOX_ML}),
+    # European / CJK — CosyVoice3 + Chatterbox ML + new mid-VRAM tier
+    'es': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'fr': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'de': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'it': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'ja': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'ko': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'zh': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_F5, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'ru': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    # Extra Chatterbox-ML-only European langs — now augmented with
+    # XTTS-v2 (where supported) + MMS-TTS as universal 1 GB tier.
+    'pt': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'nl': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'pl': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'sv': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
     'da': frozenset({BACKEND_CHATTERBOX_ML}),
-    'fi': frozenset({BACKEND_CHATTERBOX_ML}),
-    'hu': frozenset({BACKEND_CHATTERBOX_ML}),
-    'el': frozenset({BACKEND_CHATTERBOX_ML}),
-    'tr': frozenset({BACKEND_CHATTERBOX_ML}),
-    'cs': frozenset({BACKEND_CHATTERBOX_ML}),
-    'ro': frozenset({BACKEND_CHATTERBOX_ML}),
-    'bg': frozenset({BACKEND_CHATTERBOX_ML}),
+    'fi': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'hu': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'el': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'tr': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'cs': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'ro': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'bg': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
     'hr': frozenset({BACKEND_CHATTERBOX_ML}),
     'sk': frozenset({BACKEND_CHATTERBOX_ML}),
+    # New SUPPORTED_LANG_DICT codes — mid-VRAM coverage tier
+    'ar': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'fa': frozenset({BACKEND_MMS_TTS}),
+    'he': frozenset({BACKEND_MMS_TTS}),
+    'sw': frozenset({BACKEND_MMS_TTS}),
+    'uk': frozenset({BACKEND_MMS_TTS}),
+    'cy': frozenset({BACKEND_MMS_TTS}),
+    'is': frozenset({BACKEND_MMS_TTS}),
+    'id': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'ms': frozenset({BACKEND_MMS_TTS}),
+    'th': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'vi': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'km': frozenset({BACKEND_MMS_TTS}),
+    'lo': frozenset({BACKEND_MMS_TTS}),
+    'my': frozenset({BACKEND_MMS_TTS}),
+    'lv': frozenset({BACKEND_MMS_TTS}),
+    'sr': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'ks': frozenset({BACKEND_MMS_TTS}),
+    # Indian English — exact-code key so en-IN routes through Indic
+    # Parler (which speaks English with Indian phonemes) before the
+    # generic 'en' Chatterbox-Turbo ladder.  Includes every backend
+    # that can speak plain 'en' as a safety floor.
+    'en-IN': frozenset({
+        BACKEND_INDIC_PARLER, BACKEND_MMS_TTS, BACKEND_XTTS_V2,
+        BACKEND_MELOTTS, BACKEND_F5, BACKEND_CHATTERBOX_TURBO,
+        BACKEND_CHATTERBOX_ML, BACKEND_KOKORO, BACKEND_PIPER,
+    }),
+    # 'zh-cn' / 'zh_TW' / 'zh-Hans' all collapse to 'zh' via
+    # _normalize_lang() before this lookup runs (see _capable_backends_for).
+    # No separate entry needed — Chinese variants reuse the 'zh' allowlist.
 }
 # Indic langs — prefer Indic Parler (authoritative 21 Indic langs)
 # but keep Chatterbox ML as a LOCAL fallback so a broken Indic Parler
@@ -298,10 +396,18 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
 # Chatterbox ML is locally installed for every user who has any other
 # non-Latin lang, so the fallback has material coverage on most boxes.
 for _lang in _INDIC_LANGS:
+    # Indic Parler + Chatterbox ML stay as the heavy GPU options.
+    # MMS-TTS adds a 1 GB-tier universal Indic fallback so users on
+    # tight VRAM (< 4 GB) still get audio without falling all the way
+    # to Piper (which has no Indic voice files).  XTTS-v2 only ships
+    # 'hi' among Indic, added explicitly in the per-lang map below.
     _LANG_CAPABLE_BACKENDS[_lang] = frozenset({
         BACKEND_INDIC_PARLER,
         BACKEND_CHATTERBOX_ML,
+        BACKEND_MMS_TTS,
     })
+# XTTS-v2 only adds Hindi among Indic — extend explicitly.
+_LANG_CAPABLE_BACKENDS['hi'] = _LANG_CAPABLE_BACKENDS['hi'] | frozenset({BACKEND_XTTS_V2})
 
 
 def _normalize_lang(lang: str | None) -> str:
@@ -345,48 +451,94 @@ def _publish_lang_unsupported(lang: str, attempted: list[str]) -> None:
 # _get_lang_preference().  Direct use of this dict is degraded-mode only.
 _FALLBACK_LANG_ENGINE_PREFERENCE = {
     # English ladder (quality first, then CPU-friendly):
-    # 1. Chatterbox Turbo — big GPU, paralinguistic tags, voice clone
-    # 2. F5-TTS           — big GPU, voice clone
-    # 3. Indic Parler     — big GPU, also covers English
-    # 4. Kokoro 82M       — small neural, CPU-friendly, beats Piper
-    # 5. Piper            — bundled CPU absolute-last-resort
-    'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_INDIC_PARLER, BACKEND_KOKORO, BACKEND_PIPER],
-    # International: Chatterbox Multilingual is PRIMARY because it is
-    # pip-installable (`chatterbox-tts`) and ships with every normal
-    # Nunba install.  CosyVoice3 is KEPT as a secondary slot for power
-    # users who manually clone the `FunAudioLLM/CosyVoice` repo to
-    # `~/PycharmProjects/CosyVoice` — without that clone, `import
-    # cosyvoice` raises ModuleNotFoundError and the synth silently
-    # cascades to the second entry anyway.  Listing Chatterbox first
-    # flips the default path for 99% of installs from "load
-    # un-importable primary → fail → fall back" to "load importable
-    # primary → succeed".  (J213 decision, 2026-04-18 live audit.)
-    'es': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'fr': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'de': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'ja': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'ko': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'zh': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'it': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'ru': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    # Portuguese — Chatterbox ML covers pt natively (see
-    # _FALLBACK_ENGINE_CAPABILITIES[CHATTERBOX_ML]['languages']).
+    # 1. Chatterbox Turbo — big GPU, paralinguistic tags, voice clone (5.6 GB)
+    # 2. F5-TTS           — big GPU, voice clone (2.5 GB)
+    # 3. MeloTTS          — neural, ~1.5 GB, CPU runs at real-time
+    # 4. XTTS-v2          — voice clone, 17 langs, 2.5 GB
+    # 5. Indic Parler     — big GPU, also covers English (2.0 GB)
+    # 6. Kokoro 82M       — small neural, CPU-friendly, beats Piper (0.2 GB)
+    # 7. MMS-TTS          — universal coverage, ~1 GB
+    # 8. Piper            — bundled CPU absolute-last-resort
+    'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_MELOTTS, BACKEND_XTTS_V2,
+           BACKEND_INDIC_PARLER, BACKEND_KOKORO, BACKEND_MMS_TTS, BACKEND_PIPER],
+    # International: MeloTTS (1.5 GB) and XTTS-v2 (2.5 GB) sit ABOVE the
+    # 14 GB Chatterbox-ML so 4-8 GB GPU users get quality TTS without
+    # the heaviest engine.  Chatterbox kept as the high-quality clone
+    # option for users with the VRAM.  CosyVoice3 stays as the
+    # power-user slot (requires git clone of FunAudioLLM/CosyVoice).
+    # MMS-TTS is the universal floor before falling back to chatterbox/piper.
+    'es': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'fr': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'de': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'ja': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'ko': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'zh': [BACKEND_MELOTTS, BACKEND_F5, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'it': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'ru': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    # Portuguese — XTTS-v2 covers pt; Chatterbox ML covers pt natively.
     # CosyVoice3's 9-lang set excludes pt, so we skip it here to avoid
     # routing Portuguese users through a wrong-language fallback chain
     # (the J210 gap, 2026-04-18 live audit).
-    'pt': [BACKEND_CHATTERBOX_ML, BACKEND_PIPER],
+    'pt': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS, BACKEND_PIPER],
+    # Newly explicitly-covered langs (previously hit _DEFAULT_PREFERENCE).
+    'ar': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'nl': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'pl': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'tr': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'cs': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'hu': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'sv': [BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'fi': [BACKEND_MMS_TTS],
+    'el': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'ro': [BACKEND_MMS_TTS],
+    'bg': [BACKEND_MMS_TTS],
+    'uk': [BACKEND_MMS_TTS],
+    'cy': [BACKEND_MMS_TTS],
+    'is': [BACKEND_MMS_TTS],
+    # id / th / vi — Chatterbox-ML's `languages` set does NOT include
+    # these codes (verified 2026-04-29 against the engine's capabilities
+    # dict). MMS-TTS is the only engine in their ladder that actually
+    # speaks them, so it MUST come first to avoid silent fallthrough.
+    'id': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'ms': [BACKEND_MMS_TTS],
+    'th': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'vi': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'fa': [BACKEND_MMS_TTS],
+    'he': [BACKEND_MMS_TTS],
+    'sw': [BACKEND_MMS_TTS],
+    'km': [BACKEND_MMS_TTS],
+    'lo': [BACKEND_MMS_TTS],
+    'my': [BACKEND_MMS_TTS],
+    'lv': [BACKEND_MMS_TTS],
+    'sr': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'ks': [BACKEND_MMS_TTS],
+    # NB: 'zh-cn' is intentionally NOT keyed here. _normalize_lang()
+    # collapses 'zh-cn' / 'zh-CN' / 'zh_TW' to 'zh' before the ladder
+    # lookup, so any 'zh-cn' entry would be dead-code AND would also
+    # need its first-choice engine to declare the 'zh-cn' code (which
+    # MeloTTS / XTTS-v2 do not — they list 'zh' only). All Chinese
+    # variants therefore consume the 'zh' ladder.
+    # Indian English — Indic Parler natively handles English with Indian
+    # phonemes/prosody.  Exact-code lookup runs BEFORE _normalize_lang
+    # collapses 'en-IN' → 'en' (see _get_lang_preference).  Falls back
+    # to MMS-TTS (1 GB) and Piper (CPU) for low-VRAM hosts.
+    'en-IN': [BACKEND_INDIC_PARLER, BACKEND_MMS_TTS, BACKEND_PIPER],
 }
-# Add all Indic languages → Indic Parler TTS
+# Add all Indic languages → Indic Parler TTS, then mms_tts as 1 GB-tier
+# universal fallback so every Indic code has at least one engine ≤3 GB
+# (Indic Parler is 2 GB, mms_tts is 1 GB — both safely within budget).
 for _lang in _INDIC_LANGS:
-    _FALLBACK_LANG_ENGINE_PREFERENCE[_lang] = [BACKEND_INDIC_PARLER]
+    _FALLBACK_LANG_ENGINE_PREFERENCE[_lang] = [BACKEND_INDIC_PARLER, BACKEND_MMS_TTS]
+# XTTS-v2 covers Hindi specifically — promote it for hi as a voice-clone option.
+_FALLBACK_LANG_ENGINE_PREFERENCE['hi'] = [BACKEND_INDIC_PARLER, BACKEND_XTTS_V2, BACKEND_MMS_TTS]
 
 # Default fallback chain for unlisted languages.
-# Chatterbox ML is placed first for the same reason as the explicit
-# per-lang lists above: pip-installable, importable out of the box.
-# CosyVoice3 follows for the power-user path (repo clone required).
-# Indic Parler is the final Unicode-safe catcher for whatever slipped
-# through.
-_DEFAULT_PREFERENCE = [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3, BACKEND_INDIC_PARLER]
+# MMS-TTS first because it has 50+ language coverage at 1 GB VRAM —
+# the universal-coverage floor.  Chatterbox-ML next for users who have
+# the 14 GB GPU.  Indic Parler as a Unicode-safe catcher for whatever
+# slipped through (it has English support so it doubles as a final
+# guard before Piper gives up).
+_DEFAULT_PREFERENCE = [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3, BACKEND_INDIC_PARLER]
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -413,6 +565,10 @@ _BACKEND_TO_REGISTRY_KEY: dict[str, str] = {
     BACKEND_INDIC_PARLER:     'indic_parler',
     BACKEND_COSYVOICE3:       'cosyvoice3',
     BACKEND_KOKORO:           'kokoro',
+    # Mid-VRAM coverage tier — added 2026-04-29.
+    BACKEND_MELOTTS:          'melotts',
+    BACKEND_XTTS_V2:          'xtts_v2',
+    BACKEND_MMS_TTS:          'mms_tts',
     # CPU engines — also run via HARTOS RuntimeToolManager subprocess
     'luxtts':                 'luxtts',  # kept for frozen HARTOS compat until rebuild
     'pocket_tts':             'pocket_tts',
@@ -534,44 +690,147 @@ def _get_engine_capabilities(backend=None) -> dict:
     return _FALLBACK_ENGINE_CAPABILITIES.get(backend, {})
 
 
+def _free_vram_gb() -> float | None:
+    """Read free VRAM from vram_manager.  Returns None if no GPU signal."""
+    try:
+        from integrations.service_tools.vram_manager import vram_manager
+        return vram_manager.get_free_vram()
+    except Exception:
+        return None
+
+
+def _vram_cache_bucket(free_gb: float) -> int:
+    """Quantize free VRAM to a coarse cache-key bucket.
+
+    Stability across small fluctuations (e.g. 6.2 → 6.4 GB) prevents
+    the filter from re-running on every chat.  Bucket size is 1 GB —
+    enough resolution to distinguish chatterbox_turbo (5.6) vs F5 (2.5)
+    while still grouping nearby readings.
+    """
+    return int(free_gb)
+
+
+# Cache: (free_vram_bucket, original_ladder_tuple) → filtered ladder.
+# Bounded at 256 entries; evicted in bulk when full.
+_LADDER_FILTER_CACHE: dict[tuple, list[str]] = {}
+_LADDER_FILTER_CACHE_MAX = 256
+
+
+def _filter_ladder_by_vram_budget(prefs: list[str]) -> list[str]:
+    """Drop GPU backends whose declared min_vram exceeds free VRAM.
+
+    Why this exists: without it, the ladder probes chatterbox_turbo
+    (5.6 GB min) on every chat even on a 4 GB GPU, wasting an OOM
+    round-trip per backend before falling through.  CPU-friendly
+    backends (no VRAM_BUDGETS entry — piper/espeak) ALWAYS pass.
+    When the catalog hasn't loaded or there's no GPU signal, returns
+    prefs unchanged (fail-open: the existing per-attempt circuit
+    breaker still demotes after live failures).
+    """
+    free_gb = _free_vram_gb()
+    if free_gb is None or free_gb <= 0:
+        return prefs  # no GPU signal — preserve full ladder
+
+    cache_key = (_vram_cache_bucket(free_gb), tuple(prefs))
+    cached = _LADDER_FILTER_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
+    try:
+        from integrations.service_tools.vram_manager import VRAM_BUDGETS
+    except Exception:
+        return prefs
+
+    def _backend_fits(be: str) -> bool:
+        registry_key = _BACKEND_TO_REGISTRY_KEY.get(be)
+        if not registry_key:
+            return True  # CPU backend (piper/espeak) — no GPU budget entry
+        budget = VRAM_BUDGETS.get(f'tts_{registry_key}')
+        if not budget:
+            return True  # unknown to vram_manager → assume fits
+        min_vram_gb, _model_size = budget
+        return min_vram_gb <= free_gb
+
+    filtered = [be for be in prefs if _backend_fits(be)]
+    # Never let the filter empty the ladder — at minimum keep Piper /
+    # Kokoro / espeak as a CPU floor.  If filter ate everything,
+    # fall back to the original list and let the runtime circuit
+    # breaker handle the OOM (matches the fail-open principle above).
+    if not filtered:
+        filtered = list(prefs)
+
+    if len(_LADDER_FILTER_CACHE) >= _LADDER_FILTER_CACHE_MAX:
+        _LADDER_FILTER_CACHE.clear()
+    _LADDER_FILTER_CACHE[cache_key] = list(filtered)
+    return filtered
+
+
 def _get_lang_preference(language: str) -> list[str]:
     """Return ordered list of preferred backends for a language.
 
     Tries ModelCatalog first (canonical).  Falls back to
     _FALLBACK_LANG_ENGINE_PREFERENCE if the catalog is unavailable.
+    Final step: drop backends whose declared min-VRAM exceeds free
+    VRAM, so the ladder doesn't waste cycles probing engines that
+    can't possibly fit on this hardware.
     """
-    try:
-        from models.catalog import ModelType, get_catalog
-        catalog = get_catalog()
-        entries = catalog.list_by_type(ModelType.TTS)
-        if entries:
-            # Build preference list: entries that support this language,
-            # sorted by language_priority (lower value = higher preference),
-            # then by overall priority descending.
-            supporting = []
-            for entry in entries:
-                langs = set(getattr(entry, 'languages', None) or [])
-                # '*' is the wildcard convention for engines that
-                # support every language (piper, espeak) — a single
-                # spec covers all languages, no per-language duplication.
-                if language in langs or '*' in langs:
-                    lang_prio = (getattr(entry, 'language_priority', None) or {})
-                    prio_val = lang_prio.get(language, 999)
-                    supporting.append((prio_val, -(getattr(entry, 'priority', 0) or 0), entry))
-            if supporting:
-                supporting.sort(key=lambda x: (x[0], x[1]))
-                result = []
-                for _, _, entry in supporting:
-                    catalog_id = entry.id.replace('tts-', '', 1)
-                    be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
-                    if be not in result:
-                        result.append(be)
-                if result:
-                    return result
-    except Exception:
-        pass  # catalog unavailable — fall through
+    # Region-coded inputs (e.g. 'en-IN', 'pt-BR') get their routing
+    # from the fallback dict's exact-code key BEFORE consulting the
+    # catalog.  Reason: most TTS entries' `languages` set lists only
+    # the bare language ('en'), so the catalog path returns just
+    # wildcard CPU engines (piper) for region codes — silently
+    # bypassing region-specific intent (en-IN → Indic Parler).
+    # The fallback dict is the source of truth for region routing;
+    # the catalog is the source of truth for priority within a bare
+    # language.  Both stay canonical for their respective concerns.
+    prefs: list[str] | None = None
+    if '-' in (language or '') and language in _FALLBACK_LANG_ENGINE_PREFERENCE:
+        prefs = list(_FALLBACK_LANG_ENGINE_PREFERENCE[language])
 
-    return _FALLBACK_LANG_ENGINE_PREFERENCE.get(language, _DEFAULT_PREFERENCE)
+    if prefs is None:
+        try:
+            from models.catalog import ModelType, get_catalog
+            catalog = get_catalog()
+            entries = catalog.list_by_type(ModelType.TTS)
+            if entries:
+                # Build preference list: entries that support this language,
+                # sorted by language_priority (lower value = higher preference),
+                # then by overall priority descending.
+                supporting = []
+                for entry in entries:
+                    langs = set(getattr(entry, 'languages', None) or [])
+                    # '*' is the wildcard convention for engines that
+                    # support every language (piper, espeak) — a single
+                    # spec covers all languages, no per-language duplication.
+                    if language in langs or '*' in langs:
+                        lang_prio = (getattr(entry, 'language_priority', None) or {})
+                        prio_val = lang_prio.get(language, 999)
+                        supporting.append((prio_val, -(getattr(entry, 'priority', 0) or 0), entry))
+                if supporting:
+                    supporting.sort(key=lambda x: (x[0], x[1]))
+                    result = []
+                    for _, _, entry in supporting:
+                        catalog_id = entry.id.replace('tts-', '', 1)
+                        be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
+                        if be not in result:
+                            result.append(be)
+                    if result:
+                        prefs = result
+        except Exception:
+            pass  # catalog unavailable — fall through
+
+    # Exact-match FIRST — preserves region codes like ``en-IN`` (Indian
+    # English) so the Indic-Parler-first ladder fires when the caller
+    # passes the BCP-47 region tag.  Falls back to the bare-language
+    # entry (``_normalize_lang('en-IN') == 'en'``) if no region-specific
+    # ladder is registered.  Same DRY rule — extend the canonical dict
+    # instead of forking a "regional" one.
+    if prefs is None:
+        prefs = (_FALLBACK_LANG_ENGINE_PREFERENCE.get(language)
+                 or _FALLBACK_LANG_ENGINE_PREFERENCE.get(_normalize_lang(language))
+                 or _DEFAULT_PREFERENCE)
+
+    return _filter_ladder_by_vram_budget(list(prefs))
 
 
 # ── Backward-compat aliases (importers that do ``from tts.tts_engine import

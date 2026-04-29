@@ -201,9 +201,10 @@ BACKEND_PACKAGES = _build_backend_packages_from_hartos()
 # transformers<4.47, conflicts with main's 5.1.0).  Migrating
 # chatterbox / cosyvoice / f5 / kokoro / omnivoice into their own
 # venvs is a follow-up task per engine — flip install_target='venv'
-# in HARTOS *only after* the matching tts/<engine>_worker.py file
-# lands in Nunba (mirroring tts/indic_parler_worker.py), otherwise
-# the synth dispatch can't reach the engine inside its venv.
+# in HARTOS and set `tool.python_exe = backend_venv.ensure_venv(<engine>)`
+# on the engine's HARTOS ToolWorker (see #53).  No per-engine
+# Nunba-side worker file is needed: gpu_worker._dispatch_and_run
+# spawns the HARTOS tool directly under the venv's python.
 BACKEND_VENV_PACKAGES = _build_backend_venv_packages_from_hartos()
 
 
@@ -1289,11 +1290,29 @@ def install_backend_full(backend: str,
                     f"({len(venv_pkgs)} packages)..."
                 )
             from tts.backend_venv import ensure_venv, install_into_venv
-            ensure_venv(backend)
+            venv_python = ensure_venv(backend)
             venv_ok, venv_msg = install_into_venv(backend, venv_pkgs)
             if not venv_ok:
                 return False, f"venv install failed: {venv_msg}"
             pkg_ok, pkg_msg = True, venv_msg
+            # Wire the HARTOS ToolWorker to spawn its dispatch subprocess
+            # under THIS venv's python (#53 contract).  Without this,
+            # install_target='venv' only routes the install — synth still
+            # spawns under python-embed and re-hits the same version
+            # conflicts.  Use the spec already in BACKEND_VENV_PACKAGES
+            # path: HARTOS owns tool_module + tool_worker_attr.
+            try:
+                spec = _hartos_engine_registry().get(backend)
+                if spec and spec.tool_module and spec.tool_worker_attr:
+                    import importlib
+                    worker = getattr(
+                        importlib.import_module(spec.tool_module),
+                        spec.tool_worker_attr, None)
+                    if worker is not None:
+                        worker.python_exe = str(venv_python)
+                        getattr(worker, 'stop', lambda: None)()
+            except Exception as _e:
+                logger.debug("python_exe wire skipped for %s: %s", backend, _e)
         else:
             # Step 1b: normal main-interpreter install path.
             if progress_cb:

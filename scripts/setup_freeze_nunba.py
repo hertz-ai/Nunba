@@ -385,7 +385,11 @@ build_exe_options = {
         "tts.piper_tts",  # Piper TTS for CPU text-to-speech
         "tts.package_installer",  # Runtime TTS package installer
         "tts.backend_venv",  # Per-backend venv infra (Track A)
-        "tts.indic_parler_worker",  # Subprocess entrypoint (runs inside venv) (Track B)
+        # tts.indic_parler_worker DELETED — was a duplicate __main__ path
+        # paralleling HARTOS integrations/service_tools/indic_parler_tool.
+        # The central dispatcher (gpu_worker._dispatch_and_run) now spawns
+        # the HARTOS tool directly under the engine's venv via
+        # ToolWorker(python_exe=...).  See task #53.
         "tts.tts_engine",  # Unified TTS engine (auto-selects GPU/CPU backend)
         "tts.tts_handshake",  # First-run voice-check handshake (gates Ready banner)
         "tts.verified_synth",  # Verified-signal gate (consumed by tts_handshake + _bg_install)
@@ -1700,6 +1704,34 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # STT — CTranslate2 bundles platform-specific CUDA runtime
             ("faster-whisper", "faster-whisper", "faster_whisper", []),
             ("ctranslate2", "ctranslate2", "ctranslate2", []),
+            # ── Mid-VRAM coverage tier (added 2026-04-29) ───────────
+            # Three new engines that fill the 1–3 GB bucket so every
+            # SUPPORTED_LANG_DICT code has at least one ≤3 GB engine
+            # in its preference ladder.
+            #
+            # MeloTTS (myshell-ai) — 6 langs (en/es/fr/zh/ja/ko), neural,
+            # CPU-friendly real-time inference, ~1.5 GB VRAM.  Ships
+            # `melotts` PyPI package with `melo` import root.
+            # `gpu_worker._maybe_self_heal_from_line` catches transitive
+            # imports MyShell forgot to declare in install_requires
+            # (witnessed for chatterbox-tts; same self-heal applies here).
+            ("melotts", "melotts", "melo", []),
+            # XTTS-v2 (Coqui idiap fork) — 17 langs incl. hi, voice
+            # cloning, ~2.5 GB VRAM.  PyPI: `coqui-tts` (the maintained
+            # 2026 fork; the older `TTS` package is unmaintained).
+            # Both ship `from TTS.api import TTS` so the import name
+            # is stable.
+            ("coqui-tts", "coqui-tts", "TTS", []),
+            # MMS-TTS (Meta's 1100+ language VITS) — uses `transformers`
+            # (already bundled) + `soundfile` (already a transitive of
+            # the bigger TTS engines).  No NEW pip install line is
+            # strictly necessary; the entry is here so the bundle
+            # accountant explicitly knows MMS-TTS is in scope and can
+            # optionally pre-pull a tiny smoke checkpoint at first run.
+            # We list `transformers` to make the dependency explicit
+            # without re-downloading (--no-deps + `_check_path` skip
+            # short-circuits when the package is already present).
+            ("mms-tts (transformers)", "transformers", "transformers", []),
         ]
         for _pkg_label, _pip_name, _import_name, _extra_args in _tts_deps:
             _check_path = os.path.join(_embed_sp, _import_name)

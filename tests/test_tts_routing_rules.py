@@ -31,8 +31,17 @@ from tts.tts_engine import (
     BACKEND_COSYVOICE3,
     BACKEND_F5,
     BACKEND_INDIC_PARLER,
+    BACKEND_MELOTTS,
+    BACKEND_MMS_TTS,
     BACKEND_PIPER,
+    BACKEND_XTTS_V2,
 )
+
+# Mid-VRAM tier (added 2026-04-29) — engines that are pip-installable
+# AND fit in ≤ 3 GB VRAM, so they're acceptable primary choices for
+# fresh-install consumer-GPU users.  Used by the international-lang
+# preference contract below.
+_MID_VRAM_TIER = frozenset({BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS})
 
 
 # ==========================================================================
@@ -106,16 +115,24 @@ class TestInternationalRouting:
         for lang in self.INTL_LANGS:
             assert lang in _FALLBACK_LANG_ENGINE_PREFERENCE, f"Intl lang {lang} missing"
 
-    def test_all_intl_prefer_chatterbox_ml(self):
-        """J213 decision (2026-04-18): CosyVoice3 demoted because
-        `cosyvoice` is not pip-installable and the standard installer
-        never clones the repo.  Chatterbox ML takes primary since it
-        IS pip-installable via `chatterbox-tts` and covers all 8
-        langs."""
+    def test_all_intl_prefer_mid_vram_tier(self):
+        """Policy 2026-04-29 (extends J213):
+
+        First-choice MUST be pip-installable AND ≤ 3 GB VRAM.  The
+        mid-VRAM tier (MeloTTS 1.5 GB, XTTS-v2 2.5 GB, MMS-TTS 1 GB)
+        satisfies both.  Chatterbox ML stays in the ladder for users
+        with 14 GB GPU; CosyVoice3 stays for power users with the
+        repo cloned.  See test_tts_language_routing_matrix.py § 3 for
+        the full evolution.
+        """
         for lang in self.INTL_LANGS:
             prefs = _FALLBACK_LANG_ENGINE_PREFERENCE[lang]
-            assert prefs[0] == BACKEND_CHATTERBOX_ML, \
-                f"Lang {lang} should prefer Chatterbox ML (J213), got {prefs[0]}"
+            first = prefs[0]
+            assert first in _MID_VRAM_TIER, (
+                f"Lang {lang} first choice {first!r} not in mid-VRAM "
+                f"tier {set(_MID_VRAM_TIER)} — fresh 4 GB GPU user "
+                f"would cascade.  Ladder: {prefs}"
+            )
 
     def test_intl_retains_cosyvoice3_secondary(self):
         """Demote kept CosyVoice3 in the ladder for power users who
@@ -125,11 +142,13 @@ class TestInternationalRouting:
             assert BACKEND_COSYVOICE3 in prefs, \
                 f"Lang {lang} should still list CosyVoice3 (secondary slot)"
 
-    def test_japanese_prefers_chatterbox_ml(self):
-        assert _FALLBACK_LANG_ENGINE_PREFERENCE['ja'][0] == BACKEND_CHATTERBOX_ML
+    def test_japanese_prefers_mid_vram_tier(self):
+        """Japanese first-choice must be pip-installable AND ≤ 3 GB."""
+        assert _FALLBACK_LANG_ENGINE_PREFERENCE['ja'][0] in _MID_VRAM_TIER
 
-    def test_chinese_prefers_chatterbox_ml(self):
-        assert _FALLBACK_LANG_ENGINE_PREFERENCE['zh'][0] == BACKEND_CHATTERBOX_ML
+    def test_chinese_prefers_mid_vram_tier(self):
+        """Chinese first-choice must be pip-installable AND ≤ 3 GB."""
+        assert _FALLBACK_LANG_ENGINE_PREFERENCE['zh'][0] in _MID_VRAM_TIER
 
 
 # ==========================================================================
@@ -139,10 +158,19 @@ class TestDefaultFallback:
     def test_default_preference_exists(self):
         assert len(_DEFAULT_PREFERENCE) >= 2
 
-    def test_default_starts_with_chatterbox_ml(self):
-        """J213: primary is Chatterbox ML (pip-installable).  Was
-        CosyVoice3 (clone-required)."""
-        assert _DEFAULT_PREFERENCE[0] == BACKEND_CHATTERBOX_ML
+    def test_default_starts_with_light_tier(self):
+        """2026-04-29: _DEFAULT_PREFERENCE leads with the mid-VRAM tier
+        (currently MMS-TTS, ~1 GB) so genuinely-unlisted langs still
+        synth on consumer GPUs.  Pre-J213 was CosyVoice3 (clone-only),
+        J213 was Chatterbox ML (pip-installable but 14 GB).  Now the
+        default leads with a ≤ 3 GB engine that's also pip-installable."""
+        first = _DEFAULT_PREFERENCE[0]
+        assert first in _MID_VRAM_TIER, (
+            f"_DEFAULT_PREFERENCE[0] = {first!r} should be in the "
+            f"mid-VRAM tier {set(_MID_VRAM_TIER)}."
+        )
+        caps = _FALLBACK_ENGINE_CAPABILITIES[first]
+        assert caps['vram_gb'] <= 3.0
 
     def test_default_includes_indic_parler(self):
         assert BACKEND_INDIC_PARLER in _DEFAULT_PREFERENCE
