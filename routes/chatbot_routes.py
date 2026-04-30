@@ -2317,17 +2317,94 @@ def chat_route():
     # To avoid duplicate audio, we check if HARTOS handled the request (Tier-1).
     # If Tier-2/3 produced the text, we synthesize here.
 
-    # Find the agent configuration
-    agent_config = None
+    # ── Agent identity resolution (server-derived; client agent_type is ignored) ──
+    #
+    # Client payload semantics:
+    #   * `prompt_id` is the canonical agent identifier.
+    #     - 0 / null  → default Hevolve / draft-first
+    #     - > 0       → user-created agent (PROMPTS_DIR/{prompt_id}.json)
+    #     - < 0       → reserved for future built-in registry (not used today)
+    #   * `agent_id` (legacy string registry key like 'local_assistant',
+    #     'cloud_radha', etc.) is still accepted for back-compat but only
+    #     consulted when prompt_id can't resolve.  Any client-minted synthetic
+    #     string ('orphan_49', 'ghost_*', etc.) silently falls back to default
+    #     instead of returning 400 — the user keeps chatting under Hevolve.
+    #   * `agent_type` from the request is NEVER read.  The server derives type
+    #     from the resolved agent (registry config or 'local' for user agents).
+    #     This eliminates the 'Unknown agent type: orphan' bug class —
+    #     denormalized data on the wire was the root cause.
+    #
+    # Migration plan in `memory/project_agent_id_int_collapse.md`:
+    #   Phase 1 (this commit): server tolerant; frontend unchanged.
+    #   Phase 2: frontend stops sending agent_id and agent_type.
+    #   Phase 3: server rejects requests that send those fields.
     all_agents = LOCAL_AGENTS + CLOUD_AGENTS
-    for agent in all_agents:
-        if agent['id'] == agent_id:
-            agent_config = agent
-            break
+    _default_agent = next(
+        (a for a in LOCAL_AGENTS if a.get('id') == 'local_assistant'),
+        LOCAL_AGENTS[0] if LOCAL_AGENTS else {'id': 'local_assistant', 'type': 'local'},
+    )
 
-    # Determine agent type from config or parameter
-    if agent_config:
-        agent_type = agent_config.get('type', agent_type)
+    def _coerce_int(v):
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.lstrip('-').isdigit():
+            try:
+                return int(v)
+            except ValueError:
+                return None
+        return None
+
+    def _resolve_agent(_prompt_id, _agent_id_legacy):
+        """Return (agent_config, resolved_agent_id, resolved_type, resolved_prompt_id).
+
+        Resolution order:
+          1. prompt_id > 0 with prompt file → user agent (type='local').
+          2. agent_id_legacy in registry (LOCAL_AGENTS/CLOUD_AGENTS) → built-in.
+          3. agent_id_legacy as digit with prompt file → user agent.
+          4. Anything else → silent fallback to default (no 400, ever).
+        """
+        _pid_int = _coerce_int(_prompt_id)
+        # 1. User agent via prompt_id
+        if _pid_int is not None and _pid_int > 0:
+            try:
+                from core.platform_paths import get_prompts_dir
+                _prompts_dir = get_prompts_dir()
+            except ImportError:
+                _prompts_dir = os.path.join(
+                    os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'prompts')
+            if os.path.isfile(os.path.join(_prompts_dir, f'{_pid_int}.json')):
+                return ({'id': _pid_int, 'type': 'local'}, _pid_int, 'local', _pid_int)
+        # 2. Registry lookup by string key
+        if _agent_id_legacy:
+            for _a in all_agents:
+                if _a.get('id') == _agent_id_legacy:
+                    return (_a, _agent_id_legacy, _a.get('type', 'local'), _pid_int)
+        # 3. agent_id legacy as digit (some old clients sent prompt_id in agent_id)
+        _aid_int = _coerce_int(_agent_id_legacy)
+        if _aid_int is not None and _aid_int > 0:
+            try:
+                from core.platform_paths import get_prompts_dir
+                _prompts_dir = get_prompts_dir()
+            except ImportError:
+                _prompts_dir = os.path.join(
+                    os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'prompts')
+            if os.path.isfile(os.path.join(_prompts_dir, f'{_aid_int}.json')):
+                return ({'id': _aid_int, 'type': 'local'}, _aid_int, 'local', _aid_int)
+        # 4. Default fallback — orphan/stale/synthetic IDs land here without 400
+        return (_default_agent, _default_agent['id'], _default_agent.get('type', 'local'), None)
+
+    agent_config, agent_id, agent_type, prompt_id = _resolve_agent(prompt_id, agent_id)
+    # Log when client-supplied agent_type differed from the derived one — helps
+    # us confirm the back-compat shim is the only path being exercised once
+    # frontend Phase 2 lands.
+    _client_type = data.get('agent_type')
+    if _client_type and _client_type != agent_type:
+        logger.info(
+            "chat: client-supplied agent_type=%r ignored; server derived %r "
+            "from agent_id=%r prompt_id=%r (Phase-1 back-compat shim, see "
+            "memory/project_agent_id_int_collapse.md)",
+            _client_type, agent_type, agent_id, prompt_id,
+        )
 
     # ============== LOCAL AGENT ==============
     if agent_type == 'local':
@@ -2818,8 +2895,23 @@ def chat_route():
                 'success': False
             })
 
-    # Unknown agent type
-    return jsonify({'error': f'Unknown agent type: {agent_type}'}), 400
+    # Unreachable in practice: _resolve_agent always returns type ∈
+    # {'local', 'cloud'} (its default fallback covers everything,
+    # including stale prompt_ids and client-minted synthetic agent_ids).
+    # Kept as a defensive 500 so a future registry entry with an invalid
+    # type fails loud server-side instead of returning a misleading 400
+    # to the client.
+    logger.error(
+        "chat: _resolve_agent returned unexpected type=%r for "
+        "agent_id=%r prompt_id=%r — registry corruption?",
+        agent_type, agent_id, prompt_id,
+    )
+    return jsonify({
+        'error': 'Server registry inconsistency — agent type unknown',
+        'agent_id': agent_id,
+        'agent_type': agent_type,
+        'success': False,
+    }), 500
 
 
 def backend_health_route():
