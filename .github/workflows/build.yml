@@ -216,7 +216,7 @@ jobs:
       - name: Install Python dependencies + sibling repos
         shell: bash
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt 2>&1 | tail -5
 
           # Sibling repos are checked out to _deps/<name> by the
@@ -417,7 +417,7 @@ jobs:
 
       - name: Install Python dependencies + sibling repos
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt 2>&1 | tail -5
           for dep_dir in ../hevolveai ../HARTOS; do
             if [ -f "$dep_dir/pyproject.toml" ] || [ -f "$dep_dir/setup.py" ]; then
@@ -584,7 +584,7 @@ jobs:
 
       - name: Install Python dependencies + sibling repos
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt 2>&1 | tail -5
 
           echo "=== Checking sibling repos ==="
