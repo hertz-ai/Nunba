@@ -1236,7 +1236,21 @@ def _self_heal_missing_transitives(
         m = _MISSING_MODULE_RE.search(err_text)
         if m:
             missing = m.group(1).split('.')[0]  # heal at top-level only
-            pip_args = ['install', missing]
+            # ``-U`` is required even for "missing" — when ~/.nunba/site-
+            # packages/<pkg>/ already exists from a prior partial install,
+            # pip --target SKIPS writing with the warning
+            #   "Target directory ... already exists. Specify --upgrade
+            #    to force replacement."
+            # The previous code ran without -U, so the stale dir survived
+            # untouched and the very next deep probe failed with the
+            # same ModuleNotFoundError — auto-heal looked successful in
+            # the log ("Successfully installed omegaconf-2.3.0") but the
+            # probe stayed broken.  This was the root cause of the
+            # chatterbox_turbo "missing for 'omegaconf'" loop on
+            # Windows installs that had ever started a previous install.
+            # The version-mismatch branch below already used -U for
+            # exactly this reason; the two branches now match.
+            pip_args = ['install', '-U', missing]
             heal_key = missing
             kind = 'missing'
         else:
