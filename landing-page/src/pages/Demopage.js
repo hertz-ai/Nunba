@@ -4440,7 +4440,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                     : 'text-gray-400 hover:text-gray-200'
                 }`}
               >
-                {mode === 'local_only' ? 'Local' : mode === 'auto' ? 'Auto' : 'Hive'}
+                {mode === 'local_only' ? 'Local' : mode === 'auto' ? 'Hybrid' : 'Hive'}
               </button>
             ))}
           </div>
