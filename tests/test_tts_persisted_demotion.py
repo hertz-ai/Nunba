@@ -39,7 +39,6 @@ import time
 
 import pytest
 
-
 # ────────────────────────────────────────────────────────────────────
 # Helpers
 # ────────────────────────────────────────────────────────────────────
@@ -83,7 +82,7 @@ def test_round_trip_demotion_survives_restart(state_path):
     threshold must be loaded back into ``_demoted_backends`` by the
     next instance's ``__init__``. Without this the ladder would
     re-burn 3 failures on every boot."""
-    from tts.tts_engine import TTSEngine, BACKEND_CHATTERBOX_TURBO
+    from tts.tts_engine import BACKEND_CHATTERBOX_TURBO, TTSEngine
 
     eng = TTSEngine(auto_init=False)
     # Drive 3 failures — the threshold — so demotion fires + persists.
@@ -114,7 +113,7 @@ def test_expired_entry_is_dropped_on_hydrate(state_path):
     """Persisted entries past ``expires_at`` must NOT pollute
     ``_demoted_backends``. Self-heals transient causes (driver flap,
     weights mid-download) without admin intervention."""
-    from tts.tts_engine import TTSEngine, _TTS_STATE_SCHEMA
+    from tts.tts_engine import _TTS_STATE_SCHEMA, TTSEngine
 
     now = time.time()
     state_path.write_text(json.dumps({
@@ -152,7 +151,7 @@ def test_schema_mismatch_drops_all_demotions(state_path):
     """A schema bump means the persistence layout we no longer
     understand. Drop everything; the next demotion rewrites in the
     current schema. Covers ladder restructuring across Nunba versions."""
-    from tts.tts_engine import TTSEngine, _TTS_STATE_SCHEMA
+    from tts.tts_engine import _TTS_STATE_SCHEMA, TTSEngine
 
     now = time.time()
     state_path.write_text(json.dumps({
@@ -184,7 +183,7 @@ def test_piper_never_hydrated_even_if_persisted(state_path):
     guards Piper from in-memory demotion; the persistence layer must
     refuse to hydrate it too in case a future bug or hand-edit puts
     it in the file."""
-    from tts.tts_engine import TTSEngine, BACKEND_PIPER, _TTS_STATE_SCHEMA
+    from tts.tts_engine import _TTS_STATE_SCHEMA, BACKEND_PIPER, TTSEngine
 
     now = time.time()
     state_path.write_text(json.dumps({
@@ -209,7 +208,7 @@ def test_piper_never_persisted_on_save(state_path):
     """If something reaches into ``_demoted_backends`` and adds Piper
     directly (test, future bug, manual debug), ``_save_persisted_demotions``
     must refuse to serialise it so the disk file never holds Piper."""
-    from tts.tts_engine import TTSEngine, BACKEND_PIPER
+    from tts.tts_engine import BACKEND_PIPER, TTSEngine
 
     eng = TTSEngine(auto_init=False)
     eng._demoted_backends.add(BACKEND_PIPER)
@@ -302,7 +301,7 @@ def test_under_threshold_failures_do_not_persist(state_path):
     """Persistence should only fire when demotion fires (i.e. at the
     failure threshold). 1-2 failures must NOT touch disk — that
     avoids file IO on every transient hiccup."""
-    from tts.tts_engine import TTSEngine, BACKEND_CHATTERBOX_TURBO
+    from tts.tts_engine import BACKEND_CHATTERBOX_TURBO, TTSEngine
 
     eng = TTSEngine(auto_init=False)
     eng._record_backend_failure(BACKEND_CHATTERBOX_TURBO)
@@ -372,7 +371,7 @@ def test_corrupt_state_file_does_not_block_init(state_path):
 def test_missing_demoted_key_does_not_block_init(state_path):
     """File exists, schema matches, but no ``demoted`` key — must
     hydrate empty without raising."""
-    from tts.tts_engine import TTSEngine, _TTS_STATE_SCHEMA
+    from tts.tts_engine import _TTS_STATE_SCHEMA, TTSEngine
 
     state_path.write_text(json.dumps({'schema': _TTS_STATE_SCHEMA}))
     eng = TTSEngine(auto_init=False)
@@ -389,7 +388,7 @@ def test_hydrate_seeds_consecutive_failures_counter(state_path):
     the persisted ``failures_at_demotion`` so the in-session view is
     consistent (a hydrated-demoted backend already 'looks' like 3
     failures happened)."""
-    from tts.tts_engine import TTSEngine, _TTS_STATE_SCHEMA
+    from tts.tts_engine import _TTS_STATE_SCHEMA, TTSEngine
 
     now = time.time()
     state_path.write_text(json.dumps({
