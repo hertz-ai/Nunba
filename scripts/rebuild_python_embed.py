@@ -74,9 +74,42 @@ EMBED_DIR = EMBED_DIR_FINAL + ".building"
 BACKUP_DIR = os.path.join(PROJECT_DIR, "python-embed-backup")
 REQUIREMENTS_FILE = os.path.join(SCRIPTS_DIR, "python-embed-requirements.txt")
 HARTOS_BACKEND_SRC = os.path.join(PROJECT_DIR, "hartos_backend_src")
-HEVOLVEAI_SRC = os.path.join(os.path.dirname(PROJECT_DIR), "hevolveai")
-LLM_LANGCHAIN_SRC = os.path.join(os.path.dirname(PROJECT_DIR),
-                                  "HARTOS")
+
+
+def _resolve_sibling_repo(name: str) -> str:
+    """Locate a sibling repo that may live in either canonical layout:
+
+      1. ``<parent>/<name>``                 — the developer / Linux/macOS
+                                               CI symlink layout (matches
+                                               ``ln -sf $GITHUB_WORKSPACE/_deps/<name> ../<name>``)
+      2. ``<PROJECT_DIR>/_deps/<name>``      — the Windows CI fallback when
+                                               the symlink/junction step
+                                               silently fails (mklink /J +
+                                               cygpath quoting on Windows
+                                               GHA runners; documented in
+                                               .github/workflows/build.yml
+                                               "Link sibling repos")
+
+    Returns whichever exists first; falls back to (1) if neither exists,
+    so unchanged callers keep getting the same path they always did.
+
+    Single-writer per the unification reuse contract: this helper is the
+    canonical way to resolve sibling-repo paths from build scripts.  If
+    a future call site needs a third layout, extend this function — do
+    NOT inline ``os.path.join(os.path.dirname(PROJECT_DIR), name)`` ad
+    hoc.
+    """
+    primary = os.path.join(os.path.dirname(PROJECT_DIR), name)
+    if os.path.isdir(primary):
+        return primary
+    fallback = os.path.join(PROJECT_DIR, "_deps", name)
+    if os.path.isdir(fallback):
+        return fallback
+    return primary  # legacy default; caller guards via os.path.isdir() anyway
+
+
+HEVOLVEAI_SRC = _resolve_sibling_repo("hevolveai")
+LLM_LANGCHAIN_SRC = _resolve_sibling_repo("HARTOS")
 
 # Import version + deps from centralized deps.py
 if SCRIPTS_DIR not in sys.path:
