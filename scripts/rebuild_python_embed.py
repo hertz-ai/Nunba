@@ -848,10 +848,12 @@ def _run_rebuild_steps():
         _rebuild_hevolveai_cython(python_exe, hevolveai_src)
 
     step("7a. Installing HevolveAI (Embodied Continual Learner With Hiveintelligence)")
+    _hevolveai_installed = False
     if hevolveai_src:
         run([python_exe, "-m", "pip", "install", hevolveai_src,
              "--no-warn-script-location", "--no-deps"], timeout=120)
         print(f"  Installed from {hevolveai_src}")
+        _hevolveai_installed = True
     else:
         print(f"  WARNING: HevolveAI not found at {HEVOLVEAI_SRC}, skipping")
 
@@ -979,7 +981,16 @@ _inject_path(_lib_dir, front=False)
     # we fell into before (top-level import succeeded but every
     # submodule failed with `DLL load failed while importing
     # visual_encoding` at Nunba runtime).  If any canary fails the
-    # bundle is unusable, so they're critical.
+    # bundle is unusable, so they're critical — UNLESS the install
+    # itself was skipped at step 7a because hevolveai source wasn't
+    # available (fork PR / dev env without HEVOLVE_REPO_TOKEN).  In
+    # that case we degrade canary failures to WARN, matching the
+    # fork-friendly gate at .github/workflows/build.yml:86-117 that
+    # explicitly allows missing siblings.  Same pattern hart-backend
+    # already uses below (critical=False).  This is the single source
+    # of truth for "was hevolveai actually installed" — both step 7a
+    # and the canary read the same `_hevolveai_installed` flag, so
+    # the install-skip / canary-skip can never drift apart.
     canaries = [
         "hevolveai",
         "hevolveai.embodied_ai.utils.visual_encoding",
@@ -988,7 +999,8 @@ _inject_path(_lib_dir, front=False)
     ]
     for mod in canaries:
         _verify(f"hevolveai canary: {mod}",
-                [python_exe, "-c", f"import {mod}; print('{mod} OK')"])
+                [python_exe, "-c", f"import {mod}; print('{mod} OK')"],
+                critical=_hevolveai_installed)
 
     # hart-backend is non-critical at this stage — its install can
     # legitimately fail in dev setups where the source tree isn't
