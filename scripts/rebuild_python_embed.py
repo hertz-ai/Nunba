@@ -91,6 +91,41 @@ def _find_sibling(name):
 HEVOLVEAI_SRC = _find_sibling("hevolveai")
 LLM_LANGCHAIN_SRC = _find_sibling("HARTOS")
 
+def _resolve_sibling_repo(name: str) -> str:
+    """Locate a sibling repo that may live in either canonical layout:
+
+      1. ``<parent>/<name>``                 — the developer / Linux/macOS
+                                               CI symlink layout (matches
+                                               ``ln -sf $GITHUB_WORKSPACE/_deps/<name> ../<name>``)
+      2. ``<PROJECT_DIR>/_deps/<name>``      — the Windows CI fallback when
+                                               the symlink/junction step
+                                               silently fails (mklink /J +
+                                               cygpath quoting on Windows
+                                               GHA runners; documented in
+                                               .github/workflows/build.yml
+                                               "Link sibling repos")
+
+    Returns whichever exists first; falls back to (1) if neither exists,
+    so unchanged callers keep getting the same path they always did.
+
+    Single-writer per the unification reuse contract: this helper is the
+    canonical way to resolve sibling-repo paths from build scripts.  If
+    a future call site needs a third layout, extend this function — do
+    NOT inline ``os.path.join(os.path.dirname(PROJECT_DIR), name)`` ad
+    hoc.
+    """
+    primary = os.path.join(os.path.dirname(PROJECT_DIR), name)
+    if os.path.isdir(primary):
+        return primary
+    fallback = os.path.join(PROJECT_DIR, "_deps", name)
+    if os.path.isdir(fallback):
+        return fallback
+    return primary  # legacy default; caller guards via os.path.isdir() anyway
+
+
+HEVOLVEAI_SRC = _resolve_sibling_repo("hevolveai")
+LLM_LANGCHAIN_SRC = _resolve_sibling_repo("HARTOS")
+
 # Import version + deps from centralized deps.py
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
@@ -828,10 +863,12 @@ def _run_rebuild_steps():
         _rebuild_hevolveai_cython(python_exe, hevolveai_src)
 
     step("7a. Installing HevolveAI (Embodied Continual Learner With Hiveintelligence)")
+    _hevolveai_installed = False
     if hevolveai_src:
         run([python_exe, "-m", "pip", "install", hevolveai_src,
              "--no-warn-script-location", "--no-deps"], timeout=120)
         print(f"  Installed from {hevolveai_src}")
+        _hevolveai_installed = True
     else:
         print(f"  WARNING: HevolveAI not found at {HEVOLVEAI_SRC}, skipping")
 
@@ -959,7 +996,16 @@ _inject_path(_lib_dir, front=False)
     # we fell into before (top-level import succeeded but every
     # submodule failed with `DLL load failed while importing
     # visual_encoding` at Nunba runtime).  If any canary fails the
-    # bundle is unusable, so they're critical.
+    # bundle is unusable, so they're critical — UNLESS the install
+    # itself was skipped at step 7a because hevolveai source wasn't
+    # available (fork PR / dev env without HEVOLVE_REPO_TOKEN).  In
+    # that case we degrade canary failures to WARN, matching the
+    # fork-friendly gate at .github/workflows/build.yml:86-117 that
+    # explicitly allows missing siblings.  Same pattern hart-backend
+    # already uses below (critical=False).  This is the single source
+    # of truth for "was hevolveai actually installed" — both step 7a
+    # and the canary read the same `_hevolveai_installed` flag, so
+    # the install-skip / canary-skip can never drift apart.
     canaries = [
         "hevolveai",
         "hevolveai.embodied_ai.utils.visual_encoding",
@@ -968,7 +1014,8 @@ _inject_path(_lib_dir, front=False)
     ]
     for mod in canaries:
         _verify(f"hevolveai canary: {mod}",
-                [python_exe, "-c", f"import {mod}; print('{mod} OK')"])
+                [python_exe, "-c", f"import {mod}; print('{mod} OK')"],
+                critical=_hevolveai_installed)
 
     # hart-backend is non-critical at this stage — its install can
     # legitimately fail in dev setups where the source tree isn't

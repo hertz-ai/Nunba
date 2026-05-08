@@ -83,7 +83,7 @@ const AgentSidebar = ({
         }`}
       >
         <div className="flex justify-between items-center mb-4">
-          <h1 className="text-2xl font-semibold text-white">HevolveAI</h1>
+          <h1 className="text-2xl font-semibold text-white">Nunba</h1>
         </div>
 
         <div
@@ -93,7 +93,7 @@ const AgentSidebar = ({
         >
           <div className="flex justify-between items-center mb-2">
             <h1 className="text-2xl font-semibold text-white ml-4">
-              HevolveAI
+              Nunba
             </h1>
           </div>
 
@@ -191,7 +191,7 @@ const AgentSidebar = ({
                   className="inline-block font-serif text-sm mb-4"
                 >
                   <img
-                    alt="Download HevolveAI Companion"
+                    alt="Download Nunba Companion"
                     src="/companion.svg"
                     className="w-32 h-12 object-contain"
                     onError={handleImgError}
@@ -372,7 +372,7 @@ const AgentSidebar = ({
       {isOpen && (
         <div className="absolute left-0 w-full h-screen bg-gray-900 transition-all duration-300 p-2 z-50">
           <div className="flex justify-between items-center mb-1">
-            <h1 className="text-2xl font-semibold text-white">HevolveAI</h1>
+            <h1 className="text-2xl font-semibold text-white">Nunba</h1>
             <button onClick={() => setIsOpen(false)} className="text-white">
               <X className="w-6 h-6" />
             </button>
@@ -491,7 +491,7 @@ const AgentSidebar = ({
                 className="inline-block font-serif text-sm mb-4"
               >
                 <img
-                  alt="Download HevolveAI Companion"
+                  alt="Download Nunba Companion"
                   src="/companion.svg"
                   className="w-32 h-12 object-contain"
                 />

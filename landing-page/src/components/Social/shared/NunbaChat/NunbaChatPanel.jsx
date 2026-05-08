@@ -744,10 +744,32 @@ function PanelContent() {
             display: 'flex',
             flexDirection: 'column',
             gap: 1,
-            '&::-webkit-scrollbar': {width: 4},
+            // Modern auto-hide scrollbar — same pattern as the global
+            // rule in tailwind.css.  Theme-neutral mid-gray (127,127,127)
+            // so the thumb is visible on both light AND dark chat
+            // surfaces (the original common.white at 10% alpha was
+            // invisible on white backgrounds — 2026-05-08 user-reported
+            // regression).  10px gutter reserved so layout never jumps
+            // when the bar appears.
+            '&::-webkit-scrollbar': {width: 10},
             '&::-webkit-scrollbar-thumb': {
-              bgcolor: alpha(theme.palette.common.white, 0.08),
-              borderRadius: 2,
+              bgcolor: 'rgba(127,127,127,0.30)',
+              borderRadius: '999px',
+              border: '3px solid transparent',
+              backgroundClip: 'padding-box',
+              transition: 'background 220ms ease, border-width 220ms ease',
+            },
+            '&:hover::-webkit-scrollbar-thumb': {
+              bgcolor: 'rgba(127,127,127,0.50)',
+              borderWidth: '2px',
+            },
+            '&::-webkit-scrollbar-thumb:hover': {
+              bgcolor: 'rgba(127,127,127,0.65)',
+              borderWidth: '1px',
+            },
+            '&::-webkit-scrollbar-thumb:active': {
+              bgcolor: 'rgba(127,127,127,0.80)',
+              borderWidth: 0,
             },
           }}
         >

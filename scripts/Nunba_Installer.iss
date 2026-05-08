@@ -155,6 +155,38 @@ begin
     end;
 end;
 
+// Register a single Windows URL-scheme handler in HKCR.  Single
+// canonical helper used for every scheme — keeps the install +
+// uninstall paths DRY across hevolveai / nunba / hevolve.
+procedure RegisterUrlScheme(scheme, friendlyName, exePath, cmd: string);
+begin
+    try
+        // Main protocol key - <scheme>://
+        RegWriteStringValue(HKCR, scheme, '', friendlyName);
+        RegWriteStringValue(HKCR, scheme, 'URL Protocol', '');
+        // Default icon (lifted from the app exe's first icon resource)
+        RegWriteStringValue(HKCR, scheme + '\DefaultIcon', '', exePath + ',0');
+        // Shell command — same `--protocol "%1"` pass-through every scheme
+        RegWriteStringValue(HKCR, scheme + '\shell', '', 'open');
+        RegWriteStringValue(HKCR, scheme + '\shell\open', '', '&Open');
+        RegWriteStringValue(HKCR, scheme + '\shell\open\command', '', cmd);
+        Log('Protocol handler ' + scheme + ':// registered successfully');
+    except
+        Log('Error registering protocol handler ' + scheme + '://');
+    end;
+end;
+
+// Symmetric helper for uninstall — single deletion site per scheme.
+procedure UnregisterUrlScheme(scheme: string);
+begin
+    try
+        RegDeleteKeyIncludingSubkeys(HKCR, scheme);
+        Log('Removed ' + scheme + ' protocol registry entries');
+    except
+        Log('Error removing ' + scheme + ' protocol registry entries');
+    end;
+end;
+
 // Register startup and protocol entries programmatically
 procedure RegisterEntries();
 var
@@ -179,27 +211,23 @@ begin
         end;
     end;
 
-    // Register protocol handler if selected (hevolveai:// protocol)
+    // Register protocol handlers if selected.  All three schemes from
+    // HARTOS canonical DEEPLINK_SCHEMES (core/install_links.py) are
+    // registered together so any URL the desktop / mobile / web emits
+    // routes to Nunba regardless of which scheme prefix it carries:
+    //   - hevolveai://  canonical desktop scheme (since 2024)
+    //   - nunba://      UNIF-G4 brand-canon scheme
+    //   - hevolve://    legacy mobile scheme — share / referral / invite
+    //                   URLs in the wild still use this prefix
+    // app.py handle_protocol_launch already accepts all three; this
+    // closes the matching gap on the Windows registry side so the OS
+    // actually routes them to Nunba.exe instead of asking the user
+    // which app should open the URL.
     if WizardIsTaskSelected('protocolhandler') then
     begin
-        try
-            // Main protocol key - hevolveai://
-            RegWriteStringValue(HKCR, 'hevolveai', '', 'URL:HevolveAI Protocol');
-            RegWriteStringValue(HKCR, 'hevolveai', 'URL Protocol', '');
-
-            // Default icon
-            RegWriteStringValue(HKCR, 'hevolveai\DefaultIcon', '', appExePath + ',0');
-
-            // Shell command
-            RegWriteStringValue(HKCR, 'hevolveai\shell', '', 'open');
-            RegWriteStringValue(HKCR, 'hevolveai\shell\open', '', '&Open');
-            RegWriteStringValue(HKCR, 'hevolveai\shell\open\command', '', protocolCommand);
-
-            Log('Protocol handler hevolveai:// registered successfully');
-            Log('Protocol command: ' + protocolCommand);
-        except
-            Log('Error registering protocol handler');
-        end;
+        RegisterUrlScheme('hevolveai', 'URL:HevolveAI Protocol', appExePath, protocolCommand);
+        RegisterUrlScheme('nunba',     'URL:Nunba Protocol',     appExePath, protocolCommand);
+        RegisterUrlScheme('hevolve',   'URL:Hevolve Protocol',   appExePath, protocolCommand);
     end;
 end;
 
@@ -303,12 +331,11 @@ begin
             Log('Error removing startup registry entry');
         end;
 
-        // Remove protocol registry entries (hevolveai://)
-        try
-            RegDeleteKeyIncludingSubkeys(HKCR, 'hevolveai');
-            Log('Removed hevolveai protocol registry entries');
-        except
-            Log('Error removing protocol registry entries');
-        end;
+        // Remove all three protocol registry entries — symmetric with
+        // RegisterEntries above.  Uses the canonical UnregisterUrlScheme
+        // helper so adding / removing a scheme is a one-line change.
+        UnregisterUrlScheme('hevolveai');
+        UnregisterUrlScheme('nunba');
+        UnregisterUrlScheme('hevolve');
     end;
 end;

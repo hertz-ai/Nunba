@@ -67,7 +67,7 @@ export default function Institution() {
               </h4>
               <p style={{color: '#FFF'}} className=" text-lg max-w-xl mx-auto">
                 Learn, research and discover the knowledge you seek with your
-                HevolveAI friend.
+                Nunba friend.
               </p>
 
               <a
