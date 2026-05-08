@@ -253,7 +253,7 @@ const Header = ({fixed}) => {
                   <ul className="dropdown-menu">
                     <li>
                       <a href="/products/recap">
-                        HevolveAI Agent API Specification
+                        Nunba Agent API Specification
                       </a>
                     </li>
                     <li>
