@@ -137,7 +137,7 @@ export default function NewHome() {
                   To Your New AI Friend
                 </div>
                 <div className="md:flex justify-between md:font-semibold md:text-3xl  lg:!justify-around lg:font-bold lg:!text-4xl xl:text-4xl xl:justify-between">
-                  <div>Introducing HevolveAI</div>
+                  <div>Introducing Nunba</div>
                   <div
                     className="md:w-72 lg:w-[400px] xl:w-[320px]"
                     style={{color: agentsData[currentAgentIndex]?.color}}
@@ -149,7 +149,7 @@ export default function NewHome() {
                 </div>
               </div>
               <p style={{color: '#FFF'}} className="text-lg max-w-xl mx-auto">
-                Create Your HevolveAI Agent Today In Your Language.
+                Create Your Nunba Agent Today In Your Language.
               </p>
               <div
                 style={{gap: '70px'}}

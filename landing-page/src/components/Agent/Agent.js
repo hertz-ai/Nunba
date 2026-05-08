@@ -485,7 +485,7 @@ const AgentPage = () => {
 
                 {/* Desktop */}
                 <div className="hidden md:flex md:flex-col h-full" style={entranceStyle(heroEntrance)}>
-                    <h1 className="text-2xl font-semibold text-white ml-4 mt-4">HevolveAI</h1>
+                    <h1 className="text-2xl font-semibold text-white ml-4 mt-4">Nunba</h1>
                     <div className="relative h-full flex items-center justify-center flex-col text-center">
                         <div className="w-full mb-16 md:mb-24 lg:mb-48">
                             <HeroContent {...heroProps} mobile={false} />

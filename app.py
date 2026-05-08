@@ -7033,6 +7033,10 @@ def main():
             pywebview's WebView2 suspends rAF while hidden OR iconic. React 18's
             createRoot uses rAF for scheduling, so the render may not complete
             until we nudge the compositor. This function:
+              (0) wakes the WebView2 compositor with show()+restore() — the
+                  same action tray "Show" performs (the only path that has
+                  historically rendered content reliably after auto-start
+                  hidden→visible),
               (1) waits for Flask (raw-socket, avoids proxy issues),
               (2) checks mount state with a STRICTER predicate that also
                   inspects the root's bounding box (paint-dead detection),
@@ -7043,6 +7047,31 @@ def main():
             """
             _local_url = f"http://localhost:{args.port}/local"
             _MAX_ATTEMPTS = 3
+
+            # ── (0) Wake the WebView2 compositor — same native action tray
+            # "Show" performs in desktop/tray_handler.py:_on_restore. Without
+            # it, the auto-start hidden→visible transition leaves the
+            # compositor suspended even though the OS reports the window
+            # visible: evaluate_js raises 'Main window failed to start' and
+            # load_url paints into a dead surface, so the user sees a black
+            # window until they manually click the tray icon. show() and
+            # restore() are idempotent on already-visible / non-minimized
+            # windows (Win32 ShowWindow no-ops when state is unchanged), so
+            # this is safe for the bg_shown / events_restored / watchdog
+            # callers alike. Each call is wrapped so a transient pywebview
+            # error cannot abort the recovery sequence below.
+            try:
+                _window.show()
+            except Exception as _ws_err:
+                logger.debug(
+                    f"[REMOUNT:{origin}] window.show() raised: {_ws_err}")
+            try:
+                _window.restore()
+            except Exception as _wr_err:
+                logger.debug(
+                    f"[REMOUNT:{origin}] window.restore() raised: {_wr_err}")
+            # Give the native compositor a beat to wake before evaluate_js.
+            time.sleep(0.3)
 
             # ── Wait for Flask to be ready (raw socket, avoids proxy issues) ──
             import socket as _bg_sock
@@ -7725,8 +7754,16 @@ def handle_protocol_launch():
         protocol_url = args.protocol
         logger.info(f"Processing protocol URL: {protocol_url}")
 
-        # Sometimes Windows passes the full URL, sometimes just parameters
-        if not protocol_url.startswith('hevolveai://'):
+        # Sometimes Windows passes the full URL, sometimes just parameters.
+        # All three schemes accepted on receive (matches HARTOS canonical
+        # ``DEEPLINK_SCHEMES`` so any URL produced by ``invite_link()``
+        # opens the desktop regardless of which mobile-era scheme it
+        # carries):
+        #   - hevolveai://   canonical desktop scheme since 2024
+        #   - nunba://       UNIF-G4 brand-canon scheme
+        #   - hevolve://     legacy mobile scheme (Android + iOS native)
+        _SCHEMES = ('hevolveai://', 'nunba://', 'hevolve://')
+        if not any(protocol_url.startswith(s) for s in _SCHEMES):
             protocol_url = 'hevolveai://' + protocol_url
             logger.info(f"Added protocol prefix: {protocol_url}")
 
@@ -7747,6 +7784,40 @@ def handle_protocol_launch():
         except Exception as params_err:
             logger.error(f"Parameter parsing failed: {str(params_err)}")
             params = {}
+
+        # ── UNIF-G4: deep-link routing ──
+        # Recognized canonical paths (both nunba:// and hevolveai://):
+        #   /invite/<code>             → accept friend invite
+        #   /meet/<platform>/<room>    → join external audio/video room
+        #   /group/<platform>/<group>  → join external group chat
+        # These are dispatched to HARTOS via /api/social/* handlers; no
+        # parallel routing logic added — same agent tools (Invite_Friend,
+        # Join_External_Room) execute the verb.
+        deeplink_path = (parsed.path or '').strip('/')
+        deeplink_segments = [s for s in deeplink_path.split('/') if s]
+        if deeplink_segments and deeplink_segments[0] in ('invite', 'meet', 'group'):
+            args.background = False  # bring app forward for any deep link
+            kind = deeplink_segments[0]
+            try:
+                import json as _json
+                import urllib.request as _urlreq
+                payload = {'kind': kind, 'segments': deeplink_segments[1:],
+                           'scheme': parsed.scheme}
+                req = _urlreq.Request(
+                    'http://127.0.0.1:5000/api/social/deeplink',
+                    data=_json.dumps(payload).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'},
+                    method='POST',
+                )
+                _urlreq.urlopen(req, timeout=5).read()
+                logger.info(f"Deep-link {kind} dispatched: {deeplink_segments}")
+            except Exception as deep_err:
+                # Log only — don't fail the launch.  The Liquid UI
+                # accept/join card will still appear once Flask is up
+                # because the AgentOverlay subscribes to the same
+                # WAMP topic the handler emits onto.
+                logger.warning(f"Deep-link dispatch deferred (Flask not ready?): {deep_err}")
+                args.deeplink_pending = payload
 
         # Handle different actions
         action = params.get('action', ['show'])[0] if params.get('action') else 'show'

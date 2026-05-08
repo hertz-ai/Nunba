@@ -25,6 +25,11 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+# Single source of truth for the probe-err file path — the writer
+# (`tts._torch_probe._write_probe_err`) and the readers/context
+# builders below all use this so the path formula cannot drift.
+from tts._torch_probe import probe_err_path
+
 logger = logging.getLogger('NunbaTTSInstaller')
 
 # huggingface_hub 0.29+ removes is_offline_mode needed by transformers <5.x
@@ -334,6 +339,16 @@ BACKEND_DISPLAY_NAMES = {
     'omnivoice':               'OmniVoice (646 languages, voice clone)',
     'espeak':                  'eSpeak NG (CPU last-resort fallback)',
     'makeittalk':              'MakeItTalk (cloud, English)',
+    # HARTOS engines added after this dict's last refresh.  Keep
+    # alphabetised within this block so future drifts are obvious.
+    # TestConstants.test_display_names_match_backends pins the
+    # complete keyspace — add new engines here AND add a real
+    # display string (no auto-generation) so progress callbacks
+    # surface a sensible label.
+    'melotts':                 'MeloTTS (6 languages, neural)',
+    'mms_tts':                 'MMS-TTS (50+ languages via VITS)',
+    'neutts_air':              'NeuTTS Air (English, on-device voice clone)',
+    'xtts_v2':                 'XTTS-v2 (17 languages, voice clone)',
 }
 
 # Lock to prevent concurrent installs (in-process)
@@ -1060,11 +1075,10 @@ def install_backend_packages(backend: str,
                     'attempted_packages': packages,
                     'healed_during_loop': healed,
                     'path': 'early-return (all-pip-installed)',
-                    'probe_err_file': os.path.join(
-                        os.path.expanduser('~'),
-                        'Documents', 'Nunba', 'logs',
-                        f'probe_{backend}.err',
-                    ),
+                    # Single source of truth for the probe-err path —
+                    # was inline `os.path.join(..., 'probe_{backend}.err')`
+                    # repeated 3x in this file before consolidation.
+                    'probe_err_file': probe_err_path(backend),
                 },
             )
         except Exception:
@@ -1155,11 +1169,7 @@ def install_backend_packages(backend: str,
                         'display_name': display_name,
                         'attempted_packages': packages,
                         'healed_during_loop': healed,
-                        'probe_err_file': os.path.join(
-                            os.path.expanduser('~'),
-                            'Documents', 'Nunba', 'logs',
-                            f'probe_{backend}.err',
-                        ),
+                        'probe_err_file': probe_err_path(backend),
                     },
                 )
             except Exception:
@@ -1257,10 +1267,7 @@ def _self_heal_missing_transitives(
     if not _resolve_paths():
         return True, []
 
-    err_file = os.path.join(
-        os.path.expanduser('~'), 'Documents', 'Nunba', 'logs',
-        f'probe_{backend}.err',
-    )
+    err_file = probe_err_path(backend)
 
     healed: list[str] = []
     for iteration in range(max_iter):
@@ -1567,6 +1574,30 @@ def _download_model_weights(backend: str,
         snapshot_download(model_id)
         return True, "Model downloaded"
 
+    elif backend == 'neutts_air':
+        # NeuTTS Air — Q4 GGUF backbone (~600MB) + NeuCodec decoder
+        # (~50MB) on HuggingFace.  The neutts package's NeuTTS()
+        # constructor downloads them lazily on first synth call, but
+        # we proactively snapshot here so the install screen doesn't
+        # leave the user waiting for the next chat to fetch ~650MB.
+        # Skip download if either model is already cached — covers
+        # the case where the user installed neutts_air for the
+        # second time (re-running the installer is idempotent).
+        backbone_id = 'neuphonic/neutts-air-q4-gguf'
+        codec_id = 'neuphonic/neucodec'
+        if _is_hf_model_cached(backbone_id) and _is_hf_model_cached(codec_id):
+            return True, "Already downloaded"
+        if progress_cb:
+            progress_cb("Downloading NeuTTS Air model (~650MB)...")
+        try:
+            if not _is_hf_model_cached(backbone_id):
+                snapshot_download(backbone_id)
+            if not _is_hf_model_cached(codec_id):
+                snapshot_download(codec_id)
+        except Exception as e:
+            return False, f"NeuTTS download failed: {e}"
+        return True, "Model downloaded"
+
     elif backend == 'piper':
         # Piper voices are tiny (~20MB), downloaded by PiperTTS._ensure_loaded
         # Check if default voice exists in ~/.nunba/piper/voices/
@@ -1670,10 +1701,16 @@ def get_backend_status() -> dict[str, dict]:
     from the main process.
     """
     # Probe module per venv backend — single source of truth so UI
-    # reflects reality post-install.
+    # reflects reality post-install.  Mapping is backend_id → import
+    # name that ``backend_venv.is_venv_healthy`` runs in the venv's
+    # python to confirm a usable install.
     _VENV_PROBE = {
         'indic_parler': 'parler_tts',
-        'kokoro': 'kokoro',
+        # NeuTTS Air — installs the ``neutts`` PyPI package into a
+        # dedicated venv (install_target='venv' on the HARTOS spec).
+        # Probe imports ``neutts`` from the venv's python, mirroring
+        # the parler_tts probe above.
+        'neutts_air':   'neutts'
     }
 
     status = {}

@@ -85,9 +85,9 @@ describe('AgentSidebar', () => {
     expect(sidebar).toBeInTheDocument();
   });
 
-  it('renders HevolveAI title', () => {
+  it('renders Nunba title', () => {
     renderSidebar();
-    const titles = screen.getAllByText('HevolveAI');
+    const titles = screen.getAllByText('Nunba');
     expect(titles.length).toBeGreaterThan(0);
   });
 

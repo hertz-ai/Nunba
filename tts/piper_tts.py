@@ -340,7 +340,41 @@ class PiperTTS:
                                 output_path: str,
                                 model_path: Path,
                                 speed: float) -> str | None:
-        """Synthesize using piper-tts module"""
+        """Synthesize using piper-tts module.
+
+        Defensive WAV-format setup
+        --------------------------
+        ``piper.PiperVoice.synthesize_wav`` only sets the WAV header
+        (``setnchannels`` / ``setsampwidth`` / ``setframerate``) on the
+        FIRST audio chunk it produces.  When ``synthesize`` returns
+        zero chunks — e.g. empty input after preprocessing, text that
+        is purely unsupported characters, or an internal piper
+        early-return — the format never gets set, and Python's
+        ``wave.Wave_write.close()`` then raises the misleading
+        ``# channels not specified`` error from the ``with`` block exit.
+
+        The user-visible symptom (observed 2026-05-08 09:26:01) is
+        ``Module synthesis failed: # channels not specified`` followed
+        by ``No synthesis method available`` — the entire piper
+        floor collapses, making TTS go silent.
+
+        The fix is twofold and minimal:
+
+        1. Pre-set the WAV header from ``voice.config.sample_rate``
+           BEFORE calling piper.  Piper is canonically mono / 16-bit;
+           sample rate is voice-specific and exposed on the loaded
+           voice's config.  We pass ``set_wav_format=False`` so piper
+           does NOT overwrite our headers when it does produce audio.
+        2. After ``synthesize_wav`` returns, check that piper actually
+           produced frames.  Zero frames now closes the file cleanly
+           (valid empty WAV) and raises a clear, actionable error
+           instead of the wave-module mask.
+
+        This is a single canonical writer per the piper integration —
+        callers above (``synthesize`` at line 322) keep the same
+        contract: success ⇒ output_path, failure ⇒ exception that
+        bubbles up to the executable-fallback path.
+        """
         from piper import PiperVoice
 
         voice = PiperVoice.load(str(model_path))
@@ -354,11 +388,62 @@ class PiperTTS:
             except (ImportError, TypeError):
                 pass  # Speed control unavailable, use default
 
-        # Use synthesize_wav (correct API for piper-tts >=2023)
-        with wave.open(output_path, 'wb') as wav_file:
-            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+        # Resolve voice-specific sample rate; piper voices default to
+        # 22050 Hz but each model can ship with its own (e.g. lessac is
+        # 22050, libritts is 16000).  Read it from the loaded voice
+        # config so we pre-set the right value.  Falls back to piper's
+        # baseline 22050 if the attribute path drifts in a future
+        # piper release — better a slightly off sample rate than a
+        # crashed close().
+        try:
+            sample_rate = int(voice.config.sample_rate)
+        except (AttributeError, TypeError, ValueError):
+            sample_rate = 22050
 
-        logger.info(f"Synthesized audio: {output_path}")
+        with wave.open(output_path, 'wb') as wav_file:
+            # Defensive headers — see method docstring.  Set BEFORE
+            # ``synthesize_wav`` so a zero-chunk synthesis still closes
+            # the file cleanly with valid (but empty) WAV headers.
+            wav_file.setnchannels(1)         # piper output is mono
+            wav_file.setsampwidth(2)         # 16-bit signed PCM
+            wav_file.setframerate(sample_rate)
+
+            # ``set_wav_format=False`` tells piper to honour our
+            # pre-set headers instead of re-setting them on the first
+            # chunk.  This is the API contract added in piper-tts
+            # 1.x; older releases ignore the kwarg gracefully (they
+            # just re-set the same values we already set).
+            voice.synthesize_wav(
+                text, wav_file,
+                syn_config=syn_config,
+                set_wav_format=False,
+            )
+
+            n_frames = wav_file.getnframes()
+
+        # Zero frames = piper returned no audio.  This is NOT the
+        # caller's bug — text was probably empty after preprocessing or
+        # contains only characters the voice can't produce.  Surface
+        # a clear, recoverable error so the upstream fallback chain
+        # can either retry with a different voice or fall through to
+        # the executable path.  Without this check, the user sees
+        # "TTS went silent" with no diagnostic.
+        if n_frames == 0:
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise RuntimeError(
+                f"Piper produced 0 audio frames for {len(text)}-char input "
+                f"(voice={model_path.name}, sample_rate={sample_rate}). "
+                f"Text may be empty after preprocessing or contain only "
+                f"characters this voice cannot synthesize."
+            )
+
+        logger.info(
+            f"Synthesized audio: {output_path} "
+            f"({n_frames} frames @ {sample_rate} Hz)"
+        )
         return output_path
 
     def _synthesize_with_executable(self,
