@@ -2,7 +2,7 @@ name: Deploy Docs & Test Reports
 
 on:
   push:
-    branches: [main, test-local-deployment-with-gpu]
+    branches: [main, test-local-deployment-with-gpu, may-8th-pull-latest]
   # Allow manual trigger (useful for regenerating reports)
   workflow_dispatch:
 

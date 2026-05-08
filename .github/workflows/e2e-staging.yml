@@ -12,9 +12,9 @@ name: e2e-staging
 
 on:
   push:
-    branches: [main, test-local-deployment-with-gpu]
+    branches: [main, test-local-deployment-with-gpu, may-8th-pull-latest]
   pull_request:
-    branches: [main, test-local-deployment-with-gpu]
+    branches: [main, test-local-deployment-with-gpu, may-8th-pull-latest]
   schedule:
     - cron: "0 6 * * *"    # nightly 06:00 UTC
   workflow_dispatch: {}

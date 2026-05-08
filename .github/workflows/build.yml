@@ -10,6 +10,7 @@ on:
     branches:
       - main
       - test-local-deployment-with-gpu
+      - may-8th-pull-latest
     tags:
       - 'v*'
   # Manual trigger from GitHub UI

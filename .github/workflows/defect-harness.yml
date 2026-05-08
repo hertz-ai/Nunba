@@ -2,9 +2,9 @@ name: Defect Reproduction Harness
 
 on:
   push:
-    branches: [main, test-local-deployment-with-gpu]
+    branches: [main, test-local-deployment-with-gpu, may-8th-pull-latest]
   pull_request:
-    branches: [main, test-local-deployment-with-gpu]
+    branches: [main, test-local-deployment-with-gpu, may-8th-pull-latest]
   workflow_dispatch: {}
 
 # Cancel in-progress runs when a new push lands on the same ref.
