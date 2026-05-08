@@ -4090,7 +4090,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 !isTextMode && videoUrl && !uploadedImage && !uploadedPdf && window.innerWidth > 768
                   ? 'md:w-[60%]'
                   : 'md:w-full'
-              } overflow-x-hidden overflow-y-auto pt-2 md:pt-0`}
+              } overflow-x-clip overflow-y-auto pt-2 md:pt-0`}
             >
               {/* Chat header bar — GPU tier badge surfaces the speculation-capability
                   boundary (see components/chat/GpuTierBadge.jsx for the product-owner +
