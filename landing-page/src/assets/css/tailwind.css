@@ -5219,19 +5219,33 @@ h6,
  * scrollbar-width:thin (no per-element transitions there, but it's
  * already thin so the at-rest state matches).  Same canon palette
  * (rgba white) — works on dark + light surfaces. */
-/* Theme-neutral palette — 2026-05-08 fix:  the original rgba(255,255,255,…)
- * thumb was invisible at 10% alpha on light backgrounds (white-on-white)
- * AND too faint on most dark surfaces.  Switched to mid-gray
- * rgba(127,127,127,…) which has visible contrast on both light and dark
- * surfaces (it's halfway between full black and full white at every alpha
- * step).  The base alpha is bumped to 0.30 at rest so the thumb is
- * actually perceptible without hovering — matches the user's expectation
- * of "I can see the scrollbar but it's thin and unobtrusive". */
+/* macOS-style overlay scrollbar — 2026-05-08 design clarification:
+ * AT REST: scrollbar is completely hidden (width 0, invisible).
+ * ON HOVER over the container: scrollbar grows in with smooth 220ms
+ * width animation + thumb fades from transparent to mid-gray.
+ * OFF HOVER: scrollbar shrinks back to 0, thumb fades out.
+ *
+ * Mid-gray rgba(127,127,127,…) so the thumb is visible on BOTH light
+ * and dark chat surfaces.  Width 10px on hover (same gutter as before).
+ *
+ * Firefox uses `scrollbar-width: none` which is binary (no hover state)
+ * — Firefox users see no scrollbar at all but mousewheel-scroll still
+ * works.  Acceptable trade-off; the Chromium / WebView2 (Nunba desktop +
+ * Hevolve web served from Flask) is the primary surface and gets the
+ * full hover-grow animation. */
 * {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(127,127,127,0.35) transparent;
+  scrollbar-width: none;
+  scrollbar-color: rgba(127,127,127,0.55) transparent;
 }
 *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  transition: width 220ms ease, height 220ms ease;
+}
+/* Hovering ANYWHERE on the container surfaces the scrollbar — same
+ * affordance as macOS:  the gutter physically grows from 0 → 10px
+ * with a smooth 220ms width transition. */
+*:hover::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
@@ -5239,25 +5253,22 @@ h6,
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: rgba(127,127,127,0.30);
+  background: rgba(127,127,127,0);
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: padding-box;
   transition: background 220ms ease, border-width 220ms ease;
 }
-/* Hovering ANYWHERE on the container surfaces the scrollbar — same
- * affordance as macOS / VS Code / Notion: thumb thickens + brightens
- * without a layout shift. */
 *:hover::-webkit-scrollbar-thumb {
-  background: rgba(127,127,127,0.50);
+  background: rgba(127,127,127,0.55);
   border-width: 2px;
 }
 /* Direct hover on the thumb itself — the "I'm grabbing it" state. */
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(127,127,127,0.65);
+  background: rgba(127,127,127,0.70);
   border-width: 1px;
 }
 *::-webkit-scrollbar-thumb:active {
-  background: rgba(127,127,127,0.80);
+  background: rgba(127,127,127,0.85);
   border-width: 0;
 }
