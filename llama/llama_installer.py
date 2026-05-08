@@ -153,6 +153,13 @@ _HF_CACHE_DIR = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "hugging
 class LlamaInstaller:
     """Handles Llama.cpp installation and model downloading"""
 
+    # Class-level dedupe set for find_llama_server INFO logs (see
+    # find_llama_server below).  Shared across all LlamaInstaller
+    # instances within the same Python process so the same path
+    # only logs INFO once even when many health probes / status
+    # endpoints / start-server call sites all resolve it.
+    _logged_paths: set[str] = set()
+
     def __init__(self, install_dir: str | None = None, models_dir: str | None = None):
         """
         Initialize the installer
@@ -287,7 +294,19 @@ class LlamaInstaller:
 
         for path in search_paths:
             if path.exists():
-                logger.info(f"Found llama-server at: {path}")
+                # Log INFO on the FIRST successful resolve per (class, path)
+                # so boot-time visibility is preserved.  Subsequent calls
+                # for the same path log at DEBUG to avoid spamming the
+                # langchain.log every 5-7s when health probes / status
+                # endpoints poll.  Class-level set keeps the dedupe
+                # alive across LlamaInstaller() instances (the constructor
+                # is called from many sites in HARTOS+Nunba).
+                _path_str = str(path)
+                if _path_str not in LlamaInstaller._logged_paths:
+                    LlamaInstaller._logged_paths.add(_path_str)
+                    logger.info(f"Found llama-server at: {_path_str}")
+                else:
+                    logger.debug(f"Found llama-server at: {_path_str}")
                 # Update GPU support detection from the found binary's location
                 bin_dir = path.parent
                 cuda_dlls = list(bin_dir.glob("ggml-cuda*.dll")) + list(bin_dir.glob("ggml-cuda*.so"))
