@@ -5477,6 +5477,26 @@ def start_background_services():
             )
     threading.Thread(target=_warmup_watchdog, daemon=True, name='TTSWarmupWatchdog').start()
 
+    # Pre-warm HARTOS get_tools(is_first=True) singletons so the user's first
+    # casual-conv chat after restart doesn't pay the ~33s LangChain
+    # `load_tools(['google-search'])` cost.  Sub-singleton is module-level
+    # cached + double-checked-locked in HARTOS hart_intelligence_entry; calling
+    # it once on a boot thread populates the cache for all subsequent get_tools
+    # callers.  Daemon thread — never blocks shutdown.  If the import or call
+    # fails, we log a warning and the first user chat falls back to its
+    # previous behaviour (lazy-load on first call).
+    def _warmup_get_tools_cache():
+        try:
+            from hart_intelligence_entry import _safe_load_google_search
+            _safe_load_google_search()
+        except Exception as e:
+            logging.warning(
+                f"get_tools cache pre-warm failed (non-blocking): {e}"
+            )
+    threading.Thread(
+        target=_warmup_get_tools_cache, daemon=True, name='ToolsWarmup'
+    ).start()
+
 
 if __name__ == '__main__':
     try:
