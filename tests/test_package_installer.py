@@ -1360,6 +1360,59 @@ class TestDownloadModelWeights:
             assert ok is True
             assert 'No model download needed' in msg
 
+    def test_neutts_air_already_cached(self, tmp_path):
+        """If both the GGUF backbone AND the codec are cached, the
+        download path short-circuits to "Already downloaded" without
+        hitting HuggingFace.  Mirrors the f5 / chatterbox cached path."""
+        # _is_hf_model_cached looks under ~/.cache/huggingface/hub/
+        backbone = (tmp_path / '.cache' / 'huggingface' / 'hub' /
+                    'models--neuphonic--neutts-air-q4-gguf')
+        codec = (tmp_path / '.cache' / 'huggingface' / 'hub' /
+                 'models--neuphonic--neucodec')
+        backbone.mkdir(parents=True)
+        codec.mkdir(parents=True)
+        fake_hf = types.ModuleType('huggingface_hub')
+        fake_hf.snapshot_download = MagicMock()
+        with patch.object(Path, 'home', return_value=tmp_path), \
+             patch.dict(sys.modules, {'huggingface_hub': fake_hf}):
+            ok, msg = pi._download_model_weights('neutts_air')
+            assert ok is True
+            assert 'Already downloaded' in msg
+            fake_hf.snapshot_download.assert_not_called()
+
+    def test_neutts_air_downloads_both_models(self, tmp_path):
+        """When neither the backbone GGUF nor the codec is cached,
+        ``_download_model_weights('neutts_air')`` MUST request both
+        models from HuggingFace (not just one).  Regression guard:
+        the codec is small (~50MB) but required — leaving it out
+        produces a runtime ImportError inside neutts.NeuTTS()."""
+        fake_hf = types.ModuleType('huggingface_hub')
+        fake_hf.snapshot_download = MagicMock()
+        with patch.object(Path, 'home', return_value=tmp_path), \
+             patch.dict(sys.modules, {'huggingface_hub': fake_hf}):
+            ok, msg = pi._download_model_weights('neutts_air')
+            assert ok is True
+            calls = [c.args[0] for c in fake_hf.snapshot_download.call_args_list]
+            assert 'neuphonic/neutts-air-q4-gguf' in calls, (
+                f"backbone GGUF not requested; calls={calls}"
+            )
+            assert 'neuphonic/neucodec' in calls, (
+                f"NeuCodec decoder not requested; calls={calls}"
+            )
+
+    def test_neutts_air_propagates_download_failure(self, tmp_path):
+        """Network errors from snapshot_download must surface as
+        ``(False, msg)`` so the install path can hand off to error
+        advice instead of silently succeeding with a half-downloaded
+        model."""
+        fake_hf = types.ModuleType('huggingface_hub')
+        fake_hf.snapshot_download = MagicMock(side_effect=RuntimeError("nope"))
+        with patch.object(Path, 'home', return_value=tmp_path), \
+             patch.dict(sys.modules, {'huggingface_hub': fake_hf}):
+            ok, msg = pi._download_model_weights('neutts_air')
+            assert ok is False
+            assert 'NeuTTS download failed' in msg
+
 
 # ========================== _invalidate_import_cache ======================
 
@@ -1478,6 +1531,48 @@ class TestGetBackendStatus:
                 any(op in n for op in ('==', '>=', '<=', '!=', '>', '<', '~'))
                 for n in called_names
             ), f'pip operators leaked through: {called_names}'
+
+    def test_neutts_air_routes_through_venv_probe(self):
+        """`get_backend_status` must check neutts_air through the venv
+        probe (``backend_venv.is_venv_healthy('neutts_air', 'neutts')``)
+        rather than against the main interpreter's ``find_spec``.
+
+        Regression guard for the 2026-05-08 wiring: neutts_air's
+        install_target='venv' lands the package outside python-embed,
+        so a main-interp ``find_spec('neutts')`` would always return
+        None and the UI would lock the engine as "not installed" even
+        when the venv is healthy.  This test pins the routing decision
+        AND surfaces the venv_backed: True flag the UI relies on."""
+        fake_is_healthy = MagicMock(return_value=True)
+        fake_bv_mod = types.ModuleType('tts.backend_venv')
+        fake_bv_mod.is_venv_healthy = fake_is_healthy
+        with patch.dict(sys.modules, {'tts.backend_venv': fake_bv_mod}), \
+             patch.object(pi, 'is_package_installed', return_value=False):
+            # Main-interpreter find_spec MUST NOT govern the answer for
+            # venv-backed engines.  Force it False to prove the venv
+            # probe is the one being asked.
+            status = pi.get_backend_status()
+        assert 'neutts_air' in status
+        assert status['neutts_air']['venv_backed'] is True
+        assert status['neutts_air']['installed'] is True, (
+            "venv probe returned True but get_backend_status still "
+            "reports neutts_air as not installed — the venv branch is "
+            "not being taken."
+        )
+        # The probe must be invoked with backend='neutts_air' AND the
+        # canonical import name 'neutts' (NOT 'neutts_air' or 'neutts-air').
+        called_args = fake_is_healthy.call_args_list
+        neutts_calls = [c for c in called_args
+                        if c.args and c.args[0] == 'neutts_air']
+        assert neutts_calls, (
+            f"is_venv_healthy never called with neutts_air; calls={called_args}"
+        )
+        # Second positional arg is the import probe name.
+        first_call = neutts_calls[0]
+        assert first_call.args[1] == 'neutts', (
+            f"venv probe called with wrong import name: "
+            f"got {first_call.args[1]!r}, expected 'neutts'"
+        )
 
 
 # ========================== get_recommended_backends ======================
@@ -1598,6 +1693,49 @@ class TestConstants:
                     f"installs it later one-at-a-time, avoiding the "
                     f"parallel-build setuptools race. plan={plan}"
                 )
+
+    def test_neutts_air_keyspace_aligned(self):
+        """The 7-surface integration table in
+        ``memory/audit_neutts_air_2026-05-08.md`` requires neutts_air
+        to appear in EVERY canonical dict — drift between any two
+        produces a half-wired engine the user sees as silently failing.
+
+        This single drift-guard pins all the package_installer-side
+        surfaces simultaneously: BACKEND_PACKAGES (auto-derived from
+        HARTOS), BACKEND_VENV_PACKAGES (venv routing), and
+        BACKEND_DISPLAY_NAMES (UI label).  If a future change removes
+        neutts_air from any one of them this test fires."""
+        assert 'neutts_air' in pi.BACKEND_PACKAGES, (
+            "BACKEND_PACKAGES missing neutts_air — install router "
+            "won't see the engine in get_backend_status() iteration."
+        )
+        assert 'neutts_air' in pi.BACKEND_VENV_PACKAGES, (
+            "BACKEND_VENV_PACKAGES missing neutts_air — venv install "
+            "path won't fire and neutts will leak into the main "
+            "interpreter (collides with llama-cpp-python pins)."
+        )
+        assert 'neutts_air' in pi.BACKEND_DISPLAY_NAMES, (
+            "BACKEND_DISPLAY_NAMES missing neutts_air — UI shows raw "
+            "id 'neutts_air' instead of 'NeuTTS Air (...)'."
+        )
+
+    def test_neutts_air_venv_install_plan_canonical(self):
+        """The venv install plan for neutts_air MUST include the
+        ``neutts[all]`` extra (which pulls llama-cpp-python + the
+        codec deps).  Without ``[all]`` the bare ``neutts`` package
+        installs but synth fails at codec encode time."""
+        venv_plan = pi.BACKEND_VENV_PACKAGES.get('neutts_air', [])
+        # Single source of truth lives in HARTOS pip_install_plan.
+        # We pin the [all] extra here because that's the only
+        # neutts-specific gotcha — without it, the engine appears
+        # installed (find_spec returns True) but raises onnxruntime
+        # ImportError at synth time (silent failure).
+        joined = ' '.join(venv_plan).lower()
+        assert 'neutts' in joined, f"venv plan missing neutts: {venv_plan}"
+        assert '[all]' in joined or 'soundfile' in joined, (
+            f"venv plan missing extras (neutts[all] OR explicit "
+            f"soundfile + onnxruntime): {venv_plan}"
+        )
 
 
 class TestProbeIsolation:

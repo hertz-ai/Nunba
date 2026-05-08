@@ -47,6 +47,14 @@ BACKEND_PIPER = "piper"
 BACKEND_MELOTTS = "melotts"
 BACKEND_XTTS_V2 = "xtts_v2"
 BACKEND_MMS_TTS = "mms_tts"
+# NeuTTS Air (Neuphonic) — Apache-2.0, 748M Qwen2-backbone GGUF, RTF<0.5
+# on CPU, 24kHz, instant voice cloning from 3-15s reference audio.  Slots
+# between F5-TTS / Chatterbox-Turbo (heavy GPU clones) and Kokoro / MMS
+# (light tier) on the English ladder — added 2026-05-08.  Routed into
+# its own venv because `neutts[all]` pulls llama-cpp-python whose pins
+# can drift from the main interpreter (same pattern as chatterbox_turbo
+# and indic_parler).
+BACKEND_NEUTTS_AIR = "neutts_air"
 BACKEND_NONE = "none"
 
 # ════════════════════════════════════════════════════════════════════
@@ -268,6 +276,23 @@ _FALLBACK_ENGINE_CAPABILITIES = {
         'sample_rate': 24000,
         'quality': 'high',
     },
+    BACKEND_NEUTTS_AIR: {
+        # NeuTTS Air (Neuphonic) — 748M Qwen2-backbone, Q4 GGUF ~600MB,
+        # Apache-2.0.  RTF<0.5 on CPU (Intel i5 / RPi 5), 24kHz output.
+        # Voice cloning from 3-15s reference audio (no zero-config
+        # default voice — uses upstream 'jo' sample).  Slots between
+        # F5-TTS / Chatterbox-Turbo (heavy clone) and Kokoro / Piper
+        # (light tier) on the English ladder.
+        'name': 'NeuTTS Air (Neuphonic)',
+        'vram_gb': 0.4,                 # CPU-friendly; GPU optional
+        'languages': {'en'},
+        'paralinguistic': [],
+        'emotion_tags': [],
+        'voice_cloning': True,
+        'streaming': False,
+        'sample_rate': 24000,
+        'quality': 'high',
+    },
     BACKEND_PIPER: {
         'name': 'Piper TTS (CPU)',
         'vram_gb': 0,
@@ -371,6 +396,7 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
         BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_CHATTERBOX_ML,
         BACKEND_INDIC_PARLER, BACKEND_COSYVOICE3, BACKEND_KOKORO, BACKEND_PIPER,
         BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS,
+        BACKEND_NEUTTS_AIR,
     }),
     # European / CJK — CosyVoice3 + Chatterbox ML + new mid-VRAM tier
     'es': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
@@ -423,6 +449,7 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
         BACKEND_INDIC_PARLER, BACKEND_MMS_TTS, BACKEND_XTTS_V2,
         BACKEND_MELOTTS, BACKEND_F5, BACKEND_CHATTERBOX_TURBO,
         BACKEND_CHATTERBOX_ML, BACKEND_KOKORO, BACKEND_PIPER,
+        BACKEND_NEUTTS_AIR,
     }),
     # 'zh-cn' / 'zh_TW' / 'zh-Hans' all collapse to 'zh' via
     # _normalize_lang() before this lookup runs (see _capable_backends_for).
@@ -495,13 +522,22 @@ _FALLBACK_LANG_ENGINE_PREFERENCE = {
     # English ladder (quality first, then CPU-friendly):
     # 1. Chatterbox Turbo — big GPU, paralinguistic tags, voice clone (5.6 GB)
     # 2. F5-TTS           — big GPU, voice clone (2.5 GB)
-    # 3. MeloTTS          — neural, ~1.5 GB, CPU runs at real-time
-    # 4. XTTS-v2          — voice clone, 17 langs, 2.5 GB
-    # 5. Indic Parler     — big GPU, also covers English (2.0 GB)
-    # 6. Kokoro 82M       — small neural, CPU-friendly, beats Piper (0.2 GB)
-    # 7. MMS-TTS          — universal coverage, ~1 GB
-    # 8. Piper            — bundled CPU absolute-last-resort
-    'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_MELOTTS, BACKEND_XTTS_V2,
+    # 3. NeuTTS Air       — CPU-friendly Q4 GGUF (~600 MB), voice clone, RTF<0.5
+    # 4. MeloTTS          — neural, ~1.5 GB, CPU runs at real-time
+    # 5. XTTS-v2          — voice clone, 17 langs, 2.5 GB
+    # 6. Indic Parler     — big GPU, also covers English (2.0 GB)
+    # 7. Kokoro 82M       — small neural, CPU-friendly, beats Piper (0.2 GB)
+    # 8. MMS-TTS          — universal coverage, ~1 GB
+    # 9. Piper            — bundled CPU absolute-last-resort
+    # NeuTTS Air slotted between F5 and MeloTTS (mirrors HARTOS
+    # LANG_ENGINE_PREFERENCE['en'] which puts it at rung 3, after
+    # chatterbox_turbo + omnivoice; Nunba's fallback ladder doesn't
+    # carry omnivoice yet so neutts_air sits at rung 3 here).  Quality
+    # 0.91 from upstream MOS — between F5 (0.91) and MeloTTS (0.86).
+    # CPU-friendly is the differentiator: this is the FIRST clone-
+    # capable engine in the ladder that doesn't require GPU.
+    'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_NEUTTS_AIR,
+           BACKEND_MELOTTS, BACKEND_XTTS_V2,
            BACKEND_INDIC_PARLER, BACKEND_KOKORO, BACKEND_MMS_TTS, BACKEND_PIPER],
     # International: MeloTTS (1.5 GB) and XTTS-v2 (2.5 GB) sit ABOVE the
     # 14 GB Chatterbox-ML so 4-8 GB GPU users get quality TTS without
@@ -611,6 +647,10 @@ _BACKEND_TO_REGISTRY_KEY: dict[str, str] = {
     BACKEND_MELOTTS:          'melotts',
     BACKEND_XTTS_V2:          'xtts_v2',
     BACKEND_MMS_TTS:          'mms_tts',
+    # NeuTTS Air — added 2026-05-08.  CPU-friendly clone engine, venv-
+    # routed (install_target='venv' on the HARTOS spec) so its
+    # llama-cpp-python pin doesn't drift the main interpreter.
+    BACKEND_NEUTTS_AIR:       'neutts_air',
 }
 
 # CPU-only catalog entries with NO native Nunba implementation —

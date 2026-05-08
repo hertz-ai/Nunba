@@ -1556,6 +1556,30 @@ def _download_model_weights(backend: str,
         snapshot_download(model_id)
         return True, "Model downloaded"
 
+    elif backend == 'neutts_air':
+        # NeuTTS Air — Q4 GGUF backbone (~600MB) + NeuCodec decoder
+        # (~50MB) on HuggingFace.  The neutts package's NeuTTS()
+        # constructor downloads them lazily on first synth call, but
+        # we proactively snapshot here so the install screen doesn't
+        # leave the user waiting for the next chat to fetch ~650MB.
+        # Skip download if either model is already cached — covers
+        # the case where the user installed neutts_air for the
+        # second time (re-running the installer is idempotent).
+        backbone_id = 'neuphonic/neutts-air-q4-gguf'
+        codec_id = 'neuphonic/neucodec'
+        if _is_hf_model_cached(backbone_id) and _is_hf_model_cached(codec_id):
+            return True, "Already downloaded"
+        if progress_cb:
+            progress_cb("Downloading NeuTTS Air model (~650MB)...")
+        try:
+            if not _is_hf_model_cached(backbone_id):
+                snapshot_download(backbone_id)
+            if not _is_hf_model_cached(codec_id):
+                snapshot_download(codec_id)
+        except Exception as e:
+            return False, f"NeuTTS download failed: {e}"
+        return True, "Model downloaded"
+
     elif backend == 'piper':
         # Piper voices are tiny (~20MB), downloaded by PiperTTS._ensure_loaded
         # Check if default voice exists in ~/.nunba/piper/voices/
@@ -1659,8 +1683,17 @@ def get_backend_status() -> dict[str, dict]:
     from the main process.
     """
     # Probe module per venv backend — single source of truth so UI
-    # reflects reality post-install.
-    _VENV_PROBE = {'indic_parler': 'parler_tts'}
+    # reflects reality post-install.  Mapping is backend_id → import
+    # name that ``backend_venv.is_venv_healthy`` runs in the venv's
+    # python to confirm a usable install.
+    _VENV_PROBE = {
+        'indic_parler': 'parler_tts',
+        # NeuTTS Air — installs the ``neutts`` PyPI package into a
+        # dedicated venv (install_target='venv' on the HARTOS spec).
+        # Probe imports ``neutts`` from the venv's python, mirroring
+        # the parler_tts probe above.
+        'neutts_air':   'neutts',
+    }
 
     status = {}
     for backend, packages in BACKEND_PACKAGES.items():
