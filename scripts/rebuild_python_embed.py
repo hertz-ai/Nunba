@@ -75,6 +75,21 @@ BACKUP_DIR = os.path.join(PROJECT_DIR, "python-embed-backup")
 REQUIREMENTS_FILE = os.path.join(SCRIPTS_DIR, "python-embed-requirements.txt")
 HARTOS_BACKEND_SRC = os.path.join(PROJECT_DIR, "hartos_backend_src")
 
+def _find_sibling(name):
+    """Resolve a sibling repo path, preferring _deps/ (CI) over ../name (local dev)."""
+    parent = os.path.dirname(PROJECT_DIR)
+    candidates = [
+        os.path.join(PROJECT_DIR, "_deps", name),   # CI: actions/checkout
+        os.path.join(parent, name),                  # local dev
+        os.path.join(parent, name.lower()),          # local dev (lowercase variant)
+    ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return candidates[1]  # return the ../name path so warning messages show a useful hint
+
+HEVOLVEAI_SRC = _find_sibling("hevolveai")
+LLM_LANGCHAIN_SRC = _find_sibling("HARTOS")
 
 def _resolve_sibling_repo(name: str) -> str:
     """Locate a sibling repo that may live in either canonical layout:
