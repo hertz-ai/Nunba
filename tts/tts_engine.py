@@ -1778,31 +1778,140 @@ class TTSEngine:
     # previous failure. These three helpers + the demoted-set check in
     # _select_backend_for_language are the circuit breaker.
 
-    def _record_backend_failure(self, backend: str) -> None:
+    # Failure-class signatures used by ``_is_structural_error``.
+    # Lower-cased substring match against ``str(error).lower()`` plus
+    # the exception class name.  Each phrase is a deterministic /
+    # near-deterministic indicator that the engine cannot self-heal
+    # mid-session — re-trying it next call (or next boot) costs the
+    # user latency for no recovery probability.
+    #
+    # Curated from observed failure logs 2026-04-30 .. 2026-05-08:
+    #   * "died during startup" / "worker startup failed" — chatterbox
+    #     subprocess crashes before binding the IPC socket; usually
+    #     missing CUDA driver or corrupted weights.
+    #   * "no module named" / ModuleNotFoundError — pip install never
+    #     landed (kokoro / melotts on this host); a re-attempt would
+    #     hit the same network/disk failure.
+    #   * "loader returned failure" — HARTOS model_orchestrator bottoms
+    #     out after exhausting retries; structural by orchestrator's
+    #     own contract.
+    #   * "venv creation failed" / "no module named venv" —
+    #     chatterbox-class venv bootstrap broken.
+    #   * "missing weights" / "model file not found" — download never
+    #     completed; needs admin or hub-install.
+    #   * "torch not compiled with cuda" — environmental.
+    #
+    # Anything that does NOT match is treated as TRANSIENT (CUDA OOM,
+    # network blip, filesystem race, audio encode glitch) so the
+    # standard 3-strike rule applies — preserving tolerance for
+    # one-off hiccups.  Bias is intentional: a misclassified transient
+    # costs one extra synth attempt; a misclassified structural would
+    # lock an engine out for a week even though it could self-heal.
+    _STRUCTURAL_FAILURE_SIGNATURES: tuple[str, ...] = (
+        'died during startup',
+        'worker startup failed',
+        'worker died',
+        'no module named',
+        'modulenotfounderror',
+        'loader returned failure',
+        'venv creation failed',
+        'missing weights',
+        'model file not found',
+        'torch not compiled with cuda',
+        'cudnn_status_not_initialized',
+    )
+
+    @classmethod
+    def _is_structural_error(cls, error: Exception | None) -> bool:
+        """Classify a synth failure as structural or transient.
+
+        Walks the ``__cause__`` / ``__context__`` chain so a wrapping
+        ``RuntimeError`` does not hide an underlying ``ImportError``.
+        Returns False for ``error=None`` (legacy callers without an
+        exception in scope) — keeps the prior 3-strike behaviour
+        unchanged for any caller that hasn't been updated.
+        """
+        if error is None:
+            return False
+        seen: set[int] = set()
+        cur: BaseException | None = error
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            blob = f"{type(cur).__name__.lower()} {(str(cur) or '').lower()}"
+            for sig in cls._STRUCTURAL_FAILURE_SIGNATURES:
+                if sig in blob:
+                    return True
+            cur = (getattr(cur, '__cause__', None)
+                   or getattr(cur, '__context__', None))
+        return False
+
+    def _record_backend_failure(
+        self, backend: str, error: Exception | None = None,
+    ) -> None:
         """Increment consecutive-failure counter; demote at threshold.
 
         Piper is exempt — it is the canonical CPU last-resort and
-        demoting it would leave the engine with no backend. If Piper
+        demoting it would leave the engine with no backend.  If Piper
         keeps failing the right answer is to surface that to the user
         (text-only fallback), not to silently eject it.
 
-        At demotion threshold the backend is also written to the
-        persisted-demotion cache so the next boot does not waste 3
-        more failures on the same broken engine.
-        ``_DEMOTION_TTL_SECONDS`` (7 days) bounds the persistence so
-        transient causes (driver flap, weights mid-download) self-heal
-        without admin intervention.
+        Failure-class threshold (introduced 2026-05-08):
+
+        * **STRUCTURAL** — ``error`` matches a signature in
+          ``_STRUCTURAL_FAILURE_SIGNATURES`` (worker died at startup,
+          missing module, missing weights, …).  These are
+          deterministic — re-trying next call or next boot costs
+          latency with zero recovery probability.  Demote on the
+          first strike + persist across boots.
+
+        * **TRANSIENT** — anything else (CUDA OOM, network blip,
+          filesystem race).  Three-strikes-then-demote behaviour
+          preserved.  Pre-2026-05-08 every failure was treated this
+          way, which meant chatterbox_turbo (which dies during worker
+          startup on every boot) burned ~3 minutes on every cold
+          start: each boot saw exactly 1 failure, the in-memory
+          counter reset, the persisted cache never wrote, and the
+          next boot re-discovered the same breakage from scratch.
+          The structural classifier closes that loop: 1 boot to
+          detect, 0 boots to recover.
+
+        Once the threshold is crossed the backend is written to
+        ``tts_state.json`` so the next boot does not waste failures
+        on the same broken engine.  ``_DEMOTION_TTL_SECONDS`` (7
+        days) bounds the persistence so transient causes (driver
+        flap, weights mid-download) self-heal without admin
+        intervention.  A successful synth (``_record_backend_success``)
+        clears the counter mid-session so a flaky-but-not-broken
+        engine never accumulates into a permanent demotion.
+
+        Backwards compatible: callers that haven't been updated to
+        pass ``error`` get the legacy threshold (3 strikes, transient
+        treatment) automatically.
         """
         if not backend or backend == BACKEND_PIPER or backend == BACKEND_NONE:
             return
         n = self._consecutive_failures.get(backend, 0) + 1
         self._consecutive_failures[backend] = n
-        if n >= self._failure_threshold and backend not in self._demoted_backends:
+
+        structural = self._is_structural_error(error)
+        threshold = 1 if structural else self._failure_threshold
+
+        if n >= threshold and backend not in self._demoted_backends:
             self._demoted_backends.add(backend)
+            kind = 'STRUCTURAL' if structural else 'transient'
+            err_summary = ''
+            if error is not None:
+                err_summary = (
+                    f" (error class: {type(error).__name__}; "
+                    f"msg: {str(error)[:120]!r})"
+                )
             logger.warning(
                 f"TTS backend '{backend}' DEMOTED for this session "
-                f"after {n} consecutive failures — ladder will skip it. "
-                f"Reset on next successful synth."
+                f"after {n} {kind} failure{'s' if n != 1 else ''} — "
+                f"ladder will skip it.{err_summary} "
+                f"Persisted to tts_state.json (TTL "
+                f"{_DEMOTION_TTL_SECONDS // 86400}d) so subsequent "
+                f"boots don't re-burn latency on the same engine."
             )
             try:
                 self._save_persisted_demotions()
@@ -2874,8 +2983,15 @@ class TTSEngine:
                 # demotion threshold. Transient = one-off CUDA OOM or
                 # subprocess crash; do NOT count those because the
                 # engine usually recovers next call.
+                #
+                # Pass the exception so ``_record_backend_failure``
+                # can classify structural (worker died at startup,
+                # missing module, ...) → demote on first strike +
+                # persist. Transient signatures still get the
+                # 3-strike threshold.  See
+                # ``_STRUCTURAL_FAILURE_SIGNATURES``.
                 if not is_transient:
-                    self._record_backend_failure(self._active_backend)
+                    self._record_backend_failure(self._active_backend, e)
 
                 if is_transient:
                     # Subprocess already isolated the crash — don't tear
@@ -2984,8 +3100,14 @@ class TTSEngine:
                     _surface_backend_exception(candidate, fallback_err)
                 except Exception:
                     pass
+                # Pass the exception for structural classification —
+                # a fallback engine that ALSO dies during startup
+                # should be demoted on first strike (and persisted)
+                # rather than waiting for two more boots' worth of
+                # 3-strike accumulation that never converges because
+                # the in-memory counter resets each boot.
                 if not bool(getattr(fallback_err, 'transient', False)):
-                    self._record_backend_failure(candidate)
+                    self._record_backend_failure(candidate, fallback_err)
                 continue
 
         # Exhausted the filtered candidate list without producing audio.
