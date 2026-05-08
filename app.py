@@ -7754,8 +7754,14 @@ def handle_protocol_launch():
         logger.info(f"Processing protocol URL: {protocol_url}")
 
         # Sometimes Windows passes the full URL, sometimes just parameters.
-        # Both 'hevolveai://' (legacy) and 'nunba://' (UNIF-G4) are valid.
-        _SCHEMES = ('hevolveai://', 'nunba://')
+        # All three schemes accepted on receive (matches HARTOS canonical
+        # ``DEEPLINK_SCHEMES`` so any URL produced by ``invite_link()``
+        # opens the desktop regardless of which mobile-era scheme it
+        # carries):
+        #   - hevolveai://   canonical desktop scheme since 2024
+        #   - nunba://       UNIF-G4 brand-canon scheme
+        #   - hevolve://     legacy mobile scheme (Android + iOS native)
+        _SCHEMES = ('hevolveai://', 'nunba://', 'hevolve://')
         if not any(protocol_url.startswith(s) for s in _SCHEMES):
             protocol_url = 'hevolveai://' + protocol_url
             logger.info(f"Added protocol prefix: {protocol_url}")
