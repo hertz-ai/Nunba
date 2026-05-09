@@ -66,6 +66,7 @@ const CampaignDetailPage = lazyRetry(() => import('./components/Social/Campaigns
 const PostDetailPage = lazyRetry(() => import('./components/Social/Post/PostDetailPage'));
 const SearchPage = lazyRetry(() => import('./components/Social/Search/SearchPage'));
 const NotificationsPage = lazyRetry(() => import('./components/Social/Notifications/NotificationsPage'));
+const InboxPage = lazyRetry(() => import('./components/Social/Inbox/InboxPage'));
 const RecipeListPage = lazyRetry(() => import('./components/Social/Recipes/RecipeListPage'));
 const CommunityListPage = lazyRetry(() => import('./components/Social/Communities/CommunityListPage'));
 const CommunityDetailPage = lazyRetry(() => import('./components/Social/Communities/CommunityDetailPage'));
@@ -534,6 +535,7 @@ function MainRoutes() {
 
           {/* Auth required — flat+ only */}
           <Route path="notifications" element={<RoleGuard minRole="flat"><NotificationsPage /></RoleGuard>} />
+          <Route path="inbox" element={<RoleGuard minRole="flat"><InboxPage /></RoleGuard>} />
           <Route path="regions" element={<RoleGuard minRole="flat"><RegionsPage /></RoleGuard>} />
           <Route path="regions/:regionId" element={<RoleGuard minRole="flat"><RegionDetailPage /></RoleGuard>} />
           <Route path="hub" element={<ActivityHub />} />

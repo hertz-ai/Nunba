@@ -939,6 +939,21 @@ export const invitesApi = {
   resolveCode: (code) => socialApi.get(`/invites/code/${code}`),
 };
 
+// --- Inbox (PR D — flagship unified inbox) ---
+// Wraps GET /api/social/sync/inbox.  Server flag-gated by `sync_v1`,
+// returns a flattened cross-source row list:
+//   { cursor, has_more, rows: [InboxRow, ...] }
+// where InboxRow = { id, kind, parent_kind, parent_id, sender_id,
+//                    sender_kind, content_preview, is_unread,
+//                    last_activity_at, deep_link }.
+// Pass back the `cursor` as `since` to fetch the next page.
+export const inboxApi = {
+  list: ({since, limit = 50} = {}) =>
+    socialApi.get('/sync/inbox', {
+      params: since ? {since, limit} : {limit},
+    }),
+};
+
 // --- Marketplace ---
 export const marketplaceApi = {
   listings: (params) => socialApi.get('/marketplace/listings', {params}),
