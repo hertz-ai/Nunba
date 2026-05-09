@@ -219,10 +219,12 @@ os.environ.setdefault('HEVOLVE_FLAG_E2E_DMS', 'true')
 os.environ.setdefault('HEVOLVE_FLAG_FRIENDS_V2', 'true')
 os.environ.setdefault('HEVOLVE_FLAG_POST_PRIVACY', 'true')
 os.environ.setdefault('HEVOLVE_FLAG_MODERATION_V2', 'true')
-# HEVOLVE_FLAG_DISPATCH_VIA_CHAT deferred — the gate reader (
-# integrations/agentic_router.py:_dispatch_via_chat) is currently absent
-# from the HARTOS tree.  Setting the flag without a reader would be
-# dead config.  Re-enable here once the helper lands.
+# DISPATCH_VIA_CHAT — gate reader at agentic_router.py:_dispatch_via_chat
+# (HARTOS commit 567a78b restored the helper after Wave-1 audit).  Social
+# agents now reuse the canonical /chat runtime (autogen + persona + tools
+# + history) instead of raw single-shot llm.invoke; falls back to raw
+# llm.invoke if /chat unreachable, so flag-on is strictly additive.
+os.environ.setdefault('HEVOLVE_FLAG_DISPATCH_VIA_CHAT', 'true')
 # Skipped — DEAD CONFIG (declared in feature_flags._DEFAULTS but no active
 # reader in code; flipping would be no-op):
 #   tenancy_v2 / members_v2 / multi_tenant_cloud / electron_build.
