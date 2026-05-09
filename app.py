@@ -1412,9 +1412,14 @@ def _load_deferred_config():
             except Exception:
                 pass
 
-    # ── Auto-enable agent engine when LLM is configured ──
+    # ── Auto-enable agent engine + speculative dispatch when LLM is configured ──
+    # Both are LLM-gated: agent_daemon's tick path uses speculative dispatch
+    # (agent_daemon.py:541) only when an LLM is reachable, so the two flags
+    # belong together.  Setting unconditionally would cause agent-engine
+    # startup with no LLM, which emits errors.
     if _llm_configured:
         os.environ.setdefault('HEVOLVE_AGENT_ENGINE_ENABLED', 'true')
+        os.environ.setdefault('HEVOLVE_SPECULATIVE_ENABLED', 'true')
 
 # Static splash was shown BEFORE frozen fixes (line 329).
 # _early_splash and _eroot are already set.

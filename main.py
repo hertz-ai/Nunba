@@ -183,6 +183,38 @@ os.environ.setdefault('HARTOS_BACKEND_URL', 'http://localhost:6777')  # LangChai
 # Signal bundled mode so langchain/HevolveAI redirect logs to Documents/Nunba/logs
 os.environ['NUNBA_BUNDLED'] = '1'
 
+# ── Phase 7+ feature flags — Wave 1 batch enable (additive flags only) ──
+# Each flag gates an additive code path: new route, new model registration,
+# new daemon trigger, or new helper.  Off-path is no-op or empty fallback;
+# audited 2026-05-09 (zero parallel paths, zero DRY violations).
+# Data-shape flags (tenancy_v2, members_v2, friends_v2, post_privacy,
+# moderation_v2, multi_tenant_cloud, tenant_strict_mode) and build-system
+# flags (electron_build) are deferred — they need schema migration audit
+# before flip; tracked separately.
+# setdefault preserves any explicit override from the deploy environment.
+os.environ.setdefault('HEVOLVE_FLAG_MENTIONS_AUTOCOMPLETE', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_MENTIONS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_AGENT_MEMBERS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_INVITES_V2', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_CONVERSATIONS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_REACTIONS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_SYNC_V1', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_CALLS_V1', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_AGENT_VOICE_BRIDGE', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_WEAR_CALLS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_NUNBA_DESKTOP_V2', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_E2E_DMS', 'true')
+# HEVOLVE_FLAG_DISPATCH_VIA_CHAT deferred — the gate reader (
+# integrations/agentic_router.py:_dispatch_via_chat) is currently absent
+# from the HARTOS tree.  Setting the flag without a reader would be
+# dead config.  Re-enable here once the helper lands.
+# HEVOLVE_AGENT_ENGINE_ENABLED + HEVOLVE_SPECULATIVE_ENABLED are LLM-gated;
+# set in app.py:1417 only when an LLM is configured (avoids agent-engine
+# startup with no LLM, which would emit errors).  Don't duplicate here.
+os.environ.setdefault('HEVOLVE_VISION_LITE_ENABLED', 'true')
+os.environ.setdefault('HEVOLVE_RSI_REALTIME', 'true')
+os.environ.setdefault('HEVOLVE_RSI_EXPLORE', 'true')
+
 # Restore persisted node config (master key, tier) from previous session
 _node_config_path = os.path.join(PROGRAM_DATA_DIR, 'data', 'node_config.json')
 if os.path.isfile(_node_config_path):
