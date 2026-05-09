@@ -204,10 +204,30 @@ os.environ.setdefault('HEVOLVE_FLAG_AGENT_VOICE_BRIDGE', 'true')
 os.environ.setdefault('HEVOLVE_FLAG_WEAR_CALLS', 'true')
 os.environ.setdefault('HEVOLVE_FLAG_NUNBA_DESKTOP_V2', 'true')
 os.environ.setdefault('HEVOLVE_FLAG_E2E_DMS', 'true')
+# Wave 2 — data-shape flags (schema migrations v41/v48/v50 verified live):
+#   FRIENDS_V2   — friend-graph routes (10+ endpoints in api.py:449+).
+#                  Schema v41 already created friendships table; gate is
+#                  endpoint-only, no legacy data.
+#   POST_PRIVACY — public/friends/community/private gating.
+#                  v48 added posts.privacy column; privacy.py:_normalize
+#                  maps NULL→'public' so all 363 pre-flag posts stay
+#                  exactly as visible as before.
+#   MODERATION_V2 — ContentClassifier post-DLP audit + is_quarantined.
+#                   v50 added content_moderation_decisions table +
+#                   posts.is_quarantined; legacy posts have no decision
+#                   rows (audit-trail gap, acceptable per Phase 7e plan).
+os.environ.setdefault('HEVOLVE_FLAG_FRIENDS_V2', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_POST_PRIVACY', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_MODERATION_V2', 'true')
 # HEVOLVE_FLAG_DISPATCH_VIA_CHAT deferred — the gate reader (
 # integrations/agentic_router.py:_dispatch_via_chat) is currently absent
 # from the HARTOS tree.  Setting the flag without a reader would be
 # dead config.  Re-enable here once the helper lands.
+# Skipped — DEAD CONFIG (declared in feature_flags._DEFAULTS but no active
+# reader in code; flipping would be no-op):
+#   tenancy_v2 / members_v2 / multi_tenant_cloud / electron_build.
+# Skipped — NO-OP for flat/desktop tier (g.tenant_id is None):
+#   tenant_strict_mode.
 # HEVOLVE_AGENT_ENGINE_ENABLED + HEVOLVE_SPECULATIVE_ENABLED are LLM-gated;
 # set in app.py:1417 only when an LLM is configured (avoids agent-engine
 # startup with no LLM, which would emit errors).  Don't duplicate here.
