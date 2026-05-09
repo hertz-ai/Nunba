@@ -218,8 +218,13 @@ class RealtimeService {
   // ── Internal: dispatch (transport-agnostic, idempotent) ─────────────
 
   _isDuplicate(payload) {
-    // Explicit ID (TTS request_id, notification id, etc.)
-    let id = payload.request_id || payload.id;
+    // Per-event dedup id from HARTOS (publish_thinking_trace +
+    // EventBus.emit auto-inject this).  Critical: prefer msg_id over
+    // request_id because multiple events share request_id (N thinking
+    // steps in one chat turn) — keying on request_id alone would drop
+    // every event after the first.  request_id stays the GROUPING key
+    // for daemon-stale filtering (Demopage.js:1434), not for dedup.
+    let id = payload.msg_id || payload.request_id || payload.id;
     // No explicit ID — generate content hash so identical payloads from
     // different transports (WAMP + SSE) dedup correctly.
     if (!id) {
