@@ -1,6 +1,7 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
+import { QRCodeSVG } from 'qrcode.react';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CloseIcon from '@mui/icons-material/Close';
@@ -430,6 +431,67 @@ function MeetCopilotOverlay({ data, onDismiss }) {
   );
 }
 
+// ─── QR pairing overlay ──────────────────────────────────────────────
+//
+// Renders a QR code the user scans with their existing client app
+// (WhatsApp → Linked devices, Telegram → Devices, Discord → Authorize).
+// Driven by HARTOS's `agent_ui_update({type: 'qr_pair', qr, channel,
+// title, help})` emitted from `_wire_qr_pair_emitter` after a successful
+// register_channel for any auth_method='qr_session' channel.  Same Liquid
+// UI pipe the rest of the overlays use — single emit path, no parallel
+// surface.
+
+function QRPairOverlay({ data, onDismiss }) {
+  const qr = (data && data.qr) || '';
+  const title = (data && data.title) || 'Scan to connect';
+  const help = (data && data.help) || (
+    'Open the app on your phone, find "Linked devices" or "Devices", '
+    + 'and scan this code.'
+  );
+  return (
+    <Box sx={{ p: 2, textAlign: 'center' }}>
+      <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.25 }}>
+        {title}
+      </Typography>
+      {qr ? (
+        <Box
+          sx={{
+            display: 'inline-block',
+            p: 2,
+            bgcolor: '#fff',
+            borderRadius: 2,
+            boxShadow: '0 4px 18px rgba(0,0,0,0.4)',
+          }}
+        >
+          <QRCodeSVG value={qr} size={220} level="M" includeMargin={false} />
+        </Box>
+      ) : (
+        <Box sx={{ py: 4 }}>
+          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)' }}>
+            Generating QR code…
+          </Typography>
+        </Box>
+      )}
+      <Typography
+        variant="body2"
+        sx={{ color: 'rgba(255,255,255,0.7)', mt: 2, lineHeight: 1.4 }}
+      >
+        {help}
+      </Typography>
+      {onDismiss && (
+        <Button
+          size="small"
+          variant="text"
+          onClick={onDismiss}
+          sx={{ mt: 1.5, color: 'rgba(255,255,255,0.5)' }}
+        >
+          Cancel
+        </Button>
+      )}
+    </Box>
+  );
+}
+
 // ─── Router: picks the right renderer ────────────────────────────────
 
 function OverlayContent({ data, onDismiss }) {
@@ -451,6 +513,7 @@ function OverlayContent({ data, onDismiss }) {
     case 'media': return <MediaOverlay data={data} />;
     case 'metric': return <MetricOverlay data={data} />;
     case 'form': return <FormOverlay data={data} onDismiss={onDismiss} />;
+    case 'qr_pair': return <QRPairOverlay data={data} onDismiss={onDismiss} />;
     case 'list': return <ListOverlay data={data} />;
     case 'layout': return <LayoutOverlay data={data} />;
     case 'meet_copilot': return <MeetCopilotOverlay data={data} onDismiss={onDismiss} />;
