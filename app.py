@@ -7107,6 +7107,14 @@ def main():
                 try:
                     return _window.evaluate_js(
                         "(function(){"
+                        "  // PRIMARY signal — index.html's MutationObserver"
+                        "  // sets window._reactMounted=true the instant React"
+                        "  // injects real content into #root (ignoring"
+                        "  // style/script/noscript noise + sub-50-char nodes)."
+                        "  // This is the canonical mount flag — Python's"
+                        "  // children.length check below is a fallback for the"
+                        "  // window between observer install and first mutation."
+                        "  if (window._reactMounted === true) return 'mounted';"
                         "  var r = document.getElementById('root');"
                         "  if (!r) return 'no_root';"
                         "  if (r.children.length === 0) return 'empty';"
@@ -7118,7 +7126,14 @@ def main():
                         "})()"
                     )
                 except Exception:
-                    return None
+                    # evaluate_js threw — WebView2 COM RPC not ready, NOT a
+                    # mount failure.  Distinct sentinel so the caller can
+                    # retry the probe instead of triggering a reload (which
+                    # would yank the user's running session for no reason
+                    # and reset Demopage's mount-time state including the
+                    # window.innerWidth capture that drives portrait/
+                    # landscape layout).
+                    return 'probe_failed'
 
             for attempt in range(_MAX_ATTEMPTS):
                 # Give React a moment — rAF just resumed after visibility change
@@ -7160,10 +7175,26 @@ def main():
                         "transitions forced, repaint done")
                     return
 
-                # state is 'paint_dead', 'empty', 'no_root', or None —
-                # React either didn't mount OR WebView2 compositor is suspended.
-                # In both cases the reload path (with post-load resize kick)
-                # is the safest recovery.
+                # 'probe_failed' is NOT a mount problem — evaluate_js
+                # threw because WebView2's COM RPC isn't ready yet (common
+                # transiently after a window-state change).  Skip the
+                # reload entirely; the next attempt's longer sleep gives
+                # the RPC time to come back, and on a real mount the
+                # check returns 'mounted'.  Reloading on probe_failed
+                # was the bug behind the 'every resize → portrait' UX
+                # regression: the watchdog kept firing reloads against
+                # a perfectly-mounted React, each reload triggered a
+                # ChatInterface remount that re-ran useState(
+                # window.innerWidth), and during a live resize gesture
+                # the captured width was an intermediate value that
+                # snapped layout to portrait.
+                if state == 'probe_failed':
+                    continue
+
+                # state is 'paint_dead', 'empty', or 'no_root' — React
+                # really didn't mount OR WebView2 compositor is suspended.
+                # In both cases the reload path (with post-load resize
+                # kick) is the safest recovery.
                 # Preserve the URL the user is currently on — the
                 # taskbar-restore / shown / events.restored watchdogs all
                 # fire AFTER the user has been navigating, so reloading
