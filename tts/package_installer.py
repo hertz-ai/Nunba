@@ -1029,6 +1029,20 @@ def install_backend_packages(backend: str,
             cuda_torch_was_installed = True
             # install_gpu_torch installs torch + torchaudio together
             to_install = [p for p in to_install if p != 'torchaudio']
+        elif "Another process is already installing" in cuda_msg:
+            # Another thread beat us to the lock — wait for it to finish
+            # rather than proceeding without CUDA torch and failing later.
+            if progress_cb:
+                progress_cb("Waiting for CUDA torch install to complete...")
+            import time
+            for _ in range(120):  # up to 10 minutes
+                time.sleep(5)
+                if is_cuda_torch():
+                    cuda_torch_was_installed = True
+                    to_install = [p for p in to_install if p != 'torchaudio']
+                    break
+            else:
+                logger.warning("Timed out waiting for CUDA torch install from another thread")
         else:
             logger.warning(f"CUDA torch install failed: {cuda_msg}")
             # Continue — caller decides how to handle a still-CPU torch.
