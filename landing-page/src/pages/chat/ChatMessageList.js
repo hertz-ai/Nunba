@@ -506,6 +506,16 @@ const ChatMessageList = ({
                           />
                         </div>
                       )}
+                      {/* Timestamp — parity with the assistant bubble below.
+                          Same field (message.timestamp), same helper
+                          (formatTimestamp).  Demopage backfills this on
+                          every send (Demopage.js:1380) so the field is
+                          reliably present. */}
+                      {message.timestamp && (
+                        <div className="text-xs mt-1" style={{ color: 'rgba(0,0,0,0.55)' }}>
+                          {formatTimestamp(message.timestamp)}
+                        </div>
+                      )}
                     </div>
                   )}
 
