@@ -468,7 +468,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         const contText = contData.text || contData.response;
 
         if (contText) {
-          setMessages((prev) => [...prev, { type: 'assistant', content: contText }]);
+          setMessages((prev) => [...prev, {
+            type: 'assistant',
+            content: contText,
+            source: contData.source,
+            servedBy: contData.served_by,
+            nodeTier: contData.node_tier,
+          }]);
           setShouldScroll(true);
         }
 
@@ -512,7 +518,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   const execData = execResult || {};
                   const execText = execData.text || execData.response;
                   if (execText) {
-                    setMessages((prev) => [...prev, { type: 'assistant', content: execText }]);
+                    setMessages((prev) => [...prev, {
+                      type: 'assistant',
+                      content: execText,
+                      source: execData.source,
+                      servedBy: execData.served_by,
+                      nodeTier: execData.node_tier,
+                    }]);
                     setShouldScroll(true);
                   }
                   // Clean up autonomous state
@@ -1397,6 +1409,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               content: extractedText,
               isDraft: false,
               source: parsed.source || 'expert',
+              servedBy: parsed.served_by,
+              nodeTier: parsed.node_tier,
             };
             return updated;
           }
@@ -1405,6 +1419,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             type: 'assistant',
             content: extractedText,
             source: parsed.source || 'expert',
+            servedBy: parsed.served_by,
+            nodeTier: parsed.node_tier,
           }];
         });
         setShouldScroll(true);
@@ -1636,6 +1652,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             type: 'assistant',
             content: extractedText,
             source: parsed.source || 'cloud',
+            servedBy: parsed.served_by,
+            nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
             const newMessages = [...prev, assistantMessage];
@@ -1662,6 +1680,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           type: 'assistant',
           content: extractedText,
           source: parsed.source || 'cloud',
+          servedBy: parsed.served_by,
+          nodeTier: parsed.node_tier,
         };
 
         setMessages((prev) => {
@@ -1705,6 +1725,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           const assistantMessage = {
             type: 'assistant',
             content: textToShow,
+            source: parsed.source,
+            servedBy: parsed.served_by,
+            nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
             const newMessages = [...prev, assistantMessage];

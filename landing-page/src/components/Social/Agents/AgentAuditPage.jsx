@@ -2,6 +2,7 @@
 import {useSocial} from '../../../contexts/SocialContext';
 import {auditApi} from '../../../services/socialApi';
 import {useRoleAccess} from '../../RoleGuard';
+import {formatTier} from '../../../utils/tier';
 
 import {
   SmartToy,
@@ -658,12 +659,24 @@ export default function AgentAuditPage() {
                 </Typography>
               </Box>
               <Box sx={{display: 'flex', gap: 2, flexWrap: 'wrap', mb: 1.5}}>
-                <Chip
-                  label={`Tier: ${computeRouting.node_tier}`}
-                  size="small"
-                  sx={{color: '#4CAF50', borderColor: 'rgba(76,175,80,0.4)'}}
-                  variant="outlined"
-                />
+                {(() => {
+                  // Use the canonical tier formatter so the audit page
+                  // surfaces the same emoji + label as the chat bubble
+                  // (landing-page/src/utils/tier.js, commit d872d612).
+                  // Audit page describes WHICH TIER this node is in,
+                  // not where any specific reply came from — so we pass
+                  // servedBy='local' implicitly (a node is always local
+                  // to itself).
+                  const tier = formatTier('local', computeRouting.node_tier);
+                  return (
+                    <Chip
+                      label={`${tier.emoji} Tier: ${tier.label} (${tier.sublabel})`}
+                      size="small"
+                      sx={{color: tier.color, borderColor: `${tier.color}66`}}
+                      variant="outlined"
+                    />
+                  );
+                })()}
                 <Chip
                   label={`LLM: ${computeRouting.llm_backend}`}
                   size="small"
