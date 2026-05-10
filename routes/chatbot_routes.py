@@ -2678,7 +2678,21 @@ def chat_route():
                         'agent_id': agent_id,
                         'agent_type': 'local',
                         'source': 'langchain_local',
-                        'success': True
+                        'success': True,
+                        # Privacy-first: tell the client which compute tier
+                        # served this reply so the UI can render a tier
+                        # badge (🔒 local on-device / 🏠 LAN HARTOS /
+                        # 🌐 cloud).  No automatic egress; just
+                        # transparency about what already happened.
+                        # 'langchain_local' source means the reply came
+                        # from this Nunba instance's bundled LLM — fully
+                        # on-device on flat tier, fully on-LAN on
+                        # regional tier.  Cloud-served replies set
+                        # source='langchain_cloud' in the cloud chatbot
+                        # pipeline (chatbot_pipeline/chatbot.py).
+                        'served_by': 'local',
+                        'node_tier': os.environ.get(
+                            'HEVOLVE_NODE_TIER', 'flat'),
                     }
                     # Agent-driven resource request: 3 detection paths (ordered by priority)
                     # 1. Direct secret_request from backend/adapter
