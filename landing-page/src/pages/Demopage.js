@@ -3985,11 +3985,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
             <div
               className={`${
-                !uploadedImage && !uploadedPdf && window.innerWidth > 768
+                !uploadedImage && !uploadedPdf && screenWidth > 768
                   ? (isTextMode ? 'w-0 overflow-hidden' : (videoUrl || mediaMode === 'audio' ? 'w-[30%]' : 'w-0 overflow-hidden'))
                   : 'w-full'
               } ${
-                window.innerWidth <= 768 ? (isTextMode ? '' : (videoUrl || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
+                screenWidth <= 768 ? (isTextMode ? '' : (videoUrl || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
               } relative flex justify-center items-center transition-all duration-300 md:sticky md:top-0 md:h-screen`}
               style={{ overflow: 'visible' }}
             >
@@ -4003,7 +4003,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                           width={getVideoWidthforMobile()}
                           onLoadedMetadata={handleLoadedMetadata}
                           className={`${
-                            window.innerWidth <= 768
+                            screenWidth <= 768
                               ? 'absolute top-0 '
                               : 'absolute bottom-44 right-5 '
                           } object-contain rounded-lg animate-fade-in`}
@@ -4030,14 +4030,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                             />
                           )}
                           <div className={`${
-                            window.innerWidth <= 768
+                            screenWidth <= 768
                               ? 'absolute top-0 inset-x-0 h-[35vh]'
                               : 'absolute inset-0'
                           } flex justify-center items-center`}>
                             <VoiceVisualizer
                               audioRef={audioRef}
                               isActive={isPlayingResponse || tts.isSpeaking}
-                              size={window.innerWidth <= 768 ? Math.min(window.innerWidth * 0.35, 160) : Math.min(window.innerWidth * 0.2, 200)}
+                              size={screenWidth <= 768 ? Math.min(screenWidth * 0.35, 160) : Math.min(screenWidth * 0.2, 200)}
                             />
                           </div>
                         </>
@@ -4046,7 +4046,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   ) : (
                     <div
                       className={`${
-                        window.innerWidth <= 768 ? 'h-full' : 'h-[85vh]'
+                        screenWidth <= 768 ? 'h-full' : 'h-[85vh]'
                       } w-full flex flex-col items-center justify-between gap-4`}
                     >
                       <>
@@ -4057,7 +4057,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                               width={getVideoWidthforMobile()}
                               height="auto"
                               className={`${
-                                window.innerWidth <= 768
+                                screenWidth <= 768
                                   ? 'h-[15vh]'
                                   : 'h-[40vh]'
                               } w-full object-contain rounded-lg animate-fade-in`}
@@ -4136,7 +4136,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
             <div
               className={`flex-1 w-full min-h-0 ${
-                !isTextMode && videoUrl && !uploadedImage && !uploadedPdf && window.innerWidth > 768
+                !isTextMode && videoUrl && !uploadedImage && !uploadedPdf && screenWidth > 768
                   ? 'md:w-[60%]'
                   : 'md:w-full'
               } overflow-x-clip overflow-y-auto pt-2 md:pt-0`}
