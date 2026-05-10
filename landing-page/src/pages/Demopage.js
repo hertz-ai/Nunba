@@ -22,6 +22,7 @@ import {
   ChevronLeft,
 } from 'lucide-react';
 import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL } from '../config/apiBase';
+import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -1892,11 +1893,28 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             requestId
           );
           // Local-first: connect to embedded WAMP router (port 8088)
-          // when Flask backend is on localhost, otherwise use cloud router.
-          const isLocalBackend = window.location.hostname === 'localhost' ||
-            window.location.hostname === '127.0.0.1' ||
-            window.location.hostname === '0.0.0.0';
-          const wsUri = isLocalBackend ? WAMP_LOCAL_URL : WAMP_CLOUD_URL;
+          // when Flask backend is on the same machine OR on the LAN.
+          // Recognises localhost, RFC1918 private IPs, .local mDNS hosts,
+          // and link-local addresses — see utils/backendHost.js.
+          //
+          // Privacy invariant: a phone visiting Nunba on a desktop's LAN
+          // IP must connect to the LAN crossbar, not the public cloud
+          // crossbar.  Before this fix, only literal localhost matched
+          // and every cross-device LAN client silently shipped social
+          // events through wss://aws_rasa.hertzai.com.
+          //
+          // localWampUrl rewrites the bundled WAMP_LOCAL_URL to point
+          // at the SAME host the SPA was served from (port 8088), so
+          // LAN clients reach the desktop's embedded router instead of
+          // their own loopback.
+          const hostname = window.location.hostname;
+          const isLocalBackend = isLocalBackendHost(hostname);
+          // Env-override (REACT_APP_WAMP_URL via WAMP_LOCAL_URL) wins
+          // over auto-detection — preserves the manual escape hatch
+          // for power users / CI / sandbox configurations.
+          const envOverride = process.env.REACT_APP_WAMP_URL ? WAMP_LOCAL_URL : null;
+          const wsUri = envOverride
+            || (isLocalBackend ? localWampUrl(hostname) : WAMP_CLOUD_URL);
           crossbarWorker.postMessage({
             type: 'INIT',
             payload: {
