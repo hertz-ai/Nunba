@@ -351,6 +351,34 @@ export const ratingsApi = {
   trust: (userId) => socialApi.get(`/trust/${userId}`),
 };
 
+// --- Calls (Phase 7d) — voice/video/screen-share rooms ---
+//
+// Server flag-gated by `calls_v1`; off → 503.  Mirrors RN socialApi.callsApi
+// (Hevolve_React_Native/services/socialApi.js) for SPA/RN parity.
+//
+// Token-mode return shape:
+//   { mode: 'livekit',         url, token, metadata, expires_at }
+//   { mode: 'livekit_pending', url, token: '', reason }   ← infra not ready
+//   { mode: 'p2p_mesh',        call_id, reason }          ← flat/Nunba/regional
+//
+// Consumed by components/Social/Calls/CallRoom.js.  Adding this export
+// unblocks the React build (was failing with
+// "callsApi is not exported from socialApi").
+export const callsApi = {
+  start: ({parent_kind, parent_id, kind = 'voice', title, settings} = {}) =>
+    socialApi.post('/calls', {parent_kind, parent_id, kind, title, settings}),
+  get: (call_id) => socialApi.get(`/calls/${call_id}`),
+  token: (call_id, opts = {}) => socialApi.post(`/calls/${call_id}/token`, opts),
+  join: (call_id, opts = {}) => socialApi.post(`/calls/${call_id}/join`, opts),
+  leave: (call_id) => socialApi.post(`/calls/${call_id}/leave`, {}),
+  end: (call_id) => socialApi.post(`/calls/${call_id}/end`, {}),
+  participants: (call_id, include_left = false) =>
+    socialApi.get(`/calls/${call_id}/participants`,
+      include_left ? {params: {include_left: 'true'}} : undefined),
+  addAgent: (call_id, agent_id) =>
+    socialApi.post(`/calls/${call_id}/agents`, {agent_id}),
+};
+
 // --- Referrals ---
 export const referralsApi = {
   getCode: () => socialApi.get('/referral/code'),
