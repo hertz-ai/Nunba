@@ -6965,6 +6965,10 @@ def main():
                 try:
                     state = _safe_eval_js(
                         "(function(){"
+                        "  // PRIMARY: window._reactMounted is the canonical mount"
+                        "  // flag set by index.html's MutationObserver — same"
+                        "  // signal _force_remount_and_paint's probe consults."
+                        "  if (window._reactMounted === true) return 'mounted';"
                         "  var r = document.getElementById('root');"
                         "  if (!r) return 'no_root';"
                         "  if (r.children.length === 0) return 'empty';"
@@ -6992,18 +6996,32 @@ def main():
                             "})()"
                         )
                         logger.info("[MOUNT_GUARD] Transitions forced, repaint done")
-                    elif state in ('empty', 'no_root', None):
+                    elif state is None:
+                        # _safe_eval_js exhausted retries — WebView2 RPC not
+                        # ready, NOT a real mount failure.  Skip reload entirely:
+                        # the in-page MutationObserver will set _reactMounted
+                        # when React actually mounts, and any future
+                        # mount-check re-probe (taskbar_restore /
+                        # events.restored / explicit recovery) will catch
+                        # genuine failures.  Triggering reload+resize here
+                        # was the cause of the 2026-05-10 maximize-then-
+                        # restore-to-startup-size regression: _window.width
+                        # returns the LOGICAL startup dimension (pywebview
+                        # doesn't track OS-level maximize state), so the
+                        # `_window.resize(w+1, h)` "wake compositor" call
+                        # collapsed the maximized window back to startup.
+                        logger.info("[MOUNT_GUARD] eval_js failed (probe RPC unavailable) — skipping reload, no window-resize side effect")
+                    elif state in ('empty', 'no_root'):
                         logger.warning(f"[MOUNT_GUARD] React not mounted ({state}) — reloading")
                         _window.load_url(f"http://localhost:{args.port}/local")
                         time.sleep(3.0)
-                        # Force resize to wake compositor
-                        try:
-                            w, h = _window.width, _window.height
-                            _window.resize(w + 1, h)
-                            time.sleep(0.1)
-                            _window.resize(w, h)
-                        except Exception:
-                            pass
+                        # NOTE: removed _window.resize(w+1, h) "wake compositor"
+                        # call — it caused window to shrink back to logical
+                        # startup size on maximize.  load_url alone is
+                        # sufficient to remount React; the JS-side document.
+                        # body display flick handles repaint without touching
+                        # window dimensions.  See the explicit body flick
+                        # in the post-mount transition-force branch above.
                 except Exception as e:
                     logger.warning(f"[MOUNT_GUARD] Check failed: {e}")
 
@@ -7490,6 +7508,13 @@ def main():
             try:
                 check_result = _window.evaluate_js("""
                     (function(){
+                        // PRIMARY: window._reactMounted is the canonical mount
+                        // flag set by index.html's MutationObserver — same
+                        // signal _force_remount_and_paint and _mount_guard
+                        // probes consult.  If set, we're definitively mounted.
+                        if (window._reactMounted === true) {
+                            return JSON.stringify({mounted: true, reason: '_reactMounted flag'});
+                        }
                         var r = document.getElementById('root');
                         if (!r) return JSON.stringify({mounted: false, reason: 'no root'});
                         var children = r.childNodes.length;
@@ -7520,17 +7545,20 @@ def main():
                     import json as _json
                     state = _json.loads(check_result)
                     if not state.get('mounted'):
-                        logger.warning(f"[RECOVERY] React not mounted after 20s (children={state.get('children')}, innerLen={state.get('innerLen')}) — forcing reload + repaint")
+                        logger.warning(f"[RECOVERY] React not mounted after 20s (children={state.get('children')}, innerLen={state.get('innerLen')}) — forcing reload")
                         _window.load_url(f"http://localhost:{_recovery_port}/local")
                         time.sleep(2)
-                        # Force repaint via resize
-                        try:
-                            w, h = _window.width, _window.height
-                            _window.resize(w + 1, h)
-                            time.sleep(0.1)
-                            _window.resize(w, h)
-                        except Exception:
-                            pass
+                        # NOTE: removed _window.resize(w+1, h) "force repaint
+                        # via resize" — _window.width returns the LOGICAL
+                        # startup dimension (pywebview doesn't track OS-level
+                        # maximize state), so this call collapsed the
+                        # maximized window back to startup size on
+                        # iconic→non-iconic transitions (live evidence
+                        # 2026-05-10 22:28).  load_url alone is sufficient
+                        # to remount React; window-dimension manipulation
+                        # is the wrong tool for "wake compositor."
+                else:
+                    logger.info("[RECOVERY] React mount check returned no result (eval_js failed) — skipping reload, no window-resize side effect")
             except Exception as e:
                 logger.warning(f"[RECOVERY] React check failed: {e}")
 
