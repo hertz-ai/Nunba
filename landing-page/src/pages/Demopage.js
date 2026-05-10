@@ -3211,6 +3211,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 type: 'assistant',
                 content: responseText,
                 source: resultData.source || 'langchain_local',
+                // Privacy-first: surface where the bytes were served
+                // from so ChatMessageList can render the tier badge
+                // (on-device / LAN / cloud).  Server defaults at
+                // routes/chatbot_routes.py:2693.
+                servedBy: resultData.served_by,
+                nodeTier: resultData.node_tier,
                 timestamp: new Date(),
                 // Draft-first: tag with speculationId so the expert
                 // response arriving via WAMP can replace this bubble
@@ -3447,6 +3453,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           type: 'assistant',
           content: responseText,
           source: resultData.source || null,
+          servedBy: resultData.served_by,
+          nodeTier: resultData.node_tier,
         }]);
       }
       // Track agent status from execution response

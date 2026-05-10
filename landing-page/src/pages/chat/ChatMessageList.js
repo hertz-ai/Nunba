@@ -8,6 +8,8 @@ import {FileText} from 'lucide-react';
 import Markdown from 'markdown-to-jsx';
 import React, {useState, useEffect} from 'react';
 
+import {formatTier} from '../../utils/tier';
+
 // Markdown renderer for assistant replies — the model emits standard
 // Markdown (**bold**, _italic_, lists, code fences, links).  Without
 // this, the bubble shows literal asterisks and underscores instead
@@ -531,23 +533,38 @@ const ChatMessageList = ({
                           </Markdown>
                         </div>
                       )}
-                      {/* Intelligence source badge + timestamp */}
-                      <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
-                        <div className="flex items-center gap-1">
-                          <span
-                            className="inline-block w-2 h-2 rounded-full"
-                            style={{
-                              backgroundColor: message.source?.includes('local') || !message.source
-                                ? '#2ECC71'
-                                : '#6C63FF',
-                            }}
-                          />
-                          {message.source?.includes('local') || !message.source ? 'Local' : 'Hive'}
-                        </div>
-                        {message.timestamp && (
-                          <span>&middot; {formatTimestamp(message.timestamp)}</span>
-                        )}
-                      </div>
+                      {/* Intelligence source badge + timestamp.
+                          servedBy/nodeTier come from /chat response_json
+                          (Nunba routes/chatbot_routes.py:2693).  Fall back
+                          to message.source so legacy buckets that didn't
+                          plumb the new fields still render something. */}
+                      {(() => {
+                        const tier = formatTier(
+                          message.servedBy ||
+                            (message.source?.includes('local') ? 'local'
+                              : message.source?.includes('cloud') ? 'cloud'
+                              : message.source?.includes('hive') ? 'hive'
+                              : 'local'),
+                          message.nodeTier,
+                        );
+                        return (
+                          <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                            <div
+                              className="flex items-center gap-1"
+                              title={`${tier.label} · ${tier.sublabel}`}
+                            >
+                              <span
+                                className="inline-block w-2 h-2 rounded-full"
+                                style={{ backgroundColor: tier.color }}
+                              />
+                              <span>{tier.emoji} {tier.label}</span>
+                            </div>
+                            {message.timestamp && (
+                              <span>&middot; {formatTimestamp(message.timestamp)}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </>
                   )}
 
