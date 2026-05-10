@@ -255,22 +255,23 @@ export default function CallRoom() {
   }, [mode, token, livekitUrl]);
 
   // ── Controls ────────────────────────────────────────────────
+  // `next` is the post-toggle state of `muted` (true = muted = mic OFF);
+  // `setMicrophoneEnabled` takes the inverse (true = mic ON).
   const toggleMute = useCallback(async () => {
-    setMuted((m) => !m);
+    const next = !muted;
+    setMuted(next);
     const r = roomRef.current;
     if (r && r.localParticipant) {
-      try { await r.localParticipant.setMicrophoneEnabled(muted); } catch (_) {}
-      // (if currently muted, the toggle turns mic ON → setMicrophoneEnabled(true)
-      //  which is `!muted` AFTER the flip; the local state hasn't latched yet
-      //  so we pass `muted` (= the value about to flip from) to flip ON.)
+      try { await r.localParticipant.setMicrophoneEnabled(!next); } catch (_) {}
     }
   }, [muted]);
 
   const toggleVideo = useCallback(async () => {
-    setVideoOn((v) => !v);
+    const next = !videoOn;
+    setVideoOn(next);
     const r = roomRef.current;
     if (r && r.localParticipant) {
-      try { await r.localParticipant.setCameraEnabled(!videoOn); } catch (_) {}
+      try { await r.localParticipant.setCameraEnabled(next); } catch (_) {}
     }
   }, [videoOn]);
 

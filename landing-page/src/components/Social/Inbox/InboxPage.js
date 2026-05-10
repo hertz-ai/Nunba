@@ -332,10 +332,32 @@ export default function InboxPage() {
     const target = routeForRow(row);
     if (!target) return;
     if (target.kind === 'href') {
-      // Prefer in-app routing for local hrefs; for external schemes
-      // we fall back to the browser's native handler.
-      if (target.value.startsWith('/')) navigate(target.value);
-      else window.location.href = target.value;
+      const v = String(target.value || '');
+      // In-app path → react-router navigate.
+      if (v.startsWith('/')) {
+        navigate(v);
+        return;
+      }
+      // Same-origin https://hevolve.ai/...  → strip origin + react-router.
+      if (typeof window !== 'undefined' && window.location
+          && v.startsWith(window.location.origin)) {
+        navigate(v.slice(window.location.origin.length) || '/');
+        return;
+      }
+      // External http(s) — open in a new tab so we don't trash session.
+      if (/^https?:\/\//i.test(v)) {
+        if (typeof window !== 'undefined') {
+          window.open(v, '_blank', 'noopener,noreferrer');
+        }
+        return;
+      }
+      // Custom scheme (hevolve://, nunba://, mailto:, etc.) — let the
+      // browser dispatch via assignment but only if the user's UA is
+      // expected to honor it.  Skip in test/jsdom envs (no real handler).
+      if (typeof window !== 'undefined' && window.location
+          && typeof window.location.assign === 'function') {
+        try { window.location.assign(v); } catch (_) { /* swallow */ }
+      }
       return;
     }
     if (target.kind === 'path') navigate(target.value);
