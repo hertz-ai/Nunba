@@ -2793,13 +2793,31 @@ def chat_route():
                             args=(langchain_prompt_id, user_id, agent_name_for_post),
                             daemon=True
                         ).start()
-                    # TTS at Nunba layer — fires when HARTOS can't handle it:
-                    # - Tier-1 down (not _hartos_backend_available)
-                    # - Non-English (frozen HARTOS doesn't pass language to TTS)
-                    from routes.hartos_backend_adapter import _ensure_hartos
-                    _nunba_handles_tts = (not _ensure_hartos() or
-                                          (preferred_lang and not preferred_lang.startswith('en')))
-                    if audio_mode and response_text and _nunba_handles_tts:
+                    # TTS at Nunba layer — non-English ONLY.
+                    #
+                    # We are inside the Tier-1 LangChain success branch — by
+                    # construction HARTOS just served this turn AND its bg
+                    # thread (hart_intelligence_entry.py:_bg) has already
+                    # published the TTS audio.  Firing Nunba TTS here too
+                    # produced a second publish for the SAME audio_url, and
+                    # because the two pipelines emit slightly-different
+                    # envelopes (Nunba's payload omits msg_id; HARTOS adds
+                    # one via publish_async), the SPA's
+                    # realtimeService._isDuplicate keys each on a different
+                    # field and BOTH passed → user heard the same audio
+                    # twice ~26ms apart on the first turn.  On subsequent
+                    # turns _ensure_hartos() warm-cached True and the gate
+                    # short-circuited, so the symptom only ever showed on
+                    # the first message.
+                    #
+                    # Non-English remains a legitimate Nunba-side reason:
+                    # the bundled HARTOS TTS path doesn't always wire
+                    # preferred_lang into the engine (Indic Parler /
+                    # Kokoro routing lives in Nunba's tts_engine).  This
+                    # branch keeps that single canonical override and
+                    # nothing else.
+                    if (audio_mode and response_text and preferred_lang
+                            and not preferred_lang.startswith('en')):
                         _fire_nunba_tts(response_text, user_id, request_id, preferred_lang)
                     return jsonify(response_json)
                 else:
