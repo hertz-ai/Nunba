@@ -1117,6 +1117,38 @@ class LlamaConfig:
 
                 except Exception:
                     pass
+            elif response.status_code == 503:
+                # llama-server is alive but the model is mid-load.  Body is
+                # ``{"error":{"message":"Loading model","type":"unavailable_error","code":503}}``.
+                # Treat this as ALIVE — the server has bound the port and is
+                # serving HTTP, it's just warming up.  Returning OTHER_SERVICE
+                # here would cause the LLM-WATCHDOG to queue another restart,
+                # which extends the loading window, which re-triggers another
+                # 503 on the next probe — self-amplifying restart loop seen
+                # 2026-05-11 20:15-20:20 (crash_count climbed 2→3→4 entirely
+                # from this false-alarm cycle, while llama-server stayed up).
+                try:
+                    body = response.json()
+                    err_msg = ''
+                    if isinstance(body, dict):
+                        err_msg = (body.get('error') or {}).get('message', '') \
+                            if isinstance(body.get('error'), dict) \
+                            else str(body.get('error') or '')
+                    if 'Loading model' in err_msg or 'loading' in err_msg.lower():
+                        logger.info(
+                            f"llama-server on port {port} alive but loading "
+                            f"model (HTTP 503) — treating as EXTERNAL_LLAMA "
+                            f"to suppress restart-amplification.")
+                        return ServerType.EXTERNAL_LLAMA, {"status": "loading"}
+                except Exception:
+                    # Body wasn't JSON, but a 503 from /health on the LLM
+                    # port is still much more likely 'warming up' than
+                    # 'some other service' — same call: trust port over
+                    # status code.
+                    logger.info(
+                        f"llama-server on port {port} returned 503 with "
+                        f"non-JSON body — treating as alive-but-warming.")
+                    return ServerType.EXTERNAL_LLAMA, {"status": "loading"}
 
             # Try /v1/models endpoint (llama.cpp compatibility)
             models_url = f"http://127.0.0.1:{port}/v1/models"
@@ -1131,6 +1163,12 @@ class LlamaConfig:
                         return ServerType.EXTERNAL_LLAMA, {"models": data.get("data", [])}
                 except Exception:
                     pass
+            elif response.status_code == 503:
+                # Same warming-up case via the OpenAI-compat endpoint.
+                logger.info(
+                    f"llama-server on port {port} /v1/models returned 503 "
+                    f"— treating as alive-but-warming.")
+                return ServerType.EXTERNAL_LLAMA, {"status": "loading"}
 
             # Some other service is running
             logger.warning(f"Port {port} is occupied by a non-llama.cpp service")
