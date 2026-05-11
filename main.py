@@ -778,19 +778,33 @@ def after_request(response):
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    # Content-Security-Policy — desktop app only talks to its own
-    # Flask origin + localhost llama-server (:8080/:8082) + VisionService
-    # (:5460) + crossbar (:8088). `unsafe-inline` is required because
-    # CRA's runtime and MUI emotion inject inline styles; migrating to
-    # nonce/hash CSP is a separate, larger task. blob: covers generated
-    # audio URLs used for synthesized TTS playback.
+    # Content-Security-Policy — desktop app talks to:
+    # - own Flask origin ('self')
+    # - localhost llama-server (:8080/:8082), VisionService (:5460),
+    #   crossbar (:8088)
+    # - hertzai.com cloud subdomains for OTP/auth/SMS: azurekong (login,
+    #   OTP verify), mailer (teacher/admin auth, registration, content),
+    #   sms (OTP delivery).  These are bundled-mode reality — without
+    #   them CSP blocks the `Get OTP` fetch before it leaves the browser
+    #   and users on registered accounts get told to "sign up" (live
+    #   incident 2026-05-11, frontend console:
+    #   "Refused to connect because it violates the document's Content
+    #    Security Policy. https://azurekong.hertzai.com/data/login").
+    # `unsafe-inline` is required because CRA's runtime and MUI emotion
+    # inject inline styles; migrating to nonce/hash CSP is a separate,
+    # larger task.  blob: covers generated audio URLs used for synthesized
+    # TTS playback.
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob: https:; "
         "media-src 'self' blob: data:; "
-        "connect-src 'self' http://localhost:* ws://localhost:* wss://localhost:*; "
+        "connect-src 'self' "
+        "http://localhost:* ws://localhost:* wss://localhost:* "
+        "https://*.hertzai.com wss://*.hertzai.com "
+        "https://hevolve.ai https://*.hevolve.ai wss://*.hevolve.ai "
+        "https://mcgroce.com https://*.mcgroce.com wss://*.mcgroce.com; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self'"
