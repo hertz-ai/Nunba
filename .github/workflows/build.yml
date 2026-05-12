@@ -1,8 +1,14 @@
 name: Build & Sign Installers
 
 on:
-  # Build on version tags (e.g. v2.0.1)
+  # Rolling nightly: every push to main produces a fresh `nightly-<sha>-<runid>`
+  # release marked --latest=true so docs.hevolve.ai/downloads links like
+  # /releases/latest/download/Nunba_Setup.exe always resolve to the newest
+  # build between tagged v* releases.  Mirrors the pattern in
+  # hertz-ai/HARTOS .github/workflows/release.yml `publish-nightly` job.
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   # Manual trigger from GitHub UI
@@ -58,27 +64,87 @@ jobs:
           token: ${{ secrets.HEVOLVE_REPO_TOKEN || github.token }}
         continue-on-error: true
 
-      - name: Verify sibling repos cloned (fail fast with actionable error)
+      - name: Verify sibling repos cloned (fork-aware diagnostic)
         shell: bash
+        env:
+          HAS_PAT: ${{ secrets.HEVOLVE_REPO_TOKEN != '' }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork || github.repository_owner != 'hertz-ai' }}
         run: |
-          # Since 2026-04-02: build.yml silently fails because default
-          # GITHUB_TOKEN lacks repo:read on private hertz-ai repos, so
-          # the sibling Checkout steps (continue-on-error: true) no-op,
-          # and the real failure surfaces 3 steps later as
-          # "ModuleNotFoundError: No module named 'sql'" which is
-          # opaque to anyone not knowing the setup.  Fail here with
-          # the fix path instead.
+          # Why this gate exists (2026-04-02 silent-failure history):
+          # The sibling Checkout steps use continue-on-error:true, so if
+          # the default GITHUB_TOKEN lacks repo:read on the private
+          # siblings, they no-op and the real failure surfaces 3 steps
+          # later as `ModuleNotFoundError: No module named 'sql'` \u2014 opaque
+          # to anyone not steeped in the setup.  Fail HERE with a useful
+          # diagnostic + action path.
+          #
+          # 2026-04-24: differentiate fork / contributor builds from
+          # internal main-repo builds.  Forks can't access the parent
+          # org's secrets by GitHub design, so HEVOLVE_REPO_TOKEN is
+          # NEVER present for fork PRs.  Hard-failing those just blocks
+          # external contribution.  Instead: emit a ::warning:: so the
+          # contributor knows why their installer-build-from-fork can't
+          # complete, and point them at the open-sourcing roadmap.
           missing=()
           for repo in HARTOS hevolveai Hevolve_Database; do
             if [ ! -d "_deps/$repo" ] || [ -z "$(ls -A "_deps/$repo" 2>/dev/null)" ]; then
               missing+=("$repo")
             fi
           done
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error title=Sibling repos missing::The private sibling repos [${missing[*]}] did not clone. This means default GITHUB_TOKEN lacks repo:read access to hertz-ai/* private repos. Add a HEVOLVE_REPO_TOKEN secret (PAT with repo:read scope) to repository settings. Until the secret is set, the Nunba installer build cannot complete \u2014 build-windows will fail on 'import sql', build-linux will fail on AppImage + hevolve-database install."
-            echo "Missing sibling repos: ${missing[*]}"
-            exit 1
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "All sibling repos cloned successfully."
+            exit 0
           fi
+
+          if [ "$HAS_PAT" = "false" ]; then
+            # Fork / no-PAT path: this is a legitimate state for external
+            # contributors.  Warn loudly but don't block the workflow so
+            # the contributor gets as far as their changes allow.
+            echo "::warning title=Private siblings unavailable (no HEVOLVE_REPO_TOKEN)::"
+            echo ""
+            echo "HEVOLVE_REPO_TOKEN secret is not available in this build"
+            echo "context \u2014 this is expected for:"
+            echo "  - pull requests from forks (GitHub blocks secrets on fork PRs)"
+            echo "  - external contributor rebuilds on their own fork"
+            echo ""
+            echo "Missing siblings: ${missing[*]}"
+            echo ""
+            echo "The installer steps that depend on these siblings will"
+            echo "fail further down (notably 'import sql' from Hevolve_Database"
+            echo "and hevolveai.* imports).  Your code changes still compile"
+            echo "+ lint via the quality.yml workflow, which is the"
+            echo "appropriate CI surface for fork PRs."
+            echo ""
+            echo "Open-sourcing roadmap:"
+            echo "  - Hevolve_Database: planned \u2014 unblocks the 'sql' import"
+            echo "    chain for fork builds.  Tracked in the Nunba task"
+            echo "    backlog as part of the CI-fork-friendly work."
+            echo "  - HevolveAI: stays private \u2014 loaded at runtime via the"
+            echo "    public hevolvearmor wheel (inside HARTOS)."
+            echo ""
+            echo "Exiting 0 to let the workflow continue until it hits the"
+            echo "actual missing-module boundary."
+            exit 0
+          fi
+
+          # HAS_PAT=true but clone still failed \u2014 this IS a real error
+          # that needs operator action.  Keep the hard-fail posture with
+          # the actionable fix path.
+          echo "::error title=Sibling repos missing despite HEVOLVE_REPO_TOKEN::"
+          echo ""
+          echo "HEVOLVE_REPO_TOKEN is set but the Checkout step(s) still"
+          echo "did not produce the sibling repos: ${missing[*]}"
+          echo ""
+          echo "Check:"
+          echo "  1. PAT has repo:read scope on hertz-ai/* private repos"
+          echo "  2. PAT is not expired (GitHub shows expiry at settings/tokens)"
+          echo "  3. PAT owner is still a member of the hertz-ai org"
+          echo "  4. The Checkout step logs above for the actual HTTP error"
+          echo ""
+          echo "Until this resolves the Nunba installer cannot build \u2014"
+          echo "build-windows will fail at 'import sql', build-linux at"
+          echo "AppImage + hevolve-database install."
+          exit 1
 
       - name: Link sibling repos
         shell: bash
@@ -124,29 +190,64 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      # Configure git so anything the build script clones from
+      # github.com (private siblings, pip git+https URLs, cx_Freeze
+      # extras) authenticates with HEVOLVE_REPO_TOKEN instead of
+      # prompting for credentials and dying with
+      #   fatal: could not read Username for 'https://github.com'
+      # GIT_TERMINAL_PROMPT=0 is the belt-and-suspenders: even if
+      # the rewrite misses a URL shape, git fails fast with a clear
+      # error instead of hanging on /dev/tty.
+      - name: Configure git credentials for github.com clones
+        shell: bash
+        env:
+          HEVOLVE_REPO_TOKEN: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+        run: |
+          if [ -n "$HEVOLVE_REPO_TOKEN" ]; then
+            git config --global \
+              "url.https://x-access-token:${HEVOLVE_REPO_TOKEN}@github.com/.insteadOf" \
+              "https://github.com/"
+            echo "[git] github.com clones will use HEVOLVE_REPO_TOKEN"
+          else
+            echo "::warning::HEVOLVE_REPO_TOKEN not set; private-repo clones from github.com will fail"
+          fi
+          echo "GIT_TERMINAL_PROMPT=0" >> $GITHUB_ENV
+
       - name: Install Python dependencies + sibling repos
         shell: bash
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt 2>&1 | tail -5
 
-          # Install sibling deps in order: hevolveai → HARTOS (skip Hevolve_Database here, handled below)
-          for dep_dir in ../hevolveai ../HARTOS; do
+          # Sibling repos are checked out to _deps/<name> by the
+          # earlier Checkout steps.  Install from there directly —
+          # the mklink junctions in the prior "Link sibling repos"
+          # step silently failed on the Windows runner (cygpath +
+          # cmd /c quoting), leaving ../HARTOS empty so subsequent
+          # `pip install -e ../HARTOS` no-ops and `import sql` blows
+          # up at build time.  Pointing pip at _deps/ removes the
+          # junction failure point entirely.
+          for dep_dir in _deps/hevolveai _deps/HARTOS; do
             if [ -f "$dep_dir/pyproject.toml" ] || [ -f "$dep_dir/setup.py" ]; then
-              echo "Installing $(basename $dep_dir) from source..."
+              echo "Installing $(basename $dep_dir) from $dep_dir..."
               pip install --no-deps -e "$dep_dir" 2>&1 | tail -2
             fi
           done
 
           # Hevolve_Database: try pip install -e first, fall back to .pth
-          if [ -f "../Hevolve_Database/setup.py" ]; then
+          if [ -f "_deps/Hevolve_Database/setup.py" ]; then
             echo "Installing Hevolve_Database from source (setup.py)..."
-            pip install --no-deps -e "../Hevolve_Database" 2>&1 | tail -3
+            pip install --no-deps -e "_deps/Hevolve_Database" 2>&1 | tail -3
           fi
           # Always create .pth as belt-and-suspenders (editable installs can silently break)
-          if [ -d "../Hevolve_Database/sql" ]; then
+          if [ -d "_deps/Hevolve_Database/sql" ]; then
             SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
-            HEVOLVE_DB_PATH=$(cd ../Hevolve_Database && pwd)
+            # MUST be a Windows-style absolute path on win runners — bash's
+            # `pwd` returns MSYS2-style /d/a/... which Python on Windows
+            # treats as a literal-but-nonexistent path, silently dropping
+            # the .pth entry.  Use python's os.path.abspath so the .pth
+            # carries D:\a\... and `import sql` actually resolves.
+            HEVOLVE_DB_PATH=$(python -c "import os; print(os.path.abspath('_deps/Hevolve_Database'))")
             echo "$HEVOLVE_DB_PATH" > "$SITE_PKG/hevolve_database.pth"
             echo "Added Hevolve_Database to Python path via .pth: $HEVOLVE_DB_PATH"
           fi
@@ -299,9 +400,24 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
+      # See build-windows for the rationale on this step.
+      - name: Configure git credentials for github.com clones
+        env:
+          HEVOLVE_REPO_TOKEN: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+        run: |
+          if [ -n "$HEVOLVE_REPO_TOKEN" ]; then
+            git config --global \
+              "url.https://x-access-token:${HEVOLVE_REPO_TOKEN}@github.com/.insteadOf" \
+              "https://github.com/"
+            echo "[git] github.com clones will use HEVOLVE_REPO_TOKEN"
+          else
+            echo "::warning::HEVOLVE_REPO_TOKEN not set; private-repo clones from github.com will fail"
+          fi
+          echo "GIT_TERMINAL_PROMPT=0" >> $GITHUB_ENV
+
       - name: Install Python dependencies + sibling repos
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt 2>&1 | tail -5
           for dep_dir in ../hevolveai ../HARTOS; do
             if [ -f "$dep_dir/pyproject.toml" ] || [ -f "$dep_dir/setup.py" ]; then
@@ -451,9 +567,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libfuse2 desktop-file-utils
 
+      # See build-windows for the rationale on this step.
+      - name: Configure git credentials for github.com clones
+        env:
+          HEVOLVE_REPO_TOKEN: ${{ secrets.HEVOLVE_REPO_TOKEN }}
+        run: |
+          if [ -n "$HEVOLVE_REPO_TOKEN" ]; then
+            git config --global \
+              "url.https://x-access-token:${HEVOLVE_REPO_TOKEN}@github.com/.insteadOf" \
+              "https://github.com/"
+            echo "[git] github.com clones will use HEVOLVE_REPO_TOKEN"
+          else
+            echo "::warning::HEVOLVE_REPO_TOKEN not set; private-repo clones from github.com will fail"
+          fi
+          echo "GIT_TERMINAL_PROMPT=0" >> $GITHUB_ENV
+
       - name: Install Python dependencies + sibling repos
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt 2>&1 | tail -5
 
           echo "=== Checking sibling repos ==="
@@ -526,7 +657,7 @@ jobs:
           Exec=Nunba
           Icon=nunba
           Type=Application
-          Categories=Utility;AI;
+          Categories=Utility;ArtificialIntelligence;
           EOF
 
           if [ -f assets/icon.png ]; then
@@ -534,7 +665,11 @@ jobs:
           else
             convert -size 256x256 xc:purple Nunba.AppDir/usr/share/icons/hicolor/256x256/apps/nunba.png 2>/dev/null || true
           fi
-          cp Nunba.AppDir/nunba.desktop Nunba.AppDir/
+          # Previous line tried `cp Nunba.AppDir/nunba.desktop Nunba.AppDir/`
+          # which is a self-copy — bash errors with "same file".  The
+          # .desktop file is already at the AppDir root (line 522's
+          # `cat > Nunba.AppDir/nunba.desktop`), which is where
+          # appimagetool expects it.  No copy needed.
           ln -sf usr/share/icons/hicolor/256x256/apps/nunba.png Nunba.AppDir/nunba.png
 
           cat > Nunba.AppDir/AppRun << 'APPRUN'
@@ -545,6 +680,7 @@ jobs:
           APPRUN
           chmod +x Nunba.AppDir/AppRun
 
+          mkdir -p Output
           ARCH=x86_64 ./appimagetool-x86_64.AppImage Nunba.AppDir Output/Nunba-x86_64.AppImage
         env:
           ARCH: x86_64
@@ -616,3 +752,92 @@ jobs:
             artifacts/Nunba_Setup_macOS/Nunba_Setup.dmg
             artifacts/Nunba_Setup_Linux_AppImage/Nunba-x86_64.AppImage
             artifacts/Nunba_Setup_Linux_deb/nunba_*.deb
+
+  # ============================================================
+  # Publish Rolling Nightly Release (every push to main)
+  # ============================================================
+  #
+  # Mirrors the pattern in hertz-ai/HARTOS .github/workflows/release.yml
+  # publish-nightly job (lines 462-567): every push to main produces a
+  # fresh `nightly-<sha>-<runid>` release marked --latest=true, so
+  # docs.hevolve.ai/downloads links like
+  #   https://github.com/hertz-ai/Nunba/releases/latest/download/Nunba_Setup.exe
+  # always resolve to the newest build between signed v* tags.
+  #
+  # Why unique-per-run tag instead of reusing "nightly":
+  # GitHub's immutable-release feature permanently reserves any tag name
+  # used for a published release — reusing "nightly" would 422 on
+  # subsequent publishes.  github.run_id makes the tag unique even under
+  # "Re-run all jobs" of the same commit.  Old nightly-* releases are
+  # pruned to newest 3.
+  #
+  # `if: always()` so partial build success (e.g. macOS codesigning flakes
+  # but Windows + Linux complete) still ships the artifacts that did build.
+  publish-nightly:
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/all-artifacts
+          pattern: Nunba_Setup_*
+          merge-multiple: true
+
+      - name: Create unique-tagged nightly release, upload, publish as latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          REPO="${{ github.repository }}"
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          RUN_ID="${{ github.run_id }}"
+          TAG="nightly-${SHORT_SHA}-${RUN_ID}"
+
+          echo "=== Artifacts downloaded ==="
+          ls -la /tmp/all-artifacts/ || { echo "No artifacts dir"; exit 0; }
+          FILES=$(find /tmp/all-artifacts -maxdepth 2 -type f | wc -l)
+          if [[ "$FILES" -eq 0 ]]; then
+            echo "No installer artifacts produced by any build-* job — nothing to publish"
+            exit 0
+          fi
+
+          echo "=== Creating $TAG DRAFT (mutable while draft) ==="
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --target "$SHA" \
+            --draft \
+            --prerelease \
+            --title "Nunba nightly ${SHORT_SHA}" \
+            --notes "Rolling bleeding-edge build from \`main\` @ ${SHORT_SHA} on every push. For signed stable installers see the [vX.Y.Z release archive](https://github.com/${REPO}/releases)."
+
+          echo "=== Uploading artifacts ==="
+          find /tmp/all-artifacts -maxdepth 2 -type f | while read -r f; do
+            echo "  -> $(basename "$f")"
+            gh release upload "$TAG" "$f" --repo "$REPO" --clobber
+          done
+
+          echo "=== Publishing as latest (immutable after publish) ==="
+          gh release edit "$TAG" --repo "$REPO" \
+            --draft=false --latest=true --prerelease=false
+
+          echo "=== Pruning old nightly-* releases (keep newest 3) ==="
+          gh api "repos/${REPO}/releases" --paginate \
+            --jq '.[] | select(.tag_name | startswith("nightly-")) | {tag:.tag_name, created:.created_at}' \
+            | jq -s 'sort_by(.created) | reverse | .[3:] | .[].tag' -r \
+            | while read -r OLD_TAG; do
+              [[ -n "$OLD_TAG" && "$OLD_TAG" != "$TAG" ]] && {
+                echo "  pruning $OLD_TAG"
+                gh release delete "$OLD_TAG" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+              }
+            done
+
+          echo "=== Done ==="
+          gh api "repos/${REPO}/releases/latest" \
+            --jq '{tag:.tag_name, assets:[.assets[].name], published:.published_at}' || true

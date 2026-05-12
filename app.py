@@ -5,8 +5,69 @@ Creates a WebApp with reliable startup and system tray functionality + Sidebar C
 Connect to Hivemind with your friends' agents.
 """
 # app.py (VERY TOP — before any other imports)
+# ── Defang importlib.metadata.packages_distributions() before transformers ──
+# (Mirror of HARTOS hart_intelligence_entry.py:21-52 — installed here too
+# because Nunba's frozen entry point is app.py, NOT hart_intelligence_entry.py,
+# so the HARTOS-side patch never fires in the desktop bundle.)
+#
+# transformers/utils/import_utils.py:45 calls
+#     PACKAGE_DISTRIBUTION_MAPPING = importlib.metadata.packages_distributions()
+# at module-import time, with NO guard.  The function walks every
+# *.dist-info/METADATA visible on sys.path and accesses
+# `dist.metadata['Name']`.  ANY corrupt dist-info (METADATA missing,
+# Name: header malformed, pip rewriting it concurrently, OR a bundle
+# shipping a corrupt file from a freeze-time interrupted install)
+# raises KeyError('Name') → transformers crashes its module-load →
+# langchain crashes → every code path that touches them dies.
+#
+# Witnessed cascade on the 2026-04-26 user log: Nunba's bundle ships
+# python-embed/Lib/site-packages/transformers-5.1.0.dist-info/METADATA
+# as 31KB of whitespace (no Name: header) — likely an interrupted pip
+# install during the freeze step that got baked into every installer.
+# The agent_daemon's tick path lazily triggers transformers
+# evaluation; the unguarded `packages_distributions()` blew up every
+# 30-second tick: "Agent daemon tick error (state reset): 'Name'".
+# Result: Admin Agent Dashboard sat empty for the entire process
+# lifetime because the daemon never completed a tick cleanly.
+#
+# Monkey-patch applies BEFORE any langchain/transformers reach this
+# interpreter so the swap takes effect for the import-time call.
+import importlib.metadata as _md_safe
 import os
 import sys
+
+_orig_pd = getattr(_md_safe, 'packages_distributions', None)
+if _orig_pd is not None and not getattr(_orig_pd, '_hartos_guarded', False):
+    def _safe_packages_distributions():
+        try:
+            return _orig_pd()
+        except Exception:
+            # Best-effort fallback: empty mapping.  Auto-docstring
+            # lookups against {} return generic guesses (worse than the
+            # real lookup but nonfatal — the daemon tick stays alive).
+            return {}
+    _safe_packages_distributions._hartos_guarded = True
+    _md_safe.packages_distributions = _safe_packages_distributions
+del _md_safe
+
+# Block user site-packages for every subprocess, unconditionally.
+# Rationale (2026-04-25 incident): a stale hevolve_backend-0.0.1.dev339
+# wheel had dropped a partial ``core/`` package at
+# ``%APPDATA%\Roaming\Python\Python312\site-packages\core`` two months
+# earlier.  Python's default sys.path puts that user-site AHEAD of
+# python-embed's own site-packages AND the freeze-bundled top-level
+# ``core/``, so ``import core`` bound to the 7-submodule stale copy
+# and every ``from core.gpu_tier import ...`` in main.py raised
+# ModuleNotFoundError in the running installed Nunba.exe.
+#
+# ``_isolate_frozen_imports()`` below scrubs sys.path correctly, but
+# it runs AFTER torch pre-warm and pycparser preload — so setting
+# PYTHONNOUSERSITE here (module top, before anything else) guarantees
+# every subprocess spawned from ANY point in app.py inherits the
+# user-site block, even if spawned before _isolate_frozen_imports()
+# fires.  The current interpreter's sys.path is still fixed by
+# _isolate_frozen_imports; this is purely a belt for children.
+os.environ.setdefault('PYTHONNOUSERSITE', '1')
 
 # PyTorch CUDA: expandable segments MUST be set before first `import torch`.
 # Frozen fixes below import langchain which can pull in torch transitively.
@@ -17,6 +78,19 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 # Without this, Chrome/WebView2 autoplay policy silently blocks Audio.play().
 os.environ.setdefault('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
                        '--autoplay-policy=no-user-gesture-required')
+
+# Frozen pywebview builds detach stdio after the window attaches. Any later
+# StreamHandler.emit then raises ValueError("I/O operation on closed file"),
+# and Handler.handleError tries to write the traceback to the same closed
+# sys.stderr — an infinite cascade that took down hart_generate, waitress,
+# and the autobahn component in the 2026-04-23 onboarding log. Setting
+# logging.raiseExceptions=False turns handleError into a no-op: the single
+# failed emit is swallowed cleanly instead of spiralling. Gated to frozen
+# builds so dev runs still surface genuine logging config errors.
+if getattr(sys, 'frozen', False):
+    import logging as _logging_boot
+    _logging_boot.raiseExceptions = False
+    del _logging_boot
 
 # ── Frozen-build code-hash short-circuit (2026-04-19) ──
 # `security.node_integrity.compute_code_hash` recursively walks every .py
@@ -42,7 +116,7 @@ if getattr(sys, 'frozen', False):
         except OSError:
             _exe_mtime = 0
         _ch = _h_cc.sha256()
-        _ch.update(f"{_exe}|{_exe_mtime}".encode('utf-8'))
+        _ch.update(f"{_exe}|{_exe_mtime}".encode())
         os.environ.setdefault('HEVOLVE_CODE_HASH_PRECOMPUTED', _ch.hexdigest())
         del _h_cc, _exe, _exe_mtime, _ch
     except Exception:
@@ -84,14 +158,62 @@ if getattr(sys, 'frozen', False):
 # chain inside the hartos-init thread) get it from sys.modules cache
 # without re-executing torch/__init__.py.
 if getattr(sys, 'frozen', False):
+    # When the user passes --validate / --acceptance-test, reattach to the
+    # parent console so the verification report is actually visible.
+    # Nunba.exe is linked as a PE32+ GUI subsystem (pywebview / Twisted
+    # require it), which means Windows silently discards stdout/stderr
+    # unless a console is explicitly attached. Before this hook, a
+    # headless validate run looked like a hang; it was silently exiting.
+    # Diagnosis: task #377.
+    if any(flag in sys.argv for flag in ('--validate', '--acceptance-test', '--diag')):
+        try:
+            import ctypes
+            # ATTACH_PARENT_PROCESS = -1: attach to invoking console if any,
+            # else fall back to allocating a fresh one so direct launches
+            # still show output.
+            if not ctypes.windll.kernel32.AttachConsole(-1):
+                ctypes.windll.kernel32.AllocConsole()
+            # Re-wire stdio to the freshly-attached console FDs.
+            sys.stdout = open('CONOUT$', 'w', buffering=1, encoding='utf-8', errors='replace')
+            sys.stderr = open('CONOUT$', 'w', buffering=1, encoding='utf-8', errors='replace')
+        except Exception:
+            pass  # Non-Windows or no WinAPI — fall through; log file is still the source of truth.
     try:
+        import importlib.util
+
         import torch  # noqa: F401  — full torch.__init__ under stock importer
         import torch.autograd  # noqa: F401  — belt-and-braces: ensure attr bound
         import torch.nested  # noqa: F401  — warm before wrapper sees it
+        # cx_Freeze's loader sometimes leaves torch.__spec__ as None.
+        # transformers' _is_package_available() calls importlib.util.find_spec("torch")
+        # which returns None if __spec__ was never set, then raises
+        # ValueError when an attribute is read off of None. Re-seat the
+        # spec so the entire transformers → hart_intelligence chain loads.
+        # Diagnosis: task #377 + #297 (A1 re-landing).
+        if torch.__spec__ is None and getattr(torch, '__file__', None):
+            torch.__spec__ = importlib.util.spec_from_file_location(
+                'torch', torch.__file__,
+            )
     except Exception:
         # If torch isn't bundled or fails to import, don't crash app boot.
         # The hartos-init thread will re-attempt and surface a clearer error.
         pass
+
+    # ── No HARTOS heavy-chain pre-warm here ──
+    # The deferred init lives in `routes.hartos_backend_adapter`.
+    # `start_hartos_init_background()` (called from `main.py`
+    # `_deferred_social_init`) spawns the `hartos-init` thread AFTER
+    # Flask is ready; chat falls through to Tier-3 (llama.cpp) until
+    # Tier-1 is up.  Importing the heavy chain (transformers / langchain
+    # / autogen / hart_intelligence / helper / create_recipe /
+    # reuse_recipe) at module-load time races with that thread on
+    # `transformers`'s per-module import lock and triggers the
+    # `_LazyModule.__getattr__` ~1500-frame recursion documented at
+    # `routes/hartos_backend_adapter.py:41-49`.  The 2026-04-28 prewarm
+    # regression and its three follow-up "fixes" all trace back to
+    # ignoring that comment.  Regression guard:
+    # `tests/test_no_eager_hartos_imports.py` AST-fails on any
+    # module-level import of those packages from `app.py`.
 
 # Trace recursion in frozen builds — write to file since Win32GUI has no console
 if getattr(sys, 'frozen', False):
@@ -263,20 +385,103 @@ def _preload_pycparser_from_lib_src():
         pass
 
 
+def _running_from_install_location():
+    """Detect whether THIS process is executing from the installed Nunba
+    directory (``\\HevolveAI\\Nunba\\``), regardless of how Python was
+    launched.
+
+    Motivation (2026-04-21 watchdog dump): the installed Nunba hung 31+s
+    at ``importing_main`` because ``integrations.social.models`` imported
+    ``sqlalchemy`` from the developer's ``.venv\\Lib\\site-packages\\``
+    instead of the bundled ``lib\\sqlalchemy\\``.  Root cause: the
+    freeze_core console launcher does NOT always set ``sys.frozen = True``,
+    so ``_isolate_frozen_imports()`` short-circuited and left the dev
+    venv ahead of bundled ``lib/`` on ``sys.path``.
+
+    The only reliable signal available at that early point is the file
+    location of ``__main__`` / ``sys.executable`` / ``sys.argv[0]``.  If
+    any of those sit under the install root, we MUST isolate sys.path
+    regardless of ``sys.frozen``.
+
+    Safe on dev tree: developer's app.py at
+    ``C:\\Users\\...\\PycharmProjects\\Nunba-HART-Companion\\app.py``
+    returns False, so dev-mode ``python app.py`` still resolves imports
+    from the active venv as expected.
+    """
+    _needle = "\\hevolveai\\nunba\\"
+
+    def _norm(p):
+        try:
+            return os.path.abspath(p).lower().replace("/", "\\")
+        except Exception:
+            return ""
+
+    # Check 1: cx_Freeze exe (Nunba.exe) → sys.executable is inside install
+    if _needle in _norm(sys.executable):
+        return True
+    # Check 2: direct-python launcher → sys.argv[0] is the installed app.py
+    if sys.argv and sys.argv[0] and _needle in _norm(sys.argv[0]):
+        return True
+    # Check 3: __main__.__file__ fallback (covers runpy / exec chains)
+    main_mod = sys.modules.get("__main__")
+    main_file = getattr(main_mod, "__file__", None) if main_mod else None
+    if main_file and _needle in _norm(main_file):
+        return True
+    return False
+
+
 def _isolate_frozen_imports():
-    if not getattr(sys, "frozen", False):
+    # FIX-5.3 (2026-04-21): Run if we're cx_Freeze frozen OR running from
+    # the installed directory.  The freeze_core console launcher does not
+    # always set sys.frozen, so a bare ``sys.frozen`` guard lets the dev
+    # venv's sqlalchemy/site-packages win on sys.path precedence and the
+    # watchdog catches a 31s+ stuck import during boot.
+    if not (getattr(sys, "frozen", False) or _running_from_install_location()):
         return
 
-    # block user site-packages (prevents importing fastapi from Roaming)
+    # block user site-packages (prevents importing fastapi from Roaming).
+    # Also clear VIRTUAL_ENV so subprocess spawns (llama-server, piper,
+    # parler worker) don't inherit the developer's .venv.
     os.environ["PYTHONNOUSERSITE"] = "1"
     os.environ.pop("PYTHONPATH", None)
+    os.environ.pop("VIRTUAL_ENV", None)
 
-    # aggressively remove user site-packages if already present (case-insensitive)
+    # aggressively remove user site-packages if already present
+    # (case-insensitive). Three patterns are stripped:
+    #   1. Roaming user site-packages (pip --user installs)
+    #   2. Any \site-packages not under \HevolveAI\Nunba\
+    #   3. Dev-tree venv paths (PycharmProjects, .venv) — the one the
+    #      2026-04-21 watchdog caught winning over bundled lib/.
+    #
+    # 2026-04-24 regression fix (argparse-missing): the frozen bundle's
+    # OWN directory tree must never be stripped — even when the build
+    # sits under a path that matches a dev-tree pattern (e.g.
+    # `build/Nunba/lib/` under `PycharmProjects\`).  That case fell
+    # through `_running_from_install_location()` (which only matches
+    # `\HevolveAI\Nunba\`), so rule 3 above ripped the bundle's own
+    # library.zip out of sys.path and `import argparse` failed at
+    # boot despite argparse.pyc being physically bundled.
+    _frozen_base = ''
+    if getattr(sys, 'frozen', False):
+        try:
+            _frozen_base = os.path.abspath(
+                os.path.dirname(sys.executable)
+            ).lower().replace("/", "\\")
+        except Exception:
+            _frozen_base = ''
+
     bad = []
     for p in list(sys.path):
         _lp = p.lower().replace("/", "\\")
-        if ("\\appdata\\roaming\\python\\" in _lp) or \
-           ("\\site-packages" in _lp and "\\hevolveai\\nunba\\" not in _lp):
+        # Never strip paths belonging to the frozen bundle itself.
+        if _frozen_base and _lp.startswith(_frozen_base):
+            continue
+        if (
+            ("\\appdata\\roaming\\python\\" in _lp)
+            or ("\\site-packages" in _lp and "\\hevolveai\\nunba\\" not in _lp)
+            or ("\\pycharmprojects\\" in _lp and "\\hevolveai\\nunba\\" not in _lp)
+            or ("\\.venv\\" in _lp)
+        ):
             bad.append(p)
     for p in bad:
         try:
@@ -293,8 +498,21 @@ def _isolate_frozen_imports():
     except Exception:
         pass
 
-    # ensure bundled lib wins
-    base = os.path.dirname(sys.executable)
+    # ensure bundled lib wins.  Prefer sys.executable's directory, but fall
+    # back to __main__.__file__'s directory for the direct-python launcher
+    # case where sys.executable points at the dev Python interpreter.
+    base = os.path.dirname(os.path.abspath(sys.executable))
+    if "\\hevolveai\\nunba\\" not in base.lower().replace("/", "\\"):
+        main_mod = sys.modules.get("__main__")
+        main_file = getattr(main_mod, "__file__", None) if main_mod else None
+        if main_file:
+            _mbase = os.path.dirname(os.path.abspath(main_file))
+            if "\\hevolveai\\nunba\\" in _mbase.lower().replace("/", "\\"):
+                base = _mbase
+        if sys.argv and sys.argv[0]:
+            _abase = os.path.dirname(os.path.abspath(sys.argv[0]))
+            if "\\hevolveai\\nunba\\" in _abase.lower().replace("/", "\\"):
+                base = _abase
     for p in [base, os.path.join(base, "lib"), os.path.join(base, "lib_src")]:
         if os.path.isdir(p) and p not in sys.path:
             sys.path.insert(0, p)
@@ -641,6 +859,22 @@ if getattr(sys, 'frozen', False):
     _embed_site_packages = os.path.join(_app_dir, 'python-embed', 'Lib', 'site-packages')
     if os.path.isdir(_embed_site_packages) and _embed_site_packages not in sys.path:
         sys.path.append(_embed_site_packages)
+    # ── HevolveArmor: point HARTOS's native_hive_loader at the bundled
+    # armored hevolveai. setup_freeze_nunba.py stages the encrypted
+    # modules + key under <app_dir>/vendor/hevolveai_armored/ via
+    # HARTOS/scripts/armor_hevolveai.py at build time; here we export
+    # the env vars that security/native_hive_loader.py consults when
+    # hart_intelligence_entry first calls try_import_hevolveai. The
+    # hook install is lazy — it happens on first hevolveai import,
+    # not at app.py load — so no hevolvearmor import is needed here.
+    _armored_dir = os.path.join(_app_dir, 'vendor', 'hevolveai_armored')
+    if os.path.isdir(_armored_dir):
+        _armor_modules = os.path.join(_armored_dir, 'modules')
+        _armor_key = os.path.join(_armored_dir, '_key.bin')
+        if os.path.isdir(_armor_modules):
+            os.environ.setdefault('HEVOLVE_ARMORED_DIR', _armor_modules)
+        if os.path.isfile(_armor_key):
+            os.environ.setdefault('HEVOLVE_ARMOR_KEY_FILE', _armor_key)
     # Remove stale torchvision/_C.pyd from frozen lib/ — it conflicts with
     # the real CUDA torch in user site-packages (entry point mismatch error).
     # torch/torchvision should ONLY come from ~/.nunba/site-packages/.
@@ -862,7 +1096,12 @@ if getattr(sys, 'frozen', False):
     _lc_wd.start()
     try:
         _trace("  [1/4] importing langchain_classic.chains (expected <1s, but can be slow on cold cache)")
-        import langchain_classic.chains as _lc_chains
+        # Eager: pre-installs a `ReduceDocumentsChain` stub into
+        # `langchain_classic.chains.__dict__` BEFORE the hartos-init thread
+        # starts, so HARTOS's later access goes to our stub and never pulls
+        # the real class (which transitively loads torch).  Direct
+        # `__dict__` write — no `_LazyModule.__getattr__` trigger.
+        import langchain_classic.chains as _lc_chains  # allow:eager-hartos-import
         _trace(f"  [2/4] import completed at {_lc_time.time()-_lc_start:.3f}s")
         # Write stub directly via __dict__ — skips __getattr__ probe.
         if 'ReduceDocumentsChain' not in _lc_chains.__dict__:
@@ -944,8 +1183,31 @@ if getattr(sys, 'frozen', False):
 
     if _torch_safe:
         try:
-            import torch as _torch_test
-            del _torch_test
+            import torch as _torch_real
+            # cx_Freeze loads torch via the frozen importer which leaves
+            # `__spec__` as None.  transformers.is_torch_available() calls
+            # `importlib.util.find_spec('torch')` which raises
+            # `ValueError: torch.__spec__ is None` on Py 3.12+.  That cascades
+            # through langchain_classic → hart_intelligence_entry and breaks
+            # the HARTOS Tier-1 import path (witnessed 2026-04-21 in
+            # hartos_init_error.log).  Patch __spec__ on the REAL torch the
+            # same way we patch the stub torch below.
+            if getattr(_torch_real, '__spec__', None) is None:
+                try:
+                    from importlib.machinery import ModuleSpec as _RealTorchSpec
+                    _torch_real.__spec__ = _RealTorchSpec(
+                        name='torch',
+                        loader=None,
+                        origin=getattr(_torch_real, '__file__', 'frozen_real'),
+                        is_package=True,
+                    )
+                    _torch_real.__spec__.submodule_search_locations = list(
+                        getattr(_torch_real, '__path__', []) or []
+                    )
+                    _trace("torch.__spec__ patched (frozen real torch)")
+                except Exception as _spec_exc:
+                    _trace(f"torch.__spec__ patch failed: {_spec_exc}")
+            del _torch_real
         except (ImportError, ModuleNotFoundError):
             pass
         except (AttributeError, OSError, RuntimeError):
@@ -969,6 +1231,30 @@ if getattr(sys, 'frozen', False):
         _torch_stub.__version__ = '0.0.0'
         _torch_stub.__file__ = 'frozen_stub'
         _torch_stub._is_stub = True  # marker for downstream code to detect
+        # __spec__ MUST be set or `importlib.util.find_spec('torch')`
+        # raises `ValueError: torch.__spec__ is None` (Py 3.12 safeguard).
+        # transformers.is_torch_available() calls find_spec on every
+        # is_torch_available() invocation; without a spec, every
+        # transformers-backed path cascades into a ValueError.
+        # Witnessed 2026-04-21: hart_onboarding → langchain_classic →
+        # transformers → is_torch_available → ValueError: torch.__spec__
+        # is None, surfacing in hevolve_social Agent daemon tick errors
+        # + hart_intelligence blueprint init + /api/hart/generate.
+        try:
+            from importlib.machinery import ModuleSpec as _TorchStubSpec
+            _torch_stub.__spec__ = _TorchStubSpec(
+                name='torch', loader=None, origin='frozen_stub',
+                is_package=True,
+            )
+            _torch_stub.__spec__.submodule_search_locations = []
+        except Exception:
+            # Fallback: crude sentinel.  Better than None for find_spec.
+            class _StubSpec:  # noqa: N801
+                name = 'torch'
+                loader = None
+                origin = 'frozen_stub'
+                submodule_search_locations = []
+            _torch_stub.__spec__ = _StubSpec()
 
         # Core tensor type — a dummy class that raises on actual use
         class _TensorStub:
@@ -1007,14 +1293,23 @@ if getattr(sys, 'frozen', False):
         _torch_stub.ones = lambda *a, **kw: None
         _torch_stub.device = str  # torch.device('cpu') → just a string
 
-        # Submodules
-        _torch_stub.autograd = _types.ModuleType('torch.autograd')
-        _torch_stub.cuda = _types.ModuleType('torch.cuda')
+        # Submodules \u2014 each also needs __spec__ to satisfy find_spec.
+        def _mk_submod(_n):
+            _m = _types.ModuleType(_n)
+            try:
+                _m.__spec__ = _TorchStubSpec(
+                    name=_n, loader=None, origin='frozen_stub',
+                )
+            except Exception:
+                pass
+            return _m
+        _torch_stub.autograd = _mk_submod('torch.autograd')
+        _torch_stub.cuda = _mk_submod('torch.cuda')
         _torch_stub.cuda.is_available = lambda: False
         _torch_stub.cuda.empty_cache = lambda: None
         _torch_stub.cuda.device_count = lambda: 0
-        _torch_stub.nn = _types.ModuleType('torch.nn')
-        _torch_stub.nn.functional = _types.ModuleType('torch.nn.functional')
+        _torch_stub.nn = _mk_submod('torch.nn')
+        _torch_stub.nn.functional = _mk_submod('torch.nn.functional')
         _torch_stub.nn.Module = type('Module', (), {})
 
         sys.modules['torch'] = _torch_stub
@@ -1235,9 +1530,14 @@ def _load_deferred_config():
             except Exception:
                 pass
 
-    # ── Auto-enable agent engine when LLM is configured ──
+    # ── Auto-enable agent engine + speculative dispatch when LLM is configured ──
+    # Both are LLM-gated: agent_daemon's tick path uses speculative dispatch
+    # (agent_daemon.py:541) only when an LLM is reachable, so the two flags
+    # belong together.  Setting unconditionally would cause agent-engine
+    # startup with no LLM, which emits errors.
     if _llm_configured:
         os.environ.setdefault('HEVOLVE_AGENT_ENGINE_ENABLED', 'true')
+        os.environ.setdefault('HEVOLVE_SPECULATIVE_ENABLED', 'true')
 
 # Static splash was shown BEFORE frozen fixes (line 329).
 # _early_splash and _eroot are already set.
@@ -1495,8 +1795,19 @@ def _clipboard_monitor_thread():
 
 _pump_early_splash('Preparing interface...')
 
-# Default configuration for stop API URL
-DEFAULT_STOP_API_URL = "http://gcp_training2.hertzai.com:5001/stop"
+# Default configuration for stop API URL — resolved from HARTOS so
+# cloud-trainer deployments can override via HEVOLVE_STOP_API_URL.
+# Default is empty string for local installs (no cloud trainer to
+# stop).  Same resolver used by main.py — single source of truth in
+# core.config_cache.get_stop_api_url.  Used to live as a hardcoded
+# `http://gcp_training2.hertzai.com:5001/stop` literal that timed
+# out silently on every shutdown of every local install.
+try:
+    from core.config_cache import get_stop_api_url as _get_stop_api_url
+    DEFAULT_STOP_API_URL = _get_stop_api_url()
+except ImportError:
+    import os as _os
+    DEFAULT_STOP_API_URL = _os.environ.get('HEVOLVE_STOP_API_URL', '')
 
 # Initialize argument parser
 # Enhanced argument parser with sidebar options
@@ -1725,6 +2036,22 @@ if getattr(args, 'validate', False):
             _mod_obj = sys.modules.get(_mod_name)
             if not _mod_obj:
                 _mod_obj = importlib.import_module(_mod_name)
+            # Trigger the adapter's lazy Tier-1 import.  Runtime spawns this
+            # from `main.py._deferred_social_init` (background thread) — but
+            # in --validate mode main.py never runs, so the attributes below
+            # would otherwise stay at their module-import defaults
+            # (False / 'unknown') and falsely report "Tier-1 failed to load".
+            # Calling _attempt_hartos_init synchronously exercises the SAME
+            # import path Tier-1 takes at runtime, so this check is honest:
+            # if the synchronous call sets _hartos_backend_available=True,
+            # the bundle will work; if it doesn't, the bundle is genuinely
+            # broken and we want validate to flag it.
+            _trigger = getattr(_mod_obj, '_attempt_hartos_init', None)
+            if callable(_trigger):
+                try:
+                    _trigger()
+                except Exception:
+                    pass  # the failure is already recorded in adapter state
             for _attr, _expected, _msg in _checks:
                 _val = getattr(_mod_obj, _attr, '__MISSING__')
                 if _val == '__MISSING__':
@@ -1991,7 +2318,10 @@ if getattr(args, 'acceptance_test', False):
         else:
             # Post-freeze: verify behavioral equivalents.
             try:
-                import hart_intelligence_entry as _hie  # noqa: F401
+                # Eager only inside `--validate` / `--acceptance-test` /
+                # `--diag` CLI branches — normal boot path doesn't enter
+                # this block (see top-level CLI flag check in app.py).
+                import hart_intelligence_entry as _hie  # noqa: F401  # allow:eager-hartos-import
                 from core.user_lang import get_preferred_lang as _gpl
                 _has_fallback = callable(_gpl)
                 _check('symptom_5_preferred_lang_fallback_active',
@@ -2182,7 +2512,11 @@ _log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 _root_logger = logging.getLogger()
 _root_logger.setLevel(logging.INFO)
 
-_gui_fh = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+from logging.handlers import RotatingFileHandler as _RFH
+
+# 25MB × 5 = 125MB cap (was unbounded → 347MB witnessed 2026-04-21).
+_gui_fh = _RFH(log_file, mode='a', encoding='utf-8',
+               maxBytes=25 * 1024 * 1024, backupCount=5)
 _gui_fh.setLevel(logging.INFO)
 _gui_fh.setFormatter(logging.Formatter(_log_format))
 _root_logger.addHandler(_gui_fh)
@@ -3556,6 +3890,17 @@ def call_stop_api():
     Call the stop API to stop AI control processing
     """
     try:
+        # Skip the cloud-trainer notification when the URL isn't
+        # configured.  Local installs have no cloud trainer to stop,
+        # so an empty stop_api_url is the documented "no-op" path
+        # (see core.config_cache.get_stop_api_url docstring).
+        if not args.stop_api_url:
+            logger.info(
+                "stop API not configured (HEVOLVE_STOP_API_URL unset) — "
+                "skipping cloud-trainer stop notification (no-op for "
+                "local installs)"
+            )
+            return True
         logger.info(f"Calling stop API ay {args.stop_api_url}")
 
         # Try to get user data from storage
@@ -5646,30 +5991,148 @@ def start_flask():
                 "message": "CORS is working correctly"
             })
 
-        # Start the Flask application via waitress (production WSGI)
+        # Start the Flask application — Hypercorn (ASGI) primary,
+        # Waitress fallback.  This is the BUNDLE entry point: Nunba.exe
+        # runs app.py; app.py imports main.py as the Flask app provider.
         # Use _dynamic_wsgi_app when flask_app isn't ready yet — it will
         # automatically route to flask_app once main.py import completes.
+        #
+        # Hypercorn (ASGI) wins for the same reasons as the HARTOS sibling:
+        # asyncio loop multiplexes connection IO so idle keep-alive / SSE
+        # clients don't burn worker threads (waitress was holding one
+        # thread per connection regardless of activity — that's how
+        # /tts/setup-engine queue-depth-68 happened with threads=8).
+        # Sync Flask handlers run in loop.run_in_executor() against
+        # NUNBA_WORKER_THREADS (default 128) so /dashboard/agents and
+        # /health stay responsive while a TTS install grinds.
+        # Falls through to Waitress on ImportError so older bundles /
+        # cx_Freeze installs missing the h2/wsproto chain still boot.
         _wsgi_target = _serving_app if _serving_app is flask_app else _dynamic_wsgi_app
-        # Lazy import — avoids crash if waitress wasn't bundled in frozen exe
         try:
-            from waitress import serve as _serve
-            logger.info(f"Starting Waitress server on port {args.port} (app={'full' if _serving_app is flask_app else 'dynamic-dispatcher'})")
-            _serve(_wsgi_target, host="0.0.0.0", port=args.port, threads=8)
-        except ImportError:
-            logger.warning("waitress not available, falling back to Flask dev server")
-            # Patch stdout/stderr before .run() to prevent click.echo crash
-            # in frozen GUI exes where console file descriptors are closed
-            import io as _io
-            for _attr in ('stdout', 'stderr'):
-                _stream = getattr(sys, _attr, None)
-                if _stream is None:
-                    setattr(sys, _attr, open(os.devnull, 'w', encoding='utf-8'))
-                else:
+            _worker_threads = int(os.environ.get('NUNBA_WORKER_THREADS', '128'))
+        except (TypeError, ValueError):
+            _worker_threads = 128
+
+        try:
+            # Hypercorn's `worker_serve` installs SIGINT / SIGTERM /
+            # SIGBREAK handlers via `signal.signal()`.  That call only
+            # works in the main thread; from a worker thread it raises
+            # `ValueError: signal only works in main thread of the main
+            # interpreter`.  On Windows the asyncio policy first tries
+            # `loop.add_signal_handler` (raises NotImplementedError on
+            # ProactorEventLoop), then falls back to `signal.signal`
+            # which then raises ValueError -> hypercorn aborts.
+            #
+            # In a desktop GUI app the signal handlers are dead code
+            # anyway: pywebview owns the main thread, the user shuts
+            # down via the tray icon / window-close callback (which
+            # routes through `desktop.tray_handler`), and POSIX signals
+            # never fire on a frozen Win32 GUI app.  So patch
+            # `signal.signal` to silently no-op when called from a
+            # non-main thread — hypercorn's signal-install becomes a
+            # no-op, and the rest of `worker_serve` proceeds normally.
+            #
+            # Scope: the patch is applied BEFORE hypercorn imports and
+            # is intentionally left in place for the lifetime of the
+            # process (hypercorn never returns from `serve`; no other
+            # call site needs the original behaviour).
+            import signal as _sig_patch
+            import threading as _th_check
+            if _th_check.current_thread() is not _th_check.main_thread():
+                _orig_signal_signal = _sig_patch.signal
+                def _silent_signal(signum, handler):
                     try:
-                        _stream.fileno()
-                    except (ValueError, OSError, _io.UnsupportedOperation):
+                        return _orig_signal_signal(signum, handler)
+                    except (ValueError, OSError):
+                        # Non-main-thread or unavailable signum on this
+                        # platform — degrade to the default disposition.
+                        return _sig_patch.SIG_DFL
+                _silent_signal._hartos_thread_safe = True  # marker for tests
+                _sig_patch.signal = _silent_signal
+                logger.info(
+                    "Patched signal.signal to no-op outside main thread "
+                    "(hypercorn signal-handler install will silently skip)"
+                )
+
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+
+            from hypercorn.asyncio import serve as _hcserve
+            from hypercorn.config import Config
+            from hypercorn.middleware import AsyncioWSGIMiddleware
+
+            _hc_config = Config()
+            _hc_config.bind = [f'0.0.0.0:{args.port}']
+            _hc_config.keep_alive_timeout = 120
+            _hc_config.h11_max_incomplete_size = 16 * 1024 * 1024
+            _hc_config.accesslog = None
+            _hc_config.errorlog = '-'
+
+            _asgi_app = AsyncioWSGIMiddleware(_wsgi_target)
+
+            async def _hc_runner():
+                _loop = asyncio.get_running_loop()
+                _loop.set_default_executor(ThreadPoolExecutor(
+                    max_workers=_worker_threads, thread_name_prefix='nunba'))
+                await _hcserve(_asgi_app, _hc_config)
+
+            logger.info(
+                f"Starting Hypercorn (ASGI) on 0.0.0.0:{args.port} "
+                f"(executor_threads={_worker_threads}, "
+                f"app={'full' if _serving_app is flask_app else 'dynamic-dispatcher'})"
+            )
+            asyncio.run(_hc_runner())
+        except (ImportError, NotImplementedError, ValueError, RuntimeError) as _hc_exc:
+            # Broad on purpose.  Three known failure shapes here, all of
+            # which should degrade to Waitress instead of killing the
+            # server thread:
+            #   * ImportError      - hypercorn not installed.
+            #   * NotImplementedError - asyncio.add_signal_handler() on
+            #     Windows ProactorEventLoop in a non-main thread.
+            #   * ValueError       - hypercorn's worker_serve calls
+            #     signal.signal() which raises "signal only works in
+            #     main thread of the main interpreter" because
+            #     start_flask is invoked from the NunbaGUI thread, not
+            #     the main thread (main thread is bound to pywebview).
+            #     2026-04-28 server.log:114 reproduced this and the
+            #     prior `except ImportError` let it escape to the outer
+            #     `except Exception` which sys.exit(1)'d the worker
+            #     thread, leaving :5000 unbound for the whole boot.
+            #   * RuntimeError     - asyncio loop already running from
+            #     a parent context (rare; covered defensively).
+            # Waitress is signal-handler-free and thread-safe, so the
+            # fallback is the correct behaviour for every case above.
+            logger.warning(
+                f"Hypercorn boot failed ({type(_hc_exc).__name__}: "
+                f"{_hc_exc}) — falling back to Waitress"
+            )
+            try:
+                from waitress import serve as _serve
+                # threads=8 was the historical value; bumped to 64 on the
+                # fallback path so a degraded boot (no hypercorn) still has
+                # enough headroom for the dashboard + SSE + slow installs.
+                _w_threads = int(os.environ.get('NUNBA_WAITRESS_THREADS', '64'))
+                logger.info(
+                    f"Starting Waitress server on port {args.port} "
+                    f"(threads={_w_threads}, "
+                    f"app={'full' if _serving_app is flask_app else 'dynamic-dispatcher'})"
+                )
+                _serve(_wsgi_target, host="0.0.0.0", port=args.port, threads=_w_threads)
+            except ImportError:
+                logger.warning("waitress not available, falling back to Flask dev server")
+                # Patch stdout/stderr before .run() to prevent click.echo crash
+                # in frozen GUI exes where console file descriptors are closed
+                import io as _io
+                for _attr in ('stdout', 'stderr'):
+                    _stream = getattr(sys, _attr, None)
+                    if _stream is None:
                         setattr(sys, _attr, open(os.devnull, 'w', encoding='utf-8'))
-            _serving_app.run(debug=False, host="0.0.0.0", port=args.port, use_reloader=False)
+                    else:
+                        try:
+                            _stream.fileno()
+                        except (ValueError, OSError, _io.UnsupportedOperation):
+                            setattr(sys, _attr, open(os.devnull, 'w', encoding='utf-8'))
+                _serving_app.run(debug=False, host="0.0.0.0", port=args.port, use_reloader=False)
     except Exception as e:
         logger.error(f"Error starting Flask server: {str(e)}")
         logger.error(traceback.format_exc())
@@ -6400,17 +6863,20 @@ def main():
         start_hidden = args.background and not (args.sidebar or args.always_on_top)
         if sys.platform == "darwin": start_hidden = False  # no tray on macOS — always show window
 
-        # First launch after installation: always show window (even in --background)
-        # so the user sees the app after reboot. Detected by checking if this is
-        # the first --background launch since setup-ai ran.
+        # Background mode (e.g., autostart after reboot) ALWAYS keeps the main
+        # window hidden.  The user-visible surface in that mode is:
+        #   - the system tray icon
+        #   - the floating Nanba companion window (animated character + input bar)
+        # The `.setup_complete` marker is still consumed (single-shot cleanup)
+        # but never overrides start_hidden — the floating companion is the
+        # post-install indicator, not a full-screen window flash.
         if start_hidden:
             try:
                 _setup_marker = os.path.join(
                     os.path.expanduser('~'), 'Documents', 'Nunba', 'data', '.setup_complete')
                 if os.path.exists(_setup_marker):
-                    logger.info("[STARTUP] First launch after installation — showing window")
-                    start_hidden = False
-                    os.remove(_setup_marker)  # only override once
+                    os.remove(_setup_marker)  # cleanup only — do NOT flip start_hidden
+                    logger.info("[STARTUP] .setup_complete marker cleaned up (background mode — window stays hidden)")
             except Exception:
                 pass
 
@@ -6542,12 +7008,29 @@ def main():
             import ctypes as _ct
             _screen_w = _ct.windll.user32.GetSystemMetrics(0) if sys.platform == 'win32' else 1920
             _screen_h = _ct.windll.user32.GetSystemMetrics(1) if sys.platform == 'win32' else 1080
-            _comp_w, _comp_h = 200, 260
+            # 220x310: character + status bar + input bar + platform hint.
+            # Must match the html/body size in landing-page/public/nanba-companion.html
+            # (DRY Gate 2 — window size and HTML size are the same contract).
+            _comp_w, _comp_h = 220, 310
             _comp_x = _screen_w - _comp_w - 30  # Bottom-right, 30px margin
             _comp_y = _screen_h - _comp_h - 80  # Above taskbar
 
             class CompanionAPI:
-                """Python bridge for the companion window JS."""
+                """Python bridge for the companion window JS.
+
+                Exposes three entry points:
+                  * on_companion_click        — user clicked the character (show main window)
+                  * on_companion_dblclick     — double-click (bring main window forward)
+                  * on_companion_prompt(text) — user hit Enter in the floating input bar;
+                                                 forwards the prompt to the /chat endpoint
+                                                 and returns the assistant reply for the
+                                                 speech bubble.
+
+                All three are synchronous from pywebview's perspective; on_companion_prompt
+                internally does a blocking requests.post but has a hard timeout and a
+                generic error path so the input bar always re-enables itself.
+                """
+
                 def on_companion_click(self):
                     """User clicked the companion — toggle main window or start voice chat."""
                     try:
@@ -6568,6 +7051,71 @@ def main():
                             _window.on_top = False
                     except Exception:
                         pass
+
+                def on_companion_prompt(self, text):
+                    """User submitted a quick prompt from the floating input bar.
+
+                    Forwards to the Flask /chat endpoint on this instance (loopback,
+                    same Waitress process) with a 60s timeout.  Returns a short
+                    string the JS will render in the speech bubble.
+
+                    Never raises — failure is mapped to a user-visible error string.
+                    """
+                    try:
+                        if not text or not str(text).strip():
+                            return "Type something first."
+                        prompt = str(text).strip()[:500]
+                        try:
+                            import requests  # runtime-optional; pip-installed in venv
+                        except Exception as _imp_err:
+                            logger.warning("[COMPANION] requests unavailable: %s", _imp_err)
+                            return "Chat unavailable (missing requests)."
+                        try:
+                            _port = args.port
+                        except Exception:
+                            _port = 5000
+                        _url = f"http://127.0.0.1:{_port}/chat"
+                        try:
+                            r = requests.post(
+                                _url,
+                                json={
+                                    "message": prompt,
+                                    "source": "companion_input_bar",
+                                },
+                                timeout=60,
+                            )
+                        except requests.Timeout:
+                            return "Nunba is still thinking — check the main window."
+                        except Exception as _net_err:
+                            logger.warning("[COMPANION] /chat call failed: %s", _net_err)
+                            return "Chat is offline. Try again in a moment."
+                        if r.status_code >= 400:
+                            logger.warning("[COMPANION] /chat returned %s", r.status_code)
+                            return f"Error {r.status_code} — try again."
+                        try:
+                            data = r.json()
+                        except Exception:
+                            return (r.text or "").strip()[:240] or "OK"
+                        reply = (
+                            (isinstance(data, dict) and (
+                                data.get("response")
+                                or data.get("message")
+                                or data.get("text")
+                                or data.get("reply")
+                            ))
+                            or ""
+                        )
+                        if isinstance(reply, (dict, list)):
+                            reply = str(reply)
+                        reply = (reply or "").strip()
+                        if not reply:
+                            reply = "Done."
+                        if len(reply) > 240:
+                            reply = reply[:237] + "…"
+                        return reply
+                    except Exception as _prompt_err:
+                        logger.exception("[COMPANION] on_companion_prompt failed: %s", _prompt_err)
+                        return "Something went wrong. Try the main window."
 
             _companion_api = CompanionAPI()
 
@@ -6679,6 +7227,10 @@ def main():
                 try:
                     state = _safe_eval_js(
                         "(function(){"
+                        "  // PRIMARY: window._reactMounted is the canonical mount"
+                        "  // flag set by index.html's MutationObserver — same"
+                        "  // signal _force_remount_and_paint's probe consults."
+                        "  if (window._reactMounted === true) return 'mounted';"
                         "  var r = document.getElementById('root');"
                         "  if (!r) return 'no_root';"
                         "  if (r.children.length === 0) return 'empty';"
@@ -6706,18 +7258,32 @@ def main():
                             "})()"
                         )
                         logger.info("[MOUNT_GUARD] Transitions forced, repaint done")
-                    elif state in ('empty', 'no_root', None):
+                    elif state is None:
+                        # _safe_eval_js exhausted retries — WebView2 RPC not
+                        # ready, NOT a real mount failure.  Skip reload entirely:
+                        # the in-page MutationObserver will set _reactMounted
+                        # when React actually mounts, and any future
+                        # mount-check re-probe (taskbar_restore /
+                        # events.restored / explicit recovery) will catch
+                        # genuine failures.  Triggering reload+resize here
+                        # was the cause of the 2026-05-10 maximize-then-
+                        # restore-to-startup-size regression: _window.width
+                        # returns the LOGICAL startup dimension (pywebview
+                        # doesn't track OS-level maximize state), so the
+                        # `_window.resize(w+1, h)` "wake compositor" call
+                        # collapsed the maximized window back to startup.
+                        logger.info("[MOUNT_GUARD] eval_js failed (probe RPC unavailable) — skipping reload, no window-resize side effect")
+                    elif state in ('empty', 'no_root'):
                         logger.warning(f"[MOUNT_GUARD] React not mounted ({state}) — reloading")
                         _window.load_url(f"http://localhost:{args.port}/local")
                         time.sleep(3.0)
-                        # Force resize to wake compositor
-                        try:
-                            w, h = _window.width, _window.height
-                            _window.resize(w + 1, h)
-                            time.sleep(0.1)
-                            _window.resize(w, h)
-                        except Exception:
-                            pass
+                        # NOTE: removed _window.resize(w+1, h) "wake compositor"
+                        # call — it caused window to shrink back to logical
+                        # startup size on maximize.  load_url alone is
+                        # sufficient to remount React; the JS-side document.
+                        # body display flick handles repaint without touching
+                        # window dimensions.  See the explicit body flick
+                        # in the post-mount transition-force branch above.
                 except Exception as e:
                     logger.warning(f"[MOUNT_GUARD] Check failed: {e}")
 
@@ -6751,6 +7317,10 @@ def main():
             pywebview's WebView2 suspends rAF while hidden OR iconic. React 18's
             createRoot uses rAF for scheduling, so the render may not complete
             until we nudge the compositor. This function:
+              (0) wakes the WebView2 compositor with show()+restore() — the
+                  same action tray "Show" performs (the only path that has
+                  historically rendered content reliably after auto-start
+                  hidden→visible),
               (1) waits for Flask (raw-socket, avoids proxy issues),
               (2) checks mount state with a STRICTER predicate that also
                   inspects the root's bounding box (paint-dead detection),
@@ -6761,6 +7331,31 @@ def main():
             """
             _local_url = f"http://localhost:{args.port}/local"
             _MAX_ATTEMPTS = 3
+
+            # ── (0) Wake the WebView2 compositor — same native action tray
+            # "Show" performs in desktop/tray_handler.py:_on_restore. Without
+            # it, the auto-start hidden→visible transition leaves the
+            # compositor suspended even though the OS reports the window
+            # visible: evaluate_js raises 'Main window failed to start' and
+            # load_url paints into a dead surface, so the user sees a black
+            # window until they manually click the tray icon. show() and
+            # restore() are idempotent on already-visible / non-minimized
+            # windows (Win32 ShowWindow no-ops when state is unchanged), so
+            # this is safe for the bg_shown / events_restored / watchdog
+            # callers alike. Each call is wrapped so a transient pywebview
+            # error cannot abort the recovery sequence below.
+            try:
+                _window.show()
+            except Exception as _ws_err:
+                logger.debug(
+                    f"[REMOUNT:{origin}] window.show() raised: {_ws_err}")
+            try:
+                _window.restore()
+            except Exception as _wr_err:
+                logger.debug(
+                    f"[REMOUNT:{origin}] window.restore() raised: {_wr_err}")
+            # Give the native compositor a beat to wake before evaluate_js.
+            time.sleep(0.3)
 
             # ── Wait for Flask to be ready (raw socket, avoids proxy issues) ──
             import socket as _bg_sock
@@ -6792,6 +7387,14 @@ def main():
                 try:
                     return _window.evaluate_js(
                         "(function(){"
+                        "  // PRIMARY signal — index.html's MutationObserver"
+                        "  // sets window._reactMounted=true the instant React"
+                        "  // injects real content into #root (ignoring"
+                        "  // style/script/noscript noise + sub-50-char nodes)."
+                        "  // This is the canonical mount flag — Python's"
+                        "  // children.length check below is a fallback for the"
+                        "  // window between observer install and first mutation."
+                        "  if (window._reactMounted === true) return 'mounted';"
                         "  var r = document.getElementById('root');"
                         "  if (!r) return 'no_root';"
                         "  if (r.children.length === 0) return 'empty';"
@@ -6803,7 +7406,14 @@ def main():
                         "})()"
                     )
                 except Exception:
-                    return None
+                    # evaluate_js threw — WebView2 COM RPC not ready, NOT a
+                    # mount failure.  Distinct sentinel so the caller can
+                    # retry the probe instead of triggering a reload (which
+                    # would yank the user's running session for no reason
+                    # and reset Demopage's mount-time state including the
+                    # window.innerWidth capture that drives portrait/
+                    # landscape layout).
+                    return 'probe_failed'
 
             for attempt in range(_MAX_ATTEMPTS):
                 # Give React a moment — rAF just resumed after visibility change
@@ -6845,15 +7455,47 @@ def main():
                         "transitions forced, repaint done")
                     return
 
-                # state is 'paint_dead', 'empty', 'no_root', or None —
-                # React either didn't mount OR WebView2 compositor is suspended.
-                # In both cases the reload path (with post-load resize kick)
-                # is the safest recovery.
+                # 'probe_failed' is NOT a mount problem — evaluate_js
+                # threw because WebView2's COM RPC isn't ready yet (common
+                # transiently after a window-state change).  Skip the
+                # reload entirely; the next attempt's longer sleep gives
+                # the RPC time to come back, and on a real mount the
+                # check returns 'mounted'.  Reloading on probe_failed
+                # was the bug behind the 'every resize → portrait' UX
+                # regression: the watchdog kept firing reloads against
+                # a perfectly-mounted React, each reload triggered a
+                # ChatInterface remount that re-ran useState(
+                # window.innerWidth), and during a live resize gesture
+                # the captured width was an intermediate value that
+                # snapped layout to portrait.
+                if state == 'probe_failed':
+                    continue
+
+                # state is 'paint_dead', 'empty', or 'no_root' — React
+                # really didn't mount OR WebView2 compositor is suspended.
+                # In both cases the reload path (with post-load resize
+                # kick) is the safest recovery.
+                # Preserve the URL the user is currently on — the
+                # taskbar-restore / shown / events.restored watchdogs all
+                # fire AFTER the user has been navigating, so reloading
+                # _local_url ('/local') yanks them back to the home page
+                # from wherever they were (/admin, /chat, /agents/...).
+                # Same get_current_url-then-fallback pattern used at
+                # app.py:5036 for the focus-route reload path.
+                try:
+                    _cur = (_window.get_current_url() or '').strip()
+                except Exception:
+                    _cur = ''
+                _target = (
+                    _local_url if (not _cur or 'about:blank' in _cur)
+                    else _cur
+                )
                 logger.warning(
                     f"[REMOUNT:{origin}] React not mounted ({state}) — "
-                    f"{'navigating' if attempt == 0 else 'reloading'}")
+                    f"{'navigating' if attempt == 0 else 'reloading'} "
+                    f"to {_target}")
                 try:
-                    _window.load_url(_local_url)
+                    _window.load_url(_target)
                 except Exception as e:
                     logger.warning(f"[REMOUNT:{origin}] load_url failed: {e}")
                     continue
@@ -7163,6 +7805,13 @@ def main():
             try:
                 check_result = _window.evaluate_js("""
                     (function(){
+                        // PRIMARY: window._reactMounted is the canonical mount
+                        // flag set by index.html's MutationObserver — same
+                        // signal _force_remount_and_paint and _mount_guard
+                        // probes consult.  If set, we're definitively mounted.
+                        if (window._reactMounted === true) {
+                            return JSON.stringify({mounted: true, reason: '_reactMounted flag'});
+                        }
                         var r = document.getElementById('root');
                         if (!r) return JSON.stringify({mounted: false, reason: 'no root'});
                         var children = r.childNodes.length;
@@ -7193,17 +7842,20 @@ def main():
                     import json as _json
                     state = _json.loads(check_result)
                     if not state.get('mounted'):
-                        logger.warning(f"[RECOVERY] React not mounted after 20s (children={state.get('children')}, innerLen={state.get('innerLen')}) — forcing reload + repaint")
+                        logger.warning(f"[RECOVERY] React not mounted after 20s (children={state.get('children')}, innerLen={state.get('innerLen')}) — forcing reload")
                         _window.load_url(f"http://localhost:{_recovery_port}/local")
                         time.sleep(2)
-                        # Force repaint via resize
-                        try:
-                            w, h = _window.width, _window.height
-                            _window.resize(w + 1, h)
-                            time.sleep(0.1)
-                            _window.resize(w, h)
-                        except Exception:
-                            pass
+                        # NOTE: removed _window.resize(w+1, h) "force repaint
+                        # via resize" — _window.width returns the LOGICAL
+                        # startup dimension (pywebview doesn't track OS-level
+                        # maximize state), so this call collapsed the
+                        # maximized window back to startup size on
+                        # iconic→non-iconic transitions (live evidence
+                        # 2026-05-10 22:28).  load_url alone is sufficient
+                        # to remount React; window-dimension manipulation
+                        # is the wrong tool for "wake compositor."
+                else:
+                    logger.info("[RECOVERY] React mount check returned no result (eval_js failed) — skipping reload, no window-resize side effect")
             except Exception as e:
                 logger.warning(f"[RECOVERY] React check failed: {e}")
 
@@ -7462,8 +8114,16 @@ def handle_protocol_launch():
         protocol_url = args.protocol
         logger.info(f"Processing protocol URL: {protocol_url}")
 
-        # Sometimes Windows passes the full URL, sometimes just parameters
-        if not protocol_url.startswith('hevolveai://'):
+        # Sometimes Windows passes the full URL, sometimes just parameters.
+        # All three schemes accepted on receive (matches HARTOS canonical
+        # ``DEEPLINK_SCHEMES`` so any URL produced by ``invite_link()``
+        # opens the desktop regardless of which mobile-era scheme it
+        # carries):
+        #   - hevolveai://   canonical desktop scheme since 2024
+        #   - nunba://       UNIF-G4 brand-canon scheme
+        #   - hevolve://     legacy mobile scheme (Android + iOS native)
+        _SCHEMES = ('hevolveai://', 'nunba://', 'hevolve://')
+        if not any(protocol_url.startswith(s) for s in _SCHEMES):
             protocol_url = 'hevolveai://' + protocol_url
             logger.info(f"Added protocol prefix: {protocol_url}")
 
@@ -7484,6 +8144,40 @@ def handle_protocol_launch():
         except Exception as params_err:
             logger.error(f"Parameter parsing failed: {str(params_err)}")
             params = {}
+
+        # ── UNIF-G4: deep-link routing ──
+        # Recognized canonical paths (both nunba:// and hevolveai://):
+        #   /invite/<code>             → accept friend invite
+        #   /meet/<platform>/<room>    → join external audio/video room
+        #   /group/<platform>/<group>  → join external group chat
+        # These are dispatched to HARTOS via /api/social/* handlers; no
+        # parallel routing logic added — same agent tools (Invite_Friend,
+        # Join_External_Room) execute the verb.
+        deeplink_path = (parsed.path or '').strip('/')
+        deeplink_segments = [s for s in deeplink_path.split('/') if s]
+        if deeplink_segments and deeplink_segments[0] in ('invite', 'meet', 'group'):
+            args.background = False  # bring app forward for any deep link
+            kind = deeplink_segments[0]
+            try:
+                import json as _json
+                import urllib.request as _urlreq
+                payload = {'kind': kind, 'segments': deeplink_segments[1:],
+                           'scheme': parsed.scheme}
+                req = _urlreq.Request(
+                    'http://127.0.0.1:5000/api/social/deeplink',
+                    data=_json.dumps(payload).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'},
+                    method='POST',
+                )
+                _urlreq.urlopen(req, timeout=5).read()
+                logger.info(f"Deep-link {kind} dispatched: {deeplink_segments}")
+            except Exception as deep_err:
+                # Log only — don't fail the launch.  The Liquid UI
+                # accept/join card will still appear once Flask is up
+                # because the AgentOverlay subscribes to the same
+                # WAMP topic the handler emits onto.
+                logger.warning(f"Deep-link dispatch deferred (Flask not ready?): {deep_err}")
+                args.deeplink_pending = payload
 
         # Handle different actions
         action = params.get('action', ['show'])[0] if params.get('action') else 'show'
@@ -7751,18 +8445,14 @@ if __name__ == "__main__":
         _early_splash = None
         # _eroot stays alive — _show_splash reuses it
 
-    # Show animated splash screen
-    # Skip splash in background mode UNLESS this is the first launch after setup
+    # Show animated splash screen.
+    # Background mode (autostart after reboot) STRICTLY skips the splash —
+    # the floating companion window is the user-visible post-install
+    # indicator.  We do NOT touch the .setup_complete marker here; the
+    # marker is consumed once by the background-mode window-hidden block
+    # (app.py in __main__'s webview branch).  Keeping the cleanup in a
+    # single place preserves the one-writer invariant.
     _skip_splash = args.background
-    if _skip_splash:
-        try:
-            _setup_marker = os.path.join(
-                os.path.expanduser('~'), 'Documents', 'Nunba', 'data', '.setup_complete')
-            if os.path.exists(_setup_marker):
-                _skip_splash = False  # show splash on first post-install launch
-                logger.info("[STARTUP] First post-install launch — showing splash despite --background")
-        except Exception:
-            pass
 
     if _skip_splash:
         logger.info("[STARTUP] Background mode — skipping splash animation")

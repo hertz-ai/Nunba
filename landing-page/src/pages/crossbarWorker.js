@@ -44,6 +44,14 @@ const postWorkerMessage = (type, payload) => {
 };
 
 const generateMessageId = (data, topic) => {
+  // Per-event dedup id (HARTOS publish_thinking_trace + EventBus.emit set
+  // this).  Multiple events can share request_id (N thinking steps in one
+  // chat turn) — we MUST NOT key on request_id alone or every step after
+  // the first gets dropped.  Fall back to request_id+topic for legacy
+  // payloads, then to a content-hash for fully anonymous payloads.
+  if (data?.msg_id) {
+    return `${data.msg_id}_${topic}`;
+  }
   if (data?.request_id) {
     return `${data.request_id}_${topic}`;
   }
@@ -788,6 +796,23 @@ function initCrossbar({
         `com.hertzai.pupit.${userId}`,
         `com.hertzai.hevolve.analogy.${userId}`,
         `com.hertzai.hevolve.chat.${userId}`,
+        // Cross-device sync (U1-U8): HARTOS persists every chat turn
+        // and publishes on `<CHAT_TOPIC_NEW>.<user_id>` so peer devices
+        // can mirror without polling.  See HARTOS core/constants.py
+        // CHAT_TOPIC_NEW + integrations/social/chat_messages.publish_new.
+        // Provider-side dedup by msg_id is owned by NunbaChatProvider.
+        `com.hertzai.hevolve.chat.new.${userId}`,
+        // BLE encounter (J204, J209-J210): HARTOS encounter_api.swipe
+        // publishes match events on `<ENCOUNTER_TOPIC_MATCH>.<user_id>`
+        // and icebreaker_approve / decline publishes on
+        // `<ENCOUNTER_TOPIC_ICEBREAKER>.<user_id>`.  See HARTOS
+        // core/constants.py + integrations/social/encounter_api.py
+        // _publish_match / _publish_icebreaker.  Provider-side handler
+        // (EncounterMatchModal, IcebreakerSheet) registered via
+        // services/realtimeService.js subscribeEncounterMatch /
+        // subscribeEncounterIcebreaker.
+        `com.hevolve.encounter.match.${userId}`,
+        `com.hevolve.encounter.icebreaker.${userId}`,
         `com.hertzai.hevolve.${userId}`,
         `com.hertzai.bookparsing.${userId}`,
         `com.hertzai.hevolve.social.${userId}`,

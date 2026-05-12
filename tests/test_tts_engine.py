@@ -86,10 +86,22 @@ class TestBackendConstants:
 
 class TestFallbackEngineCapabilities:
     def test_all_backends_present(self):
-        from tts.tts_engine import BACKEND_KOKORO
+        # 11 backends: 7 original + 3 mid-VRAM tier (MeloTTS, XTTS-v2,
+        # MMS-TTS) added 2026-04-29 to fill the 1-3 GB coverage gap +
+        # NeuTTS Air added 2026-05-08 (CPU-friendly Apache-2.0 voice
+        # clone; closes the audit_neutts_air_2026-05-08 7-surface gap).
+        from tts.tts_engine import (
+            BACKEND_KOKORO,
+            BACKEND_MELOTTS,
+            BACKEND_MMS_TTS,
+            BACKEND_NEUTTS_AIR,
+            BACKEND_XTTS_V2,
+        )
         expected = {BACKEND_F5, BACKEND_CHATTERBOX_TURBO, BACKEND_CHATTERBOX_ML,
                     BACKEND_INDIC_PARLER, BACKEND_COSYVOICE3, BACKEND_KOKORO,
-                    BACKEND_PIPER}
+                    BACKEND_PIPER,
+                    BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS,
+                    BACKEND_NEUTTS_AIR}
         assert set(_FALLBACK_ENGINE_CAPABILITIES.keys()) == expected
 
     def test_f5_vram(self):
@@ -160,8 +172,28 @@ class TestLangEnginePreference:
     def test_english_last_choice_is_piper(self):
         assert _FALLBACK_LANG_ENGINE_PREFERENCE['en'][-1] == BACKEND_PIPER
 
-    def test_spanish_first_choice_is_cosyvoice3(self):
-        assert _FALLBACK_LANG_ENGINE_PREFERENCE['es'][0] == BACKEND_COSYVOICE3
+    def test_spanish_first_choice_is_pip_installable_light_engine(self):
+        """Pre-2026-04-29 this asserted CosyVoice3 (later Chatterbox-ML
+        per J213).  As of 2026-04-29 the mid-VRAM tier (MeloTTS 1.5 GB,
+        XTTS-v2 2.5 GB) takes the primary slot for international
+        languages: pip-installable AND fits in 4 GB consumer GPUs.
+        See test_tts_language_routing_matrix.py § 3 for the full
+        policy doc.
+        """
+        from tts.tts_engine import (
+            _FALLBACK_ENGINE_CAPABILITIES,
+            BACKEND_MELOTTS,
+            BACKEND_MMS_TTS,
+            BACKEND_XTTS_V2,
+        )
+        first = _FALLBACK_LANG_ENGINE_PREFERENCE['es'][0]
+        assert first in {BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}, (
+            f"Spanish first-choice {first!r} is not in the mid-VRAM "
+            f"primary tier."
+        )
+        caps = _FALLBACK_ENGINE_CAPABILITIES[first]
+        assert 'es' in caps['languages']
+        assert caps['vram_gb'] <= 3.0
 
     def test_indic_languages_prefer_indic_parler(self):
         for lang in _INDIC_LANGS:
@@ -197,17 +229,37 @@ class TestCatalogMapping:
             assert _CATALOG_TO_BACKEND[cat_id] == be
 
     def test_backend_to_catalog_contains_all_backends(self):
-        # _BACKEND_TO_CATALOG carries the 7 primary backends PLUS two
-        # string-only keys ('luxtts', 'pocket_tts') that are retained
-        # for frozen-HARTOS compatibility — they have no top-level
-        # BACKEND_* constant because they never ship as their own
-        # backend, they fall through to the CPU in-process path.
-        from tts.tts_engine import BACKEND_KOKORO
+        # _BACKEND_TO_CATALOG is derived from _BACKEND_TO_REGISTRY_KEY,
+        # so any new BACKEND_* constant added there flows through here
+        # automatically.  Carries 11 primary backends (7 original + 3
+        # mid-VRAM tier added 2026-04-29 + NeuTTS Air added 2026-05-08).
+        #
+        # 2026-05-04 fix: the dict no longer carries 'luxtts' /
+        # 'pocket_tts' string-only keys.  Those were self-mappings
+        # inside _BACKEND_TO_REGISTRY_KEY ("kept for frozen HARTOS
+        # compat until rebuild") that produced a literal-echo entry
+        # in _CATALOG_TO_BACKEND ('pocket_tts' → 'pocket_tts'),
+        # causing the catalog ladder to "select" pocket_tts as a
+        # real backend and audio synthesis to silently fail.  CPU
+        # fallback aliases now live in _CPU_FALLBACK_CATALOG_IDS and
+        # only appear in _CATALOG_TO_BACKEND (one-way mapping to
+        # BACKEND_PIPER) — they were never valid Nunba backend
+        # constants in the first place.
+        from tts.tts_engine import (
+            BACKEND_KOKORO,
+            BACKEND_MELOTTS,
+            BACKEND_MMS_TTS,
+            BACKEND_NEUTTS_AIR,
+            BACKEND_XTTS_V2,
+        )
         primary = {BACKEND_F5, BACKEND_CHATTERBOX_TURBO, BACKEND_CHATTERBOX_ML,
                    BACKEND_INDIC_PARLER, BACKEND_COSYVOICE3, BACKEND_KOKORO,
-                   BACKEND_PIPER}
-        compat = {'luxtts', 'pocket_tts'}
-        assert set(_BACKEND_TO_CATALOG.keys()) == primary | compat
+                   BACKEND_PIPER,
+                   # Mid-VRAM tier — 2026-04-29
+                   BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS,
+                   # NeuTTS Air — 2026-05-08
+                   BACKEND_NEUTTS_AIR}
+        assert set(_BACKEND_TO_CATALOG.keys()) == primary
 
 
 class TestKokoroEnglishLadder:
@@ -258,6 +310,149 @@ class TestKokoroEnglishLadder:
         assert spec.tool_function == 'kokoro_synthesize'
         assert spec.tool_worker_attr == '_tool'
         assert 'en' in spec.languages
+
+
+class TestNeuTTSAirEnglishLadder:
+    """NeuTTS Air (Neuphonic) is a CPU-friendly English voice-clone
+    engine slotting between F5-TTS (heavy GPU clone) and MeloTTS / Kokoro
+    (light tier) on the English TTS ladder.  Apache-2.0, 748M Qwen2-
+    backbone, Q4 GGUF ~600 MB, RTF<0.5 on CPU.  Voice cloning from
+    3-15s reference audio.  These tests lock the placement and registry
+    wiring so the engine stays reachable across both Nunba's fallback
+    ladder and the HARTOS canonical registry — drift-guard for the
+    7-surface integration table in
+    ``memory/audit_neutts_air_2026-05-08.md``."""
+
+    def test_neutts_air_constant_value(self):
+        from tts.tts_engine import BACKEND_NEUTTS_AIR
+        assert BACKEND_NEUTTS_AIR == 'neutts_air'
+
+    def test_neutts_air_in_english_preference(self):
+        from tts.tts_engine import (
+            _FALLBACK_LANG_ENGINE_PREFERENCE,
+            BACKEND_NEUTTS_AIR,
+            BACKEND_PIPER,
+        )
+        prefs = _FALLBACK_LANG_ENGINE_PREFERENCE['en']
+        assert BACKEND_NEUTTS_AIR in prefs
+        # NeuTTS Air must come BEFORE Piper — same rationale as Kokoro:
+        # CPU-friendly neural beats Piper's robotic concatenative on
+        # any host that has the ~600 MB GGUF download budget.
+        assert prefs.index(BACKEND_NEUTTS_AIR) < prefs.index(BACKEND_PIPER)
+
+    def test_neutts_air_above_mid_tier(self):
+        """NeuTTS Air sits ABOVE MeloTTS / XTTS-v2 / Kokoro on the
+        English ladder.  Quality 0.91 (per upstream MOS) > Kokoro 0.88
+        and > MeloTTS 0.86 — the ladder is quality-ordered."""
+        from tts.tts_engine import (
+            _FALLBACK_LANG_ENGINE_PREFERENCE,
+            BACKEND_KOKORO,
+            BACKEND_MELOTTS,
+            BACKEND_NEUTTS_AIR,
+            BACKEND_XTTS_V2,
+        )
+        prefs = _FALLBACK_LANG_ENGINE_PREFERENCE['en']
+        idx_neutts = prefs.index(BACKEND_NEUTTS_AIR)
+        for lower in (BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_KOKORO):
+            assert idx_neutts < prefs.index(lower), (
+                f"neutts_air must come before {lower} in en ladder; "
+                f"got {prefs}"
+            )
+
+    def test_neutts_air_registry_key_wired(self):
+        from tts.tts_engine import _BACKEND_TO_REGISTRY_KEY, BACKEND_NEUTTS_AIR
+        assert _BACKEND_TO_REGISTRY_KEY[BACKEND_NEUTTS_AIR] == 'neutts_air'
+
+    def test_neutts_air_catalog_id_wired(self):
+        from tts.tts_engine import (
+            _BACKEND_TO_CATALOG,
+            _CATALOG_TO_BACKEND,
+            BACKEND_NEUTTS_AIR,
+        )
+        # _registry_key_to_catalog_id('neutts_air') == 'neutts-air'
+        assert _BACKEND_TO_CATALOG[BACKEND_NEUTTS_AIR] == 'neutts-air'
+        # Inverse map must roundtrip both forms (catalog hyphen + registry underscore)
+        assert _CATALOG_TO_BACKEND['neutts-air'] == BACKEND_NEUTTS_AIR
+        assert _CATALOG_TO_BACKEND['neutts_air'] == BACKEND_NEUTTS_AIR
+
+    def test_neutts_air_fallback_caps_english_only_voice_clone(self):
+        from tts.tts_engine import BACKEND_NEUTTS_AIR
+        caps = _FALLBACK_ENGINE_CAPABILITIES[BACKEND_NEUTTS_AIR]
+        assert caps['languages'] == {'en'}
+        assert caps['voice_cloning'] is True
+        assert caps['quality'] == 'high'
+        assert caps['sample_rate'] == 24000
+        # CPU-friendly is the differentiator from the heavy GPU clones
+        # (chatterbox_turbo 5.6 GB, F5 2.5 GB).  vram_gb is small and
+        # represents the optional GPU codec workspace.
+        assert caps['vram_gb'] <= 1.0
+
+    def test_neutts_air_in_lang_capable_set(self):
+        from tts.tts_engine import _LANG_CAPABLE_BACKENDS, BACKEND_NEUTTS_AIR
+        assert BACKEND_NEUTTS_AIR in _LANG_CAPABLE_BACKENDS['en']
+        assert BACKEND_NEUTTS_AIR in _LANG_CAPABLE_BACKENDS['en-IN']
+
+    def test_neutts_air_in_hartos_engine_registry(self):
+        """The HARTOS-side ENGINE_REGISTRY must carry the neutts_air
+        spec with a valid subprocess tool path AND tool_worker_attr.
+        Without `tool_worker_attr` the Nunba `_create_backend` falls
+        into the `_InProcessTTSBackend` branch and tries to `import
+        neutts` from the MAIN interpreter — guaranteed ImportError
+        because install_target='venv' lands neutts in the per-engine
+        venv only.  This drift-guard pins the spec shape."""
+        try:
+            from integrations.channels.media.tts_router import ENGINE_REGISTRY
+        except Exception:
+            pytest.skip("HARTOS tts_router not importable in this env")
+        spec = ENGINE_REGISTRY.get('neutts_air')
+        assert spec is not None
+        assert spec.tool_module == 'integrations.service_tools.neutts_tool'
+        assert spec.tool_function == 'neutts_synthesize'
+        assert spec.tool_worker_attr == '_tool', (
+            "neutts_air MUST set tool_worker_attr so Nunba routes "
+            "through _SubprocessTTSBackend (which honors the venv "
+            "python_exe wire) instead of trying to import neutts "
+            "from the main interpreter."
+        )
+        assert spec.install_target == 'venv'
+        assert 'en' in spec.languages
+        assert 'neutts[all]' in spec.pip_install_plan
+        assert spec.required_package == 'neutts'
+
+    def test_neutts_air_in_hartos_lang_preference(self):
+        """The HARTOS LANG_ENGINE_PREFERENCE['en'] ladder must carry
+        neutts_air so the smart router selects it.  Pinned position
+        not asserted (HARTOS may rebalance against omnivoice/melotts)
+        — only membership + above-piper ordering is contractual."""
+        try:
+            from integrations.channels.media.tts_router import (
+                LANG_ENGINE_PREFERENCE,
+            )
+        except Exception:
+            pytest.skip("HARTOS tts_router not importable in this env")
+        en = LANG_ENGINE_PREFERENCE['en']
+        assert 'neutts_air' in en
+        assert en.index('neutts_air') < en.index('piper')
+
+    def test_neutts_air_create_backend_uses_subprocess_adapter(self):
+        """`_create_backend(BACKEND_NEUTTS_AIR)` must return a
+        ``_SubprocessTTSBackend`` (not ``_InProcessTTSBackend``) so the
+        venv-wired worker handles synth.  This is the test that catches
+        a regression where someone drops `tool_worker_attr` from the
+        HARTOS spec — the in-process branch would then run, import
+        ``neutts`` from main, and silently fail."""
+        from tts.tts_engine import (
+            _SubprocessTTSBackend,
+            BACKEND_NEUTTS_AIR,
+            TTSEngine,
+        )
+        engine = TTSEngine(auto_init=False)
+        backend = engine._create_backend(BACKEND_NEUTTS_AIR)
+        assert isinstance(backend, _SubprocessTTSBackend), (
+            f"Expected _SubprocessTTSBackend for {BACKEND_NEUTTS_AIR}, "
+            f"got {type(backend).__name__}"
+        )
+        assert backend._engine_id == 'neutts_air'
 
 
 # ===========================================================================

@@ -25,9 +25,20 @@ except Exception:
     # AttributeError when pyautogui isn't installed in the runner env.
     pyautogui = None  # type: ignore[assignment]
 
-# Configure logging
-user_docs = os.path.join(os.path.expanduser('~'), 'Documents')
-log_dir = os.path.join(user_docs, 'HevolveAi Agent Companion', 'logs')
+# Configure logging — use core.platform_paths.get_log_dir() (canonical
+# Nunba log directory `~/Documents/Nunba/logs/`).  The hard-coded
+# `~/Documents/HevolveAi Agent Companion/logs/` path was a parallel
+# filesystem namespace that broke the data-paths contract: log
+# rotation, log-cleanup tasks, and the existing tail-the-log debug
+# workflow all skipped this directory entirely.
+try:
+    from core.platform_paths import get_log_dir
+    log_dir = get_log_dir()
+except Exception:
+    # Standalone harness without HARTOS — match the canonical layout.
+    log_dir = os.path.join(
+        os.path.expanduser('~'), 'Documents', 'Nunba', 'logs',
+    )
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, 'indicator_window.log')
 
@@ -137,6 +148,13 @@ class RibbonIndicator:
                 widget.bind('<Button-1>', self.toggle_panel)  # Changed to toggle_panel
                 widget.bind('<Enter>', self.on_tab_hover_enter)
                 widget.bind('<Leave>', self.on_tab_hover_leave)
+                # Right-click context menu — expose quick actions (open
+                # chat, stop AI, hide indicator, restore main window,
+                # quit Nunba) without forcing the user to expand the
+                # full ribbon panel.  `<Button-3>` is Tk's canonical
+                # right-button event on Windows/Linux; macOS bridges
+                # a secondary click to the same event.
+                widget.bind('<Button-3>', self._show_context_menu)
             
             # Start subtle pulse animation
             self.start_tab_pulse()
@@ -669,6 +687,149 @@ class RibbonIndicator:
         except Exception as e:
             logger.error(f"Error hiding ribbon tab: {str(e)}")
     
+    # ── Right-click context menu ─────────────────────────────────
+    # Quick-action menu anchored at the cursor.  Intentionally kept
+    # small — every item maps to an existing method or HTTP endpoint
+    # so we don't duplicate state-management logic.  Rebuilt on every
+    # right-click so item labels and enabled/disabled state stay in
+    # sync with the current panel state (expanded vs collapsed, AI
+    # running vs stopped).
+    #
+    # DRY: no command strings are inlined; every handler delegates to
+    # either an existing bound method (toggle_panel, stop_ai_control,
+    # hide, destroy) or the Flask /show_window route (already serving
+    # the system-tray "Restore" menu).
+    def _show_context_menu(self, event=None):
+        """Build + pop up the right-click context menu at the cursor."""
+        try:
+            # Build menu on the ribbon_window so it's destroyed with it.
+            menu = tk.Menu(self.ribbon_window, tearoff=0,
+                           bg='#2F2F2F', fg='#F0F0F0',
+                           activebackground='#3C3C3C',
+                           activeforeground='#FF5F57',
+                           bd=0, font=('Segoe UI', 9))
+
+            # Expand / collapse chat panel — reuses toggle_panel logic.
+            if self.expanded:
+                menu.add_command(label='▾ Collapse Chat Panel',
+                                 command=lambda: self.toggle_panel())
+            else:
+                menu.add_command(label='▸ Open Chat Panel',
+                                 command=lambda: self.toggle_panel())
+
+            menu.add_separator()
+
+            # Stop the active AI session — same action as the panel
+            # button.  Disabled if the panel isn't expanded because
+            # stop_ai_control needs self.stop_button to exist.
+            if self.expanded:
+                menu.add_command(label='⏹ Stop AI Control',
+                                 command=self.stop_ai_control)
+            else:
+                menu.add_command(label='⏹ Stop AI Control',
+                                 command=self._stop_ai_via_api)
+
+            # Hide the floating indicator (auto-restore on next AI turn).
+            menu.add_command(label='👻 Hide Indicator',
+                             command=self.hide)
+
+            menu.add_separator()
+
+            # Restore / raise the main Nunba window — delegates to the
+            # Flask `/show_window` route which calls pywebview's
+            # `_window.show()` on the main thread (safe cross-process).
+            menu.add_command(label='⧉ Restore Nunba Window',
+                             command=self._restore_main_window)
+
+            menu.add_separator()
+
+            # Nuclear quit.  This is the same exit path the system-tray
+            # "Quit" uses: `os._exit(0)` bypasses Py_Finalize so
+            # non-daemon threads (llama-server watchdogs, TTS warmup,
+            # MCP bridge) don't hang the shutdown.  See app.py:1583 for
+            # the symmetric path.
+            menu.add_command(label='✕ Quit Nunba', command=self._quit_nunba)
+
+            # Pop up at the click location.  `tk_popup` handles the
+            # implicit `grab_release()` that prevents the menu from
+            # leaving the grab when the user clicks away.
+            try:
+                x = event.x_root if event is not None else 0
+                y = event.y_root if event is not None else 0
+                menu.tk_popup(x, y)
+            finally:
+                # Release the implicit grab so normal event processing
+                # resumes even if tk_popup raised (rare on Windows, can
+                # happen on Linux with competing WMs).
+                try:
+                    menu.grab_release()
+                except Exception:
+                    pass
+
+            logger.info('Ribbon right-click context menu shown')
+
+        except Exception as e:
+            logger.error(f"Error showing context menu: {e}")
+
+    def _stop_ai_via_api(self):
+        """Call the /indicator/stop API directly (used when the panel
+        is collapsed, so self.stop_button is None and
+        stop_ai_control would raise).  Fire-and-forget — we don't
+        block the Tk thread for the HTTP response."""
+        def _call():
+            try:
+                requests.get(f"{self.server_url}/indicator/stop",
+                             timeout=5,
+                             headers={'Accept': 'application/json'})
+                logger.info('/indicator/stop called via right-click menu')
+            except Exception as exc:
+                logger.error(f"stop-via-api failed: {exc}")
+        threading.Thread(target=_call, daemon=True).start()
+
+    def _restore_main_window(self):
+        """Ask app.py (pywebview host) to raise + show the main Nunba
+        window.  Uses /show_window (same endpoint the tray uses)."""
+        def _call():
+            try:
+                requests.get(f"{self.server_url}/show_window", timeout=5,
+                             headers={'Accept': 'application/json'})
+                logger.info('/show_window called via right-click menu')
+            except Exception as exc:
+                logger.error(f"restore-main-window failed: {exc}")
+        threading.Thread(target=_call, daemon=True).start()
+
+    def _quit_nunba(self):
+        """Full-app shutdown via the indicator's right-click menu.
+        Mirrors desktop.tray_handler._on_quit — hides tray + calls
+        os._exit(0) to bypass the pywebview atexit chain that hangs
+        on Windows when non-daemon threads are still alive."""
+        logger.info('Quit Nunba selected from right-click context menu')
+        try:
+            # Hide our own UI first so the user sees the indicator
+            # disappear immediately while the kill propagates.
+            self.destroy()
+        except Exception:
+            pass
+        try:
+            # If the tray module is available, let it run its shutdown
+            # hook (stops pystray icon cleanly, flushes audit log).
+            import desktop.tray_handler as _tray
+            if hasattr(_tray, 'stop_tray'):
+                try:
+                    _tray.stop_tray()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Nuclear exit to skip Py_Finalize (llama-server watchdog +
+        # crossbar publisher are non-daemon on some configs and would
+        # hang forever otherwise).
+        try:
+            os._exit(0)
+        except Exception:
+            import sys as _sys
+            _sys.exit(0)
+
     def destroy(self):
         """Destroy the ribbon tab"""
         try:
@@ -685,17 +846,24 @@ class RibbonIndicator:
 _indicator_window = None
 _window_thread = None
 
+_auto_hide_stop = threading.Event()
+
+
+def stop_auto_hide():
+    """Signal auto_hide_after_timeout to exit cleanly (called on shutdown)."""
+    _auto_hide_stop.set()
+
+
 def auto_hide_after_timeout(timeout_seconds=15.0):
     """Automatically hide the indicator after inactivity"""
     global indicator_active, control_start_time
-    
+
     if globals().get('STANDALONE_TEST_MODE', False):
         logger.info("Auto-hide disabled in standalone test mode")
-        while True:
-            time.sleep(60)
-    
-    while True:
-        time.sleep(1.0)
+        _auto_hide_stop.wait()
+        return
+
+    while not _auto_hide_stop.wait(1.0):
         try:
             if indicator_active and control_start_time:
                 elapsed = time.time() - control_start_time

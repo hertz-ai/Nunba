@@ -218,8 +218,13 @@ class RealtimeService {
   // ── Internal: dispatch (transport-agnostic, idempotent) ─────────────
 
   _isDuplicate(payload) {
-    // Explicit ID (TTS request_id, notification id, etc.)
-    let id = payload.request_id || payload.id;
+    // Per-event dedup id from HARTOS (publish_thinking_trace +
+    // EventBus.emit auto-inject this).  Critical: prefer msg_id over
+    // request_id because multiple events share request_id (N thinking
+    // steps in one chat turn) — keying on request_id alone would drop
+    // every event after the first.  request_id stays the GROUPING key
+    // for daemon-stale filtering (Demopage.js:1434), not for dedup.
+    let id = payload.msg_id || payload.request_id || payload.id;
     // No explicit ID — generate content hash so identical payloads from
     // different transports (WAMP + SSE) dedup correctly.
     if (!id) {
@@ -424,6 +429,153 @@ export function subscribeTtsLangEvents(callback) {
   _ensureTtsLangWorker();
   _ttsLangListeners.add(callback);
   return () => _ttsLangListeners.delete(callback);
+}
+
+// ── chat.new (cross-device sync, U5) ──────────────────────────────
+// HARTOS publishes <CHAT_TOPIC_NEW>.<user_id> on every persisted chat
+// turn (see HARTOS integrations/social/chat_messages.publish_new).
+// The web worker already subscribes (crossbarWorker.js topics list);
+// here we filter its generic DATA_RECEIVED postMessage by sourceTopic
+// and surface it as a typed subscriber callback.
+//
+// IMPORTANT — no-parallel-paths invariant for callers:
+// the LOCAL device's own /chat HTTP turns ALSO produce chat.new
+// events (server-side persist publishes regardless of origin).
+// Callers MUST drop events whose `device_id` matches their local
+// device id; otherwise messages will appear twice (once from the
+// optimistic /chat-response write path, once from this WAMP path).
+// NunbaChatProvider.jsx is the canonical consumer + filter site.
+
+const _chatNewListeners = new Set();
+let _chatNewWorkerHandler = null;
+
+function _ensureChatNewWorker() {
+  if (_chatNewWorkerHandler || !_worker) return;
+  _chatNewWorkerHandler = (e) => {
+    const {type, payload} = e.data || {};
+    if (type !== 'DATA_RECEIVED' || !payload) return;
+    const {sourceTopic, data} = payload;
+    if (
+      typeof sourceTopic !== 'string' ||
+      !sourceTopic.startsWith('com.hertzai.hevolve.chat.new.')
+    ) {
+      return;
+    }
+    _chatNewListeners.forEach((cb) => {
+      try {
+        cb(data);
+      } catch (err) {
+        console.warn('chat.new event handler error:', err);
+      }
+    });
+  };
+  _worker.addEventListener('message', _chatNewWorkerHandler);
+}
+
+/**
+ * Subscribe to chat.new WAMP events.  Callback receives the persisted
+ * ChatMessage row dict: `msg_id`, `request_id`, `device_id`, `user_id`,
+ * `role`, `content`, `lang`, `attachments`, `created_at`.
+ *
+ * @param {(event: object) => void} callback
+ * @returns {Function} unsubscribe
+ */
+export function subscribeChatNew(callback) {
+  _ensureChatNewWorker();
+  _chatNewListeners.add(callback);
+  return () => _chatNewListeners.delete(callback);
+}
+
+// ── BLE encounter match + icebreaker (J204, J209-J210) ──────────────
+// Same worker-message-filter pattern as subscribeChatNew above.  HARTOS
+// encounter_api._publish_match / _publish_icebreaker fire on the
+// per-user-suffixed topics; the worker subscribes (crossbarWorker.js)
+// and posts DATA_RECEIVED with sourceTopic intact; we filter and
+// dispatch to typed listeners.
+
+const _encounterMatchListeners = new Set();
+let _encounterMatchWorkerHandler = null;
+
+function _ensureEncounterMatchWorker() {
+  if (_encounterMatchWorkerHandler || !_worker) return;
+  _encounterMatchWorkerHandler = (e) => {
+    const {type, payload} = e.data || {};
+    if (type !== 'DATA_RECEIVED' || !payload) return;
+    const {sourceTopic, data} = payload;
+    if (
+      typeof sourceTopic !== 'string' ||
+      !sourceTopic.startsWith('com.hevolve.encounter.match.')
+    ) {
+      return;
+    }
+    _encounterMatchListeners.forEach((cb) => {
+      try {
+        cb(data);
+      } catch (err) {
+        console.warn('encounter.match handler error:', err);
+      }
+    });
+  };
+  _worker.addEventListener('message', _encounterMatchWorkerHandler);
+}
+
+/**
+ * Subscribe to BLE encounter match events.  Callback receives the
+ * canonical Encounter row dict (id, user_a, user_b, lat, lng,
+ * matched_at, icebreaker_a_status, icebreaker_b_status, etc.).
+ * Fires once per mutual-like.  Use the payload's `id` as `match_id`
+ * for the subsequent /icebreaker/draft request.
+ *
+ * @param {(event: object) => void} callback
+ * @returns {Function} unsubscribe
+ */
+export function subscribeEncounterMatch(callback) {
+  _ensureEncounterMatchWorker();
+  _encounterMatchListeners.add(callback);
+  return () => _encounterMatchListeners.delete(callback);
+}
+
+
+const _encounterIcebreakerListeners = new Set();
+let _encounterIcebreakerWorkerHandler = null;
+
+function _ensureEncounterIcebreakerWorker() {
+  if (_encounterIcebreakerWorkerHandler || !_worker) return;
+  _encounterIcebreakerWorkerHandler = (e) => {
+    const {type, payload} = e.data || {};
+    if (type !== 'DATA_RECEIVED' || !payload) return;
+    const {sourceTopic, data} = payload;
+    if (
+      typeof sourceTopic !== 'string' ||
+      !sourceTopic.startsWith('com.hevolve.encounter.icebreaker.')
+    ) {
+      return;
+    }
+    _encounterIcebreakerListeners.forEach((cb) => {
+      try {
+        cb(data);
+      } catch (err) {
+        console.warn('encounter.icebreaker handler error:', err);
+      }
+    });
+  };
+  _worker.addEventListener('message', _encounterIcebreakerWorkerHandler);
+}
+
+/**
+ * Subscribe to BLE encounter icebreaker state-change events.
+ * Callback receives `{match_id, side: 'a'|'b', status: 'sent'|'declined',
+ * icebreaker_a, icebreaker_b}`.  Fires when EITHER party approves or
+ * declines a draft.  Use to update the UI state on the OTHER party's
+ * device (e.g., dismiss the draft modal once the other side has acted).
+ *
+ * @param {(event: object) => void} callback
+ * @returns {Function} unsubscribe
+ */
+export function subscribeEncounterIcebreaker(callback) {
+  _ensureEncounterIcebreakerWorker();
+  _encounterIcebreakerListeners.add(callback);
+  return () => _encounterIcebreakerListeners.delete(callback);
 }
 
 // Singleton

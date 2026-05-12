@@ -70,12 +70,12 @@ export default function IndexThree() {
                   className="bg-gradient-to-br from-amber-400 to-fuchsia-600  bg-clip-text"
                 >
                   {' '}
-                  Your New Learning Friend, HevolveAI
+                  Your New Learning Friend, Nunba
                 </span>{' '}
               </h4>
               <p style={{color: '#FFF'}} className=" text-lg max-w-xl mx-auto">
                 Learn, research and discover the knowledge you seek with your
-                HevolveAI friend.
+                Nunba friend.
               </p>
 
               <a

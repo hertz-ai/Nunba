@@ -66,6 +66,8 @@ const CampaignDetailPage = lazyRetry(() => import('./components/Social/Campaigns
 const PostDetailPage = lazyRetry(() => import('./components/Social/Post/PostDetailPage'));
 const SearchPage = lazyRetry(() => import('./components/Social/Search/SearchPage'));
 const NotificationsPage = lazyRetry(() => import('./components/Social/Notifications/NotificationsPage'));
+const InboxPage = lazyRetry(() => import('./components/Social/Inbox/InboxPage'));
+const CallRoom = lazyRetry(() => import('./components/Social/Calls/CallRoom'));
 const RecipeListPage = lazyRetry(() => import('./components/Social/Recipes/RecipeListPage'));
 const CommunityListPage = lazyRetry(() => import('./components/Social/Communities/CommunityListPage'));
 const CommunityDetailPage = lazyRetry(() => import('./components/Social/Communities/CommunityDetailPage'));
@@ -97,6 +99,7 @@ const ConversationHistoryPanel = lazyRetry(() => import('./components/Channels/C
 // Settings
 const BackupSettingsPage = lazyRetry(() => import('./components/Social/Settings/BackupSettingsPage'));
 const ThemeSettingsPage = lazyRetry(() => import('./components/Social/Settings/ThemeSettingsPage'));
+const PrivacySettingsPage = lazyRetry(() => import('./components/Social/Settings/PrivacySettingsPage'));
 
 // Agent Audit
 const AgentAuditPage = lazyRetry(() => import('./components/Social/Agents/AgentAuditPage'));
@@ -508,6 +511,7 @@ function MainRoutes() {
           <Route path="channels/history" element={<RoleGuard minRole="flat"><Helmet><title>Nunba — Channel History</title></Helmet><ConversationHistoryPanel /></RoleGuard>} />
           <Route path="settings/backup" element={<RoleGuard minRole="guest"><Helmet><title>Nunba — Backup &amp; Sync</title></Helmet><BackupSettingsPage /></RoleGuard>} />
           <Route path="settings/appearance" element={<RoleGuard minRole="guest"><Helmet><title>Nunba — Appearance</title></Helmet><ThemeSettingsPage /></RoleGuard>} />
+          <Route path="settings/privacy" element={<RoleGuard minRole="flat"><Helmet><title>Nunba — Privacy &amp; Cloud Capabilities</title></Helmet><PrivacySettingsPage /></RoleGuard>} />
           <Route path="agents" element={<RoleGuard minRole="flat"><Helmet><title>Nunba — Agent Audit</title></Helmet><AgentAuditPage /></RoleGuard>} />
           <Route path="autopilot" element={<Suspense fallback={<PageSkeleton dark />}><Helmet><title>Nunba — Autopilot</title></Helmet><AutopilotPage /></Suspense>} />
           <Route path="tools" element={<><Helmet><title>Nunba — MCP Tools</title></Helmet><MCPToolBrowser /></>} />
@@ -532,6 +536,8 @@ function MainRoutes() {
 
           {/* Auth required — flat+ only */}
           <Route path="notifications" element={<RoleGuard minRole="flat"><NotificationsPage /></RoleGuard>} />
+          <Route path="inbox" element={<RoleGuard minRole="flat"><InboxPage /></RoleGuard>} />
+          <Route path="calls/:callId" element={<RoleGuard minRole="flat"><CallRoom /></RoleGuard>} />
           <Route path="regions" element={<RoleGuard minRole="flat"><RegionsPage /></RoleGuard>} />
           <Route path="regions/:regionId" element={<RoleGuard minRole="flat"><RegionDetailPage /></RoleGuard>} />
           <Route path="hub" element={<ActivityHub />} />

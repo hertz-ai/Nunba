@@ -18,6 +18,7 @@ import CloudIcon from '@mui/icons-material/Cloud';
 import ExtensionIcon from '@mui/icons-material/Extension';
 import ForumIcon from '@mui/icons-material/Forum';
 import HubIcon from '@mui/icons-material/Hub';
+import LeaderboardIcon from '@mui/icons-material/Leaderboard';
 import MemoryIcon from '@mui/icons-material/Memory';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import PeopleIcon from '@mui/icons-material/People';
@@ -40,6 +41,7 @@ export const ICON_MAP = {
   cloud: CloudIcon,
   people: PeopleIcon,
   admin_panel_settings: AdminPanelSettingsIcon,
+  leaderboard: LeaderboardIcon,
   open_in_new: OpenInNewIcon,
 };
 
@@ -52,6 +54,7 @@ export const PAGE_REGISTRY = [
   { id: 'marketplace',     label: 'Marketplace',      route: '/social/marketplace', icon: 'storefront',               category: 'discover', requiresRole: null },
   { id: 'mcp_tools',       label: 'MCP Tools',        route: '/social/tools',       icon: 'extension',                category: 'discover', requiresRole: null },
   { id: 'autopilot',       label: 'Autopilot',        route: '/social/autopilot',   icon: 'precision_manufacturing',  category: 'agents',   requiresRole: null },
+  { id: 'hive_contest',    label: 'Hive Contest',     route: '/hive_contest',       icon: 'leaderboard',              category: 'discover', requiresRole: null },
   { id: 'admin_models',    label: 'Model Management', route: '/admin/models',       icon: 'memory',                   category: 'admin',    requiresRole: 'central' },
   { id: 'admin_channels',  label: 'Channels',         route: '/admin/channels',     icon: 'hub',                      category: 'admin',    requiresRole: 'central' },
   { id: 'admin_providers', label: 'AI Providers',     route: '/admin/providers',    icon: 'cloud',                    category: 'admin',    requiresRole: 'central' },

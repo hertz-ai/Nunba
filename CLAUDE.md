@@ -18,6 +18,42 @@ or `models/` directories** — namespace collision under cx_Freeze
 silently hides whichever package's `__init__.py` loads second (see
 `memory/feedback_frozen_build_pitfalls.md` Rule 2).
 
+## Branch Discipline — MAIN BRANCH ONLY (MANDATORY)
+
+**Work directly on `main` in the main clone.  Every session.  No exceptions.**
+
+- **Never** create, use, or resume a `claude/*` branch.
+- **Never** create or use a git worktree (`.claude/worktrees/*`).
+- **Never** operate inside a worktree directory — even if the Claude
+  Code harness boots you there.  Step out immediately and use
+  absolute paths to the main clone.
+- **All commits land on `main`.**  All pushes go to `origin/main`.
+
+Full protocol + session-start sanity check + violation log live in
+the user-memory file `memory/feedback_main_branch_only.md`.  Read it
+if you ever see a `claude/*` branch or `.claude/worktrees/` dir —
+that is a regression and must be reported to the user, not silently
+accepted.
+
+If the harness forces you into a worktree:
+1. Do NOT edit files inside the worktree.
+2. Use absolute paths in every `Edit`/`Write`/`Read` call so tools
+   act on the main clone (e.g.
+   `C:\Users\sathi\PycharmProjects\Nunba-HART-Companion\app.py`).
+3. Prefix every `git` command with
+   `cd C:/Users/sathi/PycharmProjects/Nunba-HART-Companion && git …`
+   so git never defaults to the worktree's CWD.
+4. After session ends, the user deletes the filesystem leftovers:
+   `cmd /c "rd /s /q C:\Users\sathi\PycharmProjects\Nunba-HART-Companion\.claude\worktrees"`.
+
+Why this rule exists (2026-04-21 incident): the harness booted on
+`claude/determined-elbakyan-94a24c` in a worktree, leaving a stale
+branch and filesystem leftovers that polluted `git branch -a` and
+confused which copy of the code had the latest edits.  User called
+it out directly: parallel branches always drift, and the user should
+never need to ask "which one has my fix?" — the answer is always
+`main`.
+
 ## Repo Layout
 
 | Path | Purpose |

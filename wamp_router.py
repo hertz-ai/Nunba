@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple  # noqa: UP035
 
@@ -57,27 +58,58 @@ YIELD_MSG = 70
 # ── Auth Token ──────────────────────────────────────────────────────────
 # When NUNBA_WAMP_TICKET is set (or auto-generated for LAN mode),
 # the router requires ticket auth.  When empty, anonymous is allowed.
+#
+# Env vars are read LAZILY (not at module import) — cx_Freeze + systemd
+# can inject env at different layers, and the import-time read snapshot
+# was witnessed to differ from the value visible at first AUTHENTICATE
+# (the launcher set it after the bundled exe began initialization).
 import secrets
 
-_wamp_ticket: str | None = os.environ.get('NUNBA_WAMP_TICKET', '')
+# `None` = sentinel "not yet read"; subsequent reads use the cached
+# value.  Tests override via _set_wamp_ticket_for_test() below.
+_wamp_ticket: str | None = None
+
+
+def _read_ticket_from_env() -> str:
+    """Read NUNBA_WAMP_TICKET from os.environ; '' means absent."""
+    return os.environ.get('NUNBA_WAMP_TICKET', '')
 
 
 def _require_auth() -> bool:
     """True when the router requires ticket authentication."""
+    global _wamp_ticket
+    if _wamp_ticket is None:
+        _wamp_ticket = _read_ticket_from_env()
     return bool(_wamp_ticket)
 
 
 def get_wamp_ticket() -> str:
     """Return the current WAMP ticket (for Flask API to serve to clients)."""
+    global _wamp_ticket
+    if _wamp_ticket is None:
+        _wamp_ticket = _read_ticket_from_env()
     return _wamp_ticket
 
 
 def _enable_auth_for_lan():
     """Auto-generate a ticket when binding to non-localhost (LAN mode)."""
     global _wamp_ticket
+    if _wamp_ticket is None:
+        _wamp_ticket = _read_ticket_from_env()
     if not _wamp_ticket:
         _wamp_ticket = secrets.token_urlsafe(32)
         logger.info("WAMP auth enabled (auto-generated ticket for LAN mode)")
+
+
+# Reuse HARTOS's canonical publish-side gate (integrations.social.realtime)
+# so subscribe + publish enforce an identical invariant. Anonymous → only
+# public topics (HARTOS gate already refuses empty user_id on user-scoped).
+def _authorize_topic_for_authid(topic: str, authid: str) -> bool:
+    from integrations.social.realtime import _authorize_topic_for_user_id
+    if not authid or authid == 'anonymous':
+        return _authorize_topic_for_user_id(topic, '')
+    return _authorize_topic_for_user_id(topic, authid)
+
 
 # ── Router State ─────────────────────────────────────────────────────────
 
@@ -119,6 +151,11 @@ class WampSession:
         self.realm: str | None = None
         self.authenticated: bool = False  # True after successful auth or when auth not required
         self.authid: str = 'anonymous'    # User identity for topic authorization
+        # HELLO-claimed authid held until ticket auth completes — only
+        # promoted to self.authid by `_handle_authenticate` after the
+        # ticket signature verifies, so a client cannot bypass auth by
+        # claiming someone else's authid in HELLO.
+        self.pending_authid: str = 'anonymous'
 
     def send(self, msg: list):
         """Send a WAMP message (JSON-encoded list) to this client."""
@@ -138,6 +175,10 @@ _state_lock = threading.Lock()
 _event_loop: asyncio.AbstractEventLoop | None = None
 _router_thread: threading.Thread | None = None
 _started = False
+# Set to True once stop_wamp_router is registered as an atexit hook, so
+# we don't stack N copies of the callback when start_wamp_router is
+# called repeatedly (idempotent start + idempotent atexit registration).
+_atexit_registered = False
 
 
 def _get_realm(name: str = 'realm1') -> WampRealm:
@@ -185,9 +226,17 @@ def _handle_hello(session: WampSession, msg: list):
         # Check if client supports ticket auth
         client_methods = details.get('authmethods', [])
         if 'ticket' in client_methods:
+            # Remember the HELLO-claimed authid for promotion after the
+            # ticket signature verifies.  Sanitize: strict identifier
+            # subset to refuse weird authid payloads.
+            _claimed = str(details.get('authid', 'anonymous'))[:128]
+            if not all(c.isalnum() or c in ('-', '_', '.') for c in _claimed):
+                _claimed = 'anonymous'
+            session.pending_authid = _claimed
             # Send CHALLENGE for ticket auth
             session.send([CHALLENGE, 'ticket', {}])
-            logger.debug("Session %d: sent ticket CHALLENGE", session.session_id)
+            logger.debug("Session %d: sent ticket CHALLENGE (claimed authid=%s)",
+                         session.session_id, _claimed)
             return
         else:
             # Client doesn't support ticket auth — reject
@@ -196,11 +245,19 @@ def _handle_hello(session: WampSession, msg: list):
                            session.session_id)
             return
 
-    # No auth required — welcome immediately with client-provided authid
-    _client_authid = details.get('authid', 'anonymous')
-    _send_welcome(session, authid=_client_authid)
-    logger.debug("Session %d joined realm '%s' as '%s'",
-                 session.session_id, realm_name, _client_authid)
+    # No auth required — loopback single-user posture. start_wamp_router
+    # only skips ticket when bound to 127.0.0.1 (LAN mode auto-enables
+    # via _enable_auth_for_lan). On loopback the caller is the same
+    # machine as Flask + webview; authid is not a security boundary (a
+    # same-host attacker already has filesystem access). Trust the
+    # client-claimed authid so the webview's TTS / chat subscriptions
+    # continue to match com.hertzai.pupit.{userId} topics.
+    _claimed = str(details.get('authid', 'anonymous'))[:128]
+    if not all(c.isalnum() or c in ('-', '_', '.') for c in _claimed):
+        _claimed = 'anonymous'
+    _send_welcome(session, authid=_claimed)
+    logger.debug("Session %d joined realm '%s' as '%s' (loopback no-auth)",
+                 session.session_id, realm_name, _claimed)
 
 
 def _handle_authenticate(session: WampSession, msg: list):
@@ -209,9 +266,16 @@ def _handle_authenticate(session: WampSession, msg: list):
     signature = msg[1] if len(msg) > 1 else ''
 
     if _require_auth() and _hmac.compare_digest(str(signature), _wamp_ticket):
-        _send_welcome(session, authid='client', authrole='trusted',
+        # Promote the HELLO-claimed authid to the live session identity now
+        # that the ticket signature is valid.  authid is what topic
+        # authorization keys off — without this, every authenticated
+        # client shared one identity ('client') and all per-user topic
+        # gates collapsed.
+        _verified_authid = session.pending_authid or 'anonymous'
+        _send_welcome(session, authid=_verified_authid, authrole='trusted',
                       authmethod='ticket')
-        logger.debug("Session %d authenticated via ticket", session.session_id)
+        logger.debug("Session %d authenticated via ticket as '%s'",
+                     session.session_id, _verified_authid)
     else:
         session.send([ABORT, {}, 'wamp.error.not_authorized'])
         logger.warning("Session %d: ticket auth FAILED", session.session_id)
@@ -227,21 +291,25 @@ def _handle_subscribe(session: WampSession, msg: list):
     request_id = msg[1]
     topic = msg[3] if len(msg) > 3 else ''
 
+    # Task #335 J2: stamp WAMP wire request_id + authenticated user id
+    # onto every log line so grep can correlate across subsystems.
+    # Uses the canonical reuse-existing-ids helper (desktop.log_ctx).
+    from desktop.log_ctx import log_ctx
+    log = log_ctx(logger, request_id=request_id, user_id=session.authid)
+
     if not topic:
         session.send([ERROR, SUBSCRIBE, request_id, {}, 'wamp.error.invalid_uri'])
         return
 
-    # Topic authorization: user-scoped topics (com.hertzai.hevolve.*.{userId})
-    # must match the session's authid. Prevents cross-user eavesdropping.
+    # Topic authorization — exact-segment match (NOT substring).
     # Backend publish_local() bypasses this (no session, direct realm access).
-    if session.authid and session.authid != 'anonymous':
-        # User-scoped topics end with the user_id segment
-        if 'hertzai' in topic and session.authid not in topic:
-            session.send([ERROR, SUBSCRIBE, request_id, {},
-                          'wamp.error.not_authorized'])
-            logger.warning("Session %d (%s): subscribe to '%s' DENIED (not their topic)",
-                           session.session_id, session.authid, topic)
-            return
+    if not _authorize_topic_for_authid(topic, session.authid):
+        session.send([ERROR, SUBSCRIBE, request_id, {},
+                      'wamp.error.not_authorized'])
+        log.warning("Session %d (%s): subscribe to '%s' DENIED "
+                    "(topic-authid mismatch)",
+                    session.session_id, session.authid, topic)
+        return
 
     realm = _get_realm(session.realm or 'realm1')
     sub_id = _gen_id()
@@ -251,8 +319,8 @@ def _handle_subscribe(session: WampSession, msg: list):
         realm.sub_index[sub_id] = (session.session_id, topic)
 
     session.send([SUBSCRIBED, request_id, sub_id])
-    logger.debug("Session %d subscribed to '%s' (sub_id=%d)",
-                 session.session_id, topic, sub_id)
+    log.debug("Session %d subscribed to '%s' (sub_id=%d)",
+              session.session_id, topic, sub_id)
 
 
 def _handle_unsubscribe(session: WampSession, msg: list):
@@ -280,7 +348,26 @@ def _handle_publish(session: WampSession, msg: list):
     args = msg[4] if len(msg) > 4 else []
     kwargs = msg[5] if len(msg) > 5 else {}
 
+    # Task #335 J2: correlation-id stamp — reuse wire request_id + authid
+    # (see desktop/log_ctx.py; contract commit ace96769).
+    from desktop.log_ctx import log_ctx
+    log = log_ctx(logger, request_id=request_id, user_id=session.authid)
+
     if not topic:
+        return
+
+    # Per-topic publish authorization — pairs with the subscribe-side gate.
+    # Without this, an authenticated session could PUBLISH to e.g.
+    # com.hertzai.hevolve.chat.<other_user> and inject spoofed chat /
+    # TTS audio URLs into the victim's UI (LAN multi-user mode + any
+    # bug that lets a session keep itself authenticated).
+    if not _authorize_topic_for_authid(topic, session.authid):
+        if options.get('acknowledge'):
+            session.send([ERROR, PUBLISH, request_id, {},
+                          'wamp.error.not_authorized'])
+        log.warning("Session %d (%s): publish to '%s' DENIED "
+                    "(topic-authid mismatch)",
+                    session.session_id, session.authid, topic)
         return
 
     realm = _get_realm(session.realm or 'realm1')
@@ -367,12 +454,19 @@ def _handle_call(session: WampSession, msg: list):
     args = msg[4] if len(msg) > 4 else []
     kwargs = msg[5] if len(msg) > 5 else {}
 
+    # Task #335 J2: correlation-id stamp — reuse wire request_id + authid
+    # (see desktop/log_ctx.py; contract commit ace96769).
+    from desktop.log_ctx import log_ctx
+    log = log_ctx(logger, request_id=request_id, user_id=session.authid)
+
     realm = _get_realm(session.realm or 'realm1')
 
     with realm.lock:
         reg = realm.registrations.get(procedure)
 
     if not reg:
+        log.debug("Session %d (%s): CALL '%s' → no such procedure",
+                  session.session_id, session.authid, procedure)
         session.send([ERROR, CALL, request_id, {},
                       'wamp.error.no_such_procedure'])
         return
@@ -395,7 +489,11 @@ def _handle_call(session: WampSession, msg: list):
                 invocation.append([])
             invocation.append(kwargs)
         callee.send(invocation)
+        log.debug("Session %d (%s): CALL '%s' dispatched (inv_id=%d)",
+                  session.session_id, session.authid, procedure, inv_id)
     else:
+        log.debug("Session %d (%s): CALL '%s' → callee gone",
+                  session.session_id, session.authid, procedure)
         session.send([ERROR, CALL, request_id, {},
                       'wamp.error.no_such_procedure'])
 
@@ -450,8 +548,31 @@ _AUTH_HANDLERS = {
 }
 
 
+_MAX_WAMP_MSG_BYTES = 256 * 1024
+_MAX_WAMP_MSG_PER_SECOND = 100
+
+
 def _dispatch_message(session: WampSession, raw: str):
     """Parse and dispatch a WAMP message from a client."""
+    if len(raw) > _MAX_WAMP_MSG_BYTES:
+        logger.warning("Session %d: message %d bytes exceeds cap; dropped",
+                       session.session_id, len(raw))
+        return
+    # Per-session token bucket — refills at _MAX_WAMP_MSG_PER_SECOND.
+    now = time.monotonic()
+    last = getattr(session, '_rl_last', now)
+    tokens = getattr(session, '_rl_tokens', float(_MAX_WAMP_MSG_PER_SECOND))
+    tokens = min(float(_MAX_WAMP_MSG_PER_SECOND),
+                 tokens + (now - last) * _MAX_WAMP_MSG_PER_SECOND)
+    if tokens < 1.0:
+        logger.warning("Session %d: rate-limit; message dropped",
+                       session.session_id)
+        session._rl_last = now
+        session._rl_tokens = tokens
+        return
+    session._rl_last = now
+    session._rl_tokens = tokens - 1.0
+
     try:
         msg = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
@@ -747,6 +868,21 @@ def start_wamp_router(port: int = 8088, host: str = '127.0.0.1') -> bool:
     # Register with watchdog so silent crashes are detected and auto-restarted
     _register_with_watchdog(port, host)
 
+    # Register stop as an atexit hook so we drain pending asyncio tasks
+    # BEFORE HARTOS's runtime_manager.stop_all (registered at HARTOS import
+    # in integrations/service_tools/runtime_manager.py) tears down its
+    # ThreadPoolExecutor.  atexit is LIFO — wamp_router imports later than
+    # HARTOS, so our handler runs first on interpreter shutdown.  Skipping
+    # this left pending .create_task()'s trying to schedule callbacks on
+    # the shut-down executor and raising
+    # ``RuntimeError: cannot schedule new futures after shutdown`` during
+    # tray-quit on Windows (task #325 / G5).
+    global _atexit_registered
+    if not _atexit_registered:
+        import atexit
+        atexit.register(stop_wamp_router)
+        _atexit_registered = True
+
     return True
 
 
@@ -798,12 +934,64 @@ def _start_heartbeat_thread():
     _heartbeat_thread.start()
 
 
-def stop_wamp_router():
-    """Stop the embedded WAMP router (for clean shutdown)."""
+def stop_wamp_router(drain_timeout_s: float = 3.0):
+    """Stop the embedded WAMP router cleanly.
+
+    Drains pending asyncio tasks with a bounded timeout BEFORE stopping
+    the event loop.  Without the drain, tasks scheduled via
+    `loop.create_task` (chat publish fan-out, tool-call dispatch) keep
+    running and their done-callbacks try to schedule follow-up work on
+    a shut-down ThreadPoolExecutor — producing
+    ``RuntimeError: cannot schedule new futures after shutdown`` when
+    the HARTOS runtime_manager atexit has already torn its executor
+    down (task #325 / G5).
+
+    Idempotent: safe to call even if the router was never started, or
+    called multiple times (atexit + tray-quit + test teardown can all
+    fire).
+    """
     global _started, _event_loop
     _started = False
-    if _event_loop and _event_loop.is_running():
-        _event_loop.call_soon_threadsafe(_event_loop.stop)
+
+    loop = _event_loop
+    if loop is not None and loop.is_running():
+        # Drain in the loop's own thread: cancel every task other than
+        # the drain itself, then gather (with return_exceptions) so
+        # CancelledError doesn't escape.  Uses run_coroutine_threadsafe
+        # because we're being called from the main thread (atexit) or
+        # the watchdog thread, not from inside the loop.
+        async def _drain_tasks():
+            tasks = [t for t in asyncio.all_tasks(loop)
+                     if t is not asyncio.current_task()]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        try:
+            drain_future = asyncio.run_coroutine_threadsafe(
+                _drain_tasks(), loop,
+            )
+            try:
+                drain_future.result(timeout=drain_timeout_s)
+            except TimeoutError:
+                logger.warning(
+                    "WAMP drain exceeded %.1fs; stopping loop with pending "
+                    "tasks (futures-after-shutdown may still fire)",
+                    drain_timeout_s,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("WAMP drain raised: %s", e)
+        except RuntimeError:
+            # Loop already closed between our is_running() check and
+            # run_coroutine_threadsafe — nothing left to drain.
+            pass
+
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except RuntimeError:
+            # Loop closed concurrently; acceptable.
+            pass
 
     # Unregister from watchdog
     try:

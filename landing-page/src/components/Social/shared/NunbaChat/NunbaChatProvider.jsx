@@ -9,13 +9,16 @@ import {NUNBA_CAMERA_CONSENT} from '../../../../constants/events';
 import {useSocial} from '../../../../contexts/SocialContext';
 import useCameraFrameStream from '../../../../hooks/useCameraFrameStream';
 import {useTTS} from '../../../../hooks/useTTS';
-import realtimeService from '../../../../services/realtimeService';
+import realtimeService, {
+  subscribeChatNew,
+} from '../../../../services/realtimeService';
 import {chatApi} from '../../../../services/socialApi';
 import {
   classifyError,
   getBackoff,
   makeMsgId,
 } from '../../../../utils/chatRetry';
+import {getStableDeviceId} from '../../../../utils/deviceId';
 
 import React, {
   createContext,
@@ -922,6 +925,159 @@ export default function NunbaChatProvider({children}) {
       realtimeService.off('tts', handleTTSPush);
     };
   }, [tts]);
+
+  // ── Cross-device sync (U5) ─────────────────────────────────────────
+  //
+  // No-parallel-paths invariant:
+  //   * Local-device messages are written by sendMessage's optimistic
+  //     setMessages (line ~738) and /chat-response setMessages (line
+  //     ~795).  Those two stay as the sole writer for THIS device's
+  //     turns.
+  //   * Remote-device messages are written EXCLUSIVELY by
+  //     `handleRemoteMessage` below; both the chat.new live path AND
+  //     the cloud-pull backfill funnel into this single writer.
+  //
+  // The filter is `event.device_id === local_device_id` → drop.  The
+  // server publishes chat.new for every persisted turn regardless of
+  // origin, so this device's own turns echo back on WAMP shortly after
+  // /chat returns; without the filter we'd double-render every local
+  // turn.  msg_id dedup inside setMessages is defense in depth:
+  // catches re-deliveries (worker reconnect; backfill racing live).
+
+  // Single writer for remote-origin messages.  SRP: filter by
+  // device_id, validate shape, dedup by msg_id, append.  Both the
+  // live chat.new useEffect and the cloud-pull useEffect dispatch
+  // every remote message through this callback.
+  const handleRemoteMessage = useCallback((event, localDeviceId) => {
+    if (!event || typeof event !== 'object') return;
+    if (localDeviceId && event.device_id === localDeviceId) return;
+    const msgId = event.msg_id;
+    const role = event.role;
+    const content = event.content;
+    if (!msgId || !role || typeof content !== 'string') return;
+    const ts = event.created_at
+      ? Date.parse(event.created_at) || Date.now()
+      : Date.now();
+    setMessages((prev) => {
+      if (prev.some((m) => m.messageId === msgId)) return prev;
+      return [
+        ...prev,
+        {
+          role,
+          text: content,
+          ts,
+          messageId: msgId,
+          status: 'synced',
+          sourceDevice: event.device_id || 'remote',
+        },
+      ];
+    });
+  }, []);
+
+  // Live realtime: subscribe to chat.new WAMP topic.  Fail-safe if
+  // local device id can't resolve — msg_id-only dedup would be
+  // insufficient (frontend `messageId` from chatRetry.makeMsgId and
+  // server `msg_id` ULID are different id schemes; they never
+  // overlap, so without device_id filter every local turn double-
+  // renders).  Refusing to subscribe is strictly better.
+  useEffect(() => {
+    if (!userId) return undefined;
+    let mounted = true;
+    let unsub = null;
+    (async () => {
+      let localDeviceId = null;
+      try {
+        localDeviceId = await getStableDeviceId();
+      } catch (err) {
+        console.warn('chat.new: getStableDeviceId failed:', err);
+      }
+      if (!mounted || !localDeviceId) {
+        if (mounted) {
+          console.warn(
+            'chat.new: skipping subscription — no local device id ' +
+            '(cross-device sync degraded; local /chat path still works).',
+          );
+        }
+        return;
+      }
+      unsub = subscribeChatNew((event) => {
+        handleRemoteMessage(event, localDeviceId);
+      });
+    })();
+    return () => {
+      mounted = false;
+      if (unsub) unsub();
+    };
+  }, [userId, handleRemoteMessage]);
+
+  // Bootstrap backfill: GET /api/chat-sync/pull-since on login (and
+  // when userId changes — e.g., guest → registered).  Pulls every
+  // ConversationEntry row > last-seen-cursor, feeds each through
+  // handleRemoteMessage (so device_id filter + msg_id dedup apply
+  // identically to live events).  Cursor persisted in localStorage
+  // so a re-login skips already-mirrored history.
+  useEffect(() => {
+    if (!userId) return undefined;
+    let cancelled = false;
+    (async () => {
+      let localDeviceId = null;
+      try {
+        localDeviceId = await getStableDeviceId();
+      } catch (err) {
+        console.warn('chat-sync pull: getStableDeviceId failed:', err);
+      }
+      if (cancelled || !localDeviceId) return;
+      const cursorKey = `nunba_chat_sync_cursor_${userId}`;
+      let cursor = 0;
+      try {
+        const stored = localStorage.getItem(cursorKey);
+        if (stored) cursor = parseInt(stored, 10) || 0;
+      } catch (err) {
+        // localStorage disabled — start from 0
+      }
+      try {
+        const res = await fetch(
+          `/api/chat-sync/pull-since?since=${cursor}&limit=500`,
+          {
+            method: 'GET',
+            credentials: 'include',
+            headers: {'Content-Type': 'application/json'},
+          },
+        );
+        if (!res.ok) {
+          if (res.status !== 501) {
+            console.warn('chat-sync pull-since non-OK:', res.status);
+          }
+          return;
+        }
+        const body = await res.json();
+        if (cancelled) return;
+        const messages = Array.isArray(body.messages) ? body.messages : [];
+        const nextCursor =
+          typeof body.next_cursor === 'number' ? body.next_cursor : cursor;
+        // Sort chronologically before append so the message-list
+        // ordering matches when-it-happened, not when-it-arrived.
+        messages
+          .slice()
+          .sort((a, b) => {
+            const ta = a.created_at ? Date.parse(a.created_at) : 0;
+            const tb = b.created_at ? Date.parse(b.created_at) : 0;
+            return ta - tb;
+          })
+          .forEach((m) => handleRemoteMessage(m, localDeviceId));
+        try {
+          localStorage.setItem(cursorKey, String(nextCursor));
+        } catch (err) {
+          // ignore
+        }
+      } catch (err) {
+        console.warn('chat-sync pull-since error:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, handleRemoteMessage]);
 
   const clearMessages = useCallback(() => {
     const agentKey = currentAgent?.prompt_id || 'default';

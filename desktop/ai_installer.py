@@ -238,6 +238,33 @@ class AIInstaller:
                         if not success:
                             logger.warning("Vision projector download failed (vision may not work)")
 
+                # Qwen3.5-0.8B caption / draft model — dedicated llama-server
+                # on port 8081 used by VisionService (live frame captioning,
+                # 1s/frame) and as the speculative draft for the main 4B.
+                # Non-fatal: if this fails, vision falls back to MiniCPM /
+                # mobilevlm / clip via lightweight_backend; draft-first chat
+                # just uses the main 4B standalone.
+                try:
+                    _qwen08b_file = 'Qwen3.5-0.8B-UD-Q4_K_XL.gguf'
+                    _qwen08b_mmproj = 'mmproj-Qwen3.5-0.8B-F16.gguf'
+                    _qwen08b_repo = 'unsloth/Qwen3.5-0.8B-GGUF'
+                    _qwen08b_path = self.models_dir / _qwen08b_file
+                    if _qwen08b_path.exists() and not force_reinstall:
+                        self._report_progress(
+                            "Qwen3.5-0.8B (vision + draft) already present", 83)
+                    else:
+                        self._report_progress(
+                            "Downloading Qwen3.5-0.8B (vision + draft, ~750MB)...", 83)
+                        ok = installer.download_model(_qwen08b_repo, _qwen08b_file)
+                        if ok:
+                            installer.download_model(_qwen08b_repo, _qwen08b_mmproj)
+                        else:
+                            logger.warning(
+                                "Qwen3.5-0.8B download failed — vision will fall "
+                                "back to MiniCPM; draft-first chat will use 4B only")
+                except Exception as _qe:
+                    logger.warning(f"Qwen3.5-0.8B step non-fatal error: {_qe}")
+
             self._report_progress("Llama.cpp installation complete", 85)
             return True, "Llama.cpp and model installed successfully"
 

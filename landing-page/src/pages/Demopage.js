@@ -22,6 +22,7 @@ import {
   ChevronLeft,
 } from 'lucide-react';
 import { BOOK_PARSING_URL, UPLOAD_FILE_URL, UPLOAD_NATIVE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL } from '../config/apiBase';
+import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -53,6 +54,11 @@ import realtimeService from '../services/realtimeService';
 
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
+
+// ── Local engine readiness — gates messageQueue while local LLM is booting.
+//    Returns true in steady-state and on health-endpoint failure (optimistic),
+//    so existing send behavior is unchanged when there is no boot to wait on.
+import {useLocalEngineReady} from '../hooks/useLocalEngineReady';
 
 // ── Extracted sub-components ──
 import GpuTierBadge from '../components/chat/GpuTierBadge';
@@ -117,9 +123,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // still fires inside handleSend for every real request, which is what
   // ChatInputBar's send-button disabled state now keys on.
   const [loading, setLoading] = useState(false);
-  const [messageQueue, setMessageQueue] = useState([]); // Queue for messages sent while loading
+  const [messageQueue, setMessageQueue] = useState([]); // Queue for messages sent while loading or while local engine is booting
   const lastMessageSentAtRef = useRef(0); // Timestamp of last sent message
   const [editingQueueId, setEditingQueueId] = useState(null); // Track which queue item is being edited
+  // Local-engine readiness gate.  Defaults true (optimistic) — only flips
+  // false when /api/llm/status reports `available:false`.  Once true,
+  // sticky-true for the session.  See hooks/useLocalEngineReady.js for
+  // the zero-regression contract.
+  const engineReady = useLocalEngineReady();
   const [requestId, setRequestId] = useState(null);
   const requestIdRef = useRef(null);
   // Keep ref in sync — handleDataReceived (useCallback) reads the ref to filter
@@ -206,6 +217,25 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // Keep refs in sync for unmount cleanup (avoids stale closure)
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { currentAgentRef.current = currentAgent; }, [currentAgent]);
+
+  // Backfill timestamp on any message added without one — every
+  // setMessages call site (user send, assistant reply, system phase
+  // events, restored history, orphan recovery, …) flows through this
+  // single normalizer so the rendered chat shows consistent times
+  // (ChatMessageList:486 conditionally renders message.timestamp).
+  // Same value is persisted by saveMessagesToStorage so timestamps
+  // survive navigation + reload.  Idempotent: subsequent renders see
+  // every message timestamped, condition is false, no-op.  Latency:
+  // single re-render pass (~ms) — backfill time tracks creation time
+  // closely enough for chat UX.
+  useEffect(() => {
+    if (messages.some((m) => !m.timestamp)) {
+      const now = new Date().toISOString();
+      setMessages((prev) => prev.map((m) =>
+        m.timestamp ? m : { ...m, timestamp: now }
+      ));
+    }
+  }, [messages]);
 
   // Backend health check on mount — fast poll (3s) until healthy, then slow (30s)
   useEffect(() => {
@@ -444,7 +474,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         const contText = contData.text || contData.response;
 
         if (contText) {
-          setMessages((prev) => [...prev, { type: 'assistant', content: contText }]);
+          setMessages((prev) => [...prev, {
+            type: 'assistant',
+            content: contText,
+            source: contData.source,
+            servedBy: contData.served_by,
+            nodeTier: contData.node_tier,
+          }]);
           setShouldScroll(true);
         }
 
@@ -488,7 +524,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   const execData = execResult || {};
                   const execText = execData.text || execData.response;
                   if (execText) {
-                    setMessages((prev) => [...prev, { type: 'assistant', content: execText }]);
+                    setMessages((prev) => [...prev, {
+                      type: 'assistant',
+                      content: execText,
+                      source: execData.source,
+                      servedBy: execData.served_by,
+                      nodeTier: execData.node_tier,
+                    }]);
                     setShouldScroll(true);
                   }
                   // Clean up autonomous state
@@ -528,8 +570,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   }, [autoContinueFlag]);
 
   // ── Message queue: auto-send next queued message when loading finishes ──
+  // Also fires when engineReady transitions true→ (i.e., when a local-engine
+  // boot completes), so messages typed during boot autopush exactly the same
+  // way as messages typed during a previous in-flight request.
   useEffect(() => {
-    if (!loading && messageQueue.length > 0) {
+    if (!loading && engineReady && messageQueue.length > 0) {
       const [next, ...rest] = messageQueue;
       setMessageQueue(rest);
       // Directly set inputMessage and call handleSend via ref on next tick
@@ -538,7 +583,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         if (handleSendRef.current) handleSendRef.current();
       }, 50);
     }
-  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loading, engineReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Safety: flush stuck queue items after 10s if loading is still true ──
   useEffect(() => {
@@ -833,9 +878,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               allAgents.find(a => a.type === 'local' && !a.create_agent) ||
               allAgents[0];
             setCurrentAgent(defaultAgent);
+            // Persist the chosen default so reload picks the same agent + use
+            // prompt_id||id fallback (built-in agents like local_assistant
+            // only have a string id).  Also load any prior conversation for
+            // THIS agent from localStorage so the user doesn't see an empty
+            // chat (whatsapp/teams expectation: navigation back shows last
+            // conversation, not a clean slate).  Both writes combined here.
             const _defaultId = defaultAgent.prompt_id || defaultAgent.id;
             if (_defaultId) {
               localStorage.setItem('active_agent_id', String(_defaultId));
+              const savedMessages = loadMessagesFromStorage(_defaultId);
+              if (savedMessages.length > 0) setMessages(savedMessages);
             }
           }
         }
@@ -1406,6 +1459,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               content: extractedText,
               isDraft: false,
               source: parsed.source || 'expert',
+              servedBy: parsed.served_by,
+              nodeTier: parsed.node_tier,
             };
             return updated;
           }
@@ -1414,6 +1469,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             type: 'assistant',
             content: extractedText,
             source: parsed.source || 'expert',
+            servedBy: parsed.served_by,
+            nodeTier: parsed.node_tier,
           }];
         });
         setShouldScroll(true);
@@ -1645,6 +1702,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             type: 'assistant',
             content: extractedText,
             source: parsed.source || 'cloud',
+            servedBy: parsed.served_by,
+            nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
             const newMessages = [...prev, assistantMessage];
@@ -1671,6 +1730,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           type: 'assistant',
           content: extractedText,
           source: parsed.source || 'cloud',
+          servedBy: parsed.served_by,
+          nodeTier: parsed.node_tier,
         };
 
         setMessages((prev) => {
@@ -1714,6 +1775,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           const assistantMessage = {
             type: 'assistant',
             content: textToShow,
+            source: parsed.source,
+            servedBy: parsed.served_by,
+            nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
             const newMessages = [...prev, assistantMessage];
@@ -1902,11 +1966,28 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             requestId
           );
           // Local-first: connect to embedded WAMP router (port 8088)
-          // when Flask backend is on localhost, otherwise use cloud router.
-          const isLocalBackend = window.location.hostname === 'localhost' ||
-            window.location.hostname === '127.0.0.1' ||
-            window.location.hostname === '0.0.0.0';
-          const wsUri = isLocalBackend ? WAMP_LOCAL_URL : WAMP_CLOUD_URL;
+          // when Flask backend is on the same machine OR on the LAN.
+          // Recognises localhost, RFC1918 private IPs, .local mDNS hosts,
+          // and link-local addresses — see utils/backendHost.js.
+          //
+          // Privacy invariant: a phone visiting Nunba on a desktop's LAN
+          // IP must connect to the LAN crossbar, not the public cloud
+          // crossbar.  Before this fix, only literal localhost matched
+          // and every cross-device LAN client silently shipped social
+          // events through wss://aws_rasa.hertzai.com.
+          //
+          // localWampUrl rewrites the bundled WAMP_LOCAL_URL to point
+          // at the SAME host the SPA was served from (port 8088), so
+          // LAN clients reach the desktop's embedded router instead of
+          // their own loopback.
+          const hostname = window.location.hostname;
+          const isLocalBackend = isLocalBackendHost(hostname);
+          // Env-override (REACT_APP_WAMP_URL via WAMP_LOCAL_URL) wins
+          // over auto-detection — preserves the manual escape hatch
+          // for power users / CI / sandbox configurations.
+          const envOverride = process.env.REACT_APP_WAMP_URL ? WAMP_LOCAL_URL : null;
+          const wsUri = envOverride
+            || (isLocalBackend ? localWampUrl(hostname) : WAMP_CLOUD_URL);
           crossbarWorker.postMessage({
             type: 'INIT',
             payload: {
@@ -3105,19 +3186,25 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     logger.log(isPersonalisedEndpoint, 'isPersonalisedEndpoint');
 
     if (!inputMessage.trim() && !fileUrl && !userImage) return;
-    // Queue message ONLY if there's an active user-initiated request AND it's
-    // been less than 10s since that message.  Require a real prior send
-    // (lastMessageSentAtRef > 0) so the initial `loading=true` state — which
-    // covers onboarding/prompt-fetch/auth phases, not an actual chat in
-    // flight — can't trap the user's first click in the queue.  Any implicit
-    // send (STT auto-submit, onboarding handshake) that set `loading` without
-    // recording a user message will not match this guard, so the user's first
-    // real click proceeds normally.
+    // Queue message when EITHER:
+    //   (a) An active user-initiated request is in flight (loading) AND it's
+    //       been less than 10s since that send.  Require a real prior send
+    //       (lastMessageSentAtRef > 0) so the initial `loading=true` state —
+    //       which covers onboarding/prompt-fetch/auth phases, not an actual
+    //       chat in flight — can't trap the user's first click in the queue.
+    //       Implicit sends (STT auto-submit, onboarding handshake) that set
+    //       `loading` without recording a user message won't match this guard
+    //       and the user's first real click proceeds normally; OR
+    //   (b) The local engine is still booting (engineReady=false).
+    //       engineReady defaults to true and is sticky-true once observed
+    //       ready, so steady-state behavior is identical to the pre-
+    //       engineReady gate.  The boot-time branch ignores the 10s throttle
+    //       window — during boot there is no "previous request" to wait on;
+    //       messages should buffer for the entire boot, not just 10s.
     const timeSinceLastMsg = Date.now() - lastMessageSentAtRef.current;
     if (
-      loading &&
-      lastMessageSentAtRef.current > 0 &&
-      timeSinceLastMsg < 10000
+      (loading && lastMessageSentAtRef.current > 0 && timeSinceLastMsg < 10000)
+      || !engineReady
     ) {
       setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
       setInputMessage('');
@@ -3244,15 +3331,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           try {
             setIsRequestInFlight(true);
             updateMessageStatus(msgId, { status: 'sending', error: null });
+            // Orphan agents are display-only ghosts (Demopage.js:806-824)
+            // synthesised when localStorage has chat history for an
+            // agent the backend no longer knows about.  We render their
+            // history but new messages must route through the default
+            // local agent — the chat backend rejects `agent_type='orphan'`
+            // with 400 ("Unknown agent type: orphan", chatbot_routes.py:2822).
+            const _isOrphan = currentAgent?.type === 'orphan' || currentAgent?._isOrphan;
+            const _agentTypeForBackend = _isOrphan ? 'local' : (currentAgent?.type || 'local');
+            const _agentIdForBackend = _isOrphan
+              ? 'local_assistant'
+              : (currentAgent?.id || currentAgent?.prompt_id || 'local_assistant');
+            // Orphan ghosts also drop their stale prompt_id so the
+            // backend's "is this a real custom agent?" check
+            // (chatbot_routes.py:2427-2439) doesn't try to read a
+            // non-existent prompt file at PROMPTS_DIR/{prompt_id}.json.
+            const _promptIdForBackend = _isOrphan ? 0 : (currentAgent?.prompt_id ?? 0);
             const localResult = await chatApi.chat({
               text: inputMessage,
               user_id: effectiveUserId,
               request_id: generatedRequestId,
-              agent_id: currentAgent?.id || currentAgent?.prompt_id || 'local_assistant',
-              agent_type: currentAgent?.type || 'local',
+              agent_id: _agentIdForBackend,
+              agent_type: _agentTypeForBackend,
               conversation_id: conversationId,
               media_mode: mediaMode || 'audio',
-              prompt_id: currentAgent?.prompt_id ?? 0,
+              prompt_id: _promptIdForBackend,
               create_agent: currentAgent?.create_agent || false,
               autonomous_creation: currentAgent?.autonomous_creation || false,
               image_url: userImage || null,
@@ -3395,6 +3498,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 type: 'assistant',
                 content: responseText,
                 source: resultData.source || 'langchain_local',
+                // Privacy-first: surface where the bytes were served
+                // from so ChatMessageList can render the tier badge
+                // (on-device / LAN / cloud).  Server defaults at
+                // routes/chatbot_routes.py:2693.
+                servedBy: resultData.served_by,
+                nodeTier: resultData.node_tier,
                 timestamp: new Date(),
                 // Draft-first: tag with speculationId so the expert
                 // response arriving via WAMP can replace this bubble
@@ -3641,6 +3750,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           type: 'assistant',
           content: responseText,
           source: resultData.source || null,
+          servedBy: resultData.served_by,
+          nodeTier: resultData.node_tier,
         }]);
       }
       // Track agent status from execution response
@@ -4617,24 +4728,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
       {/* ── Top-right toolbar: hidden when embedded in AgentChatPage ── */}
       {!embeddedMode && <div className="absolute top-1 right-2 z-50 flex items-center gap-1.5 flex-wrap justify-end">
-        {/* Install / Launch companion (desktop only) */}
-        {screenWidth >= 768 && !companionStatus.isInstalled && !isLocalRoute && (
-          <a
-            href="https://azurekong.hertzai.com/mkt-aws/examples/daf7beee-7HevolveAI_Agent_Companion_Setup_2.exe"
-            download
-            className="bg-gradient-to-r from-blue-500 to-green-500 text-white border border-gray-600 rounded-lg px-2 py-1 text-xs hover:brightness-110 transition-all inline-block text-center whitespace-nowrap"
-          >
-            Install Companion
-          </a>
-        )}
-        {screenWidth >= 768 && companionStatus.isInstalled && !companionStatus.isRunning && !isLocalRoute && (
-          <a
-            href="hevolveai://launch?action=show"
-            className="bg-gradient-to-r from-green-500 to-blue-500 text-white border border-gray-600 rounded-lg px-2 py-1 text-xs hover:brightness-110 transition-all inline-block text-center whitespace-nowrap"
-          >
-            Launch Companion
-          </a>
-        )}
+        {/* Install / Launch Companion buttons removed 2026-04-28:
+            Nunba IS the companion app — pointing users to a separate
+            "HevolveAI Agent Companion .exe" or `hevolveai://` launcher
+            from inside Nunba (or from cloud Hevolve, which now points
+            people at Nunba directly) is misleading.  Cloud-side desktop
+            app discovery now flows through the Nunba downloads page. */}
 
         {/* Intelligence preference toggle + backend health */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -4668,7 +4767,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                     : 'text-gray-400 hover:text-gray-200'
                 }`}
               >
-                {mode === 'local_only' ? 'Local' : mode === 'auto' ? 'Auto' : 'Hive'}
+                {mode === 'local_only' ? 'Local' : mode === 'auto' ? 'Hybrid' : 'Hive'}
               </button>
             ))}
           </div>

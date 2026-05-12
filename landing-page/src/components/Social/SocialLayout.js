@@ -28,6 +28,7 @@ import ScienceIcon from '@mui/icons-material/Science';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import BackupIcon from '@mui/icons-material/Backup';
 import PaletteIcon from '@mui/icons-material/Palette';
+import PrivacyTipIcon from '@mui/icons-material/PrivacyTip';
 import AutoModeIcon from '@mui/icons-material/AutoMode';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import MemoryIcon from '@mui/icons-material/Memory';
@@ -45,6 +46,7 @@ import FlagIcon from '@mui/icons-material/Flag';
 import GroupIcon from '@mui/icons-material/Group';
 import HomeIcon from '@mui/icons-material/Home';
 import NotificationsIcon from '@mui/icons-material/Notifications';
+import InboxIcon from '@mui/icons-material/Inbox';
 import PublicIcon from '@mui/icons-material/Public';
 import SearchIcon from '@mui/icons-material/Search';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
@@ -222,6 +224,12 @@ const navGroups = [
         path: '/social/settings/appearance',
         icon: <PaletteIcon />,
         minRole: 'guest',
+      },
+      {
+        label: 'Privacy',
+        path: '/social/settings/privacy',
+        icon: <PrivacyTipIcon />,
+        minRole: 'flat',
       },
     ],
   },
@@ -564,6 +572,19 @@ export default function SocialLayout({children}) {
               </ListItemIcon>
               <ListItemText
                 primary="Notifications"
+                primaryTypographyProps={{fontSize: '0.85rem'}}
+              />
+            </ListItemButton>
+            <ListItemButton
+              selected={location.pathname === '/social/inbox'}
+              onClick={() => navigate('/social/inbox')}
+              sx={{borderRadius: RADIUS.sm, mx: 0.5, my: 0.2}}
+            >
+              <ListItemIcon sx={{minWidth: 36}}>
+                <InboxIcon />
+              </ListItemIcon>
+              <ListItemText
+                primary="Inbox"
                 primaryTypographyProps={{fontSize: '0.85rem'}}
               />
             </ListItemButton>

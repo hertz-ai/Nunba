@@ -41,7 +41,63 @@ BACKEND_INDIC_PARLER = "indic_parler"
 BACKEND_COSYVOICE3 = "cosyvoice3"
 BACKEND_KOKORO = "kokoro"
 BACKEND_PIPER = "piper"
+# Mid-VRAM coverage tier (1–3 GB) — added 2026-04-29 to fill the
+# 38-language coverage gap below the 4–14 GB heavy clone engines.
+# Each maps via _BACKEND_TO_REGISTRY_KEY to a HARTOS engine spec.
+BACKEND_MELOTTS = "melotts"
+BACKEND_XTTS_V2 = "xtts_v2"
+BACKEND_MMS_TTS = "mms_tts"
+# NeuTTS Air (Neuphonic) — Apache-2.0, 748M Qwen2-backbone GGUF, RTF<0.5
+# on CPU, 24kHz, instant voice cloning from 3-15s reference audio.  Slots
+# between F5-TTS / Chatterbox-Turbo (heavy GPU clones) and Kokoro / MMS
+# (light tier) on the English ladder — added 2026-05-08.  Routed into
+# its own venv because `neutts[all]` pulls llama-cpp-python whose pins
+# can drift from the main interpreter (same pattern as chatterbox_turbo
+# and indic_parler).
+BACKEND_NEUTTS_AIR = "neutts_air"
 BACKEND_NONE = "none"
+
+# ════════════════════════════════════════════════════════════════════
+# Persisted-demotion state (negative-finding cache)
+# ════════════════════════════════════════════════════════════════════
+# Without this cache, a deterministically-broken top-of-ladder engine
+# (e.g. chatterbox_turbo with corrupt weights, OOM under sustained VRAM
+# pressure) is re-tried 3 times every boot before in-session demotion
+# kicks in. Persisting demotions across reboots eliminates the wasted
+# 3-failure cost. The cache is purely SUBTRACTIVE: selection still
+# walks the quality-ordered ladder top-down in
+# `_select_backend_for_language`; demotion just removes a candidate
+# from contention. A NEWLY-installed top engine is therefore picked up
+# automatically on the next boot because it has no demotion record.
+#
+# Self-healing: a demotion auto-expires after `_DEMOTION_TTL_SECONDS`,
+# is wiped on schema mismatch (covers Nunba ladder updates that may
+# have moved the engine to a different rung), and can be cleared by
+# the admin endpoint or the hub-install hook (so reinstalling a
+# previously-demoted engine gives it a fresh chance).
+_TTS_STATE_SCHEMA = 1
+_DEMOTION_TTL_SECONDS = 7 * 86400
+
+
+def _get_tts_state_path() -> str:
+    """Return the canonical path to the persisted TTS state file.
+
+    Uses ``core.platform_paths.get_db_dir`` (the same resolver that
+    owns ``hart_language.json``) so the file lives next to the other
+    user-state JSON blobs and respects ``NUNBA_DATA_DIR`` /
+    ``HARTOS_DATA_DIR`` overrides. Falls back to the literal
+    `~/Documents/Nunba/data/` only if the resolver isn't importable
+    (degraded-mode dev environment); the production path resolves
+    through the helper.
+    """
+    try:
+        from core.platform_paths import get_db_dir
+        return os.path.join(get_db_dir(), 'tts_state.json')
+    except Exception:
+        return os.path.join(
+            os.path.expanduser('~'), 'Documents', 'Nunba',
+            'data', 'tts_state.json',
+        )
 
 # ════════════════════════════════════════════════════════════════════
 # Global TTS tempo knob. Default is "balanced" per the project
@@ -220,6 +276,23 @@ _FALLBACK_ENGINE_CAPABILITIES = {
         'sample_rate': 24000,
         'quality': 'high',
     },
+    BACKEND_NEUTTS_AIR: {
+        # NeuTTS Air (Neuphonic) — 748M Qwen2-backbone, Q4 GGUF ~600MB,
+        # Apache-2.0.  RTF<0.5 on CPU (Intel i5 / RPi 5), 24kHz output.
+        # Voice cloning from 3-15s reference audio (no zero-config
+        # default voice — uses upstream 'jo' sample).  Slots between
+        # F5-TTS / Chatterbox-Turbo (heavy clone) and Kokoro / Piper
+        # (light tier) on the English ladder.
+        'name': 'NeuTTS Air (Neuphonic)',
+        'vram_gb': 0.4,                 # CPU-friendly; GPU optional
+        'languages': {'en'},
+        'paralinguistic': [],
+        'emotion_tags': [],
+        'voice_cloning': True,
+        'streaming': False,
+        'sample_rate': 24000,
+        'quality': 'high',
+    },
     BACKEND_PIPER: {
         'name': 'Piper TTS (CPU)',
         'vram_gb': 0,
@@ -229,6 +302,66 @@ _FALLBACK_ENGINE_CAPABILITIES = {
         'voice_cloning': False,
         'streaming': False,
         'sample_rate': 22050,
+        'quality': 'medium',
+    },
+    # ── Mid-VRAM coverage tier (1–3 GB) ─────────────────────────
+    # These three engines fill the gap so every SUPPORTED_LANG_DICT
+    # code has at least one engine with vram_gb≤3.0 in its
+    # _FALLBACK_LANG_ENGINE_PREFERENCE ladder.  Capabilities mirror
+    # the canonical HARTOS ENGINE_REGISTRY (single source of truth
+    # at runtime via _get_engine_capabilities → ModelCatalog).
+    BACKEND_MELOTTS: {
+        'name': 'MeloTTS (myshell-ai)',
+        'vram_gb': 1.5,
+        'languages': {'en', 'es', 'fr', 'zh', 'ja', 'ko'},
+        'paralinguistic': [],
+        'emotion_tags': [],
+        'voice_cloning': False,
+        'streaming': False,
+        'sample_rate': 24000,
+        'quality': 'high',
+    },
+    BACKEND_XTTS_V2: {
+        'name': 'XTTS-v2 (Coqui)',
+        'vram_gb': 2.5,
+        'languages': {
+            'en', 'es', 'fr', 'de', 'it', 'pt', 'pl', 'tr', 'ru', 'nl',
+            'cs', 'ar', 'zh', 'hu', 'ko', 'ja', 'hi',
+        },
+        'paralinguistic': [],
+        'emotion_tags': [],
+        'voice_cloning': True,
+        'streaming': False,
+        'sample_rate': 24000,
+        'quality': 'high',
+    },
+    BACKEND_MMS_TTS: {
+        'name': 'MMS-TTS (Meta VITS)',
+        'vram_gb': 1.0,
+        'languages': {
+            # Roman-script + non-Roman (with uroman) — same set as the
+            # HARTOS spec.  Keeping symmetry with that registry; if the
+            # catalog isn't loaded yet, fallback selection still routes
+            # to mms_tts as the universal coverage engine.
+            'en', 'es', 'fr', 'de', 'it', 'pt', 'pl', 'tr', 'ru', 'nl',
+            'cs', 'hu', 'sv', 'fi', 'el', 'ro', 'bg', 'uk', 'cy', 'is',
+            'zh', 'ja', 'ko', 'vi', 'th', 'id', 'ms', 'km', 'lo', 'my',
+            'hi', 'bn', 'ta', 'te', 'mr', 'gu', 'kn', 'ml', 'pa', 'or',
+            'ne', 'as', 'sd', 'sa', 'ur', 'si',
+            'ar', 'fa', 'he', 'sw',
+            # Additional codes in core.constants.SUPPORTED_LANG_DICT.
+            # MMS-TTS upstream ships per-language VITS checkpoints for
+            # 1100+ langs (Pratap et al., Meta, 2023); these are within
+            # that catalogue and supported by the mms_tts_tool wrapper.
+            'lv',  # Latvian
+            'sr',  # Serbian
+            'ks',  # Kashmiri
+        },
+        'paralinguistic': [],
+        'emotion_tags': [],
+        'voice_cloning': False,
+        'streaming': False,
+        'sample_rate': 16000,
         'quality': 'medium',
     },
 }
@@ -262,31 +395,65 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
     'en': frozenset({
         BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_CHATTERBOX_ML,
         BACKEND_INDIC_PARLER, BACKEND_COSYVOICE3, BACKEND_KOKORO, BACKEND_PIPER,
+        BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS,
+        BACKEND_NEUTTS_AIR,
     }),
-    # European / CJK — CosyVoice3 + Chatterbox ML
-    'es': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'fr': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'de': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'it': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'ja': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'ko': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'zh': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    'ru': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML}),
-    # Extra Chatterbox-ML-only European langs
-    'pt': frozenset({BACKEND_CHATTERBOX_ML}),
-    'nl': frozenset({BACKEND_CHATTERBOX_ML}),
-    'pl': frozenset({BACKEND_CHATTERBOX_ML}),
-    'sv': frozenset({BACKEND_CHATTERBOX_ML}),
+    # European / CJK — CosyVoice3 + Chatterbox ML + new mid-VRAM tier
+    'es': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'fr': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'de': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'it': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'ja': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'ko': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'zh': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_F5, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'ru': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    # Extra Chatterbox-ML-only European langs — now augmented with
+    # XTTS-v2 (where supported) + MMS-TTS as universal 1 GB tier.
+    'pt': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'nl': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'pl': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'sv': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
     'da': frozenset({BACKEND_CHATTERBOX_ML}),
-    'fi': frozenset({BACKEND_CHATTERBOX_ML}),
-    'hu': frozenset({BACKEND_CHATTERBOX_ML}),
-    'el': frozenset({BACKEND_CHATTERBOX_ML}),
-    'tr': frozenset({BACKEND_CHATTERBOX_ML}),
-    'cs': frozenset({BACKEND_CHATTERBOX_ML}),
-    'ro': frozenset({BACKEND_CHATTERBOX_ML}),
-    'bg': frozenset({BACKEND_CHATTERBOX_ML}),
+    'fi': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'hu': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'el': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'tr': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'cs': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'ro': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'bg': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
     'hr': frozenset({BACKEND_CHATTERBOX_ML}),
     'sk': frozenset({BACKEND_CHATTERBOX_ML}),
+    # New SUPPORTED_LANG_DICT codes — mid-VRAM coverage tier
+    'ar': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'fa': frozenset({BACKEND_MMS_TTS}),
+    'he': frozenset({BACKEND_MMS_TTS}),
+    'sw': frozenset({BACKEND_MMS_TTS}),
+    'uk': frozenset({BACKEND_MMS_TTS}),
+    'cy': frozenset({BACKEND_MMS_TTS}),
+    'is': frozenset({BACKEND_MMS_TTS}),
+    'id': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'ms': frozenset({BACKEND_MMS_TTS}),
+    'th': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'vi': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'km': frozenset({BACKEND_MMS_TTS}),
+    'lo': frozenset({BACKEND_MMS_TTS}),
+    'my': frozenset({BACKEND_MMS_TTS}),
+    'lv': frozenset({BACKEND_MMS_TTS}),
+    'sr': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
+    'ks': frozenset({BACKEND_MMS_TTS}),
+    # Indian English — exact-code key so en-IN routes through Indic
+    # Parler (which speaks English with Indian phonemes) before the
+    # generic 'en' Chatterbox-Turbo ladder.  Includes every backend
+    # that can speak plain 'en' as a safety floor.
+    'en-IN': frozenset({
+        BACKEND_INDIC_PARLER, BACKEND_MMS_TTS, BACKEND_XTTS_V2,
+        BACKEND_MELOTTS, BACKEND_F5, BACKEND_CHATTERBOX_TURBO,
+        BACKEND_CHATTERBOX_ML, BACKEND_KOKORO, BACKEND_PIPER,
+        BACKEND_NEUTTS_AIR,
+    }),
+    # 'zh-cn' / 'zh_TW' / 'zh-Hans' all collapse to 'zh' via
+    # _normalize_lang() before this lookup runs (see _capable_backends_for).
+    # No separate entry needed — Chinese variants reuse the 'zh' allowlist.
 }
 # Indic langs — prefer Indic Parler (authoritative 21 Indic langs)
 # but keep Chatterbox ML as a LOCAL fallback so a broken Indic Parler
@@ -298,10 +465,18 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
 # Chatterbox ML is locally installed for every user who has any other
 # non-Latin lang, so the fallback has material coverage on most boxes.
 for _lang in _INDIC_LANGS:
+    # Indic Parler + Chatterbox ML stay as the heavy GPU options.
+    # MMS-TTS adds a 1 GB-tier universal Indic fallback so users on
+    # tight VRAM (< 4 GB) still get audio without falling all the way
+    # to Piper (which has no Indic voice files).  XTTS-v2 only ships
+    # 'hi' among Indic, added explicitly in the per-lang map below.
     _LANG_CAPABLE_BACKENDS[_lang] = frozenset({
         BACKEND_INDIC_PARLER,
         BACKEND_CHATTERBOX_ML,
+        BACKEND_MMS_TTS,
     })
+# XTTS-v2 only adds Hindi among Indic — extend explicitly.
+_LANG_CAPABLE_BACKENDS['hi'] = _LANG_CAPABLE_BACKENDS['hi'] | frozenset({BACKEND_XTTS_V2})
 
 # ── Piper capability registration ───────────────────────────────────
 # Piper is the portable CPU-only backend that works identically on
@@ -368,48 +543,103 @@ def _publish_lang_unsupported(lang: str, attempted: list[str]) -> None:
 # _get_lang_preference().  Direct use of this dict is degraded-mode only.
 _FALLBACK_LANG_ENGINE_PREFERENCE = {
     # English ladder (quality first, then CPU-friendly):
-    # 1. Chatterbox Turbo — big GPU, paralinguistic tags, voice clone
-    # 2. F5-TTS           — big GPU, voice clone
-    # 3. Indic Parler     — big GPU, also covers English
-    # 4. Kokoro 82M       — small neural, CPU-friendly, beats Piper
-    # 5. Piper            — bundled CPU absolute-last-resort
-    'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_INDIC_PARLER, BACKEND_KOKORO, BACKEND_PIPER],
-    # International: Chatterbox Multilingual is PRIMARY because it is
-    # pip-installable (`chatterbox-tts`) and ships with every normal
-    # Nunba install.  CosyVoice3 is KEPT as a secondary slot for power
-    # users who manually clone the `FunAudioLLM/CosyVoice` repo to
-    # `~/PycharmProjects/CosyVoice` — without that clone, `import
-    # cosyvoice` raises ModuleNotFoundError and the synth silently
-    # cascades to the second entry anyway.  Listing Chatterbox first
-    # flips the default path for 99% of installs from "load
-    # un-importable primary → fail → fall back" to "load importable
-    # primary → succeed".  (J213 decision, 2026-04-18 live audit.)
-    'es': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'fr': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'de': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'ja': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'ko': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'zh': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'it': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    'ru': [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3],
-    # Portuguese — Chatterbox ML covers pt natively (see
-    # _FALLBACK_ENGINE_CAPABILITIES[CHATTERBOX_ML]['languages']).
+    # 1. Chatterbox Turbo — big GPU, paralinguistic tags, voice clone (5.6 GB)
+    # 2. F5-TTS           — big GPU, voice clone (2.5 GB)
+    # 3. NeuTTS Air       — CPU-friendly Q4 GGUF (~600 MB), voice clone, RTF<0.5
+    # 4. MeloTTS          — neural, ~1.5 GB, CPU runs at real-time
+    # 5. XTTS-v2          — voice clone, 17 langs, 2.5 GB
+    # 6. Indic Parler     — big GPU, also covers English (2.0 GB)
+    # 7. Kokoro 82M       — small neural, CPU-friendly, beats Piper (0.2 GB)
+    # 8. MMS-TTS          — universal coverage, ~1 GB
+    # 9. Piper            — bundled CPU absolute-last-resort
+    # NeuTTS Air slotted between F5 and MeloTTS (mirrors HARTOS
+    # LANG_ENGINE_PREFERENCE['en'] which puts it at rung 3, after
+    # chatterbox_turbo + omnivoice; Nunba's fallback ladder doesn't
+    # carry omnivoice yet so neutts_air sits at rung 3 here).  Quality
+    # 0.91 from upstream MOS — between F5 (0.91) and MeloTTS (0.86).
+    # CPU-friendly is the differentiator: this is the FIRST clone-
+    # capable engine in the ladder that doesn't require GPU.
+    'en': [BACKEND_CHATTERBOX_TURBO, BACKEND_F5, BACKEND_NEUTTS_AIR,
+           BACKEND_MELOTTS, BACKEND_XTTS_V2,
+           BACKEND_INDIC_PARLER, BACKEND_KOKORO, BACKEND_MMS_TTS, BACKEND_PIPER],
+    # International: MeloTTS (1.5 GB) and XTTS-v2 (2.5 GB) sit ABOVE the
+    # 14 GB Chatterbox-ML so 4-8 GB GPU users get quality TTS without
+    # the heaviest engine.  Chatterbox kept as the high-quality clone
+    # option for users with the VRAM.  CosyVoice3 stays as the
+    # power-user slot (requires git clone of FunAudioLLM/CosyVoice).
+    # MMS-TTS is the universal floor before falling back to chatterbox/piper.
+    'es': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'fr': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'de': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'ja': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'ko': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'zh': [BACKEND_MELOTTS, BACKEND_F5, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'it': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'ru': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    # Portuguese — XTTS-v2 covers pt; Chatterbox ML covers pt natively.
     # CosyVoice3's 9-lang set excludes pt, so we skip it here to avoid
     # routing Portuguese users through a wrong-language fallback chain
     # (the J210 gap, 2026-04-18 live audit).
-    'pt': [BACKEND_CHATTERBOX_ML, BACKEND_PIPER],
+    'pt': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS, BACKEND_PIPER],
+    # Newly explicitly-covered langs (previously hit _DEFAULT_PREFERENCE).
+    'ar': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'nl': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'pl': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'tr': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'cs': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'hu': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'sv': [BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'fi': [BACKEND_MMS_TTS],
+    'el': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'ro': [BACKEND_MMS_TTS],
+    'bg': [BACKEND_MMS_TTS],
+    'uk': [BACKEND_MMS_TTS],
+    'cy': [BACKEND_MMS_TTS],
+    'is': [BACKEND_MMS_TTS],
+    # id / th / vi — Chatterbox-ML's `languages` set does NOT include
+    # these codes (verified 2026-04-29 against the engine's capabilities
+    # dict). MMS-TTS is the only engine in their ladder that actually
+    # speaks them, so it MUST come first to avoid silent fallthrough.
+    'id': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'ms': [BACKEND_MMS_TTS],
+    'th': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'vi': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'fa': [BACKEND_MMS_TTS],
+    'he': [BACKEND_MMS_TTS],
+    'sw': [BACKEND_MMS_TTS],
+    'km': [BACKEND_MMS_TTS],
+    'lo': [BACKEND_MMS_TTS],
+    'my': [BACKEND_MMS_TTS],
+    'lv': [BACKEND_MMS_TTS],
+    'sr': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
+    'ks': [BACKEND_MMS_TTS],
+    # NB: 'zh-cn' is intentionally NOT keyed here. _normalize_lang()
+    # collapses 'zh-cn' / 'zh-CN' / 'zh_TW' to 'zh' before the ladder
+    # lookup, so any 'zh-cn' entry would be dead-code AND would also
+    # need its first-choice engine to declare the 'zh-cn' code (which
+    # MeloTTS / XTTS-v2 do not — they list 'zh' only). All Chinese
+    # variants therefore consume the 'zh' ladder.
+    # Indian English — Indic Parler natively handles English with Indian
+    # phonemes/prosody.  Exact-code lookup runs BEFORE _normalize_lang
+    # collapses 'en-IN' → 'en' (see _get_lang_preference).  Falls back
+    # to MMS-TTS (1 GB) and Piper (CPU) for low-VRAM hosts.
+    'en-IN': [BACKEND_INDIC_PARLER, BACKEND_MMS_TTS, BACKEND_PIPER],
 }
-# Add all Indic languages → Indic Parler TTS
+# Add all Indic languages → Indic Parler TTS, then mms_tts as 1 GB-tier
+# universal fallback so every Indic code has at least one engine ≤3 GB
+# (Indic Parler is 2 GB, mms_tts is 1 GB — both safely within budget).
 for _lang in _INDIC_LANGS:
-    _FALLBACK_LANG_ENGINE_PREFERENCE[_lang] = [BACKEND_INDIC_PARLER]
+    _FALLBACK_LANG_ENGINE_PREFERENCE[_lang] = [BACKEND_INDIC_PARLER, BACKEND_MMS_TTS]
+# XTTS-v2 covers Hindi specifically — promote it for hi as a voice-clone option.
+_FALLBACK_LANG_ENGINE_PREFERENCE['hi'] = [BACKEND_INDIC_PARLER, BACKEND_XTTS_V2, BACKEND_MMS_TTS]
 
 # Default fallback chain for unlisted languages.
-# Chatterbox ML is placed first for the same reason as the explicit
-# per-lang lists above: pip-installable, importable out of the box.
-# CosyVoice3 follows for the power-user path (repo clone required).
-# Indic Parler is the final Unicode-safe catcher for whatever slipped
-# through.
-_DEFAULT_PREFERENCE = [BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3, BACKEND_INDIC_PARLER]
+# MMS-TTS first because it has 50+ language coverage at 1 GB VRAM —
+# the universal-coverage floor.  Chatterbox-ML next for users who have
+# the 14 GB GPU.  Indic Parler as a Unicode-safe catcher for whatever
+# slipped through (it has English support so it doubles as a final
+# guard before Piper gives up).
+_DEFAULT_PREFERENCE = [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML, BACKEND_COSYVOICE3, BACKEND_INDIC_PARLER]
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -436,10 +666,42 @@ _BACKEND_TO_REGISTRY_KEY: dict[str, str] = {
     BACKEND_INDIC_PARLER:     'indic_parler',
     BACKEND_COSYVOICE3:       'cosyvoice3',
     BACKEND_KOKORO:           'kokoro',
-    # CPU engines — also run via HARTOS RuntimeToolManager subprocess
-    'luxtts':                 'luxtts',  # kept for frozen HARTOS compat until rebuild
-    'pocket_tts':             'pocket_tts',
+    # Mid-VRAM coverage tier — added 2026-04-29.
+    BACKEND_MELOTTS:          'melotts',
+    BACKEND_XTTS_V2:          'xtts_v2',
+    BACKEND_MMS_TTS:          'mms_tts',
+    # NeuTTS Air — added 2026-05-08.  CPU-friendly clone engine, venv-
+    # routed (install_target='venv' on the HARTOS spec) so its
+    # llama-cpp-python pin doesn't drift the main interpreter.
+    BACKEND_NEUTTS_AIR:       'neutts_air',
 }
+
+# CPU-only catalog entries with NO native Nunba implementation —
+# they ALL collapse to BACKEND_PIPER.  Single source of truth for
+# "HARTOS exposed this engine in the catalog but Nunba can't run it
+# in-process; route to Piper which IS bundled in python-embed".
+# Both hyphen and underscore forms accepted because HARTOS catalog
+# uses hyphens, ENGINE_REGISTRY uses underscores.
+#
+# 2026-05-04 root-cause fix: pre this date the engines below were
+# self-mapped INSIDE _BACKEND_TO_REGISTRY_KEY (e.g. ``'pocket_tts':
+# 'pocket_tts'``).  The inverse-derivation at the setdefault loop
+# below then produced ``_CATALOG_TO_BACKEND['pocket_tts'] =
+# 'pocket_tts'`` (a literal echo).  The catalog ladder "selected"
+# pocket_tts as a real backend, the dispatcher tried to spawn it,
+# and audio synthesis silently failed with "No TTS engine available
+# (install pocket-tts or espeak-ng)" on every install missing those
+# extras.  Live evidence in user's gui_app.log 2026-04-30 → 2026-05-04.
+#
+# Fix: keep _BACKEND_TO_REGISTRY_KEY pure (only Nunba native GPU
+# backends), declare CPU fallbacks explicitly here, and the inverse
+# map gets a correct alias instead of a self-referential trap.
+# Adding a new CPU-only HARTOS engine = ONE entry in this tuple.
+_CPU_FALLBACK_CATALOG_IDS: tuple[str, ...] = (
+    'pocket-tts', 'pocket_tts',  # tiny-pocket TTS — not bundled in Nunba
+    'espeak',                    # system binary — not always present
+    'luxtts',                    # internal HARTOS tool — Nunba doesn't run it
+)
 
 
 def _get_engine_registry():
@@ -476,11 +738,18 @@ _CATALOG_TO_BACKEND: dict[str, str] = {
 # so both 'f5-tts' (catalog) and 'f5_tts' (registry key) map back.
 for _backend, _key in _BACKEND_TO_REGISTRY_KEY.items():
     _CATALOG_TO_BACKEND.setdefault(_key, _backend)
-# CPU alias fallbacks — all route to Piper in Nunba
-_CATALOG_TO_BACKEND.setdefault('pocket-tts', BACKEND_PIPER)
-_CATALOG_TO_BACKEND.setdefault('pocket_tts', BACKEND_PIPER)
-_CATALOG_TO_BACKEND.setdefault('espeak', BACKEND_PIPER)
-_CATALOG_TO_BACKEND.setdefault('chatterbox_multilingual', BACKEND_CHATTERBOX_ML)  # legacy name
+# CPU fallback aliases — single writer, no setdefault gymnastics, no
+# parallel-path drift.  These IDs do NOT appear in
+# _BACKEND_TO_REGISTRY_KEY (the GPU bridge is now pure), so the prior
+# setdefault loop cannot shadow this assignment.  Adding a new CPU-only
+# HARTOS engine = one entry in _CPU_FALLBACK_CATALOG_IDS above.
+for _alias in _CPU_FALLBACK_CATALOG_IDS:
+    _CATALOG_TO_BACKEND[_alias] = BACKEND_PIPER
+# Legacy ENGINE_REGISTRY key kept for backwards compat — pre-2026-04
+# HARTOS used 'chatterbox_multilingual' before the dual-form rule was
+# established.  Different mapping target, so kept separate from the
+# CPU fallback list above.
+_CATALOG_TO_BACKEND.setdefault('chatterbox_multilingual', BACKEND_CHATTERBOX_ML)
 
 
 def _entry_to_legacy_caps(entry) -> dict:
@@ -557,44 +826,147 @@ def _get_engine_capabilities(backend=None) -> dict:
     return _FALLBACK_ENGINE_CAPABILITIES.get(backend, {})
 
 
+def _free_vram_gb() -> float | None:
+    """Read free VRAM from vram_manager.  Returns None if no GPU signal."""
+    try:
+        from integrations.service_tools.vram_manager import vram_manager
+        return vram_manager.get_free_vram()
+    except Exception:
+        return None
+
+
+def _vram_cache_bucket(free_gb: float) -> int:
+    """Quantize free VRAM to a coarse cache-key bucket.
+
+    Stability across small fluctuations (e.g. 6.2 → 6.4 GB) prevents
+    the filter from re-running on every chat.  Bucket size is 1 GB —
+    enough resolution to distinguish chatterbox_turbo (5.6) vs F5 (2.5)
+    while still grouping nearby readings.
+    """
+    return int(free_gb)
+
+
+# Cache: (free_vram_bucket, original_ladder_tuple) → filtered ladder.
+# Bounded at 256 entries; evicted in bulk when full.
+_LADDER_FILTER_CACHE: dict[tuple, list[str]] = {}
+_LADDER_FILTER_CACHE_MAX = 256
+
+
+def _filter_ladder_by_vram_budget(prefs: list[str]) -> list[str]:
+    """Drop GPU backends whose declared min_vram exceeds free VRAM.
+
+    Why this exists: without it, the ladder probes chatterbox_turbo
+    (5.6 GB min) on every chat even on a 4 GB GPU, wasting an OOM
+    round-trip per backend before falling through.  CPU-friendly
+    backends (no VRAM_BUDGETS entry — piper/espeak) ALWAYS pass.
+    When the catalog hasn't loaded or there's no GPU signal, returns
+    prefs unchanged (fail-open: the existing per-attempt circuit
+    breaker still demotes after live failures).
+    """
+    free_gb = _free_vram_gb()
+    if free_gb is None or free_gb <= 0:
+        return prefs  # no GPU signal — preserve full ladder
+
+    cache_key = (_vram_cache_bucket(free_gb), tuple(prefs))
+    cached = _LADDER_FILTER_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
+    try:
+        from integrations.service_tools.vram_manager import VRAM_BUDGETS
+    except Exception:
+        return prefs
+
+    def _backend_fits(be: str) -> bool:
+        registry_key = _BACKEND_TO_REGISTRY_KEY.get(be)
+        if not registry_key:
+            return True  # CPU backend (piper/espeak) — no GPU budget entry
+        budget = VRAM_BUDGETS.get(f'tts_{registry_key}')
+        if not budget:
+            return True  # unknown to vram_manager → assume fits
+        min_vram_gb, _model_size = budget
+        return min_vram_gb <= free_gb
+
+    filtered = [be for be in prefs if _backend_fits(be)]
+    # Never let the filter empty the ladder — at minimum keep Piper /
+    # Kokoro / espeak as a CPU floor.  If filter ate everything,
+    # fall back to the original list and let the runtime circuit
+    # breaker handle the OOM (matches the fail-open principle above).
+    if not filtered:
+        filtered = list(prefs)
+
+    if len(_LADDER_FILTER_CACHE) >= _LADDER_FILTER_CACHE_MAX:
+        _LADDER_FILTER_CACHE.clear()
+    _LADDER_FILTER_CACHE[cache_key] = list(filtered)
+    return filtered
+
+
 def _get_lang_preference(language: str) -> list[str]:
     """Return ordered list of preferred backends for a language.
 
     Tries ModelCatalog first (canonical).  Falls back to
     _FALLBACK_LANG_ENGINE_PREFERENCE if the catalog is unavailable.
+    Final step: drop backends whose declared min-VRAM exceeds free
+    VRAM, so the ladder doesn't waste cycles probing engines that
+    can't possibly fit on this hardware.
     """
-    try:
-        from models.catalog import ModelType, get_catalog
-        catalog = get_catalog()
-        entries = catalog.list_by_type(ModelType.TTS)
-        if entries:
-            # Build preference list: entries that support this language,
-            # sorted by language_priority (lower value = higher preference),
-            # then by overall priority descending.
-            supporting = []
-            for entry in entries:
-                langs = set(getattr(entry, 'languages', None) or [])
-                # '*' is the wildcard convention for engines that
-                # support every language (piper, espeak) — a single
-                # spec covers all languages, no per-language duplication.
-                if language in langs or '*' in langs:
-                    lang_prio = (getattr(entry, 'language_priority', None) or {})
-                    prio_val = lang_prio.get(language, 999)
-                    supporting.append((prio_val, -(getattr(entry, 'priority', 0) or 0), entry))
-            if supporting:
-                supporting.sort(key=lambda x: (x[0], x[1]))
-                result = []
-                for _, _, entry in supporting:
-                    catalog_id = entry.id.replace('tts-', '', 1)
-                    be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
-                    if be not in result:
-                        result.append(be)
-                if result:
-                    return result
-    except Exception:
-        pass  # catalog unavailable — fall through
+    # Region-coded inputs (e.g. 'en-IN', 'pt-BR') get their routing
+    # from the fallback dict's exact-code key BEFORE consulting the
+    # catalog.  Reason: most TTS entries' `languages` set lists only
+    # the bare language ('en'), so the catalog path returns just
+    # wildcard CPU engines (piper) for region codes — silently
+    # bypassing region-specific intent (en-IN → Indic Parler).
+    # The fallback dict is the source of truth for region routing;
+    # the catalog is the source of truth for priority within a bare
+    # language.  Both stay canonical for their respective concerns.
+    prefs: list[str] | None = None
+    if '-' in (language or '') and language in _FALLBACK_LANG_ENGINE_PREFERENCE:
+        prefs = list(_FALLBACK_LANG_ENGINE_PREFERENCE[language])
 
-    return _FALLBACK_LANG_ENGINE_PREFERENCE.get(language, _DEFAULT_PREFERENCE)
+    if prefs is None:
+        try:
+            from models.catalog import ModelType, get_catalog
+            catalog = get_catalog()
+            entries = catalog.list_by_type(ModelType.TTS)
+            if entries:
+                # Build preference list: entries that support this language,
+                # sorted by language_priority (lower value = higher preference),
+                # then by overall priority descending.
+                supporting = []
+                for entry in entries:
+                    langs = set(getattr(entry, 'languages', None) or [])
+                    # '*' is the wildcard convention for engines that
+                    # support every language (piper, espeak) — a single
+                    # spec covers all languages, no per-language duplication.
+                    if language in langs or '*' in langs:
+                        lang_prio = (getattr(entry, 'language_priority', None) or {})
+                        prio_val = lang_prio.get(language, 999)
+                        supporting.append((prio_val, -(getattr(entry, 'priority', 0) or 0), entry))
+                if supporting:
+                    supporting.sort(key=lambda x: (x[0], x[1]))
+                    result = []
+                    for _, _, entry in supporting:
+                        catalog_id = entry.id.replace('tts-', '', 1)
+                        be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
+                        if be not in result:
+                            result.append(be)
+                    if result:
+                        prefs = result
+        except Exception:
+            pass  # catalog unavailable — fall through
+
+    # Exact-match FIRST — preserves region codes like ``en-IN`` (Indian
+    # English) so the Indic-Parler-first ladder fires when the caller
+    # passes the BCP-47 region tag.  Falls back to the bare-language
+    # entry (``_normalize_lang('en-IN') == 'en'``) if no region-specific
+    # ladder is registered.  Same DRY rule — extend the canonical dict
+    # instead of forking a "regional" one.
+    if prefs is None:
+        prefs = (_FALLBACK_LANG_ENGINE_PREFERENCE.get(language)
+                 or _FALLBACK_LANG_ENGINE_PREFERENCE.get(_normalize_lang(language))
+                 or _DEFAULT_PREFERENCE)
+
+    return _filter_ladder_by_vram_budget(list(prefs))
 
 
 # ── Backward-compat aliases (importers that do ``from tts.tts_engine import
@@ -991,6 +1363,37 @@ class TTSEngine:
         self._init_lock = threading.Lock()
         self._synth_lock = threading.Lock()  # GPU backends are not thread-safe
         self._pending_backend = None  # backend being loaded in background
+
+        # Per-session backend health tracking (Fix B, 2026-04-28).
+        # Without these counters the ladder gets pinned on the first
+        # entry forever — chatterbox raises, _synthesize_with_fallback
+        # walks through, and the next request goes RIGHT back to
+        # chatterbox because nothing remembered it just exploded.
+        # Counter resets on successful synth; demotion is session-local
+        # only (cleared on process restart) so a transient VRAM-pressure
+        # window doesn't permanently disable the user's preferred GPU
+        # engine across reboots.
+        self._consecutive_failures: dict[str, int] = {}
+        self._demoted_backends: set[str] = set()
+        # 3 strikes is the same threshold the model_lifecycle.py
+        # eviction guard uses — keep it consistent across the codebase
+        # so failures observed by either subsystem trip a single,
+        # well-understood circuit.
+        self._failure_threshold = 3
+
+        # Hydrate persisted demotions from prior boots — the negative-
+        # finding cache that prevents the ladder from re-burning 3
+        # failures every boot on a deterministically-broken top engine.
+        # Selection (`_select_backend_for_language`) is unchanged; the
+        # ladder still walks top-down, demotion is purely subtractive.
+        # A newly-installed top engine has no demotion record so it is
+        # picked up automatically on the very next boot — discovery is
+        # the ladder, persistence only suppresses known-bad rungs until
+        # `_DEMOTION_TTL_SECONDS` expiry, schema bump, or admin reset.
+        try:
+            self._load_persisted_demotions()
+        except Exception as _he:
+            logger.debug(f"TTS demotion hydrate skipped: {_he}")
 
         # Hardware info (detected lazily)
         self.gpu_info = None
@@ -1430,6 +1833,369 @@ class TTSEngine:
         import importlib.util
         return importlib.util.find_spec(required_pkg) is None
 
+    # ── Per-backend health tracking (Fix B, 2026-04-28) ─────────────
+    # The ladder used to wedge on the first preference forever: any
+    # transient or hard failure inside chatterbox would flow into
+    # _synthesize_with_fallback, but on the NEXT call _active_backend
+    # was reset to chatterbox again because nothing remembered the
+    # previous failure. These three helpers + the demoted-set check in
+    # _select_backend_for_language are the circuit breaker.
+
+    # Failure-class signatures used by ``_is_structural_error``.
+    # Lower-cased substring match against ``str(error).lower()`` plus
+    # the exception class name.  Each phrase is a deterministic /
+    # near-deterministic indicator that the engine cannot self-heal
+    # mid-session — re-trying it next call (or next boot) costs the
+    # user latency for no recovery probability.
+    #
+    # Curated from observed failure logs 2026-04-30 .. 2026-05-08:
+    #   * "died during startup" / "worker startup failed" — chatterbox
+    #     subprocess crashes before binding the IPC socket; usually
+    #     missing CUDA driver or corrupted weights.
+    #   * "no module named" / ModuleNotFoundError — pip install never
+    #     landed (kokoro / melotts on this host); a re-attempt would
+    #     hit the same network/disk failure.
+    #   * "loader returned failure" — HARTOS model_orchestrator bottoms
+    #     out after exhausting retries; structural by orchestrator's
+    #     own contract.
+    #   * "venv creation failed" / "no module named venv" —
+    #     chatterbox-class venv bootstrap broken.
+    #   * "missing weights" / "model file not found" — download never
+    #     completed; needs admin or hub-install.
+    #   * "torch not compiled with cuda" — environmental.
+    #
+    # Anything that does NOT match is treated as TRANSIENT (CUDA OOM,
+    # network blip, filesystem race, audio encode glitch) so the
+    # standard 3-strike rule applies — preserving tolerance for
+    # one-off hiccups.  Bias is intentional: a misclassified transient
+    # costs one extra synth attempt; a misclassified structural would
+    # lock an engine out for a week even though it could self-heal.
+    _STRUCTURAL_FAILURE_SIGNATURES: tuple[str, ...] = (
+        'died during startup',
+        'worker startup failed',
+        'worker died',
+        'no module named',
+        'modulenotfounderror',
+        'loader returned failure',
+        'venv creation failed',
+        'missing weights',
+        'model file not found',
+        'torch not compiled with cuda',
+        'cudnn_status_not_initialized',
+    )
+
+    @classmethod
+    def _is_structural_error(cls, error: Exception | None) -> bool:
+        """Classify a synth failure as structural or transient.
+
+        Walks the ``__cause__`` / ``__context__`` chain so a wrapping
+        ``RuntimeError`` does not hide an underlying ``ImportError``.
+        Returns False for ``error=None`` (legacy callers without an
+        exception in scope) — keeps the prior 3-strike behaviour
+        unchanged for any caller that hasn't been updated.
+        """
+        if error is None:
+            return False
+        seen: set[int] = set()
+        cur: BaseException | None = error
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            blob = f"{type(cur).__name__.lower()} {(str(cur) or '').lower()}"
+            for sig in cls._STRUCTURAL_FAILURE_SIGNATURES:
+                if sig in blob:
+                    return True
+            cur = (getattr(cur, '__cause__', None)
+                   or getattr(cur, '__context__', None))
+        return False
+
+    def _record_backend_failure(
+        self, backend: str, error: Exception | None = None,
+    ) -> None:
+        """Increment consecutive-failure counter; demote at threshold.
+
+        Piper is exempt — it is the canonical CPU last-resort and
+        demoting it would leave the engine with no backend.  If Piper
+        keeps failing the right answer is to surface that to the user
+        (text-only fallback), not to silently eject it.
+
+        Failure-class threshold (introduced 2026-05-08):
+
+        * **STRUCTURAL** — ``error`` matches a signature in
+          ``_STRUCTURAL_FAILURE_SIGNATURES`` (worker died at startup,
+          missing module, missing weights, …).  These are
+          deterministic — re-trying next call or next boot costs
+          latency with zero recovery probability.  Demote on the
+          first strike + persist across boots.
+
+        * **TRANSIENT** — anything else (CUDA OOM, network blip,
+          filesystem race).  Three-strikes-then-demote behaviour
+          preserved.  Pre-2026-05-08 every failure was treated this
+          way, which meant chatterbox_turbo (which dies during worker
+          startup on every boot) burned ~3 minutes on every cold
+          start: each boot saw exactly 1 failure, the in-memory
+          counter reset, the persisted cache never wrote, and the
+          next boot re-discovered the same breakage from scratch.
+          The structural classifier closes that loop: 1 boot to
+          detect, 0 boots to recover.
+
+        Once the threshold is crossed the backend is written to
+        ``tts_state.json`` so the next boot does not waste failures
+        on the same broken engine.  ``_DEMOTION_TTL_SECONDS`` (7
+        days) bounds the persistence so transient causes (driver
+        flap, weights mid-download) self-heal without admin
+        intervention.  A successful synth (``_record_backend_success``)
+        clears the counter mid-session so a flaky-but-not-broken
+        engine never accumulates into a permanent demotion.
+
+        Backwards compatible: callers that haven't been updated to
+        pass ``error`` get the legacy threshold (3 strikes, transient
+        treatment) automatically.
+        """
+        if not backend or backend == BACKEND_PIPER or backend == BACKEND_NONE:
+            return
+        n = self._consecutive_failures.get(backend, 0) + 1
+        self._consecutive_failures[backend] = n
+
+        structural = self._is_structural_error(error)
+        threshold = 1 if structural else self._failure_threshold
+
+        if n >= threshold and backend not in self._demoted_backends:
+            self._demoted_backends.add(backend)
+            kind = 'STRUCTURAL' if structural else 'transient'
+            err_summary = ''
+            if error is not None:
+                err_summary = (
+                    f" (error class: {type(error).__name__}; "
+                    f"msg: {str(error)[:120]!r})"
+                )
+            logger.warning(
+                f"TTS backend '{backend}' DEMOTED for this session "
+                f"after {n} {kind} failure{'s' if n != 1 else ''} — "
+                f"ladder will skip it.{err_summary} "
+                f"Persisted to tts_state.json (TTL "
+                f"{_DEMOTION_TTL_SECONDS // 86400}d) so subsequent "
+                f"boots don't re-burn latency on the same engine."
+            )
+            try:
+                self._save_persisted_demotions()
+            except Exception as _pe:
+                logger.debug(f"TTS demotion persist skipped: {_pe}")
+
+    def _record_backend_success(self, backend: str) -> None:
+        """Clear the per-backend failure counter on a successful synth.
+
+        A demoted backend can't get here (it never gets called once
+        skipped), so demotion is session-sticky until process restart.
+        That's deliberate: an engine that failed 3 times in a row is
+        almost always broken in a way that won't fix itself mid-session
+        (missing weights, bad CUDA driver, OOM with steady GPU load).
+        Don't waste user latency probing it again.
+        """
+        if backend and self._consecutive_failures.get(backend):
+            self._consecutive_failures[backend] = 0
+
+    def _is_demoted(self, backend: str) -> bool:
+        return backend in self._demoted_backends
+
+    # ── Persisted demotion cache (cross-boot negative findings) ─────
+    # See module-level docstring above ``_TTS_STATE_SCHEMA`` for the
+    # full design rationale. These three helpers are the ONLY code
+    # that touches ``tts_state.json`` — selection is intentionally
+    # unaware of persistence (Gate 4: no parallel selection paths).
+
+    def _load_persisted_demotions(self) -> None:
+        """Hydrate ``_demoted_backends`` from disk, dropping expired
+        and Piper-poisoned entries.
+
+        Self-healing rules (any one drops a row):
+          * TTL: ``expires_at`` in the past
+          * Schema bump: ``schema`` field differs from
+            ``_TTS_STATE_SCHEMA`` → wipe all (covers ladder
+            restructuring across Nunba versions)
+          * Backend is Piper / NONE — never let a stale file demote
+            the absolute fallback
+
+        Quietly returns on every error path: a missing/corrupt state
+        file MUST NOT block engine init.
+        """
+        path = _get_tts_state_path()
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding='utf-8') as _f:
+                data = json.load(_f)
+        except (OSError, ValueError) as e:
+            logger.debug(f"TTS state file unreadable ({e}) — starting fresh")
+            return
+
+        if data.get('schema') != _TTS_STATE_SCHEMA:
+            logger.info(
+                f"TTS state schema mismatch (got {data.get('schema')!r}, "
+                f"expected {_TTS_STATE_SCHEMA}) — dropping all persisted "
+                f"demotions on hydrate"
+            )
+            return
+
+        persisted = data.get('demoted')
+        if not isinstance(persisted, dict):
+            return
+
+        import time as _time
+        now = _time.time()
+        hydrated: list[str] = []
+        expired: list[str] = []
+        for backend, info in persisted.items():
+            if not isinstance(info, dict):
+                continue
+            expires_at = info.get('expires_at')
+            if not isinstance(expires_at, (int, float)) or expires_at < now:
+                expired.append(backend)
+                continue
+            if backend in (BACKEND_PIPER, BACKEND_NONE):
+                continue
+            self._demoted_backends.add(backend)
+            self._consecutive_failures[backend] = info.get(
+                'failures_at_demotion', self._failure_threshold)
+            hydrated.append(backend)
+
+        if hydrated:
+            logger.info(
+                f"TTS persisted demotion: hydrated {len(hydrated)} entries "
+                f"({', '.join(sorted(hydrated))}) — ladder will skip these "
+                f"until TTL expiry, hub-install, or admin reset."
+            )
+        if expired:
+            logger.info(
+                f"TTS persisted demotion: dropped {len(expired)} expired "
+                f"entries on hydrate ({', '.join(sorted(expired))})"
+            )
+            try:
+                self._save_persisted_demotions()
+            except Exception:
+                pass
+
+    def _save_persisted_demotions(self) -> None:
+        """Atomic-write the in-memory demotion set to disk.
+
+        Atomic via tempfile + ``os.replace`` so a crash mid-write
+        cannot leave a half-written file. Piper / NONE are filtered
+        out before serialisation so a future bug that adds them to
+        ``_demoted_backends`` cannot leak into the persistent cache.
+        """
+        path = _get_tts_state_path()
+
+        import time as _time
+        now = _time.time()
+        demoted_payload: dict[str, dict[str, Any]] = {}
+        for backend in self._demoted_backends:
+            if backend in (BACKEND_PIPER, BACKEND_NONE):
+                continue
+            demoted_payload[backend] = {
+                'first_demoted_at': now,
+                'expires_at': now + _DEMOTION_TTL_SECONDS,
+                'failures_at_demotion': self._consecutive_failures.get(
+                    backend, self._failure_threshold),
+            }
+        payload = {
+            'schema': _TTS_STATE_SCHEMA,
+            'updated_at': now,
+            'demoted': demoted_payload,
+        }
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except OSError as e:
+            logger.debug(f"TTS state dir create skipped: {e}")
+            return
+
+        import tempfile as _tf
+        try:
+            fd, tmp = _tf.mkstemp(
+                prefix='tts_state.', suffix='.tmp',
+                dir=os.path.dirname(path),
+            )
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as _f:
+                    json.dump(payload, _f)
+                    _f.flush()
+                    try:
+                        os.fsync(_f.fileno())
+                    except OSError:
+                        pass
+                os.replace(tmp, path)
+            except Exception:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError as e:
+            logger.warning(f"Failed to persist TTS demotion state: {e}")
+
+    @classmethod
+    def clear_persisted_demotions(cls, backend: str | None = None) -> int:
+        """Clear persisted demotion entries from ``tts_state.json``.
+
+        Wired from two call sites:
+          * the hub-install completion hook in ``main.py`` —
+            reinstalling a previously-demoted engine should give it
+            a fresh chance on the next selection
+          * an admin-reset endpoint (future) so support flows have a
+            big red button
+
+        ``backend=None`` clears every demotion. Returns the count of
+        rows removed (0 when no state file exists). Idempotent and
+        safe under concurrent calls (``os.replace`` is atomic).
+        """
+        path = _get_tts_state_path()
+        if not os.path.isfile(path):
+            return 0
+        try:
+            with open(path, encoding='utf-8') as _f:
+                data = json.load(_f)
+        except (OSError, ValueError):
+            return 0
+
+        persisted = data.get('demoted')
+        if not isinstance(persisted, dict) or not persisted:
+            return 0
+
+        if backend is None:
+            cleared = len(persisted)
+            data['demoted'] = {}
+        else:
+            if backend not in persisted:
+                return 0
+            del persisted[backend]
+            cleared = 1
+
+        import tempfile as _tf
+        try:
+            fd, tmp = _tf.mkstemp(
+                prefix='tts_state.', suffix='.tmp',
+                dir=os.path.dirname(path),
+            )
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as _f:
+                    json.dump(data, _f)
+                os.replace(tmp, path)
+            except Exception:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError as e:
+            logger.warning(f"Failed to clear persisted TTS demotions: {e}")
+            return 0
+
+        if cleared:
+            logger.info(
+                f"Cleared {cleared} persisted TTS demotion(s) "
+                f"({'all' if backend is None else backend})"
+            )
+        return cleared
+
     def _select_backend_for_language(self, language='en') -> str:
         """Select the best TTS backend for a language.
 
@@ -1438,11 +2204,21 @@ class TTSEngine:
         runnable engine is always selected — not the one with the highest
         catalog score (which favors previously-loaded engines over better ones).
 
+        Demoted backends (3+ consecutive failures this session) are
+        skipped so the ladder actually advances after repeated failures
+        instead of wedging on the first preference forever.
+
         Auto-installs missing backends in background via TTSLoader.download().
         """
         self._ensure_hw_detected()
         prefs = _get_lang_preference(language)
         for backend in prefs:
+            if self._is_demoted(backend):
+                logger.info(
+                    f"Backend {backend} skipped: demoted this session "
+                    f"({self._consecutive_failures.get(backend, 0)} failures)"
+                )
+                continue
             if self._can_run_backend(backend):
                 logger.info(f"Selected backend '{backend}' for language '{language}' (quality-ordered)")
                 return backend
@@ -1592,6 +2368,40 @@ class TTSEngine:
         self._initialized = False
         if self.auto_init:
             self.initialize(force_backend=new_backend)
+
+    def set_backend(self, backend: str) -> bool:
+        """Force-set the active TTS backend, instantiating it if needed.
+
+        Public counterpart to ``initialize(force_backend=...)`` — exists so
+        that ``tts.verified_synth.verify_backend_synth`` (and any other
+        caller that needs to probe a specific backend) can pin the engine
+        to a chosen backend before calling ``synthesize``.
+
+        Without this method, verify_backend_synth's probe path silently
+        falls through to auto-routing — the canonical handshake reports
+        "backend X PASS" while actually exercising whatever
+        ``_select_backend_for_language('en')`` selected (typically Piper
+        on CPU-only hosts).  That defeats per-backend health gating in
+        the admin UI's Validate button AND in scripts/probe_all_tts_live.py.
+
+        Args:
+            backend: Backend constant (BACKEND_KOKORO, 'piper', etc.) —
+                must be a key in _BACKEND_TO_REGISTRY_KEY or the BACKEND_PIPER
+                CPU fallback.
+
+        Returns:
+            True iff the backend instance is now active and ready to
+            ``synthesize()``.  False if instantiation failed (worker
+            crash, missing pip dependency, OOM); the active backend is
+            left unchanged in that case.
+        """
+        prev = self._active_backend
+        ok = self.initialize(force_backend=backend, blocking=True)
+        if not ok:
+            # Restore previous active backend so the engine isn't left
+            # in a half-pinned state that confuses the next caller.
+            self._active_backend = prev
+        return ok
 
     def initialize(self, force_backend: str | None = None,
                    blocking: bool = True) -> bool:
@@ -1841,8 +2651,17 @@ class TTSEngine:
                    or (result.get('results', [{}])[0].get('url')
                        if result.get('results') else None))
             if result.get('status') == 'completed' and url:
-                import urllib.request
-                urllib.request.urlretrieve(url, out_path)
+                # urllib.request.urlretrieve has NO timeout kwarg — a stuck
+                # remote URL hangs the chat hot path indefinitely (Gate 7
+                # banned pattern, same class as the wmic 27-min hang).
+                # Switch to requests.get(timeout=...) with chunked write.
+                import requests as _req
+                _resp = _req.get(url, timeout=60, stream=True)
+                _resp.raise_for_status()
+                with open(out_path, 'wb') as _of:
+                    for _chunk in _resp.iter_content(chunk_size=65536):
+                        if _chunk:
+                            _of.write(_chunk)
                 return out_path
 
             # Async — poll until done, respecting ledger pause/cancel
@@ -1875,8 +2694,14 @@ class TTSEngine:
                                   or (poll.get('results', [{}])[0].get('url')
                                       if poll.get('results') else None))
                         if dl_url:
-                            import urllib.request
-                            urllib.request.urlretrieve(dl_url, out_path)
+                            # See note above — urlretrieve cannot timeout.
+                            import requests as _req
+                            _resp = _req.get(dl_url, timeout=60, stream=True)
+                            _resp.raise_for_status()
+                            with open(out_path, 'wb') as _of:
+                                for _chunk in _resp.iter_content(chunk_size=65536):
+                                    if _chunk:
+                                        _of.write(_chunk)
                             return out_path
                         return None
                     elif poll.get('status') == 'failed':
@@ -2187,6 +3012,10 @@ class TTSEngine:
                             logger.warning(f"TTS output suspiciously small ({fsize}B for {text_len} chars), may be broken")
                     except Exception:
                         pass
+                    # Real audio produced — clear the failure counter
+                    # so a one-off transient error doesn't accumulate
+                    # into a session-permanent demotion.
+                    self._record_backend_success(self._active_backend)
                 return result
             except Exception as e:
                 # Transient GPU failure (CUDA OOM in subprocess, worker
@@ -2200,6 +3029,32 @@ class TTSEngine:
                     f"Synthesis failed ({self._active_backend}): {e} "
                     f"[transient={is_transient}]"
                 )
+                # Surface the FULL traceback to the per-backend sidecar
+                # log so the actual exception (FileNotFoundError on
+                # missing weights, WorkerCrash on CUDA OOM, ImportError
+                # on missing pip dep, etc.) is recoverable for triage.
+                # Without this, the engine's fallback chain swallows the
+                # underlying error and only the generic "Synthesis
+                # failed" line above survives — useless for triage.
+                try:
+                    from tts.verified_synth import _surface_backend_exception
+                    _surface_backend_exception(self._active_backend, e)
+                except Exception:
+                    pass
+                # Non-transient = the engine is broken in a way that
+                # won't self-heal mid-request. Count it against the
+                # demotion threshold. Transient = one-off CUDA OOM or
+                # subprocess crash; do NOT count those because the
+                # engine usually recovers next call.
+                #
+                # Pass the exception so ``_record_backend_failure``
+                # can classify structural (worker died at startup,
+                # missing module, ...) → demote on first strike +
+                # persist. Transient signatures still get the
+                # 3-strike threshold.  See
+                # ``_STRUCTURAL_FAILURE_SIGNATURES``.
+                if not is_transient:
+                    self._record_backend_failure(self._active_backend, e)
 
                 if is_transient:
                     # Subprocess already isolated the crash — don't tear
@@ -2272,6 +3127,12 @@ class TTSEngine:
             candidates = filtered
 
         for candidate in candidates:
+            # Skip already-demoted backends so the fallback chain doesn't
+            # waste cycles re-trying engines we've already proved broken
+            # this session.
+            if self._is_demoted(candidate):
+                logger.debug(f"Fallback skipping demoted backend {candidate}")
+                continue
             try:
                 if candidate not in self._backends:
                     self._backends[candidate] = self._create_backend(candidate)
@@ -2288,9 +3149,28 @@ class TTSEngine:
                         logger.info(f"Fallback succeeded: {failed} -> {candidate}")
                         # Permanent switch — engine crashed, don't retry
                         self._active_backend = candidate
+                    self._record_backend_success(candidate)
                     return result
             except Exception as fallback_err:
                 logger.debug(f"Fallback {candidate} also failed: {fallback_err}")
+                # Record failure + surface the traceback so the sidecar
+                # log captures EVERY backend that failed in this chain,
+                # not just the primary.  Demotion only kicks in for
+                # non-transient errors; subprocess crashes flagged
+                # `transient=True` shouldn't count against the budget.
+                try:
+                    from tts.verified_synth import _surface_backend_exception
+                    _surface_backend_exception(candidate, fallback_err)
+                except Exception:
+                    pass
+                # Pass the exception for structural classification —
+                # a fallback engine that ALSO dies during startup
+                # should be demoted on first strike (and persisted)
+                # rather than waiting for two more boots' worth of
+                # 3-strike accumulation that never converges because
+                # the in-memory counter resets each boot.
+                if not bool(getattr(fallback_err, 'transient', False)):
+                    self._record_backend_failure(candidate, fallback_err)
                 continue
 
         # Exhausted the filtered candidate list without producing audio.

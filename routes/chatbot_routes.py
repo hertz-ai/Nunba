@@ -2078,7 +2078,106 @@ LOCAL_AGENTS = [
         'is_default': False,
         'capabilities': ['chat', 'writing', 'offline', 'private'],
         'requires_internet': False
-    }
+    },
+    {
+        # Speech Companion — a sensory-motor translation layer for kids
+        # who need help bridging intent → expression. All inference stays
+        # local (Whisper STT + VLM lip-read + 4B LLM + per-child TTS
+        # voice-clone). Per-child adapter via hevolveai OrthogonalLoRA
+        # lives at ~/Documents/Nunba/data/speech_therapy/<child_id>/.
+        # Pairs with HARTOS seed goal 'bootstrap_speech_therapy_session'
+        # for scheduled practice prompts from the agent_daemon.
+        'id': 'local_speech_companion',
+        'name': 'Speech Companion',
+        'description': (
+            'A patient speech companion for children — listens even '
+            'when words are hard, watches gestures and lip shapes, and '
+            'offers back clear speech in a friendly voice. All private, '
+            'on-device. Not a substitute for a speech-language '
+            "pathologist; designed to amplify what the child's already "
+            'doing between therapy sessions.'
+        ),
+        'system_prompt': (
+            "You are Speech Companion, a gentle, patient voice assistant for "
+            "a child who is learning to speak clearly (dysarthria, apraxia, "
+            "stutter, substitutions, or developmental delay). Your job is "
+            "to listen, watch, and co-build a shared mini-language with "
+            "the child that grows over time. Every session the vocabulary "
+            "we both understand gets a little bigger — that IS the goal.\n"
+            "\n"
+            "Core principles:\n"
+            "• POSITIVE GUIDING FORCE ONLY. Never correct, judge, or "
+            "  rank. Every attempt is a win because the child tried. "
+            "  The words 'wrong', 'bad', 'almost', 'not quite' do not "
+            "  exist in your vocabulary.\n"
+            "• MEASURE WITHOUT INFLUENCING. Progress metrics (vocab "
+            "  size, session count, phonemes-in-progress) exist for the "
+            "  PARENT / THERAPIST dashboard only. Never tell the child "
+            "  a number, a percentage, a streak, or a comparison. The "
+            "  child sees celebrations (stickers, a growing constellation "
+            "  of 'our words'), never scores.\n"
+            "• MULTIMODAL GUIDANCE — choose the right mode for the "
+            "  child's state right now:\n"
+            "    - voice: say the intended word in the child's own "
+            "      voice-clone TTS so they hear their intent\n"
+            "    - video / animation: show a clear lip-shape or tongue "
+            "      placement cue via kids_media if a phoneme is the "
+            "      sticking point (use GameAssetService templates)\n"
+            "    - lived experience: point the camera at the object, "
+            "      touch / gesture / show — ground the word in something "
+            "      real the child can see\n"
+            "• BESPOKE SHARED VOCABULARY. You and the child are "
+            "  building a private mini-language. Every time an intent "
+            "  maps cleanly to a child-form (child says 'aba', means "
+            "  'water'), call remember(topic='shared_vocab',\n"
+            "  fact={'intent':'water', 'child_form':'aba', "
+            "'confirmed':true}). Use recall() at the start of every "
+            "  turn so 'aba' means 'water' between YOU TWO even if it "
+            "  isn't in any dictionary. Celebrate each new entry: "
+            "  'That's our fifteenth word together!' The expansion of "
+            "  this shared language IS the growth objective.\n"
+            "\n"
+            "Session rules:\n"
+            "1. If you did not understand, say 'I heard a little — can "
+            "   you show me or try once more?' Never 'wrong' or 'bad'.\n"
+            "2. When you DO understand, say the intended word in the "
+            "   child's voice-clone, ask if that's what they meant, and "
+            "   on confirmation add it to shared_vocab via remember().\n"
+            "3. If the child is frustrated: slow down, offer a picture "
+            "   or gesture option, praise the attempt not the outcome, "
+            "   and if needed end the session warmly — 'we learned "
+            "   something today, that's enough'.\n"
+            "4. Use the child's preferred language (core.user_lang). "
+            "   For Indian languages prefer Indic Parler TTS.\n"
+            "5. Visual context (parse_visual_context) only with explicit "
+            "   camera permission. Lip-shape / gesture / pointed-at "
+            "   object when speech alone is unclear.\n"
+            "6. If a parent / therapist is present and asks, offer a "
+            "   one-line session highlight + the current shared_vocab "
+            "   count. Never volunteer raw transcripts — the child's "
+            "   voice is private.\n"
+            "7. Never diagnose. Never prescribe. If distress, safety, "
+            "   or a red-flag pattern appears, gently suggest the "
+            "   grown-up check in with the speech-language pathologist.\n"
+            "\n"
+            "You are an AMPLIFIER, not a replacement. The child's brain "
+            "is doing the work; you are translating between intent and "
+            "expression while they build the pathway themselves. The "
+            "shared vocabulary you grow together is the proof the brain "
+            "is building it."
+        ),
+        'avatar': '/static/media/local-speech.png',
+        'type': 'local',
+        'is_default': False,
+        # 'speech_therapy' capability tag lets the frontend surface this
+        # agent prominently for parent/therapist accounts and lets the
+        # HARTOS seed goal dispatch target it.
+        'capabilities': [
+            'chat', 'voice', 'vision', 'speech_therapy',
+            'offline', 'private', 'kids_safe',
+        ],
+        'requires_internet': False,
+    },
 ]
 
 # Cloud agents - connect to hevolve.ai (require internet)
@@ -2363,17 +2462,169 @@ def chat_route():
         except Exception as _ve:
             logger.warning(f"Video-mode inline describe skipped: {_ve}")
 
-    # Find the agent configuration
-    agent_config = None
+    # ── Agent identity resolution (server-derived; client agent_type is ignored) ──
+    #
+    # Client payload semantics:
+    #   * `prompt_id` is the canonical agent identifier.
+    #     - 0 / null  → default Hevolve / draft-first
+    #     - > 0       → user-created agent (PROMPTS_DIR/{prompt_id}.json)
+    #     - < 0       → reserved for future built-in registry (not used today)
+    #   * `agent_id` (legacy string registry key like 'local_assistant',
+    #     'cloud_radha', etc.) is still accepted for back-compat but only
+    #     consulted when prompt_id can't resolve.  Any client-minted synthetic
+    #     string ('orphan_49', 'ghost_*', etc.) silently falls back to default
+    #     instead of returning 400 — the user keeps chatting under Hevolve.
+    #   * `agent_type` from the request is NEVER read.  The server derives type
+    #     from the resolved agent (registry config or 'local' for user agents).
+    #     This eliminates the 'Unknown agent type: orphan' bug class —
+    #     denormalized data on the wire was the root cause.
+    #
+    # Migration plan in `memory/project_agent_id_int_collapse.md`:
+    #   Phase 1 (this commit): server tolerant; frontend unchanged.
+    #   Phase 2: frontend stops sending agent_id and agent_type.
+    #   Phase 3: server rejects requests that send those fields.
     all_agents = LOCAL_AGENTS + CLOUD_AGENTS
-    for agent in all_agents:
-        if agent['id'] == agent_id:
-            agent_config = agent
-            break
+    _default_agent = next(
+        (a for a in LOCAL_AGENTS if a.get('id') == 'local_assistant'),
+        LOCAL_AGENTS[0] if LOCAL_AGENTS else {'id': 'local_assistant', 'type': 'local'},
+    )
 
-    # Determine agent type from config or parameter
-    if agent_config:
-        agent_type = agent_config.get('type', agent_type)
+    def _coerce_int(v):
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.lstrip('-').isdigit():
+            try:
+                return int(v)
+            except ValueError:
+                return None
+        return None
+
+    def _resolve_agent(_prompt_id, _agent_id_legacy):
+        """Return (agent_config, resolved_agent_id, resolved_type, resolved_prompt_id).
+
+        Resolution order:
+          1. prompt_id > 0 with prompt file -> user agent (type='local').
+          2. agent_id_legacy in registry (LOCAL_AGENTS/CLOUD_AGENTS) -> built-in.
+          3. agent_id_legacy as digit with prompt file -> user agent.
+          4. Caller sent a real prompt_id but no recipe is on disk
+             (cross-device user, recipe missing locally) -> PRESERVE
+             prompt_id + signal create-mode so HARTOS enters
+             gather_info / create_recipe instead of casually chatting
+             with local_assistant in disguise.  See chat-routing
+             trace 2026-05-04 (Speech Therapy from Recents): prior
+             behaviour silently swapped prompt_id to None and routed
+             to local_assistant, hiding the recipe-missing fact from
+             both the user and the dispatcher.
+          5. No prompt_id at all -> silent fallback to default
+             (no 400, the casual-chat case).
+
+        Returns ``(agent_config, resolved_agent_id, resolved_type,
+        resolved_prompt_id, force_create_agent)``.  ``force_create_agent``
+        is the new field added 2026-05-04 (commit b719eb47); the only
+        caller is the unpack at the call site below.
+        """
+        _pid_int = _coerce_int(_prompt_id)
+        # 1. User agent via prompt_id
+        if _pid_int is not None and _pid_int > 0:
+            try:
+                from core.platform_paths import get_prompts_dir
+                _prompts_dir = get_prompts_dir()
+            except ImportError:
+                _prompts_dir = os.path.join(
+                    os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'prompts')
+            if os.path.isfile(os.path.join(_prompts_dir, f'{_pid_int}.json')):
+                return ({'id': _pid_int, 'type': 'local'}, _pid_int,
+                        'local', _pid_int, False)
+        # 2. Registry lookup by string key
+        if _agent_id_legacy:
+            for _a in all_agents:
+                if _a.get('id') == _agent_id_legacy:
+                    return (_a, _agent_id_legacy, _a.get('type', 'local'),
+                            _pid_int, False)
+        # 3. agent_id legacy as digit (some old clients sent prompt_id in agent_id)
+        _aid_int = _coerce_int(_agent_id_legacy)
+        if _aid_int is not None and _aid_int > 0:
+            try:
+                from core.platform_paths import get_prompts_dir
+                _prompts_dir = get_prompts_dir()
+            except ImportError:
+                _prompts_dir = os.path.join(
+                    os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'prompts')
+            if os.path.isfile(os.path.join(_prompts_dir, f'{_aid_int}.json')):
+                return ({'id': _aid_int, 'type': 'local'}, _aid_int,
+                        'local', _aid_int, False)
+        # 4. Caller sent a real numeric prompt_id but the recipe
+        #    isn't local. Preserve it + force create-mode so HARTOS
+        #    enters the gather_info -> create_recipe pipeline.  No
+        #    casual chat during agent creation - that's the design
+        #    intent for cross-device users (recipe was created on
+        #    another device and hasn't synced yet).
+        #
+        #    NOTE: this branch is intentionally narrow to the
+        #    numeric-prompt_id case.  We do NOT force-create for a
+        #    synthetic-string _agent_id_legacy ('orphan_49',
+        #    'ghost_*') here — that contradicts the lines 2329-2331
+        #    contract: "Any client-minted synthetic string silently
+        #    falls back to default instead of returning 400 — the
+        #    user keeps chatting under Hevolve."  Forcing create
+        #    on a synthetic string would send HARTOS into create_recipe
+        #    with a bogus identifier and produce an agent the user
+        #    never asked for.  Synthetic strings fall through to step 5.
+        if _pid_int is not None and _pid_int > 0:
+            logger.warning(
+                'Recipe missing locally for prompt_id=%s - forcing '
+                'create_agent=True so HARTOS routes to gather_info / '
+                'create_recipe (was previously silently falling back '
+                'to local_assistant which hid the cross-device sync '
+                'gap from the user)', _pid_int)
+            return ({'id': _pid_int, 'type': 'local'}, _pid_int,
+                    'local', _pid_int, True)
+        # 5. No usable prompt_id and either no agent_id_legacy OR a
+        #    synthetic string we can't resolve -> default casual chat
+        #    under Hevolve, per the lines 2329-2331 contract.
+        return (_default_agent, _default_agent['id'],
+                _default_agent.get('type', 'local'), None, False)
+
+    agent_config, agent_id, agent_type, prompt_id, _force_create_agent = \
+        _resolve_agent(prompt_id, agent_id)
+    # When _resolve_agent had to fall back due to missing recipe (step 4),
+    # force create_agent=True so HARTOS hard-routes to autogen instead of
+    # casually chatting via the draft-first path.  Per design intent: no
+    # point in casual chat when we know we need to (re)create an agent.
+    #
+    # ALSO force autonomous_creation=True so HARTOS enters
+    # `if autonomous:` at hart_intelligence_entry.py:6731 — that's the
+    # path that (a) runs find_matching_agent for REUSE, (b) calls
+    # _autonomous_gather_info (LLM auto-fills identity, with a partial-
+    # salvage fallback at hart_intelligence_entry.py:5817), then (c)
+    # immediately calls recipe() which executes via the autogen tool
+    # group (visual_execution / call_visual_task / etc).  Without this,
+    # autonomous=False sends the request to the interview-only branch
+    # at line 6827 that asks "what would you like to name your agent?"
+    # — useless for a free-text task prompt where the user just wanted
+    # the work done.  Witnessed 2026-05-06 17:04:51 with "open notepad
+    # and type hi" (request f8794588) — gather_info paused at turn 1/12
+    # and never reached recipe().  This single flag flip routes the
+    # same fallback to the auto-create+execute pipeline.
+    if _force_create_agent and not create_agent:
+        create_agent = True
+        autonomous_creation = True
+        logger.info(
+            'create_agent + autonomous_creation forced True by '
+            '_resolve_agent fallback - HARTOS will route to '
+            '_autonomous_gather_info → recipe() (auto-fill identity '
+            'and execute), not the interview-only path')
+    # Log when client-supplied agent_type differed from the derived one — helps
+    # us confirm the back-compat shim is the only path being exercised once
+    # frontend Phase 2 lands.
+    _client_type = data.get('agent_type')
+    if _client_type and _client_type != agent_type:
+        logger.info(
+            "chat: client-supplied agent_type=%r ignored; server derived %r "
+            "from agent_id=%r prompt_id=%r (Phase-1 back-compat shim, see "
+            "memory/project_agent_id_int_collapse.md)",
+            _client_type, agent_type, agent_id, prompt_id,
+        )
 
     # ============== LOCAL AGENT ==============
     if agent_type == 'local':
@@ -2464,25 +2715,23 @@ def chat_route():
         # --- Tier 1: Try LangChain pipeline via adapter (port 6777) ---
         if HEVOLVE_CHAT_AVAILABLE:
             try:
-                # Determine langchain prompt_id:
-                # - Built-in local agents (local_assistant, etc.) → None → regular LangChain chat
-                # - Custom agents with numeric prompt_id AND a HARTOS prompt file → create/reuse flow
-                # - Agents without a prompt file → casual chat (no prompt_id)
+                # Determine langchain prompt_id from _resolve_agent's
+                # already-classified result (single source of truth -
+                # the prior inline file-check here was a parallel path
+                # that double-stripped prompt_id, hiding the missing-
+                # recipe case from HARTOS even when create_agent=True
+                # was set by step 4 of _resolve_agent).
+                #
+                # Three cases _resolve_agent returns map cleanly to:
+                #   step 1 / step 3 (digit + file exists)  → pass int
+                #   step 2 (registry hit, e.g. local_assistant) → None
+                #   step 4 (forced create-mode) → keep prompt_id so
+                #     HARTOS gather/create can use the same id the
+                #     user clicked instead of auto-generating a new one
+                #     and creating a stranger agent
                 langchain_prompt_id = None
-                _candidate_pid = prompt_id or agent_id
-                if _candidate_pid and str(_candidate_pid).isdigit():
-                    # Only pass prompt_id to HARTOS if the agent has a prompt file
-                    # (user-created agents). Hardcoded default agents (e.g. id=54)
-                    # don't have prompt files and should go to casual LangChain chat.
-                    try:
-                        from core.platform_paths import get_prompts_dir
-                        _prompt_file = os.path.join(get_prompts_dir(), f'{_candidate_pid}.json')
-                    except ImportError:
-                        _prompt_file = os.path.join(
-                            os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'prompts',
-                            f'{_candidate_pid}.json')
-                    if os.path.isfile(_prompt_file):
-                        langchain_prompt_id = int(_candidate_pid)
+                if prompt_id and str(prompt_id).isdigit():
+                    langchain_prompt_id = int(prompt_id)
 
                 # Intent routing (casual_conv / create_agent / channel
                 # connect nudge) is performed inside HARTOS by the
@@ -2579,7 +2828,21 @@ def chat_route():
                         'agent_id': agent_id,
                         'agent_type': 'local',
                         'source': 'langchain_local',
-                        'success': True
+                        'success': True,
+                        # Privacy-first: tell the client which compute tier
+                        # served this reply so the UI can render a tier
+                        # badge (🔒 local on-device / 🏠 LAN HARTOS /
+                        # 🌐 cloud).  No automatic egress; just
+                        # transparency about what already happened.
+                        # 'langchain_local' source means the reply came
+                        # from this Nunba instance's bundled LLM — fully
+                        # on-device on flat tier, fully on-LAN on
+                        # regional tier.  Cloud-served replies set
+                        # source='langchain_cloud' in the cloud chatbot
+                        # pipeline (chatbot_pipeline/chatbot.py).
+                        'served_by': 'local',
+                        'node_tier': os.environ.get(
+                            'HEVOLVE_NODE_TIER', 'flat'),
                     }
                     # Agent-driven resource request: 3 detection paths (ordered by priority)
                     # 1. Direct secret_request from backend/adapter
@@ -2681,8 +2944,25 @@ def chat_route():
                             daemon=True
                         ).start()
                     # TTS at Nunba layer — fires when HARTOS can't handle it:
-                    # - Tier-1 down (not _hartos_backend_available)
-                    # - Non-English (frozen HARTOS doesn't pass language to TTS)
+                    # - HARTOS Tier-1 not yet booted (boot transient — live
+                    #   evidence 2026-05-10 22:03:02 showed a chat served
+                    #   while HARTOS was still loading; HARTOS's bg TTS
+                    #   thread did NOT fire so Nunba MUST step in).
+                    # - Non-English (frozen HARTOS doesn't always pass
+                    #   preferred_lang to the synth pipeline; Indic Parler
+                    #   / Kokoro routing lives in Nunba's tts_engine).
+                    #
+                    # The earlier 2d574bc4 attempt to drop the
+                    # `not _ensure_hartos()` clause (claiming "HARTOS
+                    # always handles TTS in Tier-1 success") regressed
+                    # first-message TTS to silence: HARTOS's tts bg
+                    # thread can be unbooted at the moment chatbot_routes
+                    # returns its Tier-1 response, in which case nothing
+                    # publishes the audio.  Restored to the pre-2d574bc4
+                    # shape; the prior intermittent double-publish is
+                    # better-addressed at a deeper layer (MessageBus
+                    # dual-bridge in #504), not by gating away the
+                    # legitimate Nunba fallback.
                     from routes.hartos_backend_adapter import _ensure_hartos
                     _nunba_handles_tts = (not _ensure_hartos() or
                                           (preferred_lang and not preferred_lang.startswith('en')))
@@ -2818,7 +3098,11 @@ def chat_route():
             response = requests.post(
                 cloud_endpoint,
                 json=payload,
-                timeout=60,
+                # Tiered timeout: 5s connect, 60s total.  Single int timeout
+                # leaves connect-time budget conflated with read-time budget;
+                # a stuck DNS resolution then burns the full 60s before any
+                # data flows.  Cloud chat is on the user-facing hot path.
+                timeout=(5, 60),
                 headers=cloud_headers
             )
 
@@ -2865,8 +3149,23 @@ def chat_route():
                 'success': False
             })
 
-    # Unknown agent type
-    return jsonify({'error': f'Unknown agent type: {agent_type}'}), 400
+    # Unreachable in practice: _resolve_agent always returns type ∈
+    # {'local', 'cloud'} (its default fallback covers everything,
+    # including stale prompt_ids and client-minted synthetic agent_ids).
+    # Kept as a defensive 500 so a future registry entry with an invalid
+    # type fails loud server-side instead of returning a misleading 400
+    # to the client.
+    logger.error(
+        "chat: _resolve_agent returned unexpected type=%r for "
+        "agent_id=%r prompt_id=%r — registry corruption?",
+        agent_type, agent_id, prompt_id,
+    )
+    return jsonify({
+        'error': 'Server registry inconsistency — agent type unknown',
+        'agent_id': agent_id,
+        'agent_type': agent_type,
+        'success': False,
+    }), 500
 
 
 def backend_health_route():

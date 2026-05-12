@@ -4,6 +4,68 @@ main.py -- Nunba Server
 A Friend, A Well Wisher, Your LocalMind
 Connect to Hivemind to collaborate with your friends' agents.
 """
+# torch.__spec__ post-facto patch.
+# app.py's frozen-build torch stub installs sys.modules['torch'] =
+# types.ModuleType() with __spec__ = None, which makes Py 3.12
+# importlib.util.find_spec('torch') raise ValueError.  The upstream
+# fix is in app.py:980 (commit 2fbcca98) but this post-facto patch
+# keeps BOTH paths working when main.py is loaded after a stub install
+# from an older bundled app.py.  Safe to run even when the source is
+# already patched (no-ops if __spec__ is already set).
+import sys as _s_spec
+
+try:
+    from importlib.machinery import ModuleSpec as _MS_spec
+    for _mod_name in ('torch', 'torch.autograd', 'torch.cuda',
+                      'torch.nn', 'torch.nn.functional'):
+        _m = _s_spec.modules.get(_mod_name)
+        if _m is not None and getattr(_m, '__spec__', None) is None:
+            try:
+                _m.__spec__ = _MS_spec(
+                    name=_mod_name, loader=None, origin='frozen_stub',
+                    is_package=_mod_name in ('torch', 'torch.nn'),
+                )
+                if _mod_name == 'torch':
+                    _m.__spec__.submodule_search_locations = []
+            except Exception:
+                pass
+except Exception:
+    pass
+
+# WMI-hang prevention (MUST BE FIRST).
+# platform.uname/node/system/release/version on Windows funnel through
+# _wmi_query which hangs 60s+ when WMI is busy (Defender). Populate
+# platform._uname_cache so every caller gets instant cached results
+# and never touches WMI.  Witnessed 2026-04-21: startup blocked 70s+
+# in desktop/ai_key_vault + 50s+ in mouseinfo (transitive via
+# pyautogui).
+import os as _o_wmi
+import platform as _p_wmi
+import sys as _s_wmi
+
+try:
+    import socket as _sk_wmi
+    _hn_wmi = _sk_wmi.gethostname()
+except Exception:
+    _hn_wmi = _o_wmi.environ.get('COMPUTERNAME') or 'unknown'
+try:
+    from collections import namedtuple as _nt_wmi
+    _UR_wmi = _nt_wmi('uname_result',
+                      'system node release version machine processor')
+    _p_wmi._uname_cache = _UR_wmi(
+        system='Windows' if _s_wmi.platform == 'win32' else _s_wmi.platform,
+        node=_hn_wmi, release='', version='',
+        machine=_o_wmi.environ.get('PROCESSOR_ARCHITECTURE', 'AMD64'),
+        processor=_o_wmi.environ.get('PROCESSOR_IDENTIFIER', ''),
+    )
+except Exception:
+    pass
+del _p_wmi, _s_wmi, _o_wmi, _hn_wmi
+try:
+    del _sk_wmi, _nt_wmi, _UR_wmi
+except NameError:
+    pass
+
 import argparse
 import logging
 import os
@@ -21,14 +83,29 @@ import traceback
 os.environ.setdefault('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
                        '--autoplay-policy=no-user-gesture-required')
 
-# HuggingFace: skip model update checks when running offline / cached.
-# Prevents 30-60s of HEAD request timeouts on every model load.
-# Models are downloaded during install — no need to re-check at runtime.
-if not os.environ.get('HF_HUB_OFFLINE'):
-    _hf_cache = os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')
-    if os.path.isdir(_hf_cache) and any(
-            d.startswith('models--') for d in os.listdir(_hf_cache)):
-        os.environ['HF_HUB_OFFLINE'] = '1'
+# HuggingFace: do NOT force-set HF_HUB_OFFLINE=1 globally at boot.
+#
+# The previous heuristic ("any model cache present → set OFFLINE")
+# permanently blocked new TTS-backend installs from downloading their
+# weights — witnessed 2026-04-21 in gui_app.log:
+#     chatterbox_turbo install error: Cannot find an appropriate cached
+#     snapshot folder ... outgoing traffic has been disabled. To enable
+#     repo look-ups and downloads online, set 'HF_HUB_OFFLINE=0'.
+# A user with cached Whisper / MiniCPM weights but missing Chatterbox
+# could never auto-install the missing TTS engine because the cache
+# heuristic flipped them into offline-only mode.
+#
+# huggingface_hub has its own ETag-based fast path that completes in
+# ~50 ms when the cached file is current — the alleged 30-60s HEAD
+# stall only manifests on a degraded network, where blocking outbound
+# traffic doesn't help anyway (the install path needs the network).
+#
+# Users who want strict offline can still set HF_HUB_OFFLINE=1 in the
+# env before launching Nunba.  Programmatic offline-during-read can be
+# scoped by per-call kwargs to huggingface_hub APIs.
+#
+# Leaving HF_HUB_OFFLINE alone is the safer default for the auto-install
+# venv pipeline.
 
 from flask import Flask, jsonify, request, send_file
 
@@ -110,6 +187,60 @@ os.environ.setdefault('HARTOS_BACKEND_URL', 'http://localhost:6777')  # LangChai
 # Signal bundled mode so langchain/HevolveAI redirect logs to Documents/Nunba/logs
 os.environ['NUNBA_BUNDLED'] = '1'
 
+# ── Phase 7+ feature flags — Wave 1 batch enable (additive flags only) ──
+# Each flag gates an additive code path: new route, new model registration,
+# new daemon trigger, or new helper.  Off-path is no-op or empty fallback;
+# audited 2026-05-09 (zero parallel paths, zero DRY violations).
+# Data-shape flags (tenancy_v2, members_v2, friends_v2, post_privacy,
+# moderation_v2, multi_tenant_cloud, tenant_strict_mode) and build-system
+# flags (electron_build) are deferred — they need schema migration audit
+# before flip; tracked separately.
+# setdefault preserves any explicit override from the deploy environment.
+os.environ.setdefault('HEVOLVE_FLAG_MENTIONS_AUTOCOMPLETE', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_MENTIONS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_AGENT_MEMBERS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_INVITES_V2', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_CONVERSATIONS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_REACTIONS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_SYNC_V1', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_CALLS_V1', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_AGENT_VOICE_BRIDGE', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_WEAR_CALLS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_NUNBA_DESKTOP_V2', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_E2E_DMS', 'true')
+# Wave 2 — data-shape flags (schema migrations v41/v48/v50 verified live):
+#   FRIENDS_V2   — friend-graph routes (10+ endpoints in api.py:449+).
+#                  Schema v41 already created friendships table; gate is
+#                  endpoint-only, no legacy data.
+#   POST_PRIVACY — public/friends/community/private gating.
+#                  v48 added posts.privacy column; privacy.py:_normalize
+#                  maps NULL→'public' so all 363 pre-flag posts stay
+#                  exactly as visible as before.
+#   MODERATION_V2 — ContentClassifier post-DLP audit + is_quarantined.
+#                   v50 added content_moderation_decisions table +
+#                   posts.is_quarantined; legacy posts have no decision
+#                   rows (audit-trail gap, acceptable per Phase 7e plan).
+os.environ.setdefault('HEVOLVE_FLAG_FRIENDS_V2', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_POST_PRIVACY', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_MODERATION_V2', 'true')
+# DISPATCH_VIA_CHAT — gate reader at agentic_router.py:_dispatch_via_chat
+# (HARTOS commit 567a78b restored the helper after Wave-1 audit).  Social
+# agents now reuse the canonical /chat runtime (autogen + persona + tools
+# + history) instead of raw single-shot llm.invoke; falls back to raw
+# llm.invoke if /chat unreachable, so flag-on is strictly additive.
+os.environ.setdefault('HEVOLVE_FLAG_DISPATCH_VIA_CHAT', 'true')
+# Skipped — DEAD CONFIG (declared in feature_flags._DEFAULTS but no active
+# reader in code; flipping would be no-op):
+#   tenancy_v2 / members_v2 / multi_tenant_cloud / electron_build.
+# Skipped — NO-OP for flat/desktop tier (g.tenant_id is None):
+#   tenant_strict_mode.
+# HEVOLVE_AGENT_ENGINE_ENABLED + HEVOLVE_SPECULATIVE_ENABLED are LLM-gated;
+# set in app.py:1417 only when an LLM is configured (avoids agent-engine
+# startup with no LLM, which would emit errors).  Don't duplicate here.
+os.environ.setdefault('HEVOLVE_VISION_LITE_ENABLED', 'true')
+os.environ.setdefault('HEVOLVE_RSI_REALTIME', 'true')
+os.environ.setdefault('HEVOLVE_RSI_EXPLORE', 'true')
+
 # Restore persisted node config (master key, tier) from previous session
 _node_config_path = os.path.join(PROGRAM_DATA_DIR, 'data', 'node_config.json')
 if os.path.isfile(_node_config_path):
@@ -161,11 +292,13 @@ _splash('Loading social platform...')
 # core.optional_import so the failure (if any) lands in
 # /api/admin/diag/degradations instead of being silently swallowed.
 HARTOS_BACKEND_DIRECT = False
-init_social = None
-social_bp = None
-get_engine = None
-init_db = None
 try:
+    # Availability probe ONLY — we no longer bind init_social/social_bp/
+    # init_db/get_engine at module load.  HARTOS owns its own bootstrap
+    # via ``hartos_bootstrap.bootstrap()``; consumers must not reach
+    # past the facade.  See `tests/test_hartos_facade_only.py` for the
+    # AST guard, and the framework-bootstrap section near the bottom of
+    # this file for the call site.
     from core.optional_import import optional_import as _opt_import
     _social_mod = _opt_import(
         'integrations.social',
@@ -173,14 +306,11 @@ try:
     )
     _social_models = _opt_import(
         'integrations.social.models',
-        reason='HARTOS social DB engine + init_db migration runner',
+        reason='HARTOS social DB engine availability probe',
     )
     if _social_mod is not None and _social_models is not None:
-        init_social = _social_mod.init_social
-        social_bp = _social_mod.social_bp
-        get_engine = _social_models.get_engine
-        init_db = _social_models.init_db
         HARTOS_BACKEND_DIRECT = True
+    del _social_mod, _social_models
 except Exception as _se:
     # core.optional_import itself failing is a cold-boot bug — log loud.
     logging.warning(f"social platform optional-import wiring failed: {_se}")
@@ -235,8 +365,18 @@ APP_DIR = get_app_directory()
 # Landing page build directory (built from landing-page source in Nunba)
 LANDING_PAGE_BUILD_DIR = os.path.join(APP_DIR, 'landing-page', 'build')
 
-# Default API Endpoint
-DEFAULT_STOP_API_URL = "http://gcp_training2.hertzai.com:5001/stop"
+# Default stop-API URL — resolved from HARTOS so cloud-trainer
+# deployments can override via HEVOLVE_STOP_API_URL.  Default is empty
+# string for local installs (no cloud trainer to stop) — callers
+# below skip the POST when args.stop_api_url is falsy.  Used to live
+# as a hardcoded `http://gcp_training2.hertzai.com:5001/stop`
+# literal that timed out silently on every shutdown of every local
+# install for years.
+try:
+    from core.config_cache import get_stop_api_url as _get_stop_api_url
+    DEFAULT_STOP_API_URL = _get_stop_api_url()
+except ImportError:
+    DEFAULT_STOP_API_URL = os.environ.get('HEVOLVE_STOP_API_URL', '')
 
 # Setting global variables to track LLM Control Status
 llm_control_active = False
@@ -291,16 +431,20 @@ _has_file_handler = any(
 )
 
 if not _has_file_handler:
-    # Standalone mode — no app.py, so set up server.log ourselves
+    # Standalone mode — no app.py, so set up server.log ourselves.
+    # 25MB × 5 = 125MB cap (was unbounded → 344MB witnessed 2026-04-21).
+    from logging.handlers import RotatingFileHandler as _RFH_srv
     try:
-        _server_fh = logging.FileHandler(args.log_file, mode='a', encoding='utf-8')
+        _server_fh = _RFH_srv(args.log_file, mode='a', encoding='utf-8',
+                              maxBytes=25 * 1024 * 1024, backupCount=5)
         _server_fh.setLevel(logging.INFO)
         _server_fh.setFormatter(logging.Formatter(_log_format))
         _root_logger.addHandler(_server_fh)
     except Exception:
         temp_log_file = os.path.join(tempfile.gettempdir(), 'Nunba', 'server.log')
         os.makedirs(os.path.dirname(temp_log_file), exist_ok=True)
-        _server_fh = logging.FileHandler(temp_log_file, mode='a', encoding='utf-8')
+        _server_fh = _RFH_srv(temp_log_file, mode='a', encoding='utf-8',
+                              maxBytes=25 * 1024 * 1024, backupCount=5)
         _server_fh.setLevel(logging.INFO)
         _server_fh.setFormatter(logging.Formatter(_log_format))
         _root_logger.addHandler(_server_fh)
@@ -315,7 +459,9 @@ else:
     # app.py's gui_app.log FileHandler is the primary log destination.
     # Just add server.log as a SECONDARY destination (not replacing gui_app.log).
     try:
-        _server_fh = logging.FileHandler(args.log_file, mode='a', encoding='utf-8')
+        from logging.handlers import RotatingFileHandler as _RFH_srv
+        _server_fh = _RFH_srv(args.log_file, mode='a', encoding='utf-8',
+                              maxBytes=25 * 1024 * 1024, backupCount=5)
         _server_fh.setLevel(logging.INFO)
         _server_fh.setFormatter(logging.Formatter(_log_format))
         _root_logger.addHandler(_server_fh)
@@ -625,29 +771,44 @@ def after_request(response):
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
     response.headers['Access-Control-Max-Age'] = '3600'
 
-    # Chrome Private Network Access (PNA) headers — required for local network
-    # requests from secure contexts.  Without these Chrome shows warnings and
-    # may block requests to localhost in future versions.
-    if request.headers.get('Access-Control-Request-Private-Network') == 'true':
+    # Chrome Private Network Access — only honor when the origin already
+    # passed _is_allowed_origin (so any third-party page can't escalate
+    # itself by asking for PNA).
+    if (origin and _is_allowed_origin(origin)
+            and request.headers.get('Access-Control-Request-Private-Network') == 'true'):
         response.headers['Access-Control-Allow-Private-Network'] = 'true'
 
     # Security headers — desktop app, never iframed, no external scripts
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    # Content-Security-Policy — desktop app only talks to its own
-    # Flask origin + localhost llama-server (:8080/:8082) + VisionService
-    # (:5460) + crossbar (:8088). `unsafe-inline` is required because
-    # CRA's runtime and MUI emotion inject inline styles; migrating to
-    # nonce/hash CSP is a separate, larger task. blob: covers generated
-    # audio URLs used for synthesized TTS playback.
+    # Content-Security-Policy — desktop app talks to:
+    # - own Flask origin ('self')
+    # - localhost llama-server (:8080/:8082), VisionService (:5460),
+    #   crossbar (:8088)
+    # - hertzai.com cloud subdomains for OTP/auth/SMS: azurekong (login,
+    #   OTP verify), mailer (teacher/admin auth, registration, content),
+    #   sms (OTP delivery).  These are bundled-mode reality — without
+    #   them CSP blocks the `Get OTP` fetch before it leaves the browser
+    #   and users on registered accounts get told to "sign up" (live
+    #   incident 2026-05-11, frontend console:
+    #   "Refused to connect because it violates the document's Content
+    #    Security Policy. https://azurekong.hertzai.com/data/login").
+    # `unsafe-inline` is required because CRA's runtime and MUI emotion
+    # inject inline styles; migrating to nonce/hash CSP is a separate,
+    # larger task.  blob: covers generated audio URLs used for synthesized
+    # TTS playback.
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob: https:; "
         "media-src 'self' blob: data:; "
-        "connect-src 'self' http://localhost:* ws://localhost:* wss://localhost:*; "
+        "connect-src 'self' "
+        "http://localhost:* ws://localhost:* wss://localhost:* "
+        "https://*.hertzai.com wss://*.hertzai.com "
+        "https://hevolve.ai https://*.hevolve.ai wss://*.hevolve.ai "
+        "https://mcgroce.com https://*.mcgroce.com wss://*.mcgroce.com; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self'"
@@ -671,8 +832,9 @@ def handle_preflight():
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
         response.headers['Access-Control-Max-Age'] = '3600'
 
-        # Chrome Private Network Access preflight
-        if request.headers.get('Access-Control-Request-Private-Network') == 'true':
+        # PNA preflight — same gating as the response handler.
+        if (origin and _is_allowed_origin(origin)
+                and request.headers.get('Access-Control-Request-Private-Network') == 'true'):
             response.headers['Access-Control-Allow-Private-Network'] = 'true'
 
         return response
@@ -785,6 +947,18 @@ def call_stop_api():
                 stop_payload = {}
 
 
+        # Skip the cloud-trainer notification when the URL isn't
+        # configured.  Local installs have no cloud trainer to stop,
+        # so an empty stop_api_url is the documented "no-op" path
+        # (see core.config_cache.get_stop_api_url docstring).
+        if not args.stop_api_url:
+            logger.info(
+                "stop API not configured (HEVOLVE_STOP_API_URL unset) — "
+                "skipping cloud-trainer stop notification (no-op for "
+                "local installs)"
+            )
+            return True
+
         # Make the API Call
         logger.info(f"Calling the stop API at {args.stop_api_url} with payload: {stop_payload}")
 
@@ -859,6 +1033,7 @@ def api_guest_id():
 
 
 @app.route('/api/guest-id', methods=['DELETE'])
+@require_local_or_token
 def api_guest_id_delete():
     """Wipe local guest identity + per-bucket history.
 
@@ -906,6 +1081,23 @@ def api_guest_id_delete():
     return jsonify({'deleted': True, 'previous_guest_id': prev}), 200
 
 
+def _chat_cfg_request_id() -> str | None:
+    """Pull the per-request correlation id from Flask's request context.
+
+    Nunba's React SPA sets ``X-Request-Id`` on admin calls; if
+    missing, fall back to ``X-Nunba-Local-Token`` last-8 so logs
+    still have *something* greppable.  Never raises.
+    """
+    try:
+        rid = request.headers.get('X-Request-Id')
+        if rid:
+            return rid[:64]  # defensive cap
+        tok = request.headers.get('X-Nunba-Local-Token') or ''
+        return tok[-8:] if tok else None
+    except Exception:  # noqa: BLE001 — outside request ctx
+        return None
+
+
 @app.route('/api/admin/config/chat', methods=['GET'])
 def api_admin_chat_config_get():
     """Return the current admin-controlled chat-restore settings.
@@ -922,11 +1114,17 @@ def api_admin_chat_config_get():
     it to gate the auto-restore + auto-scroll behaviour. See
     desktop/chat_settings.py for the canonical schema + writer.
     """
+    # Task #335 J2: stamp request_id so chat-config polling (fires
+    # every few seconds from the UI) is greppable per-request.
+    from desktop.log_ctx import log_ctx
+    _log = log_ctx(logging.getLogger('main.chat_settings'),
+                   request_id=_chat_cfg_request_id())
     try:
         from desktop.chat_settings import get_chat_settings
+        _log.debug("chat-config GET ok")
         return jsonify(get_chat_settings().to_dict()), 200
     except Exception as e:  # noqa: BLE001
-        logging.warning("chat-config GET failed: %s", e)
+        _log.warning("chat-config GET failed: %s", e)
         # Defensive default — frontend treats this as 'always' so the
         # user still gets restore behaviour even if the settings file
         # is unreachable.
@@ -939,6 +1137,7 @@ def api_admin_chat_config_get():
 
 
 @app.route('/api/admin/config/chat', methods=['PUT'])
+@require_local_or_token
 def api_admin_chat_config_put():
     """Update the admin-controlled chat-restore settings.
 
@@ -946,19 +1145,31 @@ def api_admin_chat_config_put():
     cloud_sync_enabled}``. Unknown keys are ignored (forward
     compat for older clients), invalid enum values 400.
 
-    Auth: this endpoint is local-only by virtue of Nunba's flask
-    binding to 127.0.0.1; admin gating in the broader sense is
-    out-of-scope for the MVP per CLAUDE.md (single-user desktop).
+    Auth: ``@require_local_or_token``. The "Nunba binds to 127.0.0.1
+    so loopback is implicitly trusted" reasoning is wrong — any web
+    page the user's browser visits while Nunba runs can fetch this
+    PUT and silently flip restore policy / scope / cloud sync
+    (drive-by CSRF, no Origin check on simple JSON POST).  The
+    decorator forces an X-Nunba-Local-Token header that the in-app
+    React SPA carries via http://localhost:<flask_port>/local but
+    third-party origins do not.
     """
+    # Task #335 J2: reuse request_id for the admin PUT trace.
+    from desktop.log_ctx import log_ctx
+    _log = log_ctx(logging.getLogger('main.chat_settings'),
+                   request_id=_chat_cfg_request_id())
     try:
         from desktop.chat_settings import update_chat_settings
         payload = request.get_json(silent=True) or {}
         new_settings = update_chat_settings(payload)
+        _log.info("chat-config PUT applied keys=%s",
+                  sorted(k for k in payload if isinstance(payload, dict)))
         return jsonify(new_settings.to_dict()), 200
     except ValueError as ve:
+        _log.warning("chat-config PUT invalid: %s", ve)
         return jsonify({'error': 'invalid_payload', 'message': str(ve)}), 400
     except Exception as e:  # noqa: BLE001
-        logging.error("chat-config PUT failed: %s", e)
+        _log.error("chat-config PUT failed: %s", e)
         return jsonify({'error': 'update_failed', 'message': str(e)}), 500
 
 
@@ -1074,6 +1285,236 @@ def api_chat_sync_forget():
     except Exception as e:  # noqa: BLE001
         logging.error("chat-sync forget failed for %s: %s", uid, e)
         return jsonify({'error': 'forget_failed'}), 500
+
+
+# ─── Chat-Sync cursor-pull (U4: canonical ChatMessage replay) ───────
+# Unlike /api/chat-sync/pull (bucket blob), this endpoint returns the
+# HARTOS ConversationEntry rows that landed via the chat hot path
+# (hart_intelligence_entry._chat_reply → chat_messages.persist).  A
+# fresh device that just signed in pulls ?since=0 to rebuild history;
+# a subscribed device uses chat.new WAMP instead and never calls this
+# at all.  Returns 501 if HARTOS is absent.
+@app.route('/api/chat-sync/pull-since', methods=['GET'])
+def api_chat_sync_pull_since():
+    """Cursor-pull of ConversationEntry rows for the authenticated user.
+
+    Query params:
+      since — integer cursor; returns rows with id > since (default 0)
+      limit — cap, bounded by CHAT_CURSOR_PULL_MAX_ROWS (default 500)
+      channel_type — filter to 'chat' / 'web' / etc. (optional)
+      agent_id — filter to one agent (optional)
+
+    Response:
+      {'messages': [...], 'next_cursor': <int>}
+      next_cursor = max(id) across returned rows, or the input since
+      when nothing new was found.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from integrations.social import chat_messages as _cm
+    except ImportError:
+        return jsonify({
+            'error': 'hartos_missing',
+            'message': 'HARTOS chat_messages unavailable (pip not installed).',
+        }), 501
+    try:
+        since_raw = request.args.get('since', '0')
+        since = int(since_raw) if since_raw.isdigit() else 0
+    except (TypeError, ValueError):
+        since = 0
+    try:
+        limit_raw = request.args.get('limit')
+        limit = int(limit_raw) if limit_raw and limit_raw.isdigit() else None
+    except (TypeError, ValueError):
+        limit = None
+    channel_type = request.args.get('channel_type') or None
+    agent_id = request.args.get('agent_id') or None
+    try:
+        msgs = _cm.pull_since(
+            uid, since,
+            limit=limit,
+            channel_type=channel_type,
+            agent_id=agent_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync pull-since failed for %s: %s", uid, e)
+        return jsonify({'error': 'pull_failed'}), 500
+    next_cursor = since
+    for m in msgs:
+        try:
+            next_cursor = max(next_cursor, int(m.get('id') or 0))
+        except (TypeError, ValueError):
+            continue
+    return jsonify({'messages': msgs, 'next_cursor': next_cursor}), 200
+
+
+# ─── File-Sync (U9: WhatsApp-style cross-device attachments) ────────
+@app.route('/api/chat-sync/files/push', methods=['POST'])
+def api_chat_sync_files_push():
+    """Upload a binary for cross-device replication.
+
+    multipart/form-data with a single file field 'file'.  Optional
+    form fields: device_id.  Response: {file_id, sha256, size, name, mime}.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    up = request.files.get('file')
+    if up is None:
+        return jsonify({'error': 'missing_file'}), 400
+    try:
+        from desktop.file_sync import store as _store
+    except ImportError:
+        return jsonify({'error': 'file_sync_unavailable'}), 501
+    try:
+        meta = _store(
+            uid,
+            up.stream,
+            name=up.filename or 'file',
+            mime=up.mimetype or 'application/octet-stream',
+            device_id=request.form.get('device_id'),
+        )
+        return jsonify(meta), 200
+    except ValueError as ve:
+        return jsonify({'error': 'invalid_payload', 'message': str(ve)}), 400
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync files push failed for %s: %s", uid, e)
+        return jsonify({'error': 'push_failed'}), 500
+
+
+@app.route('/api/chat-sync/files/pull', methods=['GET'])
+def api_chat_sync_files_pull():
+    """Fetch a previously-pushed blob by file_id (SHA256 hex).
+
+    ?file_id=<sha256>  → returns the bytes with the recorded mime.
+    ?since=<ms>        → returns a JSON list of file metadata modified
+                         after since_ms (for cursor enumeration).
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.file_sync import fetch as _fetch
+        from desktop.file_sync import list_since as _list
+    except ImportError:
+        return jsonify({'error': 'file_sync_unavailable'}), 501
+
+    file_id = request.args.get('file_id')
+    if file_id:
+        data, meta = _fetch(uid, file_id)
+        if data is None or meta is None:
+            return jsonify({'error': 'not_found'}), 404
+        from io import BytesIO
+        return send_file(
+            BytesIO(data),
+            mimetype=meta.get('mime') or 'application/octet-stream',
+            as_attachment=False,
+            download_name=meta.get('name') or 'file',
+            max_age=0,
+        )
+
+    try:
+        since_raw = request.args.get('since', '0')
+        since_ms = int(since_raw) if since_raw.isdigit() else 0
+    except (TypeError, ValueError):
+        since_ms = 0
+    try:
+        limit_raw = request.args.get('limit')
+        limit = int(limit_raw) if limit_raw and limit_raw.isdigit() else 200
+    except (TypeError, ValueError):
+        limit = 200
+    return jsonify({'files': _list(uid, since_ms, limit=limit)}), 200
+
+
+@app.route('/api/chat-sync/files/usage', methods=['GET'])
+def api_chat_sync_files_usage():
+    """Return {'bytes': n, 'files': n, 'quota_bytes': n} for this user."""
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.file_sync import usage as _usage
+    except ImportError:
+        return jsonify({'error': 'file_sync_unavailable'}), 501
+    try:
+        return jsonify(_usage(uid)), 200
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync files usage failed for %s: %s", uid, e)
+        return jsonify({'error': 'usage_failed'}), 500
+
+
+@app.route('/api/chat-sync/files/<file_id>', methods=['DELETE'])
+def api_chat_sync_files_delete(file_id):
+    """Remove one blob + sidecar.  Returns {'deleted': bool}."""
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.file_sync import delete as _delete
+    except ImportError:
+        return jsonify({'error': 'file_sync_unavailable'}), 501
+    try:
+        return jsonify({'deleted': bool(_delete(uid, file_id))}), 200
+    except Exception as e:  # noqa: BLE001
+        logging.error("chat-sync files delete failed for %s: %s", uid, e)
+        return jsonify({'error': 'delete_failed'}), 500
+
+
+# ─── Memory-Sync (U10: agent memory-graph replication) ──────────────
+@app.route('/api/memory-sync/pull', methods=['GET'])
+def api_memory_sync_pull():
+    """Export memory_graph rows modified since ?since=<ms>.
+
+    Response: {'items': [...], 'links': [...], 'cursor': <ms>}.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.memory_sync import export as _export
+    except ImportError:
+        return jsonify({'error': 'memory_sync_unavailable'}), 501
+    try:
+        since_raw = request.args.get('since', '0')
+        since_ms = int(since_raw) if since_raw.isdigit() else 0
+    except (TypeError, ValueError):
+        since_ms = 0
+    try:
+        limit_raw = request.args.get('limit')
+        limit = int(limit_raw) if limit_raw and limit_raw.isdigit() else 500
+    except (TypeError, ValueError):
+        limit = 500
+    try:
+        return jsonify(_export(uid, since_ms, limit=limit)), 200
+    except Exception as e:  # noqa: BLE001
+        logging.error("memory-sync pull failed for %s: %s", uid, e)
+        return jsonify({'error': 'pull_failed'}), 500
+
+
+@app.route('/api/memory-sync/push', methods=['POST'])
+def api_memory_sync_push():
+    """Import a batch exported from another device.
+
+    Body: the shape returned by GET /api/memory-sync/pull.
+    Response: {'imported_items': n, 'skipped_items': n, 'imported_links': n}.
+    """
+    uid, err = _chat_sync_resolve_uid()
+    if err:
+        return err
+    try:
+        from desktop.memory_sync import import_batch as _import
+    except ImportError:
+        return jsonify({'error': 'memory_sync_unavailable'}), 501
+    try:
+        body = request.get_json(silent=True) or {}
+        return jsonify(_import(uid, body)), 200
+    except ValueError as ve:
+        return jsonify({'error': 'invalid_payload', 'message': str(ve)}), 400
+    except Exception as e:  # noqa: BLE001
+        logging.error("memory-sync push failed for %s: %s", uid, e)
+        return jsonify({'error': 'push_failed'}), 500
 
 
 def get_embedded_python_path():
@@ -1240,6 +1681,7 @@ def capture_screen_with_cursor():
         }), 500
 
 @app.route('/indicator/stop', methods=["GET"])
+@require_local_or_token
 def stop_ai_control_endpoint():
     """Stop AI Control and hide the indicator"""
     global llm_control_active
@@ -1457,19 +1899,59 @@ def llm_switch_model():
 def harthash():
     """@HARTHASH — returns git commit hashes of all repos at build time.
 
-    Used to verify which version is installed. Reads from build_hashes.json
-    (generated by build.py) or falls back to live git if in dev mode.
+    Frozen builds: reads BUILD_INFO.txt (written by scripts/build.py
+    post-cx_Freeze).  Source of truth.  Also tries the legacy
+    build_hashes.json for backwards compat with older installs.
+    Dev mode: live `git rev-parse HEAD` per sibling repo.
+
+    Always returns a JSON object — never errors.  Missing fields
+    surface as 'unknown' so the client can flag misconfigured
+    builds without a 500.
     """
     import json as _json
-    # Try build-time hashes first (frozen build)
-    _hash_file = os.path.join(os.path.dirname(os.path.abspath(
-        sys.executable if getattr(sys, 'frozen', False) else __file__)), 'build_hashes.json')
+    _install_dir = os.path.dirname(os.path.abspath(
+        sys.executable if getattr(sys, 'frozen', False) else __file__,
+    ))
+
+    # 1) BUILD_INFO.txt — the actual artifact every freeze ships.  Format
+    #    is `KEY=VALUE` lines (BUILD_SHA, HARTOS_SHA, BUILD_TIME,
+    #    BUILD_PLATFORM).  Normalize key names to match the JSON schema
+    #    legacy callers expect.
+    _info_file = os.path.join(_install_dir, 'BUILD_INFO.txt')
+    if os.path.isfile(_info_file):
+        try:
+            kv: dict = {}
+            with open(_info_file, encoding='utf-8') as _f:
+                for _ln in _f:
+                    if '=' in _ln:
+                        _k, _v = _ln.strip().split('=', 1)
+                        kv[_k.strip()] = _v.strip()
+            return jsonify({
+                'nunba': kv.get('BUILD_SHA', 'unknown'),
+                'hartos': kv.get('HARTOS_SHA', 'unknown'),
+                'hevolveai': kv.get('HEVOLVEAI_SHA', 'unknown'),
+                'hevolve_database': kv.get('HEVOLVE_DATABASE_SHA', 'unknown'),
+                'build_time': kv.get('BUILD_TIME', 'unknown'),
+                'build_platform': kv.get('BUILD_PLATFORM', sys.platform),
+                'source': 'BUILD_INFO.txt',
+            })
+        except Exception as _e:
+            logging.warning(f"harthash: BUILD_INFO.txt parse failed: {_e}")
+
+    # 2) Legacy build_hashes.json (older installs / dev tree)
+    _hash_file = os.path.join(_install_dir, 'build_hashes.json')
     if os.path.isfile(_hash_file):
-        with open(_hash_file) as f:
-            return jsonify(_json.load(f))
-    # Dev mode — read live git hashes
+        try:
+            with open(_hash_file) as f:
+                _data = _json.load(f)
+            _data.setdefault('source', 'build_hashes.json')
+            return jsonify(_data)
+        except Exception:
+            pass
+
+    # 3) Dev mode — live git rev-parse on sibling repos
     import subprocess
-    hashes = {}
+    hashes: dict = {}
     repos = {
         'nunba': os.path.dirname(os.path.abspath(__file__)),
         'hartos': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'HARTOS'),
@@ -1484,6 +1966,7 @@ def harthash():
         except Exception:
             hashes[name] = 'unknown'
     hashes['build_time'] = 'dev-mode'
+    hashes['source'] = 'live-git'
     return jsonify(hashes)
 
 
@@ -1659,8 +2142,62 @@ def admin_models_unload(model_id):
         return jsonify({"error": str(e)}), 500
 
 
-# Track active downloads for progress reporting
-_download_progress = {}  # model_id → {status, percent, message, started_at}
+# Bounded download-progress map (regression class of Task #237 / #259).
+from collections import OrderedDict as _OrderedDict
+
+
+class _BoundedDict(_OrderedDict):
+    _MAX = 64
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self._MAX:
+            self.popitem(last=False)
+
+
+_download_progress = _BoundedDict()
+
+
+def _hb_sleep(name, total_s, chunk_s=10.0, stop_check=None):
+    """Wrap watchdog.sleep_with_heartbeat with chunked-sleep fallback."""
+    if total_s <= 0:
+        return
+    try:
+        from security.node_watchdog import get_watchdog
+        wd = get_watchdog()
+        if wd is not None:
+            wd.sleep_with_heartbeat(
+                name, total_s, chunk_seconds=chunk_s, stop_check=stop_check)
+            return
+    except Exception:
+        pass
+    end = time.monotonic() + total_s
+    while time.monotonic() < end:
+        if stop_check and stop_check():
+            return
+        time.sleep(min(chunk_s, max(0.0, end - time.monotonic())))
+
+
+def _hb_register(name, expected_interval=30.0):
+    try:
+        from security.node_watchdog import get_watchdog
+        wd = get_watchdog()
+        if wd is not None and hasattr(wd, 'register'):
+            wd.register(name, expected_interval=expected_interval)
+    except Exception:
+        pass
+
+
+def _open_lc_subprocess_log():
+    """Append-mode line-buffered log handle for the LangChain subprocess."""
+    log_dir = os.path.join(
+        os.path.expanduser('~'), 'Documents', 'Nunba', 'logs')
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except OSError:
+        pass
+    return open(os.path.join(log_dir, 'langchain_subprocess.log'),
+                'a', encoding='utf-8', errors='replace', buffering=1)
 
 @app.route('/api/admin/models/<model_id>/download', methods=["POST"])
 def admin_models_download(model_id):
@@ -1891,7 +2428,43 @@ def _get_trusted_orgs_legacy_view():
     return frozenset(e['org'] for e in get_allowlist().list())
 
 
-_TRUSTED_HF_ORGS = _get_trusted_orgs_legacy_view  # callable, not a set
+class _TrustedOrgsView:
+    """Live, lazy view of the trusted-orgs allowlist.
+
+    Supports the three idioms callers historically use against
+    `_TRUSTED_HF_ORGS` when it was a frozenset literal:
+
+      * `org in _TRUSTED_HF_ORGS`              → bool
+      * `for org in _TRUSTED_HF_ORGS`          → iterator of names
+      * `len(_TRUSTED_HF_ORGS)`                → count
+
+    Every dunder reads the live allowlist via `core.hub_allowlist`, so
+    operator CRUDs through the admin endpoints reflect immediately.
+    No snapshot, no cache — that was the explicit intent of the
+    original docstring on `_get_trusted_orgs_legacy_view` (the prior
+    binding was a bug: assigning the function REFERENCE rather than
+    its result, which made the view non-iterable).
+    """
+
+    __slots__ = ()
+
+    def __contains__(self, org: object) -> bool:
+        from core.hub_allowlist import get_allowlist
+        return get_allowlist().is_trusted(str(org))
+
+    def __iter__(self):
+        from core.hub_allowlist import get_allowlist
+        return iter(e['org'] for e in get_allowlist().list())
+
+    def __len__(self) -> int:
+        from core.hub_allowlist import get_allowlist
+        return len(get_allowlist().list())
+
+    def __repr__(self) -> str:
+        return f'_TrustedOrgsView({list(self)!r})'
+
+
+_TRUSTED_HF_ORGS = _TrustedOrgsView()
 
 
 # Category → default capabilities mapping for HF-installed models.
@@ -1978,18 +2551,60 @@ def admin_models_hub_search():
 
         kwargs = {
             'sort': sort_by,
-            'direction': -1,  # descending
             'limit': limit,
             'full': False,
         }
         if filt.get('pipeline_tag'):
             kwargs['pipeline_tag'] = filt['pipeline_tag']
-        if filt.get('library'):
-            kwargs['library'] = filt['library']
-        if lang:
-            kwargs['language'] = lang
         if search:
             kwargs['search'] = search
+
+        # ── huggingface_hub compat shim ──
+        # HF < 1.0 exposed dedicated per-facet kwargs (library=, language=,
+        # tags=, task=) AND a `direction=-1` for descending sort.  HF >= 1.0
+        # (bundled version in Nunba python-embed as of 2026-04-20 is 1.4.1)
+        # removed all of them: per-facet kwargs consolidated into a single
+        # `filter=` parameter (str | Iterable[str]); `direction` removed
+        # entirely (HF 1.x sorts descending by default for download/like
+        # metrics, ascending for time-based).  Passing any of these to the
+        # new API raises ``TypeError: `HfApi.list_models() got an unexpected
+        # keyword argument 'X'``.  Detect the installed API via
+        # ``inspect.signature`` and route each kwarg through whichever
+        # channel the installed version accepts.
+        import inspect as _insp
+        _lm_params = _insp.signature(list_models).parameters
+        _supports_library_kw = 'library' in _lm_params
+        _supports_language_kw = 'language' in _lm_params
+        _supports_filter_kw = 'filter' in _lm_params
+        _supports_direction_kw = 'direction' in _lm_params
+
+        # Add `direction` only if the installed HF supports it.  HF 1.x
+        # already sorts descending for download/likes by default.
+        if _supports_direction_kw:
+            kwargs['direction'] = -1
+
+        _filter_terms: list = []
+        if filt.get('library'):
+            lib_val = filt['library']
+            if _supports_library_kw:
+                kwargs['library'] = lib_val
+            elif _supports_filter_kw:
+                if isinstance(lib_val, (list, tuple)):
+                    _filter_terms.extend(lib_val)
+                else:
+                    _filter_terms.append(lib_val)
+
+        if lang:
+            if _supports_language_kw:
+                kwargs['language'] = lang
+            elif _supports_filter_kw:
+                _filter_terms.append(lang)
+
+        if _filter_terms and _supports_filter_kw:
+            # Pass as single str when only one term (HF 1.x accepts both
+            # str and Iterable[str], but str avoids a potential wrapper
+            # round-trip for the common case).
+            kwargs['filter'] = _filter_terms[0] if len(_filter_terms) == 1 else _filter_terms
 
         models = list(list_models(**kwargs))
         # Build minimal payload — don't leak full HF metadata blobs
@@ -2275,6 +2890,21 @@ def admin_models_hub_install():
                     'validate_reason': validate_reason,
                     'started_at': _download_progress[safe_id]['started_at'],
                 }
+
+                # ── Clear persisted TTS demotions on a successful TTS
+                # install. Reinstalling a previously-demoted engine
+                # (e.g. user re-downloaded missing weights) should give
+                # the ladder a fresh chance instead of waiting for the
+                # 7-day TTL. Cleared globally because hf_id → BACKEND_*
+                # mapping is fuzzy and the user's intent ("I just
+                # repaired TTS") covers the whole TTS subsystem anyway.
+                if validated and category == 'tts':
+                    try:
+                        from tts.tts_engine import TTSEngine
+                        TTSEngine.clear_persisted_demotions()
+                    except Exception as _ce:
+                        logging.debug(
+                            f"[hub-install] TTS demotion clear skipped: {_ce}")
             except Exception as e:
                 _download_progress[safe_id] = {
                     'status': 'error', 'percent': 0,
@@ -2916,6 +3546,29 @@ def _is_private_ip(hostname):
     except (socket.gaierror, ValueError):
         return True  # Block if can't resolve
 
+
+def _resolve_and_check_public(hostname):
+    """Resolve a hostname ONCE and return the public IP (or None if private).
+
+    DNS-rebinding defense: ``_is_private_ip`` resolves once, then the
+    follow-up ``requests.get`` resolves again — an attacker-controlled
+    DNS record with TTL=0 alternating between a public address (passes
+    the gate) and ``127.0.0.1`` / ``169.254.169.254`` (gets fetched)
+    bypasses the check.  This helper returns the resolved IP so the
+    caller can pass it as ``Host``-rewritten URL or override ``getaddrinfo``.
+
+    Returns the IP string when the host resolves to a publicly-routable
+    address, else None.
+    """
+    try:
+        ip_str = socket.gethostbyname(hostname)
+        ip = ipaddress.ip_address(ip_str)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return None
+        return ip_str
+    except (socket.gaierror, ValueError):
+        return None
+
 # Image proxy endpoint to fetch external images (avoids CORS issues)
 @app.route('/api/image-proxy')
 def image_proxy():
@@ -2954,18 +3607,18 @@ def image_proxy():
         }), 400
 
     hostname = parsed.hostname
-    if not hostname or _is_private_ip(hostname):
+    # _resolve_and_check_public rejects loopback/private/link-local/reserved
+    # with a single authoritative resolve. Residual TTL-based rebind window
+    # exists between this check and requests.get's own resolve; mitigated by
+    # no-auth / no-cookie trust posture on this path. Proper DNS-pinning
+    # without breaking cert verification needs a custom HTTPAdapter; deferred.
+    if not hostname or _resolve_and_check_public(hostname) is None:
         return jsonify({'error': 'Access to internal networks is not allowed'}), 403
 
     try:
-        # Fetch the image
         response = requests.get(image_url, timeout=10, stream=True)
         response.raise_for_status()
-
-        # Get content type
         content_type = response.headers.get('Content-Type', 'image/png')
-
-        # Return the image
         return response.content, 200, {'Content-Type': content_type}
     except Exception as e:
         logging.warning(f"Image proxy failed for {image_url}: {e}")
@@ -3272,12 +3925,21 @@ except Exception:
 
 
 @app.route('/publish', methods=['POST'])
+@require_local_or_token
 def wamp_http_bridge():
     """HTTP bridge for WAMP publish — compatible with crossbarhttp3 protocol.
 
     Accepts POST with JSON body: {topic: str, args: list, kwargs: dict}
     Publishes into the embedded WAMP router so all WebSocket subscribers receive it.
     This replaces the Crossbar.io HTTP Bridge Service for local/bundled mode.
+
+    Auth: ``@require_local_or_token``.  Without this, any page the user's
+    browser visits while Nunba runs can ``fetch('http://127.0.0.1:5000/publish',
+    {body: {topic: 'com.hertzai.hevolve.chat.<victim>', args: [...]}})``
+    and inject spoofed chat / TTS audio URLs into the victim's UI.  The
+    in-process callers (HARTOS, integrations.social.realtime) use
+    publish_local() directly, NOT this HTTP path, so the decorator
+    affects only external callers — exactly the threat model.
 
     Import failures land in /api/admin/diag/degradations via _wamp_mod —
     previously a missing wamp_router.py (bundle drift, port-conflict
@@ -3534,230 +4196,119 @@ if CRASH_REPORTER_AVAILABLE:
         logging.warning(f"Failed to initialize crash reporting: {e}")
 
 _splash('Initializing services...')
-# ============== Initialize hart-backend (Local SQLite Database) ==============
-# Deferred to background thread — chat routes are already registered above,
-# so the user can start chatting immediately. Social, agents, peer discovery
-# initialize in the background while the user is already interacting.
+# ============== HARTOS framework bootstrap (single facade call) ==============
+# All HARTOS sub-init (init_social, blueprints, DB, migrations, channels,
+# agent_engine) is owned by HARTOS itself — see ``bootstrap()`` at
+# ``HARTOS/hartos_bootstrap.py``.  Nunba calls that one entry point.
 #
-# ── CRITICAL: `init_social(app)` is NOT synchronous-safe (2026-04-19) ──
-# The HARTOS `init_social` implementation at integrations/social/__init__.py:329
-# calls `init_agent_engine(app)` unconditionally, which transitively pulls
-# autogen → openai → langchain → transformers → sympy.  In the frozen build
-# this import chain can take 4+ minutes due to import-lock contention with the
-# parallel `hartos-init` thread in `routes/hartos_backend_adapter.py`.
-# Symptom: `_bg_import` (the thread that calls `exec_module(main.py)`) stalls
-# for 240s+, `flask_app` never gets set, `_dynamic_wsgi_app` permanently
-# dispatches to the boot stub `gui_app`, and the user sees "Server is running.
-# App may have encountered an error" with 404s on the React bundle.
+# What we hand HARTOS:
+#   * ``app``                       — our Flask instance.
+#   * ``device_id``, ``nunba_db_path`` — consumer-tuning knobs.
+#   * ``register_consumer_routes`` — Nunba-specific Flask routes (kids,
+#     upload, db) get registered inside HARTOS's setup-lock-bypass window
+#     so they don't trip Flask 3.x's "you can't register after first
+#     request" guard.
 #
-# Mitigation: ALL HARTOS blueprint registration (init_social, distributed
-# agent, kids routes, etc.) is now deferred to `_deferred_social_init()` below
-# so main.py's module-load finishes fast (<2s instead of 240s).  Frontend
-# endpoints that fire on first boot (/chat, /backend/health, /api/admin/config/chat,
-# /api/guest-id) are all defined directly on `app` above, so they work during
-# the deferred-init window.
+# What stays in Nunba:
+#   * Tier-1 chat-dispatcher import thread — ``routes.hartos_backend_adapter``
+#     imports ``hart_intelligence`` for in-process LangChain chat.  That's
+#     a Nunba-side adapter concern (chat UX), kicked off below.
 #
-# This is a functional change but NOT user-visible — the social UI was always
-# expected to lag behind chat-ready (see _deferred_social_init comment).
+# Regression guard: ``tests/test_hartos_facade_only.py`` AST-fails CI if
+# main.py module-level body imports any of init_social / init_agent_engine /
+# init_channels / register_all_blueprints / run_migrations / social_bp /
+# distributed_agent_bp directly — they are HARTOS framework internals and
+# must reach Flask via ``hartos_bootstrap.bootstrap()`` only.
 
 
-def _has_bp(name: str) -> bool:
-    """Idempotency helper — True if a blueprint with this name is already
-    registered on `app`.  Used to guard against double-registration when the
-    deferred init path runs after any eager path that slipped through."""
+def _register_nunba_consumer_routes(flask_app):
+    """Nunba-specific routes — passed to HARTOS bootstrap as the
+    ``register_consumer_routes`` hook.  HARTOS calls this inside its
+    setup-lock-bypass window so each ``register_blueprint`` call lands
+    even though Flask is already serving polls on /backend/health etc.
+    """
     try:
-        return name in getattr(app, 'blueprints', {})
-    except Exception:
-        return False
-
-
-def _safe_register_bp(bp, *, name_hint: str = '') -> bool:
-    """Idempotent wrapper for `app.register_blueprint`.  Returns True if
-    the blueprint was registered this call, False if it was already present
-    (or registration raised)."""
+        from routes import kids_media_routes
+        kids_media_routes.register_routes(flask_app)
+    except Exception as _e:
+        logging.debug(f"kids_media_routes register skipped: {_e}")
     try:
-        bp_name = getattr(bp, 'name', None) or name_hint
-        if bp_name and _has_bp(bp_name):
-            return False
-        app.register_blueprint(bp)
-        return True
-    except Exception as _bp_e:
-        logging.debug(f"blueprint {name_hint or getattr(bp, 'name', '?')} register failed: {_bp_e}")
-        return False
-
-
-def _deferred_social_init():
-    """Heavy social init in background — blueprint registration, DB,
-    migrations, channels, agents.
-
-    Blueprint registration (init_social + social_bp + distributed_agent +
-    kids_media + upload + db + blueprint_registry) was moved here on
-    2026-04-19 after the HARTOS `init_social` was found to transitively pull
-    autogen/openai/langchain/transformers/sympy during its unconditional
-    `init_agent_engine(app)` call (HARTOS integrations/social/__init__.py:329).
-    Keeping those calls synchronous in main.py's module-load path stalled
-    `_bg_import` for 240s+ and never let `flask_app` reach the dispatcher.
-
-    Frontend boot-critical endpoints (/chat, /backend/health, /api/guest-id,
-    /api/admin/config/chat) are defined directly on `app` above main.py's
-    deferred-init block, so they answer correctly during this init window.
-    HARTOS social endpoints (/api/social/*) return 404 until this function
-    finishes — expected (frontend already silent-fails those calls)."""
-    if not HARTOS_BACKEND_DIRECT:
-        return
+        from routes.kids_game_recommendation import kids_recommendation_bp
+        if 'kids_recommendation' not in getattr(flask_app, 'blueprints', {}):
+            flask_app.register_blueprint(kids_recommendation_bp)
+    except Exception as _e:
+        logging.debug(f"kids_recommendation_bp register skipped: {_e}")
     try:
-        # ── 1) Blueprint registration (moved from module-load path) ──
-        # Each `if not _has_bp(...)` is an idempotency guard — if anything
-        # ever registers a blueprint eagerly in the future, we won't crash
-        # with "A blueprint named X is already registered".
-        try:
-            if init_social is not None:
-                init_social(app)  # registers gamification_bp, mcp_bp, sharing_bp,
-                                  # games_bp, discovery_bp, admin_bp, channel_user_bp,
-                                  # dashboard_bp, tracker_bp, fleet_update_bp,
-                                  # regional_host_bp, sync_bp, audit_bp, content_gen_bp,
-                                  # learning_bp, theme_bp, thought_experiments_bp,
-                                  # and (behind HEVOLVE_CODING_AGENT_ENABLED) the
-                                  # coding_agent.  ALSO pulls autogen+langchain via
-                                  # init_agent_engine — this is THE heavy call.
-            from integrations.social.api import social_bp as _social_core_bp
-            _safe_register_bp(_social_core_bp, name_hint='social')  # auth, users, posts, feed
-            logging.info("Social blueprints registered (deferred — routes available after this log line)")
-        except Exception as _bp_err:
-            logging.warning(f"Social blueprint registration failed: {_bp_err}")
+        from routes.upload_routes import register_upload_routes
+        register_upload_routes(flask_app)
+    except Exception as _e:
+        logging.debug(f"upload_routes register skipped: {_e}")
+    try:
+        from routes.db_routes import register_db_routes
+        register_db_routes(flask_app)
+    except Exception as _e:
+        logging.debug(f"db_routes register skipped: {_e}")
 
-        try:
-            from integrations.distributed_agent import distributed_agent_bp
-            _safe_register_bp(distributed_agent_bp, name_hint='distributed_agent')
-        except Exception:
-            pass
 
-        try:
-            from routes import kids_media_routes
-            kids_media_routes.register_routes(app)
-        except Exception:
-            pass
+def _kick_tier1_chat_adapter():
+    """Spawn the Nunba-side Tier-1 chat-dispatcher import thread.
 
-        try:
-            from routes.kids_game_recommendation import kids_recommendation_bp
-            _safe_register_bp(kids_recommendation_bp, name_hint='kids_recommendation')
-        except Exception:
-            pass
-
-        try:
-            from routes.upload_routes import register_upload_routes
-            register_upload_routes(app)
-        except Exception:
-            pass
-
-        try:
-            from routes.db_routes import register_db_routes
-            register_db_routes(app)
-        except Exception:
-            pass
-
-        # ── Register ALL HARTOS hive blueprints (marketplace, benchmarks, robotics, etc.) ──
-        try:
-            from integrations.blueprint_registry import register_all_blueprints
-            result = register_all_blueprints(app)
-            logging.info(f"HARTOS blueprints: {len(result['registered'])} registered, "
-                         f"{len(result['skipped'])} skipped: {result['registered']}")
-        except Exception as e:
-            logging.warning(f"HARTOS blueprint registry failed: {e}")
-
-        # ── 2) DB + migrations (heavy I/O, safe to defer) ──
-        init_db()
-        try:
-            from integrations.social.migrations import run_migrations
-            run_migrations()
-        except Exception as mig_err:
-            logging.warning(f"hart-backend migrations: {mig_err}")
-        logging.info(f"hart-backend DB initialized: {NUNBA_DB_PATH}")
-
-        # Channel adapters — auto-activate from saved admin config + env vars
-        try:
-            from core.port_registry import get_port
-            from integrations.channels.flask_integration import init_channels
-            channels = init_channels(app, {
-                'agent_api_url': f'http://localhost:{get_port("backend")}/chat',
-                'default_user_id': 10077,
-                'default_prompt_id': 8888,
-                'device_id': DEVICE_ID,
-            })
-            # Auto-activate channels saved in admin config
-            _activated = 0
-            try:
-                from integrations.channels.admin.api import get_api
-                for _ch_type, _ch_cfg in get_api()._channels.items():
-                    if _ch_cfg.get('enabled', True):
-                        _tok = _ch_cfg.get('token') or _ch_cfg.get('api_key')
-                        if channels.register_channel(_ch_type, token=_tok):
-                            _activated += 1
-            except Exception:
-                pass
-            # Env-var channels: ONLY register adapters that actually have
-            # credentials.  Previously we registered all 6 (telegram,
-            # discord, whatsapp, slack, signal, web) unconditionally,
-            # which imported ~250MB of heavy SDK modules even when the
-            # user had no tokens.  `web` stays unconditional because it's
-            # the local HTTP adapter — no external creds, already cheap.
-            _env_creds = {
-                'telegram': os.environ.get('TELEGRAM_BOT_TOKEN'),
-                'discord':  os.environ.get('DISCORD_BOT_TOKEN'),
-                'whatsapp': os.environ.get('WHATSAPP_ACCESS_TOKEN'),
-                'slack':    os.environ.get('SLACK_BOT_TOKEN'),
-                'signal':   os.environ.get('SIGNAL_SERVICE_URL'),
-            }
-            for _ch_type, _tok in _env_creds.items():
-                if _tok and _ch_type not in (channels.registry._adapters or {}):
-                    channels.register_channel(_ch_type, token=_tok)
-            # `web` adapter is in-process, cheap, always register
-            if 'web' not in (channels.registry._adapters or {}):
-                channels.register_channel('web')
-            channels.start()
-            logging.info(
-                f"Channel adapters initialized "
-                f"({_activated} from config, {sum(1 for t in _env_creds.values() if t)} from env, web)",
-            )
-        except Exception as ch_err:
-            logging.debug(f"Channel adapters skipped: {ch_err}")
-
-        # Agent engine (daemon, goal seeding — only if explicitly enabled)
-        if os.environ.get('HEVOLVE_AGENT_ENGINE_ENABLED', '').lower() == 'true':
-            try:
-                from integrations.agent_engine import init_agent_engine
-                init_agent_engine(app)
-            except Exception as ae_err:
-                logging.warning(f"Agent engine init failed: {ae_err}")
-
-        # Route registrations (upload, db, kids media) are done synchronously
-        # above — only heavy init (DB, migrations, channels, agents) is deferred
-
-    except Exception as e:
-        logging.warning(f"hart-backend direct init failed: {e}")
-
-    # ── Kick off HARTOS hart_intelligence import (Tier-1 direct dispatch) ──
-    # Previously this fired at module-load time of `routes/hartos_backend_adapter`
-    # (see that file's `start_hartos_init_background` docstring) and raced
-    # with `_bg_import` on langchain/transformers/torch import locks.  Now
-    # we spawn it HERE — after main.py is fully imported, blueprints are
-    # registered, and the Flask app is ready to answer requests.  This
-    # guarantees `flask_app` is set in app.py before the heavy import chain
-    # begins.  The user can already chat via fallback (Tier-3 local llama);
-    # Tier-1 comes online a few seconds later.
+    Imports ``hart_intelligence`` for in-process LangChain chat.  Wired
+    into HARTOS bootstrap via the ``on_bootstrap_complete`` callback so
+    it fires AFTER ``init_agent_engine`` (matches legacy
+    ``_deferred_social_init`` sequencing — both used to live in the
+    same thread, in this exact order).  Sequencing this way avoids
+    racing the bootstrap thread on the ``hart_intelligence`` per-
+    package import lock, which was the smoking-gun deadlock observed
+    in 2026-04-28's Admin Dashboard incident.
+    """
     try:
         from routes.hartos_backend_adapter import start_hartos_init_background
         start_hartos_init_background()
-        logging.info("hartos-init background thread kicked off (deferred)")
-    except Exception as _hi_err:
-        logging.debug(f"start_hartos_init_background skipped: {_hi_err}")
-
-    logging.info("Social subsystem initialized (background)")
+    except Exception as e:
+        logging.debug(f"start_hartos_init_background skipped: {e}")
 
 
-# Launch deferred social init in background thread
-threading.Thread(target=_deferred_social_init, daemon=True,
-                 name='social-init').start()
+def _start_hartos_bootstrap():
+    """Kick off HARTOS framework bootstrap.
+
+    Single facade call — HARTOS owns its own init order, threading,
+    retry, and degradation-on-failure.  Tier-1 chat adapter kicks off
+    inside HARTOS bootstrap's ``on_bootstrap_complete`` callback so it
+    serialises after ``init_agent_engine`` exactly as legacy
+    ``_deferred_social_init`` did.  Nunba's main thread proceeds
+    straight to splash → webview → chat panel; chat falls through to
+    Tier-3 (llama.cpp) until Tier-1 finishes loading.
+    """
+    if not HARTOS_BACKEND_DIRECT:
+        return
+
+    try:
+        from hartos_bootstrap import bootstrap as _hartos_bootstrap
+        _hartos_bootstrap(app, config={
+            'device_id': DEVICE_ID,
+            'nunba_db_path': NUNBA_DB_PATH,
+            'register_consumer_routes': _register_nunba_consumer_routes,
+            'on_bootstrap_complete': _kick_tier1_chat_adapter,
+        })
+        logging.info("hartos_bootstrap kicked off")
+    except Exception as e:
+        # Resilience: if HARTOS bootstrap can't import (e.g. older HARTOS
+        # bundle without `hartos_bootstrap` py-module — happened on the
+        # 2026-04-28 14:08 UTC build), at least kick the Tier-1 chat
+        # adapter so the user can still chat via in-process LangChain.
+        # Admin Dashboard will be empty until HARTOS is updated, but
+        # chat hot path stays alive.
+        logging.warning(
+            f"hartos_bootstrap failed to start: {e}; "
+            "falling back to direct Tier-1 chat adapter kickoff "
+            "(dashboard + agent_engine will be empty)"
+        )
+        _kick_tier1_chat_adapter()
+
+
+threading.Thread(target=_start_hartos_bootstrap, daemon=True,
+                 name='hartos-init-kickoff').start()
 
 if not HARTOS_BACKEND_DIRECT and HARTOS_BACKEND_AVAILABLE:
     # Use adapter/proxy mode
@@ -3794,8 +4345,9 @@ def _fleet_restart_watcher():
     Fleet commands (tier_promote, tier_demote) set this env var when central
     pushes a tier change. The node must restart for the new tier to take effect.
     """
+    _hb_register('fleet-restart-watcher', expected_interval=15.0)
     while True:
-        time.sleep(10)
+        _hb_sleep('fleet-restart-watcher', 10)
         restart_target = os.environ.pop('HEVOLVE_RESTART_REQUESTED', '')
         if restart_target:
             reason = os.environ.pop('HEVOLVE_RESTART_REASON', 'Fleet command')
@@ -4344,14 +4896,17 @@ def start_langchain_service():
         if sys.platform == 'win32':
             creation_flags = subprocess.CREATE_NO_WINDOW
 
+        # Was DEVNULL — crashes left zero diagnostic. Pipe stdio to a
+        # tailable log file so the watchdog has something to grep.
+        _lc_log = _open_lc_subprocess_log()
         _langchain_process = subprocess.Popen(
             [sys.executable, langchain_script],
             cwd=os.path.abspath(langchain_dir),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=_lc_log, stderr=_lc_log,
             creationflags=creation_flags,
         )
-        logging.info(f"LangChain service starting (PID {_langchain_process.pid}) on port {langchain_port}")
+        logging.info(f"LangChain service starting (PID {_langchain_process.pid}) "
+                     f"on port {langchain_port}")
 
         # Poll for readiness (up to 10 seconds)
         for i in range(20):
@@ -4423,9 +4978,11 @@ def _langchain_watchdog():
 
     wdlog = logging.getLogger('LangChainWatchdog')
     wdlog.info("[WATCHDOG] LangChain watchdog started")
+    _hb_register('langchain-watchdog',
+                 expected_interval=max(60.0, _WATCHDOG_POLL_INTERVAL * 2))
 
     # Wait for initial startup to complete (give the service time to boot)
-    time.sleep(_WATCHDOG_RESTART_COOLDOWN)
+    _hb_sleep('langchain-watchdog', _WATCHDOG_RESTART_COOLDOWN)
 
     langchain_port = 6777
     langchain_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -4457,7 +5014,7 @@ def _langchain_watchdog():
                         f"failure(s) (port {langchain_port})"
                     )
                 consecutive_failures = 0
-                time.sleep(_WATCHDOG_POLL_INTERVAL)
+                _hb_sleep('langchain-watchdog', _WATCHDOG_POLL_INTERVAL)
                 continue
 
             # Service is not healthy
@@ -4469,7 +5026,7 @@ def _langchain_watchdog():
             )
 
             if consecutive_failures < _WATCHDOG_FAIL_THRESHOLD:
-                time.sleep(_WATCHDOG_POLL_INTERVAL)
+                _hb_sleep('langchain-watchdog', _WATCHDOG_POLL_INTERVAL)
                 continue
 
             # --- Threshold reached: restart the service ---
@@ -4516,11 +5073,11 @@ def _langchain_watchdog():
                 if sys.platform == 'win32':
                     creation_flags = subprocess.CREATE_NO_WINDOW
 
+                _lc_log = _open_lc_subprocess_log()
                 _langchain_process = subprocess.Popen(
                     [sys.executable, langchain_script],
                     cwd=os.path.abspath(langchain_dir),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=_lc_log, stderr=_lc_log,
                     creationflags=creation_flags,
                 )
                 _watchdog_restart_count += 1
@@ -4553,12 +5110,12 @@ def _langchain_watchdog():
 
             # Reset failure counter and apply cooldown
             consecutive_failures = 0
-            time.sleep(_WATCHDOG_RESTART_COOLDOWN)
+            _hb_sleep('langchain-watchdog', _WATCHDOG_RESTART_COOLDOWN)
 
         except Exception as e:
             # Watchdog must never crash — catch everything and keep going
             wdlog.error(f"[WATCHDOG] Unexpected error in watchdog loop: {e}")
-            time.sleep(_WATCHDOG_POLL_INTERVAL)
+            _hb_sleep('langchain-watchdog', _WATCHDOG_POLL_INTERVAL)
 
 
 _vision_service = None  # Global VisionService instance (accessed by chatbot_routes)
@@ -4732,6 +5289,7 @@ def start_background_services():
         logs a clear 'warmup exceeded' message if the probe is stuck,
         then lets the foreground request carry the cold-start penalty.
         """
+        _hb_register('tts-warmup', expected_interval=30.0)
         try:
             if os.environ.get('NUNBA_DISABLE_TTS'):
                 return
@@ -4755,20 +5313,22 @@ def start_background_services():
             try:
                 from core.user_lang import get_preferred_lang
                 preferred_lang = get_preferred_lang() or 'en'
-            except Exception:
-                # Final fallback only if core.user_lang isn't importable
-                # (e.g. standalone main.py harness). Keeps old behavior as
-                # a backstop, never as the primary path.
+            except Exception as _lang_exc:
+                # core.user_lang is the SINGLE source of truth for
+                # `hart_language.json`.  The previous fallback re-read
+                # the JSON inline, but with a different key name
+                # ('language' vs 'preferred_lang') than the canonical
+                # reader uses — a drift vector waiting to bite.  HARTOS
+                # is a hard pip dependency in every shipped build, so
+                # if this except branch fires we have a deeper problem
+                # than language detection; log it loudly and keep 'en'.
+                logging.error(
+                    "core.user_lang unavailable in TTS warmup (%s); "
+                    "falling back to 'en'. This indicates a HARTOS "
+                    "import / packaging regression — investigate.",
+                    _lang_exc,
+                )
                 preferred_lang = 'en'
-                try:
-                    import json as _json
-                    _hart_lang_file = os.path.join(
-                        os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'hart_language.json')
-                    if os.path.exists(_hart_lang_file):
-                        with open(_hart_lang_file) as _f:
-                            preferred_lang = _json.load(_f).get('language', 'en')
-                except Exception:
-                    pass
 
             # Import TTSEngine class first (just the class, not get_tts_engine singleton)
             # so we can prime its cache BEFORE it constructs the engine
@@ -4808,21 +5368,35 @@ def start_background_services():
                 except Exception:
                     pass
 
-                # Iterate backend → required-pip-package pairs.  The single
-                # source of truth is `_BACKEND_TO_REGISTRY_KEY` defined at
-                # module level in tts.tts_engine — there is no
-                # `_BACKEND_REQUIRED_IMPORTS` class attribute (an old refactor
-                # left this call site pointing at a dead name, which silently
-                # crashed boot-time TTS warmup with `AttributeError`).
-                from tts._torch_probe import check_backend_runnable
-                from tts.tts_engine import _BACKEND_TO_REGISTRY_KEY as _BACKEND_IMPORTS
-                for _be, _imp in _BACKEND_IMPORTS.items():
-                    # Skip backends not in the user's language ladder
+                # Prime TTSEngine._import_check_cache using the SAME
+                # probe + cache-key schema that _can_run_backend uses, so
+                # the warm-up result is actually consumed at request time.
+                #
+                # Source of truth: TTSEngine._get_required_package(backend)
+                # derives the import name from HARTOS ENGINE_REGISTRY —
+                # e.g. chatterbox_turbo → 'chatterbox' (NOT the registry
+                # key 'chatterbox_turbo'), indic_parler → 'parler_tts'
+                # (NOT 'indic_parler'). Using _BACKEND_TO_REGISTRY_KEY
+                # values here was double-wrong: (a) registry keys are
+                # bridge IDs not import names, and (b) the cache key the
+                # dispatcher looks up is f'venv:{backend}' for venv
+                # backends, so even a passing probe would leave the
+                # cache miss in place.
+                from tts.tts_engine import (
+                    _BACKEND_TO_REGISTRY_KEY,
+                    _is_venv_backend,
+                    _probe_backend_runnable,
+                )
+                for _be in _BACKEND_TO_REGISTRY_KEY:
                     if _ladder_backends and _be not in _ladder_backends:
                         logging.debug(f"TTS: skipping probe of {_be} (not in {preferred_lang} ladder)")
                         continue
-                    if check_backend_runnable(_be, _imp):
-                        TTSEngine._import_check_cache[_imp] = True
+                    _imp = TTSEngine._get_required_package(_be)
+                    if not _imp:
+                        continue  # backend has no pip dep (piper/espeak) — skip probe
+                    if _probe_backend_runnable(_be, _imp):
+                        _cache_key = f'venv:{_be}' if _is_venv_backend(_be) else _imp
+                        TTSEngine._import_check_cache[_cache_key] = True
                         logging.info(f"TTS: backend {_be} ({_imp}) verified runnable")
             # NOW create the engine — cache is primed, _can_run_backend will find entries
             from tts.tts_engine import get_tts_engine
@@ -4975,6 +5549,26 @@ def start_background_services():
             )
     threading.Thread(target=_warmup_watchdog, daemon=True, name='TTSWarmupWatchdog').start()
 
+    # Pre-warm HARTOS get_tools(is_first=True) singletons so the user's first
+    # casual-conv chat after restart doesn't pay the ~33s LangChain
+    # `load_tools(['google-search'])` cost.  Sub-singleton is module-level
+    # cached + double-checked-locked in HARTOS hart_intelligence_entry; calling
+    # it once on a boot thread populates the cache for all subsequent get_tools
+    # callers.  Daemon thread — never blocks shutdown.  If the import or call
+    # fails, we log a warning and the first user chat falls back to its
+    # previous behaviour (lazy-load on first call).
+    def _warmup_get_tools_cache():
+        try:
+            from hart_intelligence_entry import _safe_load_google_search
+            _safe_load_google_search()
+        except Exception as e:
+            logging.warning(
+                f"get_tools cache pre-warm failed (non-blocking): {e}"
+            )
+    threading.Thread(
+        target=_warmup_get_tools_cache, daemon=True, name='ToolsWarmup'
+    ).start()
+
 
 if __name__ == '__main__':
     try:
@@ -4985,16 +5579,103 @@ if __name__ == '__main__':
 
         start_background_services()
 
-        # Start the server via waitress (production WSGI)
-        # Default to 127.0.0.1 (loopback only) for security; set NUNBA_BIND_HOST=0.0.0.0 to expose on all interfaces
+        # Start the server via waitress (production WSGI).  Waitress is
+        # Windows-safe (no fork required), multi-threaded, and production-
+        # hardened — the stock Flask/werkzeug dev server is NOT safe to
+        # expose even on loopback because it serialises every request on a
+        # single Python thread.  Once a chat, TTS, or model-hub call is in
+        # flight, every other endpoint (admin/models, /api/social/feed,
+        # /backend/health) waits behind it — the user sees the UI freeze.
+        #
+        # Thread count chosen to saturate the hot-path ceiling Nunba cares
+        # about: 16 parallel requests keeps chat (1.5s), draft (300ms),
+        # TTS streaming SSE, and the admin-UI polling calls all concurrent
+        # without starving CPU — llama.cpp workers run out of process on
+        # :8080/:8081 so the WSGI threads are I/O-bound anyway.  Override
+        # via NUNBA_WAITRESS_THREADS env for cloud/central deployments.
+        # Default to 127.0.0.1 (loopback only) for security; set
+        # NUNBA_BIND_HOST=0.0.0.0 to expose on all interfaces.
         bind_host = os.environ.get('NUNBA_BIND_HOST', '127.0.0.1')
         try:
-            from waitress import serve
-            logging.info(f"Starting Waitress server on {bind_host}:{args.port}")
-            serve(app, host=bind_host, port=args.port, threads=8)
-        except ImportError:
-            logging.warning("waitress not available, falling back to Flask dev server")
-            app.run(debug=False, host=bind_host, port=args.port, use_reloader=False)
+            _worker_threads = int(os.environ.get('NUNBA_WORKER_THREADS', '128'))
+        except (TypeError, ValueError):
+            _worker_threads = 128
+
+        # Hypercorn (ASGI) — primary path.  Same server choice as the
+        # HARTOS sibling; single binary on desktop bundle + central
+        # Docker.  asyncio loop multiplexes connection IO so idle
+        # keep-alive / SSE clients no longer burn worker threads
+        # (waitress was holding one thread per connection regardless of
+        # activity — that's how /tts/setup-engine queue-depth-68 happened
+        # at 22:20–22:47 even with 16 worker threads on the bundle).
+        # Sync Flask handlers run in loop.run_in_executor() against
+        # NUNBA_WORKER_THREADS (default 128); slow paths (TTS pip install,
+        # llama inference) occupy executor threads but never block the
+        # IO layer, so dashboard / health / admin polls stay responsive.
+        # Falls through to Waitress on ImportError so older bundles /
+        # cx_Freeze installs missing the h2/wsproto chain still boot.
+        try:
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+
+            from hypercorn.asyncio import serve as _hcserve
+            from hypercorn.config import Config
+            from hypercorn.middleware import AsyncioWSGIMiddleware
+
+            config = Config()
+            config.bind = [f'{bind_host}:{args.port}']
+            config.keep_alive_timeout = 120
+            config.h11_max_incomplete_size = 16 * 1024 * 1024
+            config.accesslog = None
+            config.errorlog = '-'
+            config.server_names = ['Nunba']
+
+            asgi_app = AsyncioWSGIMiddleware(app)
+
+            async def _runner():
+                loop = asyncio.get_running_loop()
+                loop.set_default_executor(
+                    ThreadPoolExecutor(max_workers=_worker_threads,
+                                       thread_name_prefix='nunba'))
+                await _hcserve(asgi_app, config)
+
+            logging.info(
+                f"Starting Hypercorn (ASGI) on {bind_host}:{args.port} "
+                f"(executor_threads={_worker_threads})"
+            )
+            asyncio.run(_runner())
+        except ImportError as _hc_exc:
+            logging.warning(
+                f"Hypercorn unavailable ({_hc_exc}) — falling back to Waitress"
+            )
+            try:
+                _waitress_threads = int(
+                    os.environ.get('NUNBA_WAITRESS_THREADS', '64'))
+            except (TypeError, ValueError):
+                _waitress_threads = 64
+            try:
+                from waitress import serve
+                logging.info(
+                    f"Starting Waitress server on {bind_host}:{args.port} "
+                    f"(threads={_waitress_threads})"
+                )
+                # channel_timeout keeps slow clients from tying up a worker forever.
+                # cleanup_interval=30 keeps per-connection state from leaking on long
+                # SSE/chat streams.  Both chosen to match the 1.5s chat budget with
+                # generous safety margin for cold-start.
+                serve(
+                    app,
+                    host=bind_host,
+                    port=args.port,
+                    threads=_waitress_threads,
+                    channel_timeout=120,
+                    cleanup_interval=30,
+                    ident='Nunba',
+                )
+            except ImportError:
+                logging.warning("waitress not available, falling back to Flask dev server")
+                app.run(debug=False, host=bind_host, port=args.port,
+                        use_reloader=False, threaded=True)
     except Exception as e:
         logging.critical(f"Failed to start server: {str(e)}")
         logging.critical(traceback.format_exc())

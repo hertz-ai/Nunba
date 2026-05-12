@@ -220,6 +220,111 @@ export const encountersApi = {
     }),
 };
 
+// --- BLE physical-world Encounter feature ---
+// Distinct surface from `encountersApi` above (which serves the
+// community/post co-presence table); this wraps /api/social/encounter/*
+// (singular).  See PRODUCT_MAP J200-J215 for the full flow trace.
+//
+// Each method returns a Promise<AxiosResponse>; callers consume
+// `.data.data` for the success payload and `.data.error` for failures.
+export const bleEncounterApi = {
+  // J200, J201 — discoverable consent + state
+  getDiscoverable: () => socialApi.get('/encounter/discoverable'),
+  setDiscoverable: ({
+    enabled,
+    age_claim_18,
+    ttl_sec,
+    face_visible,
+    avatar_style,
+    vibe_tags,
+  }) =>
+    socialApi.post('/encounter/discoverable', {
+      enabled: !!enabled,
+      age_claim_18: !!age_claim_18,
+      ttl_sec: ttl_sec || undefined,
+      face_visible: !!face_visible,
+      avatar_style: avatar_style || 'studio_ghibli',
+      vibe_tags: vibe_tags || [],
+    }),
+
+  // J200 — phone registers current rotating pubkey
+  registerPubkey: (pubkey) =>
+    socialApi.post('/encounter/register-pubkey', {pubkey}),
+
+  // J203 — sighting → swipe-card payload
+  reportSighting: ({peer_pubkey, rssi_peak, dwell_sec, lat, lng}) =>
+    socialApi.post('/encounter/sighting', {
+      peer_pubkey,
+      rssi_peak,
+      dwell_sec,
+      lat,
+      lng,
+    }),
+
+  // J204, J205 — like/dislike; mutual returns match_id
+  swipe: (sighting_id, decision) =>
+    socialApi.post('/encounter/swipe', {sighting_id, decision}),
+
+  // J204 — list mutual matches (one-sided likes never returned)
+  listMatches: () => socialApi.get('/encounter/matches'),
+
+  // J211 — map pins for matches the user has kept visible
+  listMapPins: () => socialApi.get('/encounter/map-pins'),
+
+  // J207 — generate draft for user-approval surface
+  draftIcebreaker: (match_id) =>
+    socialApi.post('/encounter/icebreaker/draft', {match_id}),
+
+  // J209, J210 — final user-approval / decline tap
+  approveIcebreaker: (match_id, text) =>
+    socialApi.post('/encounter/icebreaker/approve', {match_id, text}),
+  declineIcebreaker: (match_id, reason) =>
+    socialApi.post('/encounter/icebreaker/decline', {match_id, reason}),
+
+  // WAMP topic constants (single-source via server response so the
+  // frontend never hard-codes them — the server's WAMP_TOPICS dict
+  // is the authority)
+  topics: () => socialApi.get('/encounter/topics'),
+};
+
+// --- User Consent (W0c F3) — JWT-authed, append-only ---
+// Wraps HARTOS integrations/social/consent_api.py (`/api/social/consent*`).
+// Append-only invariants enforced server-side: every grant is a NEW row;
+// revoke flips revoked_at on the most-recent active row but never rewrites
+// granted_at.  See HARTOS consent_api.py docstring (commit f05a396).
+//
+// IMPORTANT (DRY guard): NEVER call /api/consent/<user_id>/* — that is the
+// LEGACY upsert surface in consent_service.py whose CONSENT_TYPES allowlist
+// pre-dates 'cloud_capability'.  Only `/api/social/consent` is correct.
+export const consentApi = {
+  // POST /api/social/consent — APPEND a new row (grant)
+  grant: ({consent_type, scope, agent_id, metadata}) =>
+    socialApi.post('/consent', {
+      consent_type,
+      scope,
+      agent_id,
+      metadata,
+    }),
+
+  // POST /api/social/consent/revoke — set revoked_at on the active row
+  revoke: ({consent_type, scope, agent_id}) =>
+    socialApi.post('/consent/revoke', {
+      consent_type,
+      scope,
+      agent_id,
+    }),
+
+  // GET /api/social/consent — list (newest-first by granted_at)
+  list: ({consent_type, active_only} = {}) => {
+    const params = {};
+    if (consent_type !== undefined) params.consent_type = consent_type;
+    if (active_only !== undefined) {
+      params.active_only = active_only ? 'true' : 'false';
+    }
+    return socialApi.get('/consent', {params});
+  },
+};
+
 // --- Agent Evolution ---
 export const evolutionApi = {
   get: (agentId) => socialApi.get(`/agents/${agentId}/evolution`),
@@ -244,6 +349,34 @@ export const ratingsApi = {
   given: (userId, params) =>
     socialApi.get(`/ratings/${userId}/given`, {params}),
   trust: (userId) => socialApi.get(`/trust/${userId}`),
+};
+
+// --- Calls (Phase 7d) — voice/video/screen-share rooms ---
+//
+// Server flag-gated by `calls_v1`; off → 503.  Mirrors RN socialApi.callsApi
+// (Hevolve_React_Native/services/socialApi.js) for SPA/RN parity.
+//
+// Token-mode return shape:
+//   { mode: 'livekit',         url, token, metadata, expires_at }
+//   { mode: 'livekit_pending', url, token: '', reason }   ← infra not ready
+//   { mode: 'p2p_mesh',        call_id, reason }          ← flat/Nunba/regional
+//
+// Consumed by components/Social/Calls/CallRoom.js.  Adding this export
+// unblocks the React build (was failing with
+// "callsApi is not exported from socialApi").
+export const callsApi = {
+  start: ({parent_kind, parent_id, kind = 'voice', title, settings} = {}) =>
+    socialApi.post('/calls', {parent_kind, parent_id, kind, title, settings}),
+  get: (call_id) => socialApi.get(`/calls/${call_id}`),
+  token: (call_id, opts = {}) => socialApi.post(`/calls/${call_id}/token`, opts),
+  join: (call_id, opts = {}) => socialApi.post(`/calls/${call_id}/join`, opts),
+  leave: (call_id) => socialApi.post(`/calls/${call_id}/leave`, {}),
+  end: (call_id) => socialApi.post(`/calls/${call_id}/end`, {}),
+  participants: (call_id, include_left = false) =>
+    socialApi.get(`/calls/${call_id}/participants`,
+      include_left ? {params: {include_left: 'true'}} : undefined),
+  addAgent: (call_id, agent_id) =>
+    socialApi.post(`/calls/${call_id}/agents`, {agent_id}),
 };
 
 // --- Referrals ---
@@ -519,6 +652,12 @@ export const chatApi = {
   // Health check
   health: () => chatApiClient.get('/backend/health'),
 
+  // LLM readiness (drives the boot-time message queue gate in Demopage).
+  // Returns {available: bool, llm_mode, first_run, ...}.  Distinct from
+  // backend/health which is a GPU-tier classifier — this one tells us
+  // whether the local LLM is actually loaded and reachable.
+  llmStatus: () => chatApiClient.get('/api/llm/status'),
+
   // Network status
   networkStatus: () => chatApiClient.get('/network/status'),
 
@@ -768,6 +907,79 @@ export const mcpApi = {
   tools: (serverId) => socialApi.get(`/mcp/servers/${serverId}/tools`),
   register: (data) => socialApi.post('/mcp/register', data),
   discover: (params) => socialApi.get('/mcp/discover', {params}),
+};
+
+// --- Mentions (Phase 7a) — universal @-mention autocomplete.
+// scope: { kind?: 'human'|'agent'|'all', community_id?, conversation_id?, limit? }
+// Server flag-gated by `mentions_autocomplete`; off → returns [].
+export const mentionsApi = {
+  autocomplete: (q, scope = {}) =>
+    socialApi.get('/users/autocomplete', {
+      params: {q, ...scope},
+    }),
+  list: (params) => socialApi.get('/mentions', {params}),
+  markRead: (id) => socialApi.post(`/mentions/${id}/read`),
+};
+
+// --- Friends (Phase 7c.1) — symmetric Friendship state machine.
+// Coexists with usersApi.follow / unfollow per Plan B.1.
+// Server flag-gated (`friends_v2`); off → list endpoints return [].
+export const friendsApi = {
+  sendRequest: (target_user_id) =>
+    socialApi.post('/friends/request', {target_user_id}),
+  accept: (friendship_id) =>
+    socialApi.post(`/friends/request/${friendship_id}/accept`),
+  reject: (friendship_id) =>
+    socialApi.post(`/friends/request/${friendship_id}/reject`),
+  cancel: (friendship_id) =>
+    socialApi.post(`/friends/request/${friendship_id}/cancel`),
+  unfriend: (user_id) =>
+    socialApi.post(`/friends/${user_id}/unfriend`),
+  list: (status = 'active') =>
+    socialApi.get('/friends', {params: {status}}),
+  listPending: () =>
+    socialApi.get('/friends', {params: {status: 'pending'}}),
+  listBlocks: () => socialApi.get('/friends/blocks'),
+  block: (user_id, reason) =>
+    socialApi.post(`/friends/${user_id}/block`,
+                   reason ? {reason} : undefined),
+  unblock: (user_id) => socialApi.post(`/friends/${user_id}/unblock`),
+};
+
+// --- Invites (Phase 7c.2) — community + conversation invites.
+// Server flag-gated (`invites_v2`).  Three shapes:
+//   1. Targeted user — invitee_id set
+//   2. Off-platform email — invitee_email set
+//   3. Shareable link — neither set; server returns invite_code
+export const invitesApi = {
+  send: ({parent_kind, parent_id, invitee_id, invitee_email,
+          role_offered, expires_in_days} = {}) =>
+    socialApi.post('/invites', {
+      parent_kind, parent_id, invitee_id, invitee_email,
+      role_offered, expires_in_days,
+    }),
+  accept: (invite_id) => socialApi.post(`/invites/${invite_id}/accept`),
+  reject: (invite_id) => socialApi.post(`/invites/${invite_id}/reject`),
+  listIncoming: (include_responded = false) =>
+    socialApi.get('/invites/incoming',
+                  include_responded ?
+                    {params: {include_responded: 'true'}} : undefined),
+  resolveCode: (code) => socialApi.get(`/invites/code/${code}`),
+};
+
+// --- Inbox (PR D — flagship unified inbox) ---
+// Wraps GET /api/social/sync/inbox.  Server flag-gated by `sync_v1`,
+// returns a flattened cross-source row list:
+//   { cursor, has_more, rows: [InboxRow, ...] }
+// where InboxRow = { id, kind, parent_kind, parent_id, sender_id,
+//                    sender_kind, content_preview, is_unread,
+//                    last_activity_at, deep_link }.
+// Pass back the `cursor` as `since` to fetch the next page.
+export const inboxApi = {
+  list: ({since, limit = 50} = {}) =>
+    socialApi.get('/sync/inbox', {
+      params: since ? {since, limit} : {limit},
+    }),
 };
 
 // --- Marketplace ---

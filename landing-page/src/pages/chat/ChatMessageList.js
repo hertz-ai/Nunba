@@ -5,7 +5,38 @@ import hourglassAnimation from '../../assets/hourglass-lottie.json';
 
 import Lottie from 'lottie-react';
 import {FileText} from 'lucide-react';
+import Markdown from 'markdown-to-jsx';
 import React, {useState, useEffect} from 'react';
+
+import {formatTier} from '../../utils/tier';
+
+// Markdown renderer for assistant replies — the model emits standard
+// Markdown (**bold**, _italic_, lists, code fences, links).  Without
+// this, the bubble shows literal asterisks and underscores instead
+// of formatted text.  ``markdown-to-jsx`` is already in the bundle
+// (``pages/blogs/Markdown.js``) and sanitizes by default — no
+// new dependency, no XSS risk from raw HTML.  ``forceBlock`` keeps
+// paragraph wrapping consistent with the prior ``<div>`` layout so
+// the bubble height doesn't visually shift.
+const ASSISTANT_MD_OPTS = {
+  forceBlock: true,
+  overrides: {
+    a: {
+      props: {
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        className: 'underline',
+      },
+    },
+    code: {props: {className: 'px-1 py-0.5 rounded bg-white/10 text-xs'}},
+    pre: {props: {className: 'p-2 my-2 rounded bg-black/20 overflow-x-auto text-xs'}},
+    ul: {props: {className: 'list-disc pl-5 my-2 space-y-1'}},
+    ol: {props: {className: 'list-decimal pl-5 my-2 space-y-1'}},
+    h1: {props: {className: 'text-base font-semibold mt-2 mb-1'}},
+    h2: {props: {className: 'text-sm font-semibold mt-2 mb-1'}},
+    h3: {props: {className: 'text-sm font-semibold mt-2 mb-1'}},
+  },
+};
 
 
 
@@ -168,6 +199,15 @@ const ChatMessageList = ({
         }
 
         if (message.type === 'setup_progress') {
+          // Soft-delete: a dismissed card stays in the messages array
+          // (so chat-sync replicas, history, and any future "undo"
+          // affordance still see the record) but renders nothing.  We
+          // checked once here rather than inside SetupProgressCard so
+          // the dismissed bubble doesn't claim layout space + key
+          // collisions stay impossible.
+          if (message.dismissed) {
+            return null;
+          }
           // Retry / Switch-engine handlers POST to the TTS handshake
           // API; success fires a fresh tts_handshake SSE which the
           // Demopage listener grafts back onto this card by engine.
@@ -199,6 +239,17 @@ const ChatMessageList = ({
               console.warn('[handshake] switch failed', e);
             }
           };
+          // Soft-dismiss: flip ``dismissed:true`` on this message in
+          // place so the next render skips it.  The setup_progress
+          // SSE listener in Demopage looks the message up by jobType,
+          // so a dismissed record can still be re-located if a fresh
+          // event arrives — the user can resurrect the card by
+          // triggering another setup run.
+          const handleDismiss = () => {
+            setMessages((prev) => prev.map((m, i) => (
+              i === index ? { ...m, dismissed: true } : m
+            )));
+          };
           return (
             <SetupProgressCard
               key={`setup-${message.jobType || index}`}
@@ -208,6 +259,7 @@ const ChatMessageList = ({
               handshake={message.handshake || { status: 'pending' }}
               onRetry={handleRetry}
               onSwitchEngine={handleSwitchEngine}
+              onDismiss={handleDismiss}
             />
           );
         }
@@ -454,39 +506,75 @@ const ChatMessageList = ({
                           />
                         </div>
                       )}
+                      {/* Timestamp — parity with the assistant bubble below.
+                          Same field (message.timestamp), same helper
+                          (formatTimestamp).  Demopage backfills this on
+                          every send (Demopage.js:1380) so the field is
+                          reliably present. */}
+                      {message.timestamp && (
+                        <div className="text-xs mt-1" style={{ color: 'rgba(0,0,0,0.55)' }}>
+                          {formatTimestamp(message.timestamp)}
+                        </div>
+                      )}
                     </div>
                   )}
 
                   {message.type === 'assistant' && (
                     <>
                       {isTextMode ? (
-                        <div>{message.content}</div>
+                        <div>
+                          <Markdown options={ASSISTANT_MD_OPTS}>
+                            {message.content || ''}
+                          </Markdown>
+                        </div>
                       ) : animatingMessageIndex === index && duration > 0 ? (
+                        // Typewriter animation needs raw chars — Markdown
+                        // post-renders once the typewriter completes via
+                        // the next state transition into the static branch.
                         <TypeWriterForSubtitle
                           text={message.content}
                           duration={duration}
                           isIdle={isIdleVideo(videoUrl)}
                         />
                       ) : (
-                        <div>{message.content}</div>
-                      )}
-                      {/* Intelligence source badge + timestamp */}
-                      <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
-                        <div className="flex items-center gap-1">
-                          <span
-                            className="inline-block w-2 h-2 rounded-full"
-                            style={{
-                              backgroundColor: message.source?.includes('local') || !message.source
-                                ? '#2ECC71'
-                                : '#6C63FF',
-                            }}
-                          />
-                          {message.source?.includes('local') || !message.source ? 'Local' : 'Hive'}
+                        <div>
+                          <Markdown options={ASSISTANT_MD_OPTS}>
+                            {message.content || ''}
+                          </Markdown>
                         </div>
-                        {message.timestamp && (
-                          <span>&middot; {formatTimestamp(message.timestamp)}</span>
-                        )}
-                      </div>
+                      )}
+                      {/* Intelligence source badge + timestamp.
+                          servedBy/nodeTier come from /chat response_json
+                          (Nunba routes/chatbot_routes.py:2693).  Fall back
+                          to message.source so legacy buckets that didn't
+                          plumb the new fields still render something. */}
+                      {(() => {
+                        const tier = formatTier(
+                          message.servedBy ||
+                            (message.source?.includes('local') ? 'local'
+                              : message.source?.includes('cloud') ? 'cloud'
+                              : message.source?.includes('hive') ? 'hive'
+                              : 'local'),
+                          message.nodeTier,
+                        );
+                        return (
+                          <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                            <div
+                              className="flex items-center gap-1"
+                              title={`${tier.label} · ${tier.sublabel}`}
+                            >
+                              <span
+                                className="inline-block w-2 h-2 rounded-full"
+                                style={{ backgroundColor: tier.color }}
+                              />
+                              <span>{tier.emoji} {tier.label}</span>
+                            </div>
+                            {message.timestamp && (
+                              <span>&middot; {formatTimestamp(message.timestamp)}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </>
                   )}
 

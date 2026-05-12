@@ -7,15 +7,15 @@
   html, body {
     background: transparent;
     overflow: hidden;
-    width: 180px;
-    height: 240px;
+    width: 220px;
+    height: 310px;
     user-select: none;
     -webkit-user-select: none;
     -webkit-app-region: drag;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
 
-  .companion { width: 180px; height: 240px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; position: relative; }
+  .companion { width: 220px; height: 310px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; position: relative; }
 
   /* ── Curious Character SVG ────────────────────── */
   .character {
@@ -98,6 +98,62 @@
   .mode-dot.active { background: #FF9800; }
   .mode-dot.sleep { background: #555; }
 
+  /* ── Floating input bar (quick prompt) ──────── */
+  .input-bar {
+    margin-top: 8px;
+    width: 200px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(15, 14, 23, 0.88);
+    border: 1px solid rgba(108, 99, 255, 0.45);
+    border-radius: 18px;
+    padding: 4px 6px 4px 10px;
+    -webkit-app-region: no-drag;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .input-bar:focus-within {
+    border-color: rgba(108, 99, 255, 0.95);
+    box-shadow: 0 4px 18px rgba(108, 99, 255, 0.35);
+  }
+  .input-bar input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: 0;
+    outline: none;
+    color: #e8e8e8;
+    font-size: 11px;
+    font-family: inherit;
+    padding: 4px 0;
+  }
+  .input-bar input::placeholder { color: rgba(232, 232, 232, 0.45); }
+  .input-bar button {
+    width: 22px; height: 22px;
+    border: 0;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #6C63FF, #9B94FF);
+    color: white;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform 0.15s, opacity 0.15s;
+  }
+  .input-bar button:hover { transform: scale(1.1); }
+  .input-bar button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+  /* Platform hint line under the input */
+  .platform-hint {
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: rgba(155, 148, 255, 0.45);
+    margin-top: 4px;
+    text-align: center;
+  }
+
   /* ── Animations ──────────────────────────────── */
   @keyframes float {
     0%, 100% { transform: translateY(0); }
@@ -170,6 +226,22 @@
     <div class="mode-dot idle" id="modeDot"></div>
     <div class="name-label" id="nameLabel">Your Pal</div>
   </div>
+
+  <!-- Floating quick-prompt input bar (companion is always visible) -->
+  <form class="input-bar" id="inputBar" onsubmit="return false;" title="Ask Nunba to help with device automation (Android / macOS / Linux / Windows)">
+    <input
+      id="promptInput"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      maxlength="500"
+      placeholder="Ask Nunba…"
+      aria-label="Quick prompt for Nunba"
+    />
+    <button id="sendBtn" type="button" aria-label="Send prompt">&#10148;</button>
+  </form>
+
+  <div class="platform-hint" id="platformHint">Android · macOS · Linux · Windows</div>
 
   <!-- Hidden audio element for TTS playback -->
   <audio id="ttsAudio" preload="none"></audio>
@@ -274,16 +346,90 @@ character.addEventListener('dblclick', function(e) {
   }
 });
 
+// ── Floating input bar: submit quick prompt to Nunba ──
+var promptInput = document.getElementById('promptInput');
+var sendBtn = document.getElementById('sendBtn');
+var _submitting = false;
+
+function submitPrompt() {
+  if (_submitting) return;
+  var text = (promptInput.value || '').trim();
+  if (!text) return;
+  _submitting = true;
+  sendBtn.disabled = true;
+  promptInput.disabled = true;
+  showBubble('Thinking…', 0);
+  setMode('active');
+  // Prefer the Python bridge so the main app can own the HARTOS dispatch;
+  // fall back to a direct /chat POST if the bridge isn't available (e.g.,
+  // the companion HTML is loaded in a browser tab for debugging).
+  var viaBridge = false;
+  try {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.on_companion_prompt) {
+      viaBridge = true;
+      window.pywebview.api.on_companion_prompt(text).then(function (reply) {
+        _onPromptReply(reply);
+      }).catch(function (err) {
+        _onPromptError(err);
+      });
+    }
+  } catch (e) { viaBridge = false; }
+
+  if (!viaBridge) {
+    fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, source: 'companion_input_bar' })
+    }).then(function (r) {
+      return r.ok ? r.json() : r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+    }).then(function (data) {
+      _onPromptReply(data && (data.response || data.message || data.text) || 'OK');
+    }).catch(function (err) { _onPromptError(err); });
+  }
+}
+
+function _onPromptReply(reply) {
+  _submitting = false;
+  sendBtn.disabled = false;
+  promptInput.disabled = false;
+  promptInput.value = '';
+  setMode('idle');
+  var text = (typeof reply === 'string') ? reply : (reply && reply.text) || 'Done.';
+  if (text && text.length > 160) text = text.slice(0, 157) + '…';
+  showBubble(text || 'Done.', 8000);
+}
+
+function _onPromptError(err) {
+  _submitting = false;
+  sendBtn.disabled = false;
+  promptInput.disabled = false;
+  setMode('idle');
+  var msg = (err && err.message) ? err.message : 'Try again.';
+  if (msg.length > 120) msg = msg.slice(0, 117) + '…';
+  showBubble('⚠ ' + msg, 5000);
+}
+
+sendBtn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); submitPrompt(); });
+promptInput.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submitPrompt();
+  }
+});
+// Clicking the input should never bubble up to the drag region.
+promptInput.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+
 // ── Greeting ──
-setTimeout(function() { showBubble('Hey! Click me to talk.', 4000); }, 1500);
+setTimeout(function() { showBubble('Type a task — or click me to talk.', 5000); }, 1500);
 
 // ── Idle thoughts ──
 function idleThought() {
-  if (_speaking || _listening) return setTimeout(idleThought, 60000);
+  if (_speaking || _listening || _submitting) return setTimeout(idleThought, 60000);
   var thoughts = [
-    'Need any help?', 'I can hear you...', 'Try asking me anything!',
-    'Want to create something?', 'I can make videos, images, music...',
-    'Click me to chat!', 'Double-click to open Nunba',
+    'Type a task below…', 'I can automate Android, macOS, Linux, Windows.',
+    'Need any help?', 'Try: "summarise the latest logs"',
+    'Want to create something?', 'Click me to open full Nunba.',
+    'Double-click for the main window.',
   ];
   showBubble(thoughts[Math.floor(Math.random() * thoughts.length)], 5000);
   setTimeout(idleThought, (300 + Math.random() * 600) * 1000);
@@ -299,6 +445,9 @@ window.companionAPI = {
   setSpeaking: setSpeaking,
   setListening: setListening,
   playTTS: playTTS,
+  submitPrompt: submitPrompt,
+  focusInput: function () { try { promptInput.focus(); } catch (e) {} },
+  setReply: _onPromptReply,
 };
 </script>
 </body>

@@ -249,10 +249,17 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
         setAlert(true);
       }
     } catch (error) {
-      console.warn('OTP send failed:', error.message || error);
+      // Network-level failure (CORS preflight, DNS, timeout, cloud
+      // unreachable, certificate) \u2014 the cloud was NEVER queried, so we
+      // cannot say whether the account exists.  Showing "you don't have
+      // an account" here lied to users who are merely on a flaky
+      // connection (incident 2026-05-11: registered users with intact
+      // cloud rows were told to "sign up").  Surface the real failure
+      // mode so retry-on-connection is the obvious next step.
+      console.warn('OTP send fetch failed:', error.message || error);
       setAlert(true);
       setAlertContent(
-        'It looks like you don\u2019t have an account yet. Sign up to get started!'
+        'Couldn\u2019t reach our servers. Please check your connection and try again.'
       );
       return false;
     } finally {

@@ -26,7 +26,7 @@ export default function AboutTwo() {
 
           <div className="order-2 md:order-1">
             <h4 className="mb-4 md:text-3xl md:leading-normal text-2xl leading-normal font-semibold">
-              Why HevolveAI Agents?
+              Why Nunba Agents?
             </h4>
             <p className="text-slate-400">
               We're not just another AI platform – we're a game-changer in the
