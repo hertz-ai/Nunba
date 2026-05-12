@@ -348,7 +348,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const token = localStorage.getItem('access_token');
   const refresh_token = localStorage.getItem('refresh_token');
   const isAuthenticated = (decryptedUserId && token) || isGuestMode;
-  const effectiveUserId = isGuestMode ? guestUserId : decryptedUserId;
+  // Always fall back to 'guest' so we never ship empty/null user_id to chat
+  // OR camera-frame POST.  Earlier behavior left this nullable, which caused
+  // a silent mismatch: camera-frame POST applied its own 'guest' fallback
+  // while chat sent ''. VisionService stored the frame under 'guest' but
+  // chat_route looked it up under '' → 'no frame in store' → video-mode
+  // LLM had no visual context.  Defaulting here means every consumer of
+  // effectiveUserId sees the same non-empty value.  Cross-platform.
+  const effectiveUserId = (isGuestMode ? guestUserId : decryptedUserId) || 'guest';
   const [uploadedPdf, setUploadedPdf] = useState(null);
   const [pdfurl, setPdfurl] = useState(null);
   const [worker, setWorker] = useState(null);
@@ -2603,24 +2610,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       let committedText = '';
       let autoSendTimer = null;
 
+      // event.results accumulates across the entire SpeechRecognition session.
+      // We must only process NEW results (>= event.resultIndex) and accumulate
+      // into committedText — otherwise after sending we re-read old final
+      // results and merge new transcripts onto stale text ("Good morningHello"
+      // instead of "Hello" on the second utterance).  Cross-platform (Web
+      // Speech API is identical on Chrome/Edge/Safari Win/macOS/Linux).
       recognition.onresult = (event) => {
         let interim = '';
-        let finalText = '';
-        for (let i = 0; i < event.results.length; i++) {
+        let newFinal = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i];
-          if (result.isFinal) finalText += result[0].transcript;
+          if (result.isFinal) newFinal += result[0].transcript;
           else interim += result[0].transcript;
         }
-        committedText = finalText;
+        if (newFinal) committedText += newFinal;
         setInputMessage(committedText + interim);
 
-        const lastResult = event.results[event.results.length - 1];
-        if (lastResult.isFinal) {
+        // Re-arm autosend only when THIS event delivered new final text.
+        if (newFinal) {
           clearTimeout(autoSendTimer);
           autoSendTimer = setTimeout(() => {
             if (committedText.trim() && handleSendRef.current) {
               handleSendRef.current();
               committedText = '';
+              setInputMessage('');
             }
           }, 1000);
         }
@@ -2641,6 +2655,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         if (committedText.trim() && handleSendRef.current) {
           handleSendRef.current();
           committedText = '';
+          setInputMessage('');
         }
         setIsRecording(false);
       };
@@ -2847,7 +2862,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     // display name (e.g. Serene.Purple.Monisha) while chat was sending the
     // guest UUID — descriptions were stored under one id and queried under
     // another, so the LLM received no visual context.
-    const userId = effectiveUserId || localStorage.getItem('guest_user_id') || 'guest';
+    // CRITICAL: must match the user_id sent by chat (`effectiveUserId`) EXACTLY,
+    // otherwise the backend's _store.get_frame(user_id) lookup misses the frame
+    // we POSTed.  The 22-Apr fix used a fallback chain here that diverged from
+    // chat's payload when effectiveUserId was empty (guest mode without a
+    // localStorage guest_user_id) — frame went under 'guest', chat queried ''.
+    // Use the same expression chat uses; if effectiveUserId is empty both sides
+    // are empty and they match.  Cross-platform: works on Win/macOS/Linux.
+    const userId = effectiveUserId;
 
     const startStreaming = async () => {
       try {
