@@ -667,13 +667,69 @@ def get_description(user_id):
     return None
 
 
+_VISION_SERVICE_CACHE = [None]
+
+
 def _get_vision_service():
-    """Lazy accessor for the global VisionService instance."""
-    import sys
-    main_mod = sys.modules.get('__main__')
-    if main_mod and hasattr(main_mod, '_vision_service'):
-        return main_mod._vision_service
+    """Lazy accessor for the running VisionService singleton.
+
+    cx_Freeze on macOS mounts ``main.py`` under an opaque module name that
+    neither ``__main__`` nor ``main`` matches, so reading the module-level
+    global via ``sys.modules`` returns None.  Fall back to ``gc``: find
+    any live ``VisionService`` instance in the heap.  Safe because
+    ``_start_vision_service`` only ever creates one.
+    """
+    cached = _VISION_SERVICE_CACHE[0]
+    if cached is not None:
+        return cached
+    try:
+        import gc
+        from integrations.vision.vision_service import VisionService
+    except Exception:
+        return None
+    for _obj in gc.get_objects():
+        if isinstance(_obj, VisionService):
+            _VISION_SERVICE_CACHE[0] = _obj
+            return _obj
     return None
+
+
+def vision_frame_ingest():
+    """POST /api/vision/frame?user_id=...&channel=camera|screen, body = JPEG bytes.
+
+    Cross-platform canonical transport for SPA-sourced camera / screen
+    frames.  Reuses the same frame-store API that VisionService's
+    WebSocket handler calls (`store.put_frame` / `store.put_screen_frame`)
+    — the background `_description_loop` then picks the frames up, runs
+    them through the active vision backend (Qwen3-VL / MiniCPM /
+    lightweight), and records visual context exactly as the WebSocket
+    path does.
+
+    HTTP is used instead of WebSocket because WKWebView (macOS) rejects
+    `ws://` from the secure-context localhost page with a hard-coded
+    `SecurityError: The operation is insecure` that no WKPreference or
+    App Transport Security key unlocks.  HTTP fetch to the same Flask
+    origin has no such gate and behaves identically on WebView2 / WKWebView
+    / WebKitGTK — single frontend path for every OS, not a Mac fallback.
+    """
+    svc = _get_vision_service()
+    if svc is None or not getattr(svc, 'store', None):
+        return jsonify({'ok': False, 'error': 'vision_service_unavailable'}), 503
+    user_id = str(request.args.get('user_id') or
+                  request.headers.get('X-User-Id') or 'anon')
+    channel = (request.args.get('channel') or 'camera').lower()
+    frame_bytes = request.get_data() or b''
+    if not frame_bytes:
+        return jsonify({'ok': False, 'error': 'empty_frame'}), 400
+    try:
+        if channel == 'screen':
+            svc.store.put_screen_frame(user_id, frame_bytes)
+        else:
+            svc.store.put_frame(user_id, frame_bytes)
+        return ('', 204)
+    except Exception as _e:
+        logger.warning(f"vision_frame_ingest error: {_e}")
+        return jsonify({'ok': False, 'error': str(_e)[:120]}), 500
 
 
 def create_sessions(user_id, teacher_avatar_id, data, data_keys):
@@ -1791,7 +1847,10 @@ def voice_transcribe():
         audio_file.save(tmp.name)
         tmp.close()
 
-        from integrations.service_tools.whisper_tool import whisper_transcribe
+        from integrations.service_tools.whisper_tool import (
+            _faster_whisper_transcribe,
+            whisper_transcribe,
+        )
         # STT language resolution (fix for 2026-04-15 Romanised-Tamil
         # regression, caused by prior fix 07da0fb):
         #
@@ -1812,10 +1871,24 @@ def voice_transcribe():
         # while not forcing English on opportunistic multilingual use.
         _pref_lang = request.form.get('preferred_lang') or request.args.get('preferred_lang')
         _should_hint = bool(_pref_lang) and _pref_lang.split('-')[0].lower() not in ('', 'en', 'auto')
-        result = json.loads(
-            whisper_transcribe(tmp.name, language=_pref_lang) if _should_hint
-            else whisper_transcribe(tmp.name)
-        )
+        # Preferred path: in-process faster-whisper call.  Avoids the
+        # ToolWorker subprocess, which can't start under cx_Freeze on macOS
+        # (frozen binary has no `-m module` entry — single-instance guard
+        # re-fires and the worker exits 0 before the model loads).
+        _in_proc = None
+        try:
+            _in_proc = _faster_whisper_transcribe(
+                tmp.name, language=_pref_lang if _should_hint else None
+            )
+        except Exception as _fw_err:
+            logger.warning(f"In-process faster-whisper failed, falling back: {_fw_err}")
+        if _in_proc:
+            result = json.loads(_in_proc)
+        else:
+            result = json.loads(
+                whisper_transcribe(tmp.name, language=_pref_lang) if _should_hint
+                else whisper_transcribe(tmp.name)
+            )
 
         # Sync STT model state with catalog on first successful transcribe
         try:
@@ -2317,6 +2390,78 @@ def chat_route():
     # To avoid duplicate audio, we check if HARTOS handled the request (Tier-1).
     # If Tier-2/3 produced the text, we synthesize here.
 
+    # Video mode: grab the latest camera frame and caption it inline before
+    # the LLM call.  This is the synchronous fallback that keeps Video-mode
+    # chat grounded even when VisionService's async `_description_loop` is
+    # silent.  Failure here is non-fatal — we just skip and let the LLM
+    # answer without visual context.
+    if media_mode == 'video':
+        try:
+            _svc = _get_vision_service()
+            _store = getattr(_svc, 'store', None) if _svc is not None else None
+            # Boot-race handler: if the chat fires before getUserMedia has
+            # resolved and POSTed the first frame, the store is still empty.
+            # Poll briefly (up to ~1.5 s in 150 ms slices) so the first turn
+            # after boot gets grounded context without needing a mode toggle.
+            _frame_bytes = None
+            if _store is not None:
+                for _ in range(10):
+                    _frame_bytes = _store.get_frame(str(user_id))
+                    if _frame_bytes:
+                        break
+                    time.sleep(0.15)
+            if _frame_bytes:
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as _tf:
+                    _tf.write(_frame_bytes)
+                    _tmp_path = _tf.name
+                try:
+                    from routes.upload_routes import _describe_image_via_llm
+                    _t0 = time.monotonic()
+                    _desc = _describe_image_via_llm(
+                        _tmp_path,
+                        "You are a video-call companion watching the user's camera. "
+                        "Describe what is visible right now in 1-2 sentences "
+                        "(person, action, objects, surroundings). Be concise and factual."
+                    )
+                    _elapsed_ms = int((time.monotonic() - _t0) * 1000)
+                    if _desc:
+                        # Strong framing: explicitly tell the LLM it HAS vision
+                        # right now and must answer from what it sees.  Plain
+                        # "[Live camera view — X]" was unreliable — small
+                        # models (and HARTOS's 0.8B draft classifier) still
+                        # fell back to their "I'm an AI, I can't see" pattern
+                        # on ~30% of turns.  The imperative instruction +
+                        # labelled OBSERVATION / USER QUESTION separator
+                        # overrides that baseline.
+                        text = (
+                            "You are on a live video call with the user. "
+                            "You CAN see them through the camera right now. "
+                            "Use the visual observation below to answer "
+                            "their question. Do not say you cannot see.\n"
+                            f"OBSERVATION (live camera, just now): {_desc}\n"
+                            f"USER QUESTION: {text}"
+                        )
+                        logger.info(
+                            f"Video mode: inline camera describe "
+                            f"({len(_frame_bytes)}B → {len(_desc)} chars, "
+                            f"{_elapsed_ms} ms)"
+                        )
+                    else:
+                        logger.info(
+                            f"Video mode: describe returned empty "
+                            f"({len(_frame_bytes)}B, {_elapsed_ms} ms)"
+                        )
+                finally:
+                    try:
+                        os.unlink(_tmp_path)
+                    except Exception:
+                        pass
+            else:
+                logger.info(f"Video mode: no frame in store for user {user_id}")
+        except Exception as _ve:
+            logger.warning(f"Video-mode inline describe skipped: {_ve}")
+
     # ── Agent identity resolution (server-derived; client agent_type is ignored) ──
     #
     # Client payload semantics:
@@ -2603,6 +2748,11 @@ def chat_route():
                 _needs_tools = bool(langchain_prompt_id or create_agent
                                     or agentic_execute or agentic_plan
                                     or autonomous_creation)
+                logger.info(
+                    f"hevolve_chat dispatch: media_mode={media_mode} "
+                    f"text[:160]={text[:160]!r} "
+                    f"conv_id={conversation_id} casual={not _needs_tools}"
+                )
                 result = hevolve_chat(
                     text=text,
                     user_id=str(user_id),
@@ -3983,6 +4133,8 @@ def register_routes(app):
                      methods=["POST"], endpoint="tts_handshake_retry_api")
     app.add_url_rule("/api/tts/handshake/switch", view_func=tts_handshake_switch,
                      methods=["POST"], endpoint="tts_handshake_switch_api")
+    app.add_url_rule("/api/vision/frame", view_func=vision_frame_ingest,
+                     methods=["POST"], endpoint="vision_frame_ingest")
 
     # Kids Learning TTS routes (called by kidsLearningApi.js TTSManager)
     app.route("/api/social/tts/quick", methods=["POST"])(tts_kids_quick)

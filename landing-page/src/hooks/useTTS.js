@@ -362,23 +362,67 @@ export function useTTS(options = {}) {
         const url = URL.createObjectURL(blob);
         if (audioRef.current) {
           audioRef.current.src = url;
-          audioRef.current.play();
+          try {
+            await audioRef.current.play();
+          } catch (playErr) {
+            // macOS WebKit blocks autoplay — resume AudioContext and retry once
+            console.warn('[TTS] play() blocked, retrying after user-gesture unlock:', playErr.message);
+            try {
+              const ctx = new (window.AudioContext || window.webkitAudioContext)();
+              if (ctx.state === 'suspended') await ctx.resume();
+              await audioRef.current.play();
+            } catch (retryErr) {
+              // WKWebView on macOS refuses to play our server WAV even after
+              // an AudioContext resume — that's the "operation is not
+              // supported" error in gui_app.log.  Re-throw so the outer
+              // catch block fires the SpeechSynthesisUtterance fallback,
+              // which uses the OS system voices and actually works.
+              console.error('[TTS] play() retry failed, escalating to web speech:', retryErr.message);
+              throw retryErr;
+            }
+          }
           setIsSpeaking(true);
         }
         return url;
       } catch (err) {
         // Server TTS failed — fall back to browser Web Speech API
-        // (works for most languages, lower quality but better than silence)
+        // (works for most languages via macOS / Windows system voices
+        // — lower quality but far better than silence).  Always emit
+        // diagnostics so we can see in gui_app.log whether the fallback
+        // fired, which lang the utterance used, and whether
+        // SpeechSynthesis's autoplay policy accepted the call.
+        // Auto-detect utterance language from the actual text content
+        // rather than trusting the caller's `lang` (which is often stale —
+        // tied to hart_language.json, not the LLM's actual response
+        // language).  If the text is predominantly Latin characters, use
+        // 'en'.  Otherwise use the caller's lang hint.  Without this,
+        // an English assistant reply in a Tamil-locale session tries to
+        // speak "Hello!" with a Tamil voice and fails silently.
+        const utterLang = _isLikelyEnglish(text) ? 'en' : lang;
+        console.log('[TTS] server synth failed, trying web speech fallback (caller lang=' + lang + ' detected lang=' + utterLang + ' err=' + err.message + ')');
         try {
+          if (!('speechSynthesis' in window)) {
+            console.error('[TTS] SpeechSynthesis not available in this WebView');
+            setError(err.message);
+            return null;
+          }
+          // Cancel any queued utterances; some WebKit versions refuse to
+          // start a new one while an old utterance is pending.
+          try { window.speechSynthesis.cancel(); } catch {}
           const utter = new SpeechSynthesisUtterance(text);
-          utter.lang = lang;
+          utter.lang = utterLang;
           utter.rate = 0.9;
-          utter.onend = () => setIsSpeaking(false);
-          utter.onerror = () => setIsSpeaking(false);
+          utter.onstart = () => console.log('[TTS] web speech utterance STARTED (lang=' + utterLang + ')');
+          utter.onend = () => { setIsSpeaking(false); console.log('[TTS] web speech utterance ENDED'); };
+          utter.onerror = (e) => { setIsSpeaking(false); console.error('[TTS] web speech utterance ERROR: ' + (e.error || 'unknown')); };
           window.speechSynthesis.speak(utter);
           setIsSpeaking(true);
+          const voices = window.speechSynthesis.getVoices();
+          const matched = voices.filter((v) => v.lang.toLowerCase().startsWith(utterLang.toLowerCase().slice(0, 2)));
+          console.log('[TTS] web speech dispatched: ' + matched.length + ' voices match lang=' + utterLang + ' (total=' + voices.length + ')');
           return 'webspeech';
-        } catch {
+        } catch (fallbackErr) {
+          console.error('[TTS] web speech fallback threw: ' + fallbackErr.message);
           setError(err.message);
           return null;
         }

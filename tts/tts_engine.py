@@ -478,6 +478,29 @@ for _lang in _INDIC_LANGS:
 # XTTS-v2 only adds Hindi among Indic — extend explicitly.
 _LANG_CAPABLE_BACKENDS['hi'] = _LANG_CAPABLE_BACKENDS['hi'] | frozenset({BACKEND_XTTS_V2})
 
+# ── Piper capability registration ───────────────────────────────────
+# Piper is the portable CPU-only backend that works identically on
+# Windows / macOS / Linux with no GPU and no system-voice dependency.
+# Every language in tts/piper_tts.py:LANG_TO_VOICE gets BACKEND_PIPER
+# added to its capable set, so select_backend_for_lang can pick Piper
+# without the rest of the fallback chain (indic_parler VRAM contention,
+# WKWebView SpeechSynthesis "operation not supported") ever firing.
+# Source of truth for the actual voice file is LANG_TO_VOICE in
+# piper_tts.py — keep the two lists in sync.
+try:
+    from tts.piper_tts import LANG_TO_VOICE as _PIPER_LANG_TO_VOICE
+    for _plang in _PIPER_LANG_TO_VOICE:
+        _bare = _plang.split('_')[0]
+        for _key in (_plang, _bare):
+            _existing = _LANG_CAPABLE_BACKENDS.get(_key, frozenset())
+            _LANG_CAPABLE_BACKENDS[_key] = _existing | {BACKEND_PIPER}
+except Exception:
+    # Piper module not importable at definition time — the fallback
+    # chain in _synthesize_with_fallback still tries Piper by default
+    # for 'en', so English audio isn't broken.  Other languages will
+    # fall through to their non-Piper backends (chatterbox_ml etc.).
+    pass
+
 
 def _normalize_lang(lang: str | None) -> str:
     """'en-US' / 'ta_IN' / None → 'en' / 'ta' / 'en'."""
@@ -3473,6 +3496,29 @@ class _LazyPiper:
         self._ensure_loaded()
         speed = kwargs.get('speed', 1.0)
         voice = kwargs.get('voice')
+        # If the caller didn't specify a voice_id but gave us a language
+        # hint (via the TTSEngine layer), pick the Piper voice registered
+        # for that language in piper_tts.LANG_TO_VOICE.  This is the
+        # mechanism that makes Tamil/Hindi/etc. speak in the right
+        # phonemes instead of mumble-English.  Voice is downloaded on
+        # first use (~30-65 MB cached in ~/.nunba/piper/voices/).
+        if not voice:
+            lang_hint = kwargs.get('language') or getattr(self, '_current_lang', None)
+            if lang_hint:
+                from tts.piper_tts import voice_for_lang
+                voice = voice_for_lang(lang_hint)
+        if voice and not self._tts.is_voice_installed(voice):
+            # Lazy download — blocks this synth call but only once per
+            # language-per-machine.  Subsequent calls hit the local cache.
+            try:
+                self._tts.download_voice(voice)
+            except Exception as _e:
+                logger.warning(
+                    f"Piper voice '{voice}' download failed ({_e}); "
+                    f"falling back to DEFAULT_VOICE"
+                )
+                from tts.piper_tts import DEFAULT_VOICE as _DV
+                voice = _DV
         return self._tts.synthesize(text, output_path=output_path, speed=speed,
                                     voice_id=voice)
 

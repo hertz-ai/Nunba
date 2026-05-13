@@ -21,7 +21,7 @@ import {
   Clock,
   ChevronLeft,
 } from 'lucide-react';
-import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL } from '../config/apiBase';
+import { BOOK_PARSING_URL, UPLOAD_FILE_URL, UPLOAD_NATIVE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL } from '../config/apiBase';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
@@ -116,7 +116,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [thinkingStartTime, setThinkingStartTime] = useState(null);
 
   const [shouldScroll, setShouldScroll] = useState(false);
-  const [loading, setLoading] = useState(true);
+  // Initialize false so the send button isn't disabled at boot.  The original
+  // `true` was vestigial (no render spinner keyed on it); the queue/drain
+  // effects at lines ~526 and ~539 are gated on messageQueue.length first, so
+  // an initial-false value doesn't change their behavior.  `setLoading(true)`
+  // still fires inside handleSend for every real request, which is what
+  // ChatInputBar's send-button disabled state now keys on.
+  const [loading, setLoading] = useState(false);
   const [messageQueue, setMessageQueue] = useState([]); // Queue for messages sent while loading or while local engine is booting
   const lastMessageSentAtRef = useRef(0); // Timestamp of last sent message
   const [editingQueueId, setEditingQueueId] = useState(null); // Track which queue item is being edited
@@ -342,7 +348,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const token = localStorage.getItem('access_token');
   const refresh_token = localStorage.getItem('refresh_token');
   const isAuthenticated = (decryptedUserId && token) || isGuestMode;
-  const effectiveUserId = isGuestMode ? guestUserId : decryptedUserId;
+  // Always fall back to 'guest' so we never ship empty/null user_id to chat
+  // OR camera-frame POST.  Earlier behavior left this nullable, which caused
+  // a silent mismatch: camera-frame POST applied its own 'guest' fallback
+  // while chat sent ''. VisionService stored the frame under 'guest' but
+  // chat_route looked it up under '' → 'no frame in store' → video-mode
+  // LLM had no visual context.  Defaulting here means every consumer of
+  // effectiveUserId sees the same non-empty value.  Cross-platform.
+  const effectiveUserId = (isGuestMode ? guestUserId : decryptedUserId) || 'guest';
   const [uploadedPdf, setUploadedPdf] = useState(null);
   const [pdfurl, setPdfurl] = useState(null);
   const [worker, setWorker] = useState(null);
@@ -624,11 +637,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           !currentAgent ||
           currentAgent.prompt_id !== matchedAgent.prompt_id
         ) {
-          if (currentAgent?.prompt_id && messages.length > 0) {
+          const _switchFromId = currentAgent?.prompt_id || currentAgent?.id;
+          if (_switchFromId && messages.length > 0) {
             logger.log(
               `💾 Saving ${messages.length} messages for agent: ${currentAgent.name}`
             );
-            saveMessagesToStorage(messages, currentAgent.prompt_id);
+            saveMessagesToStorage(messages, _switchFromId);
           }
 
           logger.log(
@@ -637,13 +651,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           setMessages([]);
 
           setCurrentAgent(matchedAgent);
-          if (matchedAgent.prompt_id) {
-            localStorage.setItem('active_agent_id', String(matchedAgent.prompt_id));
+          const _switchToId = matchedAgent.prompt_id || matchedAgent.id;
+          if (_switchToId) {
+            localStorage.setItem('active_agent_id', String(_switchToId));
           }
 
           setTimeout(() => {
             const savedMessages = loadMessagesFromStorage(
-              matchedAgent.prompt_id
+              matchedAgent.prompt_id || matchedAgent.id
             );
             logger.log(
               `📥 Loading ${savedMessages.length} messages for agent: ${matchedAgent.name}`
@@ -673,7 +688,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         logger.log(
           `💾 Saving ${messages.length} messages before creating new agent`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
       }
 
       logger.log(
@@ -714,11 +729,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   useEffect(() => {
     return () => {
       // Save messages when component unmounts (using refs to avoid stale closure)
-      if (currentAgentRef.current?.prompt_id && messagesRef.current.length > 0) {
+      const _unmountId = currentAgentRef.current?.prompt_id || currentAgentRef.current?.id;
+      if (_unmountId && messagesRef.current.length > 0) {
         logger.log(
           `💾 Component unmount: Saving ${messagesRef.current.length} messages for ${currentAgentRef.current.name}`
         );
-        saveMessagesToStorage(messagesRef.current, currentAgentRef.current.prompt_id);
+        saveMessagesToStorage(messagesRef.current, _unmountId);
       }
     };
   }, []);
@@ -805,14 +821,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
         // Restore last active agent from localStorage
         const savedAgentId = localStorage.getItem('active_agent_id');
-        if (savedAgentId && /^\d+$/.test(savedAgentId) && allAgents.length > 0) {
+        if (savedAgentId && allAgents.length > 0) {
           const savedAgent = allAgents.find(
-            (a) => String(a.prompt_id) === String(savedAgentId)
+            (a) => String(a.prompt_id) === String(savedAgentId) ||
+                   String(a.id) === String(savedAgentId)
           );
           if (savedAgent) {
             logger.log('Restoring active agent:', savedAgent.name);
             setCurrentAgent(savedAgent);
-            const savedMessages = loadMessagesFromStorage(savedAgent.prompt_id);
+            const savedMessages = loadMessagesFromStorage(savedAgent.prompt_id || savedAgent.id);
             if (savedMessages.length > 0) setMessages(savedMessages);
           } else {
             // Orphan-chat recovery: savedAgentId is valid but the
@@ -855,15 +872,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             }
             logger.log(`Saved agent ${savedAgentId} not found and no orphan chat — falling back to default`);
           }
-        } else if (savedAgentId && !/^\d+$/.test(savedAgentId)) {
-          console.warn('Clearing invalid active_agent_id:', savedAgentId);
-          localStorage.removeItem('active_agent_id');
         }
 
         // If still no current agent, prefer the built-in default (local_assistant).
         // Never auto-select a user-created agent — those have full agentic prompts
         // that would make a simple "hi" trigger an autonomous agent workflow.
-        if (!savedAgentId || allAgents.length === 0) {
+        if (!savedAgentId || !allAgents.find(a => String(a.prompt_id) === String(savedAgentId) || String(a.id) === String(savedAgentId))) {
           if (allAgents.length > 0) {
             const defaultAgent =
               allAgents.find(a => a.id === 'local_assistant') ||
@@ -871,15 +885,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               allAgents.find(a => a.type === 'local' && !a.create_agent) ||
               allAgents[0];
             setCurrentAgent(defaultAgent);
-            // Symmetric with the saved-agent restore at line 769-771 and
-            // the orphan recovery at line 821 — when the fallback default
-            // is selected on a fresh boot, load any prior conversation
-            // for THIS agent from localStorage.  Without this the user
-            // sees an empty chat even though their previous default-agent
-            // history is intact in storage (whatsapp/teams expectation:
-            // navigation back shows last conversation, not a clean slate).
-            if (defaultAgent?.prompt_id) {
-              const savedMessages = loadMessagesFromStorage(defaultAgent.prompt_id);
+            // Persist the chosen default so reload picks the same agent + use
+            // prompt_id||id fallback (built-in agents like local_assistant
+            // only have a string id).  Also load any prior conversation for
+            // THIS agent from localStorage so the user doesn't see an empty
+            // chat (whatsapp/teams expectation: navigation back shows last
+            // conversation, not a clean slate).  Both writes combined here.
+            const _defaultId = defaultAgent.prompt_id || defaultAgent.id;
+            if (_defaultId) {
+              localStorage.setItem('active_agent_id', String(_defaultId));
+              const savedMessages = loadMessagesFromStorage(_defaultId);
               if (savedMessages.length > 0) setMessages(savedMessages);
             }
           }
@@ -1142,15 +1157,35 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         messages: messages,
       };
       localStorage.setItem(storageKey, JSON.stringify(chatData));
-      logger.log(`💾 Saved ${messages.length} messages for agent ${promptId}`);
+      logger.log(`Saved ${messages.length} messages for agent ${promptId}`);
     } catch (error) {
       console.error('Failed to save messages to localStorage:', error);
     }
+
+    // Also persist to server DB (survives app reinstall/WebView reset)
+    try {
+      const uid = effectiveUserId || localStorage.getItem('guest_user_id') || 'guest';
+      const last = messages[messages.length - 1];
+      const prev = messages.length >= 2 ? messages[messages.length - 2] : null;
+      if (last) {
+        fetch('/conversation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: uid,
+            request: prev?.text || prev?.content || '',
+            response: last?.text || last?.content || '',
+            topic: `agent_${promptId}`,
+          }),
+        }).catch(() => {});
+      }
+    } catch (_) {}
   };
 
   const loadMessagesFromStorage = (promptId) => {
     if (!promptId) return [];
 
+    // Try localStorage first (fastest)
     try {
       const storageKey = getChatStorageKey(promptId);
       const savedData = localStorage.getItem(storageKey);
@@ -1161,13 +1196,35 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           ? chatData
           : chatData.messages || [];
         logger.log(
-          `📥 Loaded ${messages.length} messages for agent ${promptId}`
+          `Loaded ${messages.length} messages for agent ${promptId}`
         );
         return messages;
       }
     } catch (error) {
       console.error('Failed to load messages from localStorage:', error);
     }
+
+    // Fallback: load from server DB (survives WebView reset / reinstall)
+    try {
+      const uid = effectiveUserId || localStorage.getItem('guest_user_id') || 'guest';
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', `/conversation?user_id=${encodeURIComponent(uid)}&topic=agent_${promptId}`, false);
+      xhr.send();
+      if (xhr.status === 200) {
+        const convs = JSON.parse(xhr.responseText);
+        if (Array.isArray(convs) && convs.length > 0) {
+          const restored = [];
+          convs.forEach((c) => {
+            if (c.request) restored.push({ role: 'user', text: c.request });
+            if (c.response) restored.push({ role: 'assistant', text: c.response });
+          });
+          if (restored.length > 0) {
+            logger.log(`Restored ${restored.length} messages from server DB for agent ${promptId}`);
+            return restored;
+          }
+        }
+      }
+    } catch (_) {}
 
     return [];
   };
@@ -1251,7 +1308,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       };
 
       if (currentAgent?.prompt_id && messages.length > 0) {
-        saveMessagesToStorage(messages, currentAgent.prompt_id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
       }
       setMessages([
         {
@@ -1280,7 +1337,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         logger.log(
           `💾 Saving ${messages.length} messages before selecting ${agent.name}`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
       }
 
       logger.log(`🧹 Clearing messages for agent selection: ${agent.name}`);
@@ -2292,7 +2349,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         logger.log(
           `💾 Saving ${messages.length} messages before switching to ${chat.name}`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
       }
 
       logger.log(`🧹 Clearing messages for agent switch to: ${chat.name}`);
@@ -2400,6 +2457,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     tr: 'tr-TR', vi: 'vi-VN', th: 'th-TH', id: 'id-ID',
   };
 
+  // MediaRecorder fallback refs (used when Web Speech API is unavailable, e.g. macOS WKWebView)
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+
   const handleStart = () => {
     // Barge-in: if TTS is playing, stop it before starting mic
     if (tts.isSpeaking) {
@@ -2409,8 +2470,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     }
 
     // Tier 1: WebSocket streaming STT (GPU faster-whisper, real-time)
-    // Tier 2: Batch HTTP STT (GPU faster-whisper, 2s chunks)
-    // Tier 3: Browser Web Speech API (fallback)
     const _useStreamingWhisper = async () => {
       try {
         // Discover streaming STT WebSocket port
@@ -2434,7 +2493,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         let autoSendTimer = null;
         let fullText = '';
 
-        ws.onopen = () => { wsReady = true; };
+        ws.onopen = () => {
+          wsReady = true;
+          // Send language config so Whisper doesn't auto-detect
+          const hartLang = localStorage.getItem('hart_language') || 'en';
+          ws.send(JSON.stringify({ type: 'config', language: hartLang }));
+        };
         ws.onmessage = (evt) => {
           try {
             const data = JSON.parse(evt.data);
@@ -2461,7 +2525,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
         // Record audio and send chunks over WebSocket
         // Use AudioWorklet or ScriptProcessor to get raw PCM
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        // Note: WKWebView on macOS may ignore sampleRate constraint and
+        // give hardware rate (48kHz). We resample to 16kHz before sending.
+        const TARGET_RATE = 16000;
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_RATE });
+        const actualRate = audioCtx.sampleRate;
+        const needsResample = actualRate !== TARGET_RATE;
         const source = audioCtx.createMediaStreamSource(stream);
         const processor = audioCtx.createScriptProcessor(4096, 1, 1);
 
@@ -2470,7 +2539,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           // Echo cancellation: don't send mic audio while TTS is playing
           // (prevents the agent from hearing its own voice)
           if (tts.isSpeaking || isPlayingResponse) return;
-          const float32 = e.inputBuffer.getChannelData(0);
+          let float32 = e.inputBuffer.getChannelData(0);
+
+          // Resample if AudioContext gave a different rate than 16kHz
+          if (needsResample) {
+            const ratio = actualRate / TARGET_RATE;
+            const newLen = Math.round(float32.length / ratio);
+            const resampled = new Float32Array(newLen);
+            for (let i = 0; i < newLen; i++) {
+              resampled[i] = float32[Math.round(i * ratio)];
+            }
+            float32 = resampled;
+          }
+
           // Convert float32 [-1,1] to int16 PCM
           const pcm16 = new Int16Array(float32.length);
           for (let i = 0; i < float32.length; i++) {
@@ -2513,14 +2594,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       }
     };
 
+    // Tier 2: Browser Web Speech API
     const _useWebSpeech = () => {
       const SpeechRecognition =
         window.SpeechRecognition || window.webkitSpeechRecognition;
 
-      if (!SpeechRecognition) {
-        alert('Speech Recognition is not supported in your browser.');
-        return;
-      }
+      if (!SpeechRecognition) return false;
 
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
@@ -2531,36 +2610,52 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       let committedText = '';
       let autoSendTimer = null;
 
+      // event.results accumulates across the entire SpeechRecognition session.
+      // We must only process NEW results (>= event.resultIndex) and accumulate
+      // into committedText — otherwise after sending we re-read old final
+      // results and merge new transcripts onto stale text ("Good morningHello"
+      // instead of "Hello" on the second utterance).  Cross-platform (Web
+      // Speech API is identical on Chrome/Edge/Safari Win/macOS/Linux).
       recognition.onresult = (event) => {
         let interim = '';
-        let finalText = '';
-        for (let i = 0; i < event.results.length; i++) {
+        let newFinal = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i];
-          if (result.isFinal) finalText += result[0].transcript;
+          if (result.isFinal) newFinal += result[0].transcript;
           else interim += result[0].transcript;
         }
-        committedText = finalText;
+        if (newFinal) committedText += newFinal;
         setInputMessage(committedText + interim);
 
-        const lastResult = event.results[event.results.length - 1];
-        if (lastResult.isFinal) {
+        // Re-arm autosend only when THIS event delivered new final text.
+        if (newFinal) {
           clearTimeout(autoSendTimer);
           autoSendTimer = setTimeout(() => {
             if (committedText.trim() && handleSendRef.current) {
               handleSendRef.current();
               committedText = '';
+              setInputMessage('');
             }
           }, 1000);
         }
       };
 
-      recognition.onerror = (event) => console.error('Speech recognition error', event.error);
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error', event.error);
+        // If permission denied, fall through to lower-tier fallbacks
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          setIsRecording(false);
+          recognitionRef.current = null;
+          _useMediaRecorder() || _useNativeMic();
+        }
+      };
 
       recognition.onend = () => {
         clearTimeout(autoSendTimer);
         if (committedText.trim() && handleSendRef.current) {
           handleSendRef.current();
           committedText = '';
+          setInputMessage('');
         }
         setIsRecording(false);
       };
@@ -2568,15 +2663,93 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       recognition.start();
       recognitionRef.current = recognition;
       setIsRecording(true);
+      return true;
     };
 
-    // Tier cascade: WebSocket streaming → Web Speech fallback
-    _useStreamingWhisper().then(ok => { if (!ok) _useWebSpeech(); });
+    // Tier 3: MediaRecorder fallback (when getUserMedia available — Chrome, Edge, Electron, HTTPS)
+    const _useMediaRecorder = () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((stream) => {
+          audioChunksRef.current = [];
+          const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '' });
+          recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunksRef.current.push(e.data);
+          };
+          recorder.onstop = async () => {
+            stream.getTracks().forEach((t) => t.stop());
+            const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+            if (blob.size === 0) return;
+            setInputMessage('Transcribing...');
+            try {
+              const form = new FormData();
+              form.append('audio', blob, 'recording.webm');
+              const resp = await fetch('/voice/transcribe', { method: 'POST', body: form });
+              const data = await resp.json();
+              if (data.success && data.text) {
+                setInputMessage(data.text);
+                setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 500);
+              } else {
+                setInputMessage('');
+                console.warn('[STT] Transcription failed:', data.error);
+              }
+            } catch (err) {
+              setInputMessage('');
+              console.error('[STT] Transcription request failed:', err);
+            }
+          };
+          recorder.start();
+          mediaRecorderRef.current = recorder;
+          setIsRecording(true);
+        })
+        .catch((err) => {
+          console.error('[STT] Mic access denied:', err);
+          _useNativeMic();
+        });
+      return true;
+    };
+
+    // Tier 4: Native mic fallback (pywebview JS-Python bridge)
+    // Used when getUserMedia is unavailable (macOS WKWebView over HTTP).
+    // Records via Python sounddevice and transcribes via Whisper server-side.
+    const _useNativeMic = () => {
+      if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.native_mic_record) return false;
+      console.log('[STT] Using native pywebview mic capture');
+      setInputMessage('Listening (5s)...');
+      setIsRecording(true);
+      window.pywebview.api.native_mic_record(5).then((result) => {
+        setIsRecording(false);
+        if (result && !result.startsWith('__ERROR__')) {
+          setInputMessage(result);
+          setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 500);
+        } else {
+          setInputMessage('');
+          console.warn('[STT] Native mic error:', result);
+        }
+      }).catch((err) => {
+        setIsRecording(false);
+        setInputMessage('');
+        console.error('[STT] Native mic call failed:', err);
+      });
+      return true;
+    };
+
+    // Tier cascade: WebSocket streaming → Web Speech → MediaRecorder → Native mic
+    _useStreamingWhisper().then(ok => {
+      if (!ok && !_useWebSpeech() && !_useMediaRecorder() && !_useNativeMic()) {
+        alert('Microphone is not available. Please check System Settings > Privacy > Microphone.');
+      }
+    });
   };
   handleStartRef.current = handleStart;
 
   const handleStop = () => {
-    recognitionRef.current?.stop();
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
     setIsRecording(false);
   };
 
@@ -2620,16 +2793,24 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
         if (isEcho) return; // ignore echo
 
-        // Real user speech — barge in
+        // Real user speech — barge in (but only if not just after a manual send;
+        // the mic often catches the user's own voice as they type+say the same
+        // thing, producing a duplicate auto-send)
         tts.stop();
         setDuration(0);
         setAnimatingMessageIndex(null);
-        if (text.length > 2) {
+        if (text.length > 2 && Date.now() - lastMessageSentAtRef.current >= 2000) {
           setInputMessage(text);
           setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 300);
         }
         return;
       }
+
+      // Cooldown window after a manual send — the mic often picks up the
+      // user re-saying the text they just typed, or room noise, and
+      // immediately auto-fires a duplicate send.  Suppress for 2s after
+      // any manual send.
+      if (Date.now() - lastMessageSentAtRef.current < 2000) return;
 
       // Wake word: "Hey Nunba [command]"
       const wakeIdx = text.indexOf('nunba');
@@ -2675,7 +2856,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     }
 
     let cancelled = false;
-    const userId = decryptedUserId || localStorage.getItem('guest_name') || 'anon';
+    // Must match the user_id sent by /chat (effectiveUserId) so VisionService
+    // frames land in the same FrameStore bucket the chat pipeline looks up.
+    // Previously used decryptedUserId || guest_name, which produced the
+    // display name (e.g. Serene.Purple.Monisha) while chat was sending the
+    // guest UUID — descriptions were stored under one id and queried under
+    // another, so the LLM received no visual context.
+    // CRITICAL: must match the user_id sent by chat (`effectiveUserId`) EXACTLY,
+    // otherwise the backend's _store.get_frame(user_id) lookup misses the frame
+    // we POSTed.  The 22-Apr fix used a fallback chain here that diverged from
+    // chat's payload when effectiveUserId was empty (guest mode without a
+    // localStorage guest_user_id) — frame went under 'guest', chat queried ''.
+    // Use the same expression chat uses; if effectiveUserId is empty both sides
+    // are empty and they match.  Cross-platform: works on Win/macOS/Linux.
+    const userId = effectiveUserId;
 
     const startStreaming = async () => {
       try {
@@ -2684,41 +2878,44 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         });
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
 
-        // Connect to VisionService WebSocket (port 5460)
-        const wsPort = 5460;
-        const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+        // POST JPEG frames to the Flask server's /api/vision/frame endpoint
+        // at 5 FPS.  Same-origin HTTP is the one transport that works on
+        // WebView2 (Windows), WKWebView (macOS) and WebKitGTK (Linux) —
+        // WKWebView in particular rejects cross-port ws:// from a
+        // localhost-secure-context page as "mixed content" with no
+        // WKPreference / ATS escape hatch.  Keeping HTTP on every OS
+        // preserves a single frontend path.  VisionService's background
+        // description loop picks frames straight out of its FrameStore,
+        // identical to the WebSocket route.
         const video = document.createElement('video');
         video.srcObject = stream;
         video.muted = true;
+        video.playsInline = true;
         await video.play();
 
         const canvas = document.createElement('canvas');
         canvas.width = 640;
         canvas.height = 480;
         const ctx = canvas.getContext('2d');
+        const frameUrl = `/api/vision/frame?user_id=${encodeURIComponent(userId)}&channel=camera`;
 
-        ws.onopen = () => {
-          // Send user_id first, then video_start
-          ws.send(userId);
-          ws.send('video_start');
-        };
-
-        // Stream frames at 5 FPS — backend discards what it can't process
         const interval = setInterval(() => {
-          if (ws.readyState !== WebSocket.OPEN || cancelled) return;
+          if (cancelled) return;
           ctx.drawImage(video, 0, 0, 640, 480);
           canvas.toBlob((blob) => {
-            if (blob && ws.readyState === WebSocket.OPEN) {
-              blob.arrayBuffer().then(buf => ws.send(buf));
-            }
+            if (!blob || cancelled) return;
+            fetch(frameUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/octet-stream' },
+              body: blob,
+              keepalive: true,
+            }).catch(() => { /* best-effort: next frame retries */ });
           }, 'image/jpeg', 0.6); // quality 0.6 = ~20-40KB per frame
         }, 200); // 200ms = 5 FPS
 
         frameStreamRef.current = {
           stop: () => {
             clearInterval(interval);
-            try { ws.send('video_stop'); } catch {}
-            ws.close();
             stream.getTracks().forEach(t => t.stop());
             video.srcObject = null;
           },
@@ -2736,7 +2933,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         frameStreamRef.current = null;
       }
     };
-  }, [mediaMode, decryptedUserId]);
+  }, [mediaMode, effectiveUserId]);
 
   // ── Camera capture — snap frame, send as image ──
   const handleCameraCapture = async () => {
@@ -2772,6 +2969,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     setDuration(duration);
   };
   const handlePdfSelect = async (event) => {
+    // Use native file picker when running inside pywebview (macOS WKWebView)
+    if (window.pywebview && window.pywebview.api) {
+      try {
+        const filePath = await window.pywebview.api.native_file_pick('pdf');
+        if (!filePath) return;
+        const fileName = filePath.split('/').pop();
+        setPdfFile({ name: fileName });
+        const response = await fetch(UPLOAD_NATIVE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath, user_id: decryptedUserId, request_id: uuidv4() }),
+        });
+        if (response.ok) {
+          const result = await response.json();
+          setRequestId(result.request_id);
+          setpdfFileUrl(result.file_url);
+        } else {
+          console.error('Failed to upload PDF:', response.status);
+        }
+      } catch (error) {
+        console.error('Error during PDF upload process:', error);
+      }
+      return;
+    }
+
     const file = event.target.files[0];
 
     if (!file) {
@@ -2832,6 +3054,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   };
 
   const handleImageSelect = async (event) => {
+    // Use native file picker when running inside pywebview (macOS WKWebView)
+    if (window.pywebview && window.pywebview.api) {
+      setIsImageUploading(true);
+      try {
+        const filePath = await window.pywebview.api.native_file_pick('image');
+        if (!filePath) { setIsImageUploading(false); return; }
+        const response = await fetch(UPLOAD_NATIVE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath, user_id: decryptedUserId, request_id: uuidv4() }),
+        });
+        if (response.ok) {
+          const result = await response.json();
+          setUserImage(result.file_url);
+        } else {
+          console.error('Failed to upload image:', response.status);
+        }
+      } catch (error) {
+        console.error('Error uploading image:', error);
+      } finally {
+        setIsImageUploading(false);
+      }
+      return;
+    }
+
     const file = event.target.files[0];
 
     if (file) {
@@ -2910,15 +3157,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const handleSend = async () => {
     // Prime TTS audio element on user gesture — required by WebView2 autoplay policy.
     // Without this, audio.play() from async SSE callbacks is silently blocked.
+    // Fire-and-forget: a stray `await` here blocks the rest of handleSend
+    // long enough for the user to click send again (UI hasn't updated yet),
+    // which produces a double-dispatch at the same millisecond.  The priming
+    // only needs to happen inside the user gesture stack — the promise
+    // resolving later is irrelevant.
     try {
       const ttsEl = document.getElementById('nunba-tts-audio');
       if (ttsEl && ttsEl.paused && !ttsEl._primed) {
         ttsEl.volume = 0;
         ttsEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
-        await ttsEl.play().catch(() => {});
-        ttsEl.volume = 1;
-        ttsEl._primed = true;
-        console.log('[TTS] Audio element primed on user gesture');
+        ttsEl.play().then(() => {
+          ttsEl.volume = 1;
+          ttsEl._primed = true;
+          console.log('[TTS] Audio element primed on user gesture');
+        }).catch(() => {});
       }
     } catch {}
 
@@ -2955,18 +3208,26 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     logger.log(isPersonalisedEndpoint, 'isPersonalisedEndpoint');
 
     if (!inputMessage.trim() && !fileUrl && !userImage) return;
-    // Queue message when:
-    //   - A previous request is in flight (loading) AND it's been less than
-    //     10s since the last sent message (existing throttle behavior); OR
-    //   - The local engine is still booting (engineReady=false).
-    //
-    // engineReady defaults to true and is sticky-true once observed ready,
-    // so steady-state behavior is identical to the pre-engineReady gate.
-    // The boot-time branch ignores the 10s throttle window — during boot
-    // there is no "previous request" to wait on; messages should buffer
-    // for the entire boot, not just 10s.
+    // Queue message when EITHER:
+    //   (a) An active user-initiated request is in flight (loading) AND it's
+    //       been less than 10s since that send.  Require a real prior send
+    //       (lastMessageSentAtRef > 0) so the initial `loading=true` state —
+    //       which covers onboarding/prompt-fetch/auth phases, not an actual
+    //       chat in flight — can't trap the user's first click in the queue.
+    //       Implicit sends (STT auto-submit, onboarding handshake) that set
+    //       `loading` without recording a user message won't match this guard
+    //       and the user's first real click proceeds normally; OR
+    //   (b) The local engine is still booting (engineReady=false).
+    //       engineReady defaults to true and is sticky-true once observed
+    //       ready, so steady-state behavior is identical to the pre-
+    //       engineReady gate.  The boot-time branch ignores the 10s throttle
+    //       window — during boot there is no "previous request" to wait on;
+    //       messages should buffer for the entire boot, not just 10s.
     const timeSinceLastMsg = Date.now() - lastMessageSentAtRef.current;
-    if ((loading && timeSinceLastMsg < 10000) || !engineReady) {
+    if (
+      (loading && lastMessageSentAtRef.current > 0 && timeSinceLastMsg < 10000)
+      || !engineReady
+    ) {
       setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
       setInputMessage('');
       return;
@@ -3004,6 +3265,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     setMessages((prevMessages) => [...prevMessages, userMessage]);
     setLoading(true);
     lastMessageSentAtRef.current = Date.now();
+    // Force-clear the textarea DOM value immediately.  React's controlled
+    // rerender is enough in theory, but WKWebView occasionally ignores the
+    // rerender when another source (wake-listener, STT) writes to the same
+    // value in the same tick.  Direct DOM clear is belt-and-suspenders.
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+    }
     setShouldScroll(true);
     setWaitingText(null);
     logger.log('agentdata', agentData);
@@ -3289,6 +3557,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 return [...updated, assistantMessage];
               });
               setShouldScroll(true);
+
+              // Speak the response using TTS if enabled
+              if (ttsEnabled && tts.isAvailable && responseText) {
+                tts.speak(responseText);
+              }
+            }
+            // Auto-save after each response (survives force-quit)
+            const _saveId = currentAgent?.prompt_id || currentAgent?.id;
+            if (_saveId) {
+              setTimeout(() => saveMessagesToStorage(messagesRef.current, _saveId), 100);
             }
             setLoading(false);
             setIsRequestInFlight(false);
@@ -4407,6 +4685,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             inputMessage={inputMessage}
             setInputMessage={setInputMessage}
             isAuthenticated={isAuthenticated}
+            loading={loading}
             ttsEnabled={ttsEnabled}
             setTtsEnabled={setTtsEnabled}
             isRecording={isRecording}

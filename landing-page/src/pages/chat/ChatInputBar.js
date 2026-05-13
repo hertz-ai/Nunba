@@ -35,6 +35,7 @@ const ChatInputBar = ({
   inputMessage,
   setInputMessage,
   isAuthenticated,
+  loading,
   ttsEnabled,
   setTtsEnabled,
   isRecording,
@@ -239,7 +240,13 @@ const ChatInputBar = ({
         )}
 
         <button
-          onClick={() => document.getElementById('fileInput').click()}
+          onClick={() => {
+            if (window.pywebview && window.pywebview.api) {
+              handleImageSelect({target: {files: []}});
+            } else {
+              document.getElementById('fileInput').click();
+            }
+          }}
           className="text-gray-400 hover:text-gray-600 p-1"
           aria-label="Upload image"
         >
@@ -247,7 +254,13 @@ const ChatInputBar = ({
         </button>
 
         <button
-          onClick={() => document.getElementById('pdfInput').click()}
+          onClick={() => {
+            if (window.pywebview && window.pywebview.api) {
+              handlePdfSelect({target: {files: []}});
+            } else {
+              document.getElementById('pdfInput').click();
+            }
+          }}
           className="text-gray-400 hover:text-gray-600 p-1"
           aria-label="Upload PDF"
         >
@@ -336,6 +349,7 @@ const ChatInputBar = ({
           disabled={!isAuthenticated}
           onClick={handleSend}
           aria-label="Send message"
+          aria-busy={loading || undefined}
           className="p-1 rounded-lg transition-all duration-200 hover:scale-110 active:scale-90 motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
           style={{
             background: inputMessage.trim()
@@ -347,7 +361,7 @@ const ChatInputBar = ({
               : 'none',
           }}
         >
-          <SendHorizontal className="w-5 h-5" />
+          <SendHorizontal className={`w-5 h-5 ${loading ? 'animate-pulse motion-reduce:animate-none' : ''}`} />
         </button>
 
         <input

@@ -805,6 +805,76 @@ def parse_pdf_status():
     return jsonify(response)
 
 
+# ── Upload from native file path (pywebview file picker) ──
+
+@upload_bp.route('/upload/native', methods=['POST'])
+def upload_native():
+    """Upload a file from a local path selected via pywebview native file dialog.
+
+    Accepts JSON: { path, user_id, request_id, upload_type }
+    upload_type: 'image' or 'pdf' (default: auto-detect)
+    """
+    data = request.get_json(force=True)
+    file_path = data.get('path', '')
+    user_id = data.get('user_id', '0')
+    request_id = data.get('request_id', '')
+
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"error": "File not found"}), 400
+
+    src = Path(file_path)
+    ext = src.suffix.lower()
+    ftype = _file_type(ext)
+    name = _unique_name(src.name)
+
+    # Copy file to upload dir
+    import shutil
+    if ftype == 'image':
+        dest = IMAGE_DIR / name
+    elif ftype == 'pdf':
+        dest = FILE_DIR / name
+    else:
+        dest = FILE_DIR / name
+    shutil.copy2(str(src), str(dest))
+    logger.info(f"upload_native: {name} ({ftype}) from {file_path}")
+
+    # Vision inference for images
+    image_description = ""
+    if ftype == 'image':
+        desc = _describe_image_via_llm(str(dest))
+        if desc:
+            image_description = desc
+
+    subdir = 'images' if ftype == 'image' else 'files'
+    file_url = f"/uploads/{subdir}/{name}"
+
+    # Auto-trigger PDF parsing
+    pdf_job_id = None
+    if ftype == 'pdf':
+        pdf_job_id = uuid.uuid4().hex[:12]
+        _parse_jobs[pdf_job_id] = {
+            'status': 'queued', 'total_pages': 0, 'progress': 0,
+            'result': None, 'error': None, 'created_at': time.time(),
+        }
+        thread = threading.Thread(
+            target=_run_pdf_parse,
+            args=(pdf_job_id, str(dest), user_id, request_id),
+            daemon=True,
+        )
+        thread.start()
+
+    return jsonify({
+        'file_url': file_url,
+        'file_name': name,
+        'file_type': ftype,
+        'request_id': request_id,
+        'file_id': None,
+        'text': image_description or None,
+        'image_description': image_description,
+        'pdf_parse_job_id': pdf_job_id,
+    })
+
+
 # ── Static file serving ──
 
 @upload_bp.route('/uploads/<path:filepath>')
