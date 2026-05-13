@@ -75,3 +75,4 @@ nav:
   - Reference:
     - Environment Variables: reference/env-vars.md
     - Guardrails: reference/guardrails.md
+    - Commercial API: reference/commercial-api.md
