@@ -333,6 +333,18 @@ build_exe_options = {
         "pyperclip",
         "waitress",
         "requests",
+        # requests' char-detection dependency.  cx_Freeze's tracer misses
+        # charset_normalizer on macOS (witnessed 2026-05-14 build run
+        # 25842004495/build-macos: post-build Nunba --validate emits
+        # `RequestsDependencyWarning: Unable to find acceptable character
+        # detection dependency` and exits 1 because requests' import
+        # fails downstream).  Listing it explicitly forces bundling.
+        # idna + certifi follow the same pattern — declare them all so
+        # `import requests` + TLS verification both succeed in the
+        # frozen binary across all three OSes.
+        "charset_normalizer",
+        "idna",
+        "certifi",
 
         "routes.auth",  # Shared auth decorator (require_local_or_token)
         "routes.chatbot_routes",  # Chatbot routes module

@@ -152,7 +152,15 @@ build_exe_options = {
         "json", "time", "ctypes", "pathlib", "shutil",
         "flask_cors", "pyautogui", "PIL", "io", "uuid",
         "subprocess", "shlex", "pyperclip", "waitress",
-        "requests", "desktop.indicator_window", "routes.chatbot_routes",
+        "requests",
+        # requests' char-detection + encoding deps.  cx_Freeze's tracer
+        # misses these on macOS (run 25842004495 build-macos:
+        # `RequestsDependencyWarning: Unable to find acceptable character
+        # detection dependency` → post-build Nunba --validate exit 1).
+        # Listing them forces bundling so requests works in the frozen
+        # binary, which Stripe SDK + every outbound HTTPS call needs.
+        "charset_normalizer", "idna", "certifi",
+        "desktop.indicator_window", "routes.chatbot_routes",
         "tkinter", "uvicorn", "fastapi", "pydantic",
         "sqlalchemy", "pytz", "autobahn", "shapely",
         "starlette", "alembic", "greenlet",
