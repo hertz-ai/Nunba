@@ -99,8 +99,110 @@ export default function CommercialApiPricing() {
     };
   }, []);
 
-  const handleGetApiKey = (tier) => {
-    navigate('/signup', {state: {next: '/api-keys', initial_tier: tier}});
+  const API_BASE =
+    (typeof window !== 'undefined' && window.HEVOLVE_API_BASE
+      ? window.HEVOLVE_API_BASE
+      : 'https://api.hevolve.ai');
+
+  const handleGetApiKey = async (tier) => {
+    const token =
+      typeof window !== 'undefined' && window.localStorage
+        ? window.localStorage.getItem('access_token')
+        : null;
+
+    // Free tier: route through signup so the new user lands on their
+    // dashboard with a free key already minted.  Authenticated users
+    // skip signup and go straight to dashboard.
+    if (tier === 'free') {
+      if (token) {
+        navigate('/admin/agents');
+      } else {
+        navigate('/signup', {state: {next: '/admin/agents', initial_tier: 'free'}});
+      }
+      return;
+    }
+
+    // Paid tier without auth → bounce through signup, remember the
+    // upgrade intent so the post-signup hook can resume.
+    if (!token) {
+      navigate('/signup', {
+        state: {next: '/pricing', initial_tier: tier, upgrade_intent: tier},
+      });
+      return;
+    }
+
+    // Paid tier with auth → start Stripe Checkout immediately.  Need
+    // the user's API key id to scope the upgrade; assume the user has
+    // at least one (signup mints a free key by default).
+    try {
+      const keysResp = await fetch(`${API_BASE}/api/v1/intelligence/keys`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+      if (!keysResp.ok) {
+        throw new Error(`keys lookup HTTP ${keysResp.status}`);
+      }
+      const keysData = await keysResp.json();
+      const keys = (keysData && keysData.keys) || keysData.api_keys || [];
+      let keyId = keys[0] && (keys[0].id || keys[0].key_id);
+      if (!keyId) {
+        // No key yet — mint a free one so we have something to upgrade.
+        const createResp = await fetch(`${API_BASE}/api/v1/intelligence/keys`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({name: 'checkout-mint', tier: 'free'}),
+        });
+        if (!createResp.ok) {
+          throw new Error(`key mint HTTP ${createResp.status}`);
+        }
+        const createData = await createResp.json();
+        keyId = createData.api_key && createData.api_key.id;
+        if (!keyId) throw new Error('key mint returned no id');
+      }
+
+      const successBase =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}/upgrade-success`
+          : 'https://hevolve.ai/upgrade-success';
+      const cancelBase =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}/pricing`
+          : 'https://hevolve.ai/pricing';
+
+      const checkoutResp = await fetch(
+        `${API_BASE}/api/v1/intelligence/keys/${keyId}/upgrade/checkout`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            target_tier: tier,
+            success_url: `${successBase}?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: cancelBase,
+          }),
+        }
+      );
+      const checkoutData = await checkoutResp.json();
+      if (!checkoutResp.ok || !checkoutData.checkout_url) {
+        const msg = checkoutData.error || `HTTP ${checkoutResp.status}`;
+        alert(`Could not start checkout: ${msg}`);
+        return;
+      }
+      window.location.href = checkoutData.checkout_url;
+    } catch (err) {
+      console.error('Checkout init failed:', err);
+      alert(`Could not start checkout: ${err.message}.  ` +
+            `If api.hevolve.ai isn't reachable yet, the hosted ` +
+            `checkout is not yet live — try Nunba locally instead.`);
+    }
   };
 
   return (

@@ -31,6 +31,7 @@ const AboutUs = lazy(() => import("./pages/aboutus"));
 const Personalised_Learning = lazy(() => import("./pages/index-three"));
 const Pricing = lazy(() => import("./pages/pricing"));
 const CommercialApiPricing = lazy(() => import("./pages/CommercialApiPricing"));
+const UpgradeSuccess = lazy(() => import("./pages/UpgradeSuccess"));
 const SpeechTherapyPage = lazy(() => import("./pages/SpeechTherapyPage"));
 const TrialPlanPricing = lazy(() => import("./pages/TrialPlanPricing"));
 const PaymentFailure = lazy(() => import("../src/components/PaymentFailure"));
@@ -307,6 +308,20 @@ function MainRoutes() {
           element={
             <Suspense fallback={<PageSkeleton />}>
               <CommercialApiPricing />
+            </Suspense>
+          }
+        />
+
+        {/* Stripe Checkout return URL.  See
+            HARTOS/integrations/agent_engine/commercial_api.py:
+            complete_upgrade_checkout — Stripe redirects here with
+            ?session_id=cs_... and the page POSTs that back to the
+            backend to finalize the tier bump. */}
+        <Route
+          path="/upgrade-success"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <UpgradeSuccess />
             </Suspense>
           }
         />
