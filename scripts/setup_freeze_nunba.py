@@ -324,6 +324,23 @@ build_exe_options = {
         # so include the full package trees to ensure all submodules are available.
         "langchain_classic",
         "langchain_core",
+        # langchain_core.language_models/__init__.py uses `import_attr` from
+        # langchain_core._import_utils to lazy-load classes like
+        # LanguageModelOutput from `.base`.  cx_Freeze sometimes fails to
+        # follow that lazy chain even when the parent package is listed,
+        # producing the 2026-05-14 build-windows failure (run
+        # 25855122044/build-windows): `ImportError: cannot import name
+        # 'LanguageModelOutput' from 'langchain_core.language_models'`.
+        # Listing the submodules explicitly forces cx_Freeze to compile
+        # each .py into the bundle, so the lazy attribute resolution at
+        # runtime always finds its target.
+        "langchain_core.language_models",
+        "langchain_core.language_models.base",
+        "langchain_core.language_models.chat_models",
+        "langchain_core.language_models.llms",
+        "langchain_core.language_models.fake",
+        "langchain_core.language_models.fake_chat_models",
+        "langchain_core._import_utils",
         "io",
         "uuid",
         "subprocess",
