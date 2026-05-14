@@ -30,6 +30,7 @@ const Home = lazy(() => import("./pages/Home"));
 const AboutUs = lazy(() => import("./pages/aboutus"));
 const Personalised_Learning = lazy(() => import("./pages/index-three"));
 const Pricing = lazy(() => import("./pages/pricing"));
+const CommercialApiPricing = lazy(() => import("./pages/CommercialApiPricing"));
 const SpeechTherapyPage = lazy(() => import("./pages/SpeechTherapyPage"));
 const TrialPlanPricing = lazy(() => import("./pages/TrialPlanPricing"));
 const PaymentFailure = lazy(() => import("../src/components/PaymentFailure"));
@@ -285,6 +286,27 @@ function MainRoutes() {
                 </Helmet>
                 <Pricing />
               </>
+            </Suspense>
+          }
+        />
+
+        {/* Commercial API pricing — the public-facing tier table marketing
+            copy in HARTOS/_revenue_assets.md points buyers at.  Renders
+            even when api.hevolve.ai isn't reachable yet (component falls
+            back to the canonical TIER_CONFIG bundled at build time). */}
+        <Route
+          path="/pricing"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <CommercialApiPricing />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/api/pricing"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <CommercialApiPricing />
             </Suspense>
           }
         />
