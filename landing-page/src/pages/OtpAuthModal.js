@@ -106,8 +106,15 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
   const [intervalId, setIntervalId] = useState(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
-  // Show guest mode if forced (e.g., /local route) or if actually offline
-  const showGuestMode = forceGuestMode || isOffline;
+  // Show guest mode if forced (e.g., /local route) or if actually offline.
+  // `manualLoginOverride` lets the user opt INTO the email/phone path
+  // from the guest UI when they're on /local but have network — the
+  // route still defaults to guest (offline-first design intent) but
+  // the email/phone tabs are one click away.  Offline state cannot
+  // be overridden — OTP delivery requires network.
+  const [manualLoginOverride, setManualLoginOverride] = useState(false);
+  const showGuestMode =
+    (forceGuestMode || isOffline) && !(manualLoginOverride && !isOffline);
   // Detect returning guest (name saved from previous session)
   const savedGuestName = localStorage.getItem('guest_name') || '';
   const isReturningGuest = showGuestMode && !!savedGuestName;
@@ -311,6 +318,21 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
           localStorage.setItem('user_id', encryptedUserId);
           localStorage.setItem('email_address', encryptedEmailAddress);
           localStorage.setItem('refresh_token', encryptedRefreshToken);
+
+          // 2026-05-11: same-tab notifier — Demopage's auth-state useEffect
+          // had dep `[decryptedEmail, decryptedUserId]` (self-referential),
+          // so it could never see a fresh localStorage write from another
+          // component.  Workers + SSE re-init only re-fire when those
+          // React state vars change.  Dispatch a custom event so Demopage
+          // can re-decrypt localStorage and update React state, which
+          // then cascades to worker terminate-and-reinit (with the cloud
+          // user_id) and SSE reconnect.  Without this, chat publishes
+          // and TTS subscribe diverge → frontend never sees response.
+          try {
+            window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
+              detail: {source: 'otp_login', user_id: userId},
+            }));
+          } catch (_e) { /* ignore — same-origin, will never throw */ }
 
           // Migrate guest agent data before clearing
           const guestUserId = localStorage.getItem('guest_user_id');
@@ -827,6 +849,14 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                   Have a recovery code? Recover Guest Session
                 </button>
               )}
+              {!isOffline && (
+                <button
+                  onClick={() => setManualLoginOverride(true)}
+                  className="w-full text-sm text-gray-500 hover:text-blue-700 btn-press"
+                >
+                  Or sign in with email / phone
+                </button>
+              )}
             </div>
           )
         ) : !showRecoveryCode && !showRecoverMode ? (
@@ -1003,6 +1033,16 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                 Sign Up
               </button>
             </div>
+            {forceGuestMode && manualLoginOverride && (
+              <div className="mt-2 text-center text-sm text-gray-500">
+                <button
+                  className="hover:text-blue-700"
+                  onClick={() => setManualLoginOverride(false)}
+                >
+                  ← Continue as guest instead
+                </button>
+              </div>
+            )}
           </>
         ) : null}
       </div>

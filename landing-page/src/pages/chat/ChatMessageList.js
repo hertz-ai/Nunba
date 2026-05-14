@@ -6,7 +6,7 @@ import hourglassAnimation from '../../assets/hourglass-lottie.json';
 import Lottie from 'lottie-react';
 import {FileText} from 'lucide-react';
 import Markdown from 'markdown-to-jsx';
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useRef} from 'react';
 
 import {formatTier} from '../../utils/tier';
 
@@ -72,26 +72,61 @@ const THINKING_VERBS = [
   'Considering',
 ];
 
-/** Cycles through verbs while the LLM is processing */
-function CyclingVerb() {
+/** Cycles through generic verbs unless overrideText (server-emitted stage)
+ * is provided.  When server has real status text ("Searching your message
+ * history…", "Preparing tools…"), use it directly and stop cycling. */
+function CyclingVerb({overrideText}) {
   const [idx, setIdx] = useState(0);
   useEffect(() => {
+    if (overrideText) return;
     const id = setInterval(
       () => setIdx((i) => (i + 1) % THINKING_VERBS.length),
       2000
     );
     return () => clearInterval(id);
-  }, []);
+  }, [overrideText]);
+  const text = overrideText || `${THINKING_VERBS[idx]}...`;
   return (
     <span
-      key={idx}
-      className="inline-block text-xs text-gray-400"
+      key={text}
+      className="inline-block text-xs text-gray-400 truncate max-w-[60vw]"
       style={{
         animation: 'verbFadeSwap 2s ease-in-out infinite',
       }}
     >
-      {THINKING_VERBS[idx]}...
+      {text}
     </span>
+  );
+}
+
+/** Elapsed-time counter that ticks every 1s while active.  Format scales:
+ * "5s" → "42s" → "1m 12s" → "1h 5m 30s".  Resets cleanly on next request. */
+function ElapsedTimer({active}) {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef(null);
+  useEffect(() => {
+    if (active) {
+      startRef.current = Date.now();
+      setElapsed(0);
+      const id = setInterval(
+        () => setElapsed(Date.now() - startRef.current),
+        1000
+      );
+      return () => clearInterval(id);
+    }
+    startRef.current = null;
+  }, [active]);
+  if (!active) return null;
+  const s = Math.floor(elapsed / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  const txt = h > 0
+    ? `${h}h ${m % 60}m`
+    : m > 0
+    ? `${m}m ${s % 60}s`
+    : `${s}s`;
+  return (
+    <span className="ml-auto text-xs text-gray-400 font-mono">⏱ {txt}</span>
   );
 }
 
@@ -141,6 +176,15 @@ const ChatMessageList = ({
   onExecutePlan,
   onSetupLlm,
   onConfigureLlm,
+  // #508 — server-emitted dynamic stage text (latest priority=49 'Thinking'
+  // event text, ~6 words).  Substituted into the CyclingVerb spinner so
+  // the user sees real status ("Searching your message history…") instead
+  // of generic cycling verbs.  Empty/undefined falls back to the cycle.
+  latestThinkingText,
+  // #508 — when false, hide the collapsible <ThinkingProcessContainer>
+  // entirely (the spinner row's CyclingVerb is the sole status surface).
+  // Default true preserves today's UX.
+  showThinkingTraces = true,
 }) => {
   const isIdleVideo = (url) => url === idleVideoUrl;
 
@@ -148,12 +192,14 @@ const ChatMessageList = ({
     <div className="w-full px-3 py-4 space-y-6" role="log" aria-live="polite" aria-label="Chat messages">
       {messages.map((message, index) => {
         if (message.type === 'thinking_container') {
+          if (!showThinkingTraces) return null;  // #508 — toggle OFF: hide collapsible
           return (
             <ThinkingProcessContainer
               key={`thinking-container-${message.id}-${index}`}
               thinkingMessages={message.thinkingSteps}
               isMainExpanded={message.isMainExpanded}
               isContainerCompleted={message.isCompleted}
+              hideTimer={isRequestInFlight}  // #508 — hourglass row owns the live timer while in-flight
               onToggleMain={() => {
                 setMessages((prev) =>
                   prev.map((msg, msgIndex) =>
@@ -699,7 +745,7 @@ const ChatMessageList = ({
         );
       })}
 
-      {isRequestInFlight && !currentThinkingId && (
+      {isRequestInFlight && (
         <div className="flex items-center justify-start gap-2 py-2 px-1">
           <style>{`
             @keyframes verbFadeSwap {
@@ -714,7 +760,8 @@ const ChatMessageList = ({
             loop
             style={{width: 24, height: 24}}
           />
-          <CyclingVerb />
+          <CyclingVerb overrideText={latestThinkingText} />
+          <ElapsedTimer active={isRequestInFlight} />
         </div>
       )}
 

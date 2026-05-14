@@ -1536,6 +1536,15 @@ class LlamaConfig:
                 "--jinja",
                 "--reasoning-format", "deepseek",
                 "--reasoning-budget", "0",
+                # ``--log-timestamps`` adds ``[HH:MM:SS.mmm]`` to every
+                # log line llama-server emits.  Without it, the server
+                # log has no clock — verified 2026-05-12 against the
+                # 190 MB llama_server_8082.log which couldn't be
+                # correlated with frozen_debug timestamps.  Audited via
+                # ``llama-server --help`` — the flag is stable across
+                # current llama.cpp builds.  Cheapest possible win for
+                # ctx-overflow forensics.
+                "--log-timestamps",
             ]
 
             # Qwen3.5 models need additional flags

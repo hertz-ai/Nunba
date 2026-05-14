@@ -9,6 +9,13 @@ const ThinkingProcessContainer = ({
   onToggleIndividual,
   isMainExpanded,
   isContainerCompleted,
+  // #508 — when true, hide the live-time display in this container's
+  // header (the parent shows an <ElapsedTimer> in the hourglass-row
+  // spinner during in-flight, so the container's own ticker would be a
+  // duplicate).  Completion summary (totalDuration) stays visible —
+  // it's informative after the hourglass row disappears.  Also stops
+  // the 300ms ticker interval when true, saving cycles.
+  hideTimer = false,
 }) => {
   const thinkingContentRef = useRef(null);
   const [displayedTexts, setDisplayedTexts] = useState({});
@@ -55,42 +62,24 @@ const ThinkingProcessContainer = ({
     return false;
   }, [isContainerCompleted, thinkingMessages]);
 
-  useEffect(() => {
-    if (isMainExpanded && thinkingContentRef.current) {
-      if (isReallyCompleted) {
-        setTimeout(() => {
-          thinkingContentRef.current?.scrollIntoView({
-            behavior: 'smooth',
-            block: 'start',
-          });
-        }, 100);
-      } else {
-        setTimeout(() => {
-          thinkingContentRef.current?.scrollIntoView({
-            behavior: 'smooth',
-            block: 'end',
-          });
-        }, 100);
-      }
-    }
-  }, [isMainExpanded, isReallyCompleted, thinkingMessages.length]);
-
-  useEffect(() => {
-    if (isMainExpanded && !isReallyCompleted && thinkingMessages.length > 0) {
-      setTimeout(() => {
-        thinkingContentRef.current?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'end',
-        });
-      }, 200);
-    }
-  }, [thinkingMessages.length]);
+  // 2026-05-12: removed two auto-scrollIntoView effects that fired on
+  // `isMainExpanded` toggle and on every new thinking_message.  Behaviour
+  // was wrong UX — clicking expand yanked the page to the bottom of the
+  // trace block instead of letting the user read the contents from where
+  // they clicked.  Streaming new thinking lines also forced the scroll
+  // past whatever the user was actively reading.  Let the user own scroll
+  // position; the parent timeline has its own bottom-anchor logic (in
+  // Demopage scrollToBottom + setShouldScroll) that respects user intent.
+  // If we ever need this back, gate it on a "user is at bottom of chat"
+  // check (sticky-bottom convention) — never an unconditional yank.
 
   useEffect(() => {
     if (isReallyCompleted) {
       logger.log('Stopping timer - thinking completed');
       return;
     }
+    // #508 — parent owns the live ticker via <ElapsedTimer>; skip ours.
+    if (hideTimer) return;
 
     const interval = setInterval(() => {
       setLiveTime((prev) => prev + 0.3);
@@ -99,7 +88,7 @@ const ThinkingProcessContainer = ({
     return () => {
       clearInterval(interval);
     };
-  }, [isReallyCompleted]);
+  }, [isReallyCompleted, hideTimer]);
 
   useEffect(() => {
     if (!isReallyCompleted && thinkingMessages.length > 0 && liveTime === 0) {
@@ -267,8 +256,13 @@ const ThinkingProcessContainer = ({
             </span>
 
             {!isMainExpanded && !isReallyCompleted && currentPreview && (
-              <span className="text-xs text-gray-500 truncate max-w-full mt-1 font-mono">
-                {currentPreview}
+              <span
+                key={currentPreview}
+                className="block mt-1 max-w-full truncate animate-fade-in"
+              >
+                <span className="text-xs font-mono bg-gradient-to-r from-gray-400 via-gray-800 to-gray-400 bg-[length:200%_100%] bg-clip-text text-transparent animate-shimmer">
+                  {currentPreview}
+                </span>
               </span>
             )}
 
@@ -286,9 +280,12 @@ const ThinkingProcessContainer = ({
 
         <div className="flex items-center gap-2 flex-shrink-0">
           {!isReallyCompleted ? (
-            <span className="text-xs text-gray-500 font-mono">
-              {formatLiveTime(liveTime)}
-            </span>
+            // #508 — live ticker hidden when parent owns it via <ElapsedTimer>.
+            hideTimer ? null : (
+              <span className="text-xs text-gray-500 font-mono">
+                {formatLiveTime(liveTime)}
+              </span>
+            )
           ) : (
             <span className="text-xs text-green-600 font-mono">
               ✓{' '}
@@ -333,9 +330,12 @@ const ThinkingProcessContainer = ({
                 <span className="text-sm text-blue-700 font-medium">
                   Thinking in progress...
                 </span>
-                <span className="text-sm text-blue-700 font-mono">
-                  {formatLiveTime(liveTime)}
-                </span>
+                {/* #508 — live ticker hidden when parent owns it. */}
+                {!hideTimer && (
+                  <span className="text-sm text-blue-700 font-mono">
+                    {formatLiveTime(liveTime)}
+                  </span>
+                )}
               </div>
             ) : (
               <div className="flex justify-between items-center bg-green-50 p-2 rounded-md">

@@ -58,6 +58,11 @@ const ChatInputBar = ({
   onMemoryOpen,
   onToggleAlwaysListening,
   alwaysListening,
+  // #508 — thinking-trace visibility toggle.  When OFF, the collapsible
+  // <ThinkingProcessContainer> is hidden; only the hourglass-row spinner
+  // (with server-emitted dynamic verb) remains as the status surface.
+  onToggleShowThinkingTraces,
+  showThinkingTraces,
 }) => {
   return (
     <div className="bg-black pt-4 border-t border-gray-700 flex justify-center flex-col mt-2 mb-2 sticky bottom-0 z-10">
@@ -328,6 +333,29 @@ const ChatInputBar = ({
             {alwaysListening && (
               <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-green-400 rounded-full animate-pulse motion-reduce:animate-none" />
             )}
+          </button>
+        )}
+
+        {/* Thinking-traces toggle (#508) — eye-with-thinking-dots icon.
+            ON  : eye open, dots visible (collapsible trace container shows).
+            OFF : eye crossed out (only the hourglass-row spinner remains). */}
+        {onToggleShowThinkingTraces && (
+          <button
+            onClick={onToggleShowThinkingTraces}
+            className={`p-1 btn-press ${showThinkingTraces ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'}`}
+            title={showThinkingTraces ? 'Hide thinking traces' : 'Show thinking traces'}
+            aria-label={showThinkingTraces ? 'Hide thinking traces' : 'Show thinking traces'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+              <circle cx="12" cy="12" r="3" fill="currentColor" fillOpacity="0.25" />
+              <circle cx="10" cy="12" r="0.6" fill="currentColor" stroke="none" />
+              <circle cx="12" cy="12" r="0.6" fill="currentColor" stroke="none" />
+              <circle cx="14" cy="12" r="0.6" fill="currentColor" stroke="none" />
+              {!showThinkingTraces && (
+                <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="2" />
+              )}
+            </svg>
           </button>
         )}
 

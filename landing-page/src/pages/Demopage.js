@@ -114,6 +114,37 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
   const [currentThinkingId, setCurrentThinkingId] = useState(null);
   const [thinkingStartTime, setThinkingStartTime] = useState(null);
+  // #508 — latest server-emitted stage text (first 6 words capped).  Drives
+  // the spinner's CyclingVerb override so the user sees real status
+  // ("Searching your message history…") instead of generic verb cycle.
+  // Auto-clears after 3s of staleness so the spinner falls back to the
+  // existing CyclingVerb rotation rather than getting stuck on a tool
+  // name after that tool has finished.
+  const [latestThinkingText, setLatestThinkingText] = useState('');
+  const staleClearRef = useRef(null);
+  // #508 — cleanup any pending stale-clear timer on unmount so a navigate-
+  // away mid-request doesn't fire setState on an unmounted component.
+  useEffect(() => () => {
+    if (staleClearRef.current) clearTimeout(staleClearRef.current);
+  }, []);
+  // (the isRequestInFlight reset useEffect lives below, after isRequestInFlight
+  // is declared at L~196 — must not reference a const before its TDZ binding
+  // is initialised, which previously crashed startup with `Cannot access 'ot'
+  // before initialization`.)
+  // #508 — UI toggle: show the collapsible <ThinkingProcessContainer>?  When
+  // OFF, only the spinner row stays visible (its CyclingVerb gets the same
+  // dynamic text).  Default ON preserves today's UX.
+  const [showThinkingTraces, setShowThinkingTraces] = useState(() => {
+    try { return localStorage.getItem('chat_show_thinking_traces') !== 'false'; }
+    catch { return true; }
+  });
+  const toggleShowThinkingTraces = useCallback(() => {
+    setShowThinkingTraces((prev) => {
+      const next = !prev;
+      try { localStorage.setItem('chat_show_thinking_traces', next ? 'true' : 'false'); } catch {}
+      return next;
+    });
+  }, []);
 
   const [shouldScroll, setShouldScroll] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -162,6 +193,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [backendHealth, setBackendHealth] = useState(null); // 'healthy' | 'degraded' | 'offline'
   const cloudAvailable = navigator.onLine; // true = cloud hevolve.ai reachable
   const [isRequestInFlight, setIsRequestInFlight] = useState(false); // true only during active HTTP request
+  // #508 — reset latestThinkingText whenever a NEW turn fires so the spinner
+  // doesn't show stale text from the previous turn before the first new emit.
+  // Must live AFTER isRequestInFlight declaration (TDZ regression caught
+  // 2026-05-11: minified `Cannot access 'ot' before initialization`).
+  useEffect(() => {
+    if (isRequestInFlight) setLatestThinkingText('');
+  }, [isRequestInFlight]);
   const [agentRetryTrigger, setAgentRetryTrigger] = useState(0); // increment to retrigger fetchPrompts
   const [showAgentMentionList, setShowAgentMentionList] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
@@ -323,9 +361,34 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   }, [backendHealth]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [isImageUploading, setIsImageUploading] = useState(false);
-  const [decryptedUserId, setDecryptedUserId] = useState(null);
-  const [decryptedPhone, setDecryptedPhone] = useState(null);
-  const [decryptedEmail, setDecryptedEmail] = useState(null);
+  // Synchronously hydrate auth state from localStorage on first render.
+  // Without this, decryptedUserId stays null until the
+  // localStorage→decrypt useEffect (Demopage.js ~line 2276) runs after
+  // mount, and during that window `isAuthenticated` is false — which
+  // makes the /local auto-open-modal effect fire and yank the user
+  // back to the guest-login UI on every page reload mid-conversation
+  // (live evidence 2026-05-12).  Decrypting here means the very
+  // first render already knows whether a logged-in identity exists
+  // in storage, so the modal stays closed and chat state can
+  // continue.  Per-field try/catch keeps a stored-but-corrupt value
+  // from blocking other fields.
+  const _hydrateLocalStorageField = (key) => {
+    try {
+      const v = localStorage.getItem(key);
+      return v ? decrypt(v) : null;
+    } catch {
+      return null;
+    }
+  };
+  const [decryptedUserId, setDecryptedUserId] = useState(
+    () => _hydrateLocalStorageField('user_id')
+  );
+  const [decryptedPhone, setDecryptedPhone] = useState(
+    () => _hydrateLocalStorageField('phone_number')
+  );
+  const [decryptedEmail, setDecryptedEmail] = useState(
+    () => _hydrateLocalStorageField('email_address')
+  );
   const [isGuestMode, setIsGuestMode] = useState(
     () => localStorage.getItem('guest_mode') === 'true'
   );
@@ -812,8 +875,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           if (savedAgent) {
             logger.log('Restoring active agent:', savedAgent.name);
             setCurrentAgent(savedAgent);
+            // fetchPrompts re-runs on agentRetryTrigger /
+            // decryptedUserId churn mid-conversation.  Chat is
+            // append-only, so saved and live form a superset chain:
+            // whichever has MORE messages already contains the other.
+            // Pick the longer.  This preserves both first-mount
+            // restore AND mid-conversation live state without needing
+            // a per-message dedup key (most non-user message types
+            // are id-less, see comment at NunbaChatProvider:982).
+            // Regression guard 2026-05-11 (overwrite caused live loss).
             const savedMessages = loadMessagesFromStorage(savedAgent.prompt_id);
-            if (savedMessages.length > 0) setMessages(savedMessages);
+            setMessages((prev) =>
+              savedMessages.length > prev.length ? savedMessages : prev
+            );
           } else {
             // Orphan-chat recovery: savedAgentId is valid but the
             // agent isn't in allAgents (server sync failed, backend
@@ -844,7 +918,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   allAgents.push(ghost);
                   setAllAgents([...allAgents]);
                   setCurrentAgent(ghost);
-                  setMessages(orphanMessages);
+                  // Append-only superset rule (same as savedAgent
+                  // branch above) — pick whichever timeline is longer.
+                  setMessages((prev) =>
+                    orphanMessages.length > prev.length ? orphanMessages : prev
+                  );
                   // Skip the "default agent" fallback below so we
                   // don't clobber the ghost we just restored.
                   return;
@@ -880,7 +958,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             // navigation back shows last conversation, not a clean slate).
             if (defaultAgent?.prompt_id) {
               const savedMessages = loadMessagesFromStorage(defaultAgent.prompt_id);
-              if (savedMessages.length > 0) setMessages(savedMessages);
+              // Same append-only superset rule as the savedAgent +
+              // orphan branches above — pick whichever timeline is
+              // longer, preserving both first-mount restore AND
+              // mid-conversation live state.
+              setMessages((prev) =>
+                savedMessages.length > prev.length ? savedMessages : prev
+              );
             }
           }
         }
@@ -1160,10 +1244,32 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         const messages = Array.isArray(chatData)
           ? chatData
           : chatData.messages || [];
+        // Coerce mid-flight statuses to 'failed' — `retrying` / `sending`
+        // are driven by a LIVE per-second loop in handleSend; restoring
+        // them verbatim freezes a stale countdown string ("retrying in
+        // 24s...") forever because no live ticker is running on a fresh
+        // mount.  Captured 2026-05-11 after user saw a 43-min-old turn
+        // permanently stuck at "retrying in 24s".  `failed` renders the
+        // retry button instead, which is the correct affordance after
+        // the original request context has died.
+        const sanitized = messages.map((m) => {
+          if (m && (m.status === 'retrying' || m.status === 'sending')) {
+            return {
+              ...m,
+              status: 'failed',
+              error: m.error
+                ? m.error.replace(/\s*—?\s*retrying in \d+s\.\.\.?/i, '')
+                  .trim() || 'Send interrupted'
+                : 'Send interrupted',
+              retryCount: undefined,
+            };
+          }
+          return m;
+        });
         logger.log(
-          `📥 Loaded ${messages.length} messages for agent ${promptId}`
+          `📥 Loaded ${sanitized.length} messages for agent ${promptId}`
         );
-        return messages;
+        return sanitized;
       }
     } catch (error) {
       console.error('Failed to load messages from localStorage:', error);
@@ -1452,6 +1558,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           logger.log(`Dropping daemon thinking trace (req=${traceRequestId}, current=${currentReqId})`);
           return;
         }
+
+        // #508 — feed the spinner's CyclingVerb override.  First 6 words capped.
+        // 3s stale-timeout: if no new emit arrives, the text clears and the
+        // spinner falls back to CyclingVerb's auto-rotation of generic verbs
+        // (Analyzing, Understanding, …).  Each fresh emit resets the timer.
+        try {
+          const rawText = Array.isArray(parsed.text) ? parsed.text[0] : (parsed.text || '');
+          if (rawText) {
+            const words = String(rawText).trim().split(/\s+/);
+            const preview = words.slice(0, 6).join(' ') + (words.length > 6 ? '…' : '');
+            setLatestThinkingText(preview);
+            if (staleClearRef.current) clearTimeout(staleClearRef.current);
+            staleClearRef.current = setTimeout(() => setLatestThinkingText(''), 3000);
+          }
+        } catch {}
 
         logger.log('THINKING MODE DETECTED');
 
@@ -1938,6 +2059,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           const envOverride = process.env.REACT_APP_WAMP_URL ? WAMP_LOCAL_URL : null;
           const wsUri = envOverride
             || (isLocalBackend ? localWampUrl(hostname) : WAMP_CLOUD_URL);
+          // 2026-05-11: dual-subscribe was considered (subscribe to
+          // BOTH guest_user_id AND decryptedUserId topics) but rejected
+          // — guest_user_id can be a stale UUID inherited from a prior
+          // device session (re-install, shared device); subscribing to
+          // it would let this client receive events for an identity it
+          // doesn't own.  WAMP router ACL should reject but we can't
+          // rely on that.  Instead the state-prop fix (nunba:auth_changed
+          // event → Demopage re-decrypts → [decryptedUserId] deps re-
+          // fire → worker terminate-and-reinit with the cloud uid)
+          // ensures the worker is on the right id BEFORE the first
+          // /chat send.  See the auth-sync useEffect at ~L2301.
           crossbarWorker.postMessage({
             type: 'INIT',
             payload: {
@@ -1971,6 +2103,25 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       isInitializing = false;
     };
   }, [decryptedUserId]);
+
+  // ── SSE user_id alignment ─────────────────────────────────────────────
+  // The worker-init effect above only re-fires on decryptedUserId change.
+  // Guest mode populates `guest_user_id` in localStorage AFTER the
+  // "Continue as Guest" flow completes (post-mount), at which point
+  // effectiveUserId flips from '' to the per-guest UUID — but the SSE
+  // connection opened at mount is still registered under the literal
+  // 'guest' fallback.  HARTOS /chat publishes TTS with the UUID (from
+  // request body), so the broker key 'd68c9dee-…' doesn't match the
+  // SSE-registered 'guest' key and the audio event drops silently.
+  //
+  // realtimeService.init detects userId change and reconnects SSE with
+  // the new ?user_id= query param.  No worker churn — that effect's
+  // deps stay [decryptedUserId].
+  useEffect(() => {
+    if (effectiveUserId) {
+      realtimeService.init(null, { userId: effectiveUserId });
+    }
+  }, [effectiveUserId]);
 
   // ── Realtime event subscriptions (transport-agnostic) ─────────────────
   // All events arrive via realtimeService (WAMP primary, SSE fallback).
@@ -2158,20 +2309,45 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       });
     }
   }, [requestId, worker]);
+  // Auth-state sync — re-decrypt localStorage and push to React state
+  // on (a) initial mount, (b) cross-tab `storage` events, and (c) the
+  // same-tab `nunba:auth_changed` event dispatched by OtpAuthModal
+  // after a successful login.  Previously this effect's dep array was
+  // `[decryptedEmail, decryptedUserId]` — its OWN state — which made it
+  // self-referential: it could not detect a fresh localStorage write
+  // from another component (OtpAuthModal navigates without reload, so
+  // mount-time hydration never re-runs).  That left `decryptedUserId`
+  // stuck at the pre-login value, broke worker subscription topics
+  // (`com.hertzai.*.<stale_uid>`) and SSE registration, and silently
+  // dropped chat + TTS responses.  Regression captured 2026-05-11.
   useEffect(() => {
-    const encryptedUserId = localStorage.getItem('user_id');
-    const encryptedEmail = localStorage.getItem('email_address');
-
-    if (encryptedUserId && encryptedEmail) {
-      const userId = decrypt(encryptedUserId);
-      const email = decrypt(encryptedEmail);
-
-      setDecryptedUserId(userId);
-      setDecryptedEmail(email);
-    } else {
-      console.warn('No userId or email found in localStorage.');
-    }
-  }, [decryptedEmail, decryptedUserId]);
+    const sync = (evtSource) => {
+      const encryptedUserId = localStorage.getItem('user_id');
+      const encryptedEmail = localStorage.getItem('email_address');
+      if (encryptedUserId && encryptedEmail) {
+        const userId = decrypt(encryptedUserId);
+        const email = decrypt(encryptedEmail);
+        setDecryptedUserId(userId);
+        setDecryptedEmail(email);
+        // guest_mode is cleared by OtpAuthModal on successful login;
+        // mirror that into React state so effectiveUserId flips from
+        // guestUserId to decryptedUserId in the same tick.
+        if (localStorage.getItem('guest_mode') !== 'true') {
+          setIsGuestMode(false);
+        }
+        logger.log(`auth sync (${evtSource}): user_id=${userId}, isGuest=false`);
+      }
+    };
+    sync('mount');
+    const onStorage = () => sync('storage');         // other tab
+    const onAuthChanged = () => sync('auth_changed'); // same tab (OtpAuthModal)
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('nunba:auth_changed', onAuthChanged);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('nunba:auth_changed', onAuthChanged);
+    };
+  }, []);
 
   // Guest name uniqueness check when internet becomes available
   useEffect(() => {
@@ -3069,17 +3245,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         while (!localSuccess) {
           // Update status for retries
           if (retryCount > 0) {
-            const backoff = getBackoff(retryCount - 1);
-            updateMessageStatus(msgId, {
-              status: 'retrying',
-              error: `${lastLocalReason} — retrying in ${Math.round(backoff / 1000)}s...`,
-              retryCount,
-            });
             setIsRequestInFlight(false); // no active request during backoff
-            await new Promise((r) => setTimeout(r, backoff));
-            // Check if message was deleted by user during backoff
-            const stillExists = messagesRef.current.find(m => m.messageId === msgId);
-            if (!stillExists) { setLoading(false); return; }
+            const totalSec = Math.max(1, Math.round(getBackoff(retryCount - 1) / 1000));
+            let aborted = false;
+            for (let sec = totalSec; sec > 0; sec--) {
+              updateMessageStatus(msgId, {
+                status: 'retrying',
+                error: `${lastLocalReason} — retrying in ${sec}s...`,
+                retryCount,
+              });
+              await new Promise((r) => setTimeout(r, 1000));
+              // Check if message was deleted by user during backoff
+              const stillExists = messagesRef.current.find(m => m.messageId === msgId);
+              if (!stillExists) { aborted = true; break; }
+            }
+            if (aborted) { setLoading(false); return; }
           }
 
           try {
@@ -3331,16 +3511,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
       while (true) {
         if (cloudRetryCount > 0) {
-          const backoff = getBackoff(cloudRetryCount - 1);
-          updateMessageStatus(msgId, {
-            status: 'retrying',
-            error: `${lastCloudReason} — retrying in ${Math.round(backoff / 1000)}s...`,
-            retryCount: cloudRetryCount,
-          });
           setIsRequestInFlight(false);
-          await new Promise((r) => setTimeout(r, backoff));
-          const stillExists = messagesRef.current.find(m => m.messageId === msgId);
-          if (!stillExists) { setLoading(false); return; }
+          const totalSec = Math.max(1, Math.round(getBackoff(cloudRetryCount - 1) / 1000));
+          let aborted = false;
+          for (let sec = totalSec; sec > 0; sec--) {
+            updateMessageStatus(msgId, {
+              status: 'retrying',
+              error: `${lastCloudReason} — retrying in ${sec}s...`,
+              retryCount: cloudRetryCount,
+            });
+            await new Promise((r) => setTimeout(r, 1000));
+            const stillExists = messagesRef.current.find(m => m.messageId === msgId);
+            if (!stillExists) { aborted = true; break; }
+          }
+          if (aborted) { setLoading(false); return; }
         }
 
         try {
@@ -4387,6 +4571,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   onExecutePlan={handleExecutePlan}
                   onSetupLlm={handleSetupLlm}
                   onConfigureLlm={handleConfigureLlm}
+                  latestThinkingText={latestThinkingText}
+                  showThinkingTraces={showThinkingTraces}
                 />
               )}
             </div>
@@ -4434,6 +4620,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               pushNotification({ type: next ? 'success' : 'info',
                 message: next ? 'Listening for "Hey Nunba"' : 'Stopped listening' });
             }}
+            showThinkingTraces={showThinkingTraces}
+            onToggleShowThinkingTraces={toggleShowThinkingTraces}
           />
         </div>
       </div>

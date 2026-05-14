@@ -7241,14 +7241,19 @@ def main():
                 # After load, give React time to render
                 time.sleep(3.0)
 
-                # Force resize to wake WebView2 compositor
-                try:
-                    w, h = _window.width, _window.height
-                    _window.resize(w + 1, h)
-                    time.sleep(0.1)
-                    _window.resize(w, h)
-                except Exception:
-                    pass
+                # NOTE: do NOT call _window.resize(w+1, h) here as a
+                # "wake compositor" trick — _window.width returns the
+                # LOGICAL startup dimension (pywebview doesn't track OS-
+                # level maximize state), so the resize call collapses
+                # the maximized window back to startup size.  This was
+                # the second instance of the same bug fixed at the
+                # _delayed_react_check site (app.py:7551-7559) and the
+                # main _remount path (b2af3d1d).  load_url already
+                # triggered the navigation; React mount will follow on
+                # its own.  Captured 2026-05-11 — user reported
+                # "maximize restoring to startup portrait every time"
+                # AFTER b2af3d1d landed, because this code path was
+                # still running the same anti-pattern.
 
             # Final check after all attempts
             final = _check_mount()

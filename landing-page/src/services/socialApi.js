@@ -613,9 +613,12 @@ export const dashboardApi = {
 };
 
 // --- Chat API (Local Nunba backend) ---
-// Local LLM inference can take 60-90s on small models — use 120s timeout
+// Local LLM inference can take 60-90s on small models; autogen recipe builds
+// triggered by a chat turn push end-to-end latency to 60-120s on cold cache.
+// Use 180s timeout (task #486) to outlast the autogen build so the client
+// doesn't force-abort while the backend is still composing the reply.
 const chatApiClient = createApiClient(CHAT_API_URL, {
-  timeout: 120000,
+  timeout: 180000,
   cache: false,
 });
 

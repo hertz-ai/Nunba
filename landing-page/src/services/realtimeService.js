@@ -46,7 +46,29 @@ class RealtimeService {
    * @param {string} [opts.userId] - user_id for guest/local SSE (no JWT)
    */
   init(crossbarWorker, opts = {}) {
-    if (opts.userId) this._userId = opts.userId;
+    // Detect userId change — when the user transitions from "anonymous
+    // visitor" (effectiveUserId='' → SSE registered as literal 'guest')
+    // to "registered guest" (guest_user_id UUID populated post-
+    // authApi.guestRegister), an open SSE connection is stale and must
+    // reconnect with the new uid in the ?user_id= query param.
+    // Without this, the broker keeps storing chat.pupit events under
+    // 'guest' while HARTOS publishes TTS to the per-guest UUID, and
+    // the audio event silently never reaches the client.
+    // Live evidence 2026-05-12: SSE registered uid='guest', TTS event
+    // arrived for uid='d68c9dee-b324-…' — payload filter dropped it.
+    const userIdChanged = (
+      opts.userId !== undefined
+      && opts.userId !== null
+      && opts.userId !== this._userId
+    );
+    if (userIdChanged) {
+      this._userId = opts.userId;
+      if (this._sseConnected) {
+        this._closeSSE();
+      }
+    } else if (opts.userId) {
+      this._userId = opts.userId;
+    }
 
     // Always open SSE — even if worker is null (failed to create).
     // Local events (TTS audio, agent UI) only arrive via SSE.
