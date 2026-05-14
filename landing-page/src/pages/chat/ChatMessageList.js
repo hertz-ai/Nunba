@@ -72,9 +72,29 @@ const THINKING_VERBS = [
   'Considering',
 ];
 
+// Hevolve brand palette — sampled from the in-app Lottie animations
+// (hourglass-lottie.json #0197F7 + #FF0000) plus the secondary trio
+// (#00E89D / #6C63FF) already used across pricing CTAs and Demopage
+// accents.  Combined as a 3-stop cycle (skipping the bright red, which
+// is too jarring for inline body text) so the gradient drifts smoothly
+// across the visible characters without strobing.
+const HEVOLVE_GRADIENT = 'linear-gradient(90deg, #0197F7 0%, #00E89D 33%, #6C63FF 66%, #0197F7 100%)';
+
 /** Cycles through generic verbs unless overrideText (server-emitted stage)
  * is provided.  When server has real status text ("Searching your message
- * history…", "Preparing tools…"), use it directly and stop cycling. */
+ * history…", "Preparing tools…"), use it directly and stop cycling.
+ *
+ * Colour treatment:
+ *   - Text is rendered with the Hevolve gradient as `background-clip: text`.
+ *     The gradient slowly drifts (background-position animation) so even
+ *     idle "Analyzing..." text breathes between the brand colours.
+ *   - On every fresh text change a `key` remount restarts both:
+ *       1. The drift animation (gradient sweep) — sharp restart, no jump.
+ *       2. A brief 600ms "highlight" overlay that boosts saturation, then
+ *          fades back to the steady-state gradient.
+ *     The combination produces a "light up on new word" feel without
+ *     being epileptic on rapid trace bursts.
+ */
 function CyclingVerb({overrideText}) {
   const [idx, setIdx] = useState(0);
   useEffect(() => {
@@ -89,9 +109,24 @@ function CyclingVerb({overrideText}) {
   return (
     <span
       key={text}
-      className="inline-block text-xs text-gray-400 truncate max-w-[60vw]"
+      className="inline-block text-xs font-medium truncate max-w-[60vw]"
       style={{
-        animation: 'verbFadeSwap 2s ease-in-out infinite',
+        backgroundImage: HEVOLVE_GRADIENT,
+        backgroundSize: '300% 100%',
+        backgroundClip: 'text',
+        WebkitBackgroundClip: 'text',
+        WebkitTextFillColor: 'transparent',
+        color: 'transparent',
+        // Two animations layered: gradient drift (steady) +
+        // verbFadeSwap (existing vertical fade-in on remount).
+        // hevolveTextDrift runs at 6s linear infinite so the colour
+        // story is calm; verbFadeSwap is the per-change pulse.
+        animation:
+          'hevolveTextDrift 6s linear infinite, verbFadeSwap 600ms ease-out',
+        // Smooth interpolation back to steady when the next text
+        // arrives — covers any transient style mismatch.
+        transition: 'filter 400ms ease, opacity 400ms ease',
+        filter: 'saturate(1.2)',
       }}
     >
       {text}
@@ -745,16 +780,87 @@ const ChatMessageList = ({
         );
       })}
 
-      {isRequestInFlight && (
-        <div className="flex items-center justify-start gap-2 py-2 px-1">
-          <style>{`
-            @keyframes verbFadeSwap {
-              0% { opacity: 0; transform: translateY(4px); }
-              15% { opacity: 1; transform: translateY(0); }
-              85% { opacity: 1; transform: translateY(0); }
-              100% { opacity: 0; transform: translateY(-4px); }
-            }
-          `}</style>
+      <ThinkingHourglassRow
+        isRequestInFlight={isRequestInFlight}
+        latestThinkingText={latestThinkingText}
+      />
+
+      <div ref={messagesEndRef} />
+    </div>
+  );
+};
+
+// Compact human-readable formatter for the post-hoc "Thought for X"
+// pill.  Sub-second → "Xms", under a minute → "X.Xs", longer → "Xm Ys".
+// Keeps the standby pill short enough to sit comfortably on one row.
+function formatThoughtMs(ms) {
+  if (!ms || ms < 0) return '';
+  const s = ms / 1000;
+  if (s < 1) return `${Math.round(ms)}ms`;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const minutes = Math.floor(s / 60);
+  const seconds = Math.round(s % 60);
+  return `${minutes}m ${seconds}s`;
+}
+
+/** Hourglass row + Claude-Code-style standby pill.
+ *
+ * In-flight: Lottie + colour-cycling thinking text + ElapsedTimer.
+ * Standby (post-request):  no Lottie, no animation — just
+ *   "Thought for 4s" pill, matching Claude Code's silent end-state.
+ *   Persists until the next request starts, then collapses.
+ *
+ * Implementation is kept INSIDE ChatMessageList.js so the existing prop
+ * surface (isRequestInFlight, latestThinkingText) drives both states
+ * without threading new props from Demopage.  The total-elapsed
+ * capture is local: we observe the in-flight transition and snapshot
+ * the duration on the trailing edge.
+ */
+function ThinkingHourglassRow({isRequestInFlight, latestThinkingText}) {
+  const [lastThoughtMs, setLastThoughtMs] = useState(0);
+  const prevInFlightRef = useRef(false);
+  const startMsRef = useRef(null);
+
+  useEffect(() => {
+    if (isRequestInFlight && !prevInFlightRef.current) {
+      // false → true: new request starting, reset the standby pill.
+      startMsRef.current = Date.now();
+      setLastThoughtMs(0);
+    } else if (!isRequestInFlight && prevInFlightRef.current) {
+      // true → false: capture the cumulative thinking duration.
+      if (startMsRef.current) {
+        setLastThoughtMs(Date.now() - startMsRef.current);
+        startMsRef.current = null;
+      }
+    }
+    prevInFlightRef.current = isRequestInFlight;
+  }, [isRequestInFlight]);
+
+  const showStandby = !isRequestInFlight && lastThoughtMs > 0;
+
+  if (!isRequestInFlight && !showStandby) return null;
+
+  return (
+    <div className="flex items-center justify-start gap-2 py-2 px-1">
+      <style>{`
+        @keyframes verbFadeSwap {
+          0% { opacity: 0; transform: translateY(4px); }
+          15% { opacity: 1; transform: translateY(0); }
+          85% { opacity: 1; transform: translateY(0); }
+          100% { opacity: 0; transform: translateY(-4px); }
+        }
+        @keyframes hevolveTextDrift {
+          0%   { background-position: 0% 50%; }
+          50%  { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        @keyframes hevolveStandbyFadeIn {
+          0%   { opacity: 0; transform: translateY(2px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+      {isRequestInFlight ? (
+        <>
           <Lottie
             animationData={hourglassAnimation}
             loop
@@ -762,12 +868,23 @@ const ChatMessageList = ({
           />
           <CyclingVerb overrideText={latestThinkingText} />
           <ElapsedTimer active={isRequestInFlight} />
-        </div>
+        </>
+      ) : (
+        // Standby pill — Claude Code shape: no animation, just the
+        // post-hoc duration in subdued type.  Same row position so the
+        // transition from in-flight → standby is a quiet swap rather
+        // than a layout jump.
+        <span
+          className="text-[11px] text-gray-500 font-mono"
+          style={{
+            animation: 'hevolveStandbyFadeIn 280ms ease-out',
+          }}
+        >
+          ✦ Thought for {formatThoughtMs(lastThoughtMs)}
+        </span>
       )}
-
-      <div ref={messagesEndRef} />
     </div>
   );
-};
+}
 
 export default ChatMessageList;
