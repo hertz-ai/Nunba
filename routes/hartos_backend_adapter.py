@@ -87,28 +87,7 @@ _thinking_traces_lock = _threading.Lock()
 
 
 def _capture_thinking(message):
-    """Capture priority-49 thinking messages into per-request trace buffer
-    AND broadcast each one via SSE for live UI rendering.
-
-    Before 2026-05-14: captures landed in `_thinking_traces_by_request`
-    and were drained INTO the HTTP response body at end-of-request
-    (chatbot_routes.py:2762-2766 `Including N thinking traces in
-    response`).  Frontend listening on the SSE bus for
-    `type=thinking.trace` never saw anything — for IPL/web-search/any
-    multi-step query, the "Agent is thinking" panel stayed empty until
-    the full response arrived, defeating its purpose.
-
-    Witnessed 2026-05-14 (RequestID 30b02e45-...): user query
-    "find the latest ipl info" produced 6 thinking traces, ALL bundled
-    into response_json['thinking_steps'] — zero SSE pushes of type
-    thinking.trace.  Across 13,009 broadcast_sse_event lines in the
-    frozen_debug.log only 2 were thinking.trace.
-
-    Fix: emit `type='thinking.trace'` on the SSE bus as each trace is
-    captured.  The buffer + drain path stays for the response body
-    (back-compat for clients that read the JSON), so this is purely
-    additive.  Defensive: SSE failure must never break capture.
-    """
+    """Capture priority-49 thinking messages into per-request trace buffer."""
     try:
         import json as _json
         msg = message if isinstance(message, dict) else _json.loads(message)
@@ -124,21 +103,6 @@ def _capture_thinking(message):
                 # Evict oldest request (FIFO via OrderedDict insertion order)
                 if len(_thinking_traces_by_request) > 20:
                     _thinking_traces_by_request.popitem(last=False)
-            # ── SSE broadcast (live UI feed) ─────────────────────────
-            # Lazy-import main.broadcast_sse_event to avoid the import
-            # cycle (main.py → routes.hartos_backend_adapter).  Try the
-            # request's user_id first (single-user fan-out), fall back
-            # to None which broadcasts to all connected clients — the
-            # same fallback shape `task.progress` uses.  Daemon traces
-            # (req_id 'unknown' or 'daemon_*') are NOT broadcast: they
-            # belong to background work the user did not initiate.
-            try:
-                if req_id != 'unknown' and not str(req_id).startswith('daemon_'):
-                    from main import broadcast_sse_event as _broadcast
-                    _user_id = msg.get('user_id')
-                    _broadcast('thinking.trace', msg, user_id=_user_id)
-            except Exception:
-                pass  # SSE bus down or main not loaded yet — capture still works
     except Exception:
         pass
 
