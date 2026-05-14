@@ -161,6 +161,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // Keep ref in sync — handleDataReceived (useCallback) reads the ref to filter
   // daemon thinking traces without re-creating the callback on every request.
   useEffect(() => { requestIdRef.current = requestId; }, [requestId]);
+  // Per-msg_id dedup map.  The same priority=49 thinking trace can
+  // arrive at handleDataReceived via THREE paths for a single chat
+  // turn:
+  //   1. WAMP (crossbarWorker → onmessage DATA_RECEIVED) — cloud-router path
+  //   2. SSE (realtimeService.on('chat.response') → handleDataReceived)
+  //   3. HTTP /chat final response (resultData.thinking_steps.forEach
+  //      → handleDataReceived; see line ~3397 below)
+  // Without dedup the UI renders each thinking step 1-3 times.  HARTOS
+  // injects msg_id=uuid4().hex into every envelope at
+  // core/peer_link/crossbar_publish.py:90 so the key is stable across
+  // transports.  60s TTL covers slow autogen turns (1-2min) without
+  // unbounded growth (cap 500 entries; prune entries older than TTL
+  // on overflow).
+  const seenMsgIdsRef = useRef(new Map());
   const [audioUrl, setAudioUrl] = useState(null);
   const messagesEndRef = useRef(null);
   const [userImage, setUserImage] = useState(null);
@@ -1468,6 +1482,29 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         return;
       }
 
+      // Per-msg_id dedup (see seenMsgIdsRef declaration block for context).
+      // Drops the 2nd/3rd delivery of the same trace silently — first
+      // delivery wins, all downstream side effects (setMessages, audio,
+      // thinking-spinner) fire exactly once.  Skips payloads without
+      // msg_id (legacy emitters, non-trace events, parse-failures) so
+      // this is a strict additive guard.
+      const _msgId = parsed && parsed.msg_id;
+      if (_msgId) {
+        const _seen = seenMsgIdsRef.current;
+        const _now = Date.now();
+        const _prev = _seen.get(_msgId);
+        if (_prev && _now - _prev < 60000) {
+          logger.log(`Dropping duplicate trace msg_id=${String(_msgId).slice(0, 8)}…`);
+          return;
+        }
+        _seen.set(_msgId, _now);
+        if (_seen.size > 500) {
+          for (const [k, t] of _seen) {
+            if (_now - t > 60000) _seen.delete(k);
+          }
+        }
+      }
+
       const {
         isTextMode,
         waitingText,
@@ -2294,8 +2331,22 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       }
     });
 
-    return () => { unsubTts(); unsubSetup(); unsubHandshake(); unsubCapability(); };
-  }, []);
+    // Route SSE chat.response events to the same handler that processes
+    // WAMP DATA_RECEIVED events.  realtimeService emits 'chat.response'
+    // when EventSource delivers the named SSE event (see
+    // realtimeService.js addEventListener array).  Without this
+    // subscription, the SSE-delivered priority=49 thinking traces would
+    // be silently dropped in desktop mode where crossbarWorker (cloud
+    // WAMP) isn't connected.  Dedup via seenMsgIdsRef inside
+    // handleDataReceived prevents double-render when WAMP + SSE both
+    // deliver the same msg_id.
+    const unsubChatResponse = realtimeService.on('chat.response', handleDataReceived);
+
+    return () => {
+      unsubTts(); unsubSetup(); unsubHandshake(); unsubCapability();
+      unsubChatResponse();
+    };
+  }, [handleDataReceived]);
 
   useEffect(() => {
     if (requestId && worker) {

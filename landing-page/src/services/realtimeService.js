@@ -196,19 +196,30 @@ class RealtimeService {
       }
     };
 
-    // Named SSE event types from backend
-    _eventSource.addEventListener('notification', (e) => {
-      try {
-        const payload = JSON.parse(e.data);
-        this._dispatchSocialPayload({type: 'notification', ...payload});
-      } catch { /* ignore */ }
-    });
-
-    _eventSource.addEventListener('setup_progress', (e) => {
-      try {
-        const payload = JSON.parse(e.data);
-        this._dispatchSocialPayload({type: 'setup_progress', ...payload});
-      } catch { /* ignore */ }
+    // Named SSE event types from backend.  EventSource silently drops
+    // named events (`event: <name>\ndata: ...\n\n` per main.py:3870) when
+    // no addEventListener is registered for that name — `onmessage`
+    // only fires for the default/unnamed channel.  Missing chat.response
+    // here was why thinking-trace/text events never reached the renderer
+    // in desktop mode while TTS (WAMP path) worked fine — diagnosed
+    // 2026-05-14 against RequestID 30b02e45 (IPL query) where the server
+    // broadcast ~100 type=chat.response events that were silently dropped.
+    //
+    // Array-driven so adding the next event type is a one-line change.
+    // _dispatchSocialPayload normalises {type} from the payload — we
+    // pass `type: name` explicitly so the dispatcher uses the event
+    // channel name even when the payload omits its own type field.
+    [
+      'notification',
+      'setup_progress',
+      'chat.response',
+    ].forEach((name) => {
+      _eventSource.addEventListener(name, (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          this._dispatchSocialPayload({type: name, ...payload});
+        } catch { /* ignore */ }
+      });
     });
 
     _eventSource.onerror = () => {
