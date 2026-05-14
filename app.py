@@ -36,6 +36,58 @@ import importlib.metadata as _md_safe
 import os
 import sys
 
+
+# ── Early-boot crash logger ─────────────────────────────────────────
+# Witnessed 2026-05-14 (run 25852109063, 25853614289 build-macos):
+# `Nunba --validate` exits 1 in CI before the validate handler's own
+# log file (~/Documents/Nunba/logs/validate.log) gets opened, so the
+# CI runner sees only the early RequestsDependencyWarning and an
+# unexplained exit code.  This excepthook captures any unhandled
+# exception from the early-boot path (imports, monkey-patches, etc.)
+# and writes it to BOTH the validate.log directory AND the build's
+# own MacOS bundle directory, so the post-build hook can dump it.
+# The earlier crash had NO logged traceback anywhere — this fills the
+# gap without adding heavy logging machinery.
+def _early_crash_handler(exc_type, exc_value, exc_tb):
+    import traceback as _tb
+    _msg = ''.join(_tb.format_exception(exc_type, exc_value, exc_tb))
+    _candidates = [
+        os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs',
+                     'early_boot_crash.log'),
+        os.path.join(os.path.dirname(os.path.abspath(
+            sys.executable if getattr(sys, 'frozen', False) else __file__)),
+                     'early_boot_crash.log'),
+    ]
+    for _path in _candidates:
+        try:
+            os.makedirs(os.path.dirname(_path), exist_ok=True)
+            with open(_path, 'a', encoding='utf-8') as _fh:
+                _fh.write(f'\n===== early-boot crash @ {os.environ.get("__NUNBA_BOOT_PHASE", "unknown")} =====\n')
+                _fh.write(f'argv: {sys.argv}\n')
+                _fh.write(f'frozen: {getattr(sys, "frozen", False)}\n')
+                _fh.write(f'platform: {sys.platform}\n')
+                _fh.write(_msg)
+                _fh.flush()
+                try:
+                    os.fsync(_fh.fileno())
+                except OSError:
+                    pass
+        except OSError:
+            continue
+    # Echo to stderr too — CI runner captures fd 2 even when stdout is
+    # routed to /dev/null on macOS GUI frozen builds.
+    try:
+        sys.stderr.write(_msg)
+        sys.stderr.flush()
+    except Exception:
+        pass
+    # Fall through to default behaviour (exit non-zero).
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _early_crash_handler
+
+
 _orig_pd = getattr(_md_safe, 'packages_distributions', None)
 if _orig_pd is not None and not getattr(_orig_pd, '_hartos_guarded', False):
     def _safe_packages_distributions():

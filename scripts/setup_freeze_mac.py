@@ -714,6 +714,28 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
                     _log_text = open(_val_log, encoding='utf-8').read().strip()
                 except OSError as _e:
                     print(f"[WARN] could not read {_val_log}: {_e}")
+            # Also try the early-boot crash logger (app.py sys.excepthook).
+            # Captures unhandled exceptions from the import-time code that
+            # runs BEFORE the --validate handler opens its own log file —
+            # which is exactly when the macOS-only freeze crashes happen.
+            _early_crash_candidates = [
+                os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba',
+                             'logs', 'early_boot_crash.log'),
+                os.path.join(_build_dir, 'early_boot_crash.log'),
+            ]
+            for _early in _early_crash_candidates:
+                if os.path.isfile(_early):
+                    try:
+                        _early_text = open(_early, encoding='utf-8').read().strip()
+                        if _early_text:
+                            print(f"\n--- early_boot_crash.log ({_early}) ---")
+                            print(_early_text)
+                            print("--- end early_boot_crash.log ---\n")
+                            if not _log_text:
+                                _log_text = _early_text  # so non-empty branch fires below
+                    except OSError as _e:
+                        print(f"[WARN] could not read {_early}: {_e}")
+                    break
             if _ret.returncode != 0:
                 # Print validate.log content unconditionally on failure.
                 # The previous dedup gate (`if _log_text not in stdout`)
