@@ -160,6 +160,27 @@ export function readAuthSession() {
   // primary identity (cloud users still have a HART node alongside).
   const hart_node = guest_name || hart_name;
 
+  // Token authority demarcation (Phase 7.1):
+  //
+  // The localStorage key `access_token` is overloaded — it stores
+  // EITHER a Kong-issued cloud bearer (from azurekong.hertzai.com
+  // /data/varify_otp) OR a HARTOS-issued guest JWT (from
+  // /social/guest_register).  They are NOT interchangeable:
+  //   - Kong tokens authenticate against azurekong.* APIs
+  //   - HARTOS guest JWTs authenticate against the local Flask /social/*
+  //     routes (HARTOS_SECRET-signed)
+  //
+  // Storage-key migration would be invasive (every existing consumer
+  // reads `access_token`), so the session shape does the demarcation:
+  // tokens.cloud is null unless status='cloud'; tokens.hartos_local
+  // is null unless status='guest'.  Consumers that need to know which
+  // authority a token belongs to read from the right field; consumers
+  // that just need "the bearer for the current API call" can fall
+  // back to `tokens.cloud || tokens.hartos_local`.
+  const cloud_token = status === 'cloud' ? (access_token || null) : null;
+  const hartos_local_token =
+    status === 'guest' ? (access_token || null) : null;
+
   return {
     status,
     identity: {
@@ -170,7 +191,8 @@ export function readAuthSession() {
       hart_node,
     },
     tokens: {
-      cloud: access_token || null,
+      cloud: cloud_token,
+      hartos_local: hartos_local_token,
       refresh: refresh_token || null,
       expire_at,
     },
