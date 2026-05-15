@@ -70,21 +70,65 @@ describe('useStorageSync', () => {
     expect(localStorage.getItem('email_address')).toBeNull();
   });
 
-  it('is a no-op when an in-page signin already set access_token', async () => {
+  it('does not overwrite existing access_token / guest_user_id when in-page signin already happened', async () => {
+    // Scenario: an in-page signin already wrote access_token +
+    // guest_user_id.  useStorageSync must NOT clobber those values.
+    // Post-commit 150fad9b the hook DOES still top-up HART identity
+    // keys (hart_sealed / hart_name / hart_emoji / hart_language) via
+    // /api/storage/get/* when those keys are missing — this covers the
+    // WebView2-leveldb-wipe-but-user_data.json-survived case.  The
+    // assertion below verifies the cloud-identity keys are unchanged
+    // while accepting that the HART top-up may fire.
     localStorage.setItem('access_token', 'fresh-in-page-token');
     localStorage.setItem('guest_user_id', 'fresh-user-id');
+    // Set hart_sealed so the top-up arm also short-circuits.  Test
+    // verifies the BOTH-arms short-circuit path: no axios at all,
+    // no localStorage write.
+    localStorage.setItem('hart_sealed', 'true');
 
     mockStorageReturning(CLOUD_VALUES);
 
     renderHook(() => useStorageSync());
 
-    // Give the effect a tick to run; it should short-circuit before
-    // making any axios call.
     await new Promise((r) => setTimeout(r, 50));
 
     expect(axios.get).not.toHaveBeenCalled();
     expect(localStorage.getItem('access_token')).toBe('fresh-in-page-token');
     expect(localStorage.getItem('guest_user_id')).toBe('fresh-user-id');
+  });
+
+  it('tops up HART identity from /api/storage/get/* when token present but hart_sealed missing', async () => {
+    // WebView2-wipe scenario: pywebview EBWebView leveldb cleared on
+    // reinstall, but user_data.json survived with the full identity.
+    // The hook's first arm (commit 150fad9b) detects access_token in
+    // localStorage AND no hart_sealed, then fetches the 4 hart_*
+    // keys to re-hydrate React-side from companion storage.
+    localStorage.setItem('access_token', 'in-page-token');
+    localStorage.setItem('guest_user_id', 'in-page-user');
+    // hart_sealed deliberately absent — trigger the top-up.
+
+    axios.get.mockImplementation((url) => {
+      const key = url.split('/').pop();
+      const data = {
+        hart_sealed: 'true',
+        hart_name: 'Radiant.Green.lawliet',
+        hart_emoji: '🌿',
+        hart_language: 'en',
+      }[key];
+      return Promise.resolve({data: {data: data ?? null, success: true}});
+    });
+
+    renderHook(() => useStorageSync());
+
+    await waitFor(() => {
+      expect(localStorage.getItem('hart_sealed')).toBe('true');
+    });
+    expect(localStorage.getItem('hart_name')).toBe('Radiant.Green.lawliet');
+    expect(localStorage.getItem('hart_emoji')).toBe('🌿');
+    expect(localStorage.getItem('hart_language')).toBe('en');
+    // Cloud identity untouched.
+    expect(localStorage.getItem('access_token')).toBe('in-page-token');
+    expect(localStorage.getItem('guest_user_id')).toBe('in-page-user');
   });
 
   it('does nothing when storage has no token (no cloud signin yet)', async () => {
