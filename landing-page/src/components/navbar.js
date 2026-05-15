@@ -1,4 +1,4 @@
-import useAuthSession from '../hooks/useAuthSession';
+import useAuthSession, {clearAuth} from '../hooks/useAuthSession';
 import HevolveLogo from '../data/logo.gif';
 import HevolveLogoLight from '../data/logo.gif';
 
@@ -42,9 +42,12 @@ export default function Navbar() {
     });
   };
   const LogOutUser = () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('user_id');
-    localStorage.removeItem('email_address');
+    // Phase 4d — canonical logout writer.  clearAuth removes 12 auth
+    // keys (superset of the prior 3: access_token + user_id +
+    // email_address) and preserves HART node identity (hart_*  +
+    // guest_name) per the 4-layer model.  Also fires
+    // nunba:auth_changed → all useAuthSession subscribers re-read.
+    clearAuth();
     navigate('/');
   };
 

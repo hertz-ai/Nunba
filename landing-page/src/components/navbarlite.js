@@ -1,4 +1,4 @@
-import useAuthSession from '../hooks/useAuthSession';
+import useAuthSession, {clearAuth} from '../hooks/useAuthSession';
 import HevolveLogo from '../data/logo.gif';
 import HevolveLogoLight from '../data/logo.gif';
 
@@ -33,9 +33,11 @@ export default function NabBarLite() {
     });
   };
   const LogOutUser = () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('user_id');
-    localStorage.removeItem('user_email');
+    // Phase 4d — canonical logout.  Note: original code removed
+    // 'user_email' which was a phantom key (never written anywhere
+    // in the codebase per grep audit); clearAuth removes the
+    // correctly-named 'email_address' along with 11 other auth keys.
+    clearAuth();
     navigate('/');
   };
 

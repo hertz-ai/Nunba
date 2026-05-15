@@ -31,7 +31,7 @@ import { classifyError, getBackoff, makeMsgId } from '../utils/chatRetry';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import { getStableDeviceId } from '../utils/deviceId';
-import useAuthSession, { setGuestIdentity } from '../hooks/useAuthSession';
+import useAuthSession, { setGuestIdentity, clearAuth } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
 
 // NewHome is only loaded when user is not logged in (landing page)
@@ -3234,13 +3234,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   };
 
   const LogOutUser = () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('user_id');
-    localStorage.removeItem('email_address');
-    localStorage.removeItem('guest_mode');
+    // Phase 4d — canonical logout writer.  clearAuth handles 12 auth
+    // keys including the 7 the inline block used to remove.  Extra
+    // removeItem('guest_name') below preserves Demopage's prior
+    // semantic of forcing HART re-onboarding on logout from this
+    // surface (navbar.js / navbarlite.js do NOT clear guest_name,
+    // intentionally — those logouts preserve HART node identity).
+    clearAuth();
     localStorage.removeItem('guest_name');
-    localStorage.removeItem('guest_user_id');
-    localStorage.removeItem('guest_name_verified');
     setIsGuestMode(false);
     setGuestNameConflict(null);
     navigate('/');
@@ -3745,10 +3746,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               errorResponse.error === 'invalid_token' ||
               errorResponse.error_description === 'The access token is invalid or has expired'
             ) {
-              localStorage.removeItem('expire_token');
-              localStorage.removeItem('access_token');
-              localStorage.removeItem('user_id');
-              localStorage.removeItem('email_address');
+              // Phase 4d — canonical 401 invalidation.  clearAuth
+              // covers the original 4 keys (expire_token + access_token
+              // + user_id + email_address) plus 8 more cloud-related
+              // keys.  HART node identity preserved (per 4-layer model)
+              // so on next signin the user lands back in the same HART
+              // shell.
+              clearAuth();
               setIsModalOpen(true);
               updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
               setLoading(false);
