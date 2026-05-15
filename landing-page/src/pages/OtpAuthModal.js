@@ -501,9 +501,23 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
           localStorage.setItem('guest_user_id', user.id);
           localStorage.setItem('social_user_id', user.id);
           localStorage.setItem('guest_name_verified', 'true');
-          // Show one-time recovery code
-          setRecoveryCode(recovery_code);
-          setShowRecoveryCode(true);
+          // The HARTOS idempotent path (existing guest re-registers
+          // because their JWT expired) returns recovery_code: null on
+          // purpose — re-issuing would invalidate the saved code (see
+          // HARTOS integrations/social/api.py:229).  In that case the
+          // user has already saved their code; skip the one-time-
+          // recovery panel and just continue.  Showing the panel with
+          // null content was producing a blank box + "Copy & Continue"
+          // that copied the literal string "null" to the clipboard
+          // (regression diagnosed 2026-05-15).
+          if (recovery_code) {
+            setRecoveryCode(recovery_code);
+            setShowRecoveryCode(true);
+          } else {
+            resetForm();
+            onClose();
+            navigate('/agents/Hevolve');
+          }
           return;
         } catch {
           // Backend unavailable — fall through to offline mode
@@ -642,7 +656,12 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
             </div>
             <button
               onClick={() => {
-                navigator.clipboard?.writeText(recoveryCode);
+                // Defensive: only write to clipboard if we actually
+                // have a code.  Coercion would have written "null"
+                // (regression captured 2026-05-15).
+                if (recoveryCode) {
+                  navigator.clipboard?.writeText(recoveryCode);
+                }
                 setShowRecoveryCode(false);
                 resetForm();
                 onClose();

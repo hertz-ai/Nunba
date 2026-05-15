@@ -1513,9 +1513,18 @@ class LlamaConfig:
         else:
             ctx_size = self.config.get("context_size", 8192)
 
-        # Cap context: 10K balances quality + VRAM for F5-TTS coexistence.
+        # Cap context: 12K balances quality + VRAM for F5-TTS coexistence.
         # KV cache cost: ~1GB per 8K for 4B, ~0.5GB per 8K for 2B.
-        ctx_size = min(ctx_size, 10240)
+        # Raised from 10240→12288 (2026-05-15) after context-overflow
+        # diagnosis (langchain.log 32× "Context size has been exceeded"
+        # per session).  Companion fixes already in place: HARTOS
+        # MessageTokenLimiter max_tokens=3500 (was 4000) + chat_instructor
+        # added to context_handling.add_to_agent in 5 sites.  This +2K
+        # ctx provides extra headroom for tool schemas (~3-5K tokens)
+        # plus system prompt (~1.5K) on top of trimmed history.
+        # Net KV cost at 12K: ~1.5GB for 4B Q4 — still leaves ~2GB for
+        # F5-TTS / Indic Parler coexistence on the 8GB-VRAM laptop tier.
+        ctx_size = min(ctx_size, 12288)
 
         # Cap threads to 75% of cores — leave headroom for OS + TTS
         max_threads = max(1, int((os.cpu_count() or 4) * 0.75))
@@ -2191,8 +2200,14 @@ def get_active_llm_endpoint() -> dict | None:
         # External endpoint not available, fall back to local
         logger.warning(f"External endpoint {endpoint['name']} not available")
 
-    # Use local llama.cpp endpoint
-    port = config.config.get("server_port", 8080)
+    # Use local llama.cpp endpoint — prefer the port the last health
+    # probe found alive (orchestrator-assigned, e.g. 8082) over the
+    # stale config default (8080).  See `_find_live_llama_port()` for
+    # the shared probe.  Regression captured 2026-05-14 (RequestID
+    # 30b02e45): server bound on 8082, get_llama_endpoint returned
+    # 8080 from cached config — every chat → connection refused →
+    # "Starting AI engine" stub returned to UI on a 30s loop.
+    port = _find_live_llama_port() or config.config.get("server_port", 8080)
     return {
         "name": "Nunba Local AI",
         "base_url": f"http://localhost:{port}",
@@ -2202,6 +2217,12 @@ def get_active_llm_endpoint() -> dict | None:
 
 
 _cached_config = None
+# Module-level: last port observed responding to /health, populated by
+# _find_live_llama_port().  Lets get_llama_endpoint() agree with
+# check_llama_health() about which port to talk to (the SEND side now
+# matches the probe side — previously they diverged when the
+# orchestrator started llama-server on a non-default port).
+_last_healthy_llama_port: int | None = None
 
 def _get_cached_config():
     """Return a module-level LlamaConfig singleton to avoid repeated GPU detection."""
@@ -2211,6 +2232,30 @@ def _get_cached_config():
     return _cached_config
 
 
+def _find_live_llama_port() -> int | None:
+    """Probe known llama.cpp ports (config + 8082/8081/8080) and return
+    the FIRST one whose /health answers 200.  Updates the module-level
+    `_last_healthy_llama_port` so get_llama_endpoint() returns the
+    matching URL.  Single source of truth for "which port is live".
+
+    Returns:
+        Port number (int) if any responds, else None.
+    """
+    global _last_healthy_llama_port
+    config = _get_cached_config()
+    config_port = config.config.get("server_port", 8080)
+    for _port in dict.fromkeys([config_port, 8082, 8081, 8080]):
+        try:
+            response = requests.get(
+                f"http://localhost:{_port}/health", timeout=1)
+            if response.status_code == 200:
+                _last_healthy_llama_port = _port
+                return _port
+        except Exception:
+            continue
+    return None
+
+
 def check_llama_health() -> bool:
     """
     Check if llama.cpp server is running and healthy.
@@ -2218,20 +2263,7 @@ def check_llama_health() -> bool:
     Returns:
         True if llama.cpp server is available and responding, False otherwise
     """
-    config = _get_cached_config()
-    port = config.config.get("server_port", 8080)
-
-    # Check the configured port AND common alternatives (8082 for
-    # orchestrator-assigned, 8081 for draft).  The orchestrator may
-    # start the LLM on a non-default port if 8080 was busy.
-    for _port in dict.fromkeys([port, 8082, 8081, 8080]):
-        try:
-            response = requests.get(
-                f"http://localhost:{_port}/health", timeout=1)
-            if response.status_code == 200:
-                return True
-        except Exception:
-            continue
+    return _find_live_llama_port() is not None
     return False
 
 

@@ -2876,10 +2876,164 @@ def chat_route():
         except Exception as e:
             logger.warning(f'Local Llama error: {e}')
 
-        # No LLM backend reachable — one unified "bring up the right
-        # model for this capability" call. The orchestrator owns model
-        # selection + loading for every type (llm, tts, stt, vlm, ...)
-        # and the chat route stays a single line.
+        # Both Tier-1 (LangChain) and Tier-2 (raw llama) failed.  Before
+        # declaring the model "starting up", probe /health: liveness ≠
+        # readiness ≠ busy.  A completion timeout from a busy 4B is NOT
+        # the same as a dead server, and firing ensure_loaded_async on a
+        # live server is at best a no-op, at worst a spurious load
+        # attempt against an already-loaded model.  See
+        # memory/feedback_liveness_vs_readiness_vs_busy.md.  Captured
+        # 2026-05-14 from frozen_debug.log evidence: server alive on
+        # 8082 (every watchdog tick), but 30s completion timeout in
+        # Tier-2 caused the chat route to render "Starting AI engine"
+        # which is the wrong message — nothing needs starting.
+        try:
+            from llama.llama_config import check_llama_health
+            _server_alive = check_llama_health()
+        except Exception:
+            _server_alive = False
+
+        if _server_alive:
+            # Server is up — Tier-1/Tier-2 failed because the model is
+            # busy with another in-flight request (daemon autogen turn,
+            # long generation, etc.).  Do NOT call ensure_loaded_async;
+            # tell the user honestly + bump retry hint.  Envelope keys
+            # are deliberately identical to the down-path below so no
+            # frontend contract changes.
+            logger.info(
+                'Chat fall-through: /health=200 on llama server, both '
+                'tiers failed → server is BUSY (in-flight work blocked '
+                'completion).  Returning busy stub; ensure_loaded_async '
+                'NOT fired (would be no-op).'
+            )
+
+            # Surface WHICH task(s) the AI is on, so the busy message
+            # is specific not generic.  Read active tasks via the
+            # canonical SmartLedger walker (same function the HARTOS
+            # /api/agent-engine/ledger/tasks endpoint uses).  Emit a
+            # Liquid UI 'notification' with clickable actions that
+            # navigate to /admin/task-ledger?task_id=<id> on the
+            # existing AgentOverlay primitive — no new component type
+            # introduced; reuses 'notification' + 'navigate' which are
+            # already in COMPONENT_TYPES (HARTOS liquid_ui_service.py)
+            # and AgentOverlay.jsx switch.  All best-effort: any
+            # failure leaves the textual response unchanged.
+            _active_tasks = []
+            try:
+                from integrations.agent_engine.api import _iter_ledgers
+                from agent_ledger import TaskStatus
+                _scanned = 0
+                for _agent_id, _session_id, _ledger in _iter_ledgers(None):
+                    _scanned += 1
+                    for _task in _ledger.tasks.values():
+                        if TaskStatus.is_active_state(_task.status):
+                            _active_tasks.append({
+                                'task_id': _task.task_id,
+                                'description': (
+                                    getattr(_task, 'description', '')
+                                    or _task.task_id
+                                ),
+                                'status': (
+                                    _task.status.value
+                                    if hasattr(_task.status, 'value')
+                                    else str(_task.status)
+                                ),
+                                'agent_id': _agent_id,
+                            })
+                            if len(_active_tasks) >= 5:
+                                break
+                    if len(_active_tasks) >= 5 or _scanned >= 25:
+                        break
+            except Exception as _e:
+                logger.debug(f'Active-task lookup failed (non-fatal): {_e}')
+
+            # Emit Liquid UI notification with clickable navigate actions.
+            # ServiceRegistry.get('LiquidUIService') is the canonical
+            # accessor used by HARTOS Connect_Channel, Invite_Friend,
+            # meet_copilot, QR-pair etc. — same emit pattern, no parallel
+            # path.  If LiquidUIService isn't registered (e.g. HARTOS
+            # daemon offline), the emit silently no-ops and the response
+            # text below still carries the summary.
+            if _active_tasks:
+                try:
+                    from core.platform.service_registry import (
+                        ServiceRegistry,
+                    )
+                    _lui = ServiceRegistry.get('LiquidUIService')
+                    if _lui is not None:
+                        _lines = [
+                            f"• {t['description'][:60]} ({t['status']})"
+                            for t in _active_tasks[:5]
+                        ]
+                        _actions = [
+                            {
+                                'label': 'View all tasks',
+                                'kind': 'navigate',
+                                'target': '/admin/task-ledger',
+                            }
+                        ] + [
+                            {
+                                'label': f"View {t['task_id'][:8]}",
+                                'kind': 'navigate',
+                                'target': (
+                                    '/admin/task-ledger?task_id='
+                                    + t['task_id']
+                                ),
+                            }
+                            for t in _active_tasks[:3]
+                        ]
+                        _lui.agent_ui_update(str(user_id), {
+                            'type': 'notification',
+                            'title': 'AI is working on…',
+                            'message': '\n'.join(_lines),
+                            'severity': 'info',
+                            'actions': _actions,
+                        })
+                except Exception as _e:
+                    logger.debug(
+                        f'Liquid UI emit failed (non-fatal): {_e}'
+                    )
+
+            # Build the textual response.  Include task names so non-
+            # Liquid surfaces (RN, CLI, future channels) still see what
+            # the AI is doing — single message, two formats.
+            if _active_tasks:
+                _names = ', '.join(
+                    t['description'][:40] for t in _active_tasks[:3]
+                )
+                _busy_text = (
+                    f"Your local AI is still working on: {_names}. "
+                    f"Try again in a few seconds, or open the Task "
+                    f"Ledger to see all {len(_active_tasks)} active "
+                    f"task(s)."
+                )
+            else:
+                _busy_text = (
+                    "Your local AI is still working on another task. "
+                    "Try again in a few seconds."
+                )
+
+            return jsonify({
+                'text': _busy_text,
+                'agent_id': agent_id,
+                'agent_type': 'local',
+                'error': 'local_llm_starting',
+                'llm_starting': True,
+                'retry_hint_seconds': 15,
+                'success': False,
+                # Non-Liquid clients (RN, CLI) can render this too.
+                # Web SPA reads the Liquid UI emit above so this is
+                # purely informational on web — no parallel path.
+                'active_tasks': _active_tasks,
+            })
+
+        # Server actually unreachable — legitimate "starting up" path.
+        # Kept identical to the prior behaviour so the down-state UX
+        # does not regress.
+        logger.warning(
+            'Chat fall-through: /health probe failed → server is DOWN. '
+            'Firing ensure_loaded_async + starting-up stub.'
+        )
         try:
             from models.orchestrator import get_orchestrator
             get_orchestrator().ensure_loaded_async('llm', caller=f'chat:{user_id}')

@@ -7375,10 +7375,23 @@ def main():
             logger.info(
                 f"[REMOUNT:{origin}] Final mount state after "
                 f"{_MAX_ATTEMPTS} attempts: {final}")
-            if final != 'mounted':
+            if final == 'probe_failed':
+                # WebView2 COM RPC unresponsive — distinct from "React broken".
+                # The retry loop already skipped reload/resize for probe_failed
+                # (line 7324 `continue`), so the React render path was never
+                # disturbed.  Live evidence 2026-05-15: user reported "do not
+                # see black screen on restart" while 11 of these fired in a 2h
+                # window — the panic message was a logging false-positive
+                # masquerading as a critical UX failure.  Demote to INFO.
+                logger.info(
+                    f"[REMOUNT:{origin}] Could not verify mount via JS RPC "
+                    f"after {_MAX_ATTEMPTS} attempts — WebView2 COM bridge "
+                    "transiently unresponsive after window state change. "
+                    "React render path untouched; user-visible state unchanged.")
+            elif final != 'mounted':
                 logger.error(
-                    f"[REMOUNT:{origin}] React failed to mount after all "
-                    "retries. User will see black screen.")
+                    f"[REMOUNT:{origin}] React failed to mount (final "
+                    f"state={final}). User will see black screen.")
 
         # In background mode, run mount recovery on first show — the initial
         # load may have hit Flask before it was fully ready (especially on

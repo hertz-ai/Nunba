@@ -613,4 +613,16 @@ export function subscribeEncounterIcebreaker(callback) {
 
 // Singleton
 const realtimeService = new RealtimeService();
+
+// Dev/test hook: expose the singleton so Cypress (and curl-style
+// dev probes) can inject synthetic events to verify the full
+// agent_ui_update → AgentOverlay → DOM chain without spinning up
+// Flask + HARTOS + WAMP.  Production builds skip this — the check
+// uses CRA's NODE_ENV which is statically replaced at build time, so
+// the production bundle excludes the assignment via dead-code-elim.
+if (typeof window !== 'undefined' &&
+    process.env.NODE_ENV !== 'production') {
+  window.__realtimeService = realtimeService;
+}
+
 export default realtimeService;

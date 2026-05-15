@@ -2,7 +2,8 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import { Box, Typography, Chip, CircularProgress, Paper, Table,
   TableBody, TableCell, TableContainer, TableHead, TableRow,
   Select, MenuItem, FormControl, InputLabel, IconButton, Tooltip } from '@mui/material';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 const STATUS_COLORS = {
   PENDING: 'default',
@@ -20,6 +21,13 @@ export default function TaskLedgerPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [stats, setStats] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
+  // Deep-link from Liquid UI notification: `/admin/task-ledger?task_id=X`
+  // → scroll the row into view + briefly highlight.  No new transport,
+  // no parallel filter; the highlight is purely visual on top of the
+  // existing fetch + table render.
+  const [searchParams] = useSearchParams();
+  const highlightId = searchParams.get('task_id');
+  const highlightRef = useRef(null);
 
   // /api/agent-engine/ledger/* is gated by @require_auth on HARTOS
   // (integrations/agent_engine/api.py).  Match the canonical token
@@ -69,6 +77,17 @@ export default function TaskLedgerPage() {
   }, []);
 
   useEffect(() => { fetchTasks(); fetchStats(); }, [fetchTasks, fetchStats]);
+
+  // Scroll the highlighted row into view once tasks are loaded.  Runs
+  // after every refetch so a re-filter or refresh still anchors on the
+  // deep-linked task while the user is here.
+  useEffect(() => {
+    if (highlightId && highlightRef.current) {
+      highlightRef.current.scrollIntoView({
+        behavior: 'smooth', block: 'center',
+      });
+    }
+  }, [highlightId, tasks]);
 
   return (
     <Box sx={{ p: 3 }}>
@@ -133,10 +152,24 @@ export default function TaskLedgerPage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {tasks.map((task) => (
-                <TableRow key={task.id || task.task_id} hover>
+              {tasks.map((task) => {
+                const tid = task.id || task.task_id || '';
+                const isHighlighted = highlightId && tid === highlightId;
+                return (
+                <TableRow key={tid} hover
+                  ref={isHighlighted ? highlightRef : undefined}
+                  sx={isHighlighted ? {
+                    background: 'rgba(108, 99, 255, 0.18) !important',
+                    outline: '2px solid #6C63FF',
+                    outlineOffset: '-2px',
+                    animation: 'taskHighlightPulse 1.4s ease-out 2',
+                    '@keyframes taskHighlightPulse': {
+                      '0%, 100%': { background: 'rgba(108, 99, 255, 0.18)' },
+                      '50%': { background: 'rgba(108, 99, 255, 0.35)' },
+                    },
+                  } : undefined}>
                   <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                    {(task.id || task.task_id || '').slice(0, 8)}
+                    {tid.slice(0, 8)}
                   </TableCell>
                   <TableCell>{task.title || task.description || '(untitled)'}</TableCell>
                   <TableCell>
@@ -150,7 +183,8 @@ export default function TaskLedgerPage() {
                     {task.created_at ? new Date(task.created_at).toLocaleString() : '-'}
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         </TableContainer>
