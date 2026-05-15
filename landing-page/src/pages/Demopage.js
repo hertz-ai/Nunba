@@ -31,7 +31,7 @@ import { classifyError, getBackoff, makeMsgId } from '../utils/chatRetry';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import { getStableDeviceId } from '../utils/deviceId';
-import useAuthSession from '../hooks/useAuthSession';
+import useAuthSession, { setGuestIdentity } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
 
 // NewHome is only loaded when user is not logged in (landing page)
@@ -263,10 +263,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           device_id: deviceId,
         });
         const { user, token: newToken, existing } = res.data;
-        localStorage.setItem('access_token', newToken);
-        setToken(newToken);  // Fix B — pair setItem with setState so same-tab signin re-fires cloud-creds POST
-        localStorage.setItem('guest_user_id', user.id);
-        localStorage.setItem('social_user_id', user.id);
+        // Phase 4b — canonical guest writer.  Replaces the prior
+        // 3-setItem block.  Also sets guest_mode/hevolve_access_id/
+        // guest_name_verified=true (all already true entering this
+        // useEffect — !isGuestMode || !guestName returns at line 226,
+        // so we're guaranteed in guest_mode at this point).
+        setGuestIdentity({
+          user_id: user.id,
+          token: newToken,
+          guest_name: guestName,
+        });
+        setToken(newToken);  // Fix B — same-tab React state update so cloud-creds POST useEffect re-fires without 1s lag
         logger.log(
           existing
             ? '[GUEST] Token refreshed — same user, chat preserved'
