@@ -4,8 +4,9 @@ import {v4 as uuidv4} from 'uuid';
 // import { Worker, Viewer, SpecialZoomLevel } from '@react-pdf-viewer/core';
 // import '@react-pdf-viewer/core/lib/styles/index.css';
 import connectedGif from '../assets/images/connected.gif';
-import connectedImg from '../assets/images/connectedImg.gif';
-import DisconnectedImg from '../assets/images/DisconnectedImg.gif';
+// connectedImg / DisconnectedImg imports removed 2026-05-15 alongside
+// the on-screen Companion-Connection status badge below — Nunba IS
+// the companion, the icon was always self-referential noise.
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
 import AgentOverlay from '../components/AgentOverlay/AgentOverlay';
@@ -4221,10 +4222,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             <div
               className={`${
                 !uploadedImage && !uploadedPdf && window.innerWidth > 768
-                  ? (isTextMode ? 'w-0 overflow-hidden' : (videoUrl || mediaMode === 'audio' ? 'w-[30%]' : 'w-0 overflow-hidden'))
+                  ? (isTextMode ? 'w-0 overflow-hidden' : (mediaMode === 'video' || mediaMode === 'audio' ? 'w-[30%]' : 'w-0 overflow-hidden'))
                   : 'w-full'
               } ${
-                window.innerWidth <= 768 ? (isTextMode ? '' : (videoUrl || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
+                window.innerWidth <= 768 ? (isTextMode ? '' : (mediaMode === 'video' || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
               } relative flex justify-center items-center transition-all duration-300 md:sticky md:top-0 md:h-screen`}
               style={{ overflow: 'visible' }}
             >
@@ -4232,7 +4233,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 <>
                   {!uploadedImage && !uploadedPdf ? (
                     <>
-                      {videoUrl ? (
+                      {/* Branch on the user's INTENT (mediaMode) — not
+                          on whether videoUrl happens to be populated.
+                          The previous gate `videoUrl ?` made any
+                          background setVideoUrl(idleFiller.video_link)
+                          pre-empt audio mode even when the dropdown
+                          was set to "Audio Only" — bug captured
+                          2026-05-15 against /agents/Personalised
+                          %20Learning where the agent's idle filler
+                          video silently hid the VoiceVisualizer.  Now
+                          videoUrl is only consulted INSIDE the video
+                          branch as the data to render. */}
+                      {mediaMode === 'video' && videoUrl ? (
                         <video
                           src={videoUrl}
                           width={getVideoWidthforMobile()}
@@ -4806,20 +4818,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           </div>
         )}
 
-        {/* Companion Status */}
-        {companionStatus && (
-          <img
-            src={companionStatus.isRunning ? connectedImg : DisconnectedImg}
-            alt="Connection Status"
-            className="w-10 h-10"
-            title={
-              companionStatus.isRunning
-                ? 'Connected'
-                : 'Companion App Disconnected'
-            }
-            onError={handleImgError}
-          />
-        )}
+        {/* Companion status icon removed 2026-05-15: Nunba IS the
+            companion, so a green-dot "Connected"/red-dot "Disconnected"
+            badge is always self-referential and noisy.  isRunning is
+            still read by the cloud-creds POST useEffect upstream
+            (Demopage.js:1924) — keeping that gate, just dropping the
+            on-screen indicator. */}
       </div>}
 
       {/* Agent UI Overlay — floating glass cards for agent-pushed components */}
