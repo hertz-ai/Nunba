@@ -844,10 +844,8 @@ function ThinkingHourglassRow({isRequestInFlight, latestThinkingText}) {
     <div className="flex items-center justify-start gap-2 py-2 px-1">
       <style>{`
         @keyframes verbFadeSwap {
-          0% { opacity: 0; transform: translateY(4px); }
-          15% { opacity: 1; transform: translateY(0); }
-          85% { opacity: 1; transform: translateY(0); }
-          100% { opacity: 0; transform: translateY(-4px); }
+          0%   { opacity: 0; transform: translateY(4px); }
+          100% { opacity: 1; transform: translateY(0); }
         }
         @keyframes hevolveTextDrift {
           0%   { background-position: 0% 50%; }
