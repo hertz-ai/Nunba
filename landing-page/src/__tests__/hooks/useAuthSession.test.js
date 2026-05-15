@@ -38,7 +38,13 @@ jest.mock('../../utils/encryption', () => ({
 }));
 
 const useAuthSession = require('../../hooks/useAuthSession').default;
-const {readAuthSession} = require('../../hooks/useAuthSession');
+const {
+  readAuthSession,
+  setAuthFromOtp,
+  setGuestIdentity,
+  clearAuth,
+  applyHartSeal,
+} = require('../../hooks/useAuthSession');
 const {encrypt} = require('../../utils/encryption');
 
 const ENC_USER_ID = encrypt('10202');
@@ -262,5 +268,233 @@ describe('useAuthSession — hook reactivity', () => {
       document.dispatchEvent(new Event('visibilitychange'));
     });
     expect(result.current.status).toBe('guest');
+  });
+});
+
+// ── Phase 4 — writer surface ───────────────────────────────────────
+describe('writers — Phase 4 centralised mutation surface', () => {
+  describe('setAuthFromOtp', () => {
+    test('writes encrypted user_id + email + refresh_token, raw access_token, fires nunba:auth_changed', () => {
+      const handler = jest.fn();
+      window.addEventListener('nunba:auth_changed', handler);
+      try {
+        const next = setAuthFromOtp({
+          access_token: 'kong-bearer-xyz',
+          user_id: 10202,
+          email_address: 'Sales@hertzai.com',
+          refresh_token: 'refresh-xyz',
+          expires_in: 3600,
+        });
+        expect(localStorage.getItem('access_token')).toBe('kong-bearer-xyz');
+        expect(localStorage.getItem('user_id')).toBe(encrypt('10202'));
+        expect(localStorage.getItem('email_address')).toBe(encrypt('Sales@hertzai.com'));
+        expect(localStorage.getItem('refresh_token')).toBe(encrypt('refresh-xyz'));
+        expect(localStorage.getItem('expire_token')).toBe('3600');
+        expect(next.status).toBe('cloud');
+        expect(next.identity.user_id).toBe('10202');
+        expect(next.identity.email).toBe('Sales@hertzai.com');
+        expect(handler).toHaveBeenCalledTimes(1);
+        const evt = handler.mock.calls[0][0];
+        expect(evt.detail.source).toBe('otp_login');
+        expect(evt.detail.user_id).toBe('10202');
+      } finally {
+        window.removeEventListener('nunba:auth_changed', handler);
+      }
+    });
+
+    test('clears prior guest_* AND pending_cloud_* sentinels (mutual exclusion)', () => {
+      localStorage.setItem('guest_mode', 'true');
+      localStorage.setItem('guest_user_id', 'old-guest');
+      localStorage.setItem('guest_name_verified', 'true');
+      localStorage.setItem('pending_cloud_user_id', '10202');
+      localStorage.setItem('pending_cloud_email', 'Sales@hertzai.com');
+
+      setAuthFromOtp({
+        access_token: 'tok',
+        user_id: 10202,
+        email_address: 'Sales@hertzai.com',
+      });
+
+      expect(localStorage.getItem('guest_mode')).toBeNull();
+      expect(localStorage.getItem('guest_user_id')).toBeNull();
+      expect(localStorage.getItem('guest_name_verified')).toBeNull();
+      expect(localStorage.getItem('pending_cloud_user_id')).toBeNull();
+      expect(localStorage.getItem('pending_cloud_email')).toBeNull();
+    });
+
+    test('throws when payload missing access_token or user_id', () => {
+      expect(() => setAuthFromOtp({})).toThrow(/access_token/);
+      expect(() => setAuthFromOtp({access_token: 'x'})).toThrow(/user_id/);
+      expect(() => setAuthFromOtp({user_id: 1})).toThrow(/access_token/);
+    });
+  });
+
+  describe('setGuestIdentity', () => {
+    test('writes guest_* keyset, fires nunba:auth_changed with source=guest_register', () => {
+      const handler = jest.fn();
+      window.addEventListener('nunba:auth_changed', handler);
+      try {
+        const next = setGuestIdentity({
+          user_id: 'guest-uuid-abc',
+          token: 'hartos-guest-jwt',
+          guest_name: 'Radiant.Green.lawliet',
+        });
+        expect(localStorage.getItem('access_token')).toBe('hartos-guest-jwt');
+        expect(localStorage.getItem('guest_mode')).toBe('true');
+        expect(localStorage.getItem('guest_user_id')).toBe('guest-uuid-abc');
+        expect(localStorage.getItem('social_user_id')).toBe('guest-uuid-abc');
+        expect(localStorage.getItem('hevolve_access_id')).toBe('guest-uuid-abc');
+        expect(localStorage.getItem('guest_name')).toBe('Radiant.Green.lawliet');
+        expect(localStorage.getItem('guest_name_verified')).toBe('true');
+        expect(next.status).toBe('guest');
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(handler.mock.calls[0][0].detail.source).toBe('guest_register');
+      } finally {
+        window.removeEventListener('nunba:auth_changed', handler);
+      }
+    });
+
+    test('throws when payload missing user_id', () => {
+      expect(() => setGuestIdentity({})).toThrow(/user_id/);
+      expect(() => setGuestIdentity({token: 'x'})).toThrow(/user_id/);
+    });
+
+    test('handles silent re-auth (no token, no guest_name) — still writes guest_user_id', () => {
+      // Mirrors SocialContext.js:282-283 silent-recovery path.
+      setGuestIdentity({user_id: 'recovery-id'});
+      expect(localStorage.getItem('guest_mode')).toBe('true');
+      expect(localStorage.getItem('guest_user_id')).toBe('recovery-id');
+      expect(localStorage.getItem('access_token')).toBeNull();
+      expect(localStorage.getItem('guest_name')).toBeNull();
+    });
+  });
+
+  describe('clearAuth', () => {
+    test('atomically removes 12 auth keys, preserves HART node identity', () => {
+      // Seed every auth key
+      localStorage.setItem('access_token', 'tok');
+      localStorage.setItem('refresh_token', 'rtok');
+      localStorage.setItem('expire_token', '3600');
+      localStorage.setItem('user_id', encrypt('10202'));
+      localStorage.setItem('email_address', encrypt('Sales@hertzai.com'));
+      localStorage.setItem('guest_mode', 'true');
+      localStorage.setItem('guest_user_id', 'g-1');
+      localStorage.setItem('guest_name_verified', 'true');
+      localStorage.setItem('social_user_id', 'g-1');
+      localStorage.setItem('hevolve_access_id', 'g-1');
+      localStorage.setItem('pending_cloud_user_id', '99');
+      localStorage.setItem('pending_cloud_email', 'x@y');
+      // HART identity — should SURVIVE logout
+      localStorage.setItem('hart_sealed', 'true');
+      localStorage.setItem('hart_name', 'Radiant.Green.lawliet');
+      localStorage.setItem('hart_emoji', '🌿');
+      localStorage.setItem('hart_language', 'en');
+      localStorage.setItem('guest_name', 'Radiant.Green.lawliet');
+      // Unrelated key — should SURVIVE
+      localStorage.setItem('nunba_media_mode', 'audio');
+
+      const handler = jest.fn();
+      window.addEventListener('nunba:auth_changed', handler);
+      try {
+        const next = clearAuth();
+        // Auth keys cleared
+        ['access_token', 'refresh_token', 'expire_token', 'user_id',
+         'email_address', 'guest_mode', 'guest_user_id',
+         'guest_name_verified', 'social_user_id', 'hevolve_access_id',
+         'pending_cloud_user_id', 'pending_cloud_email'].forEach((k) => {
+          expect(localStorage.getItem(k)).toBeNull();
+        });
+        // HART + unrelated preserved
+        expect(localStorage.getItem('hart_sealed')).toBe('true');
+        expect(localStorage.getItem('hart_name')).toBe('Radiant.Green.lawliet');
+        expect(localStorage.getItem('hart_emoji')).toBe('🌿');
+        expect(localStorage.getItem('hart_language')).toBe('en');
+        expect(localStorage.getItem('guest_name')).toBe('Radiant.Green.lawliet');
+        expect(localStorage.getItem('nunba_media_mode')).toBe('audio');
+        expect(next.status).toBe('unauthenticated');
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(handler.mock.calls[0][0].detail.source).toBe('logout');
+      } finally {
+        window.removeEventListener('nunba:auth_changed', handler);
+      }
+    });
+  });
+
+  describe('applyHartSeal', () => {
+    test('writes hart_* keys, fires nunba:storage_hydrated', () => {
+      const handler = jest.fn();
+      window.addEventListener('nunba:storage_hydrated', handler);
+      try {
+        const next = applyHartSeal({
+          name: 'Radiant.Green.lawliet',
+          emoji: '🌿',
+          language: 'en',
+        });
+        expect(localStorage.getItem('hart_sealed')).toBe('true');
+        expect(localStorage.getItem('hart_name')).toBe('Radiant.Green.lawliet');
+        expect(localStorage.getItem('hart_emoji')).toBe('🌿');
+        expect(localStorage.getItem('hart_language')).toBe('en');
+        // guest_name back-filled
+        expect(localStorage.getItem('guest_name')).toBe('Radiant.Green.lawliet');
+        // guest_mode auto-enabled
+        expect(localStorage.getItem('guest_mode')).toBe('true');
+        expect(next.hart.sealed).toBe(true);
+        expect(next.hart.name).toBe('Radiant.Green.lawliet');
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(handler.mock.calls[0][0].detail.source).toBe('hart_seal');
+      } finally {
+        window.removeEventListener('nunba:storage_hydrated', handler);
+      }
+    });
+
+    test('does NOT overwrite guest_name if user already set one', () => {
+      localStorage.setItem('guest_name', 'PreExistingName');
+      applyHartSeal({name: 'NewHartName', language: 'en'});
+      expect(localStorage.getItem('guest_name')).toBe('PreExistingName');
+      expect(localStorage.getItem('hart_name')).toBe('NewHartName');
+    });
+
+    test('does NOT overwrite guest_mode if already set', () => {
+      localStorage.setItem('guest_mode', 'true');
+      applyHartSeal({name: 'Test'});
+      expect(localStorage.getItem('guest_mode')).toBe('true');
+    });
+
+    test('null payload is a safe no-op', () => {
+      const before = localStorage.length;
+      applyHartSeal(null);
+      expect(localStorage.length).toBe(before);
+    });
+  });
+
+  describe('writer + hook integration — events propagate to subscribed component', () => {
+    test('setAuthFromOtp triggers a hook re-render via nunba:auth_changed', () => {
+      const {result} = renderHook(() => useAuthSession());
+      expect(result.current.status).toBe('unauthenticated');
+
+      act(() => {
+        setAuthFromOtp({
+          access_token: 'live-tok',
+          user_id: 10202,
+          email_address: 'Sales@hertzai.com',
+        });
+      });
+      expect(result.current.status).toBe('cloud');
+      expect(result.current.identity.user_id).toBe('10202');
+      expect(result.current.identity.email).toBe('Sales@hertzai.com');
+    });
+
+    test('clearAuth triggers a hook re-render → unauthenticated', () => {
+      localStorage.setItem('access_token', 'tok');
+      localStorage.setItem('user_id', encrypt('10202'));
+      localStorage.setItem('email_address', encrypt('s@h.com'));
+      const {result} = renderHook(() => useAuthSession());
+      expect(result.current.status).toBe('cloud');
+
+      act(() => {
+        clearAuth();
+      });
+      expect(result.current.status).toBe('unauthenticated');
+    });
   });
 });

@@ -65,7 +65,7 @@
  */
 import {useEffect, useState, useCallback} from 'react';
 
-import {decrypt} from '../utils/encryption';
+import {decrypt, encrypt} from '../utils/encryption';
 
 /**
  * Single read pass over localStorage → canonical session shape.
@@ -261,4 +261,191 @@ export default function useAuthSession() {
   }, [reread]);
 
   return session;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Phase 4 — centralised writers
+// ────────────────────────────────────────────────────────────────────
+//
+// All identity-state writes flow through these named exports so the
+// 14-site fragmentation (OtpAuthModal localStorage block, SocialContext
+// guestRecover / guestRegister, LightYourHART seal, navbar logout,
+// Demopage 401 invalidation, axiosFactory interceptor) collapses to
+// four canonical operations.
+//
+// Each writer:
+//   1. Performs the localStorage mutations in a deterministic order
+//      (no half-state visible to other tabs mid-batch)
+//   2. Dispatches the appropriate CustomEvent so useAuthSession's
+//      reread fires immediately in every tab/component, not just on
+//      the next 1s poll tick
+//   3. Returns the resulting session shape (so callers can chain UI
+//      navigation off the new identity without waiting for re-render)
+//
+// READERS still work unchanged after these land — Phase 5+ migrate
+// the call sites one file per commit, each gated by cypress + jest.
+
+/**
+ * setAuthFromOtp — completes a successful Kong OTP verify.
+ * Replaces the localStorage block in OtpAuthModal.js:316-336.
+ *
+ * Encrypts the cloud user_id, email, refresh_token at the boundary
+ * (single import of CryptoJS / encrypt) so the rest of the codebase
+ * never sees raw cloud PII at rest.  Clears any prior guest_* and
+ * pending_cloud_* sentinels so the auto-guest-register useEffect
+ * skips and the partial-state hint disappears.
+ */
+export function setAuthFromOtp(payload) {
+  if (!payload || !payload.access_token || !payload.user_id) {
+    throw new Error('setAuthFromOtp: payload must include access_token + user_id');
+  }
+  const {
+    access_token,
+    user_id,
+    email_address,
+    refresh_token,
+    expires_in,
+  } = payload;
+
+  localStorage.setItem('access_token', String(access_token));
+  if (expires_in != null) {
+    localStorage.setItem('expire_token', String(expires_in));
+  }
+  // Encrypted (CryptoJS.AES) — Agent.js:194 expects these to be encrypted.
+  const enc_user = encrypt(String(user_id));
+  if (enc_user) localStorage.setItem('user_id', enc_user);
+  if (email_address) {
+    const enc_email = encrypt(String(email_address));
+    if (enc_email) localStorage.setItem('email_address', enc_email);
+  }
+  if (refresh_token) {
+    const enc_refresh = encrypt(String(refresh_token));
+    if (enc_refresh) localStorage.setItem('refresh_token', enc_refresh);
+  }
+  // Cloud signin clears any prior guest identity and partial-state
+  // sentinels — they are mutually exclusive states.
+  ['guest_mode', 'guest_user_id', 'guest_name', 'guest_name_verified',
+   'pending_cloud_user_id', 'pending_cloud_email'].forEach((k) =>
+    localStorage.removeItem(k));
+
+  try {
+    window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
+      detail: {source: 'otp_login', user_id: String(user_id)},
+    }));
+  } catch (_e) { /* same-origin, never throws */ }
+  return readAuthSession();
+}
+
+/**
+ * setGuestIdentity — completes a guest_register / guest_recover.
+ * Replaces the localStorage blocks in:
+ *   - SocialContext.js:131-150 (guestRecover success)
+ *   - SocialContext.js:146-160 (guestRegister fallback)
+ *   - SocialContext.js:202-203, 243-245, 282-283 (silent re-auth)
+ *   - Demopage.js:255-257 (guest auto-refresh useEffect)
+ *
+ * `token` is HARTOS-issued guest JWT.  user_id is the raw guest id
+ * (not encrypted — guest mode is local-only, no PII at rest).
+ */
+export function setGuestIdentity(payload) {
+  if (!payload || !payload.user_id) {
+    throw new Error('setGuestIdentity: payload must include user_id');
+  }
+  const {user_id, token, guest_name} = payload;
+
+  if (token) localStorage.setItem('access_token', String(token));
+  localStorage.setItem('guest_mode', 'true');
+  localStorage.setItem('guest_user_id', String(user_id));
+  localStorage.setItem('social_user_id', String(user_id));
+  localStorage.setItem('hevolve_access_id', String(user_id));
+  if (guest_name) localStorage.setItem('guest_name', String(guest_name));
+  localStorage.setItem('guest_name_verified', 'true');
+
+  try {
+    window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
+      detail: {source: 'guest_register', user_id: String(user_id)},
+    }));
+  } catch (_e) { /* same-origin */ }
+  return readAuthSession();
+}
+
+/**
+ * clearAuth — full logout.
+ * Replaces:
+ *   - navbar.js:33-37 + navbarlite.js:33-37 (LogOutUser)
+ *   - Demopage.js:3184-3186 + Demopage.js:3695-3702 (401 invalidation)
+ *   - axiosFactory.js:127 (401 interceptor)
+ *
+ * Atomically removes every key the canonical session reads.  Does
+ * NOT touch unrelated keys (nunba_media_mode, hart_sealed once
+ * sealed — HART node identity persists across logout for the same
+ * device).
+ */
+export function clearAuth() {
+  const AUTH_KEYS = [
+    'access_token',
+    'refresh_token',
+    'expire_token',
+    'user_id',
+    'email_address',
+    'guest_mode',
+    'guest_user_id',
+    'guest_name_verified',
+    'social_user_id',
+    'hevolve_access_id',
+    'pending_cloud_user_id',
+    'pending_cloud_email',
+  ];
+  AUTH_KEYS.forEach((k) => localStorage.removeItem(k));
+  // Note: guest_name + hart_sealed/hart_name/hart_emoji/hart_language
+  // deliberately NOT cleared — HART node identity persists across
+  // logout per the 4-layer identity model (HART node + cloud account
+  // co-exist; logging out of cloud doesn't dissolve the HART node).
+
+  try {
+    window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
+      detail: {source: 'logout'},
+    }));
+  } catch (_e) { /* same-origin */ }
+  return readAuthSession();
+}
+
+/**
+ * applyHartSeal — completes HART onboarding.
+ * Replaces LightYourHART.js:1036 + 1107.
+ *
+ * Sets the four hart_* keys AND back-fills guest_name (Agent.js's
+ * handleHartComplete:111 sets it as a side-effect; consolidating
+ * here removes the parallel write).  Fires 'nunba:storage_hydrated'
+ * (same event Phase 3a Agent.js listens for) so the HART gate
+ * flips synchronously on the dispatching tab.
+ */
+export function applyHartSeal(payload) {
+  if (!payload) return readAuthSession();
+  const {name, emoji, language} = payload;
+
+  localStorage.setItem('hart_sealed', 'true');
+  if (name) localStorage.setItem('hart_name', String(name));
+  if (emoji) localStorage.setItem('hart_emoji', String(emoji));
+  if (language) localStorage.setItem('hart_language', String(language));
+  // Back-fill guest_name if not already set — Agent.js handleHartComplete
+  // relied on this for the auto-guest-refresh path.
+  if (name && !localStorage.getItem('guest_name')) {
+    localStorage.setItem('guest_name', String(name));
+  }
+  // Ensure guest_mode is on so auto-refresh works after restart
+  // (Agent.js:114-116 used to do this inline).
+  if (!localStorage.getItem('guest_mode')) {
+    localStorage.setItem('guest_mode', 'true');
+  }
+
+  try {
+    window.dispatchEvent(new CustomEvent('nunba:storage_hydrated', {
+      detail: {
+        hydrated_keys: ['hart_sealed', 'hart_name', 'hart_emoji', 'hart_language'],
+        source: 'hart_seal',
+      },
+    }));
+  } catch (_e) { /* same-origin */ }
+  return readAuthSession();
 }
