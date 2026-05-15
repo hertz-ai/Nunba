@@ -65,6 +65,36 @@ export default function useStorageSync() {
         if (values.agentname) {
           localStorage.setItem('agentname', values.agentname);
         }
+        return;
+      }
+
+      // Partial-cloud-state case — Demopage:420 captured token=null at
+      // mount-time (before signin completed) and POSTed null to
+      // /api/storage/set, so user_data.json has user_id+email+agentname
+      // populated but access_token=null.  Without the sentinel below,
+      // the auto-guest-register useEffect (Demopage:225-255) would
+      // happily mint a fresh HART guest over the real cloud user_id.
+      //
+      // 4-layer identity model (no squash):
+      //   1. HART node name  → guest_name (already set by hart_onboarding)
+      //   2. Cloud user_id    → pending_cloud_user_id (this sentinel)
+      //   3. Cloud email     → pending_cloud_email (display in login hint)
+      //   4. Agentname brand → agentname (AI brand, already global)
+      //
+      // The login modal reads pending_cloud_email to render
+      // "Log in to continue as Sales@hertzai.com" instead of a generic
+      // login prompt.  The auto-guest-register effect early-returns
+      // when pending_cloud_user_id is set, so the local guest identity
+      // is preserved untouched while the user is prompted to complete
+      // signin.
+      if (values.user_id && !values.access_token) {
+        localStorage.setItem('pending_cloud_user_id', String(values.user_id));
+        if (values.email) {
+          localStorage.setItem('pending_cloud_email', values.email);
+        }
+        if (values.agentname) {
+          localStorage.setItem('agentname', values.agentname);
+        }
       }
     })();
     return () => {

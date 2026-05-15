@@ -227,6 +227,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     const existingToken = localStorage.getItem('access_token');
     if (existingToken) return; // token still present, no refresh needed
 
+    // Partial-cloud-state skip — useStorageSync set this sentinel when
+    // user_data.json had user_id+email but access_token=null (the
+    // Demopage:420 stale-const-token race).  In that state the user is
+    // already logged in upstream — minting a fresh HART guest here
+    // would clobber the cloud identity.  The login modal handles the
+    // "complete signin" prompt instead (reads pending_cloud_email for
+    // the hint).
+    if (localStorage.getItem('pending_cloud_user_id')) {
+      logger.log('[GUEST] Skipping auto-refresh — pending_cloud_user_id present, awaiting login');
+      return;
+    }
+
     (async () => {
       try {
         logger.log('[GUEST] Token missing — auto-refreshing with stored name:', guestName);
@@ -241,6 +253,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         });
         const { user, token: newToken, existing } = res.data;
         localStorage.setItem('access_token', newToken);
+        setToken(newToken);  // Fix B — pair setItem with setState so same-tab signin re-fires cloud-creds POST
         localStorage.setItem('guest_user_id', user.id);
         localStorage.setItem('social_user_id', user.id);
         logger.log(
@@ -253,6 +266,57 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fix B — reactive token + companion storage re-sync.
+  //
+  // Problem: localStorage.setItem('access_token', …) does NOT trigger
+  // a React re-render, so Demopage's `token` state would stay stale
+  // after an OtpAuthModal signin or useStorageSync hydrate.  That
+  // staleness is what caused user_data.json.access_token to land as
+  // null (the cloud-creds POST useEffect at :1925 captured token=null
+  // at mount and never re-fired with the live value).
+  //
+  // Fix: listen for cross-tab storage events AND poll same-tab
+  // localStorage on every mount/visibility tick so we catch in-page
+  // setItem calls too (the standard `storage` event only fires for
+  // OTHER tabs/windows).  When access_token changes, setToken triggers
+  // a re-render and the cloud-creds POST useEffect re-fires with the
+  // live value.
+  //
+  // Side-effect: also re-POST to /api/storage/set immediately on
+  // token-change so user_data.json catches up without waiting for the
+  // companionStatus.isRunning useEffect dep to flip.  Idempotent —
+  // backend handles repeat writes with the same value.
+  useEffect(() => {
+    const syncToken = () => {
+      const live = localStorage.getItem('access_token');
+      if (live !== token) {
+        setToken(live);
+        // Also clear the pending-cloud-login sentinel — signin
+        // completed, so the auto-guest-register skip is no longer
+        // needed and the partial-state hint should disappear.
+        if (live) {
+          localStorage.removeItem('pending_cloud_user_id');
+          localStorage.removeItem('pending_cloud_email');
+        }
+      }
+    };
+    window.addEventListener('storage', syncToken);
+    // Same-tab signins don't fire 'storage' — poll on visibility.
+    const onVis = () => { if (document.visibilityState === 'visible') syncToken(); };
+    document.addEventListener('visibilitychange', onVis);
+    // Same-tab same-window signins (SocialContext guestRecover / OtpAuthModal)
+    // don't fire either of the above — 1s poll catches them.  Reading a
+    // localStorage key is microseconds, so 1s interval is negligible.
+    const pollId = setInterval(syncToken, 1000);
+    // First-render catch-up in case a same-tab setItem already ran.
+    syncToken();
+    return () => {
+      window.removeEventListener('storage', syncToken);
+      document.removeEventListener('visibilitychange', onVis);
+      clearInterval(pollId);
+    };
+  }, [token]);
 
   // Auto-open login modal on /local route if not authenticated
   useEffect(() => {
@@ -417,7 +481,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [uploadedImage, setUploadedImage] = useState(null);
   const [screenWidth, setScreenWidth] = useState(window.innerWidth);
   const [sessionExpiredMessage, setSessionExpiredMessage] = useState('');
-  const token = localStorage.getItem('access_token');
+  // Reactive token state — see Fix B docstring at the storage-listener
+  // useEffect below.  Reading localStorage at mount captures whatever
+  // signin state existed BEFORE Demopage rendered; the listener picks
+  // up later signins (OtpAuthModal accept, guestRegister.setItem,
+  // useStorageSync hydrate) so the cloud-creds POST useEffect re-fires
+  // with the live token instead of the stale mount-time null.
+  const [token, setToken] = useState(() => localStorage.getItem('access_token'));
   const refresh_token = localStorage.getItem('refresh_token');
   const isAuthenticated = (decryptedUserId && token) || isGuestMode;
   const effectiveUserId = isGuestMode ? guestUserId : decryptedUserId;
