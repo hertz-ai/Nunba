@@ -469,14 +469,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // in storage, so the modal stays closed and chat state can
   // continue.  Per-field try/catch keeps a stored-but-corrupt value
   // from blocking other fields.
-  const _hydrateLocalStorageField = (key) => {
-    try {
-      const v = localStorage.getItem(key);
-      return v ? decrypt(v) : null;
-    } catch {
-      return null;
-    }
-  };
+  // Phase 7 — _hydrateLocalStorageField helper inlined.  Only remaining
+  // call site was decryptedPhone below; the other identity fields now
+  // derive from session.identity.* via useAuthSession (Phase 2).
   // Phase 2 of auth consolidation (commit c608135a Phase 1).  All
   // five identity-state variables below are derived from the canonical
   // useAuthSession() hook instead of being read independently from
@@ -497,9 +492,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [decryptedUserId, setDecryptedUserId] = useState(
     () => (session.status === 'cloud' ? session.identity.user_id : null)
   );
-  const [decryptedPhone, setDecryptedPhone] = useState(
-    () => _hydrateLocalStorageField('phone_number')
-  );
+  const [decryptedPhone, setDecryptedPhone] = useState(() => {
+    try {
+      const v = localStorage.getItem('phone_number');
+      return v ? decrypt(v) : null;
+    } catch { return null; }
+  });
   const [decryptedEmail, setDecryptedEmail] = useState(
     () => (session.status === 'cloud' ? session.identity.email : null)
   );
