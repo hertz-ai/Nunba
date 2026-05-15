@@ -484,9 +484,50 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [guestName, setGuestName] = useState(
     () => localStorage.getItem('guest_name') || ''
   );
-  const [guestUserId] = useState(
+  const [guestUserId, setGuestUserId] = useState(
     () => localStorage.getItem('guest_user_id') || ''
   );
+  // Fix C-Demopage (2026-05-15): useStorageSync writes localStorage
+  // asynchronously after mount.  The useState initializers above
+  // captured empty values, so isGuestMode / decryptedUserId /
+  // decryptedEmail / guestName / guestUserId all stayed stale even
+  // though the SSE subscriber (which re-reads live) correctly
+  // registered the user as 10202.  Live screenshot 2026-05-15:
+  // consent modal renders for user_id=10202 (SSE healthy) while
+  // Demopage shows "Please log in again." (auth state stale).
+  //
+  // Listen to the same 'nunba:storage_hydrated' event Agent.js
+  // listens to in commit 150fad9b, plus cross-tab 'storage' events,
+  // and re-read identity state.  Idempotent — setters skip if value
+  // hasn't changed (React useState bails on same-reference updates
+  // for primitives).
+  useEffect(() => {
+    const rehydrate = () => {
+      const live_guest_mode = localStorage.getItem('guest_mode') === 'true';
+      const live_guest_name = localStorage.getItem('guest_name') || '';
+      const live_guest_user_id = localStorage.getItem('guest_user_id') || '';
+      const live_user_id_enc = localStorage.getItem('user_id');
+      const live_email_enc = localStorage.getItem('email_address');
+      setIsGuestMode((p) => (p === live_guest_mode ? p : live_guest_mode));
+      setGuestName((p) => (p === live_guest_name ? p : live_guest_name));
+      setGuestUserId((p) => (p === live_guest_user_id ? p : live_guest_user_id));
+      try {
+        const dec_user = live_user_id_enc ? decrypt(live_user_id_enc) : null;
+        const dec_email = live_email_enc ? decrypt(live_email_enc) : null;
+        if (dec_user) setDecryptedUserId((p) => (p === dec_user ? p : dec_user));
+        if (dec_email) setDecryptedEmail((p) => (p === dec_email ? p : dec_email));
+      } catch { /* corrupt encrypted blob — keep last good */ }
+    };
+    window.addEventListener('nunba:storage_hydrated', rehydrate);
+    window.addEventListener('storage', rehydrate);
+    // First-tick catch-up — useStorageSync may have already fired
+    // by the time this effect mounts.  Reading localStorage is cheap.
+    rehydrate();
+    return () => {
+      window.removeEventListener('nunba:storage_hydrated', rehydrate);
+      window.removeEventListener('storage', rehydrate);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [guestNameConflict, setGuestNameConflict] = useState(null);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [screenWidth, setScreenWidth] = useState(window.innerWidth);

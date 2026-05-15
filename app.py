@@ -5213,28 +5213,31 @@ def start_flask():
                             f"Cloud user DB sync skipped: "
                             f"{type(_db_err).__name__}: {_db_err}")
 
-                if all(k in user_data for k in required_keys) and _window:
-                    #Properly URL encode each parameter
-                    agent_name_encoded = urllib.parse.quote(user_data['agentname'])
-                    email_encoded = urllib.parse.quote(user_data['email'])
-                    token_encoded = urllib.parse.quote(user_data['access_token'])
-                    userid_encoded = urllib.parse.quote(str(user_data['user_id']))
-                    # Construct the new URL with all parameters
-                    new_url = (f"https://hevolve.hertzai.com/agents/{agent_name_encoded}?"
-                               f"email={email_encoded}&"
-                               f"token={token_encoded}&"
-                               f"userid={userid_encoded}&"
-                               f"companion=true")
-
-                    logger.info(f"Attempting to load URL: {new_url}")
-
-                    # Update the window URL
-                    try:
-                        _window.load_url(new_url)
-                        logger.info(f"Updated window URL to: {new_url}")
-                        url_updated = True
-                    except Exception as e:
-                        logger.error(f"Failed to update window URL: {str(e)}")
+                # 2026-05-15 — Removed legacy cloud-handoff redirect.
+                # The previous code unconditionally called
+                # `_window.load_url("https://hevolve.hertzai.com/agents/...?token=...&companion=true")`
+                # whenever all 4 keys were present.  That was the OmniParser-GUI
+                # era handoff: the pywebview was a thin shell that navigated TO
+                # cloud hevolve.ai with token-in-URL, and the cloud React app
+                # there populated localStorage via the URL-param handler.
+                #
+                # Nunba IS the React app now (served at http://localhost:{port}/local).
+                # The cloud-handoff redirect kicked logged-in users OUT of /local
+                # and into the marketing SPA on hevolve.hertzai.com — completely
+                # bypassing Hybrid / Local / Hive intelligence-preference routing.
+                # Live evidence 2026-05-15: user reported "nunba app went to cloud
+                # hevolve.ai webview page after /local-based cloud login despite I
+                # have hybrid selected by default".
+                #
+                # localStorage hydration still works — useStorageSync in the React
+                # app reads /api/storage/get/<key> on mount and mirrors the
+                # Agent.js URL-param handler keyset.  Token-in-URL is no longer
+                # the propagation channel; the local /api/storage/* round-trip is.
+                #
+                # url_updated stays False; callers should ignore it (kept in the
+                # response shape for backwards compatibility with existing
+                # consumers, will deprecate in a follow-up).
+                _ = required_keys  # kept reference to silence unused-name linter
 
                 return jsonify({
                     'success': True,
