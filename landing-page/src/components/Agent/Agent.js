@@ -1,11 +1,12 @@
 import AgentPoster from "../../assets/images/AgentPoster.png";
+import useAuthSession from "../../hooks/useAuthSession";
 import Demopage from "../../pages/Demopage";
 import { chatApi } from "../../services/socialApi";
 import { decrypt } from "../../utils/encryption";
 import { logger } from '../../utils/logger';
 import LightYourHART from "../HART/LightYourHART";
 
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useLocation, useParams } from "react-router-dom";
 
 const defaultAgentData = {
@@ -73,49 +74,63 @@ const AgentPage = () => {
     const [demoReady, setDemoReady] = useState(false);
     const mountTimeRef = React.useRef(Date.now());
     const [screenWidth, setScreenWidth] = useState(window.innerWidth);
-    const [decryptedUserId, setDecryptedUserId] = useState(null);
-    const [decryptedEmail, setDecryptedEmail] = useState(null);
 
-    // HART onboarding gate
-    const [hartSealed, setHartSealed] = useState(
-        () => localStorage.getItem('hart_sealed') === 'true'
+    // Phase 3 of auth consolidation (commits c608135a, a34986bd).  All
+    // identity + HART state below derives from the canonical
+    // useAuthSession() hook instead of being read independently from
+    // localStorage at mount and patched via a dedicated rehydrate
+    // listener (deleted; that listener was added in 150fad9b and is
+    // now subsumed by the hook).
+    //
+    // Why local useState mirrors are kept (not replaced with raw
+    // session reads): existing setters (`setHartSealed(true)` at line
+    // 135, `setWelcomeDone(true)` at line 156, `setHeroEntrance(true)`
+    // at line 159) write local state immediately after the
+    // corresponding localStorage.setItem inside handleHartComplete /
+    // finishWelcome to avoid a 1s lag waiting for the hook's poll
+    // tick.  Keeping the local setters preserves that immediacy
+    // until Phase 4 (writer centralization) replaces them with an
+    // exported `applyHartSeal()` writer that fires the storage
+    // event synchronously.
+    const session = useAuthSession();
+    const [decryptedUserId, setDecryptedUserId] = useState(
+        () => (session.status === 'cloud' ? session.identity.user_id : null)
     );
+    const [decryptedEmail, setDecryptedEmail] = useState(
+        () => (session.status === 'cloud' ? session.identity.email : null)
+    );
+
+    // HART onboarding gate — mirrors session.hart.sealed.
+    const [hartSealed, setHartSealed] = useState(() => session.hart.sealed);
     const [showWelcome, setShowWelcome] = useState(false);
-    const [welcomeDone, setWelcomeDone] = useState(
-        () => localStorage.getItem('hart_sealed') === 'true'
-    );
-    const [heroEntrance, setHeroEntrance] = useState(
-        () => localStorage.getItem('hart_sealed') === 'true'
-    );
+    const [welcomeDone, setWelcomeDone] = useState(() => session.hart.sealed);
+    const [heroEntrance, setHeroEntrance] = useState(() => session.hart.sealed);
 
-    // useStorageSync runs async on App mount; this component's
-    // useState initializers above already fired by the time the
-    // hydrate finishes.  Subscribe to the 'nunba:storage_hydrated'
-    // signal (and to cross-tab 'storage' events for SettingsPage's
-    // "reset HART" flow at SettingsPage:1174) so we re-read the
-    // sealed flag instead of leaving the user stuck in
-    // <LightYourHART/> after a reinstall that wiped WebView2
-    // localStorage while user_data.json survived.
+    // One-way sync: hook → local mirrors.  Functional-update with
+    // referential-equality short-circuit avoids reconciler churn on
+    // identical primitives.  Also covers SettingsPage's "reset HART"
+    // flow at SettingsPage:1174 (cross-tab 'storage' event reaches
+    // the hook → session.hart.sealed flips false → mirror flips).
     useEffect(() => {
-        const reread = () => {
-            const sealed = localStorage.getItem('hart_sealed') === 'true';
-            setHartSealed((prev) => (prev === sealed ? prev : sealed));
-            if (sealed) {
-                setWelcomeDone(true);
-                setHeroEntrance(true);
-            }
-        };
-        window.addEventListener('nunba:storage_hydrated', reread);
-        window.addEventListener('storage', reread);
-        return () => {
-            window.removeEventListener('nunba:storage_hydrated', reread);
-            window.removeEventListener('storage', reread);
-        };
-    }, []);
+        const sealed = session.hart.sealed;
+        setHartSealed((prev) => (prev === sealed ? prev : sealed));
+        if (sealed) {
+            setWelcomeDone((prev) => (prev === true ? prev : true));
+            setHeroEntrance((prev) => (prev === true ? prev : true));
+        }
+        const nextUserId =
+            session.status === 'cloud' ? session.identity.user_id : null;
+        const nextEmail =
+            session.status === 'cloud' ? session.identity.email : null;
+        setDecryptedUserId((prev) => (prev === nextUserId ? prev : nextUserId));
+        setDecryptedEmail((prev) => (prev === nextEmail ? prev : nextEmail));
+    }, [session]);
 
-    // HART identity from localStorage
-    const hartName = useMemo(() => localStorage.getItem('hart_name') || '', [hartSealed]); // eslint-disable-line react-hooks/exhaustive-deps
-    const hartEmoji = useMemo(() => localStorage.getItem('hart_emoji') || '', [hartSealed]); // eslint-disable-line react-hooks/exhaustive-deps
+    // HART identity from canonical session — no more mount-time
+    // localStorage.getItem (used to need useMemo+hartSealed dep to
+    // avoid stale reads; hook now keeps these reactive).
+    const hartName = session.hart.name || '';
+    const hartEmoji = session.hart.emoji || '';
 
     const [hartLanguage, setHartLanguage] = useState('');
 
