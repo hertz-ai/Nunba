@@ -2063,29 +2063,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       hart_emoji: session.hart.emoji || undefined,
       hart_language: session.hart.language || undefined,
     };
-    if (companionStatus.isRunning) {
-      const sendPostRequest = async () => {
-        try {
-          const data = await chatApi.post('/api/storage/set', payload);
-          // this is for setting the value in companion app
-
-          logger.log('POST request response:', data);
-        } catch (error) {
-          console.error('Failed to send POST request:', error);
-        }
-      };
-
-      sendPostRequest();
-    }
+    // Phase 6 — removed dead `if (companionStatus.isRunning)` gate.
+    // Nunba IS the companion now; the React app is served by the same
+    // Flask process that serves /api/storage/set.  The gate was a
+    // relic of the OmniParser-GUI era when Nunba and the React app
+    // were SEPARATE processes communicating via WAMP, and isRunning
+    // was set true only on receipt of a COMPANION_STATUS_UPDATE
+    // event (Demopage.js:2156).  With unified-process Nunba the
+    // WAMP message rarely fires, leaving the POST stranded and
+    // user_data.json stale until the WAMP path delivers a status
+    // beacon.  Strict improvement: POST now always fires when any
+    // identity/agent field changes.
+    const sendPostRequest = async () => {
+      try {
+        const data = await chatApi.post('/api/storage/set', payload);
+        logger.log('POST request response:', data);
+      } catch (error) {
+        console.error('Failed to send POST request:', error);
+      }
+    };
+    sendPostRequest();
   }, [
-    companionStatus.isRunning,
     currentAgent?.name,
     decryptedEmail,
     token,
     decryptedUserId,
-    // Phase 6 — re-fire when HART identity changes (e.g. user
-    // completes onboarding mid-session) so user_data.json reflects
-    // the new seal before the next reinstall.
     session.hart.sealed,
     session.hart.name,
     session.hart.emoji,
