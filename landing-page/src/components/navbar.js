@@ -1,3 +1,4 @@
+import useAuthSession from '../hooks/useAuthSession';
 import HevolveLogo from '../data/logo.gif';
 import HevolveLogoLight from '../data/logo.gif';
 
@@ -13,9 +14,19 @@ export default function Navbar() {
   const [toggleMenu, setToggleMenu] = useState(false);
   const [scroll, setScroll] = useState(false);
 
-  const token = localStorage.getItem('access_token');
-  const userId = localStorage.getItem('user_id');
-  const userEmail = localStorage.getItem('email_address');
+  // Phase 3d of auth consolidation: read from canonical session
+  // instead of mount-time localStorage capture (which previously
+  // stayed stale across in-page signin → user kept seeing
+  // logged-out pill until a route change forced remount).  Writers
+  // (LogOutUser below) stay on direct localStorage.removeItem until
+  // Phase 4 introduces clearAuth().
+  const _session = useAuthSession();
+  const token = _session.tokens.cloud;
+  const userId = _session.identity.user_id;
+  // userEmail still raw (decrypted is _session.identity.email) — was
+  // never actually consumed in the JSX below (only token+userId are);
+  // kept for parity with prior shape until Phase 7 cleanup.
+  const userEmail = _session.identity.email;
 
   useEffect(() => {
     activateMenu();

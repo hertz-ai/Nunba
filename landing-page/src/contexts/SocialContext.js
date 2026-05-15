@@ -1,3 +1,4 @@
+import useAuthSession from '../hooks/useAuthSession';
 import {useReferral} from '../hooks/useReferral';
 import {apiCache} from '../services/apiCache';
 import realtimeService from '../services/realtimeService';
@@ -52,6 +53,11 @@ const SocialContext = createContext();
 export function SocialProvider({children}) {
   // Capture referral code from URL on mount
   useReferral();
+  // Phase 3c of auth consolidation: render-time isGuest derivation
+  // now reads from canonical session.  Writer paths (guestRecover /
+  // guestRegister setItem blocks) stay on direct localStorage calls
+  // and move in Phase 4.
+  const _authSession = useAuthSession();
 
   const [currentUser, setCurrentUser] = useState(null);
   const [resonance, setResonance] = useState(null);
@@ -299,7 +305,13 @@ export function SocialProvider({children}) {
   const userRole = currentUser?.role || null;
   const isGuest =
     currentUser?.role === 'guest' ||
-    (!currentUser && localStorage.getItem('guest_mode') === 'true');
+    // Use the raw guest_mode flag (not session.status === 'guest')
+    // because the original semantic only required guest_mode='true'
+    // — guest_user_id may be transiently absent between the
+    // registration request firing and the response landing.  Hook's
+    // status='guest' requires BOTH; preserving exact original
+    // behavior here keeps the SocialContext-derived-state test green.
+    (!currentUser && _authSession._raw.guest_mode);
   const accessTier = useMemo(() => {
     if (currentUser?.role) return currentUser.role;
     // Authenticated user without role field defaults to 'flat'

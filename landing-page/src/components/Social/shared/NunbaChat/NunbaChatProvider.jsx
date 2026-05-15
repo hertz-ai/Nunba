@@ -7,6 +7,7 @@
 
 import {NUNBA_CAMERA_CONSENT} from '../../../../constants/events';
 import {useSocial} from '../../../../contexts/SocialContext';
+import useAuthSession from '../../../../hooks/useAuthSession';
 import useCameraFrameStream from '../../../../hooks/useCameraFrameStream';
 import {useTTS} from '../../../../hooks/useTTS';
 import realtimeService, {
@@ -205,6 +206,13 @@ function saveMessages(userId, agentId, msgs) {
 
 export default function NunbaChatProvider({children}) {
   const {currentUser} = useSocial();
+  // Phase 3e of auth consolidation — render-time read of
+  // hevolve_access_id moves to canonical session.  All other
+  // localStorage reads in this file are inside useEffect / async
+  // callbacks (one-shot or call-time fresh), so their reads are
+  // already correct as-is and Phase 4 will migrate them with the
+  // writer centralization.
+  const _session = useAuthSession();
   // Fallback chain — aligned with STORAGE_KEY's own `|| 'guest'`
   // fallback above.  Regression history: the prior `|| '1'` default
   // made every fresh guest (no currentUser, no hevolve_access_id)
@@ -222,7 +230,7 @@ export default function NunbaChatProvider({children}) {
   const resolvedGuest = _resolveGuestId();
   const userId =
     currentUser?.id ||
-    localStorage.getItem('hevolve_access_id') ||
+    _session._raw.hevolve_access_id ||
     resolvedGuest ||
     hwGuestId ||
     'guest';

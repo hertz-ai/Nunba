@@ -1,3 +1,4 @@
+import useAuthSession from '../hooks/useAuthSession';
 import HevolveLogo from '../data/logo.gif';
 import HevolveLogoLight from '../data/logo.gif';
 
@@ -13,9 +14,11 @@ export default function NabBarLite() {
   const [toggleMenu, setToggleMenu] = useState(false);
   const [scroll, setScroll] = useState(false);
 
-  const token = localStorage.getItem('access_token');
-  const userId = localStorage.getItem('user_id');
-  const userEmail = localStorage.getItem('email_address');
+  // Phase 3d of auth consolidation — see navbar.js for rationale.
+  const _session = useAuthSession();
+  const token = _session.tokens.cloud;
+  const userId = _session.identity.user_id;
+  const userEmail = _session.identity.email;
   useEffect(() => {
     activateMenu();
     window.addEventListener('scroll', () => {

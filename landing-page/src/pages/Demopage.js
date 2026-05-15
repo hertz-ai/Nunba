@@ -4318,6 +4318,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           isGuestMode={isGuestMode}
           decryptedEmail={decryptedEmail}
           decryptedUserId={decryptedUserId}
+          guestUserId={guestUserId}
           token={token}
           isTextMode={isTextMode}
           setIsTextMode={setIsTextMode}

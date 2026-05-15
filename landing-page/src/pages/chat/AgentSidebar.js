@@ -55,6 +55,7 @@ const AgentSidebar = ({
   isGuestMode,
   decryptedEmail,
   decryptedUserId,
+  guestUserId,
   token,
   isTextMode,
   setIsTextMode,
@@ -212,7 +213,7 @@ const AgentSidebar = ({
                   {decryptedEmail && token && decryptedUserId
                     ? decryptedEmail
                     : isGuestMode
-                      ? `Guest ${(localStorage.getItem('guest_user_id') || '').slice(-4)}`
+                      ? `Guest ${(guestUserId || '').slice(-4)}`
                       : 'Welcome! Log in'}
                 </span>
               </div>
