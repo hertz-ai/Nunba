@@ -4,6 +4,7 @@ import {
   AZURE_LOGIN_URL,
   AZURE_OTP_VERIFY_URL,
 } from '../config/apiBase';
+import {setAuthFromOtp} from '../hooks/useAuthSession';
 import {agentApi, authApi, chatApi, mailerApi} from '../services/socialApi';
 import {getStableDeviceId} from '../utils/deviceId';
 import {encrypt} from '../utils/encryption';
@@ -306,36 +307,30 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
         const refresh_token = String(data?.refresh_token);
 
         try {
-          const encryptedUserId = encrypt(userId);
-          const encryptedEmailAddress = encrypt(emailAddress);
-          const encryptedRefreshToken = encrypt(refresh_token);
-
           const expireTokenTime = data.expires_in;
           setExpireTime(expireTokenTime);
 
-          localStorage.setItem('expire_token', expireTokenTime);
-          localStorage.setItem('access_token', accessToken);
-          localStorage.setItem('user_id', encryptedUserId);
-          localStorage.setItem('email_address', encryptedEmailAddress);
-          localStorage.setItem('refresh_token', encryptedRefreshToken);
-
-          // 2026-05-11: same-tab notifier — Demopage's auth-state useEffect
-          // had dep `[decryptedEmail, decryptedUserId]` (self-referential),
-          // so it could never see a fresh localStorage write from another
-          // component.  Workers + SSE re-init only re-fire when those
-          // React state vars change.  Dispatch a custom event so Demopage
-          // can re-decrypt localStorage and update React state, which
-          // then cascades to worker terminate-and-reinit (with the cloud
-          // user_id) and SSE reconnect.  Without this, chat publishes
-          // and TTS subscribe diverge → frontend never sees response.
-          try {
-            window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
-              detail: {source: 'otp_login', user_id: userId},
-            }));
-          } catch (_e) { /* ignore — same-origin, will never throw */ }
-
-          // Migrate guest agent data before clearing
+          // Capture guest_user_id BEFORE setAuthFromOtp clears it so
+          // the chat-history migration call below still has the id.
           const guestUserId = localStorage.getItem('guest_user_id');
+
+          // Phase 4a — centralised cloud-signin writer.  Replaces the
+          // inline encrypt + 5 setItem + auth_changed dispatch + 4
+          // guest_* removeItem block (lines 308-354 pre-migration).
+          // Encryption + key ordering + event dispatch + mutual-
+          // exclusion clearing now live in useAuthSession.setAuthFromOtp
+          // — one boundary, one set of jest cases.
+          setAuthFromOtp({
+            access_token: accessToken,
+            user_id: userId,
+            email_address: emailAddress,
+            refresh_token: refresh_token,
+            expires_in: expireTokenTime,
+          });
+
+          // Migrate guest agent data (chat history attaches by user_id;
+          // when transitioning guest → cloud the server-side records
+          // need their guest_user_id reassigned to the new cloud id).
           if (guestUserId) {
             chatApi
               .migrateAgents({
@@ -346,12 +341,8 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                 console.warn('Agent migration (non-blocking):', err)
               );
           }
-
-          // Clear guest mode if transitioning to real login
-          localStorage.removeItem('guest_mode');
-          localStorage.removeItem('guest_name');
-          localStorage.removeItem('guest_user_id');
-          localStorage.removeItem('guest_name_verified');
+          // guest_* and pending_cloud_* keys already cleared by
+          // setAuthFromOtp's mutual-exclusion sweep.
 
           resetForm();
           onClose();
