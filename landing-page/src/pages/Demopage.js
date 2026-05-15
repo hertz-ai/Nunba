@@ -220,6 +220,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [mentionFilter, setMentionFilter] = useState('');
   const [secretRequest, setSecretRequest] = useState(null);
 
+  // Reactive token state — declared BEFORE the auto-refresh and storage-
+  // listener useEffects below so their `[token]` deps arrays and inline
+  // setToken closures are not in the TDZ (Temporal Dead Zone) when render
+  // evaluates them.  Hoisted here from its original position lower in the
+  // function body (post adba894d) to fix the boot-time
+  // "Cannot access 'qt'/'ot' before initialization" minified TDZ error.
+  // See Fix B docstring at the storage-listener useEffect for the
+  // cross-tab / same-tab / poll sync rationale.
+  const [token, setToken] = useState(() => localStorage.getItem('access_token'));
+
   // Auto-refresh guest token on relaunch — if guest_name exists but JWT is
   // missing or expired, silently re-register to get a fresh token.
   useEffect(() => {
@@ -481,13 +491,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [uploadedImage, setUploadedImage] = useState(null);
   const [screenWidth, setScreenWidth] = useState(window.innerWidth);
   const [sessionExpiredMessage, setSessionExpiredMessage] = useState('');
-  // Reactive token state — see Fix B docstring at the storage-listener
-  // useEffect below.  Reading localStorage at mount captures whatever
-  // signin state existed BEFORE Demopage rendered; the listener picks
-  // up later signins (OtpAuthModal accept, guestRegister.setItem,
-  // useStorageSync hydrate) so the cloud-creds POST useEffect re-fires
-  // with the live token instead of the stale mount-time null.
-  const [token, setToken] = useState(() => localStorage.getItem('access_token'));
+  // (token + setToken are now hoisted above the auto-refresh useEffect
+  // to avoid the TDZ error — see comment near line 222.)
   const refresh_token = localStorage.getItem('refresh_token');
   const isAuthenticated = (decryptedUserId && token) || isGuestMode;
   const effectiveUserId = isGuestMode ? guestUserId : decryptedUserId;
