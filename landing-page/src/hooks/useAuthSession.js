@@ -422,12 +422,16 @@ export function clearAuth() {
  */
 export function applyHartSeal(payload) {
   if (!payload) return readAuthSession();
-  const {name, emoji, language} = payload;
+  const {name, emoji, language, tag} = payload;
 
   localStorage.setItem('hart_sealed', 'true');
   if (name) localStorage.setItem('hart_name', String(name));
   if (emoji) localStorage.setItem('hart_emoji', String(emoji));
   if (language) localStorage.setItem('hart_language', String(language));
+  // hart_tag: free-form discriminator written by LightYourHART.js:1034
+  // (used by SettingsPage for display).  Optional; only written when
+  // provided so re-seal calls don't clobber.
+  if (tag) localStorage.setItem('hart_tag', String(tag));
   // Back-fill guest_name if not already set — Agent.js handleHartComplete
   // relied on this for the auto-guest-refresh path.
   if (name && !localStorage.getItem('guest_name')) {

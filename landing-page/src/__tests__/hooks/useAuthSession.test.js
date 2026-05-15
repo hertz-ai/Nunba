@@ -421,12 +421,13 @@ describe('writers — Phase 4 centralised mutation surface', () => {
   });
 
   describe('applyHartSeal', () => {
-    test('writes hart_* keys, fires nunba:storage_hydrated', () => {
+    test('writes hart_* keys including optional tag, fires nunba:storage_hydrated', () => {
       const handler = jest.fn();
       window.addEventListener('nunba:storage_hydrated', handler);
       try {
         const next = applyHartSeal({
           name: 'Radiant.Green.lawliet',
+          tag: 'sapphire',
           emoji: '🌿',
           language: 'en',
         });
@@ -434,6 +435,7 @@ describe('writers — Phase 4 centralised mutation surface', () => {
         expect(localStorage.getItem('hart_name')).toBe('Radiant.Green.lawliet');
         expect(localStorage.getItem('hart_emoji')).toBe('🌿');
         expect(localStorage.getItem('hart_language')).toBe('en');
+        expect(localStorage.getItem('hart_tag')).toBe('sapphire');
         // guest_name back-filled
         expect(localStorage.getItem('guest_name')).toBe('Radiant.Green.lawliet');
         // guest_mode auto-enabled
@@ -445,6 +447,25 @@ describe('writers — Phase 4 centralised mutation surface', () => {
       } finally {
         window.removeEventListener('nunba:storage_hydrated', handler);
       }
+    });
+
+    test('re-seal with name only — keeps prior emoji/language/tag intact', () => {
+      // First seal: full payload
+      applyHartSeal({
+        name: 'OriginalName',
+        tag: 'origTag',
+        emoji: '🌿',
+        language: 'en',
+      });
+      // Re-seal: name only (mirrors LightYourHART.js:1108 corrected-name path)
+      applyHartSeal({name: 'CorrectedName'});
+
+      expect(localStorage.getItem('hart_name')).toBe('CorrectedName');
+      // Original values preserved (no clobber)
+      expect(localStorage.getItem('hart_tag')).toBe('origTag');
+      expect(localStorage.getItem('hart_emoji')).toBe('🌿');
+      expect(localStorage.getItem('hart_language')).toBe('en');
+      expect(localStorage.getItem('hart_sealed')).toBe('true');
     });
 
     test('does NOT overwrite guest_name if user already set one', () => {

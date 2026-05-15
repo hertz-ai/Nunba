@@ -19,6 +19,7 @@
  */
 
 import { API_BASE_URL } from '../../config/apiBase';
+import { applyHartSeal } from '../../hooks/useAuthSession';
 import VoiceVisualizer from '../VoiceVisualizer';
 
 import { Box, Typography, Fade, Grow, ButtonBase } from '@mui/material';
@@ -1029,12 +1030,17 @@ export default function LightYourHART({ userId, onComplete }) {
     let cancelled = false;
 
     // Persist immediately — internal setPhase calls cause effect cleanup
-    // which would cancel the async chain before reaching the seal code
-    localStorage.setItem('hart_name', hartName);
-    localStorage.setItem('hart_tag', hartTag);
-    localStorage.setItem('hart_emoji', emojiCombo);
-    localStorage.setItem('hart_sealed', 'true');
-    localStorage.setItem('hart_language', language);
+    // which would cancel the async chain before reaching the seal code.
+    // Phase 4c — canonical seal writer.  Replaces 5 setItem calls.
+    // Also auto-back-fills guest_name (if empty) and guest_mode (if
+    // absent), and fires nunba:storage_hydrated so Agent.js's HART
+    // gate flips immediately on this tab.
+    applyHartSeal({
+      name: hartName,
+      tag: hartTag,
+      emoji: emojiCombo,
+      language,
+    });
 
     (async () => {
       // Pre-synth the name via backend TTS while the user admires it visually
@@ -1102,9 +1108,11 @@ export default function LightYourHART({ userId, onComplete }) {
         await _sleep(1500);
       }
 
-      // Update localStorage with final sealed name
-      localStorage.setItem('hart_name', sealedName);
-      localStorage.setItem('hart_sealed', 'true');
+      // Update localStorage with final sealed name.
+      // Phase 4c — re-seal with corrected name.  emoji/language/tag
+      // omitted intentionally so applyHartSeal's `if (foo)` guards
+      // skip them — prior seal values stay intact.
+      applyHartSeal({name: sealedName});
 
       setPhase('sealed');
 
