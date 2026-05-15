@@ -7,6 +7,7 @@ import {SocialProvider} from './contexts/SocialContext';
 import {NunbaThemeProvider} from './contexts/ThemeContext';
 import MainRoutes from './MainRoute';
 import realtimeService from './services/realtimeService';
+import useStorageSync from './hooks/useStorageSync';
 
 import React, {Suspense, useEffect, useState, useCallback} from 'react';
 import ReactGA from 'react-ga';
@@ -15,6 +16,11 @@ import {useLocation, useNavigate} from 'react-router-dom';
 import './assets/css/tailwind.css';
 
 function App() {
+  // Pull cloud-signin creds from companion storage into localStorage on
+  // mount.  See hooks/useStorageSync.js for the omniparser-gui parity
+  // rationale.  Idempotent and non-overwriting.
+  useStorageSync();
+
   const [contactRequest, setContactRequest] = useState(null);
   const navigate = useNavigate();
 
