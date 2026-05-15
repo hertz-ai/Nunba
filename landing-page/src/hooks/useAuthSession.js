@@ -411,6 +411,52 @@ export function clearAuth() {
 }
 
 /**
+ * setAccessToken — pure access-token refresh.
+ * Replaces:
+ *   - SocialContext.js:208 (renewToken success — proactive JWT refresh
+ *     interval at line 195)
+ *   - OtpAuthModal.js:395-396 (renewToken function)
+ *
+ * Narrow: writes ONLY access_token; does NOT touch user_id, guest_*,
+ * hart_*, or any other key.  Token refresh is a credential-rotation
+ * operation, not an identity change — clobbering other keys would
+ * break the very session being refreshed.  Dispatches
+ * nunba:auth_changed with source='token_refresh' so the canonical
+ * session re-reads + re-emits to subscribers.
+ */
+export function setAccessToken(token) {
+  if (!token) return readAuthSession();
+  localStorage.setItem('access_token', String(token));
+  try {
+    window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
+      detail: {source: 'token_refresh'},
+    }));
+  } catch (_e) { /* same-origin */ }
+  return readAuthSession();
+}
+
+/**
+ * clearAccessTokenForExpiry — 401 invalidation, preserves recovery state.
+ * Replaces axiosFactory.js:127-128.
+ *
+ * Narrow: removes ONLY access_token + dispatches the legacy
+ * 'auth:expired' event (NOT 'nunba:auth_changed') so SocialContext's
+ * silent-recovery listener at SocialContext:272-294 still fires.
+ * Does NOT touch refresh_token, guest_*, or hart_* — silent recovery
+ * needs the guest credentials to re-register.
+ *
+ * If silent recovery fails (e.g. JWT permanently invalidated server-
+ * side), SocialContext upgrades to the full clearAuth() flow.
+ */
+export function clearAccessTokenForExpiry() {
+  localStorage.removeItem('access_token');
+  try {
+    window.dispatchEvent(new Event('auth:expired'));
+  } catch (_e) { /* same-origin */ }
+  return readAuthSession();
+}
+
+/**
  * applyHartSeal — completes HART onboarding.
  * Replaces LightYourHART.js:1036 + 1107.
  *

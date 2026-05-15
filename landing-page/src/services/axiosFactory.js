@@ -14,6 +14,28 @@ import {apiCache} from './apiCache';
 
 import axios from 'axios';
 
+// Lazy-imported to avoid circular: axiosFactory ← socialApi ←
+// SocialContext ← useAuthSession ← (would-be-loop).  Phase 5 of auth
+// consolidation: 401 interceptor routes through the canonical
+// clearAccessTokenForExpiry() writer which preserves recovery keys
+// and fires the legacy 'auth:expired' event for SocialContext's
+// silent-recovery listener.
+let _clearAccessTokenForExpiry = null;
+function _getClearTokenWriter() {
+  if (_clearAccessTokenForExpiry) return _clearAccessTokenForExpiry;
+  try {
+    _clearAccessTokenForExpiry =
+      require('../hooks/useAuthSession').clearAccessTokenForExpiry;
+  } catch (_e) {
+    // Fallback to inline (test env where the hook hasn't loaded).
+    _clearAccessTokenForExpiry = () => {
+      localStorage.removeItem('access_token');
+      try { window.dispatchEvent(new Event('auth:expired')); } catch (_e2) {}
+    };
+  }
+  return _clearAccessTokenForExpiry;
+}
+
 export function createApiClient(
   baseURL,
   {timeout = 15000, handle401 = true, cache = true} = {}
@@ -124,8 +146,11 @@ export function createApiClient(
     },
     (error) => {
       if (handle401 && error.response?.status === 401) {
-        localStorage.removeItem('access_token');
-        window.dispatchEvent(new Event('auth:expired'));
+        // Phase 5 — canonical 401 invalidation.  Same observable
+        // behavior as the prior 2 lines (remove access_token +
+        // dispatch auth:expired); SocialContext silent-recovery
+        // listener still fires.
+        _getClearTokenWriter()();
       }
 
       // On network error: return stale cached data if available

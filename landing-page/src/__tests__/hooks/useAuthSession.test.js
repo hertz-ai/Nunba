@@ -44,6 +44,8 @@ const {
   setGuestIdentity,
   clearAuth,
   applyHartSeal,
+  setAccessToken,
+  clearAccessTokenForExpiry,
 } = require('../../hooks/useAuthSession');
 const {encrypt} = require('../../utils/encryption');
 
@@ -516,6 +518,99 @@ describe('writers — Phase 4 centralised mutation surface', () => {
         clearAuth();
       });
       expect(result.current.status).toBe('unauthenticated');
+    });
+  });
+
+  describe('setAccessToken — Phase 5 token refresh', () => {
+    test('writes ONLY access_token, preserves all other keys, fires nunba:auth_changed source=token_refresh', () => {
+      // Seed full session
+      localStorage.setItem('access_token', 'old-token');
+      localStorage.setItem('user_id', encrypt('10202'));
+      localStorage.setItem('email_address', encrypt('s@h.com'));
+      localStorage.setItem('refresh_token', encrypt('refresh-1'));
+      localStorage.setItem('guest_user_id', 'g-1');
+      localStorage.setItem('hart_sealed', 'true');
+      localStorage.setItem('hart_name', 'TestName');
+
+      const handler = jest.fn();
+      window.addEventListener('nunba:auth_changed', handler);
+      try {
+        setAccessToken('new-token-xyz');
+        expect(localStorage.getItem('access_token')).toBe('new-token-xyz');
+        // Everything else preserved verbatim
+        expect(localStorage.getItem('user_id')).toBe(encrypt('10202'));
+        expect(localStorage.getItem('email_address')).toBe(encrypt('s@h.com'));
+        expect(localStorage.getItem('refresh_token')).toBe(encrypt('refresh-1'));
+        expect(localStorage.getItem('guest_user_id')).toBe('g-1');
+        expect(localStorage.getItem('hart_sealed')).toBe('true');
+        expect(localStorage.getItem('hart_name')).toBe('TestName');
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(handler.mock.calls[0][0].detail.source).toBe('token_refresh');
+      } finally {
+        window.removeEventListener('nunba:auth_changed', handler);
+      }
+    });
+
+    test('null/empty token is safe no-op', () => {
+      localStorage.setItem('access_token', 'existing');
+      setAccessToken(null);
+      setAccessToken('');
+      setAccessToken(undefined);
+      // No clobber
+      expect(localStorage.getItem('access_token')).toBe('existing');
+    });
+  });
+
+  describe('clearAccessTokenForExpiry — Phase 5 401 invalidation', () => {
+    test('removes ONLY access_token, preserves recovery keys, fires legacy auth:expired event', () => {
+      // Seed: cloud + guest co-existing (the 4-layer pattern)
+      localStorage.setItem('access_token', 'expired-tok');
+      localStorage.setItem('refresh_token', encrypt('refresh-xyz'));
+      localStorage.setItem('user_id', encrypt('10202'));
+      localStorage.setItem('guest_user_id', 'g-1');
+      localStorage.setItem('guest_mode', 'true');
+      localStorage.setItem('guest_name', 'GuestName');
+      localStorage.setItem('hart_sealed', 'true');
+
+      const handler = jest.fn();
+      window.addEventListener('auth:expired', handler);
+      try {
+        clearAccessTokenForExpiry();
+        // access_token gone
+        expect(localStorage.getItem('access_token')).toBeNull();
+        // EVERYTHING else preserved — silent recovery depends on these
+        expect(localStorage.getItem('refresh_token')).toBe(encrypt('refresh-xyz'));
+        expect(localStorage.getItem('user_id')).toBe(encrypt('10202'));
+        expect(localStorage.getItem('guest_user_id')).toBe('g-1');
+        expect(localStorage.getItem('guest_mode')).toBe('true');
+        expect(localStorage.getItem('guest_name')).toBe('GuestName');
+        expect(localStorage.getItem('hart_sealed')).toBe('true');
+        // Legacy event fires (NOT nunba:auth_changed — SocialContext
+        // silent-recovery listener at line 272 keys off 'auth:expired')
+        expect(handler).toHaveBeenCalledTimes(1);
+      } finally {
+        window.removeEventListener('auth:expired', handler);
+      }
+    });
+
+    test('also fires nunba:auth_changed? — NO, only auth:expired (silent-recovery contract)', () => {
+      const expiredHandler = jest.fn();
+      const changedHandler = jest.fn();
+      window.addEventListener('auth:expired', expiredHandler);
+      window.addEventListener('nunba:auth_changed', changedHandler);
+      try {
+        localStorage.setItem('access_token', 'tok');
+        clearAccessTokenForExpiry();
+        expect(expiredHandler).toHaveBeenCalledTimes(1);
+        // Critical: nunba:auth_changed NOT fired.  If it were, the
+        // useAuthSession hook would short-circuit silent recovery
+        // by re-reading the session BEFORE the SocialContext
+        // auth:expired handler had a chance to call guestRecover.
+        expect(changedHandler).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener('auth:expired', expiredHandler);
+        window.removeEventListener('nunba:auth_changed', changedHandler);
+      }
     });
   });
 });

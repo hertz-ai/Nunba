@@ -1,4 +1,4 @@
-import useAuthSession, {setGuestIdentity} from '../hooks/useAuthSession';
+import useAuthSession, {setGuestIdentity, setAccessToken} from '../hooks/useAuthSession';
 import {useReferral} from '../hooks/useReferral';
 import {apiCache} from '../services/apiCache';
 import realtimeService from '../services/realtimeService';
@@ -215,8 +215,12 @@ export function SocialProvider({children}) {
                 mailerApi
                   .renewToken({refresh_token: refreshToken})
                   .then((res) => {
-                    if (res?.access_token)
-                      localStorage.setItem('access_token', res.access_token);
+                    // Phase 5 — canonical token refresh.  Same effect
+                    // as prior `localStorage.setItem('access_token',
+                    // res.access_token)` PLUS dispatches
+                    // nunba:auth_changed so subscribers see the
+                    // rotated token without waiting for the 1s poll.
+                    if (res?.access_token) setAccessToken(res.access_token);
                   })
                   .catch(() => {}) // silent — worst case 401 interceptor handles it
                   .finally(() => {
