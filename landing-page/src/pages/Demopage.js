@@ -2042,6 +2042,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   }, [messages]);
 
   useEffect(() => {
+    // Phase 6 — HART keys now read from canonical session.hart.*
+    // instead of 4 independent localStorage.getItem calls.  Same
+    // values (the hook is the source of truth and re-reads
+    // localStorage on every relevant event).  This eliminates the
+    // last inline-localStorage reads from this POST; the surrounding
+    // orchestration (currentAgent?.name, companionStatus.isRunning
+    // gating) stays in Demopage because it depends on local
+    // component state that isn't part of useAuthSession's scope.
     const payload = {
       agentname: currentAgent?.name,
       email: isGuestMode ? guestName : decryptedEmail,
@@ -2049,13 +2057,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       user_id: effectiveUserId,
       // HART identity — persist into user_data.json so reinstall
       // (which wipes WebView2 localStorage) doesn't force the user
-      // back through the HART onboarding gate.  useStorageSync.js
-      // reads these on mount and writes them back to localStorage
-      // before Agent.js's HART gate fires.
-      hart_sealed: localStorage.getItem('hart_sealed') || undefined,
-      hart_name: localStorage.getItem('hart_name') || undefined,
-      hart_emoji: localStorage.getItem('hart_emoji') || undefined,
-      hart_language: localStorage.getItem('hart_language') || undefined,
+      // back through the HART onboarding gate.
+      hart_sealed: session.hart.sealed ? 'true' : undefined,
+      hart_name: session.hart.name || undefined,
+      hart_emoji: session.hart.emoji || undefined,
+      hart_language: session.hart.language || undefined,
     };
     if (companionStatus.isRunning) {
       const sendPostRequest = async () => {
@@ -2077,6 +2083,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     decryptedEmail,
     token,
     decryptedUserId,
+    // Phase 6 — re-fire when HART identity changes (e.g. user
+    // completes onboarding mid-session) so user_data.json reflects
+    // the new seal before the next reinstall.
+    session.hart.sealed,
+    session.hart.name,
+    session.hart.emoji,
+    session.hart.language,
   ]);
 
   useEffect(() => {
