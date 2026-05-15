@@ -88,6 +88,31 @@ const AgentPage = () => {
         () => localStorage.getItem('hart_sealed') === 'true'
     );
 
+    // useStorageSync runs async on App mount; this component's
+    // useState initializers above already fired by the time the
+    // hydrate finishes.  Subscribe to the 'nunba:storage_hydrated'
+    // signal (and to cross-tab 'storage' events for SettingsPage's
+    // "reset HART" flow at SettingsPage:1174) so we re-read the
+    // sealed flag instead of leaving the user stuck in
+    // <LightYourHART/> after a reinstall that wiped WebView2
+    // localStorage while user_data.json survived.
+    useEffect(() => {
+        const reread = () => {
+            const sealed = localStorage.getItem('hart_sealed') === 'true';
+            setHartSealed((prev) => (prev === sealed ? prev : sealed));
+            if (sealed) {
+                setWelcomeDone(true);
+                setHeroEntrance(true);
+            }
+        };
+        window.addEventListener('nunba:storage_hydrated', reread);
+        window.addEventListener('storage', reread);
+        return () => {
+            window.removeEventListener('nunba:storage_hydrated', reread);
+            window.removeEventListener('storage', reread);
+        };
+    }, []);
+
     // HART identity from localStorage
     const hartName = useMemo(() => localStorage.getItem('hart_name') || '', [hartSealed]); // eslint-disable-line react-hooks/exhaustive-deps
     const hartEmoji = useMemo(() => localStorage.getItem('hart_emoji') || '', [hartSealed]); // eslint-disable-line react-hooks/exhaustive-deps

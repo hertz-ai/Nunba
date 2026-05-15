@@ -2003,6 +2003,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       email: isGuestMode ? guestName : decryptedEmail,
       access_token: token,
       user_id: effectiveUserId,
+      // HART identity — persist into user_data.json so reinstall
+      // (which wipes WebView2 localStorage) doesn't force the user
+      // back through the HART onboarding gate.  useStorageSync.js
+      // reads these on mount and writes them back to localStorage
+      // before Agent.js's HART gate fires.
+      hart_sealed: localStorage.getItem('hart_sealed') || undefined,
+      hart_name: localStorage.getItem('hart_name') || undefined,
+      hart_emoji: localStorage.getItem('hart_emoji') || undefined,
+      hart_language: localStorage.getItem('hart_language') || undefined,
     };
     if (companionStatus.isRunning) {
       const sendPostRequest = async () => {

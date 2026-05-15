@@ -5111,9 +5111,18 @@ def start_flask():
                 global _window
                 data = request.json
 
-                # Validate that we've at least one of the expected keys
-                expected_keys = ['agentname', 'email', 'access_token', 'user_id']
-                found_keys = [key for key in expected_keys if key in data]
+                # Validate that we've at least one of the expected keys.
+                # HART keys (hart_sealed/hart_name/hart_emoji/hart_language)
+                # added 2026-05-15 so reinstall (which wipes WebView2
+                # localStorage) doesn't force the user back through the
+                # Agent.js HART onboarding gate — user_data.json now
+                # carries enough state for useStorageSync to re-hydrate
+                # both cloud identity and HART identity on the next boot.
+                expected_keys = [
+                    'agentname', 'email', 'access_token', 'user_id',
+                    'hart_sealed', 'hart_name', 'hart_emoji', 'hart_language',
+                ]
+                found_keys = [key for key in expected_keys if key in data and data[key] is not None]
 
                 if not found_keys:
                     return jsonify({
@@ -7191,22 +7200,71 @@ def main():
             # compositor suspended even though the OS reports the window
             # visible: evaluate_js raises 'Main window failed to start' and
             # load_url paints into a dead surface, so the user sees a black
-            # window until they manually click the tray icon. show() and
-            # restore() are idempotent on already-visible / non-minimized
-            # windows (Win32 ShowWindow no-ops when state is unchanged), so
-            # this is safe for the bg_shown / events_restored / watchdog
-            # callers alike. Each call is wrapped so a transient pywebview
-            # error cannot abort the recovery sequence below.
+            # window until they manually click the tray icon.
+            #
+            # IMPORTANT: `_window.restore()` is NOT idempotent on a
+            # MAXIMIZED window — pywebview's restore() maps to Win32
+            # `ShowWindow(hwnd, SW_RESTORE)`, and per MSDN SW_RESTORE
+            # "restores to original size and position" for BOTH minimized
+            # AND maximized windows.  Live evidence 2026-05-15 user
+            # report: "on maximize the nunba window restores to startup
+            # portrait size despite earlier commits".  The earlier commits
+            # removed `_window.resize(w+1, h)` anti-patterns (which was
+            # the cause SOMETIMES) but missed this DIFFERENT call that
+            # fires from the same recovery handler whenever pywebview's
+            # events.restored fires on maximize (EdgeChromium backend
+            # over-emits this event on WM_SIZE/SIZE_MAXIMIZED).
+            #
+            # Fix: gate restore() on actual iconic (minimized) state via
+            # Win32 IsIconic, so we only restore from minimize — never
+            # from maximize.  show() stays unconditional (Win32 SW_SHOW
+            # truly is a no-op on already-visible windows).
             try:
                 _window.show()
             except Exception as _ws_err:
                 logger.debug(
                     f"[REMOUNT:{origin}] window.show() raised: {_ws_err}")
             try:
-                _window.restore()
+                _is_iconic = False
+                if sys.platform == 'win32':
+                    import ctypes as _wc
+                    _hwnd = 0
+                    try:
+                        _native = getattr(_window, 'native', None)
+                        if _native is not None:
+                            _hwnd = int(getattr(_native, 'Handle', 0) or 0)
+                    except Exception:
+                        _hwnd = 0
+                    if not _hwnd:
+                        try:
+                            _ow = getattr(_window, 'original_window', None)
+                            if _ow is not None:
+                                _hwnd = int(getattr(_ow, 'handle', 0) or 0)
+                        except Exception:
+                            _hwnd = 0
+                    if not _hwnd:
+                        try:
+                            _hwnd = int(
+                                _wc.windll.user32.FindWindowW(None, args.title)
+                                or 0)
+                        except Exception:
+                            _hwnd = 0
+                    if _hwnd:
+                        _is_iconic = bool(_wc.windll.user32.IsIconic(_hwnd))
+                else:
+                    # Non-Windows: pywebview backends don't have the same
+                    # SW_RESTORE-unmaximize quirk; safe to call restore()
+                    # if we can't introspect state.
+                    _is_iconic = True
+                if _is_iconic:
+                    _window.restore()
+                else:
+                    logger.debug(
+                        f"[REMOUNT:{origin}] window not iconic — skipping "
+                        "restore() to preserve maximize state")
             except Exception as _wr_err:
                 logger.debug(
-                    f"[REMOUNT:{origin}] window.restore() raised: {_wr_err}")
+                    f"[REMOUNT:{origin}] window.restore() guard raised: {_wr_err}")
             # Give the native compositor a beat to wake before evaluate_js.
             time.sleep(0.3)
 
