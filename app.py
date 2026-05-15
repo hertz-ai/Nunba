@@ -5141,6 +5141,68 @@ def start_flask():
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']
                 url_updated = False
+                db_upserted = False
+
+                # Sync cloud account to local HARTOS social DB so the
+                # cloud user_id resolves to a real User row for
+                # /chat, /social, and any other endpoint that does
+                # `db.query(User).filter(User.id == user_id)`.  Best-
+                # effort: skipped silently when HARTOS isn't importable
+                # (standalone Nunba install) or when the DB session
+                # can't be acquired.  Idempotent — repeated calls only
+                # write when a field actually changed (token rotation,
+                # email/username edit).
+                if all(k in user_data for k in required_keys):
+                    try:
+                        from integrations.social.models import db_session, User
+                        cloud_user_id = str(user_data['user_id'])
+                        cloud_email = user_data['email']
+                        cloud_token = user_data['access_token']
+                        cloud_username = user_data['agentname']
+                        with db_session() as _db:
+                            existing = (
+                                _db.query(User).filter(User.id == cloud_user_id).first()
+                                or _db.query(User).filter(User.email == cloud_email).first()
+                            )
+                            if existing is None:
+                                _db.add(User(
+                                    id=cloud_user_id,
+                                    username=cloud_username,
+                                    display_name=cloud_username,
+                                    email=cloud_email,
+                                    user_type='human',
+                                    api_token=cloud_token,
+                                    is_verified=True,
+                                ))
+                                _db.commit()
+                                db_upserted = True
+                                logger.info(
+                                    f"Cloud user synced to local DB (created): "
+                                    f"id={cloud_user_id} email={cloud_email}")
+                            else:
+                                changed = []
+                                if existing.api_token != cloud_token:
+                                    existing.api_token = cloud_token
+                                    changed.append('api_token')
+                                if existing.email != cloud_email:
+                                    existing.email = cloud_email
+                                    changed.append('email')
+                                if changed:
+                                    _db.commit()
+                                    db_upserted = True
+                                    logger.info(
+                                        f"Cloud user synced to local DB "
+                                        f"(updated {','.join(changed)}): "
+                                        f"id={existing.id}")
+                    except Exception as _db_err:
+                        # IntegrityError on unique api_token / username collision,
+                        # ImportError when HARTOS isn't on PYTHONPATH, or any
+                        # transient DB issue — log and continue.  The cloud
+                        # signin still propagates via user_data.json + the React
+                        # useStorageSync hook.
+                        logger.debug(
+                            f"Cloud user DB sync skipped: "
+                            f"{type(_db_err).__name__}: {_db_err}")
 
                 if all(k in user_data for k in required_keys) and _window:
                     #Properly URL encode each parameter
@@ -5168,6 +5230,7 @@ def start_flask():
                 return jsonify({
                     'success': True,
                     'url_updated': url_updated,
+                    'db_upserted': db_upserted,
                     'keys_present': list(user_data.keys()),
                     'all_required_keys_present': all(k in user_data for k in required_keys)})
             except Exception as e:
