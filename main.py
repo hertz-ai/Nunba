@@ -670,7 +670,7 @@ def _deferred_platform_init():
                     return
                 if os.environ.get('NUNBA_DISABLE_LLAMA_INSTALL') != '1':
                     try:
-                        diag = cfg.diagnose_setup()
+                        diag = cfg.diagnose()
                         needs_setup = diag.get('action') in {
                             'install_binary',
                             'upgrade_binary',
