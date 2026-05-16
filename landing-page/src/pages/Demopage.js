@@ -4,8 +4,9 @@ import {v4 as uuidv4} from 'uuid';
 // import { Worker, Viewer, SpecialZoomLevel } from '@react-pdf-viewer/core';
 // import '@react-pdf-viewer/core/lib/styles/index.css';
 import connectedGif from '../assets/images/connected.gif';
-import connectedImg from '../assets/images/connectedImg.gif';
-import DisconnectedImg from '../assets/images/DisconnectedImg.gif';
+// connectedImg / DisconnectedImg imports removed 2026-05-15 alongside
+// the on-screen Companion-Connection status badge below — Nunba IS
+// the companion, the icon was always self-referential noise.
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
 import AgentOverlay from '../components/AgentOverlay/AgentOverlay';
@@ -22,6 +23,7 @@ import {
   ChevronLeft,
 } from 'lucide-react';
 import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL } from '../config/apiBase';
+import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -113,6 +115,37 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
   const [currentThinkingId, setCurrentThinkingId] = useState(null);
   const [thinkingStartTime, setThinkingStartTime] = useState(null);
+  // #508 — latest server-emitted stage text (first 6 words capped).  Drives
+  // the spinner's CyclingVerb override so the user sees real status
+  // ("Searching your message history…") instead of generic verb cycle.
+  // Auto-clears after 3s of staleness so the spinner falls back to the
+  // existing CyclingVerb rotation rather than getting stuck on a tool
+  // name after that tool has finished.
+  const [latestThinkingText, setLatestThinkingText] = useState('');
+  const staleClearRef = useRef(null);
+  // #508 — cleanup any pending stale-clear timer on unmount so a navigate-
+  // away mid-request doesn't fire setState on an unmounted component.
+  useEffect(() => () => {
+    if (staleClearRef.current) clearTimeout(staleClearRef.current);
+  }, []);
+  // (the isRequestInFlight reset useEffect lives below, after isRequestInFlight
+  // is declared at L~196 — must not reference a const before its TDZ binding
+  // is initialised, which previously crashed startup with `Cannot access 'ot'
+  // before initialization`.)
+  // #508 — UI toggle: show the collapsible <ThinkingProcessContainer>?  When
+  // OFF, only the spinner row stays visible (its CyclingVerb gets the same
+  // dynamic text).  Default ON preserves today's UX.
+  const [showThinkingTraces, setShowThinkingTraces] = useState(() => {
+    try { return localStorage.getItem('chat_show_thinking_traces') !== 'false'; }
+    catch { return true; }
+  });
+  const toggleShowThinkingTraces = useCallback(() => {
+    setShowThinkingTraces((prev) => {
+      const next = !prev;
+      try { localStorage.setItem('chat_show_thinking_traces', next ? 'true' : 'false'); } catch {}
+      return next;
+    });
+  }, []);
 
   const [shouldScroll, setShouldScroll] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -129,6 +162,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // Keep ref in sync — handleDataReceived (useCallback) reads the ref to filter
   // daemon thinking traces without re-creating the callback on every request.
   useEffect(() => { requestIdRef.current = requestId; }, [requestId]);
+  // Per-msg_id dedup map.  The same priority=49 thinking trace can
+  // arrive at handleDataReceived via THREE paths for a single chat
+  // turn:
+  //   1. WAMP (crossbarWorker → onmessage DATA_RECEIVED) — cloud-router path
+  //   2. SSE (realtimeService.on('chat.response') → handleDataReceived)
+  //   3. HTTP /chat final response (resultData.thinking_steps.forEach
+  //      → handleDataReceived; see line ~3397 below)
+  // Without dedup the UI renders each thinking step 1-3 times.  HARTOS
+  // injects msg_id=uuid4().hex into every envelope at
+  // core/peer_link/crossbar_publish.py:90 so the key is stable across
+  // transports.  60s TTL covers slow autogen turns (1-2min) without
+  // unbounded growth (cap 500 entries; prune entries older than TTL
+  // on overflow).
+  const seenMsgIdsRef = useRef(new Map());
   const [audioUrl, setAudioUrl] = useState(null);
   const messagesEndRef = useRef(null);
   const [userImage, setUserImage] = useState(null);
@@ -161,10 +208,27 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [backendHealth, setBackendHealth] = useState(null); // 'healthy' | 'degraded' | 'offline'
   const cloudAvailable = navigator.onLine; // true = cloud hevolve.ai reachable
   const [isRequestInFlight, setIsRequestInFlight] = useState(false); // true only during active HTTP request
+  // #508 — reset latestThinkingText whenever a NEW turn fires so the spinner
+  // doesn't show stale text from the previous turn before the first new emit.
+  // Must live AFTER isRequestInFlight declaration (TDZ regression caught
+  // 2026-05-11: minified `Cannot access 'ot' before initialization`).
+  useEffect(() => {
+    if (isRequestInFlight) setLatestThinkingText('');
+  }, [isRequestInFlight]);
   const [agentRetryTrigger, setAgentRetryTrigger] = useState(0); // increment to retrigger fetchPrompts
   const [showAgentMentionList, setShowAgentMentionList] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [secretRequest, setSecretRequest] = useState(null);
+
+  // Reactive token state — declared BEFORE the auto-refresh and storage-
+  // listener useEffects below so their `[token]` deps arrays and inline
+  // setToken closures are not in the TDZ (Temporal Dead Zone) when render
+  // evaluates them.  Hoisted here from its original position lower in the
+  // function body (post adba894d) to fix the boot-time
+  // "Cannot access 'qt'/'ot' before initialization" minified TDZ error.
+  // See Fix B docstring at the storage-listener useEffect for the
+  // cross-tab / same-tab / poll sync rationale.
+  const [token, setToken] = useState(() => localStorage.getItem('access_token'));
 
   // Auto-refresh guest token on relaunch — if guest_name exists but JWT is
   // missing or expired, silently re-register to get a fresh token.
@@ -172,6 +236,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     if (!isGuestMode || !guestName) return;
     const existingToken = localStorage.getItem('access_token');
     if (existingToken) return; // token still present, no refresh needed
+
+    // Partial-cloud-state skip — useStorageSync set this sentinel when
+    // user_data.json had user_id+email but access_token=null (the
+    // Demopage:420 stale-const-token race).  In that state the user is
+    // already logged in upstream — minting a fresh HART guest here
+    // would clobber the cloud identity.  The login modal handles the
+    // "complete signin" prompt instead (reads pending_cloud_email for
+    // the hint).
+    if (localStorage.getItem('pending_cloud_user_id')) {
+      logger.log('[GUEST] Skipping auto-refresh — pending_cloud_user_id present, awaiting login');
+      return;
+    }
 
     (async () => {
       try {
@@ -187,6 +263,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         });
         const { user, token: newToken, existing } = res.data;
         localStorage.setItem('access_token', newToken);
+        setToken(newToken);  // Fix B — pair setItem with setState so same-tab signin re-fires cloud-creds POST
         localStorage.setItem('guest_user_id', user.id);
         localStorage.setItem('social_user_id', user.id);
         logger.log(
@@ -199,6 +276,57 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fix B — reactive token + companion storage re-sync.
+  //
+  // Problem: localStorage.setItem('access_token', …) does NOT trigger
+  // a React re-render, so Demopage's `token` state would stay stale
+  // after an OtpAuthModal signin or useStorageSync hydrate.  That
+  // staleness is what caused user_data.json.access_token to land as
+  // null (the cloud-creds POST useEffect at :1925 captured token=null
+  // at mount and never re-fired with the live value).
+  //
+  // Fix: listen for cross-tab storage events AND poll same-tab
+  // localStorage on every mount/visibility tick so we catch in-page
+  // setItem calls too (the standard `storage` event only fires for
+  // OTHER tabs/windows).  When access_token changes, setToken triggers
+  // a re-render and the cloud-creds POST useEffect re-fires with the
+  // live value.
+  //
+  // Side-effect: also re-POST to /api/storage/set immediately on
+  // token-change so user_data.json catches up without waiting for the
+  // companionStatus.isRunning useEffect dep to flip.  Idempotent —
+  // backend handles repeat writes with the same value.
+  useEffect(() => {
+    const syncToken = () => {
+      const live = localStorage.getItem('access_token');
+      if (live !== token) {
+        setToken(live);
+        // Also clear the pending-cloud-login sentinel — signin
+        // completed, so the auto-guest-register skip is no longer
+        // needed and the partial-state hint should disappear.
+        if (live) {
+          localStorage.removeItem('pending_cloud_user_id');
+          localStorage.removeItem('pending_cloud_email');
+        }
+      }
+    };
+    window.addEventListener('storage', syncToken);
+    // Same-tab signins don't fire 'storage' — poll on visibility.
+    const onVis = () => { if (document.visibilityState === 'visible') syncToken(); };
+    document.addEventListener('visibilitychange', onVis);
+    // Same-tab same-window signins (SocialContext guestRecover / OtpAuthModal)
+    // don't fire either of the above — 1s poll catches them.  Reading a
+    // localStorage key is microseconds, so 1s interval is negligible.
+    const pollId = setInterval(syncToken, 1000);
+    // First-render catch-up in case a same-tab setItem already ran.
+    syncToken();
+    return () => {
+      window.removeEventListener('storage', syncToken);
+      document.removeEventListener('visibilitychange', onVis);
+      clearInterval(pollId);
+    };
+  }, [token]);
 
   // Auto-open login modal on /local route if not authenticated
   useEffect(() => {
@@ -322,9 +450,34 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   }, [backendHealth]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [isImageUploading, setIsImageUploading] = useState(false);
-  const [decryptedUserId, setDecryptedUserId] = useState(null);
-  const [decryptedPhone, setDecryptedPhone] = useState(null);
-  const [decryptedEmail, setDecryptedEmail] = useState(null);
+  // Synchronously hydrate auth state from localStorage on first render.
+  // Without this, decryptedUserId stays null until the
+  // localStorage→decrypt useEffect (Demopage.js ~line 2276) runs after
+  // mount, and during that window `isAuthenticated` is false — which
+  // makes the /local auto-open-modal effect fire and yank the user
+  // back to the guest-login UI on every page reload mid-conversation
+  // (live evidence 2026-05-12).  Decrypting here means the very
+  // first render already knows whether a logged-in identity exists
+  // in storage, so the modal stays closed and chat state can
+  // continue.  Per-field try/catch keeps a stored-but-corrupt value
+  // from blocking other fields.
+  const _hydrateLocalStorageField = (key) => {
+    try {
+      const v = localStorage.getItem(key);
+      return v ? decrypt(v) : null;
+    } catch {
+      return null;
+    }
+  };
+  const [decryptedUserId, setDecryptedUserId] = useState(
+    () => _hydrateLocalStorageField('user_id')
+  );
+  const [decryptedPhone, setDecryptedPhone] = useState(
+    () => _hydrateLocalStorageField('phone_number')
+  );
+  const [decryptedEmail, setDecryptedEmail] = useState(
+    () => _hydrateLocalStorageField('email_address')
+  );
   const [isGuestMode, setIsGuestMode] = useState(
     () => localStorage.getItem('guest_mode') === 'true'
   );
@@ -338,7 +491,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [uploadedImage, setUploadedImage] = useState(null);
   const [screenWidth, setScreenWidth] = useState(window.innerWidth);
   const [sessionExpiredMessage, setSessionExpiredMessage] = useState('');
-  const token = localStorage.getItem('access_token');
+  // (token + setToken are now hoisted above the auto-refresh useEffect
+  // to avoid the TDZ error — see comment near line 222.)
   const refresh_token = localStorage.getItem('refresh_token');
   const isAuthenticated = (decryptedUserId && token) || isGuestMode;
   const effectiveUserId = isGuestMode ? guestUserId : decryptedUserId;
@@ -467,7 +621,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         const contText = contData.text || contData.response;
 
         if (contText) {
-          setMessages((prev) => [...prev, { type: 'assistant', content: contText }]);
+          setMessages((prev) => [...prev, {
+            type: 'assistant',
+            content: contText,
+            source: contData.source,
+            servedBy: contData.served_by,
+            nodeTier: contData.node_tier,
+          }]);
           setShouldScroll(true);
         }
 
@@ -511,7 +671,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   const execData = execResult || {};
                   const execText = execData.text || execData.response;
                   if (execText) {
-                    setMessages((prev) => [...prev, { type: 'assistant', content: execText }]);
+                    setMessages((prev) => [...prev, {
+                      type: 'assistant',
+                      content: execText,
+                      source: execData.source,
+                      servedBy: execData.served_by,
+                      nodeTier: execData.node_tier,
+                    }]);
                     setShouldScroll(true);
                   }
                   // Clean up autonomous state
@@ -799,8 +965,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           if (savedAgent) {
             logger.log('Restoring active agent:', savedAgent.name);
             setCurrentAgent(savedAgent);
+            // fetchPrompts re-runs on agentRetryTrigger /
+            // decryptedUserId churn mid-conversation.  Chat is
+            // append-only, so saved and live form a superset chain:
+            // whichever has MORE messages already contains the other.
+            // Pick the longer.  This preserves both first-mount
+            // restore AND mid-conversation live state without needing
+            // a per-message dedup key (most non-user message types
+            // are id-less, see comment at NunbaChatProvider:982).
+            // Regression guard 2026-05-11 (overwrite caused live loss).
             const savedMessages = loadMessagesFromStorage(savedAgent.prompt_id);
-            if (savedMessages.length > 0) setMessages(savedMessages);
+            setMessages((prev) =>
+              savedMessages.length > prev.length ? savedMessages : prev
+            );
           } else {
             // Orphan-chat recovery: savedAgentId is valid but the
             // agent isn't in allAgents (server sync failed, backend
@@ -831,7 +1008,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   allAgents.push(ghost);
                   setAllAgents([...allAgents]);
                   setCurrentAgent(ghost);
-                  setMessages(orphanMessages);
+                  // Append-only superset rule (same as savedAgent
+                  // branch above) — pick whichever timeline is longer.
+                  setMessages((prev) =>
+                    orphanMessages.length > prev.length ? orphanMessages : prev
+                  );
                   // Skip the "default agent" fallback below so we
                   // don't clobber the ghost we just restored.
                   return;
@@ -867,7 +1048,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             // navigation back shows last conversation, not a clean slate).
             if (defaultAgent?.prompt_id) {
               const savedMessages = loadMessagesFromStorage(defaultAgent.prompt_id);
-              if (savedMessages.length > 0) setMessages(savedMessages);
+              // Same append-only superset rule as the savedAgent +
+              // orphan branches above — pick whichever timeline is
+              // longer, preserving both first-mount restore AND
+              // mid-conversation live state.
+              setMessages((prev) =>
+                savedMessages.length > prev.length ? savedMessages : prev
+              );
             }
           }
         }
@@ -1147,10 +1334,32 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         const messages = Array.isArray(chatData)
           ? chatData
           : chatData.messages || [];
+        // Coerce mid-flight statuses to 'failed' — `retrying` / `sending`
+        // are driven by a LIVE per-second loop in handleSend; restoring
+        // them verbatim freezes a stale countdown string ("retrying in
+        // 24s...") forever because no live ticker is running on a fresh
+        // mount.  Captured 2026-05-11 after user saw a 43-min-old turn
+        // permanently stuck at "retrying in 24s".  `failed` renders the
+        // retry button instead, which is the correct affordance after
+        // the original request context has died.
+        const sanitized = messages.map((m) => {
+          if (m && (m.status === 'retrying' || m.status === 'sending')) {
+            return {
+              ...m,
+              status: 'failed',
+              error: m.error
+                ? m.error.replace(/\s*—?\s*retrying in \d+s\.\.\.?/i, '')
+                  .trim() || 'Send interrupted'
+                : 'Send interrupted',
+              retryCount: undefined,
+            };
+          }
+          return m;
+        });
         logger.log(
-          `📥 Loaded ${messages.length} messages for agent ${promptId}`
+          `📥 Loaded ${sanitized.length} messages for agent ${promptId}`
         );
-        return messages;
+        return sanitized;
       }
     } catch (error) {
       console.error('Failed to load messages from localStorage:', error);
@@ -1349,6 +1558,29 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         return;
       }
 
+      // Per-msg_id dedup (see seenMsgIdsRef declaration block for context).
+      // Drops the 2nd/3rd delivery of the same trace silently — first
+      // delivery wins, all downstream side effects (setMessages, audio,
+      // thinking-spinner) fire exactly once.  Skips payloads without
+      // msg_id (legacy emitters, non-trace events, parse-failures) so
+      // this is a strict additive guard.
+      const _msgId = parsed && parsed.msg_id;
+      if (_msgId) {
+        const _seen = seenMsgIdsRef.current;
+        const _now = Date.now();
+        const _prev = _seen.get(_msgId);
+        if (_prev && _now - _prev < 60000) {
+          logger.log(`Dropping duplicate trace msg_id=${String(_msgId).slice(0, 8)}…`);
+          return;
+        }
+        _seen.set(_msgId, _now);
+        if (_seen.size > 500) {
+          for (const [k, t] of _seen) {
+            if (_now - t > 60000) _seen.delete(k);
+          }
+        }
+      }
+
       const {
         isTextMode,
         waitingText,
@@ -1396,6 +1628,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               content: extractedText,
               isDraft: false,
               source: parsed.source || 'expert',
+              servedBy: parsed.served_by,
+              nodeTier: parsed.node_tier,
             };
             return updated;
           }
@@ -1404,6 +1638,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             type: 'assistant',
             content: extractedText,
             source: parsed.source || 'expert',
+            servedBy: parsed.served_by,
+            nodeTier: parsed.node_tier,
           }];
         });
         setShouldScroll(true);
@@ -1435,6 +1671,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           logger.log(`Dropping daemon thinking trace (req=${traceRequestId}, current=${currentReqId})`);
           return;
         }
+
+        // #508 — feed the spinner's CyclingVerb override.  First 6 words capped.
+        // 3s stale-timeout: if no new emit arrives, the text clears and the
+        // spinner falls back to CyclingVerb's auto-rotation of generic verbs
+        // (Analyzing, Understanding, …).  Each fresh emit resets the timer.
+        try {
+          const rawText = Array.isArray(parsed.text) ? parsed.text[0] : (parsed.text || '');
+          if (rawText) {
+            const words = String(rawText).trim().split(/\s+/);
+            const preview = words.slice(0, 6).join(' ') + (words.length > 6 ? '…' : '');
+            setLatestThinkingText(preview);
+            if (staleClearRef.current) clearTimeout(staleClearRef.current);
+            staleClearRef.current = setTimeout(() => setLatestThinkingText(''), 3000);
+          }
+        } catch {}
 
         logger.log('THINKING MODE DETECTED');
 
@@ -1635,6 +1886,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             type: 'assistant',
             content: extractedText,
             source: parsed.source || 'cloud',
+            servedBy: parsed.served_by,
+            nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
             const newMessages = [...prev, assistantMessage];
@@ -1661,6 +1914,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           type: 'assistant',
           content: extractedText,
           source: parsed.source || 'cloud',
+          servedBy: parsed.served_by,
+          nodeTier: parsed.node_tier,
         };
 
         setMessages((prev) => {
@@ -1704,6 +1959,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           const assistantMessage = {
             type: 'assistant',
             content: textToShow,
+            source: parsed.source,
+            servedBy: parsed.served_by,
+            nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
             const newMessages = [...prev, assistantMessage];
@@ -1892,11 +2150,39 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             requestId
           );
           // Local-first: connect to embedded WAMP router (port 8088)
-          // when Flask backend is on localhost, otherwise use cloud router.
-          const isLocalBackend = window.location.hostname === 'localhost' ||
-            window.location.hostname === '127.0.0.1' ||
-            window.location.hostname === '0.0.0.0';
-          const wsUri = isLocalBackend ? WAMP_LOCAL_URL : WAMP_CLOUD_URL;
+          // when Flask backend is on the same machine OR on the LAN.
+          // Recognises localhost, RFC1918 private IPs, .local mDNS hosts,
+          // and link-local addresses — see utils/backendHost.js.
+          //
+          // Privacy invariant: a phone visiting Nunba on a desktop's LAN
+          // IP must connect to the LAN crossbar, not the public cloud
+          // crossbar.  Before this fix, only literal localhost matched
+          // and every cross-device LAN client silently shipped social
+          // events through wss://aws_rasa.hertzai.com.
+          //
+          // localWampUrl rewrites the bundled WAMP_LOCAL_URL to point
+          // at the SAME host the SPA was served from (port 8088), so
+          // LAN clients reach the desktop's embedded router instead of
+          // their own loopback.
+          const hostname = window.location.hostname;
+          const isLocalBackend = isLocalBackendHost(hostname);
+          // Env-override (REACT_APP_WAMP_URL via WAMP_LOCAL_URL) wins
+          // over auto-detection — preserves the manual escape hatch
+          // for power users / CI / sandbox configurations.
+          const envOverride = process.env.REACT_APP_WAMP_URL ? WAMP_LOCAL_URL : null;
+          const wsUri = envOverride
+            || (isLocalBackend ? localWampUrl(hostname) : WAMP_CLOUD_URL);
+          // 2026-05-11: dual-subscribe was considered (subscribe to
+          // BOTH guest_user_id AND decryptedUserId topics) but rejected
+          // — guest_user_id can be a stale UUID inherited from a prior
+          // device session (re-install, shared device); subscribing to
+          // it would let this client receive events for an identity it
+          // doesn't own.  WAMP router ACL should reject but we can't
+          // rely on that.  Instead the state-prop fix (nunba:auth_changed
+          // event → Demopage re-decrypts → [decryptedUserId] deps re-
+          // fire → worker terminate-and-reinit with the cloud uid)
+          // ensures the worker is on the right id BEFORE the first
+          // /chat send.  See the auth-sync useEffect at ~L2301.
           crossbarWorker.postMessage({
             type: 'INIT',
             payload: {
@@ -1930,6 +2216,25 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       isInitializing = false;
     };
   }, [decryptedUserId]);
+
+  // ── SSE user_id alignment ─────────────────────────────────────────────
+  // The worker-init effect above only re-fires on decryptedUserId change.
+  // Guest mode populates `guest_user_id` in localStorage AFTER the
+  // "Continue as Guest" flow completes (post-mount), at which point
+  // effectiveUserId flips from '' to the per-guest UUID — but the SSE
+  // connection opened at mount is still registered under the literal
+  // 'guest' fallback.  HARTOS /chat publishes TTS with the UUID (from
+  // request body), so the broker key 'd68c9dee-…' doesn't match the
+  // SSE-registered 'guest' key and the audio event drops silently.
+  //
+  // realtimeService.init detects userId change and reconnects SSE with
+  // the new ?user_id= query param.  No worker churn — that effect's
+  // deps stay [decryptedUserId].
+  useEffect(() => {
+    if (effectiveUserId) {
+      realtimeService.init(null, { userId: effectiveUserId });
+    }
+  }, [effectiveUserId]);
 
   // ── Realtime event subscriptions (transport-agnostic) ─────────────────
   // All events arrive via realtimeService (WAMP primary, SSE fallback).
@@ -2102,8 +2407,22 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       }
     });
 
-    return () => { unsubTts(); unsubSetup(); unsubHandshake(); unsubCapability(); };
-  }, []);
+    // Route SSE chat.response events to the same handler that processes
+    // WAMP DATA_RECEIVED events.  realtimeService emits 'chat.response'
+    // when EventSource delivers the named SSE event (see
+    // realtimeService.js addEventListener array).  Without this
+    // subscription, the SSE-delivered priority=49 thinking traces would
+    // be silently dropped in desktop mode where crossbarWorker (cloud
+    // WAMP) isn't connected.  Dedup via seenMsgIdsRef inside
+    // handleDataReceived prevents double-render when WAMP + SSE both
+    // deliver the same msg_id.
+    const unsubChatResponse = realtimeService.on('chat.response', handleDataReceived);
+
+    return () => {
+      unsubTts(); unsubSetup(); unsubHandshake(); unsubCapability();
+      unsubChatResponse();
+    };
+  }, [handleDataReceived]);
 
   useEffect(() => {
     if (requestId && worker) {
@@ -2117,20 +2436,45 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       });
     }
   }, [requestId, worker]);
+  // Auth-state sync — re-decrypt localStorage and push to React state
+  // on (a) initial mount, (b) cross-tab `storage` events, and (c) the
+  // same-tab `nunba:auth_changed` event dispatched by OtpAuthModal
+  // after a successful login.  Previously this effect's dep array was
+  // `[decryptedEmail, decryptedUserId]` — its OWN state — which made it
+  // self-referential: it could not detect a fresh localStorage write
+  // from another component (OtpAuthModal navigates without reload, so
+  // mount-time hydration never re-runs).  That left `decryptedUserId`
+  // stuck at the pre-login value, broke worker subscription topics
+  // (`com.hertzai.*.<stale_uid>`) and SSE registration, and silently
+  // dropped chat + TTS responses.  Regression captured 2026-05-11.
   useEffect(() => {
-    const encryptedUserId = localStorage.getItem('user_id');
-    const encryptedEmail = localStorage.getItem('email_address');
-
-    if (encryptedUserId && encryptedEmail) {
-      const userId = decrypt(encryptedUserId);
-      const email = decrypt(encryptedEmail);
-
-      setDecryptedUserId(userId);
-      setDecryptedEmail(email);
-    } else {
-      console.warn('No userId or email found in localStorage.');
-    }
-  }, [decryptedEmail, decryptedUserId]);
+    const sync = (evtSource) => {
+      const encryptedUserId = localStorage.getItem('user_id');
+      const encryptedEmail = localStorage.getItem('email_address');
+      if (encryptedUserId && encryptedEmail) {
+        const userId = decrypt(encryptedUserId);
+        const email = decrypt(encryptedEmail);
+        setDecryptedUserId(userId);
+        setDecryptedEmail(email);
+        // guest_mode is cleared by OtpAuthModal on successful login;
+        // mirror that into React state so effectiveUserId flips from
+        // guestUserId to decryptedUserId in the same tick.
+        if (localStorage.getItem('guest_mode') !== 'true') {
+          setIsGuestMode(false);
+        }
+        logger.log(`auth sync (${evtSource}): user_id=${userId}, isGuest=false`);
+      }
+    };
+    sync('mount');
+    const onStorage = () => sync('storage');         // other tab
+    const onAuthChanged = () => sync('auth_changed'); // same tab (OtpAuthModal)
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('nunba:auth_changed', onAuthChanged);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('nunba:auth_changed', onAuthChanged);
+    };
+  }, []);
 
   // Guest name uniqueness check when internet becomes available
   useEffect(() => {
@@ -3028,17 +3372,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         while (!localSuccess) {
           // Update status for retries
           if (retryCount > 0) {
-            const backoff = getBackoff(retryCount - 1);
-            updateMessageStatus(msgId, {
-              status: 'retrying',
-              error: `${lastLocalReason} — retrying in ${Math.round(backoff / 1000)}s...`,
-              retryCount,
-            });
             setIsRequestInFlight(false); // no active request during backoff
-            await new Promise((r) => setTimeout(r, backoff));
-            // Check if message was deleted by user during backoff
-            const stillExists = messagesRef.current.find(m => m.messageId === msgId);
-            if (!stillExists) { setLoading(false); return; }
+            const totalSec = Math.max(1, Math.round(getBackoff(retryCount - 1) / 1000));
+            let aborted = false;
+            for (let sec = totalSec; sec > 0; sec--) {
+              updateMessageStatus(msgId, {
+                status: 'retrying',
+                error: `${lastLocalReason} — retrying in ${sec}s...`,
+                retryCount,
+              });
+              await new Promise((r) => setTimeout(r, 1000));
+              // Check if message was deleted by user during backoff
+              const stillExists = messagesRef.current.find(m => m.messageId === msgId);
+              if (!stillExists) { aborted = true; break; }
+            }
+            if (aborted) { setLoading(false); return; }
           }
 
           try {
@@ -3211,6 +3559,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 type: 'assistant',
                 content: responseText,
                 source: resultData.source || 'langchain_local',
+                // Privacy-first: surface where the bytes were served
+                // from so ChatMessageList can render the tier badge
+                // (on-device / LAN / cloud).  Server defaults at
+                // routes/chatbot_routes.py:2693.
+                servedBy: resultData.served_by,
+                nodeTier: resultData.node_tier,
                 timestamp: new Date(),
                 // Draft-first: tag with speculationId so the expert
                 // response arriving via WAMP can replace this bubble
@@ -3284,16 +3638,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
 
       while (true) {
         if (cloudRetryCount > 0) {
-          const backoff = getBackoff(cloudRetryCount - 1);
-          updateMessageStatus(msgId, {
-            status: 'retrying',
-            error: `${lastCloudReason} — retrying in ${Math.round(backoff / 1000)}s...`,
-            retryCount: cloudRetryCount,
-          });
           setIsRequestInFlight(false);
-          await new Promise((r) => setTimeout(r, backoff));
-          const stillExists = messagesRef.current.find(m => m.messageId === msgId);
-          if (!stillExists) { setLoading(false); return; }
+          const totalSec = Math.max(1, Math.round(getBackoff(cloudRetryCount - 1) / 1000));
+          let aborted = false;
+          for (let sec = totalSec; sec > 0; sec--) {
+            updateMessageStatus(msgId, {
+              status: 'retrying',
+              error: `${lastCloudReason} — retrying in ${sec}s...`,
+              retryCount: cloudRetryCount,
+            });
+            await new Promise((r) => setTimeout(r, 1000));
+            const stillExists = messagesRef.current.find(m => m.messageId === msgId);
+            if (!stillExists) { aborted = true; break; }
+          }
+          if (aborted) { setLoading(false); return; }
         }
 
         try {
@@ -3447,6 +3805,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           type: 'assistant',
           content: responseText,
           source: resultData.source || null,
+          servedBy: resultData.served_by,
+          nodeTier: resultData.node_tier,
         }]);
       }
       // Track agent status from execution response
@@ -3937,10 +4297,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             <div
               className={`${
                 !uploadedImage && !uploadedPdf && window.innerWidth > 768
-                  ? (isTextMode ? 'w-0 overflow-hidden' : (videoUrl || mediaMode === 'audio' ? 'w-[30%]' : 'w-0 overflow-hidden'))
+                  ? (isTextMode ? 'w-0 overflow-hidden' : (mediaMode === 'video' || mediaMode === 'audio' ? 'w-[30%]' : 'w-0 overflow-hidden'))
                   : 'w-full'
               } ${
-                window.innerWidth <= 768 ? (isTextMode ? '' : (videoUrl || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
+                window.innerWidth <= 768 ? (isTextMode ? '' : (mediaMode === 'video' || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
               } relative flex justify-center items-center transition-all duration-300 md:sticky md:top-0 md:h-screen`}
               style={{ overflow: 'visible' }}
             >
@@ -3948,7 +4308,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 <>
                   {!uploadedImage && !uploadedPdf ? (
                     <>
-                      {videoUrl ? (
+                      {/* Branch on the user's INTENT (mediaMode) — not
+                          on whether videoUrl happens to be populated.
+                          The previous gate `videoUrl ?` made any
+                          background setVideoUrl(idleFiller.video_link)
+                          pre-empt audio mode even when the dropdown
+                          was set to "Audio Only" — bug captured
+                          2026-05-15 against /agents/Personalised
+                          %20Learning where the agent's idle filler
+                          video silently hid the VoiceVisualizer.  Now
+                          videoUrl is only consulted INSIDE the video
+                          branch as the data to render. */}
+                      {mediaMode === 'video' && videoUrl ? (
                         <video
                           src={videoUrl}
                           width={getVideoWidthforMobile()}
@@ -4338,6 +4709,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   onExecutePlan={handleExecutePlan}
                   onSetupLlm={handleSetupLlm}
                   onConfigureLlm={handleConfigureLlm}
+                  latestThinkingText={latestThinkingText}
+                  showThinkingTraces={showThinkingTraces}
                 />
               )}
             </div>
@@ -4385,6 +4758,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               pushNotification({ type: next ? 'success' : 'info',
                 message: next ? 'Listening for "Hey Nunba"' : 'Stopped listening' });
             }}
+            showThinkingTraces={showThinkingTraces}
+            onToggleShowThinkingTraces={toggleShowThinkingTraces}
           />
         </div>
       </div>
@@ -4518,20 +4893,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           </div>
         )}
 
-        {/* Companion Status */}
-        {companionStatus && (
-          <img
-            src={companionStatus.isRunning ? connectedImg : DisconnectedImg}
-            alt="Connection Status"
-            className="w-10 h-10"
-            title={
-              companionStatus.isRunning
-                ? 'Connected'
-                : 'Companion App Disconnected'
-            }
-            onError={handleImgError}
-          />
-        )}
+        {/* Companion status icon removed 2026-05-15: Nunba IS the
+            companion, so a green-dot "Connected"/red-dot "Disconnected"
+            badge is always self-referential and noisy.  isRunning is
+            still read by the cloud-creds POST useEffect upstream
+            (Demopage.js:1924) — keeping that gate, just dropping the
+            on-screen indicator. */}
       </div>}
 
       {/* Agent UI Overlay — floating glass cards for agent-pushed components */}

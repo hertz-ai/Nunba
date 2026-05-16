@@ -183,6 +183,60 @@ os.environ.setdefault('HARTOS_BACKEND_URL', 'http://localhost:6777')  # LangChai
 # Signal bundled mode so langchain/HevolveAI redirect logs to Documents/Nunba/logs
 os.environ['NUNBA_BUNDLED'] = '1'
 
+# ── Phase 7+ feature flags — Wave 1 batch enable (additive flags only) ──
+# Each flag gates an additive code path: new route, new model registration,
+# new daemon trigger, or new helper.  Off-path is no-op or empty fallback;
+# audited 2026-05-09 (zero parallel paths, zero DRY violations).
+# Data-shape flags (tenancy_v2, members_v2, friends_v2, post_privacy,
+# moderation_v2, multi_tenant_cloud, tenant_strict_mode) and build-system
+# flags (electron_build) are deferred — they need schema migration audit
+# before flip; tracked separately.
+# setdefault preserves any explicit override from the deploy environment.
+os.environ.setdefault('HEVOLVE_FLAG_MENTIONS_AUTOCOMPLETE', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_MENTIONS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_AGENT_MEMBERS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_INVITES_V2', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_CONVERSATIONS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_REACTIONS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_SYNC_V1', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_CALLS_V1', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_AGENT_VOICE_BRIDGE', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_WEAR_CALLS', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_NUNBA_DESKTOP_V2', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_E2E_DMS', 'true')
+# Wave 2 — data-shape flags (schema migrations v41/v48/v50 verified live):
+#   FRIENDS_V2   — friend-graph routes (10+ endpoints in api.py:449+).
+#                  Schema v41 already created friendships table; gate is
+#                  endpoint-only, no legacy data.
+#   POST_PRIVACY — public/friends/community/private gating.
+#                  v48 added posts.privacy column; privacy.py:_normalize
+#                  maps NULL→'public' so all 363 pre-flag posts stay
+#                  exactly as visible as before.
+#   MODERATION_V2 — ContentClassifier post-DLP audit + is_quarantined.
+#                   v50 added content_moderation_decisions table +
+#                   posts.is_quarantined; legacy posts have no decision
+#                   rows (audit-trail gap, acceptable per Phase 7e plan).
+os.environ.setdefault('HEVOLVE_FLAG_FRIENDS_V2', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_POST_PRIVACY', 'true')
+os.environ.setdefault('HEVOLVE_FLAG_MODERATION_V2', 'true')
+# DISPATCH_VIA_CHAT — gate reader at agentic_router.py:_dispatch_via_chat
+# (HARTOS commit 567a78b restored the helper after Wave-1 audit).  Social
+# agents now reuse the canonical /chat runtime (autogen + persona + tools
+# + history) instead of raw single-shot llm.invoke; falls back to raw
+# llm.invoke if /chat unreachable, so flag-on is strictly additive.
+os.environ.setdefault('HEVOLVE_FLAG_DISPATCH_VIA_CHAT', 'true')
+# Skipped — DEAD CONFIG (declared in feature_flags._DEFAULTS but no active
+# reader in code; flipping would be no-op):
+#   tenancy_v2 / members_v2 / multi_tenant_cloud / electron_build.
+# Skipped — NO-OP for flat/desktop tier (g.tenant_id is None):
+#   tenant_strict_mode.
+# HEVOLVE_AGENT_ENGINE_ENABLED + HEVOLVE_SPECULATIVE_ENABLED are LLM-gated;
+# set in app.py:1417 only when an LLM is configured (avoids agent-engine
+# startup with no LLM, which would emit errors).  Don't duplicate here.
+os.environ.setdefault('HEVOLVE_VISION_LITE_ENABLED', 'true')
+os.environ.setdefault('HEVOLVE_RSI_REALTIME', 'true')
+os.environ.setdefault('HEVOLVE_RSI_EXPLORE', 'true')
+
 # Restore persisted node config (master key, tier) from previous session
 _node_config_path = os.path.join(PROGRAM_DATA_DIR, 'data', 'node_config.json')
 if os.path.isfile(_node_config_path):
@@ -766,19 +820,33 @@ def after_request(response):
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    # Content-Security-Policy — desktop app only talks to its own
-    # Flask origin + localhost llama-server (:8080/:8082) + VisionService
-    # (:5460) + crossbar (:8088). `unsafe-inline` is required because
-    # CRA's runtime and MUI emotion inject inline styles; migrating to
-    # nonce/hash CSP is a separate, larger task. blob: covers generated
-    # audio URLs used for synthesized TTS playback.
+    # Content-Security-Policy — desktop app talks to:
+    # - own Flask origin ('self')
+    # - localhost llama-server (:8080/:8082), VisionService (:5460),
+    #   crossbar (:8088)
+    # - hertzai.com cloud subdomains for OTP/auth/SMS: azurekong (login,
+    #   OTP verify), mailer (teacher/admin auth, registration, content),
+    #   sms (OTP delivery).  These are bundled-mode reality — without
+    #   them CSP blocks the `Get OTP` fetch before it leaves the browser
+    #   and users on registered accounts get told to "sign up" (live
+    #   incident 2026-05-11, frontend console:
+    #   "Refused to connect because it violates the document's Content
+    #    Security Policy. https://azurekong.hertzai.com/data/login").
+    # `unsafe-inline` is required because CRA's runtime and MUI emotion
+    # inject inline styles; migrating to nonce/hash CSP is a separate,
+    # larger task.  blob: covers generated audio URLs used for synthesized
+    # TTS playback.
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob: https:; "
         "media-src 'self' blob: data:; "
-        "connect-src 'self' http://localhost:* ws://localhost:* wss://localhost:*; "
+        "connect-src 'self' "
+        "http://localhost:* ws://localhost:* wss://localhost:* "
+        "https://*.hertzai.com wss://*.hertzai.com "
+        "https://hevolve.ai https://*.hevolve.ai wss://*.hevolve.ai "
+        "https://mcgroce.com https://*.mcgroce.com wss://*.mcgroce.com; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self'"

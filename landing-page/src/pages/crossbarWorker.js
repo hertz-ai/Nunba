@@ -44,6 +44,14 @@ const postWorkerMessage = (type, payload) => {
 };
 
 const generateMessageId = (data, topic) => {
+  // Per-event dedup id (HARTOS publish_thinking_trace + EventBus.emit set
+  // this).  Multiple events can share request_id (N thinking steps in one
+  // chat turn) — we MUST NOT key on request_id alone or every step after
+  // the first gets dropped.  Fall back to request_id+topic for legacy
+  // payloads, then to a content-hash for fully anonymous payloads.
+  if (data?.msg_id) {
+    return `${data.msg_id}_${topic}`;
+  }
   if (data?.request_id) {
     return `${data.request_id}_${topic}`;
   }

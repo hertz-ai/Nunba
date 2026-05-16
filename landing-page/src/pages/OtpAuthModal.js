@@ -106,8 +106,15 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
   const [intervalId, setIntervalId] = useState(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
-  // Show guest mode if forced (e.g., /local route) or if actually offline
-  const showGuestMode = forceGuestMode || isOffline;
+  // Show guest mode if forced (e.g., /local route) or if actually offline.
+  // `manualLoginOverride` lets the user opt INTO the email/phone path
+  // from the guest UI when they're on /local but have network — the
+  // route still defaults to guest (offline-first design intent) but
+  // the email/phone tabs are one click away.  Offline state cannot
+  // be overridden — OTP delivery requires network.
+  const [manualLoginOverride, setManualLoginOverride] = useState(false);
+  const showGuestMode =
+    (forceGuestMode || isOffline) && !(manualLoginOverride && !isOffline);
   // Detect returning guest (name saved from previous session)
   const savedGuestName = localStorage.getItem('guest_name') || '';
   const isReturningGuest = showGuestMode && !!savedGuestName;
@@ -249,10 +256,17 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
         setAlert(true);
       }
     } catch (error) {
-      console.warn('OTP send failed:', error.message || error);
+      // Network-level failure (CORS preflight, DNS, timeout, cloud
+      // unreachable, certificate) \u2014 the cloud was NEVER queried, so we
+      // cannot say whether the account exists.  Showing "you don't have
+      // an account" here lied to users who are merely on a flaky
+      // connection (incident 2026-05-11: registered users with intact
+      // cloud rows were told to "sign up").  Surface the real failure
+      // mode so retry-on-connection is the obvious next step.
+      console.warn('OTP send fetch failed:', error.message || error);
       setAlert(true);
       setAlertContent(
-        'It looks like you don\u2019t have an account yet. Sign up to get started!'
+        'Couldn\u2019t reach our servers. Please check your connection and try again.'
       );
       return false;
     } finally {
@@ -304,6 +318,21 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
           localStorage.setItem('user_id', encryptedUserId);
           localStorage.setItem('email_address', encryptedEmailAddress);
           localStorage.setItem('refresh_token', encryptedRefreshToken);
+
+          // 2026-05-11: same-tab notifier — Demopage's auth-state useEffect
+          // had dep `[decryptedEmail, decryptedUserId]` (self-referential),
+          // so it could never see a fresh localStorage write from another
+          // component.  Workers + SSE re-init only re-fire when those
+          // React state vars change.  Dispatch a custom event so Demopage
+          // can re-decrypt localStorage and update React state, which
+          // then cascades to worker terminate-and-reinit (with the cloud
+          // user_id) and SSE reconnect.  Without this, chat publishes
+          // and TTS subscribe diverge → frontend never sees response.
+          try {
+            window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
+              detail: {source: 'otp_login', user_id: userId},
+            }));
+          } catch (_e) { /* ignore — same-origin, will never throw */ }
 
           // Migrate guest agent data before clearing
           const guestUserId = localStorage.getItem('guest_user_id');
@@ -472,9 +501,23 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
           localStorage.setItem('guest_user_id', user.id);
           localStorage.setItem('social_user_id', user.id);
           localStorage.setItem('guest_name_verified', 'true');
-          // Show one-time recovery code
-          setRecoveryCode(recovery_code);
-          setShowRecoveryCode(true);
+          // The HARTOS idempotent path (existing guest re-registers
+          // because their JWT expired) returns recovery_code: null on
+          // purpose — re-issuing would invalidate the saved code (see
+          // HARTOS integrations/social/api.py:229).  In that case the
+          // user has already saved their code; skip the one-time-
+          // recovery panel and just continue.  Showing the panel with
+          // null content was producing a blank box + "Copy & Continue"
+          // that copied the literal string "null" to the clipboard
+          // (regression diagnosed 2026-05-15).
+          if (recovery_code) {
+            setRecoveryCode(recovery_code);
+            setShowRecoveryCode(true);
+          } else {
+            resetForm();
+            onClose();
+            navigate('/agents/Hevolve');
+          }
           return;
         } catch {
           // Backend unavailable — fall through to offline mode
@@ -613,7 +656,12 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
             </div>
             <button
               onClick={() => {
-                navigator.clipboard?.writeText(recoveryCode);
+                // Defensive: only write to clipboard if we actually
+                // have a code.  Coercion would have written "null"
+                // (regression captured 2026-05-15).
+                if (recoveryCode) {
+                  navigator.clipboard?.writeText(recoveryCode);
+                }
                 setShowRecoveryCode(false);
                 resetForm();
                 onClose();
@@ -820,6 +868,14 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                   Have a recovery code? Recover Guest Session
                 </button>
               )}
+              {!isOffline && (
+                <button
+                  onClick={() => setManualLoginOverride(true)}
+                  className="w-full text-sm text-gray-500 hover:text-blue-700 btn-press"
+                >
+                  Or sign in with email / phone
+                </button>
+              )}
             </div>
           )
         ) : !showRecoveryCode && !showRecoverMode ? (
@@ -996,6 +1052,16 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                 Sign Up
               </button>
             </div>
+            {forceGuestMode && manualLoginOverride && (
+              <div className="mt-2 text-center text-sm text-gray-500">
+                <button
+                  className="hover:text-blue-700"
+                  onClick={() => setManualLoginOverride(false)}
+                >
+                  ← Continue as guest instead
+                </button>
+              </div>
+            )}
           </>
         ) : null}
       </div>

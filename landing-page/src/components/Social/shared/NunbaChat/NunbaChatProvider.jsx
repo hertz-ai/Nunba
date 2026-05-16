@@ -749,15 +749,19 @@ export default function NunbaChatProvider({children}) {
         if (currentAgentRef.current !== agentKey) return; // agent switched
 
         if (retryCount > 0) {
-          const backoff = getBackoff(retryCount - 1);
-          updateMsgById(msgId, {
-            status: 'retrying',
-            error: `${lastReason} — retrying in ${Math.round(backoff / 1000)}s...`,
-            retryCount,
-          });
           setIsTyping(false); // no dots during backoff
-          await new Promise((r) => setTimeout(r, backoff));
-          if (currentAgentRef.current !== agentKey) return;
+          const totalSec = Math.max(1, Math.round(getBackoff(retryCount - 1) / 1000));
+          let aborted = false;
+          for (let sec = totalSec; sec > 0; sec--) {
+            updateMsgById(msgId, {
+              status: 'retrying',
+              error: `${lastReason} — retrying in ${sec}s...`,
+              retryCount,
+            });
+            await new Promise((r) => setTimeout(r, 1000));
+            if (currentAgentRef.current !== agentKey) { aborted = true; break; }
+          }
+          if (aborted) return;
           setIsTyping(true);
         }
 

@@ -351,6 +351,34 @@ export const ratingsApi = {
   trust: (userId) => socialApi.get(`/trust/${userId}`),
 };
 
+// --- Calls (Phase 7d) — voice/video/screen-share rooms ---
+//
+// Server flag-gated by `calls_v1`; off → 503.  Mirrors RN socialApi.callsApi
+// (Hevolve_React_Native/services/socialApi.js) for SPA/RN parity.
+//
+// Token-mode return shape:
+//   { mode: 'livekit',         url, token, metadata, expires_at }
+//   { mode: 'livekit_pending', url, token: '', reason }   ← infra not ready
+//   { mode: 'p2p_mesh',        call_id, reason }          ← flat/Nunba/regional
+//
+// Consumed by components/Social/Calls/CallRoom.js.  Adding this export
+// unblocks the React build (was failing with
+// "callsApi is not exported from socialApi").
+export const callsApi = {
+  start: ({parent_kind, parent_id, kind = 'voice', title, settings} = {}) =>
+    socialApi.post('/calls', {parent_kind, parent_id, kind, title, settings}),
+  get: (call_id) => socialApi.get(`/calls/${call_id}`),
+  token: (call_id, opts = {}) => socialApi.post(`/calls/${call_id}/token`, opts),
+  join: (call_id, opts = {}) => socialApi.post(`/calls/${call_id}/join`, opts),
+  leave: (call_id) => socialApi.post(`/calls/${call_id}/leave`, {}),
+  end: (call_id) => socialApi.post(`/calls/${call_id}/end`, {}),
+  participants: (call_id, include_left = false) =>
+    socialApi.get(`/calls/${call_id}/participants`,
+      include_left ? {params: {include_left: 'true'}} : undefined),
+  addAgent: (call_id, agent_id) =>
+    socialApi.post(`/calls/${call_id}/agents`, {agent_id}),
+};
+
 // --- Referrals ---
 export const referralsApi = {
   getCode: () => socialApi.get('/referral/code'),
@@ -585,9 +613,12 @@ export const dashboardApi = {
 };
 
 // --- Chat API (Local Nunba backend) ---
-// Local LLM inference can take 60-90s on small models — use 120s timeout
+// Local LLM inference can take 60-90s on small models; autogen recipe builds
+// triggered by a chat turn push end-to-end latency to 60-120s on cold cache.
+// Use 180s timeout (task #486) to outlast the autogen build so the client
+// doesn't force-abort while the backend is still composing the reply.
 const chatApiClient = createApiClient(CHAT_API_URL, {
-  timeout: 120000,
+  timeout: 180000,
   cache: false,
 });
 
@@ -937,6 +968,21 @@ export const invitesApi = {
                   include_responded ?
                     {params: {include_responded: 'true'}} : undefined),
   resolveCode: (code) => socialApi.get(`/invites/code/${code}`),
+};
+
+// --- Inbox (PR D — flagship unified inbox) ---
+// Wraps GET /api/social/sync/inbox.  Server flag-gated by `sync_v1`,
+// returns a flattened cross-source row list:
+//   { cursor, has_more, rows: [InboxRow, ...] }
+// where InboxRow = { id, kind, parent_kind, parent_id, sender_id,
+//                    sender_kind, content_preview, is_unread,
+//                    last_activity_at, deep_link }.
+// Pass back the `cursor` as `since` to fetch the next page.
+export const inboxApi = {
+  list: ({since, limit = 50} = {}) =>
+    socialApi.get('/sync/inbox', {
+      params: since ? {since, limit} : {limit},
+    }),
 };
 
 // --- Marketplace ---

@@ -324,6 +324,23 @@ build_exe_options = {
         # so include the full package trees to ensure all submodules are available.
         "langchain_classic",
         "langchain_core",
+        # langchain_core.language_models/__init__.py uses `import_attr` from
+        # langchain_core._import_utils to lazy-load classes like
+        # LanguageModelOutput from `.base`.  cx_Freeze sometimes fails to
+        # follow that lazy chain even when the parent package is listed,
+        # producing the 2026-05-14 build-windows failure (run
+        # 25855122044/build-windows): `ImportError: cannot import name
+        # 'LanguageModelOutput' from 'langchain_core.language_models'`.
+        # Listing the submodules explicitly forces cx_Freeze to compile
+        # each .py into the bundle, so the lazy attribute resolution at
+        # runtime always finds its target.
+        "langchain_core.language_models",
+        "langchain_core.language_models.base",
+        "langchain_core.language_models.chat_models",
+        "langchain_core.language_models.llms",
+        "langchain_core.language_models.fake",
+        "langchain_core.language_models.fake_chat_models",
+        "langchain_core._import_utils",
         "io",
         "uuid",
         "subprocess",
@@ -333,6 +350,18 @@ build_exe_options = {
         "pyperclip",
         "waitress",
         "requests",
+        # requests' char-detection dependency.  cx_Freeze's tracer misses
+        # charset_normalizer on macOS (witnessed 2026-05-14 build run
+        # 25842004495/build-macos: post-build Nunba --validate emits
+        # `RequestsDependencyWarning: Unable to find acceptable character
+        # detection dependency` and exits 1 because requests' import
+        # fails downstream).  Listing it explicitly forces bundling.
+        # idna + certifi follow the same pattern — declare them all so
+        # `import requests` + TLS verification both succeed in the
+        # frozen binary across all three OSes.
+        "charset_normalizer",
+        "idna",
+        "certifi",
 
         "routes.auth",  # Shared auth decorator (require_local_or_token)
         "routes.chatbot_routes",  # Chatbot routes module
@@ -696,17 +725,16 @@ def find_hevolve_modules():
     """
     # Auto-discover from HARTOS pyproject.toml — single source of truth.
     # Uses regex (not tomllib) to avoid cx_Freeze import-tracing recursion.
+    # Try sibling path first (developer + CI-with-symlink), then the CI
+    # _deps/ fallback (when the symlink creation failed).
     hevolve_modules = None
-    _proj = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    _hartos_toml = None
-    for _ht_cand in [
-        os.path.join(_proj, '_deps', 'HARTOS', 'pyproject.toml'),
-        os.path.join(os.path.dirname(_proj), 'HARTOS', 'pyproject.toml'),
-    ]:
-        if os.path.isfile(_ht_cand):
-            _hartos_toml = _ht_cand
-            break
-    if _hartos_toml and os.path.isfile(_hartos_toml):
+    _hartos_toml_candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     '..', '..', 'HARTOS', 'pyproject.toml'),
+        os.path.join('_deps', 'HARTOS', 'pyproject.toml'),
+    ]
+    _hartos_toml = next((p for p in _hartos_toml_candidates if os.path.isfile(p)), None)
+    if _hartos_toml:
         import re
         try:
             with open(_hartos_toml, encoding='utf-8') as _tf:
@@ -752,10 +780,16 @@ def find_hevolve_modules():
             if os.path.isfile(mod_path):
                 found[mod_name] = (mod_path, os.path.join("lib", f"{mod_name}.py"))
 
-    # 3. sibling HARTOS directory
-    llm_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           '..', '..', 'HARTOS')
-    if os.path.isdir(llm_dir):
+    # 3. sibling HARTOS directory (developer + CI-with-symlink) or
+    #    CI _deps/HARTOS fallback (when the symlink failed).
+    _hartos_root_candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     '..', '..', 'HARTOS'),
+        os.path.join('_deps', 'HARTOS'),
+    ]
+    for llm_dir in _hartos_root_candidates:
+        if not os.path.isdir(llm_dir):
+            continue
         for mod_name in hevolve_modules:
             if mod_name in found:
                 continue
@@ -800,8 +834,19 @@ if _hartos_dir is None:
 # found" with no diagnostic trail.  Treat missing source as a hard
 # build-abort, not a warning.
 _agent_ledger_candidates = [
-    os.path.join(_hartos_dir, 'agent-ledger-opensource', 'agent_ledger'),
+    # 1. Sibling HARTOS (when developer cloned HARTOS next to Nunba, or
+    #    when CI mklink /J to _deps/HARTOS succeeded).
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 '..', '..', 'HARTOS', 'agent-ledger-opensource', 'agent_ledger'),
+    # 2. Vendored copy inside this repo.
     os.path.join('hartos_backend_src', 'agent_ledger'),
+    # 3. CI checkout location.  GitHub Actions checks out HARTOS into
+    #    Nunba/_deps/HARTOS and then `mklink /J ../HARTOS _deps/HARTOS`
+    #    with `|| true` masking failures.  When the junction creation
+    #    fails (observed 2026-05-14 on run 25842004495 build-windows),
+    #    the sibling path is empty and the build aborts.  This direct
+    #    lookup is the resilient fallback.
+    os.path.join('_deps', 'HARTOS', 'agent-ledger-opensource', 'agent_ledger'),
 ]
 _agent_ledger_resolved = None
 for _al_path in _agent_ledger_candidates:

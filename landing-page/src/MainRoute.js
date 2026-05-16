@@ -30,6 +30,8 @@ const Home = lazy(() => import("./pages/Home"));
 const AboutUs = lazy(() => import("./pages/aboutus"));
 const Personalised_Learning = lazy(() => import("./pages/index-three"));
 const Pricing = lazy(() => import("./pages/pricing"));
+const CommercialApiPricing = lazy(() => import("./pages/CommercialApiPricing"));
+const UpgradeSuccess = lazy(() => import("./pages/UpgradeSuccess"));
 const SpeechTherapyPage = lazy(() => import("./pages/SpeechTherapyPage"));
 const TrialPlanPricing = lazy(() => import("./pages/TrialPlanPricing"));
 const PaymentFailure = lazy(() => import("../src/components/PaymentFailure"));
@@ -66,6 +68,8 @@ const CampaignDetailPage = lazyRetry(() => import('./components/Social/Campaigns
 const PostDetailPage = lazyRetry(() => import('./components/Social/Post/PostDetailPage'));
 const SearchPage = lazyRetry(() => import('./components/Social/Search/SearchPage'));
 const NotificationsPage = lazyRetry(() => import('./components/Social/Notifications/NotificationsPage'));
+const InboxPage = lazyRetry(() => import('./components/Social/Inbox/InboxPage'));
+const CallRoom = lazyRetry(() => import('./components/Social/Calls/CallRoom'));
 const RecipeListPage = lazyRetry(() => import('./components/Social/Recipes/RecipeListPage'));
 const CommunityListPage = lazyRetry(() => import('./components/Social/Communities/CommunityListPage'));
 const CommunityDetailPage = lazyRetry(() => import('./components/Social/Communities/CommunityDetailPage'));
@@ -283,6 +287,41 @@ function MainRoutes() {
                 </Helmet>
                 <Pricing />
               </>
+            </Suspense>
+          }
+        />
+
+        {/* Commercial API pricing — the public-facing tier table marketing
+            copy in HARTOS/_revenue_assets.md points buyers at.  Renders
+            even when api.hevolve.ai isn't reachable yet (component falls
+            back to the canonical TIER_CONFIG bundled at build time). */}
+        <Route
+          path="/pricing"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <CommercialApiPricing />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/api/pricing"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <CommercialApiPricing />
+            </Suspense>
+          }
+        />
+
+        {/* Stripe Checkout return URL.  See
+            HARTOS/integrations/agent_engine/commercial_api.py:
+            complete_upgrade_checkout — Stripe redirects here with
+            ?session_id=cs_... and the page POSTs that back to the
+            backend to finalize the tier bump. */}
+        <Route
+          path="/upgrade-success"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <UpgradeSuccess />
             </Suspense>
           }
         />
@@ -534,6 +573,8 @@ function MainRoutes() {
 
           {/* Auth required — flat+ only */}
           <Route path="notifications" element={<RoleGuard minRole="flat"><NotificationsPage /></RoleGuard>} />
+          <Route path="inbox" element={<RoleGuard minRole="flat"><InboxPage /></RoleGuard>} />
+          <Route path="calls/:callId" element={<RoleGuard minRole="flat"><CallRoom /></RoleGuard>} />
           <Route path="regions" element={<RoleGuard minRole="flat"><RegionsPage /></RoleGuard>} />
           <Route path="regions/:regionId" element={<RoleGuard minRole="flat"><RegionDetailPage /></RoleGuard>} />
           <Route path="hub" element={<ActivityHub />} />

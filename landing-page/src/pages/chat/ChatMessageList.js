@@ -6,7 +6,9 @@ import hourglassAnimation from '../../assets/hourglass-lottie.json';
 import Lottie from 'lottie-react';
 import {FileText} from 'lucide-react';
 import Markdown from 'markdown-to-jsx';
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useRef} from 'react';
+
+import {formatTier} from '../../utils/tier';
 
 // Markdown renderer for assistant replies — the model emits standard
 // Markdown (**bold**, _italic_, lists, code fences, links).  Without
@@ -70,26 +72,96 @@ const THINKING_VERBS = [
   'Considering',
 ];
 
-/** Cycles through verbs while the LLM is processing */
-function CyclingVerb() {
+// Hevolve brand palette — sampled from the in-app Lottie animations
+// (hourglass-lottie.json #0197F7 + #FF0000) plus the secondary trio
+// (#00E89D / #6C63FF) already used across pricing CTAs and Demopage
+// accents.  Combined as a 3-stop cycle (skipping the bright red, which
+// is too jarring for inline body text) so the gradient drifts smoothly
+// across the visible characters without strobing.
+const HEVOLVE_GRADIENT = 'linear-gradient(90deg, #0197F7 0%, #00E89D 33%, #6C63FF 66%, #0197F7 100%)';
+
+/** Cycles through generic verbs unless overrideText (server-emitted stage)
+ * is provided.  When server has real status text ("Searching your message
+ * history…", "Preparing tools…"), use it directly and stop cycling.
+ *
+ * Colour treatment:
+ *   - Text is rendered with the Hevolve gradient as `background-clip: text`.
+ *     The gradient slowly drifts (background-position animation) so even
+ *     idle "Analyzing..." text breathes between the brand colours.
+ *   - On every fresh text change a `key` remount restarts both:
+ *       1. The drift animation (gradient sweep) — sharp restart, no jump.
+ *       2. A brief 600ms "highlight" overlay that boosts saturation, then
+ *          fades back to the steady-state gradient.
+ *     The combination produces a "light up on new word" feel without
+ *     being epileptic on rapid trace bursts.
+ */
+function CyclingVerb({overrideText}) {
   const [idx, setIdx] = useState(0);
   useEffect(() => {
+    if (overrideText) return;
     const id = setInterval(
       () => setIdx((i) => (i + 1) % THINKING_VERBS.length),
       2000
     );
     return () => clearInterval(id);
-  }, []);
+  }, [overrideText]);
+  const text = overrideText || `${THINKING_VERBS[idx]}...`;
   return (
     <span
-      key={idx}
-      className="inline-block text-xs text-gray-400"
+      key={text}
+      className="inline-block text-xs font-medium truncate max-w-[60vw]"
       style={{
-        animation: 'verbFadeSwap 2s ease-in-out infinite',
+        backgroundImage: HEVOLVE_GRADIENT,
+        backgroundSize: '300% 100%',
+        backgroundClip: 'text',
+        WebkitBackgroundClip: 'text',
+        WebkitTextFillColor: 'transparent',
+        color: 'transparent',
+        // Two animations layered: gradient drift (steady) +
+        // verbFadeSwap (existing vertical fade-in on remount).
+        // hevolveTextDrift runs at 6s linear infinite so the colour
+        // story is calm; verbFadeSwap is the per-change pulse.
+        animation:
+          'hevolveTextDrift 6s linear infinite, verbFadeSwap 600ms ease-out',
+        // Smooth interpolation back to steady when the next text
+        // arrives — covers any transient style mismatch.
+        transition: 'filter 400ms ease, opacity 400ms ease',
+        filter: 'saturate(1.2)',
       }}
     >
-      {THINKING_VERBS[idx]}...
+      {text}
     </span>
+  );
+}
+
+/** Elapsed-time counter that ticks every 1s while active.  Format scales:
+ * "5s" → "42s" → "1m 12s" → "1h 5m 30s".  Resets cleanly on next request. */
+function ElapsedTimer({active}) {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef(null);
+  useEffect(() => {
+    if (active) {
+      startRef.current = Date.now();
+      setElapsed(0);
+      const id = setInterval(
+        () => setElapsed(Date.now() - startRef.current),
+        1000
+      );
+      return () => clearInterval(id);
+    }
+    startRef.current = null;
+  }, [active]);
+  if (!active) return null;
+  const s = Math.floor(elapsed / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  const txt = h > 0
+    ? `${h}h ${m % 60}m`
+    : m > 0
+    ? `${m}m ${s % 60}s`
+    : `${s}s`;
+  return (
+    <span className="ml-auto text-xs text-gray-400 font-mono">⏱ {txt}</span>
   );
 }
 
@@ -139,6 +211,15 @@ const ChatMessageList = ({
   onExecutePlan,
   onSetupLlm,
   onConfigureLlm,
+  // #508 — server-emitted dynamic stage text (latest priority=49 'Thinking'
+  // event text, ~6 words).  Substituted into the CyclingVerb spinner so
+  // the user sees real status ("Searching your message history…") instead
+  // of generic cycling verbs.  Empty/undefined falls back to the cycle.
+  latestThinkingText,
+  // #508 — when false, hide the collapsible <ThinkingProcessContainer>
+  // entirely (the spinner row's CyclingVerb is the sole status surface).
+  // Default true preserves today's UX.
+  showThinkingTraces = true,
 }) => {
   const isIdleVideo = (url) => url === idleVideoUrl;
 
@@ -146,12 +227,14 @@ const ChatMessageList = ({
     <div className="w-full px-3 py-4 space-y-6" role="log" aria-live="polite" aria-label="Chat messages">
       {messages.map((message, index) => {
         if (message.type === 'thinking_container') {
+          if (!showThinkingTraces) return null;  // #508 — toggle OFF: hide collapsible
           return (
             <ThinkingProcessContainer
               key={`thinking-container-${message.id}-${index}`}
               thinkingMessages={message.thinkingSteps}
               isMainExpanded={message.isMainExpanded}
               isContainerCompleted={message.isCompleted}
+              hideTimer={isRequestInFlight}  // #508 — hourglass row owns the live timer while in-flight
               onToggleMain={() => {
                 setMessages((prev) =>
                   prev.map((msg, msgIndex) =>
@@ -504,6 +587,16 @@ const ChatMessageList = ({
                           />
                         </div>
                       )}
+                      {/* Timestamp — parity with the assistant bubble below.
+                          Same field (message.timestamp), same helper
+                          (formatTimestamp).  Demopage backfills this on
+                          every send (Demopage.js:1380) so the field is
+                          reliably present. */}
+                      {message.timestamp && (
+                        <div className="text-xs mt-1" style={{ color: 'rgba(0,0,0,0.55)' }}>
+                          {formatTimestamp(message.timestamp)}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -531,23 +624,38 @@ const ChatMessageList = ({
                           </Markdown>
                         </div>
                       )}
-                      {/* Intelligence source badge + timestamp */}
-                      <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
-                        <div className="flex items-center gap-1">
-                          <span
-                            className="inline-block w-2 h-2 rounded-full"
-                            style={{
-                              backgroundColor: message.source?.includes('local') || !message.source
-                                ? '#2ECC71'
-                                : '#6C63FF',
-                            }}
-                          />
-                          {message.source?.includes('local') || !message.source ? 'Local' : 'Hive'}
-                        </div>
-                        {message.timestamp && (
-                          <span>&middot; {formatTimestamp(message.timestamp)}</span>
-                        )}
-                      </div>
+                      {/* Intelligence source badge + timestamp.
+                          servedBy/nodeTier come from /chat response_json
+                          (Nunba routes/chatbot_routes.py:2693).  Fall back
+                          to message.source so legacy buckets that didn't
+                          plumb the new fields still render something. */}
+                      {(() => {
+                        const tier = formatTier(
+                          message.servedBy ||
+                            (message.source?.includes('local') ? 'local'
+                              : message.source?.includes('cloud') ? 'cloud'
+                              : message.source?.includes('hive') ? 'hive'
+                              : 'local'),
+                          message.nodeTier,
+                        );
+                        return (
+                          <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                            <div
+                              className="flex items-center gap-1"
+                              title={`${tier.label} · ${tier.sublabel}`}
+                            >
+                              <span
+                                className="inline-block w-2 h-2 rounded-full"
+                                style={{ backgroundColor: tier.color }}
+                              />
+                              <span>{tier.emoji} {tier.label}</span>
+                            </div>
+                            {message.timestamp && (
+                              <span>&middot; {formatTimestamp(message.timestamp)}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </>
                   )}
 
@@ -672,28 +780,109 @@ const ChatMessageList = ({
         );
       })}
 
-      {isRequestInFlight && !currentThinkingId && (
-        <div className="flex items-center justify-start gap-2 py-2 px-1">
-          <style>{`
-            @keyframes verbFadeSwap {
-              0% { opacity: 0; transform: translateY(4px); }
-              15% { opacity: 1; transform: translateY(0); }
-              85% { opacity: 1; transform: translateY(0); }
-              100% { opacity: 0; transform: translateY(-4px); }
-            }
-          `}</style>
-          <Lottie
-            animationData={hourglassAnimation}
-            loop
-            style={{width: 24, height: 24}}
-          />
-          <CyclingVerb />
-        </div>
-      )}
+      <ThinkingHourglassRow
+        isRequestInFlight={isRequestInFlight}
+        latestThinkingText={latestThinkingText}
+      />
 
       <div ref={messagesEndRef} />
     </div>
   );
 };
+
+// Compact human-readable formatter for the post-hoc "Thought for X"
+// pill.  Sub-second → "Xms", under a minute → "X.Xs", longer → "Xm Ys".
+// Keeps the standby pill short enough to sit comfortably on one row.
+function formatThoughtMs(ms) {
+  if (!ms || ms < 0) return '';
+  const s = ms / 1000;
+  if (s < 1) return `${Math.round(ms)}ms`;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const minutes = Math.floor(s / 60);
+  const seconds = Math.round(s % 60);
+  return `${minutes}m ${seconds}s`;
+}
+
+/** Hourglass row + Claude-Code-style standby pill.
+ *
+ * In-flight: Lottie + colour-cycling thinking text + ElapsedTimer.
+ * Standby (post-request):  no Lottie, no animation — just
+ *   "Thought for 4s" pill, matching Claude Code's silent end-state.
+ *   Persists until the next request starts, then collapses.
+ *
+ * Implementation is kept INSIDE ChatMessageList.js so the existing prop
+ * surface (isRequestInFlight, latestThinkingText) drives both states
+ * without threading new props from Demopage.  The total-elapsed
+ * capture is local: we observe the in-flight transition and snapshot
+ * the duration on the trailing edge.
+ */
+function ThinkingHourglassRow({isRequestInFlight, latestThinkingText}) {
+  const [lastThoughtMs, setLastThoughtMs] = useState(0);
+  const prevInFlightRef = useRef(false);
+  const startMsRef = useRef(null);
+
+  useEffect(() => {
+    if (isRequestInFlight && !prevInFlightRef.current) {
+      // false → true: new request starting, reset the standby pill.
+      startMsRef.current = Date.now();
+      setLastThoughtMs(0);
+    } else if (!isRequestInFlight && prevInFlightRef.current) {
+      // true → false: capture the cumulative thinking duration.
+      if (startMsRef.current) {
+        setLastThoughtMs(Date.now() - startMsRef.current);
+        startMsRef.current = null;
+      }
+    }
+    prevInFlightRef.current = isRequestInFlight;
+  }, [isRequestInFlight]);
+
+  const showStandby = !isRequestInFlight && lastThoughtMs > 0;
+
+  if (!isRequestInFlight && !showStandby) return null;
+
+  return (
+    <div className="flex items-center justify-start gap-2 py-2 px-1">
+      <style>{`
+        @keyframes verbFadeSwap {
+          0%   { opacity: 0; transform: translateY(4px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes hevolveTextDrift {
+          0%   { background-position: 0% 50%; }
+          50%  { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        @keyframes hevolveStandbyFadeIn {
+          0%   { opacity: 0; transform: translateY(2px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+      {isRequestInFlight ? (
+        <>
+          <Lottie
+            animationData={hourglassAnimation}
+            loop
+            style={{width: 24, height: 24}}
+          />
+          <CyclingVerb overrideText={latestThinkingText} />
+          <ElapsedTimer active={isRequestInFlight} />
+        </>
+      ) : (
+        // Standby pill — Claude Code shape: no animation, just the
+        // post-hoc duration in subdued type.  Same row position so the
+        // transition from in-flight → standby is a quiet swap rather
+        // than a layout jump.
+        <span
+          className="text-[11px] text-gray-500 font-mono"
+          style={{
+            animation: 'hevolveStandbyFadeIn 280ms ease-out',
+          }}
+        >
+          ✦ Thought for {formatThoughtMs(lastThoughtMs)}
+        </span>
+      )}
+    </div>
+  );
+}
 
 export default ChatMessageList;

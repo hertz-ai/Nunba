@@ -1,6 +1,7 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
+import { QRCodeSVG } from 'qrcode.react';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CloseIcon from '@mui/icons-material/Close';
@@ -42,14 +43,65 @@ let _overlayIdCounter = 0;
 
 // ─── Type-specific renderers ─────────────────────────────────────────
 
-function NotificationCard({ data }) {
+function NotificationCard({ data, navigate, onDismiss }) {
   const colors = { info: INFO_BLUE, success: SUCCESS, error: ERROR_RED, warning: '#F39C12' };
   const accent = colors[data.severity] || INFO_BLUE;
+  // HARTOS COMPONENT_TYPES declares `actions` as a prop of
+  // 'notification' (liquid_ui_service.py:50).  Honor that contract:
+  // render each action as a button.  `kind: 'navigate'` invokes the
+  // same `navigate(target)` path AgentOverlay uses for the top-level
+  // 'navigate' component type — single canonical navigation primitive,
+  // no parallel path.  Unknown action kinds fall back to a console
+  // log so they're surfaceable without breaking render.
+  const actions = Array.isArray(data.actions) ? data.actions : [];
   return (
     <Box>
       <Box sx={{ width: 4, height: '100%', position: 'absolute', left: 0, top: 0, borderRadius: '16px 0 0 16px', background: accent }} />
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>{data.title || 'Notification'}</Typography>
-      <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)' }}>{data.message || data.content}</Typography>
+      <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)', whiteSpace: 'pre-line' }}>{data.message || data.content}</Typography>
+      {actions.length > 0 && (
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 1 }}>
+          {actions.map((action, i) => {
+            const label = typeof action === 'string' ? action : action.label;
+            const kind = typeof action === 'object' ? action.kind : null;
+            const target = typeof action === 'object' ? action.target : null;
+            return (
+              <Button
+                key={i}
+                size="small"
+                variant={i === 0 ? 'contained' : 'outlined'}
+                onClick={() => {
+                  if (kind === 'navigate' && navigate && target) {
+                    navigate(target);
+                    if (onDismiss) onDismiss();
+                  } else if (kind === 'external' && target) {
+                    // OAuth / external sign-in flows: open in a new tab
+                    // with security-correct rel attributes.  Same
+                    // pattern as ProductCardOverlay.buy_action.
+                    window.open(target, '_blank', 'noopener,noreferrer');
+                    if (onDismiss) onDismiss();
+                  } else {
+                    // Surface unhandled action so it's not silently
+                    // swallowed — better than no feedback.
+                    // eslint-disable-next-line no-console
+                    console.warn('NotificationCard: unhandled action', action);
+                  }
+                }}
+                sx={{
+                  fontSize: '0.7rem',
+                  textTransform: 'none',
+                  background: i === 0 ? accent : 'transparent',
+                  borderColor: accent,
+                  color: i === 0 ? '#fff' : accent,
+                  '&:hover': { background: i === 0 ? accent : 'rgba(255,255,255,0.05)' },
+                }}
+              >
+                {label}
+              </Button>
+            );
+          })}
+        </Box>
+      )}
     </Box>
   );
 }
@@ -342,11 +394,11 @@ function ListOverlay({ data }) {
   );
 }
 
-function LayoutOverlay({ data }) {
+function LayoutOverlay({ data, navigate, onDismiss }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: data.direction || 'column', gap: data.gap || 1 }}>
       {(data.children || []).map((child, i) => (
-        <Box key={i}><OverlayContent data={child} /></Box>
+        <Box key={i}><OverlayContent data={child} navigate={navigate} onDismiss={onDismiss} /></Box>
       ))}
     </Box>
   );
@@ -430,12 +482,100 @@ function MeetCopilotOverlay({ data, onDismiss }) {
   );
 }
 
+// ─── QR pairing overlay ──────────────────────────────────────────────
+//
+// Renders a QR code the user scans with their existing client app
+// (WhatsApp → Linked devices, Telegram → Devices, Discord → Authorize).
+// Driven by HARTOS's `agent_ui_update({type: 'qr_pair', qr, channel,
+// title, help})` emitted from `_wire_qr_pair_emitter` after a successful
+// register_channel for any auth_method='qr_session' channel.  Same Liquid
+// UI pipe the rest of the overlays use — single emit path, no parallel
+// surface.
+
+function QRPairOverlay({ data, onDismiss }) {
+  const qr = (data && data.qr) || '';
+  const title = (data && data.title) || 'Scan to connect';
+  const help = (data && data.help) || (
+    'Open the app on your phone, find "Linked devices" or "Devices", '
+    + 'and scan this code.'
+  );
+  return (
+    <Box sx={{ p: 2, textAlign: 'center' }}>
+      <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.25 }}>
+        {title}
+      </Typography>
+      {qr ? (
+        <Box
+          sx={{
+            display: 'inline-block',
+            p: 2,
+            bgcolor: '#fff',
+            borderRadius: 2,
+            boxShadow: '0 4px 18px rgba(0,0,0,0.4)',
+          }}
+        >
+          <QRCodeSVG value={qr} size={220} level="M" includeMargin={false} />
+        </Box>
+      ) : (
+        <Box sx={{ py: 4 }}>
+          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)' }}>
+            Generating QR code…
+          </Typography>
+        </Box>
+      )}
+      <Typography
+        variant="body2"
+        sx={{ color: 'rgba(255,255,255,0.7)', mt: 2, lineHeight: 1.4 }}
+      >
+        {help}
+      </Typography>
+      {onDismiss && (
+        <Button
+          size="small"
+          variant="text"
+          onClick={onDismiss}
+          sx={{ mt: 1.5, color: 'rgba(255,255,255,0.5)' }}
+        >
+          Cancel
+        </Button>
+      )}
+    </Box>
+  );
+}
+
 // ─── Router: picks the right renderer ────────────────────────────────
 
-function OverlayContent({ data, onDismiss }) {
+function OverlayContent({ data, onDismiss, navigate }) {
   const type = data.type || data.component_type || 'notification';
   switch (type) {
-    case 'notification': return <NotificationCard data={data} />;
+    case 'notification': return <NotificationCard data={data} navigate={navigate} onDismiss={onDismiss} />;
+    case 'toast': {
+      // HARTOS toast = transient notification — same renderer, default
+      // severity 'info' when omitted.  Reuses NotificationCard so the
+      // glass + accent + actions plumbing stays a single canonical
+      // implementation.
+      const toastData = {...data, severity: data.severity || 'info'};
+      return <NotificationCard data={toastData} navigate={navigate} onDismiss={onDismiss} />;
+    }
+    case 'oauth_link': {
+      // OAuth handshake prompt — render as a notification with a
+      // single navigate action pointing to the provider's authorize
+      // URL.  Pattern parallels Liquid UI notification + actions; no
+      // new renderer needed.  External http(s) target is honoured by
+      // the navigate action via window.open below (kind='external').
+      const oauthData = {
+        title: data.title || `Sign in to ${data.provider || 'service'}`,
+        message: data.description ||
+          `Authorize ${data.provider || 'this service'} to continue.`,
+        severity: data.severity || 'info',
+        actions: data.authorize_url ? [{
+          label: `Open ${data.provider || 'sign-in'}`,
+          kind: 'external',
+          target: data.authorize_url,
+        }] : [],
+      };
+      return <NotificationCard data={oauthData} navigate={navigate} onDismiss={onDismiss} />;
+    }
     case 'product_card': return <ProductCardOverlay data={data} />;
     case 'cart': return <CartOverlay data={data} />;
     case 'checkout': return <CheckoutOverlay data={data} />;
@@ -451,8 +591,9 @@ function OverlayContent({ data, onDismiss }) {
     case 'media': return <MediaOverlay data={data} />;
     case 'metric': return <MetricOverlay data={data} />;
     case 'form': return <FormOverlay data={data} onDismiss={onDismiss} />;
+    case 'qr_pair': return <QRPairOverlay data={data} onDismiss={onDismiss} />;
     case 'list': return <ListOverlay data={data} />;
-    case 'layout': return <LayoutOverlay data={data} />;
+    case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} />;
     case 'meet_copilot': return <MeetCopilotOverlay data={data} onDismiss={onDismiss} />;
     default:
       return (
@@ -550,7 +691,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
               <CloseIcon sx={{ fontSize: 16 }} />
             </IconButton>
             <Box sx={{ mt: overlay.agent_id ? 2.5 : 0 }}>
-              <OverlayContent data={overlay} onDismiss={() => dismiss(overlay._id)} />
+              <OverlayContent data={overlay} onDismiss={() => dismiss(overlay._id)} navigate={navigate} />
             </Box>
           </Box>
         </Grow>

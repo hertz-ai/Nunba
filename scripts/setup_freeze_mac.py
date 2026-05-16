@@ -152,7 +152,15 @@ build_exe_options = {
         "json", "time", "ctypes", "pathlib", "shutil",
         "flask_cors", "pyautogui", "PIL", "io", "uuid",
         "subprocess", "shlex", "pyperclip", "waitress",
-        "requests", "desktop.indicator_window", "routes.chatbot_routes",
+        "requests",
+        # requests' char-detection + encoding deps.  cx_Freeze's tracer
+        # misses these on macOS (run 25842004495 build-macos:
+        # `RequestsDependencyWarning: Unable to find acceptable character
+        # detection dependency` → post-build Nunba --validate exit 1).
+        # Listing them forces bundling so requests works in the frozen
+        # binary, which Stripe SDK + every outbound HTTPS call needs.
+        "charset_normalizer", "idna", "certifi",
+        "desktop.indicator_window", "routes.chatbot_routes",
         "tkinter", "uvicorn", "fastapi", "pydantic",
         "sqlalchemy", "pytz", "autobahn", "shapely",
         "starlette", "alembic", "greenlet",
@@ -695,19 +703,63 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
                 print(_ret.stdout)
             if _ret.stderr:
                 print(_ret.stderr)
-            # Check validate.log
+            # Check validate.log.  On macOS the frozen GUI binary often
+            # has a NULL stdout/stderr (PE32+ subsystem analogue), so the
+            # subprocess.run capture above is empty even when validate
+            # has plenty to say.  The binary writes a verbose log file;
+            # we ALWAYS dump it on failure regardless of dedup heuristics
+            # so the CI runner has something to triage with.  See
+            # 2026-05-14 run 25852109063/build-macos: pre-fix the log
+            # ended at the warning line with no actionable diagnostic.
             _val_log_candidates = [
                 os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs', 'validate.log'),
                 os.path.join(_build_dir, 'validate.log'),
             ]
             _val_log = next((p for p in _val_log_candidates if os.path.isfile(p)), None)
+            _log_text = ''
             if _val_log:
-                _log_text = open(_val_log, encoding='utf-8').read().strip()
-                if _log_text and _log_text not in (_ret.stdout or ''):
-                    print("\n--- validate.log ---")
-                    print(_log_text)
+                try:
+                    _log_text = open(_val_log, encoding='utf-8').read().strip()
+                except OSError as _e:
+                    print(f"[WARN] could not read {_val_log}: {_e}")
+            # Also try the early-boot crash logger (app.py sys.excepthook).
+            # Captures unhandled exceptions from the import-time code that
+            # runs BEFORE the --validate handler opens its own log file —
+            # which is exactly when the macOS-only freeze crashes happen.
+            _early_crash_candidates = [
+                os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba',
+                             'logs', 'early_boot_crash.log'),
+                os.path.join(_build_dir, 'early_boot_crash.log'),
+            ]
+            for _early in _early_crash_candidates:
+                if os.path.isfile(_early):
+                    try:
+                        _early_text = open(_early, encoding='utf-8').read().strip()
+                        if _early_text:
+                            print(f"\n--- early_boot_crash.log ({_early}) ---")
+                            print(_early_text)
+                            print("--- end early_boot_crash.log ---\n")
+                            if not _log_text:
+                                _log_text = _early_text  # so non-empty branch fires below
+                    except OSError as _e:
+                        print(f"[WARN] could not read {_early}: {_e}")
+                    break
             if _ret.returncode != 0:
-                _log_says_good = _val_log and 'Failed: 0' in open(_val_log, encoding='utf-8').read()
+                # Print validate.log content unconditionally on failure.
+                # The previous dedup gate (`if _log_text not in stdout`)
+                # silently skipped when stdout was empty AND log was
+                # short, which is exactly the failure path we need to
+                # diagnose.
+                if _log_text:
+                    print(f"\n--- validate.log ({_val_log}) ---")
+                    print(_log_text)
+                    print("--- end validate.log ---\n")
+                else:
+                    print(f"\n[WARN] validate.log not found at either:")
+                    for _c in _val_log_candidates:
+                        print(f"  - {_c}")
+                    print("  Frozen binary may have crashed before opening the log file.")
+                _log_says_good = _log_text and 'Failed: 0' in _log_text
                 if _log_says_good:
                     print(f"\n[INFO] Exe exited with code {_ret.returncode} but validate.log "
                           f"shows 0 failures -- build is good.\n")
@@ -718,6 +770,9 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
                     print(f"\n*** VALIDATION FAILED (exit {_ret.returncode}) ***")
                     print("Fix import errors above before distributing.\n")
                     sys.exit(1)
+            elif _log_text and _log_text not in (_ret.stdout or ''):
+                print("\n--- validate.log ---")
+                print(_log_text)
             else:
                 print("Validation passed.\n")
     else:

@@ -46,7 +46,29 @@ class RealtimeService {
    * @param {string} [opts.userId] - user_id for guest/local SSE (no JWT)
    */
   init(crossbarWorker, opts = {}) {
-    if (opts.userId) this._userId = opts.userId;
+    // Detect userId change — when the user transitions from "anonymous
+    // visitor" (effectiveUserId='' → SSE registered as literal 'guest')
+    // to "registered guest" (guest_user_id UUID populated post-
+    // authApi.guestRegister), an open SSE connection is stale and must
+    // reconnect with the new uid in the ?user_id= query param.
+    // Without this, the broker keeps storing chat.pupit events under
+    // 'guest' while HARTOS publishes TTS to the per-guest UUID, and
+    // the audio event silently never reaches the client.
+    // Live evidence 2026-05-12: SSE registered uid='guest', TTS event
+    // arrived for uid='d68c9dee-b324-…' — payload filter dropped it.
+    const userIdChanged = (
+      opts.userId !== undefined
+      && opts.userId !== null
+      && opts.userId !== this._userId
+    );
+    if (userIdChanged) {
+      this._userId = opts.userId;
+      if (this._sseConnected) {
+        this._closeSSE();
+      }
+    } else if (opts.userId) {
+      this._userId = opts.userId;
+    }
 
     // Always open SSE — even if worker is null (failed to create).
     // Local events (TTS audio, agent UI) only arrive via SSE.
@@ -174,19 +196,30 @@ class RealtimeService {
       }
     };
 
-    // Named SSE event types from backend
-    _eventSource.addEventListener('notification', (e) => {
-      try {
-        const payload = JSON.parse(e.data);
-        this._dispatchSocialPayload({type: 'notification', ...payload});
-      } catch { /* ignore */ }
-    });
-
-    _eventSource.addEventListener('setup_progress', (e) => {
-      try {
-        const payload = JSON.parse(e.data);
-        this._dispatchSocialPayload({type: 'setup_progress', ...payload});
-      } catch { /* ignore */ }
+    // Named SSE event types from backend.  EventSource silently drops
+    // named events (`event: <name>\ndata: ...\n\n` per main.py:3870) when
+    // no addEventListener is registered for that name — `onmessage`
+    // only fires for the default/unnamed channel.  Missing chat.response
+    // here was why thinking-trace/text events never reached the renderer
+    // in desktop mode while TTS (WAMP path) worked fine — diagnosed
+    // 2026-05-14 against RequestID 30b02e45 (IPL query) where the server
+    // broadcast ~100 type=chat.response events that were silently dropped.
+    //
+    // Array-driven so adding the next event type is a one-line change.
+    // _dispatchSocialPayload normalises {type} from the payload — we
+    // pass `type: name` explicitly so the dispatcher uses the event
+    // channel name even when the payload omits its own type field.
+    [
+      'notification',
+      'setup_progress',
+      'chat.response',
+    ].forEach((name) => {
+      _eventSource.addEventListener(name, (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          this._dispatchSocialPayload({type: name, ...payload});
+        } catch { /* ignore */ }
+      });
     });
 
     _eventSource.onerror = () => {
@@ -218,8 +251,13 @@ class RealtimeService {
   // ── Internal: dispatch (transport-agnostic, idempotent) ─────────────
 
   _isDuplicate(payload) {
-    // Explicit ID (TTS request_id, notification id, etc.)
-    let id = payload.request_id || payload.id;
+    // Per-event dedup id from HARTOS (publish_thinking_trace +
+    // EventBus.emit auto-inject this).  Critical: prefer msg_id over
+    // request_id because multiple events share request_id (N thinking
+    // steps in one chat turn) — keying on request_id alone would drop
+    // every event after the first.  request_id stays the GROUPING key
+    // for daemon-stale filtering (Demopage.js:1434), not for dedup.
+    let id = payload.msg_id || payload.request_id || payload.id;
     // No explicit ID — generate content hash so identical payloads from
     // different transports (WAMP + SSE) dedup correctly.
     if (!id) {
@@ -575,4 +613,16 @@ export function subscribeEncounterIcebreaker(callback) {
 
 // Singleton
 const realtimeService = new RealtimeService();
+
+// Dev/test hook: expose the singleton so Cypress (and curl-style
+// dev probes) can inject synthetic events to verify the full
+// agent_ui_update → AgentOverlay → DOM chain without spinning up
+// Flask + HARTOS + WAMP.  Production builds skip this — the check
+// uses CRA's NODE_ENV which is statically replaced at build time, so
+// the production bundle excludes the assignment via dead-code-elim.
+if (typeof window !== 'undefined' &&
+    process.env.NODE_ENV !== 'production') {
+  window.__realtimeService = realtimeService;
+}
+
 export default realtimeService;

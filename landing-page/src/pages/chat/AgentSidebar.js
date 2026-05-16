@@ -186,17 +186,13 @@ const AgentSidebar = ({
                     onError={handleImgError}
                   />
                 </a>
-                <a
-                  href="https://azurekong.hertzai.com/mkt-aws/examples/daf7beee-7HevolveAI_Agent_Companion_Setup_2.exe"
-                  className="inline-block font-serif text-sm mb-4"
-                >
-                  <img
-                    alt="Download Nunba Companion"
-                    src="/companion.svg"
-                    className="w-32 h-12 object-contain"
-                    onError={handleImgError}
-                  />
-                </a>
+                {/* HEVOLVEAI Windows Companion download removed
+                    2026-05-15: this sidebar ships INSIDE Nunba (which
+                    IS the Windows companion).  Promoting a separate
+                    HevolveAI_Agent_Companion_Setup.exe from inside
+                    Nunba is a confusing self-reference.  Cloud-side
+                    discovery still surfaces it through the Nunba
+                    downloads page for users on hevolve.ai. */}
               </button>
             )}
 
@@ -473,7 +469,10 @@ const AgentSidebar = ({
               bundle) is confusing.  Cloud-side desktop discovery now
               flows through the Nunba downloads page. */}
 
-          {/* Google Play & Companion (hidden on /local) */}
+          {/* Google Play only (Companion .exe download removed
+              2026-05-15: see same-day rationale in the upper
+              !isLocalRoute block — Nunba IS the companion, the link
+              was a self-reference). */}
           {!isLocalRoute && (
             <button className="flex justify-center flex-col w-full items-center xl:flex-row xl:justify-around">
               <a
@@ -483,16 +482,6 @@ const AgentSidebar = ({
                 <img
                   alt="Get it on Google Play"
                   src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png"
-                  className="w-32 h-12 object-contain"
-                />
-              </a>
-              <a
-                href="https://azurekong.hertzai.com/mkt-aws/examples/daf7beee-7HevolveAI_Agent_Companion_Setup_2.exe"
-                className="inline-block font-serif text-sm mb-4"
-              >
-                <img
-                  alt="Download Nunba Companion"
-                  src="/companion.svg"
                   className="w-32 h-12 object-contain"
                 />
               </a>

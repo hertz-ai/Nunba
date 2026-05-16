@@ -36,6 +36,58 @@ import importlib.metadata as _md_safe
 import os
 import sys
 
+
+# ── Early-boot crash logger ─────────────────────────────────────────
+# Witnessed 2026-05-14 (run 25852109063, 25853614289 build-macos):
+# `Nunba --validate` exits 1 in CI before the validate handler's own
+# log file (~/Documents/Nunba/logs/validate.log) gets opened, so the
+# CI runner sees only the early RequestsDependencyWarning and an
+# unexplained exit code.  This excepthook captures any unhandled
+# exception from the early-boot path (imports, monkey-patches, etc.)
+# and writes it to BOTH the validate.log directory AND the build's
+# own MacOS bundle directory, so the post-build hook can dump it.
+# The earlier crash had NO logged traceback anywhere — this fills the
+# gap without adding heavy logging machinery.
+def _early_crash_handler(exc_type, exc_value, exc_tb):
+    import traceback as _tb
+    _msg = ''.join(_tb.format_exception(exc_type, exc_value, exc_tb))
+    _candidates = [
+        os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs',
+                     'early_boot_crash.log'),
+        os.path.join(os.path.dirname(os.path.abspath(
+            sys.executable if getattr(sys, 'frozen', False) else __file__)),
+                     'early_boot_crash.log'),
+    ]
+    for _path in _candidates:
+        try:
+            os.makedirs(os.path.dirname(_path), exist_ok=True)
+            with open(_path, 'a', encoding='utf-8') as _fh:
+                _fh.write(f'\n===== early-boot crash @ {os.environ.get("__NUNBA_BOOT_PHASE", "unknown")} =====\n')
+                _fh.write(f'argv: {sys.argv}\n')
+                _fh.write(f'frozen: {getattr(sys, "frozen", False)}\n')
+                _fh.write(f'platform: {sys.platform}\n')
+                _fh.write(_msg)
+                _fh.flush()
+                try:
+                    os.fsync(_fh.fileno())
+                except OSError:
+                    pass
+        except OSError:
+            continue
+    # Echo to stderr too — CI runner captures fd 2 even when stdout is
+    # routed to /dev/null on macOS GUI frozen builds.
+    try:
+        sys.stderr.write(_msg)
+        sys.stderr.flush()
+    except Exception:
+        pass
+    # Fall through to default behaviour (exit non-zero).
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _early_crash_handler
+
+
 _orig_pd = getattr(_md_safe, 'packages_distributions', None)
 if _orig_pd is not None and not getattr(_orig_pd, '_hartos_guarded', False):
     def _safe_packages_distributions():
@@ -1412,9 +1464,14 @@ def _load_deferred_config():
             except Exception:
                 pass
 
-    # ── Auto-enable agent engine when LLM is configured ──
+    # ── Auto-enable agent engine + speculative dispatch when LLM is configured ──
+    # Both are LLM-gated: agent_daemon's tick path uses speculative dispatch
+    # (agent_daemon.py:541) only when an LLM is reachable, so the two flags
+    # belong together.  Setting unconditionally would cause agent-engine
+    # startup with no LLM, which emits errors.
     if _llm_configured:
         os.environ.setdefault('HEVOLVE_AGENT_ENGINE_ENABLED', 'true')
+        os.environ.setdefault('HEVOLVE_SPECULATIVE_ENABLED', 'true')
 
 # Static splash was shown BEFORE frozen fixes (line 329).
 # _early_splash and _eroot are already set.
@@ -5085,6 +5142,68 @@ def start_flask():
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']
                 url_updated = False
+                db_upserted = False
+
+                # Sync cloud account to local HARTOS social DB so the
+                # cloud user_id resolves to a real User row for
+                # /chat, /social, and any other endpoint that does
+                # `db.query(User).filter(User.id == user_id)`.  Best-
+                # effort: skipped silently when HARTOS isn't importable
+                # (standalone Nunba install) or when the DB session
+                # can't be acquired.  Idempotent — repeated calls only
+                # write when a field actually changed (token rotation,
+                # email/username edit).
+                if all(k in user_data for k in required_keys):
+                    try:
+                        from integrations.social.models import db_session, User
+                        cloud_user_id = str(user_data['user_id'])
+                        cloud_email = user_data['email']
+                        cloud_token = user_data['access_token']
+                        cloud_username = user_data['agentname']
+                        with db_session() as _db:
+                            existing = (
+                                _db.query(User).filter(User.id == cloud_user_id).first()
+                                or _db.query(User).filter(User.email == cloud_email).first()
+                            )
+                            if existing is None:
+                                _db.add(User(
+                                    id=cloud_user_id,
+                                    username=cloud_username,
+                                    display_name=cloud_username,
+                                    email=cloud_email,
+                                    user_type='human',
+                                    api_token=cloud_token,
+                                    is_verified=True,
+                                ))
+                                _db.commit()
+                                db_upserted = True
+                                logger.info(
+                                    f"Cloud user synced to local DB (created): "
+                                    f"id={cloud_user_id} email={cloud_email}")
+                            else:
+                                changed = []
+                                if existing.api_token != cloud_token:
+                                    existing.api_token = cloud_token
+                                    changed.append('api_token')
+                                if existing.email != cloud_email:
+                                    existing.email = cloud_email
+                                    changed.append('email')
+                                if changed:
+                                    _db.commit()
+                                    db_upserted = True
+                                    logger.info(
+                                        f"Cloud user synced to local DB "
+                                        f"(updated {','.join(changed)}): "
+                                        f"id={existing.id}")
+                    except Exception as _db_err:
+                        # IntegrityError on unique api_token / username collision,
+                        # ImportError when HARTOS isn't on PYTHONPATH, or any
+                        # transient DB issue — log and continue.  The cloud
+                        # signin still propagates via user_data.json + the React
+                        # useStorageSync hook.
+                        logger.debug(
+                            f"Cloud user DB sync skipped: "
+                            f"{type(_db_err).__name__}: {_db_err}")
 
                 if all(k in user_data for k in required_keys) and _window:
                     #Properly URL encode each parameter
@@ -5112,6 +5231,7 @@ def start_flask():
                 return jsonify({
                     'success': True,
                     'url_updated': url_updated,
+                    'db_upserted': db_upserted,
                     'keys_present': list(user_data.keys()),
                     'all_required_keys_present': all(k in user_data for k in required_keys)})
             except Exception as e:
@@ -6961,6 +7081,10 @@ def main():
                 try:
                     state = _safe_eval_js(
                         "(function(){"
+                        "  // PRIMARY: window._reactMounted is the canonical mount"
+                        "  // flag set by index.html's MutationObserver — same"
+                        "  // signal _force_remount_and_paint's probe consults."
+                        "  if (window._reactMounted === true) return 'mounted';"
                         "  var r = document.getElementById('root');"
                         "  if (!r) return 'no_root';"
                         "  if (r.children.length === 0) return 'empty';"
@@ -6988,18 +7112,32 @@ def main():
                             "})()"
                         )
                         logger.info("[MOUNT_GUARD] Transitions forced, repaint done")
-                    elif state in ('empty', 'no_root', None):
+                    elif state is None:
+                        # _safe_eval_js exhausted retries — WebView2 RPC not
+                        # ready, NOT a real mount failure.  Skip reload entirely:
+                        # the in-page MutationObserver will set _reactMounted
+                        # when React actually mounts, and any future
+                        # mount-check re-probe (taskbar_restore /
+                        # events.restored / explicit recovery) will catch
+                        # genuine failures.  Triggering reload+resize here
+                        # was the cause of the 2026-05-10 maximize-then-
+                        # restore-to-startup-size regression: _window.width
+                        # returns the LOGICAL startup dimension (pywebview
+                        # doesn't track OS-level maximize state), so the
+                        # `_window.resize(w+1, h)` "wake compositor" call
+                        # collapsed the maximized window back to startup.
+                        logger.info("[MOUNT_GUARD] eval_js failed (probe RPC unavailable) — skipping reload, no window-resize side effect")
+                    elif state in ('empty', 'no_root'):
                         logger.warning(f"[MOUNT_GUARD] React not mounted ({state}) — reloading")
                         _window.load_url(f"http://localhost:{args.port}/local")
                         time.sleep(3.0)
-                        # Force resize to wake compositor
-                        try:
-                            w, h = _window.width, _window.height
-                            _window.resize(w + 1, h)
-                            time.sleep(0.1)
-                            _window.resize(w, h)
-                        except Exception:
-                            pass
+                        # NOTE: removed _window.resize(w+1, h) "wake compositor"
+                        # call — it caused window to shrink back to logical
+                        # startup size on maximize.  load_url alone is
+                        # sufficient to remount React; the JS-side document.
+                        # body display flick handles repaint without touching
+                        # window dimensions.  See the explicit body flick
+                        # in the post-mount transition-force branch above.
                 except Exception as e:
                     logger.warning(f"[MOUNT_GUARD] Check failed: {e}")
 
@@ -7103,6 +7241,14 @@ def main():
                 try:
                     return _window.evaluate_js(
                         "(function(){"
+                        "  // PRIMARY signal — index.html's MutationObserver"
+                        "  // sets window._reactMounted=true the instant React"
+                        "  // injects real content into #root (ignoring"
+                        "  // style/script/noscript noise + sub-50-char nodes)."
+                        "  // This is the canonical mount flag — Python's"
+                        "  // children.length check below is a fallback for the"
+                        "  // window between observer install and first mutation."
+                        "  if (window._reactMounted === true) return 'mounted';"
                         "  var r = document.getElementById('root');"
                         "  if (!r) return 'no_root';"
                         "  if (r.children.length === 0) return 'empty';"
@@ -7114,7 +7260,14 @@ def main():
                         "})()"
                     )
                 except Exception:
-                    return None
+                    # evaluate_js threw — WebView2 COM RPC not ready, NOT a
+                    # mount failure.  Distinct sentinel so the caller can
+                    # retry the probe instead of triggering a reload (which
+                    # would yank the user's running session for no reason
+                    # and reset Demopage's mount-time state including the
+                    # window.innerWidth capture that drives portrait/
+                    # landscape layout).
+                    return 'probe_failed'
 
             for attempt in range(_MAX_ATTEMPTS):
                 # Give React a moment — rAF just resumed after visibility change
@@ -7156,10 +7309,26 @@ def main():
                         "transitions forced, repaint done")
                     return
 
-                # state is 'paint_dead', 'empty', 'no_root', or None —
-                # React either didn't mount OR WebView2 compositor is suspended.
-                # In both cases the reload path (with post-load resize kick)
-                # is the safest recovery.
+                # 'probe_failed' is NOT a mount problem — evaluate_js
+                # threw because WebView2's COM RPC isn't ready yet (common
+                # transiently after a window-state change).  Skip the
+                # reload entirely; the next attempt's longer sleep gives
+                # the RPC time to come back, and on a real mount the
+                # check returns 'mounted'.  Reloading on probe_failed
+                # was the bug behind the 'every resize → portrait' UX
+                # regression: the watchdog kept firing reloads against
+                # a perfectly-mounted React, each reload triggered a
+                # ChatInterface remount that re-ran useState(
+                # window.innerWidth), and during a live resize gesture
+                # the captured width was an intermediate value that
+                # snapped layout to portrait.
+                if state == 'probe_failed':
+                    continue
+
+                # state is 'paint_dead', 'empty', or 'no_root' — React
+                # really didn't mount OR WebView2 compositor is suspended.
+                # In both cases the reload path (with post-load resize
+                # kick) is the safest recovery.
                 # Preserve the URL the user is currently on — the
                 # taskbar-restore / shown / events.restored watchdogs all
                 # fire AFTER the user has been navigating, so reloading
@@ -7188,24 +7357,42 @@ def main():
                 # After load, give React time to render
                 time.sleep(3.0)
 
-                # Force resize to wake WebView2 compositor
-                try:
-                    w, h = _window.width, _window.height
-                    _window.resize(w + 1, h)
-                    time.sleep(0.1)
-                    _window.resize(w, h)
-                except Exception:
-                    pass
+                # NOTE: do NOT call _window.resize(w+1, h) here as a
+                # "wake compositor" trick — _window.width returns the
+                # LOGICAL startup dimension (pywebview doesn't track OS-
+                # level maximize state), so the resize call collapses
+                # the maximized window back to startup size.  This was
+                # the second instance of the same bug fixed at the
+                # _delayed_react_check site (app.py:7551-7559) and the
+                # main _remount path (b2af3d1d).  load_url already
+                # triggered the navigation; React mount will follow on
+                # its own.  Captured 2026-05-11 — user reported
+                # "maximize restoring to startup portrait every time"
+                # AFTER b2af3d1d landed, because this code path was
+                # still running the same anti-pattern.
 
             # Final check after all attempts
             final = _check_mount()
             logger.info(
                 f"[REMOUNT:{origin}] Final mount state after "
                 f"{_MAX_ATTEMPTS} attempts: {final}")
-            if final != 'mounted':
+            if final == 'probe_failed':
+                # WebView2 COM RPC unresponsive — distinct from "React broken".
+                # The retry loop already skipped reload/resize for probe_failed
+                # (line 7324 `continue`), so the React render path was never
+                # disturbed.  Live evidence 2026-05-15: user reported "do not
+                # see black screen on restart" while 11 of these fired in a 2h
+                # window — the panic message was a logging false-positive
+                # masquerading as a critical UX failure.  Demote to INFO.
+                logger.info(
+                    f"[REMOUNT:{origin}] Could not verify mount via JS RPC "
+                    f"after {_MAX_ATTEMPTS} attempts — WebView2 COM bridge "
+                    "transiently unresponsive after window state change. "
+                    "React render path untouched; user-visible state unchanged.")
+            elif final != 'mounted':
                 logger.error(
-                    f"[REMOUNT:{origin}] React failed to mount after all "
-                    "retries. User will see black screen.")
+                    f"[REMOUNT:{origin}] React failed to mount (final "
+                    f"state={final}). User will see black screen.")
 
         # In background mode, run mount recovery on first show — the initial
         # load may have hit Flask before it was fully ready (especially on
@@ -7455,6 +7642,13 @@ def main():
             try:
                 check_result = _window.evaluate_js("""
                     (function(){
+                        // PRIMARY: window._reactMounted is the canonical mount
+                        // flag set by index.html's MutationObserver — same
+                        // signal _force_remount_and_paint and _mount_guard
+                        // probes consult.  If set, we're definitively mounted.
+                        if (window._reactMounted === true) {
+                            return JSON.stringify({mounted: true, reason: '_reactMounted flag'});
+                        }
                         var r = document.getElementById('root');
                         if (!r) return JSON.stringify({mounted: false, reason: 'no root'});
                         var children = r.childNodes.length;
@@ -7485,17 +7679,20 @@ def main():
                     import json as _json
                     state = _json.loads(check_result)
                     if not state.get('mounted'):
-                        logger.warning(f"[RECOVERY] React not mounted after 20s (children={state.get('children')}, innerLen={state.get('innerLen')}) — forcing reload + repaint")
+                        logger.warning(f"[RECOVERY] React not mounted after 20s (children={state.get('children')}, innerLen={state.get('innerLen')}) — forcing reload")
                         _window.load_url(f"http://localhost:{_recovery_port}/local")
                         time.sleep(2)
-                        # Force repaint via resize
-                        try:
-                            w, h = _window.width, _window.height
-                            _window.resize(w + 1, h)
-                            time.sleep(0.1)
-                            _window.resize(w, h)
-                        except Exception:
-                            pass
+                        # NOTE: removed _window.resize(w+1, h) "force repaint
+                        # via resize" — _window.width returns the LOGICAL
+                        # startup dimension (pywebview doesn't track OS-level
+                        # maximize state), so this call collapsed the
+                        # maximized window back to startup size on
+                        # iconic→non-iconic transitions (live evidence
+                        # 2026-05-10 22:28).  load_url alone is sufficient
+                        # to remount React; window-dimension manipulation
+                        # is the wrong tool for "wake compositor."
+                else:
+                    logger.info("[RECOVERY] React mount check returned no result (eval_js failed) — skipping reload, no window-resize side effect")
             except Exception as e:
                 logger.warning(f"[RECOVERY] React check failed: {e}")
 

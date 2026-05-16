@@ -208,6 +208,14 @@ build_exe_options = {
         "pyperclip",
         "waitress",
         "requests",
+        # requests' char-detection + encoding deps.  Symmetry with the
+        # macOS/Windows freeze configs after the 2026-05-14 macOS build
+        # validation failure (`RequestsDependencyWarning`).  Linux build
+        # has not exhibited the bug to date, but listing the deps
+        # explicitly costs nothing and keeps the three freeze configs
+        # consistent — the next requirements.txt bump won't have one OS
+        # silently regress.
+        "charset_normalizer", "idna", "certifi",
 
         "routes.chatbot_routes",
         "routes.kids_media_routes",
