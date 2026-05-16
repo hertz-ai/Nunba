@@ -1284,6 +1284,22 @@ def api_chat_sync_forget():
 
 
 # ─── Chat-Sync cursor-pull (U4: canonical ChatMessage replay) ───────
+# DEPRECATED 2026-05-16 — use the canonical /api/social/sync (served
+# by integrations.social.sync_api).  This route stays for backwards
+# compat with the desktop + web callers that already use it; both
+# delegate to the SAME chat_messages.pull_since() function, so there's
+# no behavior drift, only an HTTP route divergence.  New clients
+# (Android HartChatSyncManager, iOS) call /api/social/sync directly
+# and get the multi-kind delta response shape (messages +
+# conversations + friendships + …).  This route remains messages-only
+# for the legacy {messages, next_cursor: int} contract.
+#
+# Migration sequencing:
+#   1. Add Deprecation header here (done) so callers/tests detect.
+#   2. Web + desktop UI switch to /api/social/sync at their own pace.
+#   3. Once no caller hits /api/chat-sync/pull-since in production
+#      telemetry for 30 days, remove this route.
+#
 # Unlike /api/chat-sync/pull (bucket blob), this endpoint returns the
 # HARTOS ConversationEntry rows that landed via the chat hot path
 # (hart_intelligence_entry._chat_reply → chat_messages.persist).  A
@@ -1292,7 +1308,12 @@ def api_chat_sync_forget():
 # at all.  Returns 501 if HARTOS is absent.
 @app.route('/api/chat-sync/pull-since', methods=['GET'])
 def api_chat_sync_pull_since():
-    """Cursor-pull of ConversationEntry rows for the authenticated user.
+    """DEPRECATED — prefer GET /api/social/sync.
+
+    Cursor-pull of ConversationEntry rows for the authenticated user.
+    Thin wrapper over chat_messages.pull_since(), shared with the
+    canonical /api/social/sync route which returns the same rows in a
+    multi-kind delta envelope.  Kept for legacy callers.
 
     Query params:
       since — integer cursor; returns rows with id > since (default 0)
@@ -1304,6 +1325,10 @@ def api_chat_sync_pull_since():
       {'messages': [...], 'next_cursor': <int>}
       next_cursor = max(id) across returned rows, or the input since
       when nothing new was found.
+
+    Response headers:
+      Deprecation: true
+      Link: </api/social/sync>; rel="successor-version"
     """
     uid, err = _chat_sync_resolve_uid()
     if err:
@@ -1343,7 +1368,13 @@ def api_chat_sync_pull_since():
             next_cursor = max(next_cursor, int(m.get('id') or 0))
         except (TypeError, ValueError):
             continue
-    return jsonify({'messages': msgs, 'next_cursor': next_cursor}), 200
+    resp = jsonify({'messages': msgs, 'next_cursor': next_cursor})
+    # RFC 8594-style deprecation signal so callers + monitoring can
+    # discover the route is going away.  Successor link points at the
+    # canonical multi-kind sync endpoint.
+    resp.headers['Deprecation'] = 'true'
+    resp.headers['Link'] = '</api/social/sync>; rel="successor-version"'
+    return resp, 200
 
 
 # ─── File-Sync (U9: WhatsApp-style cross-device attachments) ────────
