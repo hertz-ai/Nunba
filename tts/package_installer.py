@@ -355,12 +355,17 @@ BACKEND_DISPLAY_NAMES = {
 _install_lock = threading.Lock()
 _installing = {}  # backend → True while installing
 
+# Signalled when CUDA torch is confirmed ready in this session.
+# Backend install threads wait on this before running their pip
+# installs so they never race to download the 2.5 GB torch wheel.
+_torch_ready = threading.Event()
+
 # File-based lock to prevent concurrent pip installs ACROSS process
 # restarts.  Without this, each Nunba boot stacks another pip process
 # on top of the one still downloading from the prior boot — 3 concurrent
 # 2.5GB downloads racing for disk (observed 2026-04-16).
 _INSTALL_LOCK_DIR = os.path.join(os.path.expanduser('~'), '.nunba')
-_INSTALL_LOCK_STALE_S = 900  # 15 min — pip timeout is also 900s
+_INSTALL_LOCK_STALE_S = 3600  # 60 min — torch wheel is 2.5 GB, slow networks need time
 
 
 def _acquire_file_lock(name: str) -> bool:
@@ -676,10 +681,18 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
                 break
             now = _time.monotonic()
             # Heartbeat: tell the UI something is still happening.
-            if progress_cb and (now - state['last_beat_t']) >= heartbeat_s:
+            if (now - state['last_beat_t']) >= heartbeat_s:
                 pkg = state['current_pkg'] or 'packages'
-                progress_cb(f"pip: {pkg} (elapsed {int(now - t0)}s)")
+                if progress_cb:
+                    progress_cb(f"pip: {pkg} (elapsed {int(now - t0)}s)")
                 state['last_beat_t'] = now
+                # A large binary wheel (torch, parler_tts) is silent both
+                # during download (one "Downloading..." line then nothing)
+                # AND during extraction (pip unpacks 2.5 GB before printing
+                # "Successfully installed" — can take 3-5 min on slow disks).
+                # The heartbeat proves the process is alive in both phases,
+                # so reset the stall clock unconditionally here.
+                state['last_line_t'] = now
             # Stall detection: no stdout line for stall_timeout seconds.
             if (now - state['last_line_t']) >= stall_timeout:
                 proc.kill()
@@ -859,10 +872,12 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
         gpu_type = 'nvidia' if has_nvidia_gpu() else None
 
     if not gpu_type:
+        _torch_ready.set()  # no GPU — unblock waiters so they don't hang
         return False, "No GPU detected"
 
     variant = get_torch_variant()
     if variant not in ('cpu', 'unknown', 'none'):
+        _torch_ready.set()  # already CUDA — unblock waiters immediately
         return True, f"torch already has GPU support ({variant})"
 
     label = 'ROCm' if gpu_type == 'amd' else 'CUDA'
@@ -877,10 +892,15 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
     _torch_index = ('https://download.pytorch.org/whl/rocm6.2' if gpu_type == 'amd'
                      else 'https://download.pytorch.org/whl/cu124')
     _target = get_user_site_packages()
+    # stall_timeout=1800: pip outputs ONE "Downloading..." line then goes
+    # silent for the entire 2.5 GB transfer.  The default 120s stall killer
+    # fires mid-download every time on slow connections.  1800s (30 min)
+    # gives enough runway for the full wheel on a slow link without
+    # masking genuinely hung processes (the outer timeout=3600 still kills).
     ok, msg = _run_pip([
         'install', 'torch', 'torchaudio',
         '--index-url', _torch_index,
-    ], progress_cb, timeout=900)
+    ], progress_cb, timeout=3600, stall_timeout=1800)
 
     # Fallback: if C: is full (ENOSPC), retry to D: drive.
     # CUDA torch is 2.5GB — C: often has <5GB free on 500GB disks
@@ -895,7 +915,7 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
             'install', 'torch', 'torchaudio',
             '--index-url', _torch_index,
             '--target', _d_target, '--no-deps',
-        ], progress_cb, timeout=900)
+        ], progress_cb, timeout=3600, stall_timeout=1800)
         if ok:
             _target = _d_target
             logger.info("CUDA torch installed to D: drive successfully")
@@ -984,6 +1004,8 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
             logger.warning(f"torch reload after CUDA install failed: {e}")
             if progress_cb:
                 progress_cb("CUDA PyTorch installed — will activate on next start")
+    if ok:
+        _torch_ready.set()  # unblock all waiting backend installs
     _release_file_lock('cuda_torch')
     return ok, msg
 
@@ -1030,19 +1052,16 @@ def install_backend_packages(backend: str,
             # install_gpu_torch installs torch + torchaudio together
             to_install = [p for p in to_install if p != 'torchaudio']
         elif "Another process is already installing" in cuda_msg:
-            # Another thread beat us to the lock — wait for it to finish
-            # rather than proceeding without CUDA torch and failing later.
+            # Another thread owns the torch install — wait on the event
+            # instead of polling so we unblock the instant torch is ready.
             if progress_cb:
                 progress_cb("Waiting for CUDA torch install to complete...")
-            import time
-            for _ in range(120):  # up to 10 minutes
-                time.sleep(5)
-                if is_cuda_torch():
-                    cuda_torch_was_installed = True
-                    to_install = [p for p in to_install if p != 'torchaudio']
-                    break
+            _torch_ready.wait(timeout=3600)  # up to 60 minutes
+            if is_cuda_torch():
+                cuda_torch_was_installed = True
+                to_install = [p for p in to_install if p != 'torchaudio']
             else:
-                logger.warning("Timed out waiting for CUDA torch install from another thread")
+                logger.warning("CUDA torch not available after waiting — proceeding without it")
         else:
             logger.warning(f"CUDA torch install failed: {cuda_msg}")
             # Continue — caller decides how to handle a still-CPU torch.
@@ -1112,7 +1131,7 @@ def install_backend_packages(backend: str,
             idx_url = f'https://download.pytorch.org/whl/{variant}'
         ok, msg = _run_pip([
             'install', 'torchaudio', '--index-url', idx_url,
-        ], progress_cb)
+        ], progress_cb, stall_timeout=600)
         if ok:
             to_install = [p for p in to_install if p != 'torchaudio']
 
