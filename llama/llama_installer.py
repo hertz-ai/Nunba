@@ -492,7 +492,7 @@ class LlamaInstaller:
             if success:
                 new_version = self.get_version()
                 if old_version and new_version:
-                    report(f"Updated: b{old_version} \u2192 b{new_version}")
+                    report(f"Updated: b{old_version} -> b{new_version}")
                 else:
                     report(f"Updated to b{new_version}" if new_version else "Update complete")
             else:
