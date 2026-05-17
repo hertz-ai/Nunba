@@ -95,6 +95,7 @@ export const VISION_INFERENCE_URL = `${API_BASE_URL}/upload/vision`;
 export const CREATE_PROMPT_URL = `${CLOUD_API_URL}/db/create_prompt`;
 export const BOOK_PARSING_URL = `${API_BASE_URL}/upload/parse_pdf`;
 export const BOOK_PARSING_STATUS_URL = `${API_BASE_URL}/upload/parse_pdf/status`;
+export const UPLOAD_NATIVE_URL = `${API_BASE_URL}/upload/native`;
 export const BOOK_PARSING_CLOUD_URL = `${CLOUD_API_URL}/book_parsing/book_parsing_upload_api`;
 
 // ── Assessments (Mailer) ──
