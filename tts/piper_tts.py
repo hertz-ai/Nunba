@@ -58,10 +58,222 @@ VOICE_PRESETS = {
         "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/libritts/high/en_US-libritts-high.onnx",
         "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/libritts/high/en_US-libritts-high.onnx.json",
         "size_mb": 75
-    }
+    },
+    # ── Cross-platform voice coverage via rhasspy/piper-voices ──────────
+    # Every entry below is a .onnx + .onnx.json pair that runs identically
+    # on Windows / macOS / Linux with NO GPU, NO system-installed voice,
+    # and NO VRAM contention with the main LLM.  Portable CPU TTS — the
+    # answer to "voice should work across every device regardless of OS".
+    # Voices installed on demand (first use per language) so the bundled
+    # installer stays small.  ~10-65 MB cached per language once used.
+    #
+    # Tamil + Malayalam intentionally absent — rhasspy/piper-voices has
+    # NO upstream voice for those languages (HF URLs 404).  They're
+    # covered by indic_parler in _LANG_CAPABLE_BACKENDS fallback below.
+    # A downloaded 15-byte "Entry not found" stub previously caused
+    # PiperVoice.load to crash with `Expecting value: line 1 column 1`.
+    # Do NOT re-add ta_IN-pavithra-medium or ml_IN-gayathri-medium
+    # without verifying the URL returns a real .onnx (>1MB).
+    "ne_NP-google-medium": {
+        "name": "Google (Nepali)",
+        "language": "ne_NP", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ne/ne_NP/google/medium/ne_NP-google-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ne/ne_NP/google/medium/ne_NP-google-medium.onnx.json",
+        "size_mb": 35,
+    },
+    "ar_JO-kareem-medium": {
+        "name": "Kareem (Arabic)",
+        "language": "ar_JO", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx.json",
+        "size_mb": 35,
+    },
+    "zh_CN-huayan-medium": {
+        "name": "Huayan (Mandarin Chinese)",
+        "language": "zh_CN", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx.json",
+        "size_mb": 35,
+    },
+    "vi_VN-vivos-x_low": {
+        "name": "VIVOS (Vietnamese)",
+        "language": "vi_VN", "quality": "x_low", "sample_rate": 16000,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/vi/vi_VN/vivos/x_low/vi_VN-vivos-x_low.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/vi/vi_VN/vivos/x_low/vi_VN-vivos-x_low.onnx.json",
+        "size_mb": 10,
+    },
+    "es_ES-davefx-medium": {
+        "name": "Davefx (Spanish)",
+        "language": "es_ES", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "fr_FR-siwis-medium": {
+        "name": "Siwis (French)",
+        "language": "fr_FR", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "de_DE-thorsten-medium": {
+        "name": "Thorsten (German)",
+        "language": "de_DE", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "it_IT-riccardo-x_low": {
+        "name": "Riccardo (Italian)",
+        "language": "it_IT", "quality": "x_low", "sample_rate": 16000,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/it/it_IT/riccardo/x_low/it_IT-riccardo-x_low.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/it/it_IT/riccardo/x_low/it_IT-riccardo-x_low.onnx.json",
+        "size_mb": 10,
+    },
+    "pt_BR-faber-medium": {
+        "name": "Faber (Brazilian Portuguese)",
+        "language": "pt_BR", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium/pt_BR-faber-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium/pt_BR-faber-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "nl_NL-mls-medium": {
+        "name": "MLS (Dutch)",
+        "language": "nl_NL", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/nl/nl_NL/mls/medium/nl_NL-mls-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/nl/nl_NL/mls/medium/nl_NL-mls-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "pl_PL-mc_speech-medium": {
+        "name": "MC Speech (Polish)",
+        "language": "pl_PL", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/pl/pl_PL/mc_speech/medium/pl_PL-mc_speech-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/pl/pl_PL/mc_speech/medium/pl_PL-mc_speech-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "ru_RU-ruslan-medium": {
+        "name": "Ruslan (Russian)",
+        "language": "ru_RU", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/ruslan/medium/ru_RU-ruslan-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/ruslan/medium/ru_RU-ruslan-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "tr_TR-dfki-medium": {
+        "name": "DFKI (Turkish)",
+        "language": "tr_TR", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/tr/tr_TR/dfki/medium/tr_TR-dfki-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/tr/tr_TR/dfki/medium/tr_TR-dfki-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "sv_SE-nst-medium": {
+        "name": "NST (Swedish)",
+        "language": "sv_SE", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/sv/sv_SE/nst/medium/sv_SE-nst-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/sv/sv_SE/nst/medium/sv_SE-nst-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "hu_HU-anna-medium": {
+        "name": "Anna (Hungarian)",
+        "language": "hu_HU", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/hu/hu_HU/anna/medium/hu_HU-anna-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/hu/hu_HU/anna/medium/hu_HU-anna-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "uk_UA-ukrainian_tts-medium": {
+        "name": "Ukrainian TTS (Ukrainian)",
+        "language": "uk_UA", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/uk/uk_UA/ukrainian_tts/medium/uk_UA-ukrainian_tts-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/uk/uk_UA/ukrainian_tts/medium/uk_UA-ukrainian_tts-medium.onnx.json",
+        "size_mb": 63,
+    },
 }
 
 DEFAULT_VOICE = "en_US-amy-medium"
+
+
+# Language-code → voice-id map.  Single source of truth — keep in sync
+# with VOICE_PRESETS above.  Cross-platform: a Piper .onnx voice runs
+# identically on Windows / macOS / Linux with zero system-voice dep.
+#
+# Languages NOT in this map have no upstream Piper voice (notably ta,
+# ml, hi, te, kn, bn, pa).  For those, _LANG_CAPABLE_BACKENDS keeps
+# indic_parler / chatterbox_ml as the fallback path; never falls back
+# to the English DEFAULT_VOICE for the wrong language (see
+# voice_for_lang docstring + tts_engine._LazyPiper.synthesize).
+LANG_TO_VOICE: dict[str, str] = {
+    'en':    'en_US-amy-medium',
+    'en_US': 'en_US-amy-medium',
+    'en_GB': 'en_GB-alan-medium',
+    'ne':    'ne_NP-google-medium',
+    'ne_NP': 'ne_NP-google-medium',
+    'ar':    'ar_JO-kareem-medium',
+    'ar_JO': 'ar_JO-kareem-medium',
+    'zh':    'zh_CN-huayan-medium',
+    'zh_CN': 'zh_CN-huayan-medium',
+    'vi':    'vi_VN-vivos-x_low',
+    'vi_VN': 'vi_VN-vivos-x_low',
+    'es':    'es_ES-davefx-medium',
+    'es_ES': 'es_ES-davefx-medium',
+    'fr':    'fr_FR-siwis-medium',
+    'fr_FR': 'fr_FR-siwis-medium',
+    'de':    'de_DE-thorsten-medium',
+    'de_DE': 'de_DE-thorsten-medium',
+    'it':    'it_IT-riccardo-x_low',
+    'it_IT': 'it_IT-riccardo-x_low',
+    'pt':    'pt_BR-faber-medium',
+    'pt_BR': 'pt_BR-faber-medium',
+    'nl':    'nl_NL-mls-medium',
+    'nl_NL': 'nl_NL-mls-medium',
+    'pl':    'pl_PL-mc_speech-medium',
+    'pl_PL': 'pl_PL-mc_speech-medium',
+    'ru':    'ru_RU-ruslan-medium',
+    'ru_RU': 'ru_RU-ruslan-medium',
+    'tr':    'tr_TR-dfki-medium',
+    'tr_TR': 'tr_TR-dfki-medium',
+    'sv':    'sv_SE-nst-medium',
+    'sv_SE': 'sv_SE-nst-medium',
+    'hu':    'hu_HU-anna-medium',
+    'hu_HU': 'hu_HU-anna-medium',
+    'uk':    'uk_UA-ukrainian_tts-medium',
+    'uk_UA': 'uk_UA-ukrainian_tts-medium',
+}
+
+
+# Sentinel raised when the caller hands voice_for_lang a language Piper
+# can't speak.  Distinguishes "no voice available" from "voice exists
+# but download failed" so the engine selector can fall back to the
+# next capable backend (chatterbox_ml / indic_parler) instead of
+# silently synthesizing the wrong language with the English voice.
+class PiperLangUnavailable(Exception):
+    """Piper has no voice for the requested language."""
+
+
+def voice_for_lang(lang: str | None) -> str:
+    """Return the Piper voice_id for the given language code.
+
+    Accepts BCP-47 ('ta-IN'), POSIX ('ta_IN') or bare ('ta') forms.
+
+    Returns the matching voice_id when registered.  Raises
+    `PiperLangUnavailable` when the language has no Piper voice —
+    callers MUST handle this and fall through to the next capable
+    backend.  Never silently substitutes DEFAULT_VOICE (English) for
+    a non-English language; that produces "speaking Tamil with
+    English voice" = silent/garbled audio (data-scientist cohort
+    analysis 2026-04-15).
+    """
+    if not lang:
+        return DEFAULT_VOICE
+    normalized = lang.replace('-', '_')
+    if normalized in LANG_TO_VOICE:
+        return LANG_TO_VOICE[normalized]
+    bare = normalized.split('_')[0]
+    if bare in LANG_TO_VOICE:
+        return LANG_TO_VOICE[bare]
+    # English-family fallback only for English variants.  Everything
+    # else raises so the caller picks a different backend.
+    if bare == 'en' or normalized.startswith('en_'):
+        return DEFAULT_VOICE
+    raise PiperLangUnavailable(f"No Piper voice for lang={lang!r}")
 
 
 class PiperTTS:

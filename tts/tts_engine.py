@@ -478,6 +478,31 @@ for _lang in _INDIC_LANGS:
 # XTTS-v2 only adds Hindi among Indic — extend explicitly.
 _LANG_CAPABLE_BACKENDS['hi'] = _LANG_CAPABLE_BACKENDS['hi'] | frozenset({BACKEND_XTTS_V2})
 
+# ── Piper capability expansion ───────────────────────────────────────
+# Register BACKEND_PIPER as capable for every language in
+# piper_tts.LANG_TO_VOICE.  Piper is the portable CPU-only backend that
+# works identically on Windows / macOS / Linux with no GPU and no
+# system-voice dependency — adds non-English voice coverage that
+# previously required GPU-preferring engines (indic_parler / xtts_v2 /
+# chatterbox_ml) which fall back to text-only on CPU-only machines.
+#
+# Source of truth for the actual voice file is LANG_TO_VOICE in
+# piper_tts.py.  Capability gating happens at the engine selector;
+# actual voice resolution is in _LazyPiper.synthesize below.
+try:
+    from tts.piper_tts import LANG_TO_VOICE as _PIPER_LANG_TO_VOICE
+    for _plang in _PIPER_LANG_TO_VOICE:
+        _bare = _plang.split('_')[0]
+        for _key in (_plang, _bare):
+            _existing = _LANG_CAPABLE_BACKENDS.get(_key, frozenset())
+            _LANG_CAPABLE_BACKENDS[_key] = _existing | {BACKEND_PIPER}
+except Exception:
+    # piper_tts not importable at definition time — keep going; the
+    # fallback chain in _synthesize_with_fallback still includes Piper
+    # for 'en', and non-English langs route to their existing capable
+    # backends (chatterbox_ml / indic_parler).  No regression.
+    pass
+
 
 def _normalize_lang(lang: str | None) -> str:
     """'en-US' / 'ta_IN' / None → 'en' / 'ta' / 'en'."""
@@ -3490,6 +3515,51 @@ class _LazyPiper:
         self._ensure_loaded()
         speed = kwargs.get('speed', 1.0)
         voice = kwargs.get('voice')
+        # When the caller didn't pin a voice_id but did supply a
+        # language hint, resolve the canonical Piper voice for that
+        # language via piper_tts.voice_for_lang.  This is what makes
+        # Chinese / Arabic / Spanish / etc. speak in the right
+        # phonemes instead of mumble-English.
+        if not voice:
+            lang_hint = (kwargs.get('language')
+                         or getattr(self, '_current_lang', None))
+            if lang_hint:
+                try:
+                    from tts.piper_tts import voice_for_lang
+                    voice = voice_for_lang(lang_hint)
+                except Exception as _lang_err:
+                    # voice_for_lang raises PiperLangUnavailable when no
+                    # voice is registered for the requested language.
+                    # Re-raise so _synthesize_with_fallback walks to the
+                    # next capable backend (indic_parler / chatterbox_ml).
+                    # NEVER silently substitute DEFAULT_VOICE (English)
+                    # for a non-English lang — that produces "speaking
+                    # Tamil with English voice" = silent / garbled audio
+                    # (cohort analysis 2026-04-15 / M5 PR-12 review).
+                    logger.warning(
+                        f"Piper: no voice for lang={lang_hint!r} "
+                        f"({_lang_err}); raising to let fallback chain "
+                        f"pick chatterbox_ml / indic_parler / etc."
+                    )
+                    raise
+        if voice and not self._tts.is_voice_installed(voice):
+            # Lazy download — blocks this synth call but only once per
+            # language-per-machine.  Subsequent calls hit the local cache.
+            try:
+                self._tts.download_voice(voice)
+            except Exception as _e:
+                # Voice file unreachable (offline / HF 404 / disk full).
+                # RAISE so _synthesize_with_fallback can try the next
+                # capable backend in the lang's allowlist.  Pre-PR-12
+                # behavior silently substituted DEFAULT_VOICE here, which
+                # made the engine APPEAR to succeed while actually
+                # speaking the wrong language.  Loud failure = correct
+                # fallback chain firing = right language eventually spoken.
+                logger.error(
+                    f"Piper voice '{voice}' download failed: {_e}; "
+                    f"raising to fallback chain"
+                )
+                raise
         return self._tts.synthesize(text, output_path=output_path, speed=speed,
                                     voice_id=voice)
 
