@@ -2839,7 +2839,24 @@ class TTSEngine:
             has_media = any(s.get('type') != 'speech' for s in segments)
             has_multi_lang = len(set(s.get('lang') for s in segments
                                      if s.get('type') == 'speech')) > 1
-            if has_media or has_multi_lang or len(segments) > 1:
+            # Pure-monolingual response whose detected script doesn't match
+            # the requested `language` (e.g. LLM replied in Tamil while the
+            # user's preferred_lang is 'en'): route through the multilingual
+            # path so _synth_speech_segment honors the SEGMENT's lang and
+            # the engine selector picks the right backend (which then fires
+            # _try_auto_install → setup_progress SSE if the engine is
+            # missing).  Without this, len(segments)==1 + has_multi_lang
+            # ==False falls through to the single-language path, which
+            # synthesizes Tamil text with the English backend (Piper) and
+            # produces silence / English-phoneme garble.
+            speech_segs = [s for s in segments if s.get('type') == 'speech']
+            detected_lang_mismatch = bool(
+                len(speech_segs) == 1
+                and speech_segs[0].get('lang')
+                and speech_segs[0].get('lang') != (language or self._language or 'en')
+            )
+            if (has_media or has_multi_lang or len(segments) > 1
+                    or detected_lang_mismatch):
                 return self._synthesize_multilingual(
                     segments, output_path, voice, speed, **kwargs)
         except Exception:
