@@ -1555,6 +1555,91 @@ def get_webview():
 
         import webview as _pywebview
         pywebview = _pywebview
+
+        # macOS WKWebView media-capture + autoplay enablement.
+        # Without these settings, getUserMedia() returns "permission denied"
+        # (mic broken), audio.play() silently throws "user gesture required"
+        # (TTS broken), and ws:// to 127.0.0.1:5460 throws SecurityError
+        # (VisionService never receives camera frames).
+        # Windows WebView2 / Linux WebKitGTK don't need this and the cocoa
+        # module is macOS-only — entire block gated on sys.platform.
+        if sys.platform == 'darwin':
+            try:
+                from webview.platforms import cocoa as _cocoa
+                _orig_init = _cocoa.BrowserView.__init__
+
+                def _patched_init(self, window, *args, **kwargs):
+                    _orig_init(self, window, *args, **kwargs)
+                    try:
+                        import WebKit as _WK  # noqa: F401
+                        config = self.webview.configuration()
+                        config.setAllowsInlineMediaPlayback_(True)
+                        config.setMediaTypesRequiringUserActionForPlayback_(0)
+                        config.preferences().setValue_forKey_(True, 'mediaDevicesEnabled')
+                        config.preferences().setValue_forKey_(False, 'mediaCaptureRequiresSecureConnection')
+                        # Allow ws:// to 127.0.0.1:5460 (VisionService) from
+                        # the localhost-served React SPA.  WKWebView treats
+                        # localhost as secure context, but without this
+                        # preference the ws:// upgrade throws "The operation
+                        # is insecure" and the video-conversation frame
+                        # stream never connects.
+                        config.preferences().setValue_forKey_(True, 'allowRunningInsecureContent')
+                    except Exception:
+                        pass
+
+                _cocoa.BrowserView.__init__ = _patched_init
+
+                # requestMediaCapturePermission delegate.  WKWebView silently
+                # denies getUserMedia() unless the delegate implements this
+                # selector and calls decisionHandler(grant).  Origin-restricted
+                # to localhost/127.0.0.1 only — never auto-grant to arbitrary
+                # remote origins (security tightening vs PR #12 which granted
+                # to ALL origins).  Uses classAddMethod with explicit
+                # signature; Category-based registration was observed to
+                # destabilize the AppKit/WKWebView bootstrap in the frozen
+                # bundle (process exited silently between "Event handlers
+                # connected" and "Starting webview").
+                import objc as _objc
+
+                _delegate_cls = _cocoa.BrowserView.BrowserDelegate
+                _sel_name = (
+                    b'webView:requestMediaCapturePermissionForOrigin:'
+                    b'initiatedByFrame:type:decisionHandler:'
+                )
+                if not _delegate_cls.instancesRespondToSelector_(_sel_name):
+                    # WKPermissionDecisionGrant=1, WKPermissionDecisionDeny=2
+                    # signature v@:@@@q@? = self+_cmd (implicit) + webview +
+                    # origin + frame + NSInteger + block.
+                    def _grant_media(self, webview, origin, frame, media_type, handler):
+                        try:
+                            # WKSecurityOrigin: host accessor returns NSString.
+                            host = str(origin.host()) if origin else ''
+                        except Exception:
+                            host = ''
+                        # Allowlist: same-origin loopback only.  Any other
+                        # origin (file://, https://random-site.com, etc.)
+                        # gets WKPermissionDecisionDeny=2 — refuse silently.
+                        if host in ('127.0.0.1', 'localhost', '::1', ''):
+                            handler(1)  # grant
+                        else:
+                            handler(2)  # deny
+
+                    _imp = _objc.selector(
+                        _grant_media,
+                        selector=_sel_name,
+                        signature=b'v@:@@@q@?',
+                    )
+                    _objc.classAddMethod(_delegate_cls, _sel_name, _imp)
+
+                logging.getLogger('NunbaGUI').info(
+                    "[MEDIA] Patched WKWebView for media capture + autoplay "
+                    "(origin allowlist: 127.0.0.1, localhost)"
+                )
+            except Exception as _patch_err:
+                logging.getLogger('NunbaGUI').warning(
+                    f"[MEDIA] WKWebView patch skipped: {_patch_err}"
+                )
+
     return pywebview
 
 _pump_early_splash('Loading AI engine...')
@@ -6835,6 +6920,101 @@ def main():
         logger.info(f"[STARTUP] pywebview loaded successfully in {_wv_elapsed:.1f}s")
         _trace(f"pywebview loaded in {_wv_elapsed:.1f}s")
 
+        # ── Native mic + file picker fallback (macOS WKWebView only) ──
+        # Belt-and-suspenders for when WKWebView's media patch fails or
+        # the browser file-input is broken: exposes a Python→JS bridge
+        # the frontend can detect via `window.pywebview.api.native_*`.
+        # Windows WebView2 + Linux WebKitGTK don't need this; the
+        # class + js_api kwarg are darwin-gated so Windows/Linux retain
+        # main's existing behavior (no js_api → window.pywebview.api is
+        # undefined → ChatInputBar's `if (window.pywebview && ...)`
+        # check evaluates falsey → browser File API path runs).
+        _native_api = None
+        if sys.platform == 'darwin':
+            class NunbaNativeApi:
+                def __init__(self):
+                    self._recording = False
+
+                def native_mic_record(self, duration_sec=5):
+                    """Record audio via sounddevice + transcribe via Whisper.
+                    Called from JS when getUserMedia is unavailable
+                    (macOS WKWebView http).  Returns transcribed text
+                    or '__ERROR__:<msg>' string."""
+                    import tempfile
+                    import wave
+                    # Cap duration_sec at 30s — JS-supplied value, must
+                    # be bounded or a malicious 86400 wedges the bridge
+                    # thread for a day.
+                    try:
+                        _d = int(duration_sec or 5)
+                    except (TypeError, ValueError):
+                        _d = 5
+                    _d = max(1, min(_d, 30))
+                    try:
+                        import sounddevice as sd
+                    except ImportError:
+                        return '__ERROR__:sounddevice not installed'
+                    try:
+                        sample_rate = 16000
+                        logger.info(f"[NATIVE-MIC] Recording {_d}s at {sample_rate}Hz...")
+                        audio = sd.rec(int(_d * sample_rate),
+                                       samplerate=sample_rate,
+                                       channels=1, dtype='int16',
+                                       blocking=True)
+                        logger.info(f"[NATIVE-MIC] Recorded {len(audio)} samples")
+                        tmp = tempfile.NamedTemporaryFile(suffix='.wav',
+                                                          delete=False)
+                        with wave.open(tmp.name, 'wb') as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2)
+                            wf.setframerate(sample_rate)
+                            wf.writeframes(audio.tobytes())
+                        try:
+                            from integrations.service_tools.whisper_tool \
+                                import whisper_transcribe
+                            result = json.loads(whisper_transcribe(tmp.name))
+                            text = result.get('text', '').strip()
+                            logger.info(f"[NATIVE-MIC] Transcribed: {text[:80]}")
+                            return text if text else '__ERROR__:empty transcription'
+                        except ImportError:
+                            return '__ERROR__:whisper not available'
+                        finally:
+                            try:
+                                os.unlink(tmp.name)
+                            except OSError:
+                                pass
+                    except Exception as e:
+                        logger.error(f"[NATIVE-MIC] Error: {e}")
+                        return f'__ERROR__:{e}'
+
+                def native_file_pick(self, accept='image'):
+                    """Open native macOS NSOpenPanel via pywebview.
+                    accept: 'image', 'pdf', or 'any' (currently unused —
+                    pywebview's create_file_dialog doesn't expose MIME
+                    filters; selection is unrestricted, server-side
+                    validation in /upload/native enforces type).
+                    Returns selected file path string or '' if cancelled."""
+                    try:
+                        wv = get_webview()
+                        windows = wv.windows
+                        if not windows:
+                            return ''
+                        win = windows[0]
+                        result = win.create_file_dialog(
+                            wv.OPEN_DIALOG,
+                            allow_multiple=False,
+                        )
+                        if result and len(result) > 0:
+                            path = result[0]
+                            logger.info(f"[NATIVE-FILE] Picked: {path}")
+                            return str(path)
+                        return ''
+                    except Exception as e:
+                        logger.error(f"[NATIVE-FILE] Error: {e}")
+                        return ''
+
+            _native_api = NunbaNativeApi()
+
         # Create window with conditional hidden status and frameless design
         _window = webview.create_window(
             title=args.title,
@@ -6848,7 +7028,13 @@ def main():
             hidden=start_hidden,
             text_select=True,
             easy_drag=False,  # Disable since we handle dragging in custom title bar
-            background_color='#000000'
+            background_color='#000000',
+            # js_api is None on Windows/Linux (NunbaNativeApi only constructed
+            # on darwin above); passing None is equivalent to omitting the
+            # kwarg — pywebview's create_window handles None gracefully.
+            # On macOS this exposes window.pywebview.api.native_mic_record /
+            # native_file_pick to the SPA for the WKWebView fallback path.
+            js_api=_native_api,
         )
 
         logger.info(f"Window created: {window_width}x{window_height}, hidden={start_hidden}")
@@ -7707,6 +7893,42 @@ def main():
                 pass
 
         _window.events.loaded += _on_loaded_recovery
+
+        # ── macOS WKWebView audio-unlock JS (darwin-only) ──
+        # WebKit blocks AudioContext from running until the first user
+        # gesture.  Inject JS on page load that registers click/touch/
+        # keydown listeners (fire once) to call AudioContext.resume() —
+        # this counts as user-gesture-equivalent and unblocks TTS
+        # audio.play() on the next attempt.
+        # Self-guarded by window.__nunbaMediaPermsGranted so the JS is
+        # a no-op on every subsequent page load.
+        # Windows WebView2 + Linux WebKitGTK don't have this gate;
+        # entire block sys.platform-gated.
+        if sys.platform == 'darwin':
+            def _on_loaded_media_permissions():
+                try:
+                    _window.evaluate_js("""
+                    (function() {
+                        if (window.__nunbaMediaPermsGranted) return;
+                        window.__nunbaMediaPermsGranted = true;
+                        var resumeAudio = function() {
+                            try {
+                                var ctx = new (window.AudioContext || window.webkitAudioContext)();
+                                if (ctx.state === 'suspended') ctx.resume();
+                                var audios = document.querySelectorAll('audio');
+                                audios.forEach(function(a) { a.load(); });
+                            } catch(e) {}
+                        };
+                        ['click', 'touchstart', 'keydown'].forEach(function(evt) {
+                            document.addEventListener(evt, resumeAudio, { once: true });
+                        });
+                    })();
+                    """)
+                    logger.info("[MEDIA] Audio/mic permissions JS injected")
+                except Exception as e:
+                    logger.warning(f"[MEDIA] Permission injection failed: {e}")
+
+            _window.events.loaded += _on_loaded_media_permissions
 
         # Delayed React mount check — if HTML loads but React never mounts
         # (e.g. JS bundle failed, import error), the loaded event fires but
