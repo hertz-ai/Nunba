@@ -2158,20 +2158,110 @@ CLOUD_API_CONFIG = {
 
 
 _internet_cache = {'online': False, 'checked_at': 0}
+# Concurrency primitives for check_internet_connection.
+#   _internet_check_lock guards _internet_cache writes + _internet_check_in_flight
+#     transitions.  RLock (not Lock) so any future re-entrant call path
+#     (request hook → connectivity check → request hook) cannot self-
+#     deadlock.  HTTP is done OUTSIDE the lock so the lock itself never
+#     holds longer than a dict read/write.
+#   _internet_check_in_flight: single-element list (mutable container)
+#     marking "a probe is currently running, do not start another".
+#   _internet_check_event: signals waiters when the in-flight probe
+#     completes.  Cleared by the leader before it starts; set in the
+#     leader's `finally` so a crashed leader still releases waiters.
+_internet_check_lock = threading.RLock()
+_internet_check_in_flight = [False]
+_internet_check_event = threading.Event()
+# Event starts unset; leader.clear() is idempotent.  Pre-set so the very
+# first wait — if a race somehow has a waiter arrive before any leader —
+# returns immediately with the (stale, never-checked) default cache
+# rather than blocking 5s.
+_internet_check_event.set()
+
+_INTERNET_CHECK_TTL_S = 30.0           # cache lifetime
+_INTERNET_CHECK_HTTP_TIMEOUT_S = 2.0   # requests.head timeout
+# Waiters time out generously longer than the HTTP timeout so they don't
+# bail before the leader does — but capped so a crashed/hung leader
+# doesn't block forever.  After this timeout, waiters return whatever
+# is in the cache (possibly stale, but not a deadlock).
+_INTERNET_CHECK_WAIT_TIMEOUT_S = _INTERNET_CHECK_HTTP_TIMEOUT_S + 3.0
+
 
 def check_internet_connection():
-    """Check if internet is available (cached for 30s to avoid repeated timeouts)."""
+    """Check if internet is available.
+
+    30s TTL cache + in-flight dedup so concurrent callers during the
+    cache-stale window share ONE HTTP probe instead of each firing
+    their own SSL handshake.  Live evidence 2026-05-15 py-spy on Nunba
+    PID 36108: 5 worker threads (nunba_4 / _14 / _19 / _22 / _N) all
+    simultaneously in `ssl_wrap_socket` from this function — the
+    pre-existing TTL had a thundering-herd race (cache check at
+    line 2167 + cache write at line 2174 are NOT atomic, so every
+    expired-cache moment let all concurrent callers fire fresh
+    HTTP).  This wrapper closes that gap WITHOUT changing the public
+    return contract (still returns bool; still swallows all
+    requests-side exceptions as False; cache freshness identical).
+    """
     import time
     now = time.monotonic()
-    # Return cached result if checked within the last 30 seconds
-    if now - _internet_cache['checked_at'] < 30:
+
+    # ── Fast path: cache fresh, no lock needed.
+    # Reading two dict keys is GIL-atomic in CPython, and a stale read
+    # here is benign because we'll re-check inside the lock below.
+    if now - _internet_cache['checked_at'] < _INTERNET_CHECK_TTL_S:
         return _internet_cache['online']
-    try:
-        requests.head('https://hevolve.hertzai.com', timeout=2)
-        _internet_cache['online'] = True
-    except Exception:
-        _internet_cache['online'] = False
-    _internet_cache['checked_at'] = now
+
+    # ── Slow path: cache stale.  Decide if WE are the leader or a waiter.
+    with _internet_check_lock:
+        # Re-check inside the lock — another thread may have completed
+        # a probe between our fast-path read and our lock acquisition.
+        now = time.monotonic()
+        if now - _internet_cache['checked_at'] < _INTERNET_CHECK_TTL_S:
+            return _internet_cache['online']
+
+        if _internet_check_in_flight[0]:
+            # Another thread is mid-probe; we'll wait on its event.
+            # IMPORTANT: capture the event reference inside the lock,
+            # but release the lock BEFORE waiting (otherwise the leader
+            # can't take the lock to mark itself done → deadlock).
+            should_probe = False
+        else:
+            # We're the leader.  Mark in-flight and clear the event
+            # so any new waiters block until we set it again.
+            _internet_check_in_flight[0] = True
+            _internet_check_event.clear()
+            should_probe = True
+
+    if should_probe:
+        # HTTP probe outside the lock — long-running calls must never
+        # be held in the critical section.  Default to offline so a
+        # raise from `requests.head` (timeout, DNS, TLS) cleanly
+        # propagates the "offline" cache write via the finally block.
+        online = False
+        try:
+            requests.head('https://hevolve.hertzai.com',
+                          timeout=_INTERNET_CHECK_HTTP_TIMEOUT_S)
+            online = True
+        except Exception:
+            online = False
+        finally:
+            # Always: write result, clear in-flight, wake waiters.
+            # Order matters — set the cache before clearing in_flight
+            # so a waiter that wakes immediately reads the fresh value
+            # (not the previous one).
+            with _internet_check_lock:
+                _internet_cache['online'] = online
+                _internet_cache['checked_at'] = time.monotonic()
+                _internet_check_in_flight[0] = False
+                _internet_check_event.set()
+        return online
+
+    # ── Waiter path: block until the leader's `finally` sets the event.
+    # On timeout (leader crashed before finally — should be impossible
+    # given the try/finally, but defensive), fall through and return
+    # whatever is currently in the cache.  Stale-but-not-deadlocked is
+    # strictly better than a forever wait.
+    _internet_check_event.wait(timeout=_INTERNET_CHECK_WAIT_TIMEOUT_S)
     return _internet_cache['online']
 
 
