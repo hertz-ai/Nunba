@@ -5176,6 +5176,18 @@ def _start_vision_service():
             minicpm_port=int(os.environ.get('HEVOLVE_MINICPM_PORT', 9891)),
         )
         _vision_service.start()
+        # Register canonical singleton so chatbot_routes._get_vision_service()
+        # returns it via O(1) cache read instead of falling back to the
+        # sys.modules['__main__'] lookup (which is fragile under cx_Freeze
+        # macOS where __main__ is the opaque cx_Freeze loader, not main).
+        # Mirrors the get_tts_engine() singleton pattern.
+        try:
+            from routes import chatbot_routes as _cb_routes
+            _cb_routes._VISION_SERVICE_CACHE[0] = _vision_service
+        except Exception as _reg_err:
+            logging.warning(
+                f"VisionService singleton registration skipped: {_reg_err}"
+            )
         logging.info("VisionService started (MiniCPM sidecar + frame receiver)")
     except Exception as e:
         logging.warning(f"VisionService failed to start: {e}")

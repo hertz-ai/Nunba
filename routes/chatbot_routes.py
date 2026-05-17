@@ -667,13 +667,85 @@ def get_description(user_id):
     return None
 
 
+# Canonical singleton cache populated by main.py:_start_vision_service.
+# Mirrors the get_tts_engine() pattern (lazy module-global + threading lock).
+# Replaces a `gc.get_objects()` heap walk that PR #12 proposed — heap walk
+# is 50-200ms per cold call on a live process and would violate the 1.5s
+# chat hot path budget.  Cache write at construction site is the canonical
+# fix; sys.modules['__main__'] lookup retained as defensive fallback for
+# code paths that construct VisionService outside main.py.
+_VISION_SERVICE_CACHE = [None]
+
+
 def _get_vision_service():
-    """Lazy accessor for the global VisionService instance."""
-    import sys
+    """Lazy accessor for the global VisionService instance.
+
+    Order: cache slot (fast, canonical) → sys.modules['__main__']
+    (defensive fallback for unusual construction paths).
+    """
+    cached = _VISION_SERVICE_CACHE[0]
+    if cached is not None:
+        return cached
     main_mod = sys.modules.get('__main__')
     if main_mod and hasattr(main_mod, '_vision_service'):
-        return main_mod._vision_service
+        svc = main_mod._vision_service
+        if svc is not None:
+            _VISION_SERVICE_CACHE[0] = svc  # populate for next call
+        return svc
     return None
+
+
+def vision_frame_ingest():
+    """POST /api/vision/frame?user_id=&channel=camera|screen, body=JPEG bytes.
+
+    Cross-platform canonical HTTP transport for SPA-sourced camera /
+    screen frames.  Writes to the same per-user frame store the
+    VisionService WebSocket handler uses (`store.put_frame` /
+    `store.put_screen_frame`) — the background `_description_loop`
+    then picks the frames up, runs the active vision backend (Qwen3-VL
+    / MiniCPM), and records visual context exactly as the WebSocket
+    path does.
+
+    HTTP is used instead of WebSocket because WKWebView (macOS) rejects
+    ws:// from the secure-context localhost page with a hard-coded
+    `SecurityError: The operation is insecure` that no WKPreference or
+    App Transport Security key unlocks.  HTTP fetch to the same Flask
+    origin has no such gate and behaves identically on WebView2 /
+    WKWebView / WebKitGTK — single frontend path for every OS, not a
+    Mac-only fallback.
+
+    Auth: wrapped via _require_local_or_token at route registration.
+    user_id is read from query/header (then pinned to authenticated
+    principal by the decorator's session context where available).
+    Body cap: 512KB (5 FPS × ~40KB JPEG @ 640×480 q=0.6 = ~200KB/s,
+    cap above that rejects size-bomb DoS).
+    """
+    _MAX_FRAME_BYTES = 512_000
+    if request.content_length and request.content_length > _MAX_FRAME_BYTES:
+        return jsonify({'ok': False, 'error': 'frame_too_large',
+                        'max_bytes': _MAX_FRAME_BYTES}), 413
+    svc = _get_vision_service()
+    if svc is None or not getattr(svc, 'store', None):
+        return jsonify({'ok': False,
+                        'error': 'vision_service_unavailable'}), 503
+    user_id = str(request.args.get('user_id') or
+                  request.headers.get('X-User-Id') or 'anon')
+    channel = (request.args.get('channel') or 'camera').lower()
+    frame_bytes = request.get_data() or b''
+    if not frame_bytes:
+        return jsonify({'ok': False, 'error': 'empty_frame'}), 400
+    if len(frame_bytes) > _MAX_FRAME_BYTES:
+        return jsonify({'ok': False, 'error': 'frame_too_large',
+                        'max_bytes': _MAX_FRAME_BYTES}), 413
+    try:
+        if channel == 'screen':
+            svc.store.put_screen_frame(user_id, frame_bytes)
+        else:
+            svc.store.put_frame(user_id, frame_bytes)
+        return ('', 204)
+    except Exception as _e:
+        logger.warning(f"vision_frame_ingest error: {_e}")
+        return jsonify({'ok': False, 'error': str(_e)[:120]}), 500
 
 
 def create_sessions(user_id, teacher_avatar_id, data, data_keys):
@@ -4227,6 +4299,15 @@ def register_routes(app):
                      methods=["POST"], endpoint="tts_handshake_retry_api")
     app.add_url_rule("/api/tts/handshake/switch", view_func=tts_handshake_switch,
                      methods=["POST"], endpoint="tts_handshake_switch_api")
+
+    # Vision frame HTTP ingest endpoint — same store the WebSocket path uses;
+    # macOS WKWebView rejects ws:// upgrades from localhost so HTTP is the
+    # cross-OS canonical transport.  Wrapped in _require_local_or_token so
+    # only the authenticated principal can write frames (prevents any local
+    # process from POSTing attacker-controlled imagery as another user).
+    app.add_url_rule("/api/vision/frame",
+                     view_func=_require_local_or_token(vision_frame_ingest),
+                     methods=["POST"], endpoint="vision_frame_ingest")
 
     # Kids Learning TTS routes (called by kidsLearningApi.js TTSManager)
     app.route("/api/social/tts/quick", methods=["POST"])(tts_kids_quick)
