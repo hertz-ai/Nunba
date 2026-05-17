@@ -144,8 +144,14 @@ except ImportError:
 def _splash(msg):
     """Update startup splash status. Safe no-op if splash not available."""
     try:
-        import app as _app
-        if hasattr(_app, '_startup_splash_update'):
+        # Use sys.modules to get the already-loaded app module.
+        # A bare `import app as _app` re-executes app.py's module-level
+        # code (including the single-instance guard) when main.py is
+        # loaded via importlib from _import_main_app(), causing the
+        # guard to fire SystemExit(0) on what looks like a duplicate
+        # launch.  sys.modules lookup avoids the re-execution.
+        _app = sys.modules.get('app') or sys.modules.get('__main__')
+        if _app and hasattr(_app, '_startup_splash_update'):
             _app._startup_splash_update(msg)
     except Exception:
         pass
