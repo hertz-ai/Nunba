@@ -72,7 +72,33 @@ export default function ChannelSetupWizard({ open, onClose, onSuccess }) {
     setError('');
     setLoading(true);
     channelUserApi.catalog().then(res => {
-      setCatalog(res?.data?.data || res?.data || []);
+      // Backend (HARTOS list_all_channels) returns a slug-keyed dict:
+      //   { "<slug>": {category, display_name, color, capabilities:
+      //     {audio:true, text:true, ...}, setup_fields:[...], ... } }
+      // The wizard below iterates with .forEach + .map + reads
+      // ch.channel_type, ch.capabilities.slice -- both expect an
+      // array shape, so convert here.  Capabilities is a bool-map
+      // server-side; convert to an array of enabled capability names
+      // so the chip row below can .slice + render.
+      const raw = res?.data?.data || res?.data || [];
+      let arr;
+      if (Array.isArray(raw)) {
+        arr = raw;
+      } else {
+        arr = Object.entries(raw).map(([slug, meta]) => {
+          const m = meta || {};
+          let caps = m.capabilities;
+          if (caps && !Array.isArray(caps) && typeof caps === 'object') {
+            caps = Object.entries(caps)
+              .filter(([, v]) => v === true)
+              .map(([k]) => k);
+          } else if (!Array.isArray(caps)) {
+            caps = [];
+          }
+          return { channel_type: slug, ...m, capabilities: caps };
+        });
+      }
+      setCatalog(arr);
     }).catch(() => {
       setError('Failed to load channel catalog');
     }).finally(() => setLoading(false));
