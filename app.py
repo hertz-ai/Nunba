@@ -7228,7 +7228,21 @@ def main():
                 logger.debug(
                     f"[REMOUNT:{origin}] window.show() raised: {_ws_err}")
             try:
-                _is_iconic = False
+                # The ONLY state where restore() is destructive is MAXIMIZED
+                # (SW_RESTORE → un-maximize → snap to logical startup size).
+                # In all other states (iconic / hidden / normal), restore()
+                # is either useful (un-minimize, un-hide+activate) or a
+                # no-op + activation — matching the OLD behavior that
+                # belt-and-suspenders'd `show()` for compositor-wake.
+                # Self-review v2 (2026-05-15): the previous fix used
+                # IsIconic-only and accidentally skipped restore() on the
+                # hidden→visible path (window was hidden, not iconic →
+                # IsIconic=False → restore() skipped → potentially black
+                # screen on bg-shown / tray-show, regressing the
+                # original "wake compositor" reason for the call).
+                # IsZoomed-gated keeps restore() everywhere except the
+                # one destructive state.
+                _is_maximized = False
                 if sys.platform == 'win32':
                     import ctypes as _wc
                     _hwnd = 0
@@ -7253,17 +7267,17 @@ def main():
                         except Exception:
                             _hwnd = 0
                     if _hwnd:
-                        _is_iconic = bool(_wc.windll.user32.IsIconic(_hwnd))
-                else:
-                    # Non-Windows: pywebview backends don't have the same
-                    # SW_RESTORE-unmaximize quirk; safe to call restore()
-                    # if we can't introspect state.
-                    _is_iconic = True
-                if _is_iconic:
+                        # IsZoomed: TRUE iff window is in maximized state.
+                        # FALSE for: normal, minimized, hidden.
+                        _is_maximized = bool(_wc.windll.user32.IsZoomed(_hwnd))
+                # Non-Windows OR HWND-resolve failed: _is_maximized stays
+                # False → restore() runs unconditionally (preserves OLD
+                # behavior on macOS/Linux + the rare HWND-resolve failure).
+                if not _is_maximized:
                     _window.restore()
                 else:
                     logger.debug(
-                        f"[REMOUNT:{origin}] window not iconic — skipping "
+                        f"[REMOUNT:{origin}] window is maximized — skipping "
                         "restore() to preserve maximize state")
             except Exception as _wr_err:
                 logger.debug(
