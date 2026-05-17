@@ -51,10 +51,43 @@ const STATUS_CONFIG = {
   stalled:   { color: '#ff9800', label: 'Stalled' },
   frozen:    { color: '#ff4444', label: 'Frozen' },
   idle:      { color: '#888',    label: 'Idle' },
+  paused:    { color: '#aaa',    label: 'Paused' },
+  pending:   { color: '#999',    label: 'Pending' },
+  failed:    { color: '#ff4444', label: 'Failed' },
   completed: { color: '#666',    label: 'Completed' },
   dead:      { color: '#ff0000', label: 'Dead' },
   unknown:   { color: '#555',    label: 'Unknown' },
 };
+
+// Display order for the summary chips at the top of the dashboard.
+// Backend returns by_status as a dict keyed by status name; Python dict
+// insertion order is essentially random for our purposes.  Per user
+// request 2026-05-15: show good news first ("healthy / active"),
+// problems next ("stalled / frozen / failed"), then transient states
+// ("pending / idle / paused"), then terminal states ("completed /
+// dead / unknown") last.  Statuses not in this list fall through to
+// the end alphabetically (forward-compat for new status values).
+const STATUS_SORT_ORDER = [
+  'healthy', 'active', 'executing',
+  'stalled', 'frozen', 'failed',
+  'pending', 'idle', 'paused',
+  'completed', 'dead', 'unknown',
+];
+
+function sortStatusEntries(entries) {
+  // entries: [[statusName, count], ...]
+  const rank = (s) => {
+    const i = STATUS_SORT_ORDER.indexOf(s);
+    return i === -1 ? STATUS_SORT_ORDER.length : i;
+  };
+  return entries.slice().sort((a, b) => {
+    const ra = rank(a[0]);
+    const rb = rank(b[0]);
+    if (ra !== rb) return ra - rb;
+    // Same rank (both unknown): alphabetical fallback for stable order.
+    return a[0].localeCompare(b[0]);
+  });
+}
 
 function StatusChip({ status }) {
   const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.unknown;
@@ -124,6 +157,23 @@ function AgentCard({ agent, index }) {
           {agent.current_task && (
             <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', display: 'block', mt: 0.5 }}>
               {agent.current_task}
+            </Typography>
+          )}
+          {/* status_reason: backend-derived "why this status?" string
+              (e.g. "No dispatch in 75s ..." for stalled).  Only rendered
+              when present — additive field, safe with older backends
+              that omit it.  Color matches the status chip so the eye
+              groups them. */}
+          {agent.status_reason && (
+            <Typography variant="caption"
+              sx={{
+                color: (STATUS_CONFIG[agent.status] || {}).color || '#888',
+                display: 'block',
+                mt: 0.5,
+                fontStyle: 'italic',
+                opacity: 0.85,
+              }}>
+              {agent.status_reason}
             </Typography>
           )}
           <SparkProgress spent={m.spark_spent} budget={m.spark_budget} />
@@ -246,7 +296,7 @@ export default function AgentDashboardPage() {
                       <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)' }}>Total</Typography>
                     </Box>
                   </Grid>
-                  {summary.by_status && Object.entries(summary.by_status).map(([s, c]) => (
+                  {summary.by_status && sortStatusEntries(Object.entries(summary.by_status)).map(([s, c]) => (
                     <Grid item xs key={s}>
                       <Box sx={{ textAlign: 'center' }}>
                         <Typography variant="h5" sx={{ fontWeight: 700, color: (STATUS_CONFIG[s] || {}).color || '#888' }}>{c}</Typography>

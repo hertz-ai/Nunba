@@ -44,7 +44,16 @@ export default function TaskLedgerPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const params = statusFilter ? `?status=${statusFilter}&limit=100` : '?limit=100';
+      // STATUS_COLORS keys are UPPERCASE for display (matches the
+      // TaskStatus enum names in HARTOS agent_ledger), but the backend
+      // stats/filter API uses lowercase tokens (e.g. by_status keys:
+      // {pending, in_progress, completed, blocked, failed}).  Without
+      // toLowerCase() the backend rejects with "Unknown status: PENDING"
+      // and the page renders "Ledger unavailable: Unknown status: PENDING"
+      // — live evidence 2026-05-15 user report.
+      const params = statusFilter
+        ? `?status=${statusFilter.toLowerCase()}&limit=100`
+        : '?limit=100';
       const res = await fetch(`/api/agent-engine/ledger/tasks${params}`,
                               {headers: _authHeaders()});
       const data = await res.json().catch(() => ({}));
