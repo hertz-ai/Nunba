@@ -136,6 +136,19 @@ export function useTTS(options = {}) {
       // Single-path probe: pick best engine ONCE, use only that
       const probe = await probeTTSCapability();
       probeRef.current = probe;
+      // Defensive: probeTTSCapability can return null/undefined in test
+      // environments (no audio API mock) — without this guard, the
+      // `probe.engine` access below throws synchronously and the catch
+      // block's `probeRef.current?.engine` evaluates to `undefined`
+      // logging "[TTS] undefined init threw: TypeError" 24+ times per
+      // suite run.  Treat null-probe as "no local TTS available, fall
+      // back to server-only" exactly like the 'server' branch.
+      if (!probe) {
+        setBrowserTTSLoading(false);
+        serverAvailableRef.current = true;
+        setIsAvailable(true);
+        return;
+      }
       if (probe.engine === 'server') {
         // No local TTS — rely on server only
         setBrowserTTSLoading(false);
@@ -362,23 +375,64 @@ export function useTTS(options = {}) {
         const url = URL.createObjectURL(blob);
         if (audioRef.current) {
           audioRef.current.src = url;
-          audioRef.current.play();
+          try {
+            await audioRef.current.play();
+          } catch (playErr) {
+            // macOS WebKit blocks autoplay until first user-gesture-unlock.
+            // Creating + resuming an AudioContext counts as gesture-
+            // equivalent on most WebKit versions, so retry once after
+            // the resume.  If that ALSO fails (WKWebView's hard refusal
+            // of server-WAV playback even post-unlock), throw to the
+            // outer catch → SpeechSynthesisUtterance fallback (OS voice).
+            // Windows WebView2 + Linux WebKitGTK rarely hit this; the
+            // first .play() typically succeeds and the retry is dead code.
+            console.warn('[TTS] play() blocked, retrying after user-gesture unlock:', playErr.message);
+            try {
+              const ctx = new (window.AudioContext || window.webkitAudioContext)();
+              if (ctx.state === 'suspended') await ctx.resume();
+              await audioRef.current.play();
+            } catch (retryErr) {
+              console.error('[TTS] play() retry failed, escalating to web speech:', retryErr.message);
+              throw retryErr;
+            }
+          }
           setIsSpeaking(true);
         }
         return url;
       } catch (err) {
-        // Server TTS failed — fall back to browser Web Speech API
-        // (works for most languages, lower quality but better than silence)
+        // Server TTS failed — fall back to browser Web Speech API.
+        // Auto-detect utterance language from the actual text content
+        // rather than trusting the caller's `lang` (often stale — tied
+        // to hart_language.json, not the LLM's actual response language).
+        // Without this, an English assistant reply in a Tamil-locale
+        // session tries to speak "Hello!" with a Tamil voice and fails
+        // silently.  Strict improvement on all OS: caller passes lang,
+        // detected lang is more accurate when they diverge.
+        const utterLang = _isLikelyEnglish(text) ? 'en' : lang;
+        console.log('[TTS] server synth failed, trying web speech fallback (caller lang=' + lang + ' detected lang=' + utterLang + ' err=' + err.message + ')');
         try {
+          if (!('speechSynthesis' in window)) {
+            console.error('[TTS] SpeechSynthesis not available in this WebView');
+            setError(err.message);
+            return null;
+          }
+          // Cancel any queued utterances; some WebKit versions refuse to
+          // start a new one while an old utterance is pending.
+          try { window.speechSynthesis.cancel(); } catch (_e) { /* noop */ }
           const utter = new SpeechSynthesisUtterance(text);
-          utter.lang = lang;
+          utter.lang = utterLang;
           utter.rate = 0.9;
-          utter.onend = () => setIsSpeaking(false);
-          utter.onerror = () => setIsSpeaking(false);
+          utter.onstart = () => console.log('[TTS] web speech utterance STARTED (lang=' + utterLang + ')');
+          utter.onend = () => { setIsSpeaking(false); console.log('[TTS] web speech utterance ENDED'); };
+          utter.onerror = (e) => { setIsSpeaking(false); console.error('[TTS] web speech utterance ERROR: ' + (e.error || 'unknown')); };
           window.speechSynthesis.speak(utter);
           setIsSpeaking(true);
+          const voices = window.speechSynthesis.getVoices();
+          const matched = voices.filter((v) => v.lang.toLowerCase().startsWith(utterLang.toLowerCase().slice(0, 2)));
+          console.log('[TTS] web speech dispatched: ' + matched.length + ' voices match lang=' + utterLang + ' (total=' + voices.length + ')');
           return 'webspeech';
-        } catch {
+        } catch (fallbackErr) {
+          console.error('[TTS] web speech fallback threw: ' + fallbackErr.message);
           setError(err.message);
           return null;
         }
