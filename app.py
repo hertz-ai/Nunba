@@ -1423,8 +1423,50 @@ def _load_deferred_config():
             os.environ.setdefault('HEVOLVE_LOCAL_LLM_URL', f'http://127.0.0.1:{_cfg_port}/v1')
             if _llm_cfg.get('use_external_llm') and _llm_cfg.get('external_llm_endpoint'):
                 _llm_configured = True
+                _ep = _llm_cfg['external_llm_endpoint']
+                _ext_model = _ep.get('model')
+                if not _ext_model:
+                    # Discover the active model from the live endpoint rather than
+                    # hardcoding — works for any Ollama model or OpenAI-compat server.
+                    _raw_base = _ep.get('base_url', '')
+                    _base = _raw_base.rstrip('/').removesuffix('/v1')
+                    _is_ollama = _ep.get('type') == 'ollama' or ':11434' in _base
+                    try:
+                        import urllib.request as _ur
+                        import json as _je
+                        if _is_ollama:
+                            _resp = _ur.urlopen(_base + '/api/tags', timeout=2)
+                            _models = _je.loads(_resp.read()).get('models', [])
+                            if _models:
+                                _ext_model = _models[0]['name']
+                        else:
+                            _resp = _ur.urlopen(_base + '/v1/models', timeout=2)
+                            _data = _je.loads(_resp.read()).get('data', [])
+                            if _data:
+                                _ext_model = _data[0]['id']
+                    except Exception:
+                        pass
+                if _ext_model:
+                    os.environ.setdefault('HEVOLVE_LLM_MODEL_NAME', _ext_model)
             else:
                 _llm_configured = not _llm_cfg.get('first_run', True)
+            # Fallback: if external endpoint was down (or use_external_llm is
+            # False), discover the model from the local llama.cpp server instead.
+            if not os.environ.get('HEVOLVE_LLM_MODEL_NAME'):
+                _llama_port = _llm_cfg.get('server_port', 8080)
+                for _port in [_llama_port, 8082, 8081, 8080]:
+                    try:
+                        import urllib.request as _ur2
+                        import json as _je2
+                        _resp2 = _ur2.urlopen(
+                            f'http://127.0.0.1:{_port}/v1/models', timeout=1)
+                        _data2 = _je2.loads(_resp2.read()).get('data', [])
+                        if _data2:
+                            os.environ.setdefault(
+                                'HEVOLVE_LLM_MODEL_NAME', _data2[0]['id'])
+                            break
+                    except Exception:
+                        pass
     except Exception:
         pass
 
@@ -1816,7 +1858,7 @@ if getattr(args, 'validate', False):
         'json_repair', 'bs4',
         # 9. Database package (optional — only bundled when hevolve-database is installed)
         *( ['sql.database', 'sql.models']
-           if __import__('importlib.util').find_spec('sql') else [] ),
+           if importlib.util.find_spec('sql') else [] ),
     ]
 
     # NameError = code references an undefined name (e.g. missing import logging)

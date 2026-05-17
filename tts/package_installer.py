@@ -604,6 +604,27 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
     # instead of Program Files (which needs admin)
     user_sp = get_user_site_packages()
     if args and args[0] == 'install':
+        # --no-build-isolation means pip uses the *current* environment's
+        # setuptools instead of an isolated build env.  python-embed doesn't
+        # ship setuptools, so sdists (e.g. docopt-0.6.2.tar.gz pulled in by
+        # kokoro/melotts/coqui-tts via num2words) crash with
+        # "BackendUnavailable: Cannot import 'setuptools.build_meta'".
+        # Pre-install setuptools + wheel into the target dir so the
+        # subsequent build subprocess can find them.  The check is a fast
+        # os.path.isdir so it's effectively free on subsequent calls.
+        _st_marker = os.path.join(user_sp, 'setuptools')
+        if not os.path.isdir(_st_marker):
+            _st_cmd = [
+                python_exe, '-m', 'pip', 'install',
+                '--target', user_sp,
+                '--no-build-isolation',
+                '--progress-bar', 'off',
+                'setuptools', 'wheel',
+            ]
+            subprocess.run(_st_cmd, capture_output=True, env={
+                **os.environ.copy(), 'PYTHONNOUSERSITE': '1',
+                'PYTHONUNBUFFERED': '1',
+            })
         args = args[:1] + [
             '--target', user_sp,
             '--no-build-isolation',  # Use system setuptools (pip's isolated build fails in frozen builds)
@@ -832,6 +853,35 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
         # via the per-package file path, plus the tail in the in-memory
         # log for the operator's first glance.
         _log_hint = f' (full output: {_pip_log})' if _pip_log else ''
+
+        # Detect Windows native crashes that kill the Python process before
+        # pip can produce any output.  Seen in practice:
+        #   rc=0xC0000142 (STATUS_DLL_INIT_FAILED) — a DLL in the install
+        #     env (e.g. partial torch from a prior failed download) crashes
+        #     its DllMain on process start.
+        #   rc=0x40010004 — process killed mid-download, likely OOM or
+        #     virtual address space exhausted during the 2.5 GB torch wheel.
+        # Without this check these appear as empty pip logs with no
+        # actionable message.
+        if sys.platform == 'win32' and not out.strip():
+            _urc = rc & 0xFFFFFFFF
+            import shutil as _shutil2
+            _free = _shutil2.disk_usage(
+                get_user_site_packages()
+            ).free / 1024 ** 3
+            _crash_msg = (
+                f"python-embed crashed before producing output "
+                f"(rc=0x{_urc:08X}). "
+                f"Free disk: {_free:.1f} GB. "
+                "Common causes: (1) < 6 GB free disk — torch needs ~5 GB "
+                "temp space during download; (2) a corrupt partial install "
+                "in ~/.nunba/site-packages/ whose DLL fails to load at "
+                "Python startup. "
+                f"Full log: {_pip_log or '(disabled)'}"
+            )
+            logger.error(_crash_msg)
+            return False, _crash_msg
+
         if is_enospc:
             logger.error(
                 "pip failed (rc=%d, ENOSPC — disk full)%s. Tail:\n%s",
@@ -892,19 +942,48 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
     _torch_index = ('https://download.pytorch.org/whl/rocm6.2' if gpu_type == 'amd'
                      else 'https://download.pytorch.org/whl/cu124')
     _target = get_user_site_packages()
-    # stall_timeout=1800: pip outputs ONE "Downloading..." line then goes
-    # silent for the entire 2.5 GB transfer.  The default 120s stall killer
-    # fires mid-download every time on slow connections.  1800s (30 min)
-    # gives enough runway for the full wheel on a slow link without
-    # masking genuinely hung processes (the outer timeout=3600 still kills).
-    ok, msg = _run_pip([
-        'install', 'torch', 'torchaudio',
-        '--index-url', _torch_index,
-    ], progress_cb, timeout=3600, stall_timeout=1800)
 
-    # Fallback: if C: is full (ENOSPC), retry to D: drive.
-    # CUDA torch is 2.5GB — C: often has <5GB free on 500GB disks
-    # that are full with system files + models.
+    # Pre-flight: CUDA torch wheel is 2.5 GB. pip needs ~2× that as
+    # temp space while downloading + extracting before writing to target.
+    # If the drive has < 6 GB free, the Python process crashes silently
+    # mid-download (no ENOSPC text in stdout — the OOM kills the process
+    # before pip can print anything). Route to D: proactively rather
+    # than discovering the issue via a cryptic rc after 30 minutes.
+    import shutil as _shutil
+    _free_gb = _shutil.disk_usage(_target).free / 1024 ** 3
+    if _free_gb < 6.0 and sys.platform == 'win32' and os.path.isdir('D:\\'):
+        _d_target = os.path.join('D:\\', '.nunba', 'site-packages')
+        os.makedirs(_d_target, exist_ok=True)
+        logger.info(
+            "install_gpu_torch: only %.1f GB free on C:, routing directly to D:",
+            _free_gb,
+        )
+        if progress_cb:
+            progress_cb(
+                f"Low disk space ({_free_gb:.1f} GB) — installing CUDA PyTorch to D: drive..."
+            )
+        ok, msg = _run_pip([
+            'install', 'torch', 'torchaudio',
+            '--index-url', _torch_index,
+            '--target', _d_target,
+        ], progress_cb, timeout=3600, stall_timeout=1800)
+        if ok:
+            _target = _d_target
+            logger.info("CUDA torch installed to D: drive (low-space pre-flight)")
+    else:
+        # stall_timeout=1800: pip outputs ONE "Downloading..." line then goes
+        # silent for the entire 2.5 GB transfer.  The default 120s stall killer
+        # fires mid-download every time on slow connections.  1800s (30 min)
+        # gives enough runway for the full wheel on a slow link without
+        # masking genuinely hung processes (the outer timeout=3600 still kills).
+        ok, msg = _run_pip([
+            'install', 'torch', 'torchaudio',
+            '--index-url', _torch_index,
+        ], progress_cb, timeout=3600, stall_timeout=1800)
+
+    # Fallback: if C: is full (ENOSPC text in output), retry to D: drive.
+    # Covers the case where the drive was borderline-OK at pre-flight but
+    # filled up during the download.
     if not ok and 'No space left' in msg:
         _d_target = os.path.join('D:\\', '.nunba', 'site-packages')
         os.makedirs(_d_target, exist_ok=True)

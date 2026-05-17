@@ -470,6 +470,83 @@ def install_into_venv(
                 f"err={err[:120]!r}\n"
             )
             if rc != 0:
+                # Distinguish a native process crash (rc is a large
+                # Windows exception code, not 1 or 2) from a Python
+                # ImportError.  Crash codes seen in practice:
+                #   0xC000007B — STATUS_INVALID_IMAGE_FORMAT: a Rust/.pyd
+                #     native extension linked against a DLL that is the
+                #     wrong architecture or missing from PATH.
+                #   0x40010004 — process killed by OS (OOM or CFG violation)
+                # Approach: bisect the known problematic Rust extensions to
+                # find the crashing one, then force-reinstall it.
+                _is_crash = rc not in (0, 1, 2) and (rc > 100 or rc < 0)
+                if _is_crash:
+                    _crash_deps = [
+                        ('safetensors', 'safetensors'),
+                        ('hf-xet', 'hf_xet'),
+                        ('ml-dtypes', 'ml_dtypes'),
+                    ]
+                    _culprit = None
+                    for _dep_pip, _dep_mod in _crash_deps:
+                        _drc, _, _derr = invoke_in_venv(
+                            backend, _dep_mod, [],
+                            timeout=15, _probe_mode=True,
+                        )
+                        log_f.write(
+                            f"-- crash bisect {_dep_mod!r} rc={_drc}\n"
+                        )
+                        if _drc != 0 and _drc not in (0, 1, 2):
+                            _culprit = (_dep_pip, _dep_mod)
+                            break
+                    if _culprit:
+                        _cpip, _cmod = _culprit
+                        log_f.write(
+                            f"-- crash culprit: {_cpip!r} (rc=0x{rc & 0xFFFFFFFF:08X})"
+                            f" — force-reinstalling\n"
+                        )
+                        log_f.flush()
+                        # Force-reinstall the crashing extension; a freshly
+                        # downloaded wheel fixes corruption and DLL-cache
+                        # mismatches without needing user action.
+                        import subprocess as _sp2
+                        _vpy = str(pyexe)
+                        _r = _sp2.run(
+                            [_vpy, '-m', 'pip', 'install',
+                             '--force-reinstall', '--no-deps',
+                             '--progress-bar', 'off', _cpip],
+                            capture_output=True, text=True,
+                            timeout=120,
+                        )
+                        log_f.write(
+                            f"-- reinstall {_cpip!r} rc={_r.returncode} "
+                            f"out={_r.stdout[-200:]!r}\n"
+                        )
+                        # Retry the top-level import after reinstall.
+                        _rrc, _, _rerr = invoke_in_venv(
+                            backend, mod, [],
+                            timeout=_IMPORT_PROBE_TIMEOUT, _probe_mode=True,
+                        )
+                        log_f.write(
+                            f"-- post-reinstall verify {mod!r} rc={_rrc}\n"
+                        )
+                        if _rrc == 0:
+                            log_f.write(
+                                f"-- recovered: {_cpip!r} reinstall fixed crash\n"
+                            )
+                            continue  # this pkg verified OK; move to next
+                        err = (
+                            f"native crash 0x{rc & 0xFFFFFFFF:08X} on "
+                            f"import {_cmod!r}; reinstall did not recover. "
+                            "Check MSVC++ redistributable / CUDA runtime. "
+                            f"Details: {_rerr[-300:]!r}"
+                        )
+                    else:
+                        err = (
+                            f"process crashed (rc=0x{rc & 0xFFFFFFFF:08X}) "
+                            f"importing {mod!r}; no known Rust extension "
+                            f"identified as culprit. "
+                            f"Details: {err[-300:]!r}"
+                        )
                 return False, (
                     f"package {pkg!r} installed but import {mod!r} "
                     f"failed: {err[-400:]!r}"
