@@ -730,13 +730,22 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
                 continue
             try:
                 import subprocess as _sp_lipo
-                _arch_out = _sp_lipo.check_output(['lipo', '-archs', _bin_cs], text=True).strip()
+                # CLAUDE.md Gate 7: every subprocess MUST have a timeout.
+                # `lipo` is fast (single-pass binary surgery), 60s is generous.
+                _arch_out = _sp_lipo.check_output(
+                    ['lipo', '-archs', _bin_cs], text=True, timeout=60
+                ).strip()
                 if 'x86_64' in _arch_out and 'arm64' in _arch_out:
                     _tmp_f = os.path.join(_tmp_cs.gettempdir(), os.path.basename(_bin_cs) + '.arm64')
-                    _sp_lipo.run(['lipo', _bin_cs, '-thin', 'arm64', '-output', _tmp_f], check=True)
+                    _sp_lipo.run(
+                        ['lipo', _bin_cs, '-thin', 'arm64', '-output', _tmp_f],
+                        check=True, timeout=120,
+                    )
                     os.replace(_tmp_f, _bin_cs)
                     os.chmod(_bin_cs, 0o755)
                     print(f"Post-build: thinned {os.path.basename(_bin_cs)} to arm64")
+            except _sp_lipo.TimeoutExpired as _e_to:
+                print(f"Post-build: lipo timed out for {os.path.basename(_bin_cs)}: {_e_to} — skipping (build continues)")
             except Exception as _e_lipo:
                 print(f"Post-build: lipo thin failed for {os.path.basename(_bin_cs)}: {_e_lipo}")
 
@@ -787,20 +796,34 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
                     found.append(_p)
         return found
 
+    # CLAUDE.md Gate 7: codesign WITHOUT timeout can hang the entire build
+    # if SecurityServer / KeychainAccess stalls (no signing-identity prompt
+    # for ad-hoc sigs in CI, but stuck XPC connection observed in the wild).
+    # 60s per call is generous for ad-hoc sigs on individual Mach-Os (median
+    # 50-200ms, p99 <2s).  TimeoutExpired surfaces as a per-binary sign
+    # failure and the loop continues — build doesn't hang.
+    _CS_TIMEOUT_S = 60
+
     def _sign(path):
         # Remove any stale signature left over from lipo thinning, then re-sign.
         _sp_cs.run(['codesign', '--remove-signature', path],
-                   capture_output=True, check=False)
+                   capture_output=True, check=False, timeout=_CS_TIMEOUT_S)
         _sp_cs.run(['codesign', '--force', '--timestamp=none', '--sign', '-', path],
-                   capture_output=True, check=True)
+                   capture_output=True, check=True, timeout=_CS_TIMEOUT_S)
 
     _cs_signed = 0
+    _cs_timed_out = 0
     for _cs_f in _collect_machos(_build_dir):
         try:
             _sign(_cs_f)
             _cs_signed += 1
+        except _sp_cs.TimeoutExpired as _e_to:
+            _cs_timed_out += 1
+            print(f"Post-build: sign TIMED OUT for {_cs_f}: {_e_to} — skipping (build continues)")
         except Exception as _e_sign:
             print(f"Post-build: sign failed for {_cs_f}: {_e_sign}")
+    if _cs_timed_out:
+        print(f"Post-build: {_cs_timed_out} codesign calls timed out — investigate SecurityServer/KeychainAccess stalls before next build")
     # Clean hidden dotfiles/caches that break bundle-context codesign walks
     # (.keep, .gitignore, .aider*, .cache, .DS_Store).  codesign in bundle mode
     # tries to hash every file under MacOS/ and trips on these.
@@ -831,7 +854,7 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
             _cs_tmp = os.path.join(_tmp_cs.gettempdir(), 'Nunba_exe_sign.tmp')
             shutil.copy2(_cs_exe, _cs_tmp)
             _sp_cs.run(['codesign', '--remove-signature', _cs_tmp],
-                       capture_output=True, check=False)
+                       capture_output=True, check=False, timeout=_CS_TIMEOUT_S)
             # Sign with entitlements (audio-input, camera) so the exe declares
             # its capabilities.  TCC still needs NSMicrophoneUsageDescription
             # in Info.plist — entitlements alone aren't enough for ad-hoc sigs,
@@ -842,7 +865,8 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
             if os.path.isfile(_cs_entitlements):
                 _cs_cmd += ['--entitlements', _cs_entitlements]
             _cs_cmd.append(_cs_tmp)
-            _sp_cs.run(_cs_cmd, capture_output=True, check=True)
+            _sp_cs.run(_cs_cmd, capture_output=True, check=True,
+                       timeout=_CS_TIMEOUT_S)
             shutil.copy2(_cs_tmp, _cs_exe)
             os.chmod(_cs_exe, 0o755)
             os.remove(_cs_tmp)
