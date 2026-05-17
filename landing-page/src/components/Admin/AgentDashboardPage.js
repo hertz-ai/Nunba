@@ -23,6 +23,8 @@ import {
 } from '@mui/material';
 import React, { useState, useEffect, useRef } from 'react';
 
+import AgentOperationsDrawer from './AgentOperationsDrawer';
+
 
 // SSE-driven refresh + heartbeat fallback.
 //
@@ -134,11 +136,20 @@ function SparkProgress({ spent, budget }) {
   );
 }
 
-function AgentCard({ agent, index }) {
+function AgentCard({ agent, index, onClick }) {
   const m = agent.metrics || {};
+  // onClick (Phase B): opens AgentOperationsDrawer with this agent_id.
+  // Wrapper Box (not CardActionArea) keeps the existing nested
+  // StatusChip click semantics safe — Chip has no onClick of its own.
   return (
     <Grow in timeout={300 + index * 50}>
-      <Card sx={{ ...cardStyle, '&:hover': { border: '1px solid rgba(108,99,255,0.15)' } }}>
+      <Card
+        onClick={onClick ? () => onClick(agent.id) : undefined}
+        sx={{
+          ...cardStyle,
+          cursor: onClick ? 'pointer' : 'default',
+          '&:hover': { border: '1px solid rgba(108,99,255,0.15)' },
+        }}>
         <CardContent sx={{ p: 2.5 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
@@ -192,6 +203,8 @@ export default function AgentDashboardPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
+  // Phase B: agent_id of the card the operator just clicked; null = drawer closed.
+  const [selectedAgentId, setSelectedAgentId] = useState(null);
   const refs = useRef({etag: null, abort: null, debounce: null, hb: null, es: null});
 
   // Native fetch with If-None-Match + AbortController.  Cancels prior
@@ -329,7 +342,8 @@ export default function AgentDashboardPage() {
           <Grid container spacing={2}>
             {agents.map((agent, i) => (
               <Grid item xs={12} sm={6} md={4} key={agent.id || i}>
-                <AgentCard agent={agent} index={i} />
+                <AgentCard agent={agent} index={i}
+                  onClick={agent.id ? setSelectedAgentId : undefined} />
               </Grid>
             ))}
             {agents.length === 0 && (
@@ -344,6 +358,11 @@ export default function AgentDashboardPage() {
             )}
           </Grid>
         )}
+        <AgentOperationsDrawer
+          agentId={selectedAgentId}
+          open={Boolean(selectedAgentId)}
+          onClose={() => setSelectedAgentId(null)}
+        />
       </Box>
     </Fade>
   );
