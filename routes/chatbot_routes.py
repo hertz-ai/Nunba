@@ -2474,6 +2474,90 @@ def chat_route():
         else:
             media_mode = 'text'   # Cloud/web default
     audio_mode = media_mode in ('audio', 'video')
+
+    # ── Video mode: synchronous inline camera-frame caption ──
+    # When media_mode='video', poll the per-user frame store for the
+    # latest JPEG and prepend a "live observation" line to the user's
+    # prompt before the LLM call.  Closes the first-turn race window
+    # where VisionService's async `_description_loop` hasn't run yet
+    # and the LLM otherwise responds "I can't see anything."
+    #
+    # Polls up to ~1.5s (10 × 150ms) ONLY when frame store is empty;
+    # exits on iter 1 once a frame arrives.  Failure non-fatal — falls
+    # through to vanilla LLM call.
+    #
+    # Cross-OS: same flow on Windows / macOS / Linux.  Windows/Linux
+    # feed frames via existing WebSocket; macOS feeds via the new
+    # /api/vision/frame HTTP transport (commit 4f1c56ab).  Both write
+    # to the same `svc.store.put_frame()` consumed here.
+    if media_mode == 'video':
+        try:
+            _svc = _get_vision_service()
+            _store = getattr(_svc, 'store', None) if _svc is not None else None
+            _frame_bytes = None
+            if _store is not None:
+                for _ in range(10):
+                    _frame_bytes = _store.get_frame(str(user_id))
+                    if _frame_bytes:
+                        break
+                    time.sleep(0.15)
+            if _frame_bytes:
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.jpg',
+                                                  delete=False) as _tf:
+                    _tf.write(_frame_bytes)
+                    _tmp_path = _tf.name
+                try:
+                    from routes.upload_routes import _describe_image_via_llm
+                    _t0 = time.monotonic()
+                    _desc = _describe_image_via_llm(
+                        _tmp_path,
+                        "You are a video-call companion watching the "
+                        "user's camera. Describe what is visible right now "
+                        "in 1-2 sentences (person, action, objects, "
+                        "surroundings). Be concise and factual."
+                    )
+                    _elapsed_ms = int((time.monotonic() - _t0) * 1000)
+                    if _desc:
+                        # Strong framing: explicitly tell the LLM it HAS
+                        # vision right now and must answer from what it
+                        # sees.  Plain "[Live camera view — X]" was
+                        # unreliable — small models (and HARTOS's 0.8B
+                        # draft classifier) still fell back to their
+                        # "I'm an AI, I can't see" pattern on ~30% of
+                        # turns.  Imperative instruction + labelled
+                        # OBSERVATION / USER QUESTION separator overrides
+                        # that baseline.
+                        text = (
+                            "You are on a live video call with the user. "
+                            "You CAN see them through the camera right now. "
+                            "Use the visual observation below to answer "
+                            "their question. Do not say you cannot see.\n"
+                            f"OBSERVATION (live camera, just now): {_desc}\n"
+                            f"USER QUESTION: {text}"
+                        )
+                        logger.info(
+                            f"Video mode: inline camera describe "
+                            f"({len(_frame_bytes)}B → {len(_desc)} chars, "
+                            f"{_elapsed_ms} ms)"
+                        )
+                    else:
+                        logger.info(
+                            f"Video mode: describe returned empty "
+                            f"({len(_frame_bytes)}B, {_elapsed_ms} ms)"
+                        )
+                finally:
+                    try:
+                        os.unlink(_tmp_path)
+                    except Exception:
+                        pass
+            else:
+                logger.info(
+                    f"Video mode: no frame in store for user {user_id}"
+                )
+        except Exception as _ve:
+            logger.warning(f"Video-mode inline describe skipped: {_ve}")
+
     # TTS: fire at THIS layer (Nunba) so it works on ALL tiers — not just Tier-1.
     # When HARTOS Tier-1 is active, it ALSO fires TTS internally via _chat_reply.
     # To avoid duplicate audio, we check if HARTOS handled the request (Tier-1).
