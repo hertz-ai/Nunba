@@ -23,6 +23,11 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
+# Canonical auth gate for endpoints that accept LOCAL FILESYSTEM PATHS
+# (vs multipart uploads).  Stacked above @upload_bp.route on
+# /upload/native so the wrapped function is registered with Flask.
+from routes.auth import require_local_or_token
+
 logger = logging.getLogger(__name__)
 
 upload_bp = Blueprint('upload', __name__)
@@ -803,6 +808,160 @@ def parse_pdf_status():
         response['error'] = job.get('error', 'Unknown error')
 
     return jsonify(response)
+
+
+# ── Upload from native file-picker path (pywebview NSOpenPanel) ──
+
+def _is_safe_user_path(file_path):
+    """Reject path-traversal + arbitrary-filesystem reads.
+
+    The pywebview native file dialog returns a path the user explicitly
+    selected, but the request body is opaque — a malicious local process
+    could POST `{path: "/etc/passwd"}` directly and we'd happily copy
+    it into /uploads/files/passwd (web-accessible at /uploads/files/).
+    Restrict to user-writable directories that a real file-picker
+    selection would naturally land in.
+
+    Returns (ok: bool, reason: str).
+    """
+    if not file_path:
+        return False, 'empty path'
+    try:
+        resolved = Path(file_path).resolve(strict=True)
+    except (OSError, RuntimeError) as e:
+        return False, f'resolve failed: {e}'
+    if not resolved.is_file():
+        return False, 'not a file'
+    # Reject symlinks — Path.resolve(strict=True) follows them, but a
+    # symlink pointing into a user dir could be created by malware then
+    # POSTed; refuse the link itself if it differs from its resolved.
+    try:
+        if Path(file_path).is_symlink():
+            return False, 'symlinks rejected'
+    except OSError:
+        pass
+    # Allowlist: common file-picker source directories on each OS.
+    home = Path.home().resolve()
+    allowed_roots = [
+        home / 'Documents',
+        home / 'Desktop',
+        home / 'Downloads',
+        home / 'Pictures',
+        home / 'Movies',
+        home / 'Music',
+        # macOS-specific
+        home / 'Public',
+        # Windows-specific (Path.home is profile dir; these are siblings)
+        home / 'OneDrive',
+    ]
+    resolved_str = str(resolved)
+    for root in allowed_roots:
+        try:
+            root_resolved = root.resolve()
+        except (OSError, RuntimeError):
+            continue
+        try:
+            if resolved_str.startswith(str(root_resolved) + os.sep) or \
+               resolved == root_resolved:
+                return True, 'ok'
+        except (OSError, ValueError):
+            continue
+    return False, f'path outside user dirs (resolved={resolved})'
+
+
+@upload_bp.route('/upload/native', methods=['POST'])
+@require_local_or_token
+def upload_native():
+    """Upload a file from a local path selected via pywebview file dialog.
+
+    Accepts JSON: {path, user_id, request_id, upload_type}
+    upload_type: 'image' or 'pdf' (default: auto-detect by extension)
+
+    SECURITY:
+    - @require_local_or_token: rejects non-loopback callers without
+      a valid bearer token (decorator returns 401 JSON before view runs).
+      Required because the request body is OPAQUE — without auth, any
+      local process could POST `{path: "/etc/passwd"}` and a passing
+      browser fetch could then GET /uploads/files/passwd.
+    - _is_safe_user_path: rejects path-traversal + filesystem-allowlist
+      bypass.  Confines accepted paths to user file-picker dirs
+      (Documents, Desktop, Downloads, Pictures, Movies, Music, Public,
+      OneDrive).  Symlinks rejected (anti-evasion).
+    - 100MB copy cap: refuses disk-fill DoS via huge source files.
+
+    Cross-OS: pywebview create_file_dialog returns a string path on
+    every OS; this view consumes it uniformly.
+    """
+    data = request.get_json(force=True) or {}
+    file_path = data.get('path', '')
+    user_id = data.get('user_id', '0')
+    request_id = data.get('request_id', '')
+
+    # Path-traversal + filesystem-allowlist guard.
+    _ok, _reason = _is_safe_user_path(file_path)
+    if not _ok:
+        return jsonify({'error': 'invalid path', 'reason': _reason}), 400
+
+    src = Path(file_path).resolve(strict=True)
+    ext = src.suffix.lower()
+    ftype = _file_type(ext)
+    name = _unique_name(src.name)
+
+    import shutil
+    if ftype == 'image':
+        dest = IMAGE_DIR / name
+    elif ftype == 'pdf':
+        dest = FILE_DIR / name
+    else:
+        dest = FILE_DIR / name
+    # Cap copy size — refuse to ingest files >100MB to prevent disk-fill
+    # DoS via a malicious local process pointing at a giant local file.
+    _MAX_COPY_BYTES = 100 * 1024 * 1024
+    try:
+        if src.stat().st_size > _MAX_COPY_BYTES:
+            return jsonify({
+                'error': 'file too large',
+                'size_bytes': src.stat().st_size,
+                'max_bytes': _MAX_COPY_BYTES,
+            }), 413
+    except OSError as e:
+        return jsonify({'error': f'stat failed: {e}'}), 500
+    shutil.copy2(str(src), str(dest))
+    logger.info(f"upload_native: {name} ({ftype}) from {src}")
+
+    image_description = ''
+    if ftype == 'image':
+        desc = _describe_image_via_llm(str(dest))
+        if desc:
+            image_description = desc
+
+    subdir = 'images' if ftype == 'image' else 'files'
+    file_url = f'/uploads/{subdir}/{name}'
+
+    pdf_job_id = None
+    if ftype == 'pdf':
+        pdf_job_id = uuid.uuid4().hex[:12]
+        _parse_jobs[pdf_job_id] = {
+            'status': 'queued', 'total_pages': 0, 'progress': 0,
+            'result': None, 'error': None, 'created_at': time.time(),
+        }
+        thread = threading.Thread(
+            target=_run_pdf_parse,
+            args=(pdf_job_id, str(dest), user_id, request_id),
+            daemon=True,
+        )
+        thread.start()
+
+    return jsonify({
+        'file_url': file_url,
+        'file_name': name,
+        'file_type': ftype,
+        'request_id': request_id,
+        'file_id': None,
+        'text': image_description or None,
+        'image_description': image_description,
+        'pdf_parse_job_id': pdf_job_id,
+    })
 
 
 # ── Static file serving ──
