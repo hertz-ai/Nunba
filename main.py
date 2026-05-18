@@ -5707,6 +5707,19 @@ if __name__ == '__main__':
         # IO layer, so dashboard / health / admin polls stay responsive.
         # Falls through to Waitress on ImportError so older bundles /
         # cx_Freeze installs missing the h2/wsproto chain still boot.
+        # Also honors NUNBA_FORCE_WAITRESS=1 to skip Hypercorn entirely —
+        # the e2e-staging container (docker-compose.staging.yml) sets this
+        # because Hypercorn 0.17.3's AsyncioWSGIMiddleware silently
+        # returns 404 for all Flask routes in this configuration despite
+        # 136 rules being registered (proven by the [DIAG-ROUTE-DUMP] +
+        # 36 consecutive probe failures across cdd89120 / b78a0d49 diag
+        # runs).  Waitress is WSGI-native — no middleware translation —
+        # so the routes Flask registers are the routes Waitress serves.
+        _force_waitress = os.environ.get('NUNBA_FORCE_WAITRESS', '').lower() in ('1', 'true', 'yes')
+        if _force_waitress:
+            raise ImportError(
+                'NUNBA_FORCE_WAITRESS=1 — skipping Hypercorn, using Waitress'
+            )
         try:
             import asyncio
             from concurrent.futures import ThreadPoolExecutor

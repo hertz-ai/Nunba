@@ -112,6 +112,17 @@ services:
       # external probes hit "Connection reset by peer" because
       # hypercorn refuses non-loopback peers.
       - NUNBA_BIND_HOST=0.0.0.0
+      # Force Waitress over Hypercorn — Hypercorn 0.17.3's
+      # AsyncioWSGIMiddleware silently 404s every Flask route in this
+      # container even though `app.url_map` is fully populated (136
+      # rules, /backend/health present TWICE; proven by [DIAG-ROUTE-
+      # DUMP] in commit b78a0d49 + 40 consecutive e2e-staging failures).
+      # Waitress is WSGI-native — no ASGI translation layer — so the
+      # routes Flask registers are the routes Waitress serves.  Until
+      # the Hypercorn/WSGI bridge bug is root-caused, e2e-staging uses
+      # Waitress; desktop bundles + central docker still use Hypercorn
+      # (different network topology, no nat).
+      - NUNBA_FORCE_WAITRESS=1
       # models/catalog.py imports `integrations.service_tools.model_catalog`
       # from the bundled HARTOS source tree.  Production desktop builds
       # freeze that tree into the Python path; in CI we mount the repo
