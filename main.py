@@ -2685,7 +2685,9 @@ def admin_models_hub_install():
         from models.catalog import ModelEntry, get_catalog
         from models.orchestrator import get_orchestrator
         data = request.get_json(silent=True) or {}
-        raw_hf_id = (data.get('hf_id') or '').strip()
+        # Accept both `hf_id` (Nunba native) and `repo_id` (HuggingFace
+        # native, also what e2e probes use).  `hf_id` wins if both set.
+        raw_hf_id = (data.get('hf_id') or data.get('repo_id') or '').strip()
         category = (data.get('category') or '').lower().strip()
         confirm_unverified = bool(data.get('confirm_unverified'))
         if not raw_hf_id or '/' not in raw_hf_id:
