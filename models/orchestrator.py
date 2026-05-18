@@ -698,7 +698,17 @@ class VLMLoader(ModelLoader):
         svc = _hie.get_vision_service()
         if svc is None:
             svc = VisionService()
-            _hie._vision_service = svc  # make sure get_vision_service finds it
+            # Mirror to all 3 storage locations (HARTOS _hie, Nunba
+            # __main__, chatbot_routes cache) via the canonical writer
+            # so crash-recovery doesn't leave the cache + __main__
+            # holding a dead instance while _hie has the live one.
+            try:
+                from routes import chatbot_routes as _cb_routes
+                _cb_routes._set_vision_service(svc)
+            except Exception:
+                # Fallback to old single-location write if chatbot_routes
+                # isn't importable for some reason (e.g. test harness).
+                _hie._vision_service = svc
         return svc
 
     def load(self, entry: ModelEntry, run_mode: str) -> bool:
@@ -742,11 +752,15 @@ class VLMLoader(ModelLoader):
 
         Side-effect-free: reads any already-imported module's attribute
         directly via ``sys.modules``.  We MUST NOT do
-        ``import hart_intelligence_entry`` here — that import has heavy
-        side effects (loads HARTOS ``security/__init__.py`` which
-        unconditionally pings Redis with no connect-timeout, hanging
-        the request thread for ~21s on Windows when Redis is absent —
-        the bug that left ``/admin/models`` spinning forever).
+        ``import hart_intelligence_entry`` here — that import is expensive
+        on the boot critical path: ~5-15s for the langchain_classic /
+        bs4 / PIL / numpy / aiohttp / waitress module-level tail at
+        ``hart_intelligence_entry.py:216-409``.  (The earlier 21s Redis
+        ping in ``security/__init__.py`` was fixed by moving the
+        ``redis.ping()`` into ``JWTManager.__init__`` and
+        ``RedisRateLimiter.__init__`` — instantiation-time only — but
+        the langchain_classic tail still makes the import too heavy
+        for a probe path that should be O(microseconds).)
 
         The intent of a probe is read-only.  We also avoid calling
         ``integrations.vision.get_vision_service()`` because it

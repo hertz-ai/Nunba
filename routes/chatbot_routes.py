@@ -667,31 +667,114 @@ def get_description(user_id):
     return None
 
 
-# Canonical singleton cache populated by main.py:_start_vision_service.
-# Mirrors the get_tts_engine() pattern (lazy module-global + threading lock).
-# Replaces a `gc.get_objects()` heap walk that PR #12 proposed — heap walk
-# is 50-200ms per cold call on a live process and would violate the 1.5s
-# chat hot path budget.  Cache write at construction site is the canonical
-# fix; sys.modules['__main__'] lookup retained as defensive fallback for
-# code paths that construct VisionService outside main.py.
+# ── VisionService singleton — 3-location dual-write/dual-read ─────────
+# Historical context:
+#   * HARTOS standalone mode: canonical singleton lives at
+#     ``hart_intelligence_entry._vision_service`` (lazy-instantiated by
+#     ``hie.get_vision_service()``).
+#   * Nunba bundled mode: Nunba's main.py:_start_vision_service creates
+#     the service EAGERLY at boot (the WebSocket frame receiver must be
+#     ready before first SPA chat).  Nunba cannot pay the 5-15s
+#     ``import hart_intelligence_entry`` cost on the boot critical path
+#     (heavy langchain_classic + bs4 + PIL + numpy + aiohttp tail), so it
+#     stashes the service on ``__main__._vision_service`` instead.
+#   * Crash-recovery path: ``models/orchestrator.py:_get_service`` creates
+#     a fresh VisionService and writes to ``hie._vision_service`` (the
+#     HARTOS canonical), but NOT to __main__.
+#
+# The dual-storage workaround (avoiding _hie import at Nunba boot) is
+# load-bearing: forcing the import would add ~5-15s to boot.  What was
+# NOT load-bearing was having writers and readers disagree about which
+# location to consult.
+#
+# Fix: every writer goes through ``_set_vision_service`` which mirrors to
+# all 3 locations atomically; every reader walks all 3 (cache → _hie →
+# __main__) and self-heals by mirroring the first non-None find.  No
+# eager _hie import — we only update ``_hie._vision_service`` if the
+# module is ALREADY in sys.modules (i.e. HARTOS already paid the cost).
+#
+# Replaces a `gc.get_objects()` heap walk proposed in PR #12 (50-200ms
+# per cold call — violates 1.5s chat hot-path budget).
 _VISION_SERVICE_CACHE = [None]
 
 
-def _get_vision_service():
-    """Lazy accessor for the global VisionService instance.
+def _mirror_vision_singleton(svc):
+    """Write ``svc`` to every storage location that's currently visible.
 
-    Order: cache slot (fast, canonical) → sys.modules['__main__']
-    (defensive fallback for unusual construction paths).
+    Three locations (per the dual-storage workaround above):
+      1. ``_VISION_SERVICE_CACHE[0]`` — fast in-module cache
+      2. ``sys.modules['__main__']._vision_service`` — Nunba bundled canonical
+      3. ``sys.modules['hart_intelligence_entry']._vision_service`` —
+         HARTOS canonical (only mirrored if module already loaded; never
+         force-imports to avoid the 5-15s langchain tail at boot)
+
+    ``svc`` may be ``None`` to clear all three (used on shutdown / when
+    a stale singleton is detected and the caller wants to force the
+    next read to rebuild).
+    """
+    _VISION_SERVICE_CACHE[0] = svc
+    main_mod = sys.modules.get('__main__')
+    if main_mod is not None:
+        try:
+            main_mod._vision_service = svc
+        except Exception:
+            pass
+    hie = sys.modules.get('hart_intelligence_entry')
+    if hie is not None:
+        try:
+            hie._vision_service = svc
+        except Exception:
+            pass
+
+
+def _set_vision_service(svc):
+    """Canonical writer for the VisionService singleton.
+
+    Called by:
+      * ``main.py:_start_vision_service`` — Nunba bundled boot
+      * ``models/orchestrator.py:_get_service`` — crash-recovery
+        instantiation
+      * any future construction site
+
+    Mirrors to all 3 storage locations so readers see the same instance
+    regardless of which lookup chain they walk.
+    """
+    _mirror_vision_singleton(svc)
+
+
+def _get_vision_service():
+    """Canonical reader for the VisionService singleton.
+
+    Walks all 3 storage locations and self-heals: the first non-None
+    find is mirrored back to the other two so subsequent reads from any
+    chain see the same instance.
+
+    Priority order:
+      1. ``_VISION_SERVICE_CACHE[0]`` — fast path (no module lookup)
+      2. ``hart_intelligence_entry._vision_service`` — HARTOS canonical
+         (crash-recovery writes here; preferred over __main__ when both
+         are set because it's the more recently-written one in the
+         recovery path)
+      3. ``sys.modules['__main__']._vision_service`` — Nunba bundled
+         canonical (boot writes here; last resort)
+
+    Returns ``None`` if no live singleton exists anywhere.
     """
     cached = _VISION_SERVICE_CACHE[0]
     if cached is not None:
         return cached
-    main_mod = sys.modules.get('__main__')
-    if main_mod and hasattr(main_mod, '_vision_service'):
-        svc = main_mod._vision_service
+    hie = sys.modules.get('hart_intelligence_entry')
+    if hie is not None:
+        svc = getattr(hie, '_vision_service', None)
         if svc is not None:
-            _VISION_SERVICE_CACHE[0] = svc  # populate for next call
-        return svc
+            _mirror_vision_singleton(svc)  # heal __main__ + cache
+            return svc
+    main_mod = sys.modules.get('__main__')
+    if main_mod is not None:
+        svc = getattr(main_mod, '_vision_service', None)
+        if svc is not None:
+            _mirror_vision_singleton(svc)  # heal _hie + cache
+            return svc
     return None
 
 

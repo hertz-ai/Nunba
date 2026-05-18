@@ -5176,14 +5176,14 @@ def _start_vision_service():
             minicpm_port=int(os.environ.get('HEVOLVE_MINICPM_PORT', 9891)),
         )
         _vision_service.start()
-        # Register canonical singleton so chatbot_routes._get_vision_service()
-        # returns it via O(1) cache read instead of falling back to the
-        # sys.modules['__main__'] lookup (which is fragile under cx_Freeze
-        # macOS where __main__ is the opaque cx_Freeze loader, not main).
-        # Mirrors the get_tts_engine() singleton pattern.
+        # Canonical singleton registration — mirrors the new instance to
+        # all 3 storage locations (cache + __main__ + hart_intelligence_entry
+        # if loaded) so every consumer chain sees the same object.
+        # Single writer = no drift between bundled (__main__) and HARTOS
+        # canonical (_hie._vision_service) lookups.
         try:
             from routes import chatbot_routes as _cb_routes
-            _cb_routes._VISION_SERVICE_CACHE[0] = _vision_service
+            _cb_routes._set_vision_service(_vision_service)
         except Exception as _reg_err:
             logging.warning(
                 f"VisionService singleton registration skipped: {_reg_err}"
