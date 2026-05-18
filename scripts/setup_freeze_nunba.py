@@ -341,6 +341,25 @@ build_exe_options = {
         "langchain_core.language_models.fake",
         "langchain_core.language_models.fake_chat_models",
         "langchain_core._import_utils",
+        # Direct transitive deps of language_models.base — without these
+        # explicitly listed, cx_Freeze ships base.py but its module-level
+        # `from langchain_core.runnables import Runnable` fails at runtime
+        # because the runnables subpackage isn't fully traced, which then
+        # raises ImportError during `from .base import LanguageModelOutput`
+        # in __init__.py — surfacing on the frozen binary as the
+        # 25998831438/build-windows + build-macos validate failure
+        # 'cannot import name LanguageModelOutput from langchain_core.
+        # language_models'.  Listing the parent subpackages forces the
+        # full subtree into the bundle.
+        "langchain_core._api",
+        "langchain_core.messages",
+        "langchain_core.prompt_values",
+        "langchain_core.pydantic_v1",
+        "langchain_core.runnables",
+        "langchain_core.utils",
+        "langchain_core.outputs",
+        "langchain_core.callbacks",
+        "langchain_core.tracers",
         "io",
         "uuid",
         "subprocess",
