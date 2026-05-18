@@ -5248,7 +5248,7 @@ def start_flask():
                 # email/username edit).
                 if all(k in user_data for k in required_keys):
                     try:
-                        from integrations.social.models import db_session, User
+                        from integrations.social.models import User, db_session
                         cloud_user_id = str(user_data['user_id'])
                         cloud_email = user_data['email']
                         cloud_token = user_data['access_token']
@@ -6970,8 +6970,7 @@ def main():
                             wf.setframerate(sample_rate)
                             wf.writeframes(audio.tobytes())
                         try:
-                            from integrations.service_tools.whisper_tool \
-                                import whisper_transcribe
+                            from integrations.service_tools.whisper_tool import whisper_transcribe
                             result = json.loads(whisper_transcribe(tmp.name))
                             text = result.get('text', '').strip()
                             logger.info(f"[NATIVE-MIC] Transcribed: {text[:80]}")

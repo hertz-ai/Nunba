@@ -3249,8 +3249,8 @@ def chat_route():
             # failure leaves the textual response unchanged.
             _active_tasks = []
             try:
-                from integrations.agent_engine.api import _iter_ledgers
                 from agent_ledger import TaskStatus
+                from integrations.agent_engine.api import _iter_ledgers
                 _scanned = 0
                 for _agent_id, _session_id, _ledger in _iter_ledgers(None):
                     _scanned += 1

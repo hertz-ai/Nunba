@@ -442,9 +442,9 @@ class TestNeuTTSAirEnglishLadder:
         HARTOS spec — the in-process branch would then run, import
         ``neutts`` from main, and silently fail."""
         from tts.tts_engine import (
-            _SubprocessTTSBackend,
             BACKEND_NEUTTS_AIR,
             TTSEngine,
+            _SubprocessTTSBackend,
         )
         engine = TTSEngine(auto_init=False)
         backend = engine._create_backend(BACKEND_NEUTTS_AIR)

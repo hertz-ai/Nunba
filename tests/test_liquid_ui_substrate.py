@@ -17,6 +17,7 @@ Captured 2026-05-14 after the audit found 4 substrate bugs that
 shipped silently (qr_pair / oauth_link / toast / meet_copliot).
 """
 from __future__ import annotations
+
 import pathlib
 import sys
 
@@ -25,7 +26,6 @@ _REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO / 'scripts'))
 
 import probe_liquid_ui_audit as audit  # noqa: E402
-
 
 # Intentional negative-test emits — these are SUPPOSED to fail HARTOS
 # allowlist validation, so they don't count as substrate drift.

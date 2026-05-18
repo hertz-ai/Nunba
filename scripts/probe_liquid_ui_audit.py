@@ -14,10 +14,10 @@ Run-once verification per the active session goal: "all agentic liquid
 ui in nunba shd work and should be verified for every other task".
 """
 from __future__ import annotations
-import re
-import pathlib
-import sys
 
+import pathlib
+import re
+import sys
 
 _PRUNE_DIRS = {
     '.venv', 'venv', '__pycache__', 'build', 'dist',
