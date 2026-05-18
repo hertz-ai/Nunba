@@ -189,7 +189,7 @@ class TestLangEnginePreference:
         first = _FALLBACK_LANG_ENGINE_PREFERENCE['es'][0]
         assert first in {BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}, (
             f"Spanish first-choice {first!r} is not in the mid-VRAM "
-            f"primary tier."
+            "primary tier."
         )
         caps = _FALLBACK_ENGINE_CAPABILITIES[first]
         assert 'es' in caps['languages']
@@ -1172,7 +1172,7 @@ class TestSubprocessTTSBackend:
             assert spec.tool_function, f"{eid} missing tool_function"
             assert spec.tool_worker_attr, (
                 f"{eid} missing tool_worker_attr — subprocess adapter "
-                f"can't find its ToolWorker"
+                "can't find its ToolWorker"
             )
 
 

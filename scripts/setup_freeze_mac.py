@@ -950,14 +950,14 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
                     print(_log_text)
                     print("--- end validate.log ---\n")
                 else:
-                    print(f"\n[WARN] validate.log not found at either:")
+                    print("\n[WARN] validate.log not found at either:")
                     for _c in _val_log_candidates:
                         print(f"  - {_c}")
                     print("  Frozen binary may have crashed before opening the log file.")
                 _log_says_good = _log_text and 'Failed: 0' in _log_text
                 if _log_says_good:
                     print(f"\n[INFO] Exe exited with code {_ret.returncode} but validate.log "
-                          f"shows 0 failures -- build is good.\n")
+                          "shows 0 failures -- build is good.\n")
                 else:
                     print(f"\n*** VALIDATION FAILED (exit {_ret.returncode}) ***")
                     print("Fix import errors above before distributing.\n")

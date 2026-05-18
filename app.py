@@ -1533,7 +1533,7 @@ def get_webview():
                 if 'lib_src' not in _pp_loc:
                     logging.getLogger('NunbaGUI').warning(
                         f"pycparser loaded from non-lib_src location: {_pp_loc} — "
-                        f"preload at app.py top did not run or lib_src missing"
+                        "preload at app.py top did not run or lib_src missing"
                     )
                 else:
                     logging.getLogger('NunbaGUI').info(
@@ -2572,7 +2572,7 @@ if getattr(args, 'setup_ai', False):
             _setup_logger.info(
                 f"--setup-ai: already configured — binary={_found_binary}, "
                 f"model={_has_model}, custom_api={_has_custom_api}, first_run=False. "
-                f"Skipping wizard, exiting immediately.")
+                "Skipping wizard, exiting immediately.")
             # Don't start the server here — main Nunba.exe handles it.
             # Starting here causes a 30s+ delay (port conflict retries)
             # that creates a visible gap between splash screens.
@@ -3198,7 +3198,7 @@ if getattr(args, 'setup_ai', False):
                      anchor='w').pack(fill=tk.X)
             tk.Label(ver_inner,
                      text=f"Qwen 3.5 models require build b{_required_ver}+. "
-                          f"Update to enable 256K-context text models.",
+                          "Update to enable 256K-context text models.",
                      font=(_FONT, 10), bg='#1A1218', fg=_TEXT_DIM,
                      anchor='w', wraplength=600).pack(fill=tk.X, pady=(4, 10))
 
@@ -4203,7 +4203,7 @@ def check_existing_user_data():
                                f"email={email_encoded}&"
                                f"token={token_encoded}&"
                                f"userid={userid_encoded}&"
-                               f"companion=true")
+                               "companion=true")
 
                     logger.info(f"Loading saved user data URL: {new_url}")
                     return new_url
@@ -5271,7 +5271,7 @@ def start_flask():
                                 _db.commit()
                                 db_upserted = True
                                 logger.info(
-                                    f"Cloud user synced to local DB (created): "
+                                    "Cloud user synced to local DB (created): "
                                     f"id={cloud_user_id} email={cloud_email}")
                             else:
                                 changed = []
@@ -5285,7 +5285,7 @@ def start_flask():
                                     _db.commit()
                                     db_upserted = True
                                     logger.info(
-                                        f"Cloud user synced to local DB "
+                                        "Cloud user synced to local DB "
                                         f"(updated {','.join(changed)}): "
                                         f"id={existing.id}")
                     except Exception as _db_err:
@@ -5295,7 +5295,7 @@ def start_flask():
                         # signin still propagates via user_data.json + the React
                         # useStorageSync hook.
                         logger.debug(
-                            f"Cloud user DB sync skipped: "
+                            "Cloud user DB sync skipped: "
                             f"{type(_db_err).__name__}: {_db_err}")
 
                 # 2026-05-15 — Removed legacy cloud-handoff redirect.

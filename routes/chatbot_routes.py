@@ -1675,7 +1675,7 @@ def tts_handshake_switch():
                 try:
                     engine.set_backend(engine_id)
                 except Exception as e:
-                    logger.warning(f"[tts_handshake_switch] set_backend "
+                    logger.warning("[tts_handshake_switch] set_backend "
                                    f"{engine_id} failed: {e}")
             _hs.invalidate(engine_id)
             _hs.run_handshake(engine, engine_id, lang=lang)
@@ -2620,13 +2620,13 @@ def chat_route():
                             f"USER QUESTION: {text}"
                         )
                         logger.info(
-                            f"Video mode: inline camera describe "
+                            "Video mode: inline camera describe "
                             f"({len(_frame_bytes)}B → {len(_desc)} chars, "
                             f"{_elapsed_ms} ms)"
                         )
                     else:
                         logger.info(
-                            f"Video mode: describe returned empty "
+                            "Video mode: describe returned empty "
                             f"({len(_frame_bytes)}B, {_elapsed_ms} ms)"
                         )
                 finally:
@@ -3332,9 +3332,9 @@ def chat_route():
                 )
                 _busy_text = (
                     f"Your local AI is still working on: {_names}. "
-                    f"Try again in a few seconds, or open the Task "
+                    "Try again in a few seconds, or open the Task "
                     f"Ledger to see all {len(_active_tasks)} active "
-                    f"task(s)."
+                    "task(s)."
                 )
             else:
                 _busy_text = (
