@@ -354,7 +354,16 @@ build_exe_options = {
         "langchain_core._api",
         "langchain_core.messages",
         "langchain_core.prompt_values",
-        "langchain_core.pydantic_v1",
+        # langchain_core.pydantic_v1 omitted: cx_Freeze's tracer can't
+        # resolve it (run 26011572288/build-windows ImportError on
+        # exactly this name) even though it exists on disk and is a
+        # valid Python subpackage.  The pydantic_v1 shim does
+        # ``from pydantic.v1 import *`` at the top — the wildcard import
+        # is opaque to cx_Freeze's static analyser.  We let
+        # ``base.py``'s consumers fall through to the runtime
+        # ``from pydantic import *`` fallback inside pydantic_v1/__init__
+        # instead; pydantic itself is already bundled via the implicit
+        # langchain_core requirements chain.
         "langchain_core.runnables",
         "langchain_core.utils",
         "langchain_core.outputs",
