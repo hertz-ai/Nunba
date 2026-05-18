@@ -3493,6 +3493,19 @@ def watchdog_status():
     })
 
 
+@app.route('/health', methods=["GET"])
+def health_alias():
+    """Plain ``/health`` alias for liveness probes (LB, docker, e2e).
+
+    HARTOS standalone exposes ``/health``; Nunba historically only had
+    ``/backend/health`` (with the richer GPU/tier payload).  CI probes
+    + reverse proxies routinely expect the bare ``/health`` path, so
+    expose it as a thin redirect to the canonical backend_health view —
+    single source of truth, no duplicate JSON-build code, no drift.
+    """
+    return backend_health()
+
+
 @app.route('/backend/health', methods=["GET"])
 def backend_health():
     """Return backend + GPU tier diagnostics for the chat UI badge.
