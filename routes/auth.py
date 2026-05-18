@@ -20,7 +20,14 @@ def _is_local_request():
     set to the proxy's address we inspect ``X-Forwarded-For`` to determine the
     *real* client IP.  Without the env-var, only ``remote_addr`` is checked
     (safe default for direct connections).
+
+    CI bypass: when ``NUNBA_CI=1`` (set ONLY by docker-compose.staging.yml)
+    all requests are trusted.  The e2e probe hits the container via docker
+    NAT so requests appear from the docker bridge IP, not 127.0.0.1, and
+    would otherwise be rejected.  Production builds NEVER set this var.
     """
+    if os.environ.get('NUNBA_CI', '') == '1':
+        return True
     trusted_proxy = os.environ.get('TRUSTED_PROXY', '')
     if trusted_proxy and request.remote_addr == trusted_proxy:
         forwarded_for = request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
