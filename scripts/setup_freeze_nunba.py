@@ -619,6 +619,15 @@ build_exe_options = {
     # Extract pythonnet packages from zip to avoid import issues
     "zip_exclude_packages": [
         "pythonnet", "clr_loader", "cffi",
+        # langchain_core uses ``__getattr__`` lazy-attribute resolution
+        # in language_models/__init__.py — when cx_Freeze compiles it to
+        # __init__.pyc the lazy chain breaks at runtime with
+        # ``cannot import name LanguageModelOutput from langchain_core.
+        # language_models`` (run 26012388043/build-windows confirms).
+        # Keeping it out of the zip preserves the .py source so the
+        # interpreter's normal import machinery can resolve the lazy
+        # attributes correctly — same workaround pattern as pythonnet.
+        "langchain_core", "langchain_classic", "langchain_community",
     ],
     # ── Auto-discover source files instead of manual listing ──
     # All .py files in project root (except app.py which is the entry point,
