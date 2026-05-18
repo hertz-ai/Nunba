@@ -77,6 +77,24 @@ jobs:
           echo "::error::nunba never reached healthy state"
           exit 1
 
+      - name: Wait for Flask routes to register (max 3 min)
+        # The container healthcheck is TCP-only — it succeeds the moment
+        # hypercorn binds :5000, but main.py's route registration runs
+        # AFTER bind (blueprints + late HARTOS lazy-import chain).  Run
+        # 26011141596 caught Flask at +5s post-healthy and all 8 probe
+        # routes 404'd because the blueprint pass hadn't finished.  Poll
+        # /backend/health (the canonical bundled route, line 3496) until
+        # it returns 200 — that's the earliest signal that Flask's
+        # post-bind setup is complete and other routes are registered.
+        run: |
+          for i in $(seq 1 36); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/backend/health 2>/dev/null || echo 000)
+            echo "  [$i/36] /backend/health -> $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "::warning::Flask /backend/health never returned 200 within 3min — probing anyway"
+
       - name: Run live HTTP probes
         env:
           NUNBA_BASE: http://localhost:5000
