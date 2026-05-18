@@ -202,6 +202,15 @@ if [ "${NUNBA_CYPRESS:-1}" != "0" ] && [ -d landing-page ]; then
     echo "::notice title=cypress run::phase=starting cypress npx run (cap=7200s/120min)"
     cd landing-page
     set -o pipefail
+    # Point Cypress at Flask's :5000 when the React dev server isn't
+    # running (i.e. when landing-page/build exists, so Flask serves the
+    # bundle catch-all from there).  Cypress's built-in CYPRESS_baseUrl
+    # env var overrides cypress.config.js without code edits, keeping
+    # the dev-loop default of :3000 untouched for local `npm start`.
+    if [ -z "$_REACT_PID" ] && [ -d build ]; then
+        export CYPRESS_baseUrl="http://localhost:5000"
+        echo "::notice title=cypress base-url::override=$CYPRESS_baseUrl (Flask serves built bundle)"
+    fi
     timeout 7200 npx cypress run --browser chrome --reporter spec 2>&1 \
         | tee cypress.log \
         | awk '
