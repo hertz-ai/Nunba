@@ -619,15 +619,17 @@ build_exe_options = {
     # Extract pythonnet packages from zip to avoid import issues
     "zip_exclude_packages": [
         "pythonnet", "clr_loader", "cffi",
-        # langchain_core uses ``__getattr__`` lazy-attribute resolution
-        # in language_models/__init__.py — when cx_Freeze compiles it to
-        # __init__.pyc the lazy chain breaks at runtime with
-        # ``cannot import name LanguageModelOutput from langchain_core.
-        # language_models`` (run 26012388043/build-windows confirms).
-        # Keeping it out of the zip preserves the .py source so the
-        # interpreter's normal import machinery can resolve the lazy
-        # attributes correctly — same workaround pattern as pythonnet.
-        "langchain_core", "langchain_classic", "langchain_community",
+        # NOTE: langchain_core was briefly listed here as a workaround
+        # for the frozen-binary LanguageModelOutput import failure (run
+        # 707bc75f).  Reverted in favour of the real fix: lazy-import
+        # langchain_classic.{schema,utilities,memory} inside the
+        # helper.py functions that actually use them (HARTOS commit
+        # 5d507a9-followup).  Without the module-top import, helper +
+        # reuse_recipe + gather_agentdetails + create_recipe no longer
+        # trigger the broken langchain_core.language_models __getattr__
+        # chain at frozen-binary import time, so cx_Freeze's bundle
+        # works as-is.  Same rule the rest of HARTOS already follows
+        # for torch/transformers (heavy / lazy-init-prone deps).
     ],
     # ── Auto-discover source files instead of manual listing ──
     # All .py files in project root (except app.py which is the entry point,
