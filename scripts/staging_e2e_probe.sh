@@ -76,11 +76,15 @@ assert_status "POST hub/install homoglyph repo" 400 POST \
     -d '{"repo_id":"a\u00ed4bharat/indictrans2-en-indic-dist-200M"}'
 
 # ---- 6. HF supply-chain: random org, no confirm flag -> 403 -------------
+# Include `category` so the request passes the field-presence validators
+# and reaches the trusted-org gate (which is the contract under test).
+# Without category, the endpoint returns 400 "unknown category" before
+# the trusted-org check fires.
 assert_status "POST hub/install random-org no-confirm" 403 POST \
     /api/admin/models/hub/install \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $TOKEN" \
-    -d '{"repo_id":"randouser/some-random-model"}'
+    -d '{"repo_id":"randouser/some-random-model","category":"tts"}'
 
 # ---- 7. Admin diag thread-dump -> 200 + threads_dumped field ------------
 assert_json_field "POST /api/admin/diag/thread-dump has threads_dumped" POST \
