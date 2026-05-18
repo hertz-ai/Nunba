@@ -22,6 +22,7 @@ import {
   Tooltip,
 } from '@mui/material';
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import AgentOperationsDrawer from './AgentOperationsDrawer';
 
@@ -205,6 +206,16 @@ export default function AgentDashboardPage() {
   const [lastUpdated, setLastUpdated] = useState(null);
   // Phase B: agent_id of the card the operator just clicked; null = drawer closed.
   const [selectedAgentId, setSelectedAgentId] = useState(null);
+  // Deep-link from TaskLedgerPage's ↗ button:
+  //   /admin/agents?focus=<agent_id>
+  // Opens the drawer immediately so the operator lands on the agent's
+  // goal tree / chat / a2a / model state without an extra click.  Runs
+  // once per ?focus= value change.
+  const [searchParams] = useSearchParams();
+  const focusAgentId = searchParams.get('focus');
+  useEffect(() => {
+    if (focusAgentId) setSelectedAgentId(focusAgentId);
+  }, [focusAgentId]);
   const refs = useRef({etag: null, abort: null, debounce: null, hb: null, es: null});
 
   // Native fetch with If-None-Match + AbortController.  Cancels prior
