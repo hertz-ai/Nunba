@@ -326,6 +326,11 @@ def check_backend_runnable(backend: str, import_name: str) -> bool:
         # invoke_in_venv unavailable — fall through to the embed probe
         # below; not ideal but keeps the probe non-fatal.
 
+    # 90s: import kokoro / omnivoice requires a cold torch CUDA init
+    # (~30-40s on first subprocess launch) + the module's own import chain.
+    # The old 20s limit caused probe TimeoutExpired → False cached →
+    # "self-heal exhausted" before kokoro ever got a chance to answer.
+    _PROBE_TIMEOUT = int(os.environ.get('NUNBA_TTS_PROBE_TIMEOUT', '90'))
     try:
         r = _run_in_embed(
             'import sys,os;'
@@ -335,7 +340,7 @@ def check_backend_runnable(backend: str, import_name: str) -> bool:
             'exec(f"import {mod}");'
             'print("OK")',
             extra_argv=[import_name],
-            timeout=20,
+            timeout=_PROBE_TIMEOUT,
         )
         ok = r.returncode == 0 and 'OK' in r.stdout
         _backend_cache[backend] = ok
@@ -349,6 +354,22 @@ def check_backend_runnable(backend: str, import_name: str) -> bool:
             logger.info("Backend probe: %s (%s) NOT importable (see probe_%s.err)",
                         backend, import_name, backend)
         return ok
+    except subprocess.TimeoutExpired:
+        # Write a useful err file so _self_heal_missing_transitives can
+        # at least report a timeout rather than silently returning False.
+        _write_probe_err(
+            backend,
+            f"TimeoutExpired: probe subprocess did not complete within "
+            f"{_PROBE_TIMEOUT}s.  import {import_name} may require a longer "
+            f"timeout — set NUNBA_TTS_PROBE_TIMEOUT env var to override.\n",
+        )
+        logger.warning(
+            "Backend probe: %s (%s) timed out after %ds (probe_timeout=%ds)",
+            backend, import_name, _PROBE_TIMEOUT, _PROBE_TIMEOUT,
+        )
+        # Do NOT cache False on timeout — the package may be healthy but
+        # slow.  Let the next _invalidate_import_cache + retry decide.
+        return False
     except Exception as e:
         logger.debug("Backend probe error for %s: %s", backend, e)
         _backend_cache[backend] = False

@@ -574,6 +574,53 @@ def ensure_user_site_on_path():
                 os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
 
 
+def _cleanup_ghost_torch_distinfo(site_packages: str) -> None:
+    """Remove stale torch/torchaudio dist-info entries from user site-packages.
+
+    When pip installs a package that has torch as a transitive dep (e.g.
+    kokoro → transformers → torch), it may install a CPU stub torch dist-info
+    (e.g. torch-2.12.0.dist-info) alongside the CUDA torch binary already in
+    site-packages.  importlib.metadata then sees the wrong version; transformers'
+    is_torch_greater_or_equal("2.9.0") returns True for "2.12.0" and tries to
+    import AuxRequest from torch.nn.attention.flex_attention — which doesn't
+    exist in torch 2.6.0 — causing ImportError inside `import kokoro`.
+
+    For each of torch / torchaudio: read the actual installed binary's
+    __version__, then remove every dist-info directory whose embedded version
+    string doesn't match.  Leaves CUDA dist-info intact; removes CPU stub
+    ghost entries only.
+    """
+    import glob
+    import shutil as _shu
+    for _pkg in ('torch', 'torchaudio'):
+        _init = os.path.join(site_packages, _pkg, '__init__.py')
+        if not os.path.isfile(_init):
+            continue
+        _actual = None
+        try:
+            with open(_init) as _fh:
+                for _ln in _fh:
+                    _ln = _ln.strip()
+                    if _ln.startswith('__version__') and '=' in _ln:
+                        _actual = _ln.split('=', 1)[1].strip().strip('"\'')
+                        break
+        except Exception:
+            continue
+        if not _actual:
+            continue
+        for _di in glob.glob(os.path.join(site_packages, f'{_pkg}-*.dist-info')):
+            _di_ver = os.path.basename(_di)[len(_pkg) + 1 : -len('.dist-info')]
+            if _di_ver != _actual:
+                try:
+                    _shu.rmtree(_di)
+                    logger.info(
+                        "Removed ghost %s-%s dist-info (binary reports: %s)",
+                        _pkg, _di_ver, _actual,
+                    )
+                except Exception as _ex:
+                    logger.debug("Could not remove ghost dist-info %s: %s", _di, _ex)
+
+
 def _run_pip(args: list[str], progress_cb: Callable | None = None,
              timeout: int = 900,
              stall_timeout: int = 120,
@@ -836,12 +883,18 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
         if rc == 0:
             # Ensure the target dir is on sys.path NOW (not just next restart)
             ensure_user_site_on_path()
+            # Remove ghost torch/torchaudio dist-info entries that pip may
+            # have written as transitive deps (e.g. transformers pulls CPU
+            # torch, creating a torch-2.12.0.dist-info that confuses
+            # importlib.metadata and makes import kokoro blow up on AuxRequest).
+            _cleanup_ghost_torch_distinfo(user_sp)
             return True, out
 
         # rc != 0 below — but check if pip nonetheless reported
         # successful install of the target packages.
         if success_line and not is_enospc:
             ensure_user_site_on_path()
+            _cleanup_ghost_torch_distinfo(user_sp)
             logger.warning(
                 "pip exited rc=%d but reported success line: %s "
                 "(treating as installed; full log: %s)",
