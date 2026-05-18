@@ -5716,11 +5716,11 @@ if __name__ == '__main__':
         # runs).  Waitress is WSGI-native — no middleware translation —
         # so the routes Flask registers are the routes Waitress serves.
         _force_waitress = os.environ.get('NUNBA_FORCE_WAITRESS', '').lower() in ('1', 'true', 'yes')
-        if _force_waitress:
-            raise ImportError(
-                'NUNBA_FORCE_WAITRESS=1 — skipping Hypercorn, using Waitress'
-            )
         try:
+            if _force_waitress:
+                raise ImportError(
+                    'NUNBA_FORCE_WAITRESS=1 — skipping Hypercorn, using Waitress'
+                )
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
