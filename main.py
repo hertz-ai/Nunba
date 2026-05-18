@@ -5648,6 +5648,20 @@ def start_background_services():
 # start_background_services() / asyncio.run(_runner()).
 print('[DIAG-BOOT-PROBE] reached line 5631 (just before if __name__ == __main__)', flush=True)
 
+# DIAG-ROUTE-DUMP — dumps the Flask url_map size at boot so we know
+# whether the routes ACTUALLY made it onto the app object that
+# Hypercorn is about to serve.  If count is high but /backend/health
+# probes still 404, the issue is in AsyncioWSGIMiddleware wrapping or
+# CSRF/security middleware.  If count is low, route registration
+# silently failed earlier.
+try:
+    _rules = list(app.url_map.iter_rules())
+    _backend_rules = [r.rule for r in _rules if '/backend' in r.rule or '/health' in r.rule]
+    print(f'[DIAG-ROUTE-DUMP] total rules on app: {len(_rules)}; '
+          f'/backend|/health rules: {_backend_rules}', flush=True)
+except Exception as _e:
+    print(f'[DIAG-ROUTE-DUMP] failed to introspect url_map: {_e}', flush=True)
+
 if __name__ == '__main__':
     print('[DIAG-BOOT-PROBE] entered __main__ block', flush=True)
     try:
