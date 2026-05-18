@@ -111,6 +111,20 @@ jobs:
           docker inspect nunba-staging-app   > _logs/nunba.inspect.json   2>&1 || true
           docker inspect nunba-staging-llama > _logs/llama.inspect.json   2>&1 || true
           docker inspect nunba-staging-crossbar > _logs/crossbar.inspect.json 2>&1 || true
+          # Surface the LAST 200 lines of nunba container output INLINE
+          # in the workflow log.  Until 2026-05-18 these were uploaded
+          # only as an artifact; without inline output every CI cycle on
+          # a new probe failure took 30+ min plus a manual artifact
+          # download just to read 'why didn't routes register'.  Inline
+          # is single-click and stays with the run forever.
+          echo "===================================================="
+          echo "  nunba-staging-app — last 200 lines"
+          echo "===================================================="
+          docker compose -f docker-compose.staging.yml logs --no-color --timestamps --tail=200 nunba 2>&1 || true
+          echo "===================================================="
+          echo "  nunba-staging-llama — last 50 lines"
+          echo "===================================================="
+          docker compose -f docker-compose.staging.yml logs --no-color --timestamps --tail=50 llama 2>&1 || true
 
       - name: Upload failure artifacts
         if: failure()
