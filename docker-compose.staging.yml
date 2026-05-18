@@ -97,6 +97,14 @@ services:
       - CBURL=ws://crossbar:8088/ws
       - WAMP_URL=http://localhost:5000/publish
       - NUNBA_MCP_BEARER=staging-e2e-token-do-not-use-in-prod
+      # HARTOS-side reads HARTOS_MCP_TOKEN to validate the bearer; the
+      # probe script reads NUNBA_MCP_BEARER to set the Authorization
+      # header.  Keep both pointing at the same secret in CI so the
+      # MCP `(authed)` probes pass.  Without this the probe at
+      # /api/mcp/local/tools/execute returns 403 "provide Authorization:
+      # *** from %LOCALAPPDATA%/Nunba/mcp.token" because the server
+      # generated a random fresh token at boot (no env hint).
+      - HARTOS_MCP_TOKEN=staging-e2e-token-do-not-use-in-prod
       # Single-instance lock at ~/.nunba/nunba.lock can spuriously fail
       # under containerized restarts (overlayfs flock quirks, healthcheck
       # restart loops re-importing app.py before old fd is GC'd).  The
