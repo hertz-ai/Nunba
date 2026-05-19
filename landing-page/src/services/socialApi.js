@@ -494,6 +494,18 @@ export const adminApi = {
   // Revenue & Usage Analytics (central admin)
   revenueAnalytics: (params) =>
     socialApi.get('/admin/revenue-analytics', {params}),
+
+  // Marketing attribution (task #184 — flywheel measurement)
+  // GET /marketing/stats returns {by_code: {code: {click, download,
+  // install, signup}}, total} so the dashboard tile can show which
+  // channel converts.  Companion to /marketing/track (shipped in
+  // commit cbd0620) and /marketing/intents (commit 486e115).
+  marketingStats: (code) =>
+    socialApi.get('/marketing/stats', {params: code ? {code} : {}}),
+  marketingIntents: (platform) =>
+    socialApi.get(
+      '/marketing/intents',
+      {params: platform ? {platform} : {}}),
 };
 
 // --- Moderation API ---
