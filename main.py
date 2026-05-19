@@ -4358,14 +4358,6 @@ def _start_hartos_bootstrap():
 threading.Thread(target=_start_hartos_bootstrap, daemon=True,
                  name='hartos-init-kickoff').start()
 
-# DIAG-BOOT-PROBE — e2e-staging diagnosis (memory/nunba_e2e_staging_main_never_runs.md).
-# main.py reaches the hartos-init-kickoff thread spawn (visible via the
-# bg thread's "Tier-1 ACTIVE" log) but never reaches __main__ at line
-# 5631 (no "Starting Hypercorn" log).  These four stdout markers
-# bisect the 4357->5631 module-level window so the next CI cycle shows
-# which span blocks.  Remove once root cause is found + fixed.
-print('[DIAG-BOOT-PROBE] reached line 4358 (after hartos-init thread spawn)', flush=True)
-
 if not HARTOS_BACKEND_DIRECT and HARTOS_BACKEND_AVAILABLE:
     # Use adapter/proxy mode
     try:
@@ -4698,9 +4690,6 @@ def admin_hub_allowlist_remove(org):
 # which silently broke any time HARTOS renamed an internal symbol.
 # rotate_mcp_token() handles HARTOS_MCP_TOKEN env-pinning gracefully.
 _MCP_CONFIG_URL = 'http://localhost:5000/api/mcp/local'
-
-# DIAG-BOOT-PROBE marker 2/4 — see line 4358 marker for context.
-print('[DIAG-BOOT-PROBE] reached line 4691 (after _MCP_CONFIG_URL assign)', flush=True)
 
 
 def _mcp_config_snippet(token: str) -> str:
@@ -5241,10 +5230,6 @@ def _start_diarization_service():
 
 _bg_services_started = False
 
-# DIAG-BOOT-PROBE marker 3/4 — see line 4358 marker for context.
-print('[DIAG-BOOT-PROBE] reached line 5230 (after _bg_services_started=False)', flush=True)
-
-
 def start_background_services():
     """Start all background services: LangChain, vision, diarization, TTS warm-up.
 
@@ -5645,27 +5630,7 @@ def start_background_services():
     ).start()
 
 
-# DIAG-BOOT-PROBE marker 4/4 — see line 4358 marker for context.
-# If this fires but __main__ doesn't run hypercorn, the issue is in
-# start_background_services() / asyncio.run(_runner()).
-print('[DIAG-BOOT-PROBE] reached line 5631 (just before if __name__ == __main__)', flush=True)
-
-# DIAG-ROUTE-DUMP — dumps the Flask url_map size at boot so we know
-# whether the routes ACTUALLY made it onto the app object that
-# Hypercorn is about to serve.  If count is high but /backend/health
-# probes still 404, the issue is in AsyncioWSGIMiddleware wrapping or
-# CSRF/security middleware.  If count is low, route registration
-# silently failed earlier.
-try:
-    _rules = list(app.url_map.iter_rules())
-    _backend_rules = [r.rule for r in _rules if '/backend' in r.rule or '/health' in r.rule]
-    print(f'[DIAG-ROUTE-DUMP] total rules on app: {len(_rules)}; '
-          f'/backend|/health rules: {_backend_rules}', flush=True)
-except Exception as _e:
-    print(f'[DIAG-ROUTE-DUMP] failed to introspect url_map: {_e}', flush=True)
-
 if __name__ == '__main__':
-    print('[DIAG-BOOT-PROBE] entered __main__ block', flush=True)
     try:
         # Log Python version and environment info
         logging.info(f"Python version: {sys.version}")
