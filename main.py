@@ -198,19 +198,12 @@ os.environ['NUNBA_BUNDLED'] = '1'
 # flags (electron_build) are deferred — they need schema migration audit
 # before flip; tracked separately.
 # setdefault preserves any explicit override from the deploy environment.
-os.environ.setdefault('HEVOLVE_FLAG_MENTIONS_AUTOCOMPLETE', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_MENTIONS', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_AGENT_MEMBERS', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_INVITES_V2', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_CONVERSATIONS', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_REACTIONS', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_SYNC_V1', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_CALLS_V1', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_AGENT_VOICE_BRIDGE', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_WEAR_CALLS', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_NUNBA_DESKTOP_V2', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_E2E_DMS', 'true')
-# Wave 2 — data-shape flags (schema migrations v41/v48/v50 verified live):
+# DRY: single dict + one loop replaces 20 setdefault repetitions.
+# New flags: add one line to _FLAG_DEFAULTS, no risk of forgetting
+# the setdefault call.  Comments document the WHY for each group;
+# the dict literal is grouped to match the prior block exactly.
+#
+# Wave 2 data-shape flag context (schemas v41/v48/v50 verified live):
 #   FRIENDS_V2   — friend-graph routes (10+ endpoints in api.py:449+).
 #                  Schema v41 already created friendships table; gate is
 #                  endpoint-only, no legacy data.
@@ -222,15 +215,13 @@ os.environ.setdefault('HEVOLVE_FLAG_E2E_DMS', 'true')
 #                   v50 added content_moderation_decisions table +
 #                   posts.is_quarantined; legacy posts have no decision
 #                   rows (audit-trail gap, acceptable per Phase 7e plan).
-os.environ.setdefault('HEVOLVE_FLAG_FRIENDS_V2', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_POST_PRIVACY', 'true')
-os.environ.setdefault('HEVOLVE_FLAG_MODERATION_V2', 'true')
+#
 # DISPATCH_VIA_CHAT — gate reader at agentic_router.py:_dispatch_via_chat
 # (HARTOS commit 567a78b restored the helper after Wave-1 audit).  Social
 # agents now reuse the canonical /chat runtime (autogen + persona + tools
 # + history) instead of raw single-shot llm.invoke; falls back to raw
 # llm.invoke if /chat unreachable, so flag-on is strictly additive.
-os.environ.setdefault('HEVOLVE_FLAG_DISPATCH_VIA_CHAT', 'true')
+#
 # Skipped — DEAD CONFIG (declared in feature_flags._DEFAULTS but no active
 # reader in code; flipping would be no-op):
 #   tenancy_v2 / members_v2 / multi_tenant_cloud / electron_build.
@@ -239,9 +230,32 @@ os.environ.setdefault('HEVOLVE_FLAG_DISPATCH_VIA_CHAT', 'true')
 # HEVOLVE_AGENT_ENGINE_ENABLED + HEVOLVE_SPECULATIVE_ENABLED are LLM-gated;
 # set in app.py:1417 only when an LLM is configured (avoids agent-engine
 # startup with no LLM, which would emit errors).  Don't duplicate here.
-os.environ.setdefault('HEVOLVE_VISION_LITE_ENABLED', 'true')
-os.environ.setdefault('HEVOLVE_RSI_REALTIME', 'true')
-os.environ.setdefault('HEVOLVE_RSI_EXPLORE', 'true')
+_FLAG_DEFAULTS = {
+    # Wave 1 — additive feature flags
+    'HEVOLVE_FLAG_MENTIONS_AUTOCOMPLETE': 'true',
+    'HEVOLVE_FLAG_MENTIONS': 'true',
+    'HEVOLVE_FLAG_AGENT_MEMBERS': 'true',
+    'HEVOLVE_FLAG_INVITES_V2': 'true',
+    'HEVOLVE_FLAG_CONVERSATIONS': 'true',
+    'HEVOLVE_FLAG_REACTIONS': 'true',
+    'HEVOLVE_FLAG_SYNC_V1': 'true',
+    'HEVOLVE_FLAG_CALLS_V1': 'true',
+    'HEVOLVE_FLAG_AGENT_VOICE_BRIDGE': 'true',
+    'HEVOLVE_FLAG_WEAR_CALLS': 'true',
+    'HEVOLVE_FLAG_NUNBA_DESKTOP_V2': 'true',
+    'HEVOLVE_FLAG_E2E_DMS': 'true',
+    # Wave 2 — data-shape flags
+    'HEVOLVE_FLAG_FRIENDS_V2': 'true',
+    'HEVOLVE_FLAG_POST_PRIVACY': 'true',
+    'HEVOLVE_FLAG_MODERATION_V2': 'true',
+    # Dispatch + vision + RSI
+    'HEVOLVE_FLAG_DISPATCH_VIA_CHAT': 'true',
+    'HEVOLVE_VISION_LITE_ENABLED': 'true',
+    'HEVOLVE_RSI_REALTIME': 'true',
+    'HEVOLVE_RSI_EXPLORE': 'true',
+}
+for _flag_name, _flag_default in _FLAG_DEFAULTS.items():
+    os.environ.setdefault(_flag_name, _flag_default)
 
 # Restore persisted node config (master key, tier) from previous session
 _node_config_path = os.path.join(PROGRAM_DATA_DIR, 'data', 'node_config.json')
