@@ -50,7 +50,7 @@ import CreditSystem from './Credits';
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/legacy/build/pdf.worker.min.mjs`;
 
 // ── Use existing Nunba API services for local/global integration ──
-import {chatApi, usersApi, agentApi} from '../services/socialApi';
+import {chatApi, usersApi, agentApi, authApi} from '../services/socialApi';
 import { initGameRealtime } from '../services/gameRealtimeService';
 import realtimeService from '../services/realtimeService';
 
@@ -3703,6 +3703,44 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       logger.log('Routing to CLOUD backend');
       let cloudRetryCount = 0;
       let lastCloudReason = '';
+      let guestRecoverAttempted = false;
+
+      // Guest-aware silent 401 recovery — #207.  When /chat returns 401
+      // mid-request (e.g. HARTOS-issued guest JWT TTL expired during a
+      // long inference) and the caller is in guest mode with a known
+      // guest_name, re-register silently to mint a fresh token and
+      // replay the same request without nuking the session.  Cloud
+      // logged-in users still hit the clearAuth + login modal path
+      // because their refresh requires interactive credentials.
+      //
+      // Returns the new token on success, null on failure.  setGuestIdentity
+      // writes access_token to localStorage so the next iteration's
+      // fetch picks it up via the live-read below.
+      const tryGuestRecover = async () => {
+        if (!isGuestMode || !guestName) return null;
+        if (guestRecoverAttempted) return null;  // one-shot per request
+        guestRecoverAttempted = true;
+        try {
+          const deviceId = await getStableDeviceId();
+          const res = await authApi.guestRegister({
+            guest_name: guestName,
+            device_id: deviceId,
+          });
+          const { user, token: newToken } = res.data || {};
+          if (!newToken || !user?.id) return null;
+          setGuestIdentity({
+            user_id: user.id,
+            token: newToken,
+            guest_name: guestName,
+          });
+          setToken(newToken);
+          logger.log('[GUEST] 401 mid-chat — silent recover succeeded, retrying request');
+          return newToken;
+        } catch (e) {
+          logger.log('[GUEST] 401 silent recover failed:', e?.message || e);
+          return null;
+        }
+      };
 
       while (true) {
         if (cloudRetryCount > 0) {
@@ -3730,11 +3768,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             ? PERSONALISED_LEARNING_URL
             : CUSTOM_GPT_URL;
 
+          // Live token read — picks up a fresh JWT minted by
+          // tryGuestRecover() in the previous loop iteration.  Closure-
+          // captured `token` from useState would be stale until the
+          // next render.
+          const liveToken = localStorage.getItem('access_token') || token;
+
           const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
+              Authorization: `Bearer ${liveToken}`,
             },
             body: dataToSend,
           });
@@ -3746,31 +3790,42 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             try { errorResponse = await response.json(); } catch (err) { console.error('Failed to parse error response:', err); }
             console.error('API call failed:', response.status, response.statusText);
 
-            if (response.status === 401) {
-              if (!refresh_token) {
+            const isInvalidToken = (
+              errorResponse.error === 'invalid_token' ||
+              errorResponse.error_description === 'The access token is invalid or has expired'
+            );
+
+            if (response.status === 401 || isInvalidToken) {
+              // Guest-aware path — silently re-register and retry once
+              // before falling through to the nuke-session UX.
+              const recovered = await tryGuestRecover();
+              if (recovered) {
+                lastCloudReason = 'Session refreshed';
+                cloudRetryCount++;
+                continue;
+              }
+
+              if (response.status === 401 && !refresh_token) {
                 setSessionExpiredMessage('Session expired. Please log in again.');
                 setIsModalOpen(true);
                 updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
                 setLoading(false);
                 return;
               }
-            }
 
-            if (
-              errorResponse.error === 'invalid_token' ||
-              errorResponse.error_description === 'The access token is invalid or has expired'
-            ) {
-              // Phase 4d — canonical 401 invalidation.  clearAuth
-              // covers the original 4 keys (expire_token + access_token
-              // + user_id + email_address) plus 8 more cloud-related
-              // keys.  HART node identity preserved (per 4-layer model)
-              // so on next signin the user lands back in the same HART
-              // shell.
-              clearAuth();
-              setIsModalOpen(true);
-              updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
-              setLoading(false);
-              return;
+              if (isInvalidToken) {
+                // Phase 4d — canonical 401 invalidation.  clearAuth
+                // covers the original 4 keys (expire_token + access_token
+                // + user_id + email_address) plus 8 more cloud-related
+                // keys.  HART node identity preserved (per 4-layer model)
+                // so on next signin the user lands back in the same HART
+                // shell.
+                clearAuth();
+                setIsModalOpen(true);
+                updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
+                setLoading(false);
+                return;
+              }
             }
 
             // Other HTTP errors — retry
