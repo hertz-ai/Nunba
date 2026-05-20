@@ -479,6 +479,82 @@ export function clearAccessTokenForExpiry() {
 }
 
 /**
+ * silentGuestRefresh — fetch a fresh guest JWT without nuking the session.
+ *
+ * Single canonical entry-point for the guest-token-refresh flow.
+ * Replaces three parallel call sites that each open-coded the same dance:
+ *   - Demopage.js:254-287    auto-refresh useEffect (mount, token missing)
+ *   - Demopage.js:3719-3743  handleSend 401 helper (#207 mid-chat recovery)
+ *   - SocialContext.js:261, 309   handleExpiry / setupCurrentUser
+ *
+ * Path:
+ *   1. Read guest_name + device_id from localStorage (+ getStableDeviceId
+ *      fallback when device_id is missing)
+ *   2. POST /auth/guest-register — idempotent on device_id (api.py:207),
+ *      returns the EXISTING guest user with a fresh JWT
+ *   3. setGuestIdentity(...) on success (canonical writer; fires
+ *      nunba:auth_changed so every other consumer re-reads)
+ *   4. Returns {token, user_id, existing} or null on failure
+ *
+ * Why guest-register and NOT guest-recover:
+ *   /auth/guest-recover (HARTOS api.py:272) requires the 6-word
+ *   recovery_code, NOT device_id+display_name.  SocialContext historically
+ *   called it with the wrong payload and silently failed via
+ *   `.catch(() => {})` — silent-recovery there was a no-op.  This helper
+ *   uses guest-register's idempotent device_id path which is what
+ *   actually mints a fresh JWT against an existing guest user.
+ *
+ * Imports are lazy (require, not ES6 import) to break the known cycle
+ * axiosFactory ← socialApi ← SocialContext ← useAuthSession — same
+ * pattern Phase 5 axiosFactory.js:23-37 uses.
+ *
+ * Returns null and does NOT throw on:
+ *   - Guest mode not active (no guest_name)
+ *   - Network failure
+ *   - Backend returning a non-OK status
+ * Callers should treat null as "couldn't refresh — fall back to login UX".
+ */
+export async function silentGuestRefresh() {
+  const guestName = (() => {
+    try { return localStorage.getItem('guest_name'); } catch { return null; }
+  })();
+  if (!guestName) return null;
+
+  let authApi;
+  let getStableDeviceId;
+  try {
+    authApi = require('../services/socialApi').authApi;
+    getStableDeviceId = require('../utils/deviceId').getStableDeviceId;
+  } catch (_e) {
+    return null;  // Modules not loaded (test env without the boundary)
+  }
+
+  let deviceId = null;
+  try {
+    deviceId = (typeof getStableDeviceId === 'function')
+      ? await getStableDeviceId()
+      : null;
+  } catch { /* fall through with null */ }
+
+  try {
+    const res = await authApi.guestRegister({
+      guest_name: guestName,
+      device_id: deviceId || undefined,
+    });
+    const { user, token, existing } = res?.data || {};
+    if (!token || !user?.id) return null;
+    setGuestIdentity({
+      user_id: user.id,
+      token,
+      guest_name: guestName,
+    });
+    return { token, user_id: user.id, existing: !!existing };
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
  * applyHartSeal — completes HART onboarding.
  * Replaces LightYourHART.js:1036 + 1107.
  *

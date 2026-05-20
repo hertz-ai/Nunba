@@ -30,8 +30,7 @@ import autobahn from 'autobahn';
 import { classifyError, getBackoff, makeMsgId } from '../utils/chatRetry';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
-import { getStableDeviceId } from '../utils/deviceId';
-import useAuthSession, { setGuestIdentity, clearAuth } from '../hooks/useAuthSession';
+import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
 
 // NewHome is only loaded when user is not logged in (landing page)
@@ -50,7 +49,7 @@ import CreditSystem from './Credits';
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/legacy/build/pdf.worker.min.mjs`;
 
 // ── Use existing Nunba API services for local/global integration ──
-import {chatApi, usersApi, agentApi, authApi} from '../services/socialApi';
+import {chatApi, usersApi, agentApi} from '../services/socialApi';
 import { initGameRealtime } from '../services/gameRealtimeService';
 import realtimeService from '../services/realtimeService';
 
@@ -252,37 +251,22 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     }
 
     (async () => {
-      try {
-        logger.log('[GUEST] Token missing — auto-refreshing with stored name:', guestName);
-        // Hardware-derived device_id via /status so the backend can
-        // return our EXISTING guest User (idempotent) instead of
-        // minting a new user_id — preserves prompt_id→chat linkage
-        // in localStorage.  See HARTOS guest_register idempotent fix.
-        const deviceId = await getStableDeviceId();
-        const res = await authApi.guestRegister({
-          guest_name: guestName,
-          device_id: deviceId,
-        });
-        const { user, token: newToken, existing } = res.data;
-        // Phase 4b — canonical guest writer.  Replaces the prior
-        // 3-setItem block.  Also sets guest_mode/hevolve_access_id/
-        // guest_name_verified=true (all already true entering this
-        // useEffect — !isGuestMode || !guestName returns at line 226,
-        // so we're guaranteed in guest_mode at this point).
-        setGuestIdentity({
-          user_id: user.id,
-          token: newToken,
-          guest_name: guestName,
-        });
-        setToken(newToken);  // Fix B — same-tab React state update so cloud-creds POST useEffect re-fires without 1s lag
-        logger.log(
-          existing
-            ? '[GUEST] Token refreshed — same user, chat preserved'
-            : '[GUEST] New guest user created (first-time device)',
-        );
-      } catch {
+      logger.log('[GUEST] Token missing — auto-refreshing with stored name:', guestName);
+      // Canonical silentGuestRefresh helper — uses hardware-derived
+      // device_id via /status so the backend returns our EXISTING
+      // guest User (idempotent) instead of minting a new user_id,
+      // preserving prompt_id→chat linkage in localStorage.
+      const result = await silentGuestRefresh();
+      if (!result) {
         logger.log('[GUEST] Auto-refresh failed — will show login modal on next action');
+        return;
       }
+      setToken(result.token);  // Fix B — same-tab React state mirror
+      logger.log(
+        result.existing
+          ? '[GUEST] Token refreshed — same user, chat preserved'
+          : '[GUEST] New guest user created (first-time device)',
+      );
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -3705,41 +3689,27 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       let lastCloudReason = '';
       let guestRecoverAttempted = false;
 
-      // Guest-aware silent 401 recovery — #207.  When /chat returns 401
-      // mid-request (e.g. HARTOS-issued guest JWT TTL expired during a
-      // long inference) and the caller is in guest mode with a known
-      // guest_name, re-register silently to mint a fresh token and
-      // replay the same request without nuking the session.  Cloud
-      // logged-in users still hit the clearAuth + login modal path
-      // because their refresh requires interactive credentials.
-      //
-      // Returns the new token on success, null on failure.  setGuestIdentity
-      // writes access_token to localStorage so the next iteration's
-      // fetch picks it up via the live-read below.
+      // Guest-aware silent 401 recovery — #207 / #209.  When /chat returns
+      // 401 mid-request (e.g. HARTOS-issued guest JWT TTL expired during a
+      // long inference) and the caller is in guest mode, re-register
+      // silently to mint a fresh token and replay the same request without
+      // nuking the session.  Cloud logged-in users still hit the clearAuth
+      // + login modal path because their refresh requires interactive
+      // credentials.  silentGuestRefresh is the canonical helper in
+      // useAuthSession.js — same call shared with the mount-time
+      // auto-refresh useEffect and the SocialContext auth:expired handler.
       const tryGuestRecover = async () => {
-        if (!isGuestMode || !guestName) return null;
+        if (!isGuestMode) return null;
         if (guestRecoverAttempted) return null;  // one-shot per request
         guestRecoverAttempted = true;
-        try {
-          const deviceId = await getStableDeviceId();
-          const res = await authApi.guestRegister({
-            guest_name: guestName,
-            device_id: deviceId,
-          });
-          const { user, token: newToken } = res.data || {};
-          if (!newToken || !user?.id) return null;
-          setGuestIdentity({
-            user_id: user.id,
-            token: newToken,
-            guest_name: guestName,
-          });
-          setToken(newToken);
-          logger.log('[GUEST] 401 mid-chat — silent recover succeeded, retrying request');
-          return newToken;
-        } catch (e) {
-          logger.log('[GUEST] 401 silent recover failed:', e?.message || e);
+        const result = await silentGuestRefresh();
+        if (!result) {
+          logger.log('[GUEST] 401 silent recover failed');
           return null;
         }
+        setToken(result.token);  // Same-tab React state mirror (Fix B)
+        logger.log('[GUEST] 401 mid-chat — silent recover succeeded, retrying request');
+        return result.token;
       };
 
       while (true) {

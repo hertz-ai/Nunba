@@ -1,4 +1,4 @@
-import useAuthSession, {setGuestIdentity, setAccessToken} from '../hooks/useAuthSession';
+import useAuthSession, {setGuestIdentity, setAccessToken, silentGuestRefresh} from '../hooks/useAuthSession';
 import {useReferral} from '../hooks/useReferral';
 import {apiCache} from '../services/apiCache';
 import realtimeService from '../services/realtimeService';
@@ -127,54 +127,27 @@ export function SocialProvider({children}) {
           // Token expired — clear it
           localStorage.removeItem('access_token');
           // If this was a guest session, try to silently recover it
-          // instead of losing the entire session
+          // instead of losing the entire session.  Canonical helper —
+          // #209 — uses guest-register's idempotent device_id path
+          // (the right API for silent JWT refresh).  Previously called
+          // guestRecover with device_id+display_name which is the wrong
+          // payload (recovery requires the 6-word code) and silently
+          // failed in .catch().
           const guestId = localStorage.getItem('guest_user_id');
           const guestName = localStorage.getItem('guest_name');
           if (localStorage.getItem('guest_mode') === 'true' && guestId) {
-            authApi.guestRecover({ device_id: guestId, display_name: guestName })
-              .then((res) => {
-                if (res?.data?.token) {
-                  // Phase 4b — canonical guest writer.  Functionally
-                  // equivalent to the prior 2-setItem block; ALSO
-                  // re-asserts guest_mode/guest_user_id/hevolve_access_id
-                  // /guest_name_verified=true (all already true in this
-                  // branch — we're inside `guest_mode==='true'`).
-                  setGuestIdentity({
-                    user_id: res.data.user?.id || guestId,
-                    token: res.data.token,
-                    guest_name: guestName || undefined,
-                  });
+            silentGuestRefresh()
+              .then((result) => {
+                if (result) {
                   setCurrentUser({
-                    id: res.data.user?.id || guestId,
+                    id: result.user_id,
                     username: guestName || 'User',
                     role: 'guest',
                   });
                   fetchProfile();
+                } else {
+                  setCurrentUser({ id: guestId, username: guestName || 'User', role: 'guest' });
                 }
-              })
-              .catch(() => {
-                // Recovery failed (key rotated after reinstall) — re-register as guest
-                authApi.guestRegister({ guest_name: guestName || 'User', device_id: guestId })
-                  .then((res) => {
-                    if (res?.data?.token) {
-                      setGuestIdentity({
-                        user_id: res.data.user?.id || guestId,
-                        token: res.data.token,
-                        guest_name: guestName || undefined,
-                      });
-                      setCurrentUser({
-                        id: res.data.user?.id || guestId,
-                        username: guestName || 'User',
-                        role: 'guest',
-                      });
-                      fetchProfile();
-                    } else {
-                      setCurrentUser({ id: guestId, username: guestName || 'User', role: 'guest' });
-                    }
-                  })
-                  .catch(() => {
-                    setCurrentUser({ id: guestId, username: guestName || 'User', role: 'guest' });
-                  });
               })
               .finally(() => setLoading(false));
             return;
@@ -257,23 +230,10 @@ export function SocialProvider({children}) {
           username: guestName || 'User',
           role: 'guest',
         });
-        // Try to silently re-authenticate in the background
-        authApi.guestRecover({ device_id: guestId, display_name: guestName })
-          .then((res) => {
-            if (res?.data?.token) {
-              // Phase 4b — canonical guest writer.  Same effect as
-              // the prior 2-setItem block (access_token + social_user_id);
-              // also re-asserts guest_mode/guest_user_id/hevolve_access_id
-              // which were already true entering this `guest_mode==='true'`
-              // branch.
-              setGuestIdentity({
-                user_id: res.data.user?.id || guestId,
-                token: res.data.token,
-                guest_name: guestName || undefined,
-              });
-            }
-          })
-          .catch(() => {}); // silent — guest UI still works without a token
+        // Try to silently re-authenticate in the background.  #209 —
+        // canonical helper uses guest-register's idempotent device_id
+        // path (the correct API; guestRecover requires the 6-word code).
+        silentGuestRefresh().catch(() => {});
       }
       setLoading(false);
     } else {
@@ -305,23 +265,10 @@ export function SocialProvider({children}) {
             username: guestName || 'User',
             role: 'guest',
           });
-          // Try silent re-auth
-          authApi.guestRecover({ device_id: guestId, display_name: guestName })
-            .then((res) => {
-              if (res?.data?.token) {
-                // Phase 4b — canonical guest writer.  Original only
-                // wrote access_token (no social_user_id update — that
-                // branch trusted the existing id).  setGuestIdentity
-                // is the standard write; passing res.data.user?.id ||
-                // guestId preserves the same id-resolution order.
-                setGuestIdentity({
-                  user_id: res.data.user?.id || guestId,
-                  token: res.data.token,
-                  guest_name: guestName || undefined,
-                });
-              }
-            })
-            .catch(() => {});
+          // #209 — canonical silent-recovery helper.  Replaces the
+          // prior guestRecover-with-wrong-payload path that silently
+          // failed in the .catch().
+          silentGuestRefresh().catch(() => {});
           return;
         }
       }
