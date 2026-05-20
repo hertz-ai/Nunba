@@ -32,25 +32,37 @@ function groupKey(task) {
   return `${a}__${p}`;
 }
 
-// #204 — extract flow + action identifiers from the task description.
-// The Task model (agent-ledger-opensource/agent_ledger/core.py:191) does
-// NOT expose owner_flow_id / owner_action_id fields, but recipe-driven
-// tasks have stable description prefixes like:
-//   "Execute Action 1: <verb>: <args>"
-//   "Flow 2 / Action 3: <verb>: <args>"
-// We parse those so the UI can nest prompt → flow → action without
-// requiring a backend schema migration first.  When a description has
-// no recognizable flow/action header, the task lands in a synthetic
+// #204 / #220 — resolve flow + action identifiers.
+//
+// Preferred source (#220, no schema migration): the backend ledger's
+// pre_assign_actions() at agent-ledger-opensource/agent_ledger/core.py:3559
+// writes context = {action_id, flow, persona} on every action task.
+// We read those FIRST so the UI uses the canonical values the backend
+// stamped, not a regex over description text.
+//
+// Fallback (#204, for legacy rows + daemon-injected tasks): if context
+// is absent or doesn't carry these keys, parse the description string
+// for the conventional recipe prefix patterns:
+//   "Flow N / Action M"
+//   "Execute Action N: ..."
+//   "Action N"
+// When no signal is recoverable, the task lands in a synthetic
 // "flow=- / action=-" bucket so it still groups under its prompt.
 function parseFlowAction(task) {
+  // (a) Backend-stamped context wins.
+  const ctx = task.context || task.context_json || {};
+  if (ctx.action_id != null || ctx.flow != null) {
+    const flow = ctx.flow ? `Flow ${ctx.flow}` : 'Flow 1';
+    const action = ctx.action_id != null ? `Action ${ctx.action_id}` : '—';
+    return { flow, action };
+  }
+
+  // (b) Description regex — fallback for legacy / daemon tasks.
   const desc = task.title || task.description || '';
-  // "Flow N / Action M" — explicit hierarchical form
   let m = desc.match(/Flow\s+(\d+)\s*\/\s*Action\s+(\d+)/i);
   if (m) return { flow: `Flow ${m[1]}`, action: `Action ${m[2]}` };
-  // "Execute Action N: ..." — recipe-driven, flow implied by sibling tasks
   m = desc.match(/Execute\s+Action\s+(\d+)\b/i);
   if (m) return { flow: 'Flow 1', action: `Action ${m[1]}` };
-  // "Action N" anywhere in description
   m = desc.match(/\bAction\s+(\d+)\b/i);
   if (m) return { flow: 'Flow 1', action: `Action ${m[1]}` };
   return { flow: '—', action: '—' };
