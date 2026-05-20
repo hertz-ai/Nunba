@@ -37,6 +37,14 @@ const ThinkingProcessContainer = ({
     );
   }, [isContainerCompleted, thinkingMessages]);
 
+  // #208 — hard ceiling on the thinking spinner.  Without this, a
+  // backend that stops emitting thinking_trace SSE events mid-stream
+  // (e.g. WAMP-disconnect, llama-server stall, daemon crash) leaves
+  // the "Thinking in progress..." UI ticking forever — one user
+  // reported 83 minutes.  After 180s we force-complete locally so the
+  // user can see the partial trace + retry the message.
+  const STALE_CEILING_SEC = 180;
+
   const isReallyCompleted = useMemo(() => {
     logger.log('Computing isReallyCompleted:');
     logger.log('  - isContainerCompleted prop:', isContainerCompleted);
@@ -58,9 +66,14 @@ const ThinkingProcessContainer = ({
       }
     }
 
+    if (liveTime > STALE_CEILING_SEC) {
+      logger.log('  Force-completed via stale ceiling (' + STALE_CEILING_SEC + 's)');
+      return true;
+    }
+
     logger.log('  Not completed - still thinking');
     return false;
-  }, [isContainerCompleted, thinkingMessages]);
+  }, [isContainerCompleted, thinkingMessages, liveTime]);
 
   // 2026-05-12: removed two auto-scrollIntoView effects that fired on
   // `isMainExpanded` toggle and on every new thinking_message.  Behaviour
