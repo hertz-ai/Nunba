@@ -3614,11 +3614,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               setSecretRequest(resultData.secret_request);
             }
 
-            // Process thinking traces captured during local LangChain/autogen execution.
-            // These arrive batched (not streamed) — feed each into handleDataReceived
-            // to populate ThinkingProcessContainer before showing the final answer.
+            // #171 — thinking traces stream live via SSE 'chat.response'
+            // (EventBus.emit fan-out in HARTOS commit 29ac1b9).  The
+            // resultData.thinking_steps batched fallback was removed —
+            // it was the source of the "all at once" UI burst because
+            // forEach-dispatched the entire list once HTTP returned,
+            // long after the same traces had already streamed via SSE.
+            // Backward-compat: a legacy HARTOS that still attaches the
+            // batch is handled by the forEach below — dedup by msg_id
+            // at handleDataReceived makes the duplicate delivery a no-op.
             if (resultData.thinking_steps?.length > 0) {
-              logger.log(`Processing ${resultData.thinking_steps.length} thinking traces`);
+              logger.log(`Legacy thinking_steps batch (${resultData.thinking_steps.length}) — dedup will absorb duplicates`);
               resultData.thinking_steps.forEach((trace) => {
                 handleDataReceived(trace);
               });
@@ -3674,8 +3680,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               };
               setMessages((prev) => {
                 const updated = [...prev];
-                // Mark any open thinking containers as completed
-                if (resultData.thinking_steps?.length > 0) {
+                // #171 — completion signal is the arrival of the final
+                // response text, NOT the presence of a thinking_steps
+                // batch (which is gone now that traces stream live via
+                // SSE).  Any open thinking_container is marked complete
+                // when responseText lands — the assistant turn is
+                // semantically over at that point regardless of how
+                // traces were delivered.
+                if (responseText) {
                   for (let i = updated.length - 1; i >= 0; i--) {
                     if (updated[i].type === 'thinking_container' && !updated[i].isCompleted) {
                       updated[i] = {
