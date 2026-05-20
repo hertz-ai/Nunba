@@ -206,15 +206,24 @@ const AgentSidebar = ({
                   <span className="text-white">
                     {decryptedEmail
                       ? decryptedEmail.charAt(0).toUpperCase()
-                      : ''}
+                      : (isAuthenticated || isGuestMode) ? '•' : ''}
                   </span>
                 </button>
+                {/* Authenticated state must win even if decryptedEmail
+                    hasn't resolved yet (async storage decryption race
+                    — user 2026-05-20 saw "Welcome! Log in" persist
+                    after a real login because one of the three derived
+                    values was transiently null).  Trust the parent's
+                    isAuthenticated flag; fall back to 'Account' label
+                    while decryption finishes. */}
                 <span className="text-sm truncate">
-                  {decryptedEmail && token && decryptedUserId
+                  {decryptedEmail
                     ? decryptedEmail
-                    : isGuestMode
-                      ? `Guest ${(guestUserId || '').slice(-4)}`
-                      : 'Welcome! Log in'}
+                    : isAuthenticated
+                      ? 'Account'
+                      : isGuestMode
+                        ? `Guest ${(guestUserId || '').slice(-4)}`
+                        : 'Welcome! Log in'}
                 </span>
               </div>
             </div>
@@ -226,13 +235,19 @@ const AgentSidebar = ({
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center">
                 <span className="text-white">
-                  {decryptedEmail ? decryptedEmail.charAt(0).toUpperCase() : ''}
+                  {decryptedEmail
+                    ? decryptedEmail.charAt(0).toUpperCase()
+                    : isAuthenticated ? '•' : ''}
                 </span>
               </div>
               <span className="text-sm truncate">
-                {decryptedEmail && token && decryptedUserId
+                {decryptedEmail
                   ? decryptedEmail
-                  : 'Welcome! Log in'}
+                  : isAuthenticated
+                    ? 'Account'
+                    : isGuestMode
+                      ? `Guest ${(guestUserId || '').slice(-4)}`
+                      : 'Welcome! Log in'}
               </span>
             </div>
             <ChevronRight className="w-4 h-4" />
