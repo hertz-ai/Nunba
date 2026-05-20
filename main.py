@@ -5574,6 +5574,17 @@ def start_background_services():
 
             # Pre-load F5 only if enough VRAM (model 1.3GB + buffers = need 2.5GB free).
             # If VRAM is too tight (llama took most of it), skip — first chat uses Piper.
+            #
+            # #218 — also defer pre-load when the user is actively
+            # chatting.  Live evidence 2026-05-20 18:12-18:13 showed
+            # TTS warmup firing between two user chat turns, burning
+            # VRAM + CPU while the user was waiting on the second
+            # reply (Piper synth took 13s instead of <1s).  Honor the
+            # canonical user-priority gate (#123) — defer pre-load so
+            # the user's chat turn gets the resources.  The 60s idle
+            # timer will unload anything we DO load; the next chat
+            # uses Piper CPU (instant fallback) until the next
+            # idle-window warmup fires.
             _can_preload = False
             try:
                 from integrations.service_tools.vram_manager import vram_manager
@@ -5583,6 +5594,21 @@ def start_background_services():
                     logging.info(f"TTS warm-up: only {_free:.1f}GB VRAM free — skipping F5 pre-load")
             except Exception:
                 pass
+            # #218 — user-priority gate (#123).  Skip user-blocking
+            # warmup steps when user is actively chatting.
+            if _can_preload:
+                try:
+                    from integrations.agent_engine.dispatch import is_user_recently_active
+                    if is_user_recently_active():
+                        _can_preload = False
+                        logging.info(
+                            "TTS warm-up: user is actively chatting — "
+                            "deferring F5 pre-load (next idle window "
+                            "will retry).  Honors user-priority gate "
+                            "(#123) so the user's chat turn gets the "
+                            "VRAM/CPU.")
+                except Exception:
+                    pass  # gate not importable — fall through
 
             if _can_preload:
                 import tempfile as _tf
