@@ -64,6 +64,7 @@ import {useLocalEngineReady} from '../hooks/useLocalEngineReady';
 
 // ── Extracted sub-components ──
 import GpuTierBadge from '../components/chat/GpuTierBadge';
+import NotificationBell from '../components/Common/NotificationBell';
 import AgentSidebar from './chat/AgentSidebar';
 import PdfViewer from './chat/PdfViewer';
 import ChatInputBar from './chat/ChatInputBar';
@@ -4536,8 +4537,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             >
               {/* Chat header bar — GPU tier badge surfaces the speculation-capability
                   boundary (see components/chat/GpuTierBadge.jsx for the product-owner +
-                  accessibility rationale). Right-aligned; no layout shift when hidden. */}
-              <div className="flex justify-end items-center px-3 pt-2">
+                  accessibility rationale). Right-aligned; no layout shift when hidden.
+                  #198 — NotificationBell sits here so the bell + unread badge are
+                  visible on the FIRST page the user sees (the chat), matching LinkedIn-
+                  style global top-right placement. Same component the AdminLayout uses
+                  (commit 8ffa635e); reads /api/social/notifications. */}
+              <div className="flex justify-end items-center gap-2 px-3 pt-2">
+                <NotificationBell />
                 <GpuTierBadge />
               </div>
               {messages.length === 0 ? (
