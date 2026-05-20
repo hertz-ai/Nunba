@@ -21,6 +21,7 @@
  * tokens as MarketingFunnelCard.
  */
 import {notificationsApi} from '../../services/socialApi';
+import useAuthSession from '../../hooks/useAuthSession';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import NotificationsIcon from '@mui/icons-material/Notifications';
@@ -57,6 +58,37 @@ function resolveTargetPath(notification) {
 }
 
 
+// #201 — cross-user agent provenance label.
+// When a notification was emitted on behalf of ANOTHER user's agent
+// (e.g. someone else's recipe ran a tool that mentions us), surface
+// "anonymous user via agent Y" so the recipient knows the event
+// didn't come from a person typing — it came from someone's
+// autonomous agent.  We deliberately don't show the OTHER user's
+// identity (privacy by default in HARTOS); "anonymous user" is the
+// label.  When the agent name is unknown we fall back to "their
+// agent".  When the notification doesn't carry sender_user_id at
+// all (system message, own action) we return null.
+function formatProvenance(notification, currentUserId) {
+  if (!notification) return null;
+  const senderUid = (
+    notification.sender_user_id
+    || notification.actor_user_id
+    || notification.source_user_id
+    || null
+  );
+  if (!senderUid || senderUid === currentUserId) return null;
+  const agentName = (
+    notification.agent_name
+    || notification.actor_agent_name
+    || notification.via_agent_name
+    || null
+  );
+  return agentName
+    ? `anonymous user · via ${agentName}`
+    : `anonymous user · via their agent`;
+}
+
+
 function formatRelativeTime(iso) {
   if (!iso) return '';
   const then = new Date(iso).getTime();
@@ -75,6 +107,10 @@ export default function NotificationBell() {
   const [unreadCount, setUnreadCount] = useState(0);
   const navigate = useNavigate();
   const open = Boolean(anchor);
+  // #201 — used by formatProvenance to suppress the cross-user
+  // label when the notification's sender is the current user.
+  const session = useAuthSession();
+  const currentUserId = session?.identity?.user_id || null;
 
   const load = useCallback(async () => {
     try {
@@ -216,6 +252,20 @@ export default function NotificationBell() {
                 }}>
                   {n.title || n.type || 'Notification'}
                 </Typography>
+                {(() => {
+                  // #201 — cross-user agent provenance label
+                  const prov = formatProvenance(n, currentUserId);
+                  return prov ? (
+                    <Typography variant="caption" sx={{
+                      color: 'rgba(108, 99, 255, 0.85)',
+                      display: 'block',
+                      fontStyle: 'italic',
+                      mb: 0.25,
+                    }}>
+                      {prov}
+                    </Typography>
+                  ) : null;
+                })()}
                 {n.body && (
                   <Typography variant="caption" sx={{
                     color: 'rgba(255,255,255,0.6)',
