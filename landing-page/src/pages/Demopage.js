@@ -28,6 +28,7 @@ import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, makeMsgId, MAX_RETRIES } from '../utils/chatRetry';
+import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload } from '../utils/ttsGuards';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
@@ -3715,15 +3716,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               // only — that's why this branch needed client TTS in
               // the first place), but if it ever does, defer to the
               // server's audio instead of speaking the same text again.
-              const _isDraft = !!(resultData.speculation_id && resultData.expert_pending);
-              const _hasServerAudio = !!(
-                resultData.audio_url || resultData.aud_url ||
-                resultData.video_link?.aud_url
-              );
-              if (
-                ttsEnabled && tts.isAvailable && responseText &&
-                !_isDraft && !_hasServerAudio
-              ) {
+              // #206 — canonical speak-guard.  Helper lives in
+              // utils/ttsGuards.js so the contract is unit-testable
+              // without a React harness + reusable from other chat
+              // surfaces.  Pure boolean composition: enabled +
+              // available + non-empty text + not-a-draft + no
+              // server-side audio.
+              if (shouldSpeakLocalReply({
+                ttsEnabled,
+                ttsAvailable: tts.isAvailable,
+                responseText,
+                isDraft: isDraftReply(resultData),
+                hasServerAudio: hasServerAudioPayload(resultData),
+              })) {
                 tts.speak(responseText).catch((err) => {
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
                 });
