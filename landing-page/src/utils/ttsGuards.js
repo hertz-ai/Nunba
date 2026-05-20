@@ -50,11 +50,27 @@ export function shouldSpeakLocalReply({
   responseText,
   isDraft,
   hasServerAudio,
+  realtimeConnected,
 }) {
   if (!ttsEnabled) return false;
   if (!ttsAvailable) return false;
   if (!responseText) return false;
   if (isDraft) return false;
   if (hasServerAudio) return false;
+  // #206 / 2026-05-20 double-playback fix — server-side TTS
+  // (HARTOS Tier-1 bg thread + chatbot_routes._fire_nunba_tts) ALWAYS
+  // synthesizes the assistant reply and publishes audio_url via SSE
+  // chat.pupit topic, ASYNC after this chat response returns.  The
+  // sync resultData therefore never carries audio_url at this point,
+  // and the `!hasServerAudio` guard alone is not sufficient — it lets
+  // the client-side speak fire ALONGSIDE the inbound SSE audio.
+  // Live evidence: frozen_debug.log 19:30:00 (server synth) +
+  // 19:30:12 (client synth) producing two playbacks of identical
+  // text ~12s apart.
+  //
+  // Correct gate: speak client-side ONLY when SSE is NOT connected.
+  // When SSE is connected, the server publish IS the audio path;
+  // client-side is just a fallback for the disconnected case.
+  if (realtimeConnected) return false;
   return true;
 }

@@ -70,10 +70,16 @@ describe('#206 shouldSpeakLocalReply', () => {
     responseText: 'Hi there!',
     isDraft: false,
     hasServerAudio: false,
+    realtimeConnected: false,  // SSE disconnected — client is the fallback
   };
 
-  test('allows speak when all conditions met', () => {
+  test('allows speak when SSE disconnected AND all other conditions met', () => {
     expect(shouldSpeakLocalReply(baseOpts)).toBe(true);
+  });
+
+  test('blocks when SSE is connected (server delivers audio via SSE)', () => {
+    expect(shouldSpeakLocalReply({...baseOpts, realtimeConnected: true}))
+      .toBe(false);
   });
 
   test('blocks when ttsEnabled=false', () => {
@@ -109,6 +115,7 @@ describe('#206 shouldSpeakLocalReply', () => {
       responseText: '',
       isDraft: true,
       hasServerAudio: true,
+      realtimeConnected: true,
     })).toBe(false);
   });
 });

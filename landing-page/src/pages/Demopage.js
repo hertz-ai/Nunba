@@ -3728,6 +3728,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 responseText,
                 isDraft: isDraftReply(resultData),
                 hasServerAudio: hasServerAudioPayload(resultData),
+                // 2026-05-20 — when SSE is connected, server-side TTS
+                // delivers audio via chat.pupit; client-side is a
+                // disconnected-fallback only.  Prevents the double
+                // playback seen at frozen_debug.log 19:30:00 + 19:30:12.
+                realtimeConnected: realtimeService.connected,
               })) {
                 tts.speak(responseText).catch((err) => {
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
