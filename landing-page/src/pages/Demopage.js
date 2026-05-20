@@ -3648,6 +3648,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 return [...updated, assistantMessage];
               });
               setShouldScroll(true);
+
+              // #206 — speak the response.  Previously only the SSE
+              // no_content branch (line ~1956) invoked tts.speak; the
+              // local/on-device direct-reply path silently skipped TTS
+              // even when the badge said "On-device".  useTTS handles
+              // the cascade: server Piper -> SpeechSynthesisUtterance
+              // OS voice -> error.  fire-and-forget; don't block the
+              // chat-completion return.
+              if (ttsEnabled && tts.isAvailable && responseText) {
+                tts.speak(responseText).catch((err) => {
+                  logger.warn('[TTS] local-reply speak failed:', err?.message || err);
+                });
+              }
             }
             setLoading(false);
             setIsRequestInFlight(false);
