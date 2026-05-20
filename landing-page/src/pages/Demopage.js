@@ -27,7 +27,7 @@ import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
-import { classifyError, getBackoff, makeMsgId } from '../utils/chatRetry';
+import { classifyError, getBackoff, makeMsgId, MAX_RETRIES } from '../utils/chatRetry';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
@@ -3421,7 +3421,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         let retryCount = 0;
         let lastLocalReason = '';
 
-        while (!localSuccess) {
+        // #125 — terminal retry cap.  Previously this loop had no
+        // upper bound and would burn forever on a backend that was
+        // permanently down (e.g. offline + local_only).  After
+        // MAX_RETRIES attempts mark the message failed with the last
+        // known reason so the user can manually retry via the
+        // handleRetryMessage button.
+        while (!localSuccess && retryCount <= MAX_RETRIES) {
           // Update status for retries
           if (retryCount > 0) {
             setIsRequestInFlight(false); // no active request during backoff
@@ -3716,6 +3722,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         }
 
         if (localSuccess) return; // already handled above
+
+        // #125 — exhausted retries on local-only path.  Mark the
+        // message failed with the last known reason so the user can
+        // see why it's stuck + retry via handleRetryMessage button.
+        if (intelligencePreference === 'local_only') {
+          updateMessageStatus(msgId, {
+            status: 'failed',
+            error: `${lastLocalReason || 'Backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
+          });
+          setLoading(false);
+          setIsRequestInFlight(false);
+          return;
+        }
+        // Otherwise fall through to cloud path (intelligencePreference='auto')
       }
 
       // Cloud API path (fallback or direct)
@@ -3747,7 +3767,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         return result.token;
       };
 
-      while (true) {
+      while (cloudRetryCount <= MAX_RETRIES) {  // #125 — terminal retry cap
         if (cloudRetryCount > 0) {
           setIsRequestInFlight(false);
           const totalSec = Math.max(1, Math.round(getBackoff(cloudRetryCount - 1) / 1000));
@@ -3887,6 +3907,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           // Loop continues...
         }
       }
+
+      // #125 — exhausted cloud retries.  Surface failure with last
+      // known reason so the user can manually retry.
+      updateMessageStatus(msgId, {
+        status: 'failed',
+        error: `${lastCloudReason || 'Cloud backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
+      });
+      setLoading(false);
+      setIsRequestInFlight(false);
+      return;
     } catch (err) {
       console.error('Unexpected error during request:', err);
       setIsRequestInFlight(false);
