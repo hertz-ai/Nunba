@@ -3663,8 +3663,22 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               // 1956 will speak the expert reply — speaking the draft
               // here too would cause double playback.  Only speak when
               // this is the final answer.
+              //
+              // Server-audio guard: symmetric to the SSE branch's
+              // `hasText && !hasAudio` at line 1939.  Local backend
+              // today never returns synthesized audio bytes (text
+              // only — that's why this branch needed client TTS in
+              // the first place), but if it ever does, defer to the
+              // server's audio instead of speaking the same text again.
               const _isDraft = !!(resultData.speculation_id && resultData.expert_pending);
-              if (ttsEnabled && tts.isAvailable && responseText && !_isDraft) {
+              const _hasServerAudio = !!(
+                resultData.audio_url || resultData.aud_url ||
+                resultData.video_link?.aud_url
+              );
+              if (
+                ttsEnabled && tts.isAvailable && responseText &&
+                !_isDraft && !_hasServerAudio
+              ) {
                 tts.speak(responseText).catch((err) => {
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
                 });
