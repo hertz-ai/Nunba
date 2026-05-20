@@ -3,6 +3,36 @@ import {logger} from '../../utils/logger';
 
 import React, {useState, useRef, useEffect, useMemo} from 'react';
 
+
+// #208 — hard ceiling on the thinking spinner.  Without this, a
+// backend that stops emitting thinking_trace SSE events mid-stream
+// (e.g. WAMP-disconnect, llama-server stall, daemon crash) leaves
+// the "Thinking in progress..." UI ticking forever — one user
+// reported 83 minutes.  After STALE_CEILING_SEC seconds we
+// force-complete locally so the user can see the partial trace +
+// retry the message.
+export const STALE_CEILING_SEC = 180;
+
+
+// Exported pure helper so jest can pin the completion contract
+// without a React Testing Library setup.  Mirrors the in-component
+// useMemo computation exactly — keep them in sync.
+export function computeIsReallyCompleted({
+  isContainerCompleted,
+  thinkingMessages,
+  liveTime,
+}) {
+  if (isContainerCompleted === true) return true;
+  if (thinkingMessages && thinkingMessages.length > 0
+      && thinkingMessages.every((m) => m.isCompleted === true)) {
+    return true;
+  }
+  if (typeof liveTime === 'number' && liveTime > STALE_CEILING_SEC) {
+    return true;  // Force-complete via stale ceiling
+  }
+  return false;
+}
+
 const ThinkingProcessContainer = ({
   thinkingMessages,
   onToggleMain,
@@ -37,43 +67,16 @@ const ThinkingProcessContainer = ({
     );
   }, [isContainerCompleted, thinkingMessages]);
 
-  // #208 — hard ceiling on the thinking spinner.  Without this, a
-  // backend that stops emitting thinking_trace SSE events mid-stream
-  // (e.g. WAMP-disconnect, llama-server stall, daemon crash) leaves
-  // the "Thinking in progress..." UI ticking forever — one user
-  // reported 83 minutes.  After 180s we force-complete locally so the
-  // user can see the partial trace + retry the message.
-  const STALE_CEILING_SEC = 180;
-
-  const isReallyCompleted = useMemo(() => {
-    logger.log('Computing isReallyCompleted:');
-    logger.log('  - isContainerCompleted prop:', isContainerCompleted);
-
-    if (isContainerCompleted === true) {
-      logger.log('  Completed via isContainerCompleted prop');
-      return true;
-    }
-
-    if (thinkingMessages.length > 0) {
-      const allStepsCompleted = thinkingMessages.every(
-        (msg) => msg.isCompleted === true
-      );
-      logger.log('  - All steps completed:', allStepsCompleted);
-
-      if (allStepsCompleted) {
-        logger.log('  Completed via all steps completed');
-        return true;
-      }
-    }
-
-    if (liveTime > STALE_CEILING_SEC) {
-      logger.log('  Force-completed via stale ceiling (' + STALE_CEILING_SEC + 's)');
-      return true;
-    }
-
-    logger.log('  Not completed - still thinking');
-    return false;
-  }, [isContainerCompleted, thinkingMessages, liveTime]);
+  // #208 — pure-function completion logic, extracted so the
+  // STALE_CEILING_SEC contract is testable without React.
+  const isReallyCompleted = useMemo(
+    () => computeIsReallyCompleted({
+      isContainerCompleted,
+      thinkingMessages,
+      liveTime,
+    }),
+    [isContainerCompleted, thinkingMessages, liveTime]
+  );
 
   // 2026-05-12: removed two auto-scrollIntoView effects that fired on
   // `isMainExpanded` toggle and on every new thinking_message.  Behaviour

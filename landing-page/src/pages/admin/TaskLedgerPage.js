@@ -48,7 +48,7 @@ function groupKey(task) {
 //   "Action N"
 // When no signal is recoverable, the task lands in a synthetic
 // "flow=- / action=-" bucket so it still groups under its prompt.
-function parseFlowAction(task) {
+export function parseFlowAction(task) {
   // (a) Backend-stamped context wins.
   const ctx = task.context || task.context_json || {};
   if (ctx.action_id != null || ctx.flow != null) {
