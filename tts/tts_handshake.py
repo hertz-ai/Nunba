@@ -424,3 +424,57 @@ def invalidate(backend: str | None = None) -> None:
         else:
             for key in [k for k in _cache if k[0] == backend]:
                 _cache.pop(key, None)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #219 verified-only ladder gate
+#
+# The ladder in tts_engine._select_backend_for_language consults these
+# two predicates so the user-blocking selection prefers backends that
+# have a CONFIRMED PASSING handshake (is_verified_backend == True) and
+# skips ones with a CONFIRMED FAILING handshake (is_known_failed ==
+# True).  Backends with no cache entry at all stay candidates for the
+# fallback pass — they may not be verified yet, but they haven't been
+# proven broken either.
+#
+# Single source of truth: the same _cache dict that run_handshake
+# already writes.  We do NOT introduce a parallel "verified" set —
+# that would drift.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def is_verified_backend(backend: str) -> bool:
+    """True iff any cached handshake for `backend` (across all langs)
+    finished with ok=True.
+
+    Used by the ladder to prefer backends that have produced real
+    audio at least once this session.  An empty cache returns False;
+    the ladder falls back to the runnable-only pass when no backend
+    is yet verified.
+    """
+    with _cache_lock:
+        for key, result in _cache.items():
+            if key[0] == backend and result.ok:
+                return True
+    return False
+
+
+def is_known_failed(backend: str) -> bool:
+    """True iff every cached handshake for `backend` finished with
+    ok=False.
+
+    Backends in this state are confirmed-broken — the ladder skips
+    them on the user-blocking path even when their package import
+    succeeds (the most common shape: pip+import work but synth crashes
+    with a missing transitive dep / CUDA OOM / safetensors mismatch).
+    Returning False when the cache has no entry is intentional: an
+    unprobed backend has not been proven broken.
+    """
+    found_any = False
+    with _cache_lock:
+        for key, result in _cache.items():
+            if key[0] == backend:
+                found_any = True
+                if result.ok:
+                    return False
+    return found_any
