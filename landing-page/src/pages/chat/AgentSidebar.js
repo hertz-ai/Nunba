@@ -44,6 +44,26 @@ const _getAgentLastTask = (promptId) => {
   }
 };
 
+// #199 — read per-agent unread count from the by_source map fetched
+// at the Demopage level.  Map shape: { [agent_id|sender_id]: count }.
+// Renders a small dot+number chip on the avatar when count > 0.  No
+// new state, no parallel fetcher — Demopage owns the fetch + the
+// realtimeService listener that refreshes it.
+const _unreadFor = (chat, unreadBySource) => {
+  if (!unreadBySource || typeof unreadBySource !== 'object') return 0;
+  // Try multiple keys an agent could be mapped under (prompt_id is
+  // the canonical chat-source key; agent_id matches when notifications
+  // were emitted with agent_id; user-id of the agent owner is a final
+  // fallback for cross-user provenance — see #201).
+  return (
+    unreadBySource[chat?.prompt_id]
+    || unreadBySource[chat?.id]
+    || unreadBySource[chat?.agent_id]
+    || unreadBySource[chat?.owner_user_id]
+    || 0
+  );
+};
+
 const AgentSidebar = ({
   screenWidth,
   showContent,
@@ -57,6 +77,7 @@ const AgentSidebar = ({
   decryptedUserId,
   guestUserId,
   token,
+  unreadBySource,
   isTextMode,
   setIsTextMode,
   isModalOpen,
@@ -131,6 +152,7 @@ const AgentSidebar = ({
             <div className="space-y-1">
               {items.map((chat, index) => {
                 const _lastTask = _getAgentLastTask(chat?.prompt_id);
+                const _unread = _unreadFor(chat, unreadBySource);
                 return (
                   <div
                     onClick={() => handleButtonClick(chat)}
@@ -138,16 +160,26 @@ const AgentSidebar = ({
                     className="flex items-center ml-1 justify-start gap-1 hover:bg-gray-800 p-2 rounded cursor-pointer"
                     title={_lastTask || undefined}
                   >
-                    <img
-                      src={
-                        chat.teacher_image_url || chat.image_url || AgentPoster
-                      }
-                      alt={chat?.name}
-                      className="md:w-6 md:h-6 lg:w-8 lg:h-8 rounded-full xl:w-8 xl:h-8"
-                      onError={handleImgError}
-                    />
+                    <div className="relative">
+                      <img
+                        src={
+                          chat.teacher_image_url || chat.image_url || AgentPoster
+                        }
+                        alt={chat?.name}
+                        className="md:w-6 md:h-6 lg:w-8 lg:h-8 rounded-full xl:w-8 xl:h-8"
+                        onError={handleImgError}
+                      />
+                      {_unread > 0 && (
+                        <span
+                          aria-label={`${_unread} unread`}
+                          className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-[5px] rounded-full bg-red-500 text-white text-[10px] font-semibold flex items-center justify-center"
+                        >
+                          {_unread > 99 ? '99+' : _unread}
+                        </span>
+                      )}
+                    </div>
                     <div className="flex flex-col min-w-0 flex-1">
-                      <span className="truncate sm:text-base md:text-[1.2rem]">
+                      <span className={`truncate sm:text-base md:text-[1.2rem] ${_unread > 0 ? 'font-semibold' : ''}`}>
                         {chat?.name}
                       </span>
                       {_lastTask && (
@@ -440,6 +472,7 @@ const AgentSidebar = ({
             <div className="space-y-0.5">
               {items.map((chat, index) => {
                 const _lastTask = _getAgentLastTask(chat?.prompt_id);
+                const _unread = _unreadFor(chat, unreadBySource);
                 return (
                   <div
                     key={index}
@@ -447,16 +480,26 @@ const AgentSidebar = ({
                     className="flex items-center gap-2 text-white hover:bg-gray-800 p-1 rounded cursor-pointer"
                     title={_lastTask || undefined}
                   >
-                    <img
-                      src={
-                        chat.teacher_image_url || chat.image_url || AgentPoster
-                      }
-                      alt={chat?.name}
-                      className="!w-6 !h-6 sm:!w-8 sm:!h-8 md:!w-10 md:!h-10 lg:!w-12 lg:!h-12 xl:!w-14 xl:!h-14 rounded-full"
-                      onError={handleImgError}
-                    />
+                    <div className="relative">
+                      <img
+                        src={
+                          chat.teacher_image_url || chat.image_url || AgentPoster
+                        }
+                        alt={chat?.name}
+                        className="!w-6 !h-6 sm:!w-8 sm:!h-8 md:!w-10 md:!h-10 lg:!w-12 lg:!h-12 xl:!w-14 xl:!h-14 rounded-full"
+                        onError={handleImgError}
+                      />
+                      {_unread > 0 && (
+                        <span
+                          aria-label={`${_unread} unread`}
+                          className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-[5px] rounded-full bg-red-500 text-white text-[10px] font-semibold flex items-center justify-center"
+                        >
+                          {_unread > 99 ? '99+' : _unread}
+                        </span>
+                      )}
+                    </div>
                     <div className="flex flex-col min-w-0 flex-1">
-                      <span className="truncate text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl">
+                      <span className={`truncate text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl ${_unread > 0 ? 'font-semibold' : ''}`}>
                         {chat?.name}
                       </span>
                       {_lastTask && (

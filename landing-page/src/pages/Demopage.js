@@ -22,7 +22,7 @@ import {
   Clock,
   ChevronLeft,
 } from 'lucide-react';
-import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL } from '../config/apiBase';
+import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
@@ -546,6 +546,45 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const containerRef = useRef(null);
   const [isMediaEnded, setIsMediaEnded] = useState(false);
   const [showCreateAgentForm, setShowCreateAgentForm] = useState(false);
+
+  // #199 — per-agent unread counts.  Backend ships
+  // /api/social/notifications/unread_by_source (commit 8e4ff64) which
+  // returns {by_source: {sender_id: count}, total_unread}.  We fetch
+  // on auth-state change + every 60s + when a 'notification' SSE event
+  // arrives.  AgentSidebar reads this map and renders a red dot+count
+  // on each agent's avatar.  Reuses existing socialApi client +
+  // realtimeService listener — no new fetcher class, no new context.
+  const [unreadBySource, setUnreadBySource] = useState({});
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setUnreadBySource({});
+      return undefined;
+    }
+    let cancelled = false;
+    const fetchUnread = async () => {
+      try {
+        const res = await fetch(
+          `${SOCIAL_API_URL}/notifications/unread_by_source`,
+          {headers: {Authorization: `Bearer ${token || localStorage.getItem('access_token') || ''}`}},
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data?.by_source) {
+          setUnreadBySource(data.by_source);
+        }
+      } catch (_e) { /* silent — non-critical badge */ }
+    };
+    fetchUnread();
+    const id = setInterval(fetchUnread, 60000);
+    // Refresh on every new notification event (realtimeService dispatches
+    // 'notification' on both WAMP + SSE paths — see realtimeService.js:213).
+    const unsub = realtimeService.on('notification', fetchUnread);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      if (typeof unsub === 'function') unsub();
+    };
+  }, [isAuthenticated, token]);
   const [authFromUrl, setAuthFromUrl] = useState(() => {
     return localStorage.getItem('auth_source') === 'url';
   });
@@ -4442,6 +4481,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           sessionExpiredMessage={sessionExpiredMessage}
           isLocalRoute={isLocalRoute}
           items={items}
+          unreadBySource={unreadBySource}
           handleCreateAgentClick={handleCreateAgentClick}
           handleButtonClick={handleButtonClick}
           handleImgError={handleImgError}
