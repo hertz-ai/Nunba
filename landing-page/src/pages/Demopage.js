@@ -3652,11 +3652,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               // #206 — speak the response.  Previously only the SSE
               // no_content branch (line ~1956) invoked tts.speak; the
               // local/on-device direct-reply path silently skipped TTS
-              // even when the badge said "On-device".  useTTS handles
-              // the cascade: server Piper -> SpeechSynthesisUtterance
-              // OS voice -> error.  fire-and-forget; don't block the
-              // chat-completion return.
-              if (ttsEnabled && tts.isAvailable && responseText) {
+              // even when the badge said "On-device".  Lost in merge
+              // e1717d12 (2026-05-12 macos-fix into main) which adopted
+              // main's version of this block — main never had
+              // Monisha's 558cb56b speak line from 2026-03-25.
+              //
+              // Draft-first guard: when expert_pending=true, the local
+              // bubble is a draft that will be REPLACED by the expert
+              // reply arriving via WAMP/SSE.  The SSE branch at line
+              // 1956 will speak the expert reply — speaking the draft
+              // here too would cause double playback.  Only speak when
+              // this is the final answer.
+              const _isDraft = !!(resultData.speculation_id && resultData.expert_pending);
+              if (ttsEnabled && tts.isAvailable && responseText && !_isDraft) {
                 tts.speak(responseText).catch((err) => {
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
                 });
