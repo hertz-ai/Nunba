@@ -193,9 +193,16 @@ export default function TaskLedgerPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
+      // #204 — user reported "top count > grouped count" because the
+      // ledger endpoint was hard-capped at 100, but the stats endpoint
+      // reports the FULL count.  2502 pending tasks (per recent
+      // memory) silently dropped past row 100 in the grouped view.
+      // 1000 covers the 90th-percentile case without paging; if the
+      // user has more, the discrepancy banner below tells them and
+      // a status filter narrows the window.
       const params = statusFilter
-        ? `?status=${statusFilter.toLowerCase()}&limit=100`
-        : '?limit=100';
+        ? `?status=${statusFilter.toLowerCase()}&limit=1000`
+        : '?limit=1000';
       const res = await fetch(`/api/agent-engine/ledger/tasks${params}`,
                               {headers: _authHeaders()});
       const data = await res.json().catch(() => ({}));
@@ -349,6 +356,29 @@ export default function TaskLedgerPage() {
               <Typography variant="h6">{typeof val === 'number' ? val : JSON.stringify(val)}</Typography>
             </Paper>
           ))}
+        </Box>
+      )}
+
+      {/* #204 — surface the discrepancy when the windowed task fetch
+          doesn't cover the full ledger.  Top stats are authoritative
+          (server-side count); the grouped/flat list below shows only
+          what came back in the last fetchTasks call.  Without this
+          banner the operator silently thinks "where did my 2000 tasks
+          go?" — the bug the user reported. */}
+      {stats && typeof stats.total === 'number'
+        && tasks.length > 0 && tasks.length < stats.total && (
+        <Box sx={{
+          mb: 2, px: 2, py: 1,
+          background: 'rgba(255, 152, 0, 0.08)',
+          borderLeft: '3px solid #FF9800',
+          borderRadius: 1,
+        }}>
+          <Typography variant="caption" sx={{ color: '#FF9800' }}>
+            Showing <strong>{tasks.length}</strong> of{' '}
+            <strong>{stats.total}</strong> tasks.  Filter by status
+            above to narrow the window, or contact ops to raise the
+            page size beyond 1000.
+          </Typography>
         </Box>
       )}
 
