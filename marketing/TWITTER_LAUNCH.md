@@ -90,7 +90,7 @@ Stack:
   Whisper STT + MiniCPM-V vision
 - Cross-platform: Windows today (signed); macOS + Linux in beta
 
-OSS: https://github.com/hertz-ai/Nunba-HART-Companion
+OSS: https://github.com/hertz-ai/Nunba
 ```
 
 ## Thread tweet 8/8 (CTA)

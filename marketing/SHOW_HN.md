@@ -53,7 +53,7 @@ early access.
 
 Tech stack: Flask + llama.cpp + Crossbar WAMP + cx_Freeze; React SPA;
 React Native on Android.  Source on GitHub:
-https://github.com/hertz-ai/Nunba-HART-Companion
+https://github.com/hertz-ai/Nunba
 
 Happy to answer any questions about the architecture, the speculative
 decoding gains, the privacy model, or the federated-learning design.

@@ -49,7 +49,7 @@ https://hevolve.ai/download
 macOS and Linux builds are in beta — DM me for early access.
 
 Source on GitHub:
-https://github.com/hertz-ai/Nunba-HART-Companion
+https://github.com/hertz-ai/Nunba
 
 The architecture writeup, including the speculative-decoding pipeline:
 https://hevolve.ai/blog/run-local-ai-on-8gb-ram
