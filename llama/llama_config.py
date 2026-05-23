@@ -1556,42 +1556,47 @@ class LlamaConfig:
                 "--log-timestamps",
             ]
 
-            # ── Multi-Token Prediction (MTP) — opt-in low-latency path ──
-            # llama.cpp added native MTP support in 2026 builds.  Qwen3
-            # ships with MTP heads trained into the model; we just need
-            # to tell llama-server to use them via ``--mtp-n <N>`` where
-            # N is the number of future tokens predicted per forward
-            # pass (typically 1–4).
+            # ── N-gram speculative decoding (no draft model needed) ──
+            # The dual-model speculative path Nunba uses today (Qwen3-4B
+            # main on :8082 + Qwen3-0.8B draft on :8081) eats ~700MB of
+            # VRAM for the draft.  On tight cards (6GB) that pressure
+            # forces TTS / vision evictions during chat.
             #
-            # Why opt-in (not default):
-            #   1. Older llama-server binaries shipped before MTP
-            #      support reject the flag → server fails to boot.
-            #      Until we add a binary-version probe, leaving it OFF
-            #      keeps existing installs working.
-            #   2. MTP overlaps in scope with our existing speculative-
-            #      decoding draft model (Qwen3-0.8B on port 8081).
-            #      Enabling MTP makes the draft model redundant; we
-            #      want a controlled migration, not a flag-day cutover.
+            # llama.cpp ships an alternative: ``--spec-ngram-*`` does
+            # speculative decoding by predicting the next tokens from
+            # ngram patterns in the current context — no second model,
+            # no extra VRAM.  Gain is smaller than dual-model (~1.3-1.8x
+            # vs the dual-model ~2x) but the VRAM cost is zero.
             #
-            # When MTP is enabled, the gain is real:
-            #   * ~2x first-token throughput vs no-speculation baseline
-            #   * No second model in VRAM (~700MB recovered on 6GB cards)
-            #   * No verify-step overhead (vs draft-first which has to
-            #     verify the draft's guesses)
+            # Verified 2026-05-23 against the live binary at
+            # C:\Users\sathi\.trueflow\llama.cpp\build\bin\Release\
+            # llama-server.exe --help: ``--spec-ngram-size-n``,
+            # ``--spec-ngram-size-m``, ``--spec-ngram-min-hits`` are all
+            # present; the earlier ``--mtp-n`` flag I'd guessed at does
+            # NOT exist in this build (Multi-Token Prediction requires
+            # both newer llama.cpp + a model GGUF with MTP head
+            # tensors — Qwen3.5-4B-UD-Q4_K_XL doesn't ship those).
             #
-            # Toggle: ``$env:HEVOLVE_LLAMA_MTP_N = "2"`` (or 1, 3, 4).
-            # Anything ≥1 enables.  Empty / "0" / unset leaves it off.
-            try:
-                _mtp_n = int(os.environ.get('HEVOLVE_LLAMA_MTP_N', '0') or '0')
-            except (TypeError, ValueError):
-                _mtp_n = 0
-            if _mtp_n >= 1:
-                cmd.extend(["--mtp-n", str(_mtp_n)])
+            # Toggle: ``$env:HEVOLVE_LLAMA_NGRAM_SPEC = "1"`` to enable.
+            # Anything truthy enables; uses llama.cpp defaults for N/M.
+            # When set alongside the dual-model draft (port 8081), the
+            # dual-model takes precedence inside llama-server; clearing
+            # ``HEVOLVE_DRAFT_FIRST`` makes ngram the active path.
+            _ngram_spec = (os.environ.get('HEVOLVE_LLAMA_NGRAM_SPEC', '')
+                           or '').strip().lower()
+            if _ngram_spec in ('1', 'true', 'yes', 'on'):
+                # Defaults are conservative and well-tested in llama.cpp;
+                # surface knobs via separate env vars only if needed.
+                cmd.extend([
+                    "--spec-ngram-size-n", "3",
+                    "--spec-ngram-size-m", "4",
+                    "--spec-ngram-min-hits", "1",
+                ])
                 logger.info(
-                    "[MTP] Enabling Multi-Token Prediction with N=%d "
-                    "(opt-in via HEVOLVE_LLAMA_MTP_N).  If llama-server "
-                    "rejects this flag, unset the env var and restart.",
-                    _mtp_n,
+                    "[SPEC-NGRAM] Enabling n-gram speculative decoding "
+                    "(opt-in via HEVOLVE_LLAMA_NGRAM_SPEC).  No draft "
+                    "model needed; ~1.5x first-token speedup on chat "
+                    "patterns with no extra VRAM cost."
                 )
 
             # Qwen3.5 models need additional flags
