@@ -1585,18 +1585,58 @@ class LlamaConfig:
             _ngram_spec = (os.environ.get('HEVOLVE_LLAMA_NGRAM_SPEC', '')
                            or '').strip().lower()
             if _ngram_spec in ('1', 'true', 'yes', 'on'):
-                # Defaults are conservative and well-tested in llama.cpp;
-                # surface knobs via separate env vars only if needed.
+                # ``--spec-type`` MUST be set to one of the ngram-*
+                # variants for the size flags to take effect — without
+                # it the binary defaults to ``none`` and silently
+                # ignores the rest.  Re-verified 2026-05-23 against
+                # the live binary: valid values are
+                # ``ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|
+                # ngram-mod``.  ``ngram-map-k`` is the default-balanced
+                # choice for chat workloads.
                 cmd.extend([
+                    "--spec-type", "ngram-map-k",
                     "--spec-ngram-size-n", "3",
                     "--spec-ngram-size-m", "4",
                     "--spec-ngram-min-hits", "1",
                 ])
                 logger.info(
                     "[SPEC-NGRAM] Enabling n-gram speculative decoding "
-                    "(opt-in via HEVOLVE_LLAMA_NGRAM_SPEC).  No draft "
-                    "model needed; ~1.5x first-token speedup on chat "
-                    "patterns with no extra VRAM cost."
+                    "(--spec-type ngram-map-k) — opt-in via "
+                    "HEVOLVE_LLAMA_NGRAM_SPEC.  No draft model needed; "
+                    "~1.5x first-token speedup on chat patterns with "
+                    "no extra VRAM cost."
+                )
+
+            # ── Multi-Token Prediction (MTP) — needs newer binary ──
+            # MTP support landed in llama.cpp PR #22673 (am17an).  Local
+            # binary at C:\Users\sathi\.trueflow\llama.cpp\build\bin\
+            # Release\ predates that PR — verified 2026-05-23 against
+            # --help (--spec-type choices do NOT include `mtp`).  When
+            # the binary is upgraded, set this env var to enable real
+            # MTP:
+            #   $env:HEVOLVE_LLAMA_MTP_N = "3"
+            # which appends:
+            #   --spec-type mtp --spec-draft-n-max 3
+            # Qwen3.5-4B-UD-Q4_K_XL (the current model) ships with the
+            # MTP head exposed in checkpoint config — confirmed by the
+            # llama.cpp + Qwen3.5 / Qwen3.6 community guides.
+            try:
+                _mtp_n = int(os.environ.get('HEVOLVE_LLAMA_MTP_N', '0') or '0')
+            except (TypeError, ValueError):
+                _mtp_n = 0
+            if _mtp_n >= 1:
+                cmd.extend([
+                    "--spec-type", "mtp",
+                    "--spec-draft-n-max", str(_mtp_n),
+                ])
+                logger.info(
+                    "[MTP] Enabling Multi-Token Prediction (--spec-type "
+                    "mtp --spec-draft-n-max %d) — opt-in via "
+                    "HEVOLVE_LLAMA_MTP_N.  Requires llama.cpp built "
+                    "after PR #22673.  If llama-server rejects the "
+                    "flag, the local binary is too old; rebuild it "
+                    "or unset the env var.",
+                    _mtp_n,
                 )
 
             # Qwen3.5 models need additional flags
