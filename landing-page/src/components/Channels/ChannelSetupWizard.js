@@ -1,3 +1,4 @@
+import GatewayQRDisplay from './GatewayQRDisplay';
 import QRPairingDisplay from './QRPairingDisplay';
 
 import { channelUserApi, channelsApi } from '../../services/socialApi';
@@ -211,7 +212,9 @@ export default function ChannelSetupWizard({ open, onClose, onSuccess }) {
     const method = selectedChannel.auth_method;
     const fields = selectedChannel.setup_fields || [];
 
-    // QR session — show QR pairing display
+    // QR session — Hevolve device-pair flow (telegram_user, discord_user).
+    // Encodes hevolve://pair?code=… for pairing a second Hevolve client.
+    // NOT for WhatsApp — see the 'gateway_qr' branch below.
     if (method === 'qr_session') {
       return (
         <Box sx={{ my: 2 }}>
@@ -223,6 +226,28 @@ export default function ChannelSetupWizard({ open, onClose, onSuccess }) {
               Device paired successfully
             </Alert>
           )}
+        </Box>
+      );
+    }
+
+    // Gateway-backed pairing (WhatsApp via embedded Baileys gateway,
+    // or operator-managed WAHA when WHATSAPP_API_URL is set server-side).
+    // Component owns its own QR fetch + polling + "Link with phone
+    // number" 8-char code path.  See HARTOS #225 for the architecture.
+    if (method === 'gateway_qr') {
+      return (
+        <Box sx={{ my: 2 }}>
+          <GatewayQRDisplay
+            channelType={selectedChannel.channel_type}
+            displayName={selectedChannel.display_name}
+            onPaired={(data) => {
+              setFormData(prev => ({
+                ...prev,
+                session_token: data.token || data.account_id || data.code,
+                account_id: data.account_id,
+              }));
+            }}
+          />
         </Box>
       );
     }

@@ -557,6 +557,17 @@ export const channelUserApi = {
   setPreferred: (id) => socialApi.put(`/channels/bindings/${id}/preferred`),
   generatePairCode: () => socialApi.post('/channels/pair/generate'),
   verifyPairCode: (data) => socialApi.post('/channels/pair/verify', data),
+  // Gateway-backed pairing (WhatsApp via embedded Baileys, or
+  // operator-managed WAHA when WHATSAPP_API_URL is set on the server).
+  // The QR string returned by gatewayQr is WhatsApp-Web format — feed
+  // it to any QR generator and the user scans it from WhatsApp →
+  // Linked Devices → Link a Device.  pairCode is the "Link with phone
+  // number" 8-char alternative.  See #225 for why this is a separate
+  // endpoint from generatePairCode (Hevolve device pair, hevolve://).
+  gatewayQr: (channelType) =>
+    socialApi.get(`/channels/${channelType}/qr`),
+  gatewayPairCode: (channelType, data) =>
+    socialApi.post(`/channels/${channelType}/pair-code`, data),
   presence: () => socialApi.get('/channels/presence'),
   conversations: (params) => socialApi.get('/channels/conversations', {params}),
 };
