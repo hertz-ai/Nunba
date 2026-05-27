@@ -21,35 +21,73 @@ const STATUS_COLORS = {
   DEFERRED: 'default',
 };
 
-// Group key derivation — one row in the grouped view = one (agent_id,
-// owner_prompt_id) pair, which is the canonical "execution instance"
-// identity in agent_ledger.  Tasks with the same pair belong to the
-// same conversation/recipe run.  Falls back to 'no-prompt' / 'no-agent'
-// for tasks created outside a prompt context (e.g. daemon-injected).
+// Group key derivation — one row in the grouped view = one prompt-level
+// bucket (the agent identity).  Phase 5 (2026-05-27): grouping is now
+// four-level: prompt → session → flow → action.  This function returns
+// only the OUTERMOST key (the prompt); the session_id is a separate
+// inner layer (see sessionKey() below).
+//
+// Source preference for the prompt-id stamp:
+//   1. task.recipe_prompt_id  — explicit field stamped by
+//      create_ledger_from_actions on every Task (Phase 1, 2026-05-27).
+//      Honours the canonical type contract from CLAUDE.md
+//      "Canonical Identifier Types": prompt_id is int for humans,
+//      UUID for autonomous agents; both arrive here as string.
+//   2. task.owner_prompt_id   — pre-Phase-1 fallback for legacy ledgers.
+//   3. task.agent_id          — last-resort fallback (the convention is
+//      agent_id == prompt_id for human-created agents).
+//   4. 'no-prompt'            — daemon-injected tasks created outside a
+//      prompt context still get a bucket so they're not lost.
 function groupKey(task) {
-  const a = task.agent_id || 'no-agent';
-  const p = task.owner_prompt_id || 'no-prompt';
-  return `${a}__${p}`;
+  return (
+    task.recipe_prompt_id ||
+    task.owner_prompt_id ||
+    task.agent_id ||
+    'no-prompt'
+  );
 }
 
-// #204 / #220 — resolve flow + action identifiers.
+// Session key — Phase 5 second-level grouping.  ``session_id`` is
+// injected by the flat /api/agent-engine/ledger/tasks handler (see
+// integrations/agent_engine/api.py:351); legacy records that pre-date
+// the injection fall back to a synthetic 'session=—' bucket so the
+// renderer still has somewhere to put them.
+function sessionKey(task) {
+  return task.session_id || 'session=—';
+}
+
+// #204 / #220 / Phase 5 (2026-05-27) — resolve flow + action identifiers.
 //
-// Preferred source (#220, no schema migration): the backend ledger's
-// pre_assign_actions() at agent-ledger-opensource/agent_ledger/core.py:3559
-// writes context = {action_id, flow, persona} on every action task.
-// We read those FIRST so the UI uses the canonical values the backend
-// stamped, not a regex over description text.
+// Source preference, in order:
 //
-// Fallback (#204, for legacy rows + daemon-injected tasks): if context
-// is absent or doesn't carry these keys, parse the description string
-// for the conventional recipe prefix patterns:
-//   "Flow N / Action M"
-//   "Execute Action N: ..."
-//   "Action N"
+//   (a) Explicit recipe_* fields stamped on Task by Phase 1 (agent-
+//       ledger-opensource/agent_ledger/core.py Task.__init__).  These
+//       are the canonical coordinates; the dashboard reads exactly the
+//       integers the backend stamped — no regex, no context-dict probe.
+//       See docs/architecture/TASK_LEDGER_GROUPING_FIX_PLAN.md §0 for
+//       the type contract (flow_id + action_id are integers).
+//
+//   (b) Legacy context = {action_id, flow, persona} stamped by
+//       create_ledger_from_actions on every Task pre-Phase-1 (the
+//       previous canonical source).  Preserved so ledgers written
+//       before 2026-05-27 still render correctly without backfill.
+//
+//   (c) Description regex — last-resort fallback for daemon-injected
+//       tasks (e.g. zombie_reaper) that don't carry recipe metadata.
+//
 // When no signal is recoverable, the task lands in a synthetic
 // "flow=- / action=-" bucket so it still groups under its prompt.
 export function parseFlowAction(task) {
-  // (a) Backend-stamped context wins.
+  // (a) Phase 1 explicit fields — strict precedence over legacy paths.
+  if (task.recipe_flow_id != null || task.recipe_action_id != null) {
+    const flow = task.recipe_flow_id != null
+      ? `Flow ${task.recipe_flow_id}` : 'Flow 1';
+    const action = task.recipe_action_id != null
+      ? `Action ${task.recipe_action_id}` : '—';
+    return { flow, action };
+  }
+
+  // (b) Pre-Phase-1 backend-stamped context.
   const ctx = task.context || task.context_json || {};
   if (ctx.action_id != null || ctx.flow != null) {
     const flow = ctx.flow ? `Flow ${ctx.flow}` : 'Flow 1';
@@ -57,7 +95,7 @@ export function parseFlowAction(task) {
     return { flow, action };
   }
 
-  // (b) Description regex — fallback for legacy / daemon tasks.
+  // (c) Description regex — fallback for legacy / daemon tasks.
   const desc = task.title || task.description || '';
   let m = desc.match(/Flow\s+(\d+)\s*\/\s*Action\s+(\d+)/i);
   if (m) return { flow: `Flow ${m[1]}`, action: `Action ${m[2]}` };
@@ -142,6 +180,68 @@ function GroupHeaderRow({ group, expanded, onToggle, highlightId }) {
           </IconButton>
         </Tooltip>
       </TableCell>
+    </TableRow>
+  );
+}
+
+
+// Phase 5 — session sub-header.  Sits between GroupHeaderRow (prompt
+// level) and FlowSubHeaderRow.  Renders the session_id label + per-
+// session status counts so the operator can see "session
+// 10202_42_1716000999999 has 4 actions, 1 in_progress, 2 completed".
+// Same visual language as FlowSubHeaderRow but one indent level
+// shallower (sessions are above flows in the tree).
+function SessionSubHeaderRow({ session, expanded, onToggle, highlightId }) {
+  const counts = statusBreakdown(session.tasks);
+  const inProgress = counts.IN_PROGRESS || 0;
+  const blocked = counts.BLOCKED || 0;
+  const completed = counts.COMPLETED || 0;
+  const failed = counts.FAILED || 0;
+  const pending = counts.PENDING || 0;
+  const hasHighlight = highlightId && session.tasks.some(
+    t => (t.id || t.task_id) === highlightId);
+  return (
+    <TableRow hover onClick={onToggle}
+      sx={{
+        cursor: 'pointer',
+        bgcolor: hasHighlight
+          ? 'rgba(108,99,255,0.12)'
+          : 'rgba(108,99,255,0.03)',
+        '&:hover': { bgcolor: 'rgba(108,99,255,0.08)' },
+        '& td': { borderBottom: '1px solid rgba(108,99,255,0.10)' },
+      }}>
+      <TableCell padding="checkbox" sx={{ pl: 2 }}>
+        <IconButton size="small">
+          {expanded ? <ExpandMoreIcon fontSize="small" /> : <ChevronRightIcon fontSize="small" />}
+        </IconButton>
+      </TableCell>
+      <TableCell colSpan={2}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography variant="caption" sx={{
+            fontFamily: 'monospace', fontWeight: 500,
+            color: '#6C63FF', opacity: 0.85,
+          }}>
+            session={shortId(session.label)}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            • {(session.flowList || []).length} flow{(session.flowList || []).length === 1 ? '' : 's'}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            • {session.tasks.length} action{session.tasks.length === 1 ? '' : 's'}
+          </Typography>
+        </Stack>
+      </TableCell>
+      <TableCell>
+        <Stack direction="row" spacing={0.5}>
+          {inProgress > 0 && <Chip size="small" color="primary" label={`▶ ${inProgress}`} sx={{ height: 18 }} />}
+          {pending > 0 && <Chip size="small" label={`◌ ${pending}`} sx={{ height: 18 }} />}
+          {blocked > 0 && <Chip size="small" color="warning" label={`⛔ ${blocked}`} sx={{ height: 18 }} />}
+          {failed > 0 && <Chip size="small" color="error" label={`⚠ ${failed}`} sx={{ height: 18 }} />}
+          {completed > 0 && <Chip size="small" color="success" label={`✓ ${completed}`} sx={{ height: 18 }} />}
+        </Stack>
+      </TableCell>
+      <TableCell></TableCell>
+      <TableCell></TableCell>
     </TableRow>
   );
 }
@@ -277,6 +377,8 @@ export default function TaskLedgerPage() {
   // tasks; otherwise collapsed so the operator can scan flow headers
   // first then drill into the hot one.
   const [expandedFlows, setExpandedFlows] = useState({});
+  // Phase 5 — per-session expand state, sits between prompt and flow.
+  const [expandedSessions, setExpandedSessions] = useState({});
   const [searchParams] = useSearchParams();
   const highlightId = searchParams.get('task_id');
   const highlightRef = useRef(null);
@@ -359,19 +461,55 @@ export default function TaskLedgerPage() {
     const byKey = {};
     for (const t of tasks) {
       const k = groupKey(t);
+      const sk = sessionKey(t);
       if (!byKey[k]) {
         byKey[k] = {
           key: k,
           agent_id: t.agent_id || 'no-agent',
-          prompt_id: t.owner_prompt_id || 'no-prompt',
+          prompt_id: groupKey(t),
           tasks: [],          // ALL tasks under this prompt (back-compat)
-          flows: {},          // flow_label → {label, tasks, mostRecent}
+          // Phase 5: sessions layer between prompt and flow.
+          // session_id → {key, label, tasks, flows, mostRecent}
+          sessions: {},
+          // flows kept at prompt-level for back-compat with renderers
+          // that haven't been updated to four levels yet — points at
+          // the same Flow objects under sessions['session=—'] when no
+          // explicit session_id was injected.
+          flows: {},
           mostRecent: 0,
         };
       }
       byKey[k].tasks.push(t);
 
+      // Session bucket (Phase 5)
+      if (!byKey[k].sessions[sk]) {
+        byKey[k].sessions[sk] = {
+          key: `${k}__${sk}`,
+          label: sk,
+          tasks: [],
+          flows: {},          // flow_label → {label, tasks, mostRecent}
+          mostRecent: 0,
+        };
+      }
+      const session = byKey[k].sessions[sk];
+      session.tasks.push(t);
+
       const {flow: flowLabel, action: actionLabel} = parseFlowAction(t);
+      if (!session.flows[flowLabel]) {
+        session.flows[flowLabel] = {
+          key: `${session.key}__${flowLabel}`,
+          label: flowLabel,
+          tasks: [],
+          mostRecent: 0,
+        };
+      }
+      // Back-compat alias on the prompt-level flows dict so any
+      // renderer that still reads .flows directly gets all tasks
+      // across sessions for that flow label.  Same Flow object
+      // instance when there is only one session — when multiple
+      // sessions write the same flow label, the prompt-level
+      // .flows[label] aggregates them (used only by the legacy
+      // three-level expand path that we keep working below).
       if (!byKey[k].flows[flowLabel]) {
         byKey[k].flows[flowLabel] = {
           key: `${k}__${flowLabel}`,
@@ -384,6 +522,7 @@ export default function TaskLedgerPage() {
       // it without re-parsing.  Non-destructive — we read .description
       // again if this attribute is missing.
       t._parsedActionLabel = actionLabel;
+      session.flows[flowLabel].tasks.push(t);
       byKey[k].flows[flowLabel].tasks.push(t);
 
       const ts = Date.parse(
@@ -391,6 +530,10 @@ export default function TaskLedgerPage() {
       );
       if (!isNaN(ts)) {
         if (ts > byKey[k].mostRecent) byKey[k].mostRecent = ts;
+        if (ts > session.mostRecent) session.mostRecent = ts;
+        if (ts > session.flows[flowLabel].mostRecent) {
+          session.flows[flowLabel].mostRecent = ts;
+        }
         if (ts > byKey[k].flows[flowLabel].mostRecent) {
           byKey[k].flows[flowLabel].mostRecent = ts;
         }
@@ -405,6 +548,52 @@ export default function TaskLedgerPage() {
         if (sa !== sb) return sa - sb;
         return Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0);
       });
+
+      // Per-session sort (Phase 5)
+      Object.values(g.sessions).forEach((sess) => {
+        sess.tasks.sort((a, b) => {
+          const sa = statusRank(a.status);
+          const sb = statusRank(b.status);
+          if (sa !== sb) return sa - sb;
+          return Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0);
+        });
+        Object.values(sess.flows).forEach((f) => {
+          f.tasks.sort((a, b) => {
+            const ra = actionRank(a._parsedActionLabel);
+            const rb = actionRank(b._parsedActionLabel);
+            if (ra !== rb) return ra - rb;
+            const sa = statusRank(a.status);
+            const sb = statusRank(b.status);
+            if (sa !== sb) return sa - sb;
+            return Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0);
+          });
+        });
+        sess.flowList = Object.values(sess.flows).sort((a, b) => {
+          const ai = a.tasks.some(t => (t.status || '').toUpperCase() === 'IN_PROGRESS') ? 0 : 1;
+          const bi = b.tasks.some(t => (t.status || '').toUpperCase() === 'IN_PROGRESS') ? 0 : 1;
+          if (ai !== bi) return ai - bi;
+          const na = actionRank(a.label);
+          const nb = actionRank(b.label);
+          if (na !== nb) return na - nb;
+          return b.mostRecent - a.mostRecent;
+        });
+      });
+
+      // Sessions list: newest-first by mostRecent, with in-progress
+      // sessions floated to the top (mirrors prompt-level sort).
+      // Timestamped session_ids (Phase 2) collate later
+      // lexicographically than legacy deterministic forms for the
+      // same user_prefix, so session_id desc is a stable secondary key.
+      g.sessionList = Object.values(g.sessions).sort((a, b) => {
+        const ai = a.tasks.some(t => (t.status || '').toUpperCase() === 'IN_PROGRESS') ? 0 : 1;
+        const bi = b.tasks.some(t => (t.status || '').toUpperCase() === 'IN_PROGRESS') ? 0 : 1;
+        if (ai !== bi) return ai - bi;
+        if (a.mostRecent !== b.mostRecent) return b.mostRecent - a.mostRecent;
+        return (b.label || '').localeCompare(a.label || '');
+      });
+
+      // Prompt-level flows (back-compat for the legacy three-level
+      // expand path).  Same sort as before.
       Object.values(g.flows).forEach((f) => {
         f.tasks.sort((a, b) => {
           const ra = actionRank(a._parsedActionLabel);
@@ -416,8 +605,6 @@ export default function TaskLedgerPage() {
           return Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0);
         });
       });
-      // Convert flows dict → sorted array (hot flows first, then by
-      // flow number ascending so Flow 1 comes before Flow 2).
       g.flowList = Object.values(g.flows).sort((a, b) => {
         const ai = a.tasks.some(t => (t.status || '').toUpperCase() === 'IN_PROGRESS') ? 0 : 1;
         const bi = b.tasks.some(t => (t.status || '').toUpperCase() === 'IN_PROGRESS') ? 0 : 1;
@@ -476,6 +663,9 @@ export default function TaskLedgerPage() {
     (p) => ({...p, [key]: !p[key]}));
   const toggleFlow = (key) => setExpandedFlows(
     (p) => ({...p, [key]: !p[key]}));
+  // Phase 5 — session toggle.  Same idempotent pattern as toggleFlow.
+  const toggleSession = (key) => setExpandedSessions(
+    (p) => ({...p, [key]: !p[key]}));
 
   // #204 — default-expand flows that have in_progress tasks the first
   // time they appear (mirrors the prompt-level auto-expand at the
@@ -490,6 +680,27 @@ export default function TaskLedgerPage() {
             next[f.key] = f.tasks.some(t => {
               const s = (t.status || '').toUpperCase();
               return s === 'IN_PROGRESS' || s === 'BLOCKED';
+            });
+          }
+        }
+      }
+      return next;
+    });
+  }, [groups]);
+
+  // Phase 5 — default-expand sessions that contain IN_PROGRESS/BLOCKED
+  // tasks the first time they appear.  Same idempotent pattern as the
+  // flow expand effect above: only sets the key when undefined so the
+  // user's explicit toggle survives re-renders.
+  useEffect(() => {
+    setExpandedSessions((prev) => {
+      const next = {...prev};
+      for (const g of groups) {
+        for (const s of (g.sessionList || [])) {
+          if (next[s.key] === undefined) {
+            next[s.key] = s.tasks.some(t => {
+              const st = (t.status || '').toUpperCase();
+              return st === 'IN_PROGRESS' || st === 'BLOCKED';
             });
           }
         }
@@ -599,18 +810,39 @@ export default function TaskLedgerPage() {
             <TableBody>
               {groups.map((group) => {
                 const isExpanded = expandedGroups[group.key] ?? false;
+                const sessionList = group.sessionList || [];
                 const flowList = group.flowList || [];
-                // If there's only one synthetic '—' flow (no recipe
-                // structure parsed), skip the flow sub-header and
-                // render tasks directly under the prompt header for
-                // the same density as the old 2-level view.
-                const flat = flowList.length <= 1
-                  && flowList[0]?.label === '—';
+
+                // ── Flat-mode optimization ───────────────────────
+                // When there's exactly ONE session AND its only flow
+                // is the synthetic '—' (no recipe structure parsed),
+                // skip both sub-headers and render tasks directly
+                // under the prompt header.  Preserves the
+                // 2-level density the operator expects for
+                // daemon-injected / unstructured tasks.
+                const onlySession = sessionList.length === 1
+                  ? sessionList[0] : null;
+                const onlyFlow = onlySession && (onlySession.flowList || []).length === 1
+                  ? onlySession.flowList[0] : null;
+                const flat = !!(onlyFlow && onlyFlow.label === '—');
+
+                // ── Should we render the session layer? ─────────
+                // Only when there are 2+ sessions OR when a single
+                // session has real flow structure (label != '—').
+                // For a single-session-single-flat-flow group the
+                // session row would be visual noise — collapse it
+                // back to the legacy 3-level shape (prompt → flow →
+                // action) so existing operators see no churn.
+                const showSessionLayer = sessionList.length >= 2 ||
+                  (sessionList.length === 1 && !flat);
+
                 return (
                   <React.Fragment key={group.key}>
                     <GroupHeaderRow group={group} expanded={isExpanded}
                       onToggle={() => toggleGroup(group.key)}
                       highlightId={highlightId} />
+
+                    {/* Flat: tasks rendered directly under prompt */}
                     {isExpanded && flat && group.tasks.map((task) => {
                       const tid = task.id || task.task_id || '';
                       const isHighlighted = highlightId && tid === highlightId;
@@ -620,7 +852,51 @@ export default function TaskLedgerPage() {
                           highlightRef={highlightRef} />
                       );
                     })}
-                    {isExpanded && !flat && flowList.map((flow) => {
+
+                    {/* 4-level: prompt → session → flow → action */}
+                    {isExpanded && !flat && showSessionLayer && sessionList.map((session) => {
+                      const sessionExpanded = expandedSessions[session.key] ?? false;
+                      const sessionFlowList = session.flowList || [];
+                      return (
+                        <React.Fragment key={session.key}>
+                          <SessionSubHeaderRow session={session}
+                            expanded={sessionExpanded}
+                            onToggle={() => toggleSession(session.key)}
+                            highlightId={highlightId} />
+                          {sessionExpanded && sessionFlowList.map((flow) => {
+                            const flowExpanded = expandedFlows[flow.key] ?? false;
+                            return (
+                              <React.Fragment key={flow.key}>
+                                <FlowSubHeaderRow flow={flow}
+                                  expanded={flowExpanded}
+                                  onToggle={() => toggleFlow(flow.key)}
+                                  highlightId={highlightId} />
+                                {flowExpanded && flow.tasks.map((task) => {
+                                  const tid = task.id || task.task_id || '';
+                                  const isHighlighted = highlightId && tid === highlightId;
+                                  return (
+                                    <TaskRow key={tid} task={task}
+                                      isHighlighted={isHighlighted}
+                                      highlightRef={highlightRef} />
+                                  );
+                                })}
+                              </React.Fragment>
+                            );
+                          })}
+                        </React.Fragment>
+                      );
+                    })}
+
+                    {/* 3-level back-compat: prompt → flow → action
+                        (when session layer would just add noise — e.g.
+                        single legacy session with no '—' flow but the
+                        layer adds no information).  This branch fires
+                        when !flat && !showSessionLayer, which by
+                        construction means sessionList.length===0 (no
+                        session_id was ever injected — pre-Phase 4
+                        flat-API response).  Render falls back to the
+                        pre-Phase 5 path on group.flowList. */}
+                    {isExpanded && !flat && !showSessionLayer && flowList.map((flow) => {
                       const flowExpanded = expandedFlows[flow.key] ?? false;
                       return (
                         <React.Fragment key={flow.key}>
