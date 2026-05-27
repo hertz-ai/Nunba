@@ -1,5 +1,38 @@
 import {useEffect} from 'react';
 import axios from 'axios';
+import {encrypt} from '../utils/encryption';
+
+// Detect whether the supplied JWT was minted by /auth/guest-register
+// (HARTOS integrations/social/api.py:213 — username='guest_<n>_<id>')
+// versus a real cloud OTP signin (username = real email/handle).
+//
+// 2026-05-26 — this disambiguation is the load-bearing fix for the
+// webview's immediate "Session expired" bug.  readAuthSession at
+// useAuthSession.js:141 promotes the session to status='cloud' as
+// soon as it sees BOTH access_token AND a decryptable user_id.  If
+// useStorageSync ever encrypts a guest user_id into the cloud-decrypt
+// key, the next mount mis-classifies the session as cloud, isGuestMode
+// flips false, /chat routes to ${CLOUD_API_URL}/chat/custom_gpt with
+// the guest JWT in the Authorization header, and Hevolve cloud rejects
+// it instantly.  Result: retry/delete bar with "Session expired" on
+// every turn, no request ever reaches HARTOS.  Gate every encrypted-
+// blob write on isGuestJwt(token)===false so a guest can never be
+// promoted to cloud.
+function isGuestJwt(token) {
+  if (!token || typeof token !== 'string') return false;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return false;
+    // Base64URL-decode the payload (handle URL-safe variant + padding).
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const payload = JSON.parse(atob(pad));
+    const u = String(payload.username || '');
+    return u.startsWith('guest_');
+  } catch (_e) {
+    return false;
+  }
+}
 
 // Cloud signin populates user_data.json (via /api/storage/set when
 // companionStatus.isRunning fires).  Omniparser-gui parity: when the
@@ -76,12 +109,78 @@ function applyHartIdentity(values) {
 export default function useStorageSync() {
   useEffect(() => {
     if (localStorage.getItem('access_token')) {
-      // Already authenticated in-page — don't clobber.  But still
-      // top-up HART identity on first mount in case localStorage was
-      // wiped (WebView2 EBWebView cleanup, browser cache clear) while
-      // user_data.json survived.
+      // Already authenticated in-page — don't clobber the cloud
+      // signin keyset.  But TWO holes still need filling:
+      //
+      //   (a) HART identity — top-up if localStorage was wiped
+      //       (WebView2 EBWebView cleanup, browser cache clear)
+      //       while user_data.json survived.
+      //   (b) Encrypted `user_id` + `email_address` localStorage
+      //       keys — these are what readAuthSession decrypts to
+      //       resolve status='cloud' + populate session.identity.
+      //       The 2026-05-15 storage cleanup (or any prior
+      //       OtpAuthModal-skip auth path) can leave access_token
+      //       set but the encrypted blobs missing — in which case
+      //       AgentSidebar:254 falls to the 'Account' placeholder
+      //       forever even though Nunba IS authenticated.  Backfill
+      //       from user_data.json so the email shows up.
       let cancelled = false;
       (async () => {
+        if (cancelled) return;
+        const tok = localStorage.getItem('access_token');
+        const guestTok = isGuestJwt(tok);
+
+        // 2026-05-26 cleanup — if a prior session left an encrypted
+        // user_id / email_address behind while the current
+        // access_token is a guest JWT, the readAuthSession cloud
+        // gate fires on the stale encrypted blobs and routes /chat
+        // to the public cloud endpoint with a guest token (instant
+        // 401 → "Session expired").  Evict the stale blobs so the
+        // 'guest' branch of readAuthSession can win.  No-op when
+        // there's nothing to clean.
+        if (guestTok
+            && (localStorage.getItem('user_id')
+                || localStorage.getItem('email_address'))) {
+          localStorage.removeItem('user_id');
+          localStorage.removeItem('email_address');
+          try {
+            window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
+              detail: {source: 'storage_guest_cloud_mismatch_cleanup'},
+            }));
+          } catch (_e) { /* same-origin, never throws */ }
+        }
+
+        // (b) Backfill encrypted cloud blobs when missing — but ONLY
+        // when the active access_token is a CLOUD JWT.  A guest JWT
+        // carries a user_id that must NOT be encrypted into the
+        // cloud-decrypt key (see isGuestJwt rationale at the top of
+        // this file).
+        if (!guestTok
+            && (!localStorage.getItem('user_id')
+                || !localStorage.getItem('email_address'))) {
+          const u = await fetchStorageKey('user_id');
+          const em = await fetchStorageKey('email');
+          if (!cancelled) {
+            if (u && !localStorage.getItem('user_id')) {
+              const enc_u = encrypt(String(u));
+              if (enc_u) localStorage.setItem('user_id', enc_u);
+            }
+            if (em && !localStorage.getItem('email_address')) {
+              const enc_em = encrypt(String(em));
+              if (enc_em) localStorage.setItem('email_address', enc_em);
+            }
+            // Tell Demopage + useAuthSession to re-read localStorage
+            // so the sidebar updates without a full reload.
+            if (u || em) {
+              try {
+                window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
+                  detail: {source: 'storage_backfill', user_id: u || ''},
+                }));
+              } catch (_e) { /* same-origin, never throws */ }
+            }
+          }
+        }
+        // (a) HART identity top-up — unchanged behaviour.
         if (localStorage.getItem('hart_sealed') === 'true') return;
         const partial = {};
         for (const key of ['hart_sealed', 'hart_name', 'hart_emoji', 'hart_language']) {
@@ -117,31 +216,68 @@ export default function useStorageSync() {
       // Demopage guest-refresh flow + Agent.js mount-render see a
       // coherent identity instead of an empty localStorage.
       if (values.user_id) {
-        if (values.access_token) {
+        // 2026-05-26 — branch on JWT TYPE (cloud vs guest), not on
+        // mere access_token presence.  user_data.json carries
+        // access_token for both flows; promoting a guest JWT through
+        // the cloud branch encrypts the guest user_id into the
+        // cloud-decrypt key and breaks routing (see isGuestJwt
+        // rationale at top of file).
+        const cloudSignin = values.access_token
+            && !isGuestJwt(values.access_token);
+        if (cloudSignin) {
+          // CLOUD-AUTH hydration — values from a real OTP cloud
+          // signin.  Mirror setAuthFromOtp's post-OTP keyset so
+          // readAuthSession matches and the sidebar resolves the
+          // email instead of falling to 'Account'.
           localStorage.setItem('access_token', values.access_token);
+          const enc_user = encrypt(String(values.user_id));
+          if (enc_user) localStorage.setItem('user_id', enc_user);
+          if (values.email) {
+            const enc_email = encrypt(String(values.email));
+            if (enc_email) localStorage.setItem('email_address', enc_email);
+          }
+          // Cloud signin clears any prior guest identity + pending
+          // sentinels — same mutual-exclusion contract as
+          // setAuthFromOtp:349-351.
+          ['guest_mode', 'guest_user_id', 'guest_name',
+           'guest_name_verified', 'pending_cloud_user_id',
+           'pending_cloud_email'].forEach((k) => localStorage.removeItem(k));
+        } else {
+          // GUEST hydration OR partial-cloud-state (user_id known
+          // but no access_token).  Write the guest keyset so
+          // Agent.js + Demopage see a coherent identity instead of
+          // an empty localStorage.
+          //
+          // If values.access_token IS a guest JWT (from /auth/guest-
+          // register persisted in user_data.json), record it so the
+          // Demopage auth interceptor can forward it to HARTOS /chat
+          // — guest JWTs are valid there, they just must NOT be
+          // promoted to a cloud session.
+          if (values.access_token) {
+            localStorage.setItem('access_token', values.access_token);
+          }
+          localStorage.setItem('hevolve_access_id', String(values.user_id));
+          localStorage.setItem('guest_mode', 'true');
+          localStorage.setItem('guest_user_id', String(values.user_id));
+          localStorage.setItem('social_user_id', String(values.user_id));
+          localStorage.setItem('guest_name_verified', 'true');
+          if (!values.access_token) {
+            // Drop sentinel for the login modal's
+            // "Log in to continue as Sales@hertzai.com" prompt + so
+            // the auto-guest-register effect skips minting a fresh
+            // HART guest over the cloud identity.  Only set when
+            // we have NEITHER a cloud nor a guest JWT — i.e.,
+            // user_data.json predates the access_token write.
+            localStorage.setItem('pending_cloud_user_id', String(values.user_id));
+            if (values.email) {
+              localStorage.setItem('pending_cloud_email', values.email);
+            }
+          }
         }
-        localStorage.setItem('hevolve_access_id', String(values.user_id));
-        localStorage.setItem('guest_mode', 'true');
-        localStorage.setItem('guest_user_id', String(values.user_id));
-        localStorage.setItem('social_user_id', String(values.user_id));
-        localStorage.setItem('guest_name_verified', 'true');
         if (values.agentname) {
           localStorage.setItem('agentname', values.agentname);
         }
         applyHartIdentity(values);
-
-        // Partial-cloud-state hint — when we know there's a cloud
-        // user_id+email but the access_token never made it (Demopage
-        // :420 stale-const-token race), drop a sentinel for the
-        // login modal's "Log in to continue as Sales@hertzai.com"
-        // prompt and so the auto-guest-register effect skips
-        // minting a fresh HART guest over the cloud identity.
-        if (!values.access_token) {
-          localStorage.setItem('pending_cloud_user_id', String(values.user_id));
-          if (values.email) {
-            localStorage.setItem('pending_cloud_email', values.email);
-          }
-        }
 
         // Tell Agent.js + Demopage that storage hydrated — they can
         // re-read hart_sealed / decryptedUserId without a full page
