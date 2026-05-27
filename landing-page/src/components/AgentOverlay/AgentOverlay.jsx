@@ -1,6 +1,7 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
+import { notificationsApi } from '../../services/socialApi';
 import { QRCodeSVG } from 'qrcode.react';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -543,6 +544,170 @@ function QRPairOverlay({ data, onDismiss }) {
   );
 }
 
+// ─── PairCodeOverlay — gateway_qr conversational onboarding ──────────
+// Renders the 8-char OTP minted by the Baileys gateway (or any future
+// gateway_qr channel).  Payload contract (HARTOS-side: hart_intelligence_
+// entry._start_gateway_qr_pair_push):
+//   {type:'pair_code', channel, display_name, color, icon, code,
+//    expires_in, clipboard_payload, deeplink, instructions}
+// Auto-copies code to clipboard on mount so the user can paste straight
+// into WhatsApp without needing the explicit Copy button — same UX as
+// the mobile RN ConsentOverlayService does via Clipboard.setString.
+// Counts down expires_in so the user knows how fresh the code is.
+function PairCodeOverlay({ data, onDismiss }) {
+  const code = (data && data.code) || '';
+  const displayName = (data && data.display_name) || (data && data.channel) || 'channel';
+  const color = (data && data.color) || '#25D366';
+  const expiresIn = Math.max(0, parseInt((data && data.expires_in) || 60, 10));
+  const instructions = (data && data.instructions) || (
+    `Open ${displayName} on your phone → Settings → Linked Devices → `
+    + 'Link a Device → Link with phone number → paste this code.'
+  );
+  const deeplink = data && data.deeplink;
+  const notificationId = data && data.notification_id;
+  const [remaining, setRemaining] = useState(expiresIn);
+  const [copied, setCopied] = useState(false);
+  // P1-S3 (2026-05-26): when the pair-code expires, mark the
+  // sibling Notification row read so the bell doesn't carry an
+  // orphan unread entry forever.  Ref-guarded so we fire once per
+  // overlay mount even if the countdown re-renders the component.
+  const expireDispatchedRef = useRef(false);
+  useEffect(() => {
+    if (code) {
+      // Best-effort silent copy on mount.  navigator.clipboard requires
+      // HTTPS or localhost (Nunba's webview is on localhost so this
+      // resolves).  Falls back to manual Copy button on insecure origin.
+      try {
+        navigator.clipboard.writeText(code).then(
+          () => setCopied(true),
+          () => { /* user can still use Copy button */ },
+        );
+      } catch { /* legacy webview without Clipboard API */ }
+    }
+    const interval = setInterval(
+      () => setRemaining((r) => (r > 0 ? r - 1 : 0)), 1000,
+    );
+    return () => clearInterval(interval);
+  }, [code]);
+  useEffect(() => {
+    if (remaining === 0 && notificationId && !expireDispatchedRef.current) {
+      expireDispatchedRef.current = true;
+      // Fire-and-forget; the bell's optimistic decrement (P1-S2) and
+      // the server's 'notification.read' fan-out (P1-S1) handle the
+      // UI sync on success.  On failure we just leave the row;
+      // user can mark it read manually.
+      try {
+        notificationsApi.markRead([notificationId]).catch(() => {});
+      } catch (_e) { /* noop */ }
+    }
+  }, [remaining, notificationId]);
+
+  return (
+    <Box sx={{ p: 2 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+        <Box sx={{
+          width: 10, height: 10, bgcolor: color, borderRadius: '50%',
+          boxShadow: `0 0 10px ${color}80`,
+        }} />
+        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+          Connect {displayName}
+        </Typography>
+      </Box>
+      <Box sx={{
+        my: 1.5, p: 2, textAlign: 'center',
+        bgcolor: 'rgba(255,255,255,0.04)',
+        border: '1px dashed rgba(255,255,255,0.18)',
+        borderRadius: 2,
+      }}>
+        <Typography
+          sx={{
+            fontFamily: 'monospace', fontSize: 28,
+            letterSpacing: 6, fontWeight: 700, color,
+          }}
+        >
+          {code || '••••••••'}
+        </Typography>
+        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)' }}>
+          {remaining > 0 ? `Expires in ${remaining}s` : 'Expired — request a new code'}
+        </Typography>
+      </Box>
+      <Typography
+        variant="body2"
+        sx={{ color: 'rgba(255,255,255,0.75)', lineHeight: 1.45 }}
+      >
+        {instructions}
+        {copied && (
+          <Typography component="span" sx={{ color, ml: 0.5, fontWeight: 600 }}>
+            (copied to clipboard)
+          </Typography>
+        )}
+      </Typography>
+      <Box sx={{ display: 'flex', gap: 1, mt: 1.5, justifyContent: 'flex-end' }}>
+        <Button
+          size="small" variant="outlined"
+          onClick={() => {
+            try {
+              navigator.clipboard.writeText(code).then(() => setCopied(true));
+            } catch { /* noop */ }
+          }}
+          sx={{ borderColor: color, color }}
+        >
+          {copied ? 'Copied' : 'Copy code'}
+        </Button>
+        {deeplink && (
+          <Button
+            size="small" variant="contained"
+            onClick={() => { try { window.open(deeplink, '_blank'); } catch {} }}
+            sx={{ bgcolor: color, '&:hover': { bgcolor: color, filter: 'brightness(1.1)' } }}
+          >
+            Open on phone
+          </Button>
+        )}
+        {onDismiss && (
+          <Button size="small" variant="text" onClick={onDismiss}
+                  sx={{ color: 'rgba(255,255,255,0.5)' }}>
+            Dismiss
+          </Button>
+        )}
+      </Box>
+    </Box>
+  );
+}
+
+// ─── ChannelConnectedOverlay — success card emitted by the polling
+// thread when HARTOS confirms gateway authenticated:true (and the
+// same thread also calls register_channel so Hevolve/Nunba's adapter
+// pool + admin Channels page see the binding as active).  Lightweight,
+// auto-dismisses after 6s so it doesn't squat the overlay slot.
+function ChannelConnectedOverlay({ data, onDismiss }) {
+  const displayName = (data && data.display_name) || (data && data.channel) || 'channel';
+  const color = (data && data.color) || '#00e89d';
+  useEffect(() => {
+    const t = setTimeout(() => { if (onDismiss) onDismiss(); }, 6000);
+    return () => clearTimeout(t);
+  }, [onDismiss]);
+  return (
+    <Box sx={{
+      p: 2, display: 'flex', alignItems: 'center', gap: 1.25,
+    }}>
+      <Box sx={{
+        width: 28, height: 28, borderRadius: '50%',
+        bgcolor: color, color: '#000', display: 'flex',
+        alignItems: 'center', justifyContent: 'center',
+        fontWeight: 700, fontSize: 18,
+      }}>✓</Box>
+      <Box>
+        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+          {displayName} connected
+        </Typography>
+        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.6)' }}>
+          {(data && data.message) || 'Ready to send and receive.'}
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
+
 // ─── Router: picks the right renderer ────────────────────────────────
 
 function OverlayContent({ data, onDismiss, navigate }) {
@@ -592,6 +757,8 @@ function OverlayContent({ data, onDismiss, navigate }) {
     case 'metric': return <MetricOverlay data={data} />;
     case 'form': return <FormOverlay data={data} onDismiss={onDismiss} />;
     case 'qr_pair': return <QRPairOverlay data={data} onDismiss={onDismiss} />;
+    case 'pair_code': return <PairCodeOverlay data={data} onDismiss={onDismiss} />;
+    case 'channel_connected': return <ChannelConnectedOverlay data={data} onDismiss={onDismiss} />;
     case 'list': return <ListOverlay data={data} />;
     case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} />;
     case 'meet_copilot': return <MeetCopilotOverlay data={data} onDismiss={onDismiss} />;

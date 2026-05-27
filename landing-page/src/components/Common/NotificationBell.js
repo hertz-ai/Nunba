@@ -21,6 +21,7 @@
  * tokens as MarketingFunnelCard.
  */
 import {notificationsApi} from '../../services/socialApi';
+import realtimeService from '../../services/realtimeService';
 import useAuthSession from '../../hooks/useAuthSession';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -45,8 +46,24 @@ import {useNavigate} from 'react-router-dom';
 // Map notification.type → in-app navigation path.  Add a new branch
 // here when a new server-side notification type ships; no other
 // file needs editing.
+//
+// Generic deeplink contract (added 2026-05-26, P0-C of
+// memory/consent_fanout_p0_p3_plan.md): any notification whose
+// JSON message payload contains a `deeplink` (or `target_url`)
+// field is routed there first, before falling through to the
+// type-prefix table.  Lets new notification kinds (channel pair
+// codes, oauth handshakes, etc.) ship without per-type bell code.
 function resolveTargetPath(notification) {
   if (!notification) return null;
+  try {
+    const m = typeof notification.message === 'string'
+      ? JSON.parse(notification.message)
+      : notification.message;
+    if (m && (m.deeplink || m.target_url)) {
+      return m.deeplink || m.target_url;
+    }
+  } catch (_) { /* message wasn't JSON — fall through */ }
+  if (notification.deeplink) return notification.deeplink;
   const t = notification.type || '';
   const ref = notification.reference_id || notification.target_id;
   if (t.startsWith('post.') && ref) return `/post/${ref}`;
@@ -131,7 +148,23 @@ export default function NotificationBell() {
   useEffect(() => {
     load();
     const interval = setInterval(load, 30_000);
-    return () => clearInterval(interval);
+    // P1-S1 cross-device read sync (2026-05-26): when ANOTHER device
+    // marks a notification read, the server publishes a
+    // 'notification.read' SSE/WAMP event with the affected ids.
+    // We drop those ids from local state so the badge stays in sync
+    // without waiting for the 30s poll cycle.  Same pipe the
+    // 'notification' subscriber (SocialContext.js:210) already uses.
+    const unsubRead = realtimeService.on('notification.read', (payload) => {
+      const ids = (payload && Array.isArray(payload.ids)) ? payload.ids : [];
+      if (ids.length === 0) return;
+      const idSet = new Set(ids.map(String));
+      setItems(prev => prev.filter(n => !idSet.has(String(n.id))));
+      setUnreadCount(prev => Math.max(0, prev - ids.length));
+    });
+    return () => {
+      clearInterval(interval);
+      if (typeof unsubRead === 'function') unsubRead();
+    };
   }, [load]);
 
   const handleOpen = (e) => setAnchor(e.currentTarget);
@@ -139,20 +172,32 @@ export default function NotificationBell() {
 
   const handleItemClick = async (notification) => {
     handleClose();
+    // P1-S2 optimistic decrement (2026-05-26): adjust badge + list
+    // BEFORE the markRead round-trip so the UI feels instant.  On
+    // failure we reload to recover authoritative state.
+    setItems(prev => prev.filter(n => String(n.id) !== String(notification.id)));
+    setUnreadCount(prev => Math.max(0, prev - 1));
     try {
       await notificationsApi.markRead([notification.id]);
-    } catch (_e) { /* network blip; navigate anyway */ }
+    } catch (_e) {
+      // Roll back to the server's view; the badge will re-show if the
+      // mark-read failed.
+      load();
+    }
     const path = resolveTargetPath(notification);
     if (path) navigate(path);
-    load();
   };
 
   const handleMarkAll = async () => {
-    try {
-      await notificationsApi.markAllRead();
-    } catch (_e) { /* swallow */ }
+    // P1-S2 optimistic clear (2026-05-26): empty the list + zero the
+    // badge first; rollback via load() if the bulk update fails.
     setItems([]);
     setUnreadCount(0);
+    try {
+      await notificationsApi.markAllRead();
+    } catch (_e) {
+      load();
+    }
   };
 
   return (
