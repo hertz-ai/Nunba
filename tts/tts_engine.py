@@ -1352,6 +1352,46 @@ class TTSEngine:
     - Sentence pipeline for streaming LLM → TTS
     """
 
+    def __new__(cls, *args, **kwargs):
+        """Instance defaults set in ``__new__`` so the per-session state
+        dicts/sets (demoted backends, failure counters, install threads,
+        backend handles) are populated even on construction paths that
+        bypass ``__init__`` — tests routinely use
+        ``TTSEngine.__new__(TTSEngine)`` to build a minimal harness
+        without paying for hardware detection / persisted-demotion
+        hydrate.  Methods that read these attributes (
+        ``_select_backend_for_language``, ``_record_backend_failure``,
+        ``_is_demoted``, …) can therefore rely on them without
+        ``getattr`` boilerplate.
+
+        ``__init__`` still runs the heavy boot work (hardware detect,
+        persisted-demotion hydrate, language read-back from disk) for
+        production construction.  Defaults set here are overwritten
+        there with the proper values — same single-writer discipline
+        the rest of the module uses.
+        """
+        instance = super().__new__(cls)
+        # Per-session backend health tracking — see __init__ comment
+        # block for the rationale.  Mirrored here so tests can patch
+        # ``_is_demoted`` / ``_can_run_backend`` over an ``__new__``-
+        # constructed engine without tripping AttributeError on the
+        # underlying state these helpers read from.
+        instance._consecutive_failures = {}
+        instance._demoted_backends = set()
+        instance._failure_threshold = 3
+        instance._backends = {}
+        instance._active_backend = BACKEND_NONE
+        instance._initialized = False
+        instance._pending_backend = None
+        instance._hw_detected = False
+        instance.has_gpu = False
+        instance.vram_gb = 0.0
+        instance.gpu_info = None
+        instance._vram_manager = None
+        instance._language = 'en'
+        instance._install_threads = {}
+        return instance
+
     def __init__(self,
                  prefer_gpu: bool = True,
                  auto_init: bool = True):
@@ -2258,17 +2298,35 @@ class TTSEngine:
             except Exception:
                 return False
 
-        # PASS 1 — quality-ordered AND verified.  Piper is always
-        # eligible here because it's the trusted baseline: even with
-        # no handshake yet, it's the engine the fallback path itself
-        # would return, so allowing it in pass 1 avoids a needless
-        # second pass.
+        # PASS 1 — quality-ordered AND verified.  Piper is the trusted
+        # baseline (no handshake needed) ONLY for languages it actually
+        # has a voice for.  Without the per-language voice check, this
+        # exemption short-circuited the ladder for Tamil/Malayalam —
+        # piper_tts.py:70 documents the rhasspy upstream gap explicitly
+        # ("Tamil + Malayalam intentionally absent — HF URLs 404").  Per-
+        # language gating lets the verified backends earlier in the
+        # ladder (indic_parler / mms_tts) get their first-synth-doubles-
+        # as-handshake opportunity in PASS 2 instead of falling through
+        # to a Piper that can't speak the language.
+        def _piper_has_voice(lang):
+            try:
+                from tts.piper_tts import voice_for_lang
+                voice_for_lang(lang)
+                return True
+            except Exception:
+                return False
+
         for backend in prefs:
             if self._is_demoted(backend):
                 continue
             if _hs_is_known_failed(backend):
                 continue
-            if backend != BACKEND_PIPER and not _hs_is_verified(backend):
+            if backend == BACKEND_PIPER:
+                # Per-language voice availability gate replaces the
+                # blanket "Piper is always eligible" exemption.
+                if not _piper_has_voice(language):
+                    continue
+            elif not _hs_is_verified(backend):
                 continue
             if self._can_run_backend(backend):
                 logger.info(
@@ -2678,7 +2736,32 @@ class TTSEngine:
             return wav_parts[0] if wav_parts else None
 
     def _synth_speech_segment(self, text, lang, out_path, **kwargs):
-        """Synthesize one speech segment with language-appropriate TTS engine."""
+        """Synthesize one speech segment with language-appropriate TTS engine.
+
+        2026-05-27 — route through ``_synthesize_with_fallback`` instead
+        of calling ``inst.synthesize`` directly.  Two bugs the prior
+        direct-call path silently swallowed:
+
+          1. Piper's no-voice raise (``PiperLangUnavailable`` for ta/ml)
+             documented at piper_tts.py:3615-3620 explicitly says
+             "Re-raise so ``_synthesize_with_fallback`` walks to the
+             next capable backend (indic_parler / chatterbox_ml)" — but
+             this code never invoked it.  The exception bubbled to the
+             segment loop's generic ``except``, the segment was dropped,
+             and synthesize_text returned None → no audio + no setup
+             card surfaced to the user.
+
+          2. ``_synthesize_with_fallback``'s wrong-language safety gate
+             (line 3211-3221) that emits ``_publish_lang_unsupported``
+             SSE for the frontend's "setting up TTS for this language"
+             card was bypassed, so the user got Tamil text with no
+             audio and no explanation.
+
+        Also call ``ensure_inference_headroom`` before synth so the
+        LLM-stays / TTS-yields VRAM rule fires when the chat LLM owns
+        VRAM at synth time (matches lifecycle.py:1867 contract — offload
+        idle non-LLM models, never touch the LLM).
+        """
         if lang != self._language:
             self.set_language(lang)
             import time as _t
@@ -2688,11 +2771,33 @@ class TTSEngine:
                 _t.sleep(0.25)
 
         self._ensure_initialized()
-        inst = self._backends.get(self._active_backend)
-        if inst:
-            return inst.synthesize(text=text, output_path=out_path,
-                                   language=lang, **kwargs)
-        return None
+
+        # Proactive VRAM headroom — best-effort.  When LLM owns most of
+        # the GPU, offload idle non-LLM workers (whisper STT, etc.) so
+        # the TTS subprocess has room to load weights.  Never evicts the
+        # LLM itself (lifecycle.request_swap filters s.model_type=='llm'
+        # at line 1834).  Failures here are non-fatal — the synth call
+        # below still attempts and may succeed on CPU.
+        try:
+            from integrations.service_tools.model_lifecycle import (
+                get_model_lifecycle_manager,
+            )
+            cap = _get_engine_capabilities(self._active_backend) or {}
+            needed = float(cap.get('vram_gb', 0) or 0)
+            if needed > 0:
+                get_model_lifecycle_manager().ensure_inference_headroom(
+                    needed_gb=needed, requester='tts',
+                )
+        except Exception as _hr_err:
+            logger.debug(f"ensure_inference_headroom skipped: {_hr_err}")
+
+        return self._synthesize_with_fallback(
+            text=text,
+            output_path=out_path,
+            voice=kwargs.pop('voice', None),
+            language=lang,
+            **kwargs,
+        )
 
     def _synth_media_segment(self, modality, text, out_path,
                               genre='', duration=30, **kwargs):
