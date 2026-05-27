@@ -8,6 +8,7 @@ import {FileText} from 'lucide-react';
 import Markdown from 'markdown-to-jsx';
 import React, {useState, useEffect, useRef} from 'react';
 
+import RelativeTime from '../../components/Common/RelativeTime';
 import {formatTier} from '../../utils/tier';
 
 // Markdown renderer for assistant replies — the model emits standard
@@ -593,9 +594,16 @@ const ChatMessageList = ({
                           every send (Demopage.js:1380) so the field is
                           reliably present. */}
                       {message.timestamp && (
-                        <div className="text-xs mt-1" style={{ color: 'rgba(0,0,0,0.55)' }}>
-                          {formatTimestamp(message.timestamp)}
-                        </div>
+                        // #223 — self-ticking timestamp so "just now" auto-
+                        // advances to "1m ago" / "5m ago" while the bubble
+                        // is visible.  Previously formatTimestamp was
+                        // computed once at render; without the tick, labels
+                        // froze until an unrelated re-render fired.
+                        <RelativeTime
+                          ts={message.timestamp}
+                          className="text-xs mt-1"
+                          style={{ color: 'rgba(0,0,0,0.55)', display: 'block' }}
+                        />
                       )}
                     </div>
                   )}
@@ -651,7 +659,10 @@ const ChatMessageList = ({
                               <span>{tier.emoji} {tier.label}</span>
                             </div>
                             {message.timestamp && (
-                              <span>&middot; {formatTimestamp(message.timestamp)}</span>
+                              <>
+                                <span>&middot;</span>
+                                <RelativeTime ts={message.timestamp} />
+                              </>
                             )}
                           </div>
                         );

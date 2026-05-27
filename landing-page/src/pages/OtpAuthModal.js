@@ -4,7 +4,7 @@ import {
   AZURE_LOGIN_URL,
   AZURE_OTP_VERIFY_URL,
 } from '../config/apiBase';
-import {setAuthFromOtp} from '../hooks/useAuthSession';
+import {setAuthFromOtp, setGuestIdentity} from '../hooks/useAuthSession';
 import {agentApi, authApi, chatApi, mailerApi} from '../services/socialApi';
 import {getStableDeviceId} from '../utils/deviceId';
 import {encrypt} from '../utils/encryption';
@@ -486,12 +486,15 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
             device_id: deviceId,
           });
           const {user, token, recovery_code} = res.data;
-          localStorage.setItem('access_token', token);
-          localStorage.setItem('guest_mode', 'true');
-          localStorage.setItem('guest_name', finalName);
-          localStorage.setItem('guest_user_id', user.id);
-          localStorage.setItem('social_user_id', user.id);
-          localStorage.setItem('guest_name_verified', 'true');
+          // #209/#221 — canonical guest writer.  Replaces the prior
+          // 6-line localStorage block.  Same semantics: writes
+          // access_token + guest_mode + guest_user_id + social_user_id
+          // + hevolve_access_id + guest_name + guest_name_verified.
+          setGuestIdentity({
+            user_id: user.id,
+            token,
+            guest_name: finalName,
+          });
           // The HARTOS idempotent path (existing guest re-registers
           // because their JWT expired) returns recovery_code: null on
           // purpose — re-issuing would invalidate the saved code (see
@@ -539,12 +542,13 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
         device_id: deviceId,
       });
       const {user, token} = res.data;
-      localStorage.setItem('access_token', token);
-      localStorage.setItem('guest_mode', 'true');
-      localStorage.setItem('guest_name', savedGuestName);
-      localStorage.setItem('guest_user_id', user.id);
-      localStorage.setItem('social_user_id', user.id);
-      localStorage.setItem('guest_name_verified', 'true');
+      // #209/#221 — canonical guest writer.  Same as the primary
+      // registration site above; consolidated to one writer.
+      setGuestIdentity({
+        user_id: user.id,
+        token,
+        guest_name: savedGuestName,
+      });
       resetForm();
       onClose();
       navigate('/agents/Hevolve');
@@ -575,12 +579,13 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
         device_id: deviceId,
       });
       const {user, token} = res.data;
-      localStorage.setItem('access_token', token);
-      localStorage.setItem('guest_mode', 'true');
-      localStorage.setItem('guest_name', user.display_name || user.username);
-      localStorage.setItem('guest_user_id', user.id);
-      localStorage.setItem('social_user_id', user.id);
-      localStorage.setItem('guest_name_verified', 'true');
+      // #209/#221 — canonical guest writer.  Same shape as primary
+      // register and quick-relogin paths above.
+      setGuestIdentity({
+        user_id: user.id,
+        token,
+        guest_name: user.display_name || user.username,
+      });
       resetForm();
       onClose();
       navigate('/agents/Hevolve');

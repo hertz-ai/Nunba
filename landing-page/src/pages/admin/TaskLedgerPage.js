@@ -32,6 +32,42 @@ function groupKey(task) {
   return `${a}__${p}`;
 }
 
+// #204 / #220 — resolve flow + action identifiers.
+//
+// Preferred source (#220, no schema migration): the backend ledger's
+// pre_assign_actions() at agent-ledger-opensource/agent_ledger/core.py:3559
+// writes context = {action_id, flow, persona} on every action task.
+// We read those FIRST so the UI uses the canonical values the backend
+// stamped, not a regex over description text.
+//
+// Fallback (#204, for legacy rows + daemon-injected tasks): if context
+// is absent or doesn't carry these keys, parse the description string
+// for the conventional recipe prefix patterns:
+//   "Flow N / Action M"
+//   "Execute Action N: ..."
+//   "Action N"
+// When no signal is recoverable, the task lands in a synthetic
+// "flow=- / action=-" bucket so it still groups under its prompt.
+export function parseFlowAction(task) {
+  // (a) Backend-stamped context wins.
+  const ctx = task.context || task.context_json || {};
+  if (ctx.action_id != null || ctx.flow != null) {
+    const flow = ctx.flow ? `Flow ${ctx.flow}` : 'Flow 1';
+    const action = ctx.action_id != null ? `Action ${ctx.action_id}` : '—';
+    return { flow, action };
+  }
+
+  // (b) Description regex — fallback for legacy / daemon tasks.
+  const desc = task.title || task.description || '';
+  let m = desc.match(/Flow\s+(\d+)\s*\/\s*Action\s+(\d+)/i);
+  if (m) return { flow: `Flow ${m[1]}`, action: `Action ${m[2]}` };
+  m = desc.match(/Execute\s+Action\s+(\d+)\b/i);
+  if (m) return { flow: 'Flow 1', action: `Action ${m[1]}` };
+  m = desc.match(/\bAction\s+(\d+)\b/i);
+  if (m) return { flow: 'Flow 1', action: `Action ${m[1]}` };
+  return { flow: '—', action: '—' };
+}
+
 function shortId(s) {
   if (!s) return '-';
   return s.length > 12 ? s.slice(0, 8) : s;
@@ -111,6 +147,62 @@ function GroupHeaderRow({ group, expanded, onToggle, highlightId }) {
 }
 
 
+// #204 — flow sub-header.  Sits between GroupHeaderRow (prompt level)
+// and TaskRow (action level).  Renders the flow label + per-flow
+// status counts so the operator can see at-a-glance "Flow 2 has 4
+// actions, 1 in_progress, 2 completed".
+function FlowSubHeaderRow({ flow, expanded, onToggle, highlightId }) {
+  const counts = statusBreakdown(flow.tasks);
+  const inProgress = counts.IN_PROGRESS || 0;
+  const blocked = counts.BLOCKED || 0;
+  const completed = counts.COMPLETED || 0;
+  const failed = counts.FAILED || 0;
+  const pending = counts.PENDING || 0;
+  const hasHighlight = highlightId && flow.tasks.some(
+    t => (t.id || t.task_id) === highlightId);
+  return (
+    <TableRow hover onClick={onToggle}
+      sx={{
+        cursor: 'pointer',
+        bgcolor: hasHighlight
+          ? 'rgba(108,99,255,0.10)'
+          : 'rgba(108,99,255,0.02)',
+        '&:hover': { bgcolor: 'rgba(108,99,255,0.07)' },
+        '& td': { borderBottom: '1px solid rgba(108,99,255,0.08)' },
+      }}>
+      <TableCell padding="checkbox" sx={{ pl: 3 }}>
+        <IconButton size="small">
+          {expanded ? <ExpandMoreIcon fontSize="small" /> : <ChevronRightIcon fontSize="small" />}
+        </IconButton>
+      </TableCell>
+      <TableCell colSpan={2}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography variant="body2" sx={{
+            fontWeight: 500, color: 'text.secondary', pl: 1,
+          }}>
+            ↳ {flow.label}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            • {flow.tasks.length} action{flow.tasks.length === 1 ? '' : 's'}
+          </Typography>
+        </Stack>
+      </TableCell>
+      <TableCell>
+        <Stack direction="row" spacing={0.5}>
+          {inProgress > 0 && <Chip size="small" color="primary" label={`▶ ${inProgress}`} sx={{ height: 18 }} />}
+          {pending > 0 && <Chip size="small" label={`◌ ${pending}`} sx={{ height: 18 }} />}
+          {blocked > 0 && <Chip size="small" color="warning" label={`⛔ ${blocked}`} sx={{ height: 18 }} />}
+          {failed > 0 && <Chip size="small" color="error" label={`⚠ ${failed}`} sx={{ height: 18 }} />}
+          {completed > 0 && <Chip size="small" color="success" label={`✓ ${completed}`} sx={{ height: 18 }} />}
+        </Stack>
+      </TableCell>
+      <TableCell></TableCell>
+      <TableCell></TableCell>
+    </TableRow>
+  );
+}
+
+
 function TaskRow({ task, isHighlighted, highlightRef }) {
   return (
     <TableRow hover
@@ -180,6 +272,11 @@ export default function TaskLedgerPage() {
   // Per-group expanded state.  Default-expand groups that contain
   // IN_PROGRESS or BLOCKED tasks (the ones the operator cares about).
   const [expandedGroups, setExpandedGroups] = useState({});
+  // #204 — per-flow expanded state (middle level).  Default to expanded
+  // when the parent group is expanded AND the flow has in_progress
+  // tasks; otherwise collapsed so the operator can scan flow headers
+  // first then drill into the hot one.
+  const [expandedFlows, setExpandedFlows] = useState({});
   const [searchParams] = useSearchParams();
   const highlightId = searchParams.get('task_id');
   const highlightRef = useRef(null);
@@ -193,9 +290,16 @@ export default function TaskLedgerPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
+      // #204 — user reported "top count > grouped count" because the
+      // ledger endpoint was hard-capped at 100, but the stats endpoint
+      // reports the FULL count.  2502 pending tasks (per recent
+      // memory) silently dropped past row 100 in the grouped view.
+      // 1000 covers the 90th-percentile case without paging; if the
+      // user has more, the discrepancy banner below tells them and
+      // a status filter narrows the window.
       const params = statusFilter
-        ? `?status=${statusFilter.toLowerCase()}&limit=100`
-        : '?limit=100';
+        ? `?status=${statusFilter.toLowerCase()}&limit=1000`
+        : '?limit=1000';
       const res = await fetch(`/api/agent-engine/ledger/tasks${params}`,
                               {headers: _authHeaders()});
       const data = await res.json().catch(() => ({}));
@@ -225,10 +329,33 @@ export default function TaskLedgerPage() {
 
   useEffect(() => { fetchTasks(); fetchStats(); }, [fetchTasks, fetchStats]);
 
-  // Group tasks by (agent_id, prompt_id) — derived state, recomputed
-  // whenever the task list changes.  Each group also tracks the most
-  // recent activity timestamp so we can sort hottest-first.
+  // #204 — Three-level grouping: prompt → flow → action.
+  //
+  // User complaint (2026-05-18): "grouping shows only one action at a
+  // time like action 3, a group shd have action 1 to action n and
+  // flow 1 to flow m".  Previously a single (agent_id, prompt_id)
+  // bucket collapsed all flows + actions into one flat list per
+  // session, which read as "one action per group" when each flow had
+  // its own session row.
+  //
+  // Now: outer = (agent_id, prompt_id), middle = parsed flow id
+  // (default 'Flow 1' when only Action N is encoded), inner = task
+  // rows.  parseFlowAction reads the description string because the
+  // backend Task model (agent_ledger/core.py:191) has no flow/action
+  // fields yet — extending it is tracked separately.
+  //
+  // Each level tracks its own status counts + mostRecent so sort can
+  // float hot flows to the top within a prompt.
   const groups = useMemo(() => {
+    const statusRank = (s) => ({
+      IN_PROGRESS: 0, BLOCKED: 1, PENDING: 2, FAILED: 3,
+      DELEGATED: 4, COMPLETED: 5, DEFERRED: 6,
+    }[(s || '').toUpperCase()] ?? 9);
+    const actionRank = (label) => {
+      const m = label && label.match(/(\d+)/);
+      return m ? parseInt(m[1], 10) : 9999;
+    };
+
     const byKey = {};
     for (const t of tasks) {
       const k = groupKey(t);
@@ -237,23 +364,40 @@ export default function TaskLedgerPage() {
           key: k,
           agent_id: t.agent_id || 'no-agent',
           prompt_id: t.owner_prompt_id || 'no-prompt',
-          tasks: [],
+          tasks: [],          // ALL tasks under this prompt (back-compat)
+          flows: {},          // flow_label → {label, tasks, mostRecent}
           mostRecent: 0,
         };
       }
       byKey[k].tasks.push(t);
+
+      const {flow: flowLabel, action: actionLabel} = parseFlowAction(t);
+      if (!byKey[k].flows[flowLabel]) {
+        byKey[k].flows[flowLabel] = {
+          key: `${k}__${flowLabel}`,
+          label: flowLabel,
+          tasks: [],
+          mostRecent: 0,
+        };
+      }
+      // Stamp the parsed action label on the task so TaskRow can show
+      // it without re-parsing.  Non-destructive — we read .description
+      // again if this attribute is missing.
+      t._parsedActionLabel = actionLabel;
+      byKey[k].flows[flowLabel].tasks.push(t);
+
       const ts = Date.parse(
         t.last_heartbeat_at || t.created_at || ''
       );
-      if (!isNaN(ts) && ts > byKey[k].mostRecent) {
-        byKey[k].mostRecent = ts;
+      if (!isNaN(ts)) {
+        if (ts > byKey[k].mostRecent) byKey[k].mostRecent = ts;
+        if (ts > byKey[k].flows[flowLabel].mostRecent) {
+          byKey[k].flows[flowLabel].mostRecent = ts;
+        }
       }
     }
-    // Sort tasks within each group: in_progress first, then by created_at desc.
-    const statusRank = (s) => ({
-      IN_PROGRESS: 0, BLOCKED: 1, PENDING: 2, FAILED: 3,
-      DELEGATED: 4, COMPLETED: 5, DEFERRED: 6,
-    }[(s || '').toUpperCase()] ?? 9);
+
+    // Within each flow, sort tasks by action number then status rank.
     Object.values(byKey).forEach((g) => {
       g.tasks.sort((a, b) => {
         const sa = statusRank(a.status);
@@ -261,8 +405,32 @@ export default function TaskLedgerPage() {
         if (sa !== sb) return sa - sb;
         return Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0);
       });
+      Object.values(g.flows).forEach((f) => {
+        f.tasks.sort((a, b) => {
+          const ra = actionRank(a._parsedActionLabel);
+          const rb = actionRank(b._parsedActionLabel);
+          if (ra !== rb) return ra - rb;
+          const sa = statusRank(a.status);
+          const sb = statusRank(b.status);
+          if (sa !== sb) return sa - sb;
+          return Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0);
+        });
+      });
+      // Convert flows dict → sorted array (hot flows first, then by
+      // flow number ascending so Flow 1 comes before Flow 2).
+      g.flowList = Object.values(g.flows).sort((a, b) => {
+        const ai = a.tasks.some(t => (t.status || '').toUpperCase() === 'IN_PROGRESS') ? 0 : 1;
+        const bi = b.tasks.some(t => (t.status || '').toUpperCase() === 'IN_PROGRESS') ? 0 : 1;
+        if (ai !== bi) return ai - bi;
+        const na = actionRank(a.label);
+        const nb = actionRank(b.label);
+        if (na !== nb) return na - nb;
+        return b.mostRecent - a.mostRecent;
+      });
     });
-    // Sort groups: those with in_progress first, then by mostRecent desc.
+
+    // Sort prompt-level groups: those with in_progress first, then
+    // by mostRecent desc.
     const arr = Object.values(byKey);
     arr.sort((a, b) => {
       const ai = a.tasks.some(t => (t.status || '').toUpperCase() === 'IN_PROGRESS') ? 0 : 1;
@@ -306,6 +474,29 @@ export default function TaskLedgerPage() {
 
   const toggleGroup = (key) => setExpandedGroups(
     (p) => ({...p, [key]: !p[key]}));
+  const toggleFlow = (key) => setExpandedFlows(
+    (p) => ({...p, [key]: !p[key]}));
+
+  // #204 — default-expand flows that have in_progress tasks the first
+  // time they appear (mirrors the prompt-level auto-expand at the
+  // useEffect above).  Idempotent on re-render: only sets the key if
+  // it's currently undefined.
+  useEffect(() => {
+    setExpandedFlows((prev) => {
+      const next = {...prev};
+      for (const g of groups) {
+        for (const f of (g.flowList || [])) {
+          if (next[f.key] === undefined) {
+            next[f.key] = f.tasks.some(t => {
+              const s = (t.status || '').toUpperCase();
+              return s === 'IN_PROGRESS' || s === 'BLOCKED';
+            });
+          }
+        }
+      }
+      return next;
+    });
+  }, [groups]);
 
   return (
     <Box sx={{ p: 3 }}>
@@ -352,6 +543,29 @@ export default function TaskLedgerPage() {
         </Box>
       )}
 
+      {/* #204 — surface the discrepancy when the windowed task fetch
+          doesn't cover the full ledger.  Top stats are authoritative
+          (server-side count); the grouped/flat list below shows only
+          what came back in the last fetchTasks call.  Without this
+          banner the operator silently thinks "where did my 2000 tasks
+          go?" — the bug the user reported. */}
+      {stats && typeof stats.total === 'number'
+        && tasks.length > 0 && tasks.length < stats.total && (
+        <Box sx={{
+          mb: 2, px: 2, py: 1,
+          background: 'rgba(255, 152, 0, 0.08)',
+          borderLeft: '3px solid #FF9800',
+          borderRadius: 1,
+        }}>
+          <Typography variant="caption" sx={{ color: '#FF9800' }}>
+            Showing <strong>{tasks.length}</strong> of{' '}
+            <strong>{stats.total}</strong> tasks.  Filter by status
+            above to narrow the window, or contact ops to raise the
+            page size beyond 1000.
+          </Typography>
+        </Box>
+      )}
+
       {loading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
           <CircularProgress />
@@ -385,18 +599,44 @@ export default function TaskLedgerPage() {
             <TableBody>
               {groups.map((group) => {
                 const isExpanded = expandedGroups[group.key] ?? false;
+                const flowList = group.flowList || [];
+                // If there's only one synthetic '—' flow (no recipe
+                // structure parsed), skip the flow sub-header and
+                // render tasks directly under the prompt header for
+                // the same density as the old 2-level view.
+                const flat = flowList.length <= 1
+                  && flowList[0]?.label === '—';
                 return (
                   <React.Fragment key={group.key}>
                     <GroupHeaderRow group={group} expanded={isExpanded}
                       onToggle={() => toggleGroup(group.key)}
                       highlightId={highlightId} />
-                    {isExpanded && group.tasks.map((task) => {
+                    {isExpanded && flat && group.tasks.map((task) => {
                       const tid = task.id || task.task_id || '';
                       const isHighlighted = highlightId && tid === highlightId;
                       return (
                         <TaskRow key={tid} task={task}
                           isHighlighted={isHighlighted}
                           highlightRef={highlightRef} />
+                      );
+                    })}
+                    {isExpanded && !flat && flowList.map((flow) => {
+                      const flowExpanded = expandedFlows[flow.key] ?? false;
+                      return (
+                        <React.Fragment key={flow.key}>
+                          <FlowSubHeaderRow flow={flow} expanded={flowExpanded}
+                            onToggle={() => toggleFlow(flow.key)}
+                            highlightId={highlightId} />
+                          {flowExpanded && flow.tasks.map((task) => {
+                            const tid = task.id || task.task_id || '';
+                            const isHighlighted = highlightId && tid === highlightId;
+                            return (
+                              <TaskRow key={tid} task={task}
+                                isHighlighted={isHighlighted}
+                                highlightRef={highlightRef} />
+                            );
+                          })}
+                        </React.Fragment>
                       );
                     })}
                   </React.Fragment>

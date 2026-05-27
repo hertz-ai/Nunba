@@ -207,6 +207,19 @@ def _probe_backend_for_error(engine, backend: str, text: str,
     out, then `_surface_backend_exception` writes the traceback to
     the per-backend `.err` sidecar.
 
+    #212 — every silent-exit path now writes a synthetic sidecar entry.
+    Previously three paths returned silently with no diagnostic trace:
+      (a) `_create_backend` returns None
+      (b) engine has no `_backends` attr and no `_create_backend` method
+      (c) `inst.synthesize()` returns None without raising — the
+          backend's own try/except swallowed the underlying failure
+    The third case is the post-#86 chatterbox-turbo failure mode:
+    worker boots ("verified runnable"), inference call completes, but
+    the backend impl returns None on internal error.  Without a
+    synthetic entry the sidecar stays stale and the deep-probe is
+    useless for triage — same shape as the bug
+    _surface_backend_exception itself was built to fix.
+
     Safe to call always: any failure in this probe is itself swallowed
     so a logging path can't mask the bigger picture.
     """
@@ -222,12 +235,39 @@ def _probe_backend_for_error(engine, backend: str, text: str,
                 _surface_backend_exception(backend, e)
                 return
         if inst is None:
+            _surface_backend_exception(backend, RuntimeError(
+                f"Backend {backend!r} unreachable via deep-probe: no "
+                f"existing instance in engine._backends and "
+                f"_create_backend "
+                f"{'returned None' if hasattr(engine, '_create_backend') else 'method absent'}. "
+                f"Investigate the EngineSpec wiring in "
+                f"integrations/channels/media/tts_router.py and the "
+                f"backend factory in tts/tts_engine.py."
+            ))
             return
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as fp:
             probe_path = fp.name
         try:
-            inst.synthesize(text=text, output_path=probe_path,
-                            language=lang or 'en')
+            result = inst.synthesize(text=text, output_path=probe_path,
+                                     language=lang or 'en')
+            # Backend completed without raising but produced no audio.
+            # Write a synthetic sidecar entry so the operator/self-heal
+            # agent has something concrete to investigate instead of a
+            # silent "no path" UI message with no backend trace.
+            probe_exists = os.path.exists(probe_path)
+            probe_size = os.path.getsize(probe_path) if probe_exists else 0
+            if not result or not probe_exists or probe_size < 100:
+                _surface_backend_exception(backend, RuntimeError(
+                    f"Backend {backend!r} synthesize() returned silently "
+                    f"without raising — no usable audio produced "
+                    f"(returned={result!r}, output_path_exists={probe_exists}, "
+                    f"output_bytes={probe_size}).  The backend impl has an "
+                    f"internal try/except swallowing the real failure.  "
+                    f"Inspect the backend's synthesize() in tts_router.py "
+                    f"EngineSpec or the per-backend impl module; convert "
+                    f"the swallowed exception into a raise so future "
+                    f"failures hit the standard sidecar path."
+                ))
         except Exception as e:
             _surface_backend_exception(backend, e)
         finally:

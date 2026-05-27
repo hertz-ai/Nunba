@@ -1,5 +1,7 @@
 import {adminApi} from '../../services/socialApi';
 
+import MarketingFunnelCard from './MarketingFunnelCard';
+
 import ArticleIcon from '@mui/icons-material/Article';
 import PeopleIcon from '@mui/icons-material/People';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
@@ -268,6 +270,13 @@ export default function DashboardPage() {
               loading={loading}
               index={3}
             />
+          </Grid>
+
+          {/* Marketing funnel (#184) — channel-by-channel conversion
+              measurement, refreshes itself every 30s.  Reads
+              /api/social/marketing/stats (commit cbd0620). */}
+          <Grid item xs={12} md={6}>
+            <MarketingFunnelCard />
           </Grid>
 
           {/* System Metrics */}

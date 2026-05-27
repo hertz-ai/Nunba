@@ -56,6 +56,17 @@ class RealtimeService {
     // the audio event silently never reaches the client.
     // Live evidence 2026-05-12: SSE registered uid='guest', TTS event
     // arrived for uid='d68c9dee-b324-…' — payload filter dropped it.
+    //
+    // #211 — uid change uses OVERLAP rotation, not close+reopen.
+    // _rotateSSE opens a fresh EventSource with the new uid bound in
+    // the URL, awaits its onopen, THEN closes the old one.  The server
+    // briefly sees two subscribers (one per uid) — its uid-keyed
+    // delivery routes each broadcast to the matching subscriber, so
+    // multitenancy is preserved (no event for old uid leaks to new uid
+    // and vice versa).  Eliminates the 3-second SSE_RECONNECT_DELAY
+    // gap during which HARTOS broadcasts (TTS audio especially)
+    // landed in an empty broker (`client_count=0` in frozen_debug.log
+    // — root cause of #206 silent TTS).
     const userIdChanged = (
       opts.userId !== undefined
       && opts.userId !== null
@@ -64,7 +75,7 @@ class RealtimeService {
     if (userIdChanged) {
       this._userId = opts.userId;
       if (this._sseConnected) {
-        this._closeSSE();
+        this._rotateSSE();
       }
     } else if (opts.userId) {
       this._userId = opts.userId;
@@ -123,15 +134,20 @@ class RealtimeService {
   /**
    * connect(token) — called by RealtimeContext / SocialContext.
    *
-   * Sets JWT for authenticated SSE. If crossbar is already connected,
-   * SSE stays closed. Otherwise opens/reconnects SSE with the token.
+   * Sets JWT for authenticated SSE.  #211 — token refresh is NOT an
+   * identity change: the server already auth'd this EventSource at
+   * open time and routes by the uid it bound to.  Rotating the SSE
+   * on every token refresh (e.g. silentGuestRefresh minting a fresh
+   * JWT for the SAME guest user_id) created a 3-second window where
+   * HARTOS broadcasts hit an empty broker — that was the root cause
+   * of #206's silent TTS.  Now we just update the cached token; the
+   * existing SSE keeps delivering.  Explicit logout still calls
+   * disconnect() which fully tears down + de-auths.
    */
   connect(token) {
-    const tokenChanged = token && token !== this._token;
-    this._token = token || this._token;
+    if (token) this._token = token;
     if (this._crossbarConnected) return;
-    if (tokenChanged) this._closeSSE(); // force reconnect with new creds
-    this._openSSE();
+    if (!this._sseConnected) this._openSSE();
   }
 
   disconnect() {
@@ -161,32 +177,22 @@ class RealtimeService {
 
   // ── Internal: SSE transport ─────────────────────────────────────────
 
-  _openSSE() {
-    if (_eventSource) return; // already open
-
-    // Build URL: JWT if available, otherwise guest user_id param.
-    // Always use SOCIAL_API_URL (points to Flask :5000, not React dev :3000).
-    let url;
+  // Build the SSE URL from current auth state.
+  // Prefer JWT when available, otherwise bind by guest user_id.
+  // Always uses SOCIAL_API_URL (points to Flask :5000, not React :3000).
+  _buildSSEUrl() {
     if (this._token) {
-      url = `${SOCIAL_API_URL}/events/stream?token=${encodeURIComponent(this._token)}`;
-    } else {
-      const uid = this._userId || 'guest';
-      url = `${SOCIAL_API_URL}/events/stream?user_id=${encodeURIComponent(uid)}`;
+      return `${SOCIAL_API_URL}/events/stream?token=${encodeURIComponent(this._token)}`;
     }
+    const uid = this._userId || 'guest';
+    return `${SOCIAL_API_URL}/events/stream?user_id=${encodeURIComponent(uid)}`;
+  }
 
-    try {
-      _eventSource = new EventSource(url);
-    } catch {
-      return; // EventSource not available (e.g. SSR)
-    }
-
-    _eventSource.onopen = () => {
-      this._sseConnected = true;
-      this._connected = true;
-      this._emit('connected', {connected: true, transport: 'sse'});
-    };
-
-    _eventSource.onmessage = (e) => {
+  // Attach the standard handler set (onmessage, named events, onerror)
+  // to an EventSource.  Extracted so both _openSSE and _rotateSSE wire
+  // up the same listeners.
+  _attachSSEHandlers(es) {
+    es.onmessage = (e) => {
       try {
         const payload = JSON.parse(e.data);
         if (payload.type === 'connected') return; // initial heartbeat
@@ -214,7 +220,7 @@ class RealtimeService {
       'setup_progress',
       'chat.response',
     ].forEach((name) => {
-      _eventSource.addEventListener(name, (e) => {
+      es.addEventListener(name, (e) => {
         try {
           const payload = JSON.parse(e.data);
           this._dispatchSocialPayload({type: name, ...payload});
@@ -222,12 +228,109 @@ class RealtimeService {
       });
     });
 
-    _eventSource.onerror = () => {
+    es.onerror = () => {
+      // Only react if THIS es is still the live one — during a rotate
+      // the old es's onerror may fire on close(), which is expected
+      // and must not trigger a reconnect of the (now-active) new es.
+      if (es !== _eventSource) return;
       this._closeSSE();
       // Always reconnect SSE — local events (TTS, agent UI) need it
       // even when cloud crossbar is connected.
       _sseReconnectTimer = setTimeout(
         () => this._openSSE(),
+        SSE_RECONNECT_DELAY
+      );
+    };
+  }
+
+  _openSSE() {
+    if (_eventSource) return; // already open
+
+    const url = this._buildSSEUrl();
+    try {
+      _eventSource = new EventSource(url);
+    } catch {
+      return; // EventSource not available (e.g. SSR)
+    }
+
+    _eventSource.onopen = () => {
+      this._sseConnected = true;
+      this._connected = true;
+      this._emit('connected', {connected: true, transport: 'sse'});
+    };
+
+    this._attachSSEHandlers(_eventSource);
+  }
+
+  // #211 — Open a NEW EventSource with current uid/token, wait for its
+  // onopen, THEN close the previous one.  Server briefly sees two
+  // subscribers (old uid + new uid) — its uid-keyed delivery routes
+  // each broadcast to whichever subscriber matches, so multitenancy
+  // is preserved AND no broadcast lands in an empty broker during
+  // the swap.  If the new EventSource fails to open, the old one
+  // stays live and we retry the rotate after SSE_RECONNECT_DELAY.
+  _rotateSSE() {
+    if (!_eventSource) {
+      // No live connection to rotate — just open fresh.
+      this._openSSE();
+      return;
+    }
+
+    const oldEs = _eventSource;
+    const newUrl = this._buildSSEUrl();
+
+    let newEs;
+    try {
+      newEs = new EventSource(newUrl);
+    } catch {
+      // EventSource unavailable — keep old running.  Caller has
+      // already updated _userId/_token; next reconnect (if old dies)
+      // will pick up the new config via _buildSSEUrl().
+      return;
+    }
+
+    // Attach standard handlers FIRST so onmessage + named events are
+    // wired before onopen fires.  The standard onerror will be
+    // OVERRIDDEN below with rotation-specific logic for the pre-swap
+    // window; after swap the standard onerror takes over via the
+    // `es !== _eventSource` check it already does.
+    this._attachSSEHandlers(newEs);
+
+    let switched = false;
+    newEs.onopen = () => {
+      if (switched) return;
+      switched = true;
+      // Swap the module pointer BEFORE closing the old one so any
+      // concurrent onerror on `oldEs` sees `oldEs !== _eventSource`
+      // and skips the reconnect path (handler check in
+      // _attachSSEHandlers).
+      _eventSource = newEs;
+      this._sseConnected = true;
+      this._connected = true;
+      try { oldEs.close(); } catch { /* noop */ }
+      this._emit('connected', {connected: true, transport: 'sse', uid: this._userId});
+    };
+
+    // Override the standard onerror with rotation-specific logic for
+    // the PRE-swap window.  Must come AFTER _attachSSEHandlers (which
+    // sets the standard handler).  Once `switched` is true, this
+    // delegates back to the standard reconnect flow via _closeSSE.
+    newEs.onerror = () => {
+      if (switched) {
+        // Post-swap error on the new (now active) connection —
+        // standard reconnect flow.
+        this._closeSSE();
+        _sseReconnectTimer = setTimeout(
+          () => this._openSSE(),
+          SSE_RECONNECT_DELAY
+        );
+        return;
+      }
+      // Failed to open the rotated connection — keep OLD running and
+      // retry the rotate after the standard delay.
+      try { newEs.close(); } catch { /* noop */ }
+      _sseReconnectTimer = setTimeout(
+        () => this._rotateSSE(),
         SSE_RECONNECT_DELAY
       );
     };

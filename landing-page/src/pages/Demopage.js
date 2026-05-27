@@ -22,16 +22,16 @@ import {
   Clock,
   ChevronLeft,
 } from 'lucide-react';
-import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL } from '../config/apiBase';
+import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
-import { classifyError, getBackoff, makeMsgId } from '../utils/chatRetry';
+import { classifyError, getBackoff, makeMsgId, MAX_RETRIES } from '../utils/chatRetry';
+import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload } from '../utils/ttsGuards';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
-import { getStableDeviceId } from '../utils/deviceId';
-import useAuthSession, { setGuestIdentity, clearAuth } from '../hooks/useAuthSession';
+import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
 
 // NewHome is only loaded when user is not logged in (landing page)
@@ -64,6 +64,7 @@ import {useLocalEngineReady} from '../hooks/useLocalEngineReady';
 
 // ── Extracted sub-components ──
 import GpuTierBadge from '../components/chat/GpuTierBadge';
+import NotificationBell from '../components/Common/NotificationBell';
 import AgentSidebar from './chat/AgentSidebar';
 import PdfViewer from './chat/PdfViewer';
 import ChatInputBar from './chat/ChatInputBar';
@@ -251,37 +252,22 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     }
 
     (async () => {
-      try {
-        logger.log('[GUEST] Token missing — auto-refreshing with stored name:', guestName);
-        // Hardware-derived device_id via /status so the backend can
-        // return our EXISTING guest User (idempotent) instead of
-        // minting a new user_id — preserves prompt_id→chat linkage
-        // in localStorage.  See HARTOS guest_register idempotent fix.
-        const deviceId = await getStableDeviceId();
-        const res = await authApi.guestRegister({
-          guest_name: guestName,
-          device_id: deviceId,
-        });
-        const { user, token: newToken, existing } = res.data;
-        // Phase 4b — canonical guest writer.  Replaces the prior
-        // 3-setItem block.  Also sets guest_mode/hevolve_access_id/
-        // guest_name_verified=true (all already true entering this
-        // useEffect — !isGuestMode || !guestName returns at line 226,
-        // so we're guaranteed in guest_mode at this point).
-        setGuestIdentity({
-          user_id: user.id,
-          token: newToken,
-          guest_name: guestName,
-        });
-        setToken(newToken);  // Fix B — same-tab React state update so cloud-creds POST useEffect re-fires without 1s lag
-        logger.log(
-          existing
-            ? '[GUEST] Token refreshed — same user, chat preserved'
-            : '[GUEST] New guest user created (first-time device)',
-        );
-      } catch {
+      logger.log('[GUEST] Token missing — auto-refreshing with stored name:', guestName);
+      // Canonical silentGuestRefresh helper — uses hardware-derived
+      // device_id via /status so the backend returns our EXISTING
+      // guest User (idempotent) instead of minting a new user_id,
+      // preserving prompt_id→chat linkage in localStorage.
+      const result = await silentGuestRefresh();
+      if (!result) {
         logger.log('[GUEST] Auto-refresh failed — will show login modal on next action');
+        return;
       }
+      setToken(result.token);  // Fix B — same-tab React state mirror
+      logger.log(
+        result.existing
+          ? '[GUEST] Token refreshed — same user, chat preserved'
+          : '[GUEST] New guest user created (first-time device)',
+      );
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -561,6 +547,45 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const containerRef = useRef(null);
   const [isMediaEnded, setIsMediaEnded] = useState(false);
   const [showCreateAgentForm, setShowCreateAgentForm] = useState(false);
+
+  // #199 — per-agent unread counts.  Backend ships
+  // /api/social/notifications/unread_by_source (commit 8e4ff64) which
+  // returns {by_source: {sender_id: count}, total_unread}.  We fetch
+  // on auth-state change + every 60s + when a 'notification' SSE event
+  // arrives.  AgentSidebar reads this map and renders a red dot+count
+  // on each agent's avatar.  Reuses existing socialApi client +
+  // realtimeService listener — no new fetcher class, no new context.
+  const [unreadBySource, setUnreadBySource] = useState({});
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setUnreadBySource({});
+      return undefined;
+    }
+    let cancelled = false;
+    const fetchUnread = async () => {
+      try {
+        const res = await fetch(
+          `${SOCIAL_API_URL}/notifications/unread_by_source`,
+          {headers: {Authorization: `Bearer ${token || localStorage.getItem('access_token') || ''}`}},
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data?.by_source) {
+          setUnreadBySource(data.by_source);
+        }
+      } catch (_e) { /* silent — non-critical badge */ }
+    };
+    fetchUnread();
+    const id = setInterval(fetchUnread, 60000);
+    // Refresh on every new notification event (realtimeService dispatches
+    // 'notification' on both WAMP + SSE paths — see realtimeService.js:213).
+    const unsub = realtimeService.on('notification', fetchUnread);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      if (typeof unsub === 'function') unsub();
+    };
+  }, [isAuthenticated, token]);
   const [authFromUrl, setAuthFromUrl] = useState(() => {
     return localStorage.getItem('auth_source') === 'url';
   });
@@ -3436,7 +3461,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         let retryCount = 0;
         let lastLocalReason = '';
 
-        while (!localSuccess) {
+        // #125 — terminal retry cap.  Previously this loop had no
+        // upper bound and would burn forever on a backend that was
+        // permanently down (e.g. offline + local_only).  After
+        // MAX_RETRIES attempts mark the message failed with the last
+        // known reason so the user can manually retry via the
+        // handleRetryMessage button.
+        while (!localSuccess && retryCount <= MAX_RETRIES) {
           // Update status for retries
           if (retryCount > 0) {
             setIsRequestInFlight(false); // no active request during backoff
@@ -3583,11 +3614,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               setSecretRequest(resultData.secret_request);
             }
 
-            // Process thinking traces captured during local LangChain/autogen execution.
-            // These arrive batched (not streamed) — feed each into handleDataReceived
-            // to populate ThinkingProcessContainer before showing the final answer.
+            // #171 — thinking traces stream live via SSE 'chat.response'
+            // (EventBus.emit fan-out in HARTOS commit 29ac1b9).  The
+            // resultData.thinking_steps batched fallback was removed —
+            // it was the source of the "all at once" UI burst because
+            // forEach-dispatched the entire list once HTTP returned,
+            // long after the same traces had already streamed via SSE.
+            // Backward-compat: a legacy HARTOS that still attaches the
+            // batch is handled by the forEach below — dedup by msg_id
+            // at handleDataReceived makes the duplicate delivery a no-op.
             if (resultData.thinking_steps?.length > 0) {
-              logger.log(`Processing ${resultData.thinking_steps.length} thinking traces`);
+              logger.log(`Legacy thinking_steps batch (${resultData.thinking_steps.length}) — dedup will absorb duplicates`);
               resultData.thinking_steps.forEach((trace) => {
                 handleDataReceived(trace);
               });
@@ -3643,8 +3680,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               };
               setMessages((prev) => {
                 const updated = [...prev];
-                // Mark any open thinking containers as completed
-                if (resultData.thinking_steps?.length > 0) {
+                // #171 — completion signal is the arrival of the final
+                // response text, NOT the presence of a thinking_steps
+                // batch (which is gone now that traces stream live via
+                // SSE).  Any open thinking_container is marked complete
+                // when responseText lands — the assistant turn is
+                // semantically over at that point regardless of how
+                // traces were delivered.
+                if (responseText) {
                   for (let i = updated.length - 1; i >= 0; i--) {
                     if (updated[i].type === 'thinking_container' && !updated[i].isCompleted) {
                       updated[i] = {
@@ -3663,6 +3706,50 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 return [...updated, assistantMessage];
               });
               setShouldScroll(true);
+
+              // #206 — speak the response.  Previously only the SSE
+              // no_content branch (line ~1956) invoked tts.speak; the
+              // local/on-device direct-reply path silently skipped TTS
+              // even when the badge said "On-device".  Lost in merge
+              // e1717d12 (2026-05-12 macos-fix into main) which adopted
+              // main's version of this block — main never had
+              // Monisha's 558cb56b speak line from 2026-03-25.
+              //
+              // Draft-first guard: when expert_pending=true, the local
+              // bubble is a draft that will be REPLACED by the expert
+              // reply arriving via WAMP/SSE.  The SSE branch at line
+              // 1956 will speak the expert reply — speaking the draft
+              // here too would cause double playback.  Only speak when
+              // this is the final answer.
+              //
+              // Server-audio guard: symmetric to the SSE branch's
+              // `hasText && !hasAudio` at line 1939.  Local backend
+              // today never returns synthesized audio bytes (text
+              // only — that's why this branch needed client TTS in
+              // the first place), but if it ever does, defer to the
+              // server's audio instead of speaking the same text again.
+              // #206 — canonical speak-guard.  Helper lives in
+              // utils/ttsGuards.js so the contract is unit-testable
+              // without a React harness + reusable from other chat
+              // surfaces.  Pure boolean composition: enabled +
+              // available + non-empty text + not-a-draft + no
+              // server-side audio.
+              if (shouldSpeakLocalReply({
+                ttsEnabled,
+                ttsAvailable: tts.isAvailable,
+                responseText,
+                isDraft: isDraftReply(resultData),
+                hasServerAudio: hasServerAudioPayload(resultData),
+                // 2026-05-20 — when SSE is connected, server-side TTS
+                // delivers audio via chat.pupit; client-side is a
+                // disconnected-fallback only.  Prevents the double
+                // playback seen at frozen_debug.log 19:30:00 + 19:30:12.
+                realtimeConnected: realtimeService.connected,
+              })) {
+                tts.speak(responseText).catch((err) => {
+                  logger.warn('[TTS] local-reply speak failed:', err?.message || err);
+                });
+              }
             }
             setLoading(false);
             setIsRequestInFlight(false);
@@ -3696,14 +3783,52 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         }
 
         if (localSuccess) return; // already handled above
+
+        // #125 — exhausted retries on local-only path.  Mark the
+        // message failed with the last known reason so the user can
+        // see why it's stuck + retry via handleRetryMessage button.
+        if (intelligencePreference === 'local_only') {
+          updateMessageStatus(msgId, {
+            status: 'failed',
+            error: `${lastLocalReason || 'Backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
+          });
+          setLoading(false);
+          setIsRequestInFlight(false);
+          return;
+        }
+        // Otherwise fall through to cloud path (intelligencePreference='auto')
       }
 
       // Cloud API path (fallback or direct)
       logger.log('Routing to CLOUD backend');
       let cloudRetryCount = 0;
       let lastCloudReason = '';
+      let guestRecoverAttempted = false;
 
-      while (true) {
+      // Guest-aware silent 401 recovery — #207 / #209.  When /chat returns
+      // 401 mid-request (e.g. HARTOS-issued guest JWT TTL expired during a
+      // long inference) and the caller is in guest mode, re-register
+      // silently to mint a fresh token and replay the same request without
+      // nuking the session.  Cloud logged-in users still hit the clearAuth
+      // + login modal path because their refresh requires interactive
+      // credentials.  silentGuestRefresh is the canonical helper in
+      // useAuthSession.js — same call shared with the mount-time
+      // auto-refresh useEffect and the SocialContext auth:expired handler.
+      const tryGuestRecover = async () => {
+        if (!isGuestMode) return null;
+        if (guestRecoverAttempted) return null;  // one-shot per request
+        guestRecoverAttempted = true;
+        const result = await silentGuestRefresh();
+        if (!result) {
+          logger.log('[GUEST] 401 silent recover failed');
+          return null;
+        }
+        setToken(result.token);  // Same-tab React state mirror (Fix B)
+        logger.log('[GUEST] 401 mid-chat — silent recover succeeded, retrying request');
+        return result.token;
+      };
+
+      while (cloudRetryCount <= MAX_RETRIES) {  // #125 — terminal retry cap
         if (cloudRetryCount > 0) {
           setIsRequestInFlight(false);
           const totalSec = Math.max(1, Math.round(getBackoff(cloudRetryCount - 1) / 1000));
@@ -3729,11 +3854,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             ? PERSONALISED_LEARNING_URL
             : CUSTOM_GPT_URL;
 
+          // Live token read — picks up a fresh JWT minted by
+          // tryGuestRecover() in the previous loop iteration.  Closure-
+          // captured `token` from useState would be stale until the
+          // next render.
+          const liveToken = localStorage.getItem('access_token') || token;
+
           const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
+              Authorization: `Bearer ${liveToken}`,
             },
             body: dataToSend,
           });
@@ -3745,31 +3876,42 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             try { errorResponse = await response.json(); } catch (err) { console.error('Failed to parse error response:', err); }
             console.error('API call failed:', response.status, response.statusText);
 
-            if (response.status === 401) {
-              if (!refresh_token) {
+            const isInvalidToken = (
+              errorResponse.error === 'invalid_token' ||
+              errorResponse.error_description === 'The access token is invalid or has expired'
+            );
+
+            if (response.status === 401 || isInvalidToken) {
+              // Guest-aware path — silently re-register and retry once
+              // before falling through to the nuke-session UX.
+              const recovered = await tryGuestRecover();
+              if (recovered) {
+                lastCloudReason = 'Session refreshed';
+                cloudRetryCount++;
+                continue;
+              }
+
+              if (response.status === 401 && !refresh_token) {
                 setSessionExpiredMessage('Session expired. Please log in again.');
                 setIsModalOpen(true);
                 updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
                 setLoading(false);
                 return;
               }
-            }
 
-            if (
-              errorResponse.error === 'invalid_token' ||
-              errorResponse.error_description === 'The access token is invalid or has expired'
-            ) {
-              // Phase 4d — canonical 401 invalidation.  clearAuth
-              // covers the original 4 keys (expire_token + access_token
-              // + user_id + email_address) plus 8 more cloud-related
-              // keys.  HART node identity preserved (per 4-layer model)
-              // so on next signin the user lands back in the same HART
-              // shell.
-              clearAuth();
-              setIsModalOpen(true);
-              updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
-              setLoading(false);
-              return;
+              if (isInvalidToken) {
+                // Phase 4d — canonical 401 invalidation.  clearAuth
+                // covers the original 4 keys (expire_token + access_token
+                // + user_id + email_address) plus 8 more cloud-related
+                // keys.  HART node identity preserved (per 4-layer model)
+                // so on next signin the user lands back in the same HART
+                // shell.
+                clearAuth();
+                setIsModalOpen(true);
+                updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
+                setLoading(false);
+                return;
+              }
             }
 
             // Other HTTP errors — retry
@@ -3826,6 +3968,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           // Loop continues...
         }
       }
+
+      // #125 — exhausted cloud retries.  Surface failure with last
+      // known reason so the user can manually retry.
+      updateMessageStatus(msgId, {
+        status: 'failed',
+        error: `${lastCloudReason || 'Cloud backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
+      });
+      setLoading(false);
+      setIsRequestInFlight(false);
+      return;
     } catch (err) {
       console.error('Unexpected error during request:', err);
       setIsRequestInFlight(false);
@@ -4351,6 +4503,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           sessionExpiredMessage={sessionExpiredMessage}
           isLocalRoute={isLocalRoute}
           items={items}
+          unreadBySource={unreadBySource}
           handleCreateAgentClick={handleCreateAgentClick}
           handleButtonClick={handleButtonClick}
           handleImgError={handleImgError}
@@ -4536,8 +4689,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             >
               {/* Chat header bar — GPU tier badge surfaces the speculation-capability
                   boundary (see components/chat/GpuTierBadge.jsx for the product-owner +
-                  accessibility rationale). Right-aligned; no layout shift when hidden. */}
-              <div className="flex justify-end items-center px-3 pt-2">
+                  accessibility rationale). Right-aligned; no layout shift when hidden.
+                  #198 — NotificationBell sits here so the bell + unread badge are
+                  visible on the FIRST page the user sees (the chat), matching LinkedIn-
+                  style global top-right placement. Same component the AdminLayout uses
+                  (commit 8ffa635e); reads /api/social/notifications. */}
+              <div className="flex justify-end items-center gap-2 px-3 pt-2">
+                <NotificationBell />
                 <GpuTierBadge />
               </div>
               {messages.length === 0 ? (

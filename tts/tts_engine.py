@@ -2210,10 +2210,75 @@ class TTSEngine:
         skipped so the ladder actually advances after repeated failures
         instead of wedging on the first preference forever.
 
+        #219 verified-only gate: two-pass selection.  Pass 1 keeps a
+        backend ONLY if tts_handshake.is_verified_backend reports a
+        confirmed-passing handshake.  Pass 2 (fallback) drops the
+        verified requirement so an un-probed ladder still returns
+        something runnable.  Both passes skip backends that are
+        is_known_failed — a confirmed-failing handshake means the
+        runtime probe has already proved the synth path is broken,
+        and re-trying it on the user-blocking path is wasted latency.
+
         Auto-installs missing backends in background via TTSLoader.download().
         """
         self._ensure_hw_detected()
         prefs = _get_lang_preference(language)
+
+        # Lazy import keeps the module loadable in pre-handshake test envs
+        # where tts_handshake's import chain (desktop.log_ctx → core.constants
+        # → ...) isn't fully wired.  When unavailable (or when a predicate
+        # call itself raises — corrupt cache, lock timeout, ...), fall
+        # fully back to the legacy "first runnable wins": is_verified
+        # returns True for every backend so pass 1 behaves identically
+        # to pass 2.  We do NOT fail closed here (skip everything non-
+        # Piper) — that would regress boots where the handshake module
+        # hasn't loaded yet.  Wrapping the CALL (not just the import) so
+        # a runtime exception in the predicate gracefully degrades too.
+        try:
+            from tts import tts_handshake as _hs_mod
+            _hs_raw_is_verified = _hs_mod.is_verified_backend
+            _hs_raw_is_known_failed = _hs_mod.is_known_failed
+        except Exception:
+            _hs_raw_is_verified = None
+            _hs_raw_is_known_failed = None
+
+        def _hs_is_verified(b):
+            if _hs_raw_is_verified is None:
+                return True
+            try:
+                return bool(_hs_raw_is_verified(b))
+            except Exception:
+                return True
+
+        def _hs_is_known_failed(b):
+            if _hs_raw_is_known_failed is None:
+                return False
+            try:
+                return bool(_hs_raw_is_known_failed(b))
+            except Exception:
+                return False
+
+        # PASS 1 — quality-ordered AND verified.  Piper is always
+        # eligible here because it's the trusted baseline: even with
+        # no handshake yet, it's the engine the fallback path itself
+        # would return, so allowing it in pass 1 avoids a needless
+        # second pass.
+        for backend in prefs:
+            if self._is_demoted(backend):
+                continue
+            if _hs_is_known_failed(backend):
+                continue
+            if backend != BACKEND_PIPER and not _hs_is_verified(backend):
+                continue
+            if self._can_run_backend(backend):
+                logger.info(
+                    f"Selected backend '{backend}' for language "
+                    f"'{language}' (verified, quality-ordered)",
+                )
+                return backend
+
+        # PASS 2 — relax the verified gate so an un-probed install
+        # still gets a chance.  Known-failed backends remain blocked.
         for backend in prefs:
             if self._is_demoted(backend):
                 logger.info(
@@ -2221,8 +2286,19 @@ class TTSEngine:
                     f"({self._consecutive_failures.get(backend, 0)} failures)"
                 )
                 continue
+            if _hs_is_known_failed(backend):
+                logger.info(
+                    f"Backend {backend} skipped: handshake confirmed "
+                    f"FAILING — agent self-heal should investigate "
+                    f"the .err sidecar",
+                )
+                continue
             if self._can_run_backend(backend):
-                logger.info(f"Selected backend '{backend}' for language '{language}' (quality-ordered)")
+                logger.info(
+                    f"Selected backend '{backend}' for language "
+                    f"'{language}' (quality-ordered, unverified — "
+                    f"first synth doubles as handshake)",
+                )
                 return backend
             else:
                 # Not runnable — trigger background install for next time

@@ -1,4 +1,5 @@
 import { useSocial } from '../../contexts/SocialContext';
+import NotificationBell from '../Common/NotificationBell';
 import { useRoleAccess } from '../RoleGuard';
 import ErrorBoundary from '../shared/ErrorBoundary';
 
@@ -307,6 +308,10 @@ export default function AdminLayout({children}) {
           </Box>
 
           <Box sx={{display: 'flex', alignItems: 'center', gap: 1}}>
+            {/* #198 — global notifications bell. Reads
+                /api/social/notifications, polls every 30s, dropdown
+                lists unread + click→navigate. */}
+            <NotificationBell />
             <Box sx={{
               px: 2,
               py: 0.5,

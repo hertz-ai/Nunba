@@ -217,10 +217,54 @@ describe('AgentSidebar', () => {
       decryptedEmail: '',
       token: '',
       decryptedUserId: '',
+      isAuthenticated: false,
       isGuestMode: false,
     });
     const welcomes = screen.getAllByText('Welcome! Log in');
     expect(welcomes.length).toBeGreaterThan(0);
+  });
+
+  // Regression for user-reported bug 2026-05-20: after login the
+  // sidebar kept showing "Welcome! Log in" because decryptedEmail
+  // had not yet resolved from async storage decryption.  Trust
+  // isAuthenticated as the primary signal; fall back to 'Account'
+  // label while decryption finishes.
+  it('shows "Account" placeholder when authenticated but email pending decrypt', () => {
+    renderSidebar({
+      decryptedEmail: '',  // not decrypted yet
+      token: 'tok_123',
+      decryptedUserId: 'u_123',
+      isAuthenticated: true,
+      isGuestMode: false,
+    });
+    const accounts = screen.getAllByText('Account');
+    expect(accounts.length).toBeGreaterThan(0);
+    // Must NOT show the unauth placeholder
+    expect(screen.queryByText('Welcome! Log in')).toBeNull();
+  });
+
+  it('prefers decrypted email over "Account" fallback once available', () => {
+    renderSidebar({
+      decryptedEmail: 'lawliet@test.com',
+      token: 'tok',
+      decryptedUserId: 'u',
+      isAuthenticated: true,
+    });
+    const emails = screen.getAllByText('lawliet@test.com');
+    expect(emails.length).toBeGreaterThan(0);
+    expect(screen.queryByText('Account')).toBeNull();
+  });
+
+  it('Guest label still shown when in guest mode', () => {
+    renderSidebar({
+      decryptedEmail: '',
+      token: '',
+      decryptedUserId: '',
+      isAuthenticated: false,
+      isGuestMode: true,
+      guestUserId: 'abc12345',
+    });
+    expect(screen.getByText(/Guest 2345/i)).toBeInTheDocument();
   });
 
   // ── View All Agents button ───────────────────────────────────────────────

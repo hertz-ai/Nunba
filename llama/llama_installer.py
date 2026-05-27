@@ -20,8 +20,30 @@ from pathlib import Path
 
 logger = logging.getLogger('NunbaLlamaInstaller')
 
-# Minimum llama.cpp build required for Qwen3.5 models (architecture support)
-MIN_LLAMACPP_BUILD_QWEN35 = 8148
+# Minimum llama.cpp build for the Qwen3.5 presets.
+#
+# Bumped 8148 → 9180 on 2026-05-23 to require the build that includes
+# MTP (Multi-Token Prediction) support — PR #22673 by am17an, merged
+# 2026-05-16 into llama.cpp master.  b9180 is the lowest tag verified
+# post-merge in upstream benchmark comments (per Startup Fortune
+# coverage of the PR).
+#
+# Why bump (and not gate behind a separate constant): every Qwen3.5
+# preset materially benefits from MTP (~1.8-2.2x generation throughput
+# per upstream report), the Qwen3.5 checkpoints already ship with the
+# MTP head, and the existing update UX (app.py:3205 _on_update_llama)
+# is the right surface to drive the upgrade.  Existing installs see
+# "Update llama.cpp" prompt next time they touch model setup → click →
+# LlamaInstaller.update_llama_cpp() hits GitHub Releases API → replaces
+# the binary with latest.  After that, HEVOLVE_LLAMA_MTP_N=N (wired
+# in commit 29d228db) actually takes effect — was silently rejected
+# on b<9180 because --spec-type mtp didn't exist yet.
+#
+# Backward compat: any current installs on b8148+ but <9180 still run
+# the same Qwen3.5 architecture; the model boots fine.  The version
+# gate only changes which builds Nunba RECOMMENDS — boot succeeds
+# either way.
+MIN_LLAMACPP_BUILD_QWEN35 = 9180
 
 
 class ModelPreset:

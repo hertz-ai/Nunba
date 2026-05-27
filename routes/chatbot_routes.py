@@ -2974,10 +2974,12 @@ def chat_route():
                             }
                     if secret_req:
                         error_response['secret_request'] = secret_req
-                    # Include any thinking traces captured before the error
-                    thinking_traces = drain_thinking_traces(request_id)
-                    if thinking_traces:
-                        error_response['thinking_steps'] = thinking_traces
+                    # #171 — thinking traces stream live via SSE 'chat.response'
+                    # (EventBus.emit fan-out, commit 29ac1b9).  The HTTP-attach
+                    # path was redundant — every trace was already delivered in
+                    # real-time, and the client forEach-batch produced the
+                    # "all at once" rendering the user reported.  Drained
+                    # buffer is now diag-only; not attached to HTTP responses.
                     return jsonify(error_response)
 
                 response_text = result.get('text') or result.get('response')
@@ -3088,11 +3090,11 @@ def chat_route():
                                 }
                         except (ValueError, _json.JSONDecodeError):
                             pass  # Not JSON — leave as text
-                    # Include thinking traces captured during LangChain/autogen execution
-                    thinking_traces = drain_thinking_traces(request_id)
-                    if thinking_traces:
-                        response_json['thinking_steps'] = thinking_traces
-                        logger.info(f'Including {len(thinking_traces)} thinking traces in response')
+                    # #171 — thinking traces stream live via SSE 'chat.response'
+                    # (EventBus.emit fan-out, commit 29ac1b9).  No HTTP-batch
+                    # attach: each trace was already delivered in real-time,
+                    # and the client-side forEach-burst on the batch was the
+                    # source of the "all at once" rendering complaint.
                     # Attach non-blocking missing models (TTS, STT) so frontend can show setup cards
                     if _non_llm_missing:
                         response_json['missing_models'] = _non_llm_missing
