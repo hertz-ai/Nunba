@@ -2337,6 +2337,16 @@ class TTSEngine:
 
         # PASS 2 — relax the verified gate so an un-probed install
         # still gets a chance.  Known-failed backends remain blocked.
+        # The same per-language Piper voice check from PASS 1 applies
+        # here: without it, PASS 2 would pick Piper for Tamil/Bengali/
+        # etc. (Piper has no voice file), the first synth would raise
+        # PiperLangUnavailable, _synthesize_with_fallback would walk
+        # the candidate ladder, and we'd land at "no capable backend
+        # fits on this hardware" with no audio AND no actionable setup
+        # card.  Skipping Piper for unsupported langs here lets PASS 2
+        # pick the next runnable engine (or fall through to the
+        # lang_unsupported event below) so the UI surfaces a
+        # text-only badge instead of silent failure.
         for backend in prefs:
             if self._is_demoted(backend):
                 logger.info(
@@ -2351,6 +2361,12 @@ class TTSEngine:
                     f"the .err sidecar",
                 )
                 continue
+            if backend == BACKEND_PIPER and not _piper_has_voice(language):
+                logger.debug(
+                    f"PASS 2: Piper has no voice for '{language}' — "
+                    f"skipping to next candidate"
+                )
+                continue
             if self._can_run_backend(backend):
                 logger.info(
                     f"Selected backend '{backend}' for language "
@@ -2362,8 +2378,28 @@ class TTSEngine:
                 # Not runnable — trigger background install for next time
                 self._try_auto_install_backend(backend)
 
-        # Absolute fallback — Piper on CPU
-        logger.info(f"All backends unavailable for '{language}', falling back to Piper (CPU)")
+        # Absolute fallback — Piper on CPU.  For langs Piper can't
+        # speak (ta, bn, gu, kn, mr, or, pa, as as of 2026-05-27
+        # piper-voices) we STILL return Piper here: callers (set_language,
+        # _select_backend) downstream assume the return is a backend
+        # string, not None.  The "no audio for this lang" path is
+        # handled correctly downstream — _LazyPiper.synthesize raises
+        # PiperLangUnavailable → _synthesize_with_fallback runs → no
+        # capable backend fits on CPU-only HW → _publish_lang_unsupported
+        # fires the WAMP toast → UI shows "no TTS" badge.  Adding an
+        # explicit setup-progress emission for the unsupported case is
+        # tracked separately — at this layer we preserve the existing
+        # contract.
+        if _piper_has_voice(language):
+            logger.info(
+                f"All backends unavailable for '{language}', "
+                f"falling back to Piper (CPU)")
+        else:
+            logger.info(
+                f"All backends unavailable for '{language}' AND Piper "
+                f"has no voice for it — selector returns Piper anyway; "
+                f"synth will raise PiperLangUnavailable and the "
+                f"lang_unsupported WAMP toast will fire downstream")
         return BACKEND_PIPER
 
     def _select_backend(self) -> str:
