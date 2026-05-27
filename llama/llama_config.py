@@ -622,6 +622,24 @@ class LlamaConfig:
         if diag['mmproj_needed']:
             diag['mmproj_available'] = self.installer.get_mmproj_path(best_preset) is not None
 
+        # ── Build-version check (existing binary, build number floor) ──
+        # If a binary is already installed and no CPU/CUDA mismatch was
+        # detected above, also check whether the build number meets the
+        # selected model's MIN_LLAMACPP_BUILD floor.  When it doesn't,
+        # reuse the same 'need_gpu_build' mismatch token so the existing
+        # upgrade path (auto_setup → upgrading_binary → try_download_prebuilt)
+        # downloads the latest GitHub release — which is by definition at
+        # or above the floor.  Without this, an existing-but-too-old
+        # binary leaves auto_setup blind: no action is appended and the
+        # wizard never surfaces an upgrade card.
+        if diag['binary_found'] and not diag['binary_mismatch']:
+            is_compat, cur_ver, req_ver = self.installer.check_version_for_model(
+                best_preset, llama_server_path=diag['binary_path'])
+            if not is_compat and req_ver is not None:
+                diag['binary_mismatch'] = 'need_gpu_build'
+                diag['binary_current_build'] = cur_ver
+                diag['binary_required_build'] = req_ver
+
         # ── Current configured model ──────────────────────────────
         cur_idx = self.config.get('selected_model_index', 0)
         if 0 <= cur_idx < len(MODEL_PRESETS):
@@ -830,13 +848,31 @@ class LlamaConfig:
             if progress_callback:
                 progress_callback('upgrading_binary', 0.55)
             logger.info("Upgrading llama.cpp to CUDA build...")
-            upgraded = self.installer.try_download_prebuilt()
+            try:
+                upgraded = self.installer.try_download_prebuilt()
+                _upgrade_err = None
+            except Exception as _e:
+                upgraded = False
+                _upgrade_err = _e
             if upgraded and self.installer.binary_supports_gpu:
                 llama_server = self.installer.find_llama_server(check_system_first=True)
                 diag['run_mode'] = 'gpu'
                 logger.info("Successfully upgraded to CUDA build")
             else:
-                logger.warning("CUDA build upgrade failed — continuing with CPU binary")
+                _reason = (f'network/disk error: {_upgrade_err!r}'
+                           if _upgrade_err is not None
+                           else 'try_download_prebuilt returned False (no '
+                                'matching prebuilt asset, github unreachable, '
+                                'or write-permission denied on install dir)')
+                logger.warning(
+                    f"FALLBACK: llama.cpp upgrade failed — {_reason}. "
+                    f"Continuing with installed binary "
+                    f"(b{diag.get('binary_current_build')}); "
+                    f"_do_start_server will warn-and-proceed for any "
+                    f"min_build floor mismatch (build-gated features like "
+                    f"MTP / spec-ngram are suppressed). Auto-setup will "
+                    f"retry the upgrade on next launch."
+                )
                 diag['run_mode'] = 'cpu'
 
         # Case: no binary at all
@@ -1474,17 +1510,35 @@ class LlamaConfig:
                 logger.error("No downloaded models found. Please download a model first.")
                 return False
 
-        # Check version compatibility for the selected model
+        # Check version compatibility for the selected model.
+        #
+        # The min_build floor is a RECOMMENDED build, not an absolute load
+        # requirement: it exists to gate optional build-dependent features
+        # like MTP / spec-ngram speculative decoding (added in HEVOLVE_LLAMA_
+        # NGRAM_SPEC opt-in path below — verified b9180+ needed for
+        # --spec-type ngram-* and --spec-ngram-* flags).  The model itself
+        # still loads on lower builds; performance is only degraded for the
+        # opt-in features.  Don't hard-block chat here — warn, suppress the
+        # build-gated flags via self._suppress_build_gated_features so the
+        # command-builder skips them, and proceed.  Auto-setup already
+        # surfaced the upgrade path in diagnose() and tried try_download_
+        # prebuilt(); if that failed we still get a working chat instead
+        # of a dead one.
+        self._suppress_build_gated_features = False
         if model_preset.min_build is not None:
             is_ok, cur_ver, req_ver = self.installer.check_version_for_model(
                 model_preset, llama_server
             )
             if not is_ok:
-                logger.error(
-                    f"llama.cpp build b{cur_ver} does not support {model_preset.display_name} "
-                    f"(requires b{req_ver}+). Please update llama.cpp."
+                logger.warning(
+                    f"FALLBACK: llama.cpp build b{cur_ver} below recommended "
+                    f"b{req_ver}+ for {model_preset.display_name}. Proceeding "
+                    f"with installed binary; build-gated features (MTP / "
+                    f"spec-ngram) will be suppressed for this session. "
+                    f"Chat stays available (non-optimized). Auto-setup will "
+                    f"retry upgrade on next launch when network is reachable."
                 )
-                return False
+                self._suppress_build_gated_features = True
 
         # Build command — context size is VRAM-aware for Qwen3.5
         is_qwen35 = "Qwen3.5" in model_preset.display_name
@@ -1584,7 +1638,8 @@ class LlamaConfig:
             # ``HEVOLVE_DRAFT_FIRST`` makes ngram the active path.
             _ngram_spec = (os.environ.get('HEVOLVE_LLAMA_NGRAM_SPEC', '')
                            or '').strip().lower()
-            if _ngram_spec in ('1', 'true', 'yes', 'on'):
+            if _ngram_spec in ('1', 'true', 'yes', 'on') and not getattr(
+                    self, '_suppress_build_gated_features', False):
                 # ``--spec-type`` MUST be set to one of the ngram-*
                 # variants for the size flags to take effect — without
                 # it the binary defaults to ``none`` and silently
@@ -1593,12 +1648,25 @@ class LlamaConfig:
                 # ``ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|
                 # ngram-mod``.  ``ngram-map-k`` is the default-balanced
                 # choice for chat workloads.
+                #
+                # ``_suppress_build_gated_features`` is True when the
+                # installed llama.cpp build is below model_preset.min_build
+                # (set in the version-check warn-and-proceed path above).
+                # The ngram-spec flags need b9180+; skipping them keeps
+                # chat available on the older binary while auto-setup
+                # retries the upgrade in the background.
                 cmd.extend([
                     "--spec-type", "ngram-map-k",
                     "--spec-ngram-size-n", "3",
                     "--spec-ngram-size-m", "4",
                     "--spec-ngram-min-hits", "1",
                 ])
+            elif _ngram_spec in ('1', 'true', 'yes', 'on'):
+                logger.warning(
+                    "FALLBACK: HEVOLVE_LLAMA_NGRAM_SPEC requested but "
+                    "installed llama.cpp build does not support it; "
+                    "starting without speculative-decoding flags."
+                )
                 logger.info(
                     "[SPEC-NGRAM] Enabling n-gram speculative decoding "
                     "(--spec-type ngram-map-k) — opt-in via "
