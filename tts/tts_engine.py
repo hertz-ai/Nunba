@@ -1809,6 +1809,27 @@ class TTSEngine:
                         # test_b7_failed_cleared_on_success for the contract.
                         with TTSEngine._auto_install_lock:
                             TTSEngine._auto_install_failed.discard(backend)
+                        # Autonomous-recovery close-the-loop (#TTS-demote-heal,
+                        # 2026-05-28): a verified install means the engine is
+                        # NOT broken anymore — clear the session demotion so
+                        # PASS 1 / PASS 2 of _select_backend_for_language can
+                        # pick it up on the next request.  Persist the cleared
+                        # state so a restart doesn't re-skip the now-healthy
+                        # backend.  Without this clear, the demotion sticks
+                        # forever even after a successful reinstall via the
+                        # autonomous path PASS 2 just triggered — defeating
+                        # the autonomous-recovery contract.
+                        if backend in self._demoted_backends:
+                            self._demoted_backends.discard(backend)
+                            self._consecutive_failures[backend] = 0
+                            try:
+                                self._save_persisted_demotions()
+                            except Exception as _pe:
+                                logger.debug(
+                                    f"persist-after-clear failed: {_pe}")
+                            logger.info(
+                                f"[auto-install] '{backend}' demotion CLEARED "
+                                f"— engine is selectable again")
                         if progress:
                             progress(f"{backend} ready — "
                                      f"{verdict.n_bytes // 1024} KB test audio produced")
@@ -2353,6 +2374,24 @@ class TTSEngine:
                     f"Backend {backend} skipped: demoted this session "
                     f"({self._consecutive_failures.get(backend, 0)} failures)"
                 )
+                # Autonomous-recovery wiring (#TTS-demote-heal, 2026-05-28):
+                # a demoted backend doesn't just get skipped — we kick the
+                # existing auto-install path, which probes for fresh
+                # runnability + re-installs the venv via
+                # ``package_installer.install_backend_full`` if the venv
+                # is unhealthy.  The dedup gates inside
+                # ``_try_auto_install_backend`` (``_auto_install_pending``
+                # + ``_auto_install_failed``) make this safe to call on
+                # every request — at most one background install per
+                # backend per session.  On success the install path also
+                # clears the demotion (see _bg_install verdict.ok branch),
+                # so the engine becomes selectable on the next request
+                # without the user clicking anything.  Same wiring works
+                # for every venv-quarantined backend listed in
+                # BACKEND_VENV_PACKAGES (indic_parler today;
+                # chatterbox / cosyvoice / f5 / kokoro / omnivoice as
+                # they migrate).
+                self._try_auto_install_backend(backend)
                 continue
             if _hs_is_known_failed(backend):
                 logger.info(
@@ -2360,6 +2399,11 @@ class TTSEngine:
                     f"FAILING — agent self-heal should investigate "
                     f"the .err sidecar",
                 )
+                # Same autonomous-recovery hook: a handshake-FAILED
+                # backend should also get a re-install attempt so the
+                # underlying venv state gets repaired without operator
+                # action.  Dedup applies.
+                self._try_auto_install_backend(backend)
                 continue
             if backend == BACKEND_PIPER and not _piper_has_voice(language):
                 logger.debug(
