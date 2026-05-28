@@ -216,6 +216,16 @@ build_exe_options = {
            if os.path.isdir("landing-page/build") else [])
         # 6. Assets directory (bundled fonts, etc.)
         + ([("assets", "assets")] if os.path.isdir("assets") else [])
+        # 7. autobahn nvx .c source files (read at import time by CFFI builder).
+        # autobahn/nvx/_utf8validator.py and _xormasker.py open these .c
+        # files unconditionally at module load; cx_Freeze copies .py/.pyc
+        # but not .c data files, so without this glob the frozen Nunba
+        # crashes with FileNotFoundError on first autobahn import.
+        # Mirrors setup_freeze_nunba.py:656 and setup_freeze_linux.py:332.
+        + ([(f, os.path.join("lib", "autobahn", "nvx", os.path.basename(f)))
+            for f in glob.glob(os.path.join(
+                os.path.dirname(__import__('autobahn').__file__), 'nvx', '*.c'))]
+           if __import__('importlib').util.find_spec('autobahn') else [])
     ),
 }
 
