@@ -2022,6 +2022,41 @@ class TTSEngine:
         structural = self._is_structural_error(error)
         threshold = 1 if structural else self._failure_threshold
 
+        # Push EVERY failure to the canonical self-heal pipeline via
+        # exception_collector.report_subsystem_failure — the SAME
+        # helper channels / VLM / LLM / daemon / tool subsystems
+        # use.  Module key = 'tts.{backend}' is constructed by the
+        # helper, not here, so the convention can't drift between
+        # subsystems.  Three transient failures cluster under one
+        # pattern_key in ExceptionCollector → SelfHealingDispatcher
+        # creates a self_heal goal (default _min_occurrences=3);
+        # structural failures hit ExceptionWatcher's critical path
+        # at min_occurrences=1.  Either way the autonomous fix
+        # pipeline owns the response — TTS engine doesn't need to
+        # know about repair tools, model catalogs, or capability
+        # alternates; it just reports the failure.
+        if error is not None:
+            try:
+                import sys as _sys
+                # Lazy import to preserve the "TTS engine boots
+                # even without HARTOS imports" contract on Nunba.
+                if 'exception_collector' in _sys.modules:
+                    _ec = _sys.modules['exception_collector']
+                else:
+                    import exception_collector as _ec  # type: ignore
+                _ec.report_subsystem_failure(
+                    subsystem='tts',
+                    identifier=backend,
+                    exc=error,
+                    function='_record_backend_failure',
+                    failure_kind=('structural' if structural else 'transient'),
+                    consecutive_failures=n,
+                    threshold=threshold,
+                )
+            except Exception as _ec_err:  # noqa: BLE001
+                logger.debug(
+                    f"TTS failure → self-heal push failed: {_ec_err}")
+
         if n >= threshold and backend not in self._demoted_backends:
             self._demoted_backends.add(backend)
             kind = 'STRUCTURAL' if structural else 'transient'
