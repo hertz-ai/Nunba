@@ -2926,9 +2926,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       let autoSendTimer = null;
 
       recognition.onresult = (event) => {
+        // Iterate from event.resultIndex (NOT 0): with continuous=true,
+        // event.results keeps every finalized utterance for the whole
+        // session. Starting at 0 re-collects every previous final each
+        // time onresult fires, so the second utterance gets sent as
+        // "<previous> <new>" concatenated. resultIndex marks where the
+        // newly-changed results begin in this event — that's what we
+        // want for the current segment only. Matches the correct pattern
+        // already in hooks/useSpeechRecognition.js:187.
         let interim = '';
         let finalText = '';
-        for (let i = 0; i < event.results.length; i++) {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i];
           if (result.isFinal) finalText += result[0].transcript;
           else interim += result[0].transcript;
