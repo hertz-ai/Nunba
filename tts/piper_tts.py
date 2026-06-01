@@ -67,13 +67,28 @@ VOICE_PRESETS = {
     # Voices installed on demand (first use per language) so the bundled
     # installer stays small.  ~10-65 MB cached per language once used.
     #
-    # Tamil + Malayalam intentionally absent — rhasspy/piper-voices has
-    # NO upstream voice for those languages (HF URLs 404).  They're
-    # covered by indic_parler in _LANG_CAPABLE_BACKENDS fallback below.
+    # ── Indic-language Piper voices (CPU fallback for the "fallback
+    #     shd always be available" constraint, 2026-05-27).
+    # As of voices.json on rhasspy/piper-voices @ main, the available
+    # Indic coverage is: hi (pratham/priyamvada/rohan), ml (arjun/
+    # meera), te (maya/padmavathi/venkatesh), ur (fasih).  Picking one
+    # voice per language — medium quality, ~63 MB each — gives every
+    # user on every OS a CPU-runnable fallback without needing GPU.
+    # Indic Parler / MMS-TTS remain the quality tier when VRAM allows.
+    #
+    # Still genuinely absent from rhasspy/piper-voices (verified
+    # against voices.json 2026-05-27): ta (Tamil), bn (Bengali), gu
+    # (Gujarati), kn (Kannada), mr (Marathi), or (Odia), pa (Punjabi),
+    # as (Assamese).  For those, _LANG_CAPABLE_BACKENDS keeps
+    # indic_parler / chatterbox_ml / mms_tts as the fallback path, and
+    # _publish_lang_unsupported emits a WAMP toast when no engine fits
+    # the hardware so the UI shows a text-only badge instead of
+    # mumbling wrong-language audio.
+    #
     # A downloaded 15-byte "Entry not found" stub previously caused
     # PiperVoice.load to crash with `Expecting value: line 1 column 1`.
-    # Do NOT re-add ta_IN-pavithra-medium or ml_IN-gayathri-medium
-    # without verifying the URL returns a real .onnx (>1MB).
+    # Do NOT re-add ta_IN-pavithra-medium without verifying the URL
+    # returns a real .onnx (>1MB) — the original 404 still stands.
     "ne_NP-google-medium": {
         "name": "Google (Nepali)",
         "language": "ne_NP", "quality": "medium", "sample_rate": 22050,
@@ -186,6 +201,35 @@ VOICE_PRESETS = {
         "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/uk/uk_UA/ukrainian_tts/medium/uk_UA-ukrainian_tts-medium.onnx.json",
         "size_mb": 63,
     },
+    # ── Indic CPU fallback voices (2026-05-27) ────────────────────────
+    "hi_IN-pratham-medium": {
+        "name": "Pratham (Hindi)",
+        "language": "hi_IN", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN/pratham/medium/hi_IN-pratham-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN/pratham/medium/hi_IN-pratham-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "ml_IN-arjun-medium": {
+        "name": "Arjun (Malayalam)",
+        "language": "ml_IN", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ml/ml_IN/arjun/medium/ml_IN-arjun-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ml/ml_IN/arjun/medium/ml_IN-arjun-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "te_IN-maya-medium": {
+        "name": "Maya (Telugu)",
+        "language": "te_IN", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/te/te_IN/maya/medium/te_IN-maya-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/te/te_IN/maya/medium/te_IN-maya-medium.onnx.json",
+        "size_mb": 63,
+    },
+    "ur_PK-fasih-medium": {
+        "name": "Fasih (Urdu)",
+        "language": "ur_PK", "quality": "medium", "sample_rate": 22050,
+        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ur/ur_PK/fasih/medium/ur_PK-fasih-medium.onnx",
+        "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/ur/ur_PK/fasih/medium/ur_PK-fasih-medium.onnx.json",
+        "size_mb": 63,
+    },
 }
 
 DEFAULT_VOICE = "en_US-amy-medium"
@@ -195,11 +239,14 @@ DEFAULT_VOICE = "en_US-amy-medium"
 # with VOICE_PRESETS above.  Cross-platform: a Piper .onnx voice runs
 # identically on Windows / macOS / Linux with zero system-voice dep.
 #
-# Languages NOT in this map have no upstream Piper voice (notably ta,
-# ml, hi, te, kn, bn, pa).  For those, _LANG_CAPABLE_BACKENDS keeps
-# indic_parler / chatterbox_ml as the fallback path; never falls back
-# to the English DEFAULT_VOICE for the wrong language (see
-# voice_for_lang docstring + tts_engine._LazyPiper.synthesize).
+# Languages NOT in this map have no upstream Piper voice — as of
+# rhasspy/piper-voices voices.json @ 2026-05-27, the still-missing
+# Indic set is: ta (Tamil), bn (Bengali), gu (Gujarati), kn (Kannada),
+# mr (Marathi), or (Odia), pa (Punjabi), as (Assamese).  For those,
+# _LANG_CAPABLE_BACKENDS keeps indic_parler / chatterbox_ml / mms_tts
+# as the fallback path; never falls back to the English DEFAULT_VOICE
+# for the wrong language (see voice_for_lang docstring +
+# tts_engine._LazyPiper.synthesize).
 LANG_TO_VOICE: dict[str, str] = {
     'en':    'en_US-amy-medium',
     'en_US': 'en_US-amy-medium',
@@ -236,6 +283,15 @@ LANG_TO_VOICE: dict[str, str] = {
     'hu_HU': 'hu_HU-anna-medium',
     'uk':    'uk_UA-ukrainian_tts-medium',
     'uk_UA': 'uk_UA-ukrainian_tts-medium',
+    # ── Indic CPU fallback (2026-05-27) ──
+    'hi':    'hi_IN-pratham-medium',
+    'hi_IN': 'hi_IN-pratham-medium',
+    'ml':    'ml_IN-arjun-medium',
+    'ml_IN': 'ml_IN-arjun-medium',
+    'te':    'te_IN-maya-medium',
+    'te_IN': 'te_IN-maya-medium',
+    'ur':    'ur_PK-fasih-medium',
+    'ur_PK': 'ur_PK-fasih-medium',
 }
 
 

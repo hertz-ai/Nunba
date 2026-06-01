@@ -80,4 +80,36 @@ describe('#204/#220 parseFlowAction', () => {
       description: 'Flow 99 / Action 99: red herring',
     })).toEqual({flow: 'Flow 1', action: 'Action 1'});
   });
+
+  // Phase 5 / 2026-05-27 — explicit recipe_* fields stamped by Phase 1
+  // (agent_ledger/core.py Task.__init__) win over context AND description.
+  test('Phase 1 recipe_flow_id + recipe_action_id win over context', () => {
+    expect(parseFlowAction({
+      recipe_flow_id: 2,
+      recipe_action_id: 3,
+      context: {action_id: 99, flow: 99},   // context red herring — ignored
+      description: 'Flow 88 / Action 88: red herring',
+    })).toEqual({flow: 'Flow 2', action: 'Action 3'});
+  });
+
+  test('Phase 1 recipe_flow_id alone defaults action to "—"', () => {
+    expect(parseFlowAction({
+      recipe_flow_id: 0,
+    })).toEqual({flow: 'Flow 0', action: '—'});
+  });
+
+  test('Phase 1 recipe_action_id alone defaults flow to "Flow 1"', () => {
+    expect(parseFlowAction({
+      recipe_action_id: 5,
+    })).toEqual({flow: 'Flow 1', action: 'Action 5'});
+  });
+
+  test('Phase 1 flow_id=0 (falsy but explicit) is still honoured', () => {
+    // recipe_flow_id=0 is the most-common case (single-flow recipes);
+    // the != null check in parseFlowAction must accept it.
+    expect(parseFlowAction({
+      recipe_flow_id: 0,
+      recipe_action_id: 1,
+    })).toEqual({flow: 'Flow 0', action: 'Action 1'});
+  });
 });

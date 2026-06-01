@@ -1,7 +1,7 @@
 import GatewayQRDisplay from './GatewayQRDisplay';
 import QRPairingDisplay from './QRPairingDisplay';
 
-import { channelUserApi, channelsApi } from '../../services/socialApi';
+import socialApi, { channelUserApi, channelsApi } from '../../services/socialApi';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -262,9 +262,36 @@ export default function ChannelSetupWizard({ open, onClose, onSuccess }) {
           <Button
             variant="contained"
             startIcon={<LaunchIcon />}
-            onClick={() => {
-              const authUrl = selectedChannel.oauth_url || `/api/social/channels/oauth/${selectedChannel.channel_type}/start`;
-              window.open(authUrl, '_blank', 'width=500,height=600');
+            onClick={async () => {
+              // HARTOS oauth_api.py:201 mounts the start endpoint as
+              // POST /api/oauth/<channel_type>/start.  It returns
+              // {success, authorize_url, state} — the AUTHORIZE_URL is
+              // the IdP URL the user must open, NOT the start endpoint
+              // itself.  Earlier code window.open()'d the start endpoint
+              // directly, which is a GET → 405 method-not-allowed
+              // ("For teams I see method not found").  Proper flow:
+              // POST first (carries auth cookie via axios), then open
+              // the returned IdP URL.  Per-channel oauth_url override
+              // still short-circuits for adapters that don't follow
+              // this contract.
+              try {
+                if (selectedChannel.oauth_url) {
+                  window.open(selectedChannel.oauth_url, '_blank', 'width=500,height=600');
+                  return;
+                }
+                const res = await socialApi.post(
+                  `/api/oauth/${selectedChannel.channel_type}/start`,
+                  { return_to: window.location.href },
+                );
+                const url = res?.authorize_url || res?.data?.authorize_url;
+                if (!url) {
+                  alert(`Could not start ${selectedChannel.display_name || selectedChannel.channel_type} OAuth: ${res?.error || res?.data?.error || 'no authorize_url in response'}`);
+                  return;
+                }
+                window.open(url, '_blank', 'width=500,height=600');
+              } catch (e) {
+                alert(`OAuth start failed: ${e?.error || e?.response?.data?.error || e?.message || 'unknown error'}`);
+              }
             }}
             sx={{
               bgcolor: '#6C63FF',

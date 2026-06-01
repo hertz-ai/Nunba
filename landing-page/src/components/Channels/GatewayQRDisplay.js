@@ -36,10 +36,19 @@ export default function GatewayQRDisplay({ channelType, displayName, onPaired })
 
   const fetchQr = useCallback(async () => {
     try {
+      // axiosFactory.js:145 unwraps response.data, so `res` IS the
+      // Flask JSON body (e.g. {success:true, data:{qr,authenticated,state,account_id}}).
+      // Reading res.data.data is one level too deep — that path was
+      // valid before the response-interceptor unwrap landed, but the
+      // unwrap broke this component without breaking siblings like
+      // ChannelBindingsPage (which hedge with `res?.data?.data || res?.data`).
+      // Result: even on a successful 200 OK with QR present, `data`
+      // was undefined and the user-facing "Gateway returned no data"
+      // fallback fired permanently.  Same fix shape as siblings.
       const res = await channelUserApi.gatewayQr(channelType);
-      const data = res?.data?.data;
+      const data = res?.data?.data || res?.data;
       if (!data) {
-        setError(res?.data?.error || 'Gateway returned no data');
+        setError(res?.error || res?.data?.error || 'Gateway returned no data');
         return;
       }
       setQr(data.qr || null);
@@ -48,7 +57,12 @@ export default function GatewayQRDisplay({ channelType, displayName, onPaired })
       setAccountId(data.account_id || '');
       setError('');
     } catch (e) {
-      const msg = e?.response?.data?.error || e?.message || 'Failed to reach WhatsApp gateway';
+      // On rejection axiosFactory rejects with `error.response.data`
+      // (the body), so `e` IS the error envelope itself.  Keep the
+      // legacy `e?.response?.data?.error` path as a defensive fallback
+      // for any sibling caller that didn't get the unwrap interceptor.
+      const msg = e?.error || e?.response?.data?.error || e?.message
+                || 'Failed to reach WhatsApp gateway';
       setError(msg);
     } finally {
       setLoading(false);
@@ -88,14 +102,18 @@ export default function GatewayQRDisplay({ channelType, displayName, onPaired })
     setError('');
     try {
       const res = await channelUserApi.gatewayPairCode(channelType, { phone: phone.trim() });
-      const code = res?.data?.data?.code;
+      // Same unwrap defensiveness as fetchQr above — axiosFactory:145
+      // returns response.data, so `res.data.code` is the canonical path
+      // post-unwrap; keep `res.data.data.code` as the pre-unwrap fallback.
+      const code = res?.data?.data?.code || res?.data?.code || res?.code;
       if (code) {
         setPairCode(code);
       } else {
-        setError(res?.data?.error || 'Gateway did not return a pair code');
+        setError(res?.error || res?.data?.error || 'Gateway did not return a pair code');
       }
     } catch (e) {
-      const msg = e?.response?.data?.error || e?.message || 'pair-code request failed';
+      const msg = e?.error || e?.response?.data?.error || e?.message
+                || 'pair-code request failed';
       setError(msg);
     } finally {
       setRequestingCode(false);

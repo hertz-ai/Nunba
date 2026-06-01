@@ -168,9 +168,15 @@ for _sib_dir, _pkg_name in _sibling_editable_deps:
                 print(f"  Warning: could not fully clean {_build_dir}")
     # Install editable (no deps — avoids git clone failures)
     print(f"Auto-installing {_pkg_name} from {_sib_path}...")
-    _result = _sp.run(
-        [sys.executable, '-m', 'pip', 'install', '-e', _sib_path, '--no-deps', '--quiet'],
-        capture_output=True, text=True, timeout=300)
+    # --no-build-isolation: this .venv already has setuptools/wheel, so don't
+    # let pip spin up a fresh isolated build env and FETCH the build backend
+    # from PyPI — that network round-trip (plus the PEP 660 editable build) is
+    # what blew past the old 300s cap on a cold/busy/throttled box and failed
+    # the whole freeze with TimeoutExpired (2026-05-31).  --no-deps already
+    # skips dependency resolution; build isolation is the separate slow part.
+    _editable_cmd = [sys.executable, '-m', 'pip', 'install', '-e', _sib_path,
+                     '--no-deps', '--no-build-isolation', '--quiet']
+    _result = _sp.run(_editable_cmd, capture_output=True, text=True, timeout=600)
     if _result.returncode != 0:
         # Retry once after aggressive build cleanup
         print(f"  Retry: cleaning build artifacts and reinstalling {_pkg_name}...")
@@ -178,9 +184,7 @@ for _sib_dir, _pkg_name in _sibling_editable_deps:
             _stale_path = os.path.join(_sib_path, _stale)
             if os.path.isdir(_stale_path):
                 shutil.rmtree(_stale_path, ignore_errors=True)
-        _result = _sp.run(
-            [sys.executable, '-m', 'pip', 'install', '-e', _sib_path, '--no-deps', '--quiet'],
-            capture_output=True, text=True, timeout=300)
+        _result = _sp.run(_editable_cmd, capture_output=True, text=True, timeout=600)
         if _result.returncode != 0:
             print(f"  WARNING: {_pkg_name} install failed: {_result.stderr.strip()}")
 print("Sibling deps verified")
