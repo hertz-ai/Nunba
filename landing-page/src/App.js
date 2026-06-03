@@ -1,6 +1,7 @@
 import AgentContactRequest from './components/Agent/AgentContactRequest';
 import PageSkeleton from './components/shared/PageSkeleton';
 import {ToastProvider} from './components/shared/ToastProvider';
+import ApiErrorBanner from './components/shared/ApiErrorBanner';
 import {GA_TRACKING_ID, API_BASE_URL} from './config/apiBase';
 import {RealtimeProvider} from './contexts/RealtimeContext';
 import {SocialProvider} from './contexts/SocialContext';
@@ -103,6 +104,12 @@ function App() {
       <RealtimeProvider>
         <ToastProvider>
           <SocialProvider>
+            {/* Global server-error toast — subscribes to
+                'hevolve:api-error' CustomEvents from axiosFactory's
+                response interceptor.  Same contract as Hevolve RN's
+                DeviceEventEmitter('ApiError') + iOS Swift mirror, so
+                the UX feels identical across surfaces. */}
+            <ApiErrorBanner />
             <AgentContactRequest
               request={contactRequest}
               onAccept={handleAcceptContact}
