@@ -13,6 +13,14 @@ const socialApi = createApiClient(SOCIAL_API_URL);
 // Admin API — does NOT nuke auth session on 401 (admin 401 ≠ token expiry)
 const adminApiClient = createApiClient(ADMIN_API_URL, {handle401: false});
 
+// --- Marketing funnel (public: click/download/signup attribution) ---
+export const marketingApi = {
+  // POST /api/social/marketing/track {code, event, platform}
+  track: (data) => socialApi.post('/marketing/track', data),
+  // GET /api/social/marketing/growth — funnel + user-count dashboard
+  growth: () => socialApi.get('/marketing/growth'),
+};
+
 // --- Auth ---
 export const authApi = {
   login: (data) => socialApi.post('/auth/login', data),
