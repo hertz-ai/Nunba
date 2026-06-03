@@ -1,6 +1,7 @@
 import AgentContactRequest from './components/Agent/AgentContactRequest';
 import PageSkeleton from './components/shared/PageSkeleton';
 import {ToastProvider} from './components/shared/ToastProvider';
+import ApiErrorBanner from './components/shared/ApiErrorBanner';
 import {GA_TRACKING_ID, API_BASE_URL} from './config/apiBase';
 import {RealtimeProvider} from './contexts/RealtimeContext';
 import {SocialProvider} from './contexts/SocialContext';
@@ -8,6 +9,7 @@ import {NunbaThemeProvider} from './contexts/ThemeContext';
 import MainRoutes from './MainRoute';
 import realtimeService from './services/realtimeService';
 import useStorageSync from './hooks/useStorageSync';
+import {useReferral} from './hooks/useReferral';
 
 import React, {Suspense, useEffect, useState, useCallback} from 'react';
 import ReactGA from 'react-ga';
@@ -20,6 +22,10 @@ function App() {
   // mount.  See hooks/useStorageSync.js for the omniparser-gui parity
   // rationale.  Idempotent and non-overwriting.
   useStorageSync();
+
+  // Capture ?ref=<channel> from flywheel install links app-wide → localStorage,
+  // so it attributes on signup (and DownloadPage records the click/download).
+  useReferral();
 
   const [contactRequest, setContactRequest] = useState(null);
   const navigate = useNavigate();
@@ -98,6 +104,12 @@ function App() {
       <RealtimeProvider>
         <ToastProvider>
           <SocialProvider>
+            {/* Global server-error toast — subscribes to
+                'hevolve:api-error' CustomEvents from axiosFactory's
+                response interceptor.  Same contract as Hevolve RN's
+                DeviceEventEmitter('ApiError') + iOS Swift mirror, so
+                the UX feels identical across surfaces. */}
+            <ApiErrorBanner />
             <AgentContactRequest
               request={contactRequest}
               onAccept={handleAcceptContact}

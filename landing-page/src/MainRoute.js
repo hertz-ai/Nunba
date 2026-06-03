@@ -31,6 +31,7 @@ const AboutUs = lazy(() => import("./pages/aboutus"));
 const Personalised_Learning = lazy(() => import("./pages/index-three"));
 const Pricing = lazy(() => import("./pages/pricing"));
 const CommercialApiPricing = lazy(() => import("./pages/CommercialApiPricing"));
+const DownloadPage = lazy(() => import("./pages/DownloadPage"));
 const UpgradeSuccess = lazy(() => import("./pages/UpgradeSuccess"));
 const SpeechTherapyPage = lazy(() => import("./pages/SpeechTherapyPage"));
 const TrialPlanPricing = lazy(() => import("./pages/TrialPlanPricing"));
@@ -308,6 +309,16 @@ function MainRoutes() {
           element={
             <Suspense fallback={<PageSkeleton />}>
               <CommercialApiPricing />
+            </Suspense>
+          }
+        />
+        {/* Install funnel destination — the flywheel posts hevolve.ai/download?ref=
+            and DownloadPage records the click + serves the OS-matched installer. */}
+        <Route
+          path="/download"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <DownloadPage />
             </Suspense>
           }
         />

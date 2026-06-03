@@ -153,6 +153,22 @@ export function createApiClient(
         _getClearTokenWriter()();
       }
 
+      // Surface server-side faults to the global ApiErrorBanner so the
+      // user sees a toast instead of a silent empty surface — same
+      // visibility contract as Hevolve RN's ApiErrorBanner + iOS Swift
+      // mirror.  Mirrors the (path, status, method) shape both clients
+      // emit so cross-platform diagnostic discipline stays uniform.
+      try {
+        if (typeof window !== 'undefined' && error?.config) {
+          const status = Number(error.response?.status) || 0;
+          const url = (error.config.baseURL || '') + (error.config.url || '');
+          const method = String(error.config.method || 'get').toUpperCase();
+          window.dispatchEvent(new CustomEvent('hevolve:api-error', {
+            detail: {status, path: url, method},
+          }));
+        }
+      } catch (_) { /* never let a banner emit break the API call */ }
+
       // On network error: return stale cached data if available
       if (cache && error.config?._staleData !== undefined) {
         return error.config._staleData;

@@ -4398,8 +4398,18 @@ def register_routes(app):
     # app.route("/teachme2", methods=["POST"])(teachme2)
     app.route("/custom_gpt", methods=["POST"])(custom_gpt)
 
-    # Chat API routes (local + cloud agents)
-    app.route("/chat", methods=["POST"])(chat_route)
+    # Chat API routes (local + cloud agents).  Mark /chat as a user-facing turn
+    # (B1) so background daemons yield the shared model to the live chat instead
+    # of force-running onto it.  SINGLE SOURCE: core.foreground.mark_view — the
+    # same decorator the standalone HARTOS /chat route uses, so there is one
+    # foreground rule, not a per-app copy.  Lazy import + no-op fallback so this
+    # can never break route registration.
+    try:
+        from core.foreground import mark_view as _fg_mark
+    except Exception:
+        def _fg_mark(_f):
+            return _f
+    app.route("/chat", methods=["POST"])(_fg_mark(chat_route))
     app.route("/prompts", methods=["GET"])(get_prompts_route)
     app.route("/backend/health", methods=["GET"])(backend_health_route)
     app.route("/network/status", methods=["GET"])(network_status_route)
