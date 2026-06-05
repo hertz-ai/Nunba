@@ -174,6 +174,29 @@ EMBED_DEPS = {
     # gpu_worker subprocesses can't see the cx_Freeze venv copy. Kept in sync
     # with CORE_DEPS["pillow"] — bump both together.
     "pillow": CORE_DEPS["pillow"],
+    # Video assembly (imageio + the ffmpeg plugin).  Powers two HARTOS
+    # features that must work on every OS:
+    #   1. integrations/remote_desktop/frame_capture.py::record_to_video
+    #      (demo / call capture).  Invoked by
+    #      integrations/agent_engine/marketing_tools.py at runtime in the
+    #      HARTOS Tier-1 MAIN process — the frozen main exe resolves this
+    #      from python-embed via app.py's sys.path injection.
+    #   2. integrations/vision/ltx2_server.py (LTX2 video generation) which
+    #      runs as a gpu_worker SUBPROCESS off python-embed/python(.exe).
+    # Lives in python-embed (not CORE_DEPS) because the subprocess sets
+    # PYTHONNOUSERSITE=1 and can't see cx_Freeze lib/, AND because both the
+    # main exe and the subprocess share this sys.path entry — one copy
+    # serves both contexts (same rationale as pillow above).
+    # generate_requirements() folds EMBED_DEPS into requirements.txt, so dev
+    # runs (`python main.py`) and any full install pick it up too.
+    # frame_capture already guards the import (returns {ok: False} when
+    # absent → graceful GIF fallback), so this never breaks the build; it
+    # makes the mp4/H.264 path actually produce video across Win/macOS/Linux.
+    # imageio is pure-Python; imageio-ffmpeg ships a bundled ffmpeg binary
+    # as a per-OS wheel that pip auto-selects — no PEP 508 marker needed.
+    # numpy 1.26.4 + pillow pins above satisfy imageio's constraints.
+    "imageio": "2.37.3",
+    "imageio-ffmpeg": "0.6.0",
     # ML
     "scikit-learn": "1.7.2",
     # Tokenization
