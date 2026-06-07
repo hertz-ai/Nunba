@@ -1625,6 +1625,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         return;
       }
 
+      // #119: a valid incoming payload (thinking-trace / partial / final) means
+      // the in-flight chat turn is still progressing — push back its no-progress
+      // deadline so a long-but-working turn is never force-aborted at 180s.
+      try { chatApi.bumpChatDeadline && chatApi.bumpChatDeadline(); } catch (_) {}
+
       // Per-msg_id dedup (see seenMsgIdsRef declaration block for context).
       // Drops the 2nd/3rd delivery of the same trace silently — first
       // delivery wins, all downstream side effects (setMessages, audio,

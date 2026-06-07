@@ -653,6 +653,20 @@ const chatApiClient = createApiClient(CHAT_API_URL, {
   cache: false,
 });
 
+// #119 — progress-aware chat deadline. A long autogen/recipe turn streams
+// thinking-traces while it works; the FIXED 180s axios timeout aborts a turn
+// that is still progressing. Instead each chat request runs under an
+// AbortController whose "no-progress" deadline is pushed back every time a
+// thinking-trace arrives (Demopage.handleDataReceived calls bumpChatDeadline).
+// A genuinely stuck turn (no traces) still aborts after CHAT_DEADLINE_MS, so we
+// never hang forever — we only stop force-aborting slow-but-working turns.
+const CHAT_DEADLINE_MS = 180000;
+let _activeChatDeadline = null;
+
+export function bumpChatDeadline() {
+  if (_activeChatDeadline) _activeChatDeadline.reset();
+}
+
 // Cloud fallback client (no 401 handling — public endpoints)
 const cloudApiClient = createApiClient(CLOUD_API_URL, {
   handle401: false,
@@ -672,8 +686,28 @@ export const chatApi = {
   getUserPromptsCloud: (userId) =>
     cloudApiClient.get('/getprompt_userid/', {params: {user_id: userId}}),
 
-  // Chat with agent
-  chat: (data) => chatApiClient.post('/chat', data),
+  // Chat with agent — runs under a progress-resettable deadline (#119) instead
+  // of the fixed 180s timeout, so a turn that keeps emitting thinking-traces is
+  // not force-aborted; a turn that goes silent still aborts after CHAT_DEADLINE_MS.
+  chat: (data, config = {}) => {
+    const controller = new AbortController();
+    let timer = setTimeout(() => controller.abort(), CHAT_DEADLINE_MS);
+    const deadline = {
+      reset: () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => controller.abort(), CHAT_DEADLINE_MS);
+      },
+    };
+    _activeChatDeadline = deadline;
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (_activeChatDeadline === deadline) _activeChatDeadline = null;
+    };
+    return chatApiClient
+      .post('/chat', data, {signal: controller.signal, timeout: 0, ...config})
+      .then((r) => { cleanup(); return r; }, (e) => { cleanup(); throw e; });
+  },
+  bumpChatDeadline,  // pushed back on every thinking-trace (#119)
 
   // Custom GPT endpoint
   customGpt: (data) => chatApiClient.post('/custom_gpt', data),
