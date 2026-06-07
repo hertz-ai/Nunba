@@ -809,7 +809,16 @@ export const syncApi = {
   createBackup: (data) => socialApi.post('/sync/backup', data),
   getBackupMetadata: () => socialApi.get('/sync/backup/metadata'),
   restore: (data) => socialApi.post('/sync/restore', data),
-  linkDevice: (data) => socialApi.post('/sync/link-device', data),
+  // #117: hand the server our prior anonymous guest id so it can re-home that
+  // guest session's memory onto this account at link/login time. The server
+  // migrates ONLY an unclaimed anonymous guest (is_claimable_guest), so this is
+  // safe to always include; omitted when there was no guest session.
+  linkDevice: (data) => {
+    let guestUserId;
+    try { guestUserId = localStorage.getItem('guest_user_id') || undefined; } catch (_) { /* no-op */ }
+    return socialApi.post('/sync/link-device',
+      guestUserId ? {...data, guest_user_id: guestUserId} : data);
+  },
   listDevices: () => socialApi.get('/sync/devices'),
   unlinkDevice: (id) => socialApi.delete(`/sync/devices/${id}`),
 };
