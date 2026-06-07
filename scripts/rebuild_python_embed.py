@@ -860,9 +860,17 @@ def _run_rebuild_steps():
     # 7b. Install hart-backend (non-editable for cx_Freeze compatibility)
     step("7b. Installing hart-backend")
     hevolve_src = None
-    if os.path.isdir(HARTOS_BACKEND_SRC):
+    # Require an INSTALLABLE source (pyproject.toml present), not merely an
+    # existing directory.  A broken/empty hartos_backend_src — e.g. a clone
+    # whose worktree was partially removed (shutil.rmtree(ignore_errors=True)
+    # can't delete a memory-mapped/locked .git pack on Windows, leaving only
+    # .git/objects/pack/) — would otherwise win this check and make
+    # `pip install` fail with "Neither setup.py nor pyproject.toml found",
+    # shadowing the working local sibling.  Probe pyproject.toml, mirroring
+    # _find_local_hartos_backend()'s own installability check.
+    if os.path.isfile(os.path.join(HARTOS_BACKEND_SRC, 'pyproject.toml')):
         hevolve_src = HARTOS_BACKEND_SRC
-    elif os.path.isdir(LLM_LANGCHAIN_SRC):
+    elif os.path.isfile(os.path.join(LLM_LANGCHAIN_SRC, 'pyproject.toml')):
         hevolve_src = LLM_LANGCHAIN_SRC
 
     if hevolve_src:
