@@ -208,6 +208,79 @@ function AnimationRow({
   );
 }
 
+// ── Floating voice-orb skin ─────────────────────────────────────────────────
+// Local preference (per origin) read by the standalone /voice-orb presence.
+// Default 'viz' (amplitude visualiser); 'character' is the face alternate.
+function OrbSkinRow() {
+  const [skin, setSkin] = useState(() => {
+    try {
+      return localStorage.getItem('hart_orb_skin') === 'character'
+        ? 'character'
+        : 'viz';
+    } catch (e) {
+      return 'viz';
+    }
+  });
+  const choose = (next) => {
+    setSkin(next);
+    try {
+      localStorage.setItem('hart_orb_skin', next);
+    } catch (e) {
+      /* private mode / disabled storage — UI still reflects the choice */
+    }
+  };
+  return (
+    <Box sx={{py: 1.5}}>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <Box sx={{display: 'flex', alignItems: 'center', gap: 1.5}}>
+          <Box
+            sx={{
+              width: 20,
+              height: 20,
+              borderRadius: '50%',
+              background:
+                'radial-gradient(circle at 38% 32%, #9B94FF, #6C63FF 70%)',
+              boxShadow: '0 0 8px #6C63FF',
+            }}
+          />
+          <Box>
+            <Typography variant="body2" sx={{color: '#fff', fontWeight: 500}}>
+              Floating voice orb
+            </Typography>
+            <Typography
+              variant="caption"
+              sx={{color: 'rgba(255,255,255,0.4)'}}
+            >
+              {skin === 'viz'
+                ? 'Amplitude visualiser (default)'
+                : 'Character face'}
+            </Typography>
+          </Box>
+        </Box>
+        <Switch
+          checked={skin === 'viz'}
+          onChange={(e) => choose(e.target.checked ? 'viz' : 'character')}
+          size="small"
+          sx={{
+            '& .MuiSwitch-switchBase.Mui-checked': {
+              color: 'var(--nunba-primary, #6C63FF)',
+            },
+            '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+              backgroundColor: 'var(--nunba-primary, #6C63FF)',
+            },
+          }}
+        />
+      </Box>
+    </Box>
+  );
+}
+
 // ── Main Component ──────────────────────────────────────────────────────────
 
 export default function ThemeSettingsPage() {
@@ -768,6 +841,7 @@ export default function ThemeSettingsPage() {
               updateDraft({animations: {liquid_motion: {intensity: v}}})
             }
           />
+          <OrbSkinRow />
         </Paper>
       </Collapse>
 

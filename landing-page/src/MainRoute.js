@@ -165,6 +165,10 @@ const AdminProviderManagement = lazyRetry(() => import('./pages/admin/ProviderMa
 const AdminTaskLedger = lazyRetry(() => import('./pages/admin/TaskLedgerPage'));
 const AdminClaudeCodeIntegration = lazyRetry(() => import('./pages/admin/ClaudeCodeIntegrationPage'));
 
+// Standalone frameless voice orb — loaded by the desktop companion window and
+// the HART OS glass-shell iframe (transparent, no chrome).
+const VoiceOrbPage = lazyRetry(() => import('./components/VoiceOrb/VoiceOrbPage'));
+
 function MainRoutes() {
   return (
     <>
@@ -196,6 +200,10 @@ function MainRoutes() {
             </>
           }
         />
+
+        {/* Standalone frameless voice orb — desktop companion window + HART OS
+            glass-shell iframe. Transparent, no layout/guard (it IS the overlay). */}
+        <Route path="/voice-orb" element={<Suspense fallback={null}><VoiceOrbPage /></Suspense>} />
 
         {/* Local route for Nunba offline mode - same as root */}
         <Route
