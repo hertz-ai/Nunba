@@ -467,32 +467,22 @@ function PanelContent() {
     activeMethod: micMethod,
   } = useSpeechRecognition();
 
-  // Track the last transcript chunk we appended so a stable string from the
-  // hook (during a continuous session) doesn't get appended repeatedly.
-  const lastAppendedTranscriptRef = useRef('');
+  // Base = whatever the user had typed before this dictation session started;
+  // captured at mic-start in handleMicClick.
+  const voiceBaseRef = useRef('');
 
-  // Append (don't replace) new transcript chunks into the input.  Users keep
-  // any text they typed before tapping mic, and they can still edit before
-  // sending — auto-send is intentionally OFF (product-owner gate).
+  // The hook's `transcript` is the FULL cumulative utterance — the streaming
+  // server emits growing transcripts ("I am" -> "I am Hart" -> ...). So REPLACE
+  // the dictated tail each update rather than appending: appending cumulative
+  // transcripts duplicated the text ("I am I am Hart I am Hart OS ..."). The
+  // user keeps whatever they typed before tapping mic (the base) and can still
+  // edit before sending — auto-send stays OFF (product-owner gate).
   useEffect(() => {
     if (!transcript) return;
-    if (transcript === lastAppendedTranscriptRef.current) return;
-    lastAppendedTranscriptRef.current = transcript;
-    setInput((prev) => {
-      if (!prev) return transcript;
-      const needsSpace = !/\s$/.test(prev);
-      return needsSpace ? `${prev} ${transcript}` : `${prev}${transcript}`;
-    });
+    const base = voiceBaseRef.current;
+    const sep = base && !/\s$/.test(base) ? ' ' : '';
+    setInput(base + sep + transcript);
   }, [transcript]);
-
-  // Reset the transcript memo whenever the mic stops, so the next session
-  // starts clean and doesn't immediately re-fire the append effect with a
-  // stale value.
-  useEffect(() => {
-    if (!isListening) {
-      lastAppendedTranscriptRef.current = '';
-    }
-  }, [isListening]);
 
   // Stop the mic on unmount.  The hook also self-cleans (lines 274-286 of
   // useSpeechRecognition.js), but calling stopListening here makes the
@@ -510,7 +500,10 @@ function PanelContent() {
       return;
     }
     resetTranscript();
-    lastAppendedTranscriptRef.current = '';
+    // Capture the current input as the dictation base. The functional updater
+    // reads the live value (no stale closure) without mutating it, so the
+    // cumulative transcript replaces the dictated tail instead of stacking.
+    setInput((cur) => { voiceBaseRef.current = cur; return cur; });
     const lang = localStorage.getItem('hart_language') || 'en';
     startListening({language: lang});
   }, [isListening, startListening, stopListening, resetTranscript]);

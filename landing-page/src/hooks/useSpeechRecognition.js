@@ -242,11 +242,8 @@ export default function useSpeechRecognition(config = {}) {
   }, [defaultLanguage, startWebSocketSTT, startBrowserSTT]);
 
   const stopListening = useCallback(() => {
-    // Stop WebSocket STT
-    if (wsRef.current) {
-      try { wsRef.current.close(); } catch (_) {}
-      wsRef.current = null;
-    }
+    // Stop capturing new audio immediately (mic + processor + context), so no
+    // more frames are sent after the user releases the mic.
     if (processorRef.current) {
       try { processorRef.current.disconnect(); } catch (_) {}
       processorRef.current = null;
@@ -258,6 +255,28 @@ export default function useSpeechRecognition(config = {}) {
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
+    }
+
+    // Flush a FINAL transcript before closing the WS. The streaming server only
+    // emits {is_final:true} — which is what drives onResult — when it receives
+    // {control:'final'} (or at the 30s max-buffer). Closing the socket without
+    // it means the trailing audio is never transcribed and onResult NEVER
+    // fires: every short utterance looked "broken". Send the flush, keep the
+    // socket open briefly so the final reply (handled in ws.onmessage above)
+    // arrives, then close.
+    const ws = wsRef.current;
+    wsRef.current = null;
+    if (ws) {
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({control: 'final'}));
+          setTimeout(() => { try { ws.close(); } catch (_) {} }, 600);
+        } else {
+          ws.close();
+        }
+      } catch (_) {
+        try { ws.close(); } catch (_) {}
+      }
     }
 
     // Stop browser SpeechRecognition

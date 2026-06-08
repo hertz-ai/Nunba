@@ -5,7 +5,7 @@
  *   a) Mic button mounts inside the panel.
  *   b) Click mic when !isListening → startListening({language: <userLang>}).
  *   c) Click mic when isListening → stopListening called.
- *   d) Transcript change appends (does not replace) into TextField value.
+ *   d) Cumulative transcript REPLACES the dictated tail (no duplication).
  *   e) error containing "permission"/"denied" → friendly inline message.
  *   f) Cleanup on unmount calls stopListening.
  *   g) prefers-reduced-motion → pulse animation disabled (still red mic).
@@ -186,31 +186,48 @@ describe('NunbaChatPanel mic — stop listening', () => {
   });
 });
 
-// ── (d) Transcript appends, does not replace ──────────────────────────────
+// ── (d) Cumulative transcript REPLACES the dictated tail (no duplication) ──
+//
+// The streaming server emits GROWING cumulative transcripts
+// ("I am" -> "I am Hart" -> "I am Hart OS"). The panel must REPLACE the
+// dictated tail each update, keeping only the text the user typed before
+// tapping mic (the base). The old code appended each cumulative chunk, which
+// duplicated everything ("note: I am I am Hart I am Hart OS").
 
-describe('NunbaChatPanel mic — transcript appended into input', () => {
-  it('appends transcript to existing input text with a space separator', () => {
-    mockHookState = {
-      ...mockHookState,
-      isListening: true,
-      activeMethod: 'ws',
-      transcript: 'hello world',
-    };
-    renderPanel();
+describe('NunbaChatPanel mic — cumulative transcript replaces (no duplication)', () => {
+  it('keeps the pre-mic base and replaces the dictated tail each update', () => {
+    const {rerender} = renderPanel();
     const textarea = screen.getByPlaceholderText(/Message Nunba/i);
-    // Type something first so we can verify "append, not replace"
-    fireEvent.change(textarea, {target: {value: 'pre-typed '}});
-    // Re-render with a NEW transcript chunk (simulating WS message)
-    act(() => {
+
+    // User types a base, THEN taps mic — handleMicClick captures the base.
+    fireEvent.change(textarea, {target: {value: 'note: '}});
+    fireEvent.click(screen.getByTestId('mic-toggle-button'));
+    expect(mockStartListening).toHaveBeenCalled();
+
+    const pump = (t) => {
       mockHookState = {
         ...mockHookState,
-        transcript: 'fresh chunk from whisper',
+        isListening: true,
+        activeMethod: 'ws',
+        transcript: t,
       };
-    });
-    // Trigger a state update by clicking mic stop — this re-renders
-    // (the effect that watches `transcript` already fires on mount; but
-    // re-render with the new mock value confirms append behavior).
-    expect(textarea.value).toContain('pre-typed');
+      rerender(
+        <MemoryRouter>
+          <ThemeProvider theme={theme}>
+            <NunbaChatPanel />
+          </ThemeProvider>
+        </MemoryRouter>
+      );
+    };
+
+    // Cumulative interims from the streaming server.
+    act(() => pump('I am'));
+    act(() => pump('I am Hart'));
+    act(() => pump('I am Hart OS'));
+
+    // Replace-semantics: base + latest cumulative, with NO duplication.
+    expect(textarea.value).toBe('note: I am Hart OS');
+    expect(textarea.value).not.toMatch(/I am .*I am/);
   });
 });
 
