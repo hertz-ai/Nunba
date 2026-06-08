@@ -37,8 +37,7 @@ import logging
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional
-
+from typing import Any, Optional
 
 logger = logging.getLogger('hevolve.verify_all_models')
 
@@ -51,11 +50,11 @@ CACHE_TTL_S = 300
 # verify_all_models() writes, callers read.  Snapshot dict + monotonic
 # timestamp so we can compute age.
 _cache_lock = threading.Lock()
-_cache: Optional[Dict[str, Any]] = None
+_cache: dict[str, Any] | None = None
 _cache_ts: float = 0.0
 
 
-def _result_to_dict(r: Any) -> Dict[str, Any]:
+def _result_to_dict(r: Any) -> dict[str, Any]:
     """Coerce any verified_*.Result dataclass into the snapshot row
     shape.  Reuses existing Result fields — n_bytes/content/response/
     transcript all collapse into a single 'detail' string."""
@@ -81,7 +80,7 @@ def _result_to_dict(r: Any) -> Dict[str, Any]:
     }
 
 
-def verify_all_models(engines: Dict[str, Any] | None = None,
+def verify_all_models(engines: dict[str, Any] | None = None,
                       llm_endpoint: str = "http://127.0.0.1:8080",
                       stt_engine: Any | None = None,
                       vlm_engine: Any | None = None,
@@ -89,7 +88,7 @@ def verify_all_models(engines: Dict[str, Any] | None = None,
                       video_gen_engine: Any | None = None,
                       tts_engine: Any | None = None,
                       tts_backend: str | None = None,
-                      broadcast: bool = True) -> Dict[str, Any]:
+                      broadcast: bool = True) -> dict[str, Any]:
     """Run all 6 verifiers and return a unified snapshot.
 
     Each modality's verifier runs independently; one modality's
@@ -102,7 +101,7 @@ def verify_all_models(engines: Dict[str, Any] | None = None,
 
     Returns the snapshot dict shape documented in module docstring.
     """
-    modalities: Dict[str, Dict[str, Any]] = {}
+    modalities: dict[str, dict[str, Any]] = {}
 
     # 1. TTS — uses the canonical backend per call (defaults to first
     # registered if tts_backend not passed)
@@ -219,7 +218,7 @@ def verify_all_models(engines: Dict[str, Any] | None = None,
     return snapshot
 
 
-def get_cached(max_age_s: int = CACHE_TTL_S) -> Optional[Dict[str, Any]]:
+def get_cached(max_age_s: int = CACHE_TTL_S) -> dict[str, Any] | None:
     """Return the cached snapshot if younger than max_age_s, else None.
 
     Use this from the admin dashboard polling endpoint so an idle

@@ -24,7 +24,6 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-
 # Make the project root importable so `tts.*` works when this file is
 # loaded by `pytest tests/...`.
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
@@ -45,7 +44,7 @@ class VerifiedBackendPredicateTests(unittest.TestCase):
     """Pin the two new helpers in tts_handshake."""
 
     def setUp(self):
-        from tts.tts_handshake import _cache_lock, _cache
+        from tts.tts_handshake import _cache, _cache_lock
         with _cache_lock:
             _cache.clear()
 
@@ -94,7 +93,7 @@ class LadderGateBehaviorTests(unittest.TestCase):
     """Pin _select_backend_for_language's two-pass behavior."""
 
     def setUp(self):
-        from tts.tts_handshake import _cache_lock, _cache
+        from tts.tts_handshake import _cache, _cache_lock
         with _cache_lock:
             _cache.clear()
 

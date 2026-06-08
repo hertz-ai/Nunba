@@ -1,6 +1,6 @@
 """#217 — verify_all_models matrix runner: snapshot + cache contracts."""
-import sys
 import os
+import sys
 import unittest
 
 _TTS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'tts'))

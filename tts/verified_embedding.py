@@ -26,7 +26,6 @@ import threading
 import time
 from dataclasses import dataclass
 
-
 # Default similarity floor for the canned "hello world" / "hi there"
 # test pair.  Picked low enough that even small/quantized embedding
 # models pass, high enough that a broken model (all-zero / random)

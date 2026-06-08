@@ -22,7 +22,6 @@ import os
 import sys
 import unittest
 
-
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -30,7 +29,7 @@ if _REPO_ROOT not in sys.path:
 
 def _read_chatbot_routes_source() -> str:
     path = os.path.join(_REPO_ROOT, 'routes', 'chatbot_routes.py')
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, encoding='utf-8') as f:
         return f.read()
 
 
@@ -73,8 +72,10 @@ class HTTPAttachRemovedTests(unittest.TestCase):
         """The buffer + drain helpers remain available for diag use
         even though HTTP no longer attaches traces."""
         from routes.hartos_backend_adapter import (
-            _capture_thinking, drain_thinking_traces, _thinking_traces_by_request,
+            _capture_thinking,
+            _thinking_traces_by_request,
             _thinking_traces_lock,
+            drain_thinking_traces,
         )
         with _thinking_traces_lock:
             _thinking_traces_by_request.clear()

@@ -32,7 +32,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -167,7 +166,7 @@ def test_verified_install_clears_demotion():
     _demoted_backends + _consecutive_failures + persisted, so PASS 1
     / PASS 2 can pick it up on the next request without the user
     doing anything."""
-    from tts.tts_engine import TTSEngine, BACKEND_INDIC_PARLER
+    from tts.tts_engine import BACKEND_INDIC_PARLER, TTSEngine
 
     eng = _make_engine()
     eng._demoted_backends.add(BACKEND_INDIC_PARLER)

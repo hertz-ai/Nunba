@@ -67,7 +67,7 @@ class DeepProbeSilentExitTests(unittest.TestCase):
     def _read_sidecar(self):
         if not os.path.exists(self.sidecar):
             return ''
-        with open(self.sidecar, 'r', encoding='utf-8') as fp:
+        with open(self.sidecar, encoding='utf-8') as fp:
             return fp.read()
 
     def test_silent_synthesize_None_writes_sidecar_entry(self):

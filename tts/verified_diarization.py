@@ -21,7 +21,6 @@ import time
 import wave
 from dataclasses import dataclass
 
-
 MIN_TURNS: int = 2          # at least 2 turns from a 2-speaker clip
 MIN_SPEAKERS: int = 2       # at least 2 distinct speaker labels
 
