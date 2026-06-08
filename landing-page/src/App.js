@@ -2,7 +2,7 @@ import AgentContactRequest from './components/Agent/AgentContactRequest';
 import ApiErrorBanner from './components/shared/ApiErrorBanner';
 import PageSkeleton from './components/shared/PageSkeleton';
 import {ToastProvider} from './components/shared/ToastProvider';
-import NunbaTitleBar, {shouldRenderTitleBar} from './components/Shell/NunbaTitleBar';
+import NunbaTitleBar from './components/Shell/NunbaTitleBar';
 import {GA_TRACKING_ID, API_BASE_URL} from './config/apiBase';
 import {RealtimeProvider} from './contexts/RealtimeContext';
 import {SocialProvider} from './contexts/SocialContext';
@@ -126,10 +126,13 @@ function App() {
                 onAccept={handleAcceptContact}
                 onDeny={handleDenyContact}
               />
-              <main
-                id="main-content"
-                style={shouldRenderTitleBar() ? {paddingTop: 32} : undefined}
-              >
+              {/* Titlebar clearance is handled ENTIRELY by NunbaTitleBar's
+                  injected CSS (body.nunba-frameless-active main { padding-top }).
+                  The old inline paddingTop here was a second, unreliable source
+                  of the same offset (computed once at first paint, before
+                  pywebview attaches) — having both double-applied the gap on
+                  startup.  One source now. */}
+              <main id="main-content">
                 <Suspense fallback={<PageSkeleton />}>
                   <MainRoutes />
                 </Suspense>

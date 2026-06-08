@@ -829,9 +829,9 @@ export default function SocialLayout({children}) {
       sx={{
         display: 'flex',
         bgcolor: 'background.default',
-        minHeight: '100dvh',
+        minHeight: 'var(--nunba-content-h, 100dvh)',
         overflow: 'clip',
-        '@supports not (min-height: 100dvh)': {minHeight: '100vh'},
+        '@supports not (min-height: 100dvh)': {minHeight: 'var(--nunba-content-h, 100vh)'},
       }}
     >
       {/* Desktop sidebar */}

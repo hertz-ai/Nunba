@@ -126,10 +126,18 @@ export default function NunbaTitleBar({ children }) {
     const style = document.createElement('style');
     style.id = 'nunba-titlebar-offsets';
     style.textContent = `
-      /* When the custom titlebar is mounted, every <main> + every
-         sticky/absolute top-pinned chrome element shifts down by the
-         titlebar height so nothing is occluded by the fixed 32px strip. */
-      body.nunba-frameless-active main { padding-top: var(--nunba-titlebar-h, 32px); }
+      /* The custom titlebar is a fixed 32px overlay.  Two jobs here:
+         (1) shift top-pinned chrome down so nothing hides under the strip;
+         (2) publish --nunba-content-h = (viewport − titlebar) so full-height
+             shells (chat, social layout) size to the SPACE BELOW the bar
+             instead of a raw 100vh.  A 100vh box pushed down by the 32px
+             titlebar is 32px taller than the window → a page-level scrollbar;
+             the app is meant to be fixed (only inner views like chat scroll).
+         Default --nunba-content-h stays 100vh, so browser + macOS render is
+         unchanged (the var only shrinks when the frameless chrome is active). */
+      :root { --nunba-content-h: 100vh; }
+      body.nunba-frameless-active { --nunba-content-h: calc(100vh - var(--nunba-titlebar-h, 32px)); }
+      body.nunba-frameless-active main { padding-top: var(--nunba-titlebar-h, 32px); box-sizing: border-box; }
       body.nunba-frameless-active .sticky.top-0 { top: var(--nunba-titlebar-h, 32px); }
       body.nunba-frameless-active .absolute.top-4 { top: calc(1rem + var(--nunba-titlebar-h, 32px)); }
       body.nunba-frameless-active .fixed.top-0 { top: var(--nunba-titlebar-h, 32px); }

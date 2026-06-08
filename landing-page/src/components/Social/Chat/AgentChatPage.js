@@ -189,7 +189,7 @@ export default function AgentChatPage() {
       `&embed=true&companionAppInstalled=true`;
 
     return (
-      <Box sx={{height: '100vh', display: 'flex', flexDirection: 'column'}}>
+      <Box sx={{height: 'var(--nunba-content-h, 100vh)', display: 'flex', flexDirection: 'column'}}>
         <ModeBar label="Switch to Local" onClick={() => setViewMode('local')} />
         <Box sx={{flex: 1, minHeight: 0}}>
           <iframe
@@ -206,7 +206,7 @@ export default function AgentChatPage() {
   // ── Local mode: render the full ported ChatInterface (Demopage.js) ──
   const userRole = getSessionRole();
   return (
-    <Box sx={{height: '100vh', display: 'flex', flexDirection: 'column'}}>
+    <Box sx={{height: 'var(--nunba-content-h, 100vh)', display: 'flex', flexDirection: 'column'}}>
       <ModeBar
         label="Switch to Hosted"
         onClick={() => setViewMode('webview')}
