@@ -1,5 +1,7 @@
 /* eslint-disable no-unused-vars, camelcase, import/order, import/no-unresolved, prettier/prettier, valid-jsdoc, react-hooks/exhaustive-deps, react/no-unescaped-entities */
 import React, {useState, useRef, useEffect, useCallback, useMemo} from 'react';
+import {createPortal} from 'react-dom';
+import {useTitleBarRightSlot} from '../components/Shell/TitleBarSlotContext';
 import {v4 as uuidv4} from 'uuid';
 // import { Worker, Viewer, SpecialZoomLevel } from '@react-pdf-viewer/core';
 // import '@react-pdf-viewer/core/lib/styles/index.css';
@@ -207,6 +209,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [intelligencePreference, setIntelligencePreference] = useState(
     () => localStorage.getItem('intelligence_preference') || 'auto'
   );
+  // TB-Phase-B: when running inside pywebview's frameless mode, the toolbar
+  // portals into NunbaTitleBar's right slot.  In browser mode (`null` slot)
+  // it renders inline at its original position — zero regression.
+  const titlebarSlot = useTitleBarRightSlot();
   const [backendHealth, setBackendHealth] = useState(null); // 'healthy' | 'degraded' | 'offline'
   const cloudAvailable = navigator.onLine; // true = cloud hevolve.ai reachable
   const [isRequestInFlight, setIsRequestInFlight] = useState(false); // true only during active HTTP request
@@ -5037,8 +5043,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         />
       )}
 
-      {/* ── Top-right toolbar: hidden when embedded in AgentChatPage ── */}
-      {!embeddedMode && <div className="absolute top-1 right-2 z-50 flex items-center gap-1.5 flex-wrap justify-end">
+      {/* ── Top-right toolbar: hidden when embedded in AgentChatPage ──
+          In pywebview frameless mode, portal into NunbaTitleBar's right slot;
+          in browser mode (titlebarSlot === null) render inline at top-1 right-2. */}
+      {!embeddedMode && (() => {
+        const toolbar = <div className={titlebarSlot ? "flex items-center gap-1.5 flex-wrap justify-end" : "absolute top-1 right-2 z-50 flex items-center gap-1.5 flex-wrap justify-end"}>
         {/* Install / Launch Companion buttons removed 2026-04-28:
             Nunba IS the companion app — pointing users to a separate
             "HevolveAI Agent Companion .exe" or `hevolveai://` launcher
@@ -5141,7 +5150,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             still read by the cloud-creds POST useEffect upstream
             (Demopage.js:1924) — keeping that gate, just dropping the
             on-screen indicator. */}
-      </div>}
+      </div>;
+        return titlebarSlot ? createPortal(toolbar, titlebarSlot) : toolbar;
+      })()}
 
       {/* Agent UI Overlay — floating glass cards for agent-pushed components */}
       <AgentOverlay

@@ -7,6 +7,7 @@ import {RealtimeProvider} from './contexts/RealtimeContext';
 import {SocialProvider} from './contexts/SocialContext';
 import {NunbaThemeProvider} from './contexts/ThemeContext';
 import MainRoutes from './MainRoute';
+import NunbaTitleBar, {shouldRenderTitleBar} from './components/Shell/NunbaTitleBar';
 import realtimeService from './services/realtimeService';
 import useStorageSync from './hooks/useStorageSync';
 import {useReferral} from './hooks/useReferral';
@@ -109,17 +110,31 @@ function App() {
                 response interceptor.  Same contract as Hevolve RN's
                 DeviceEventEmitter('ApiError') + iOS Swift mirror, so
                 the UX feels identical across surfaces. */}
-            <ApiErrorBanner />
-            <AgentContactRequest
-              request={contactRequest}
-              onAccept={handleAcceptContact}
-              onDeny={handleDenyContact}
-            />
-            <main id="main-content">
-              <Suspense fallback={<PageSkeleton />}>
-                <MainRoutes />
-              </Suspense>
-            </main>
+            {/* Custom dark titlebar — pywebview frameless mode, Win+Linux only.
+                Companion floating windows (app.py:_companion_window) already use
+                their OWN frameless rendering and load /companion route; their
+                URL bypasses this MainRoute, so they never see <NunbaTitleBar />
+                — no double-chrome risk.  Detection happens inside the component
+                (shouldRenderTitleBar checks pywebview + non-macOS). */}
+            {/* NunbaTitleBar wraps MainRoutes so its TitleBarSlotProvider
+                is in scope for every page — Demopage's chip can portal into
+                the titlebar's right cluster when present, else render inline. */}
+            <NunbaTitleBar>
+              <ApiErrorBanner />
+              <AgentContactRequest
+                request={contactRequest}
+                onAccept={handleAcceptContact}
+                onDeny={handleDenyContact}
+              />
+              <main
+                id="main-content"
+                style={shouldRenderTitleBar() ? {paddingTop: 32} : undefined}
+              >
+                <Suspense fallback={<PageSkeleton />}>
+                  <MainRoutes />
+                </Suspense>
+              </main>
+            </NunbaTitleBar>
           </SocialProvider>
         </ToastProvider>
       </RealtimeProvider>

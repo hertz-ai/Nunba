@@ -7014,7 +7014,26 @@ def main():
 
             _native_api = NunbaNativeApi()
 
-        # Create window with conditional hidden status and frameless design
+        # ── Custom titlebar (TB-1/TB-2) ──
+        # Compose WindowApi alongside NunbaNativeApi so the SPA's NunbaTitleBar
+        # component can call window.pywebview.api.window_minimize / _toggle_maximize
+        # / _close / _start_drag.  WindowApi uses a getter so it can reference
+        # the (yet-uncreated) window — bound below right after create_window.
+        from desktop.native_api_window import WindowApi, use_frameless
+        _window_api = WindowApi(lambda: _window)
+        _use_frameless = use_frameless()
+        if _native_api is None:
+            _native_api = _window_api
+        else:
+            # Compose: mix WindowApi methods into the existing NunbaNativeApi.
+            for _attr in ('window_minimize', 'window_toggle_maximize',
+                          'window_close', 'window_start_drag',
+                          'window_is_maximized'):
+                setattr(_native_api, _attr, getattr(_window_api, _attr))
+
+        # Create window with conditional hidden status and frameless design.
+        # frameless=True on Win+Linux: dark NunbaTitleBar replaces native chrome.
+        # frameless=False on macOS: native traffic-light buttons (Apple HIG).
         _window = webview.create_window(
             title=args.title,
             url=initial_url,
@@ -7023,16 +7042,14 @@ def main():
             x=window_x,  # Direct X positioning
             y=window_y,  # Direct Y positioning
             resizable=True,
-            frameless=False,
+            frameless=_use_frameless,
             hidden=start_hidden,
             text_select=True,
             easy_drag=False,  # Disable since we handle dragging in custom title bar
-            background_color='#000000',
-            # js_api is None on Windows/Linux (NunbaNativeApi only constructed
-            # on darwin above); passing None is equivalent to omitting the
-            # kwarg — pywebview's create_window handles None gracefully.
-            # On macOS this exposes window.pywebview.api.native_mic_record /
-            # native_file_pick to the SPA for the WKWebView fallback path.
+            background_color='#0F0E17',  # canon bg — matches NunbaTitleBar gradient
+            # js_api is None on Windows/Linux UNLESS the WindowApi wiring above
+            # supplied one.  On macOS this also exposes window.pywebview.api.
+            # native_mic_record / native_file_pick for the WKWebView fallback.
             js_api=_native_api,
         )
 
