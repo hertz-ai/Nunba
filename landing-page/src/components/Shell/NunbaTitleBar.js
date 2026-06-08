@@ -93,6 +93,50 @@ export default function NunbaTitleBar({ children }) {
     return () => window.removeEventListener('pywebviewready', recheck);
   }, []);
 
+  // ── First-paint occlusion fix ────────────────────────────────────────
+  // Toggle a body class + CSS var so layout reflows when pywebview's api
+  // attaches late.  Without this, App.js's paddingTop is computed once at
+  // initial render (when shouldRenderTitleBar() is still false) and never
+  // re-applied, so the sidebar's bold "Nunba" h1 and mobile hamburger get
+  // covered by the fixed 32px chrome until a route change forces a
+  // re-render.  The CSS rules (injected once below) push the known top-0
+  // and top-4 children down by the titlebar height.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const body = document.body;
+    const root = document.documentElement;
+    if (visible) {
+      root.style.setProperty('--nunba-titlebar-h', '32px');
+      body.classList.add('nunba-frameless-active');
+    } else {
+      root.style.removeProperty('--nunba-titlebar-h');
+      body.classList.remove('nunba-frameless-active');
+    }
+    return () => {
+      root.style.removeProperty('--nunba-titlebar-h');
+      body.classList.remove('nunba-frameless-active');
+    };
+  }, [visible]);
+
+  // Inject the offset stylesheet once.  Scoped under
+  // `body.nunba-frameless-active` so it's a no-op in browser / macOS mode.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (document.getElementById('nunba-titlebar-offsets')) return;
+    const style = document.createElement('style');
+    style.id = 'nunba-titlebar-offsets';
+    style.textContent = `
+      /* When the custom titlebar is mounted, every <main> + every
+         sticky/absolute top-pinned chrome element shifts down by the
+         titlebar height so nothing is occluded by the fixed 32px strip. */
+      body.nunba-frameless-active main { padding-top: var(--nunba-titlebar-h, 32px); }
+      body.nunba-frameless-active .sticky.top-0 { top: var(--nunba-titlebar-h, 32px); }
+      body.nunba-frameless-active .absolute.top-4 { top: calc(1rem + var(--nunba-titlebar-h, 32px)); }
+      body.nunba-frameless-active .fixed.top-0 { top: var(--nunba-titlebar-h, 32px); }
+    `;
+    document.head.appendChild(style);
+  }, []);
+
   const callApi = useCallback((name) => {
     try {
       const api = window.pywebview && window.pywebview.api;
@@ -145,8 +189,12 @@ export default function NunbaTitleBar({ children }) {
         zIndex: 10000,
         display: 'flex',
         alignItems: 'center',
-        background: 'linear-gradient(135deg, #0F0E17 0%, #1a1830 100%)',
-        borderBottom: '1px solid rgba(108, 99, 255, 0.18)',
+        // Solid canon black — gradient was reading as "not fully black" in
+        // the install; user asked for full black background.  #0F0E17 is the
+        // Hevolve canon palette anchor.  No bottom border so the strip blends
+        // seamlessly into the dark app body below.
+        background: '#0F0E17',
+        borderBottom: 'none',
         userSelect: 'none',
         WebkitUserSelect: 'none',
         // The whole strip is draggable; interactive children opt out below.
