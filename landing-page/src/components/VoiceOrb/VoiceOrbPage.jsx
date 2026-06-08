@@ -40,25 +40,97 @@ function readSkin() {
   }
 }
 
-function MicCharacter({ active }) {
-  // Brightens + scales up while the agent speaks. A passive orb has no honest
-  // live amplitude (it must not open the mic), so this is a clean speak/idle
-  // state, not a fake meter.
+// Curious character SVG — eyes follow the cursor, mouth animates while the agent
+// speaks, periodic blink. Ported from the desktop companion (nanba-companion.html)
+// so the orb is the SINGLE source of the character; the static companion retires.
+const CHAR_CSS = `
+.hart-char { width: 104px; height: 124px; position: relative;
+  animation: hartFloat 3s ease-in-out infinite;
+  filter: drop-shadow(0 6px 16px rgba(108,99,255,0.35)); }
+.hart-char .char-body { fill: url(#hartBodyGrad); }
+.hart-char .char-eye { fill: #fff; }
+.hart-char .char-pupil { fill: #1a1a2e; transition: cx .12s ease-out, cy .12s ease-out; }
+.hart-char .char-highlight { fill: rgba(255,255,255,0.35); }
+.hart-char .char-mouth { fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; }
+.hart-char .char-antenna { stroke: #9B94FF; stroke-width: 2.5; fill: none; stroke-linecap: round; }
+.hart-char .char-antenna-tip { fill: #FF6B6B; }
+.hart-char .char-cheek { fill: rgba(255,107,107,0.25); }
+.hart-char .char-eyelid { fill: url(#hartBodyGrad); opacity: 0; }
+.hart-char.blink .char-eyelid { animation: hartBlink .15s ease-in-out; }
+.hart-char.speaking .char-mouth { animation: hartSpeak .25s ease-in-out infinite alternate; }
+.hart-char.speaking .char-antenna-tip { animation: hartTip .6s ease-in-out infinite alternate; }
+@keyframes hartFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@keyframes hartBlink { 0%,100% { opacity: 0; } 40%,60% { opacity: 1; } }
+@keyframes hartSpeak { 0% { d: path('M 32 72 Q 42 76 52 72'); } 100% { d: path('M 32 72 Q 42 82 52 72'); } }
+@keyframes hartTip { 0% { r: 5; fill: #FF6B6B; } 100% { r: 7; fill: #6C63FF; } }
+`;
+
+function Character({ active }) {
+  const rootRef = useRef(null);
+  const pupilL = useRef(null);
+  const pupilR = useRef(null);
+  const [blink, setBlink] = useState(false);
+
+  // Eyes follow the cursor. Listener is window-level because the orb container
+  // is pointer-events:none (so it never blocks the desktop behind it).
+  useEffect(() => {
+    function onMove(e) {
+      const el = rootRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const dx = Math.max(-1, Math.min(1, (e.clientX - (r.left + r.width / 2)) / 90)) * 3;
+      const dy = Math.max(-1, Math.min(1, (e.clientY - (r.top + r.height / 2)) / 120)) * 2;
+      if (pupilL.current) { pupilL.current.setAttribute('cx', 30 + dx); pupilL.current.setAttribute('cy', 50 + dy); }
+      if (pupilR.current) { pupilR.current.setAttribute('cx', 54 + dx); pupilR.current.setAttribute('cy', 50 + dy); }
+    }
+    window.addEventListener('mousemove', onMove);
+    return () => window.removeEventListener('mousemove', onMove);
+  }, []);
+
+  // Periodic blink (3–7s).
+  useEffect(() => {
+    let t;
+    const loop = () => {
+      setBlink(true);
+      setTimeout(() => setBlink(false), 200);
+      t = setTimeout(loop, 3000 + Math.random() * 4000);
+    };
+    t = setTimeout(loop, 2000);
+    return () => clearTimeout(t);
+  }, []);
+
   return (
-    <div
-      style={{
-        width: 96, height: 96, borderRadius: '50%',
-        background: 'radial-gradient(circle at 38% 32%, #9B94FF, ' + ACCENT + ' 70%)',
-        boxShadow: (active ? '0 0 42px ' : '0 0 10px ') + ACCENT + ', inset 0 -6px 14px rgba(0,0,0,0.25)',
-        transform: active ? 'scale(1.1)' : 'scale(1)',
-        transition: 'transform .25s cubic-bezier(.34,1.4,.64,1), box-shadow .3s ease',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14,
-      }}
-      aria-label="HART voice"
-    >
-      <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#0f0e17', display: 'block' }} />
-      <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#0f0e17', display: 'block' }} />
-    </div>
+    <>
+      <style>{CHAR_CSS}</style>
+      <div
+        ref={rootRef}
+        className={'hart-char' + (active ? ' speaking' : '') + (blink ? ' blink' : '')}
+        aria-label="HART voice"
+      >
+        <svg viewBox="0 0 84 100" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="hartBodyGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={ACCENT} />
+              <stop offset="100%" stopColor="#9B94FF" />
+            </linearGradient>
+          </defs>
+          <path className="char-antenna" d="M 42 22 Q 42 5 54 2" />
+          <circle className="char-antenna-tip" cx="54" cy="2" r="5" />
+          <ellipse className="char-body" cx="42" cy="58" rx="36" ry="38" />
+          <ellipse className="char-cheek" cx="18" cy="62" rx="8" ry="5" />
+          <ellipse className="char-cheek" cx="66" cy="62" rx="8" ry="5" />
+          <ellipse className="char-eye" cx="30" cy="50" rx="9" ry="11" />
+          <circle className="char-pupil" ref={pupilL} cx="30" cy="50" r="4.5" />
+          <circle className="char-highlight" cx="33" cy="46" r="2" />
+          <ellipse className="char-eyelid" cx="30" cy="50" rx="9" ry="11" />
+          <ellipse className="char-eye" cx="54" cy="50" rx="9" ry="11" />
+          <circle className="char-pupil" ref={pupilR} cx="54" cy="50" r="4.5" />
+          <circle className="char-highlight" cx="57" cy="46" r="2" />
+          <ellipse className="char-eyelid" cx="54" cy="50" rx="9" ry="11" />
+          <path className="char-mouth" d="M 32 72 Q 42 78 52 72" />
+        </svg>
+      </div>
+    </>
   );
 }
 
@@ -138,7 +210,7 @@ export default function VoiceOrbPage() {
       }}
     >
       {skin === 'character'
-        ? <MicCharacter active={active} />
+        ? <Character active={active} />
         : <VoiceVisualizer isActive={active} size={140} />}
     </div>
   );
