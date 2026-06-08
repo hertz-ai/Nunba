@@ -134,6 +134,136 @@ function Character({ active }) {
   );
 }
 
+// Quick-prompt input bar — the same send path the static companion used:
+// prefer the pywebview bridge (window.pywebview.api.on_companion_prompt, so the
+// main app owns the HARTOS dispatch), fall back to POST /chat (browser/debug).
+function InputBar() {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [reply, setReply] = useState('');
+  const replyTimer = useRef(null);
+
+  const showReply = useCallback((msg) => {
+    setReply(msg);
+    if (replyTimer.current) clearTimeout(replyTimer.current);
+    if (msg) replyTimer.current = setTimeout(() => setReply(''), 9000);
+  }, []);
+
+  const submit = useCallback(async () => {
+    const t = text.trim();
+    if (!t || busy) return;
+    setBusy(true);
+    showReply('Thinking…');
+    try {
+      let answer;
+      const api = window.pywebview && window.pywebview.api;
+      if (api && api.on_companion_prompt) {
+        answer = await api.on_companion_prompt(t);
+      } else {
+        const r = await fetch('/chat', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({message: t, source: 'companion_input_bar'}),
+        });
+        const d = r.ok ? await r.json() : null;
+        answer = (d && (d.response || d.message || d.text)) || 'OK';
+      }
+      showReply(typeof answer === 'string' && answer ? answer : 'Done');
+      setText('');
+    } catch (e) {
+      showReply('Could not reach the agent.');
+    } finally {
+      setBusy(false);
+    }
+  }, [text, busy, showReply]);
+
+  useEffect(
+    () => () => { if (replyTimer.current) clearTimeout(replyTimer.current); },
+    [],
+  );
+
+  return (
+    <div style={{width: '100%', maxWidth: 220, WebkitAppRegion: 'no-drag'}}>
+      {reply ? (
+        <div
+          style={{
+            margin: '0 auto 8px',
+            maxWidth: 200,
+            padding: '8px 12px',
+            background: 'rgba(15,14,23,0.92)',
+            border: '1px solid rgba(108,99,255,0.5)',
+            borderRadius: 12,
+            color: '#e8e8e8',
+            fontSize: 12,
+            lineHeight: 1.4,
+            textAlign: 'center',
+            maxHeight: 120,
+            overflow: 'auto',
+          }}
+        >
+          {reply}
+        </div>
+      ) : null}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          background: 'rgba(15,14,23,0.88)',
+          border: '1px solid rgba(108,99,255,0.45)',
+          borderRadius: 18,
+          padding: '4px 6px 4px 10px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+        }}
+      >
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Ask HART…"
+          aria-label="Quick prompt"
+          maxLength={500}
+          disabled={busy}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            background: 'transparent',
+            border: 0,
+            outline: 'none',
+            color: '#e8e8e8',
+            fontSize: 11,
+            padding: '4px 0',
+          }}
+        />
+        <button
+          type="submit"
+          disabled={busy}
+          aria-label="Send prompt"
+          style={{
+            width: 22,
+            height: 22,
+            border: 0,
+            borderRadius: '50%',
+            background: 'linear-gradient(135deg, #6C63FF, #9B94FF)',
+            color: '#fff',
+            fontSize: 12,
+            cursor: busy ? 'default' : 'pointer',
+            opacity: busy ? 0.4 : 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          &#10148;
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export default function VoiceOrbPage() {
   const [skin, setSkin] = useState(readSkin);
   const [speaking, setSpeaking] = useState(false);
@@ -199,19 +329,33 @@ export default function VoiceOrbPage() {
       data-skin={skin}
       data-active={active ? '1' : '0'}
       style={{
-        position: 'fixed', right: 18, bottom: 18,
-        width: 160, height: 160,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'transparent', pointerEvents: 'none',
-        transform: peeked ? 'translate(96px, 40px) scale(.5)' : 'none',
+        position: 'fixed', inset: 0,
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'flex-end',
+        padding: '0 10px 14px', background: 'transparent',
+        // Drag the frameless companion window by the orb body; the input bar
+        // opts out (no-drag, in InputBar) so it stays interactive.
+        WebkitAppRegion: 'drag',
+        transform: peeked ? 'translate(118px, 46px) scale(.5)' : 'none',
         opacity: peeked ? 0.4 : 1,
         transition: 'transform .45s cubic-bezier(.34,1.3,.64,1), opacity .45s ease',
-        zIndex: 2147483000,
+        overflow: 'hidden',
       }}
     >
-      {skin === 'character'
-        ? <Character active={active} />
-        : <VoiceVisualizer isActive={active} size={140} />}
+      <div
+        style={{
+          flex: '1 1 auto',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: 0,
+        }}
+      >
+        {skin === 'character'
+          ? <Character active={active} />
+          : <VoiceVisualizer isActive={active} size={140} />}
+      </div>
+      <InputBar />
     </div>
   );
 }

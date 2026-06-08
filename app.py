@@ -7186,8 +7186,11 @@ def main():
 
             _companion_api = CompanionAPI()
 
-            # Companion serves from the same Flask server
-            _comp_url = f"http://localhost:{args.port}/nanba-companion.html"
+            # Companion serves from the same Flask server. The React /voice-orb
+            # route (SPA fallback -> index.html) is the unified floating presence
+            # (visualiser + eye-tracking character + quick-prompt), replacing the
+            # static nanba-companion.html so there is ONE source for the orb.
+            _comp_url = f"http://localhost:{args.port}/voice-orb"
 
             _companion_window = webview.create_window(
                 title='Nanba',
