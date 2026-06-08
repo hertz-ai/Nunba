@@ -152,6 +152,7 @@ const AdminUsers = lazyRetry(() => import('./components/Admin/UsersManagementPag
 const AdminModeration = lazyRetry(() => import('./components/Admin/ModerationPage'));
 const AdminAgentSync = lazyRetry(() => import('./components/Admin/AgentSyncPage'));
 const AdminChannels = lazyRetry(() => import('./components/Admin/ChannelsPage'));
+const AdminWebResearch = lazyRetry(() => import('./components/Admin/WebResearchPage'));
 const AdminWorkflows = lazyRetry(() => import('./components/Admin/WorkflowsPage'));
 const AdminSettings = lazyRetry(() => import('./components/Admin/SettingsPage'));
 const AdminIdentity = lazyRetry(() => import('./components/Admin/IdentityPage'));
@@ -607,6 +608,7 @@ function MainRoutes() {
         <Route path="/admin/moderation" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="central" fallback="/admin"><AdminModeration /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/agents" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminAgentSync /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/channels" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminChannels /></RoleGuard></AdminLayout></Suspense>} />
+        <Route path="/admin/web-research" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminWebResearch /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/workflows" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminWorkflows /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/settings" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminSettings /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/identity" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminIdentity /></RoleGuard></AdminLayout></Suspense>} />

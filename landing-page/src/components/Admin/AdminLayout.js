@@ -12,6 +12,7 @@ import HubIcon from '@mui/icons-material/Hub';
 import MemoryIcon from '@mui/icons-material/Memory';
 import MenuIcon from '@mui/icons-material/Menu';
 import MonetizationOnIcon from '@mui/icons-material/MonetizationOn';
+import OpenInBrowserIcon from '@mui/icons-material/OpenInBrowser';
 import PeopleIcon from '@mui/icons-material/People';
 import PersonIcon from '@mui/icons-material/Person';
 import ReportIcon from '@mui/icons-material/Report';
@@ -49,6 +50,7 @@ const adminNav = [
   {label: 'Moderation', path: '/admin/moderation', icon: <ReportIcon />, minRole: 'central'},
   {label: 'Agent Sync', path: '/admin/agents', icon: <SyncIcon />},
   {label: 'Channels', path: '/admin/channels', icon: <StorageIcon />},
+  {label: 'Web Research', path: '/admin/web-research', icon: <OpenInBrowserIcon />},
   {label: 'Workflows', path: '/admin/workflows', icon: <AccountTreeIcon />},
   {label: 'Settings', path: '/admin/settings', icon: <SettingsIcon />},
   {label: 'Identity', path: '/admin/identity', icon: <PersonIcon />},

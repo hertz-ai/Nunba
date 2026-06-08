@@ -57,6 +57,7 @@ export const PAGE_REGISTRY = [
   { id: 'hive_contest',    label: 'Hive Contest',     route: '/hive_contest',       icon: 'leaderboard',              category: 'discover', requiresRole: null },
   { id: 'admin_models',    label: 'Model Management', route: '/admin/models',       icon: 'memory',                   category: 'admin',    requiresRole: 'central' },
   { id: 'admin_channels',  label: 'Channels',         route: '/admin/channels',     icon: 'hub',                      category: 'admin',    requiresRole: 'central' },
+  { id: 'admin_web_research', label: 'Web Research',  route: '/admin/web-research', icon: 'open_in_browser',          category: 'admin',    requiresRole: 'central' },
   { id: 'admin_providers', label: 'AI Providers',     route: '/admin/providers',    icon: 'cloud',                    category: 'admin',    requiresRole: 'central' },
   { id: 'admin_users',     label: 'Users',            route: '/admin/users',        icon: 'people',                   category: 'admin',    requiresRole: 'central' },
   { id: 'admin_home',      label: 'Admin',            route: '/admin',              icon: 'admin_panel_settings',     category: 'admin',    requiresRole: 'central' },

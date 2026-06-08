@@ -333,6 +333,31 @@ export const consentApi = {
   },
 };
 
+// --- Browser Research admin (BR-C3) ---
+// Calls /api/web-research/* on HARTOS Flask.  Same auth gate as the
+// existing channels admin (require_local_or_token).  Uses socialApi
+// because the prefix is non-versioned and we want consistent error handling.
+const webResearchClient = createApiClient(SOCIAL_API_URL.replace(/\/social$/, ''));
+
+export const webResearchApi = {
+  // GET /api/web-research/probe → {ok, b2_cdp_reachable, effective_mode, connection_mechanism}
+  probe: () => webResearchClient.get('/web-research/probe'),
+
+  // GET /api/web-research/tools → {ok, tools: [{name, script, action}]}
+  listTools: () => webResearchClient.get('/web-research/tools'),
+
+  // GET /api/web-research/vault → {ok, platforms: ['twitter','reddit',...]}
+  listVault: () => webResearchClient.get('/web-research/vault'),
+
+  // DELETE /api/web-research/vault/<platform> → {ok, platform, revoked}
+  revokePlatform: (platform) =>
+    webResearchClient.delete(`/web-research/vault/${encodeURIComponent(platform)}`),
+
+  // GET /api/web-research/audit?limit=N → {ok, records: [{ts, tool, platform, ...}]}
+  audit: (limit = 100) =>
+    webResearchClient.get('/web-research/audit', {params: {limit}}),
+};
+
 // --- Agent Evolution ---
 export const evolutionApi = {
   get: (agentId) => socialApi.get(`/agents/${agentId}/evolution`),
