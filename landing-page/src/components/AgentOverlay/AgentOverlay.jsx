@@ -762,6 +762,8 @@ function OverlayContent({ data, onDismiss, navigate }) {
     case 'list': return <ListOverlay data={data} />;
     case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} />;
     case 'meet_copilot': return <MeetCopilotOverlay data={data} onDismiss={onDismiss} />;
+    case 'consent_prompt': return <ConsentPromptOverlay data={data} onDismiss={onDismiss} />;
+    case 'post_preview': return <PostPreviewOverlay data={data} onDismiss={onDismiss} />;
     default:
       return (
         <Box>
@@ -770,6 +772,89 @@ function OverlayContent({ data, onDismiss, navigate }) {
         </Box>
       );
   }
+}
+
+// ─── Browser Research overlays (BR-C7 + C8) ─────────────────────────
+
+function ConsentPromptOverlay({ data, onDismiss }) {
+  const platform = data?.platform || data?.scope || 'platform';
+  const scope = data?.scope || `web_research:${platform}`;
+  const grant = async () => {
+    try {
+      const { consentApi } = await import('../../services/socialApi');
+      await consentApi.grant({consent_type: 'cloud_capability', scope});
+    } catch (e) {
+      console.error('[consent_prompt] grant failed', e);
+    } finally {
+      if (onDismiss) onDismiss();
+    }
+  };
+  return (
+    <Box data-testid="liquid-consent-prompt" sx={{p: 1.5}}>
+      <Typography variant="subtitle1" sx={{fontWeight: 700, mb: 0.5}}>
+        Grant {platform} research access
+      </Typography>
+      <Typography variant="body2" sx={{opacity: 0.8, mb: 1.5}}>
+        {data?.description ||
+          `The agent wants to use your logged-in ${platform} session to research. Cookies stay on your machine.`}
+      </Typography>
+      <Box sx={{display: 'flex', gap: 1, justifyContent: 'flex-end'}}>
+        <button onClick={onDismiss} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
+          Not now
+        </button>
+        <button data-testid="liquid-consent-grant" onClick={grant} style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
+          Grant {scope}
+        </button>
+      </Box>
+    </Box>
+  );
+}
+
+function PostPreviewOverlay({ data, onDismiss }) {
+  const platform = data?.platform || 'platform';
+  const content = data?.content || '';
+  const confirm = async () => {
+    try {
+      // Re-invoke the originating tool with dry_run=False.  We hit /chat with
+      // a synthetic tool-call message; HARTOS dispatches to Post_As_User.
+      const args = data?.confirm_args || {};
+      await fetch('/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          input_text: `confirm post`,
+          tool_call: {name: data?.confirm_tool || 'Post_As_User', args},
+        }),
+      });
+    } catch (e) {
+      console.error('[post_preview] confirm failed', e);
+    } finally {
+      if (onDismiss) onDismiss();
+    }
+  };
+  return (
+    <Box data-testid="liquid-post-preview" sx={{p: 1.5}}>
+      <Typography variant="subtitle1" sx={{fontWeight: 700, mb: 0.5}}>
+        Preview: post to {platform}
+      </Typography>
+      <Box sx={{p: 1.5, mb: 1.5, borderRadius: 1, bgcolor: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)'}}>
+        <Typography variant="body2" sx={{whiteSpace: 'pre-wrap', color: 'rgba(255,255,255,0.92)'}}>
+          {content}
+        </Typography>
+      </Box>
+      <Typography variant="caption" sx={{display: 'block', opacity: 0.65, mb: 1}}>
+        Posting as {data?.handle || 'your saved session'}
+      </Typography>
+      <Box sx={{display: 'flex', gap: 1, justifyContent: 'flex-end'}}>
+        <button onClick={onDismiss} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
+          {data?.cancel_label || 'Cancel'}
+        </button>
+        <button data-testid="liquid-post-confirm" onClick={confirm} style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#6C63FF', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
+          {data?.confirm_label || `Post to ${platform}`}
+        </button>
+      </Box>
+    </Box>
+  );
 }
 
 // ─── Main Overlay Manager ────────────────────────────────────────────
