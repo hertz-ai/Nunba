@@ -20,9 +20,9 @@
  * props needed.  Plays MUI theme — uses the same iconContainerStyle
  * tokens as MarketingFunnelCard.
  */
-import {notificationsApi} from '../../services/socialApi';
-import realtimeService from '../../services/realtimeService';
 import useAuthSession from '../../hooks/useAuthSession';
+import realtimeService from '../../services/realtimeService';
+import {notificationsApi} from '../../services/socialApi';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import NotificationsIcon from '@mui/icons-material/Notifications';

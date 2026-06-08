@@ -22,10 +22,11 @@
  * copy of this helper, and Demopage.js's guest-refresh path didn't
  * use it at all.  This util is the canonical home.
  */
+import {API_BASE_URL} from '../config/apiBase';
+
 import axios from 'axios';
 import {v4 as uuidv4} from 'uuid';
 
-import {API_BASE_URL} from '../config/apiBase';
 
 const STORAGE_KEY = 'device_id';
 

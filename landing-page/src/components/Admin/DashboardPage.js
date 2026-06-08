@@ -1,6 +1,7 @@
+import MarketingFunnelCard from './MarketingFunnelCard';
+
 import {adminApi} from '../../services/socialApi';
 
-import MarketingFunnelCard from './MarketingFunnelCard';
 
 import ArticleIcon from '@mui/icons-material/Article';
 import PeopleIcon from '@mui/icons-material/People';

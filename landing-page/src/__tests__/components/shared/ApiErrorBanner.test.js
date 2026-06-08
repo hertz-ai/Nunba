@@ -8,10 +8,12 @@
  *   - Mounts inside the existing provider tree, doesn't crash on init
  */
 
-import React from 'react';
-import {render, screen, act, cleanup} from '@testing-library/react';
-import {ThemeProvider, createTheme} from '@mui/material/styles';
 import ApiErrorBanner from '../../../components/shared/ApiErrorBanner';
+
+import {ThemeProvider, createTheme} from '@mui/material/styles';
+import {render, screen, act, cleanup} from '@testing-library/react';
+import React from 'react';
+
 
 const theme = createTheme();
 const renderBanner = () =>

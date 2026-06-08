@@ -2,14 +2,14 @@
 import TypeWriterForSubtitle from './TypeWriterSubtitle';
 
 import hourglassAnimation from '../../assets/hourglass-lottie.json';
+import RelativeTime from '../../components/Common/RelativeTime';
+import {formatTier} from '../../utils/tier';
 
 import Lottie from 'lottie-react';
 import {FileText} from 'lucide-react';
 import Markdown from 'markdown-to-jsx';
 import React, {useState, useEffect, useRef} from 'react';
 
-import RelativeTime from '../../components/Common/RelativeTime';
-import {formatTier} from '../../utils/tier';
 
 // Markdown renderer for assistant replies — the model emits standard
 // Markdown (**bold**, _italic_, lists, code fences, links).  Without

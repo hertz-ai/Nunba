@@ -131,7 +131,15 @@ jobs:
         # unit/integration/live markers only in tests/harness/pytest.ini
         # and is covered by the dedicated defect-harness.yml workflow.
         # Without --ignore, strict-markers trips here on first collection.
-        run: python -m pytest tests/ --ignore=tests/harness -v --tb=short --html=test-report-${{ matrix.os }}.html --self-contained-html
+        # -m "not journey": tests under tests/journey/*.py exercise LIVE
+        # endpoints on a running Flask + HARTOS stack — they belong in
+        # e2e-staging.yml (which spins up docker-compose) and regression.yml,
+        # NOT in python-quality where we only have pip-installed code.
+        # Every journey test is correctly marked with @pytest.mark.journey
+        # (see conftest.py — pytestmark = pytest.mark.journey).  Dozens of
+        # them fail unconditionally here because the endpoints they call
+        # need a live HARTOS that python-quality doesn't boot.
+        run: python -m pytest tests/ --ignore=tests/harness -m "not journey" -v --tb=short --html=test-report-${{ matrix.os }}.html --self-contained-html
         # HARD GATE — test failures block merge
 
       - name: Upload pytest report
@@ -284,8 +292,12 @@ jobs:
         continue-on-error: true  # Some platform-specific deps may fail on Linux
 
       - name: Start Flask backend
+        # stdout/stderr → /tmp/flask.log so post-mortem can see if Flask
+        # crashes silently during the React build (the 2-min window where
+        # nothing watches it).  Same log uploaded as artifact on failure
+        # for cypress wait-on /status 404 root-cause analysis.
         run: |
-          python main.py --port 5000 &
+          python main.py --port 5000 > /tmp/flask.log 2>&1 &
           echo $! > /tmp/flask.pid
         env:
           NUNBA_BIND_HOST: '127.0.0.1'
@@ -303,6 +315,23 @@ jobs:
             sleep 2
           done
           curl -sf http://localhost:5000/health || echo "Flask health check returned non-200 (may still work)"
+
+      - name: Recheck Flask after React build (catch silent crash)
+        # The 2-min React build runs between Flask startup and Cypress wait-on.
+        # If Flask died silently during that window, the wait-on times out
+        # with a confusing 404 instead of the real "process exited" error.
+        # This step runs RIGHT BEFORE Cypress and surfaces the actual state.
+        if: always()
+        run: |
+          FLASK_PID=$(cat /tmp/flask.pid 2>/dev/null || echo "")
+          if [ -n "$FLASK_PID" ] && kill -0 "$FLASK_PID" 2>/dev/null; then
+            echo "Flask PID $FLASK_PID is alive"
+          else
+            echo "::warning::Flask PID $FLASK_PID is DEAD before Cypress; /tmp/flask.log:"
+            tail -100 /tmp/flask.log || true
+          fi
+          curl -s -o /dev/null -w "GET /status -> %{http_code}\n" http://localhost:5000/status || true
+          curl -s -o /dev/null -w "GET /health -> %{http_code}\n" http://localhost:5000/health || true
 
       # ── Frontend: Build React and let Flask serve it (bundled mode) ──
       - name: Install frontend dependencies
@@ -390,7 +419,11 @@ jobs:
           # / would 404 because the React build isn't catch-all-served
           # by Flask in this CI mode, and /health doesn't exist on
           # main.py (only HARTOS standalone has it).
-          wait-on: http://localhost:5000/status
+          # wait-on /health (same endpoint verified during Wait-for-Flask
+          # startup polling — kept consistent across steps).  /status was
+          # used historically but returns 404 in some CI race conditions
+          # if registered AFTER /health during blueprint init.
+          wait-on: http://localhost:5000/health
           wait-on-timeout: 120
           browser: chrome
           spec: ${{ steps.shard.outputs.spec_pattern }}
@@ -560,7 +593,11 @@ jobs:
           # / would 404 because the React build isn't catch-all-served
           # by Flask in this CI mode, and /health doesn't exist on
           # main.py (only HARTOS standalone has it).
-          wait-on: http://localhost:5000/status
+          # wait-on /health (same endpoint verified during Wait-for-Flask
+          # startup polling — kept consistent across steps).  /status was
+          # used historically but returns 404 in some CI race conditions
+          # if registered AFTER /health during blueprint init.
+          wait-on: http://localhost:5000/health
           wait-on-timeout: 120
           browser: chrome
           spec: ${{ steps.smoke.outputs.spec_pattern }}

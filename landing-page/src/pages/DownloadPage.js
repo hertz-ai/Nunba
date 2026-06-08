@@ -1,7 +1,8 @@
+import {getReferralCode} from '../hooks/useReferral';
+import {marketingApi} from '../services/socialApi';
+
 import React, {useEffect, useMemo} from 'react';
 import {Helmet} from 'react-helmet-async';
-import {marketingApi} from '../services/socialApi';
-import {getReferralCode} from '../hooks/useReferral';
 
 /**
  * DownloadPage — the install funnel destination for hevolve.ai/download.

@@ -1,3 +1,5 @@
+import AgentOperationsDrawer from './AgentOperationsDrawer';
+
 import { SOCIAL_API_URL } from '../../config/apiBase';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -24,7 +26,6 @@ import {
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-import AgentOperationsDrawer from './AgentOperationsDrawer';
 
 
 // SSE-driven refresh + heartbeat fallback.

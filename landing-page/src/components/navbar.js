@@ -1,6 +1,6 @@
-import useAuthSession, {clearAuth} from '../hooks/useAuthSession';
 import HevolveLogo from '../data/logo.gif';
 import HevolveLogoLight from '../data/logo.gif';
+import useAuthSession, {clearAuth} from '../hooks/useAuthSession';
 
 import React, {useEffect, useState} from 'react';
 import ReactGA from 'react-ga';

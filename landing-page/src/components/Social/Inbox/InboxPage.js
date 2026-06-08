@@ -11,8 +11,12 @@
  *   - Reddit    → filter chip rail + EmptyState
  *   - Discord   → provenance pill ("via Discord", "in #cosmic-tea-club")
  */
-import React, {useState, useEffect, useMemo, useCallback} from 'react';
-import {useNavigate} from 'react-router-dom';
+import {inboxApi} from '../../../services/socialApi';
+
+import ClearIcon from '@mui/icons-material/Clear';
+import InboxIcon from '@mui/icons-material/Inbox';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import SearchIcon from '@mui/icons-material/Search';
 import {
   Box,
   Typography,
@@ -28,11 +32,9 @@ import {
   useTheme,
   alpha,
 } from '@mui/material';
-import SearchIcon from '@mui/icons-material/Search';
-import InboxIcon from '@mui/icons-material/Inbox';
-import RefreshIcon from '@mui/icons-material/Refresh';
-import ClearIcon from '@mui/icons-material/Clear';
-import {inboxApi} from '../../../services/socialApi';
+import React, {useState, useEffect, useMemo, useCallback} from 'react';
+import {useNavigate} from 'react-router-dom';
+
 
 /* ── Provenance color map (mirrors theme/colors.js PROVENANCE_COLORS) ── */
 const PROVENANCE_COLORS = {

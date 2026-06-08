@@ -16,6 +16,7 @@ jest.mock('axios', () => ({
 }));
 
 const axios = require('axios').default;
+
 const useStorageSync = require('../../hooks/useStorageSync').default;
 
 const CLOUD_VALUES = {

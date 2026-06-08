@@ -63,9 +63,10 @@
  *   exported from this module.  Until then, all existing
  *   localStorage.setItem call sites keep working unchanged.
  */
+import {decrypt, encrypt} from '../utils/encryption';
+
 import {useEffect, useState, useCallback} from 'react';
 
-import {decrypt, encrypt} from '../utils/encryption';
 
 /**
  * Single read pass over localStorage → canonical session shape.

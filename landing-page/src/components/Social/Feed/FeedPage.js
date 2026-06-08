@@ -14,25 +14,24 @@ import { AutopilotBanner } from '../Autopilot';
 import EmptyState from '../shared/EmptyState';
 import EncounterCard from '../shared/EncounterCard';
 import InfiniteScroll from '../shared/InfiniteScroll';
+import OnboardingChecklist from '../shared/OnboardingChecklist';
 import PostCardSkeleton from '../shared/PostCardSkeleton';
+import SeasonBanner from '../shared/SeasonBanner';
+
 import AddIcon from '@mui/icons-material/Add';
-import SmartToyIcon from '@mui/icons-material/SmartToy';
-import ExploreIcon from '@mui/icons-material/Explore';
-import PsychologyIcon from '@mui/icons-material/Psychology';
-import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
-import EmojiEventsIcon from '@mui/icons-material/EmojiEvents';
 import CampaignIcon from '@mui/icons-material/Campaign';
 import CloseIcon from '@mui/icons-material/Close';
+import EmojiEventsIcon from '@mui/icons-material/EmojiEvents';
+import ExploreIcon from '@mui/icons-material/Explore';
 
 // IntentBadge kept available for future use
 // import IntentBadge, { ALL_INTENTS } from './IntentBadge';
-import OnboardingChecklist from '../shared/OnboardingChecklist';
 
 import FavoriteIcon from '@mui/icons-material/Favorite';
-
-import SeasonBanner from '../shared/SeasonBanner';
-
+import PsychologyIcon from '@mui/icons-material/Psychology';
+import SmartToyIcon from '@mui/icons-material/SmartToy';
+import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 import { Tabs, Tab, Fab, Box, Card, Fade, Typography, Chip, Button, IconButton, keyframes, useTheme, Alert } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import React, { useState, useEffect, useCallback } from 'react';

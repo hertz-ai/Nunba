@@ -16,23 +16,25 @@
  * Lazy-loaded `livekit-client` so the bundle works in builds without
  * the dep installed (jest tests, dev environments before npm install).
  */
-import React, {
-  useState, useEffect, useRef, useCallback, useMemo,
-} from 'react';
-import {useNavigate, useParams} from 'react-router-dom';
+import {callsApi} from '../../../services/socialApi';
+
+import CallEndIcon from '@mui/icons-material/CallEnd';
+import CloseIcon from '@mui/icons-material/Close';
+import MicIcon from '@mui/icons-material/Mic';
+import MicOffIcon from '@mui/icons-material/MicOff';
+import ScreenShareIcon from '@mui/icons-material/ScreenShare';
+import StopScreenShareIcon from '@mui/icons-material/StopScreenShare';
+import VideocamIcon from '@mui/icons-material/Videocam';
+import VideocamOffIcon from '@mui/icons-material/VideocamOff';
 import {
   Box, Typography, IconButton, Avatar, Stack, Chip, CircularProgress,
   useTheme, alpha,
 } from '@mui/material';
-import MicIcon from '@mui/icons-material/Mic';
-import MicOffIcon from '@mui/icons-material/MicOff';
-import VideocamIcon from '@mui/icons-material/Videocam';
-import VideocamOffIcon from '@mui/icons-material/VideocamOff';
-import ScreenShareIcon from '@mui/icons-material/ScreenShare';
-import StopScreenShareIcon from '@mui/icons-material/StopScreenShare';
-import CallEndIcon from '@mui/icons-material/CallEnd';
-import CloseIcon from '@mui/icons-material/Close';
-import {callsApi} from '../../../services/socialApi';
+import React, {
+  useState, useEffect, useRef, useCallback, useMemo,
+} from 'react';
+import {useNavigate, useParams} from 'react-router-dom';
+
 
 // Lazy-resolve livekit-client so jest + builds without the npm dep
 // don't break.  Tests stub `__livekitForTest` on window for control.

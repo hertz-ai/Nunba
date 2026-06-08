@@ -1,6 +1,7 @@
-import {useEffect} from 'react';
-import axios from 'axios';
 import {encrypt} from '../utils/encryption';
+
+import axios from 'axios';
+import {useEffect} from 'react';
 
 // Detect whether the supplied JWT was minted by /auth/guest-register
 // (HARTOS integrations/social/api.py:213 — username='guest_<n>_<id>')

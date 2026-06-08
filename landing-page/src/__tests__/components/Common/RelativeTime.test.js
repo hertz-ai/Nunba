@@ -6,13 +6,14 @@
  * timers to assert the internal setInterval fires AND React re-renders
  * the span.
  */
-import React from 'react';
-import {render, act} from '@testing-library/react';
-
 import RelativeTime, {
   formatRelative,
   TICK_INTERVAL_MS,
 } from '../../../components/Common/RelativeTime';
+
+import {render, act} from '@testing-library/react';
+import React from 'react';
+
 
 
 describe('#223 formatRelative — pure formatter', () => {
