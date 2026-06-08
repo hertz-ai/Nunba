@@ -15,7 +15,15 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
 
-  .companion { width: 220px; height: 310px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; position: relative; }
+  .companion { width: 220px; height: 310px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; position: relative; transition: transform .45s cubic-bezier(.34,1.3,.64,1), opacity .45s ease; }
+  /* Taskbar-style auto-hide: when idle (no interaction AND the agent is neither
+     speaking nor listening) the companion peeks to the bottom-right corner;
+     hovering it (or speaking/listening) reveals it. Driven by the .peek class
+     toggled in the script, reusing the existing _speaking/_listening state. */
+  .companion.peek { transform: translate(118px, 46px) scale(.5); opacity: .4; }
+  .companion.peek .bubble,
+  .companion.peek .input-bar,
+  .companion.peek .status-bar { opacity: 0 !important; pointer-events: none; }
 
   /* ── Curious Character SVG ────────────────────── */
   .character {
@@ -289,16 +297,35 @@ function setMode(mode) {
 // ── Speaking animation ──
 function setSpeaking(v) {
   _speaking = v;
-  if (v) character.classList.add('speaking');
+  if (v) { character.classList.add('speaking'); companion.classList.remove('peek'); }
   else character.classList.remove('speaking');
 }
 
 // ── Listening animation ──
 function setListening(v) {
   _listening = v;
-  if (v) character.classList.add('listening');
+  if (v) { character.classList.add('listening'); companion.classList.remove('peek'); }
   else character.classList.remove('listening');
 }
+
+// ── Taskbar-style auto-hide ──
+// Peek (shrink to the corner) when idle: no user interaction for IDLE_MS AND the
+// agent is neither speaking nor listening. ANY interaction — or speaking /
+// listening — reveals it. Reuses the _speaking/_listening state above and the
+// .peek CSS; nothing else changes. Fully additive: if this errors the companion
+// just stays visible as before.
+var IDLE_MS = 6000;
+var _lastInteract = Date.now();
+function _wakeCompanion() { _lastInteract = Date.now(); companion.classList.remove('peek'); }
+['mousemove', 'mousedown', 'keydown', 'touchstart', 'focusin', 'wheel'].forEach(function (ev) {
+  document.addEventListener(ev, _wakeCompanion, true);
+});
+setInterval(function () {
+  // While speaking/listening, keep it revealed AND keep the idle clock fresh so it
+  // doesn't snap shut the instant TTS ends (6s grace after the agent finishes).
+  if (_speaking || _listening) { _lastInteract = Date.now(); companion.classList.remove('peek'); return; }
+  if (Date.now() - _lastInteract > IDLE_MS) companion.classList.add('peek');
+}, 1000);
 
 // ── TTS Playback (receives audio URL from main app) ──
 function playTTS(url) {
