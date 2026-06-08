@@ -9,7 +9,7 @@
  * realtimeService + VoiceVisualizer are mocked (the latter touches canvas /
  * AudioContext which jsdom lacks); this keeps the test on the orb's own wiring.
  */
-import { render, screen, act, waitFor } from '@testing-library/react';
+import { render, screen, act, waitFor, fireEvent } from '@testing-library/react';
 import React from 'react';
 
 let ttsHandler = null;
@@ -66,4 +66,17 @@ test('honours the admin character-skin setting', () => {
   expect(screen.getByTestId('voice-orb').dataset.skin).toBe('character');
   // character skin shows the face, not the visualiser
   expect(screen.queryByTestId('viz')).not.toBeInTheDocument();
+});
+
+test('clicking the orb calls the companion bridge (bring app forward)', () => {
+  const onClick = jest.fn();
+  window.pywebview = { api: { on_companion_click: onClick } };
+  try {
+    render(<VoiceOrbPage />);
+    // the orb wrapper is the clickable parent of the (mocked) visualiser
+    fireEvent.click(screen.getByTestId('viz').parentElement);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  } finally {
+    delete window.pywebview;
+  }
 });

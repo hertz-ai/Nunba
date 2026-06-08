@@ -40,6 +40,17 @@ function readSkin() {
   }
 }
 
+// Call a companion bridge method when running inside the pywebview companion
+// window (desktop); a safe no-op everywhere else (HART OS shell / browser).
+function companionApi(method) {
+  try {
+    const api = window.pywebview && window.pywebview.api;
+    if (api && typeof api[method] === 'function') api[method]();
+  } catch (e) {
+    /* not in the pywebview companion — no-op */
+  }
+}
+
 // Curious character SVG — eyes follow the cursor, mouth animates while the agent
 // speaks, periodic blink. Ported from the desktop companion (nanba-companion.html)
 // so the orb is the SINGLE source of the character; the static companion retires.
@@ -343,12 +354,19 @@ export default function VoiceOrbPage() {
       }}
     >
       <div
+        onClick={() => companionApi('on_companion_click')}
+        onDoubleClick={() => companionApi('on_companion_dblclick')}
+        title="Open Nunba"
         style={{
           flex: '1 1 auto',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           minHeight: 0,
+          // Clickable (-> bring the main app forward); no-drag so the click
+          // registers. Empty areas of the root stay draggable.
+          WebkitAppRegion: 'no-drag',
+          cursor: 'pointer',
         }}
       >
         {skin === 'character'
