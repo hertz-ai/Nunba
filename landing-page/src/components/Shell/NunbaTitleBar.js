@@ -107,40 +107,67 @@ export default function NunbaTitleBar({ children }) {
     const root = document.documentElement;
     if (visible) {
       root.style.setProperty('--nunba-titlebar-h', '32px');
+      root.classList.add('nunba-frameless-active');
       body.classList.add('nunba-frameless-active');
     } else {
       root.style.removeProperty('--nunba-titlebar-h');
+      root.classList.remove('nunba-frameless-active');
       body.classList.remove('nunba-frameless-active');
     }
     return () => {
       root.style.removeProperty('--nunba-titlebar-h');
+      root.classList.remove('nunba-frameless-active');
       body.classList.remove('nunba-frameless-active');
     };
   }, [visible]);
 
   // Inject the offset stylesheet once.  Scoped under
-  // `body.nunba-frameless-active` so it's a no-op in browser / macOS mode.
+  // `html.nunba-frameless-active` so it's a no-op in browser / macOS mode.
   useEffect(() => {
     if (typeof document === 'undefined') return;
     if (document.getElementById('nunba-titlebar-offsets')) return;
     const style = document.createElement('style');
     style.id = 'nunba-titlebar-offsets';
     style.textContent = `
-      /* The custom titlebar is a fixed 32px overlay.  Two jobs here:
-         (1) shift top-pinned chrome down so nothing hides under the strip;
-         (2) publish --nunba-content-h = (viewport − titlebar) so full-height
-             shells (chat, social layout) size to the SPACE BELOW the bar
-             instead of a raw 100vh.  A 100vh box pushed down by the 32px
-             titlebar is 32px taller than the window → a page-level scrollbar;
-             the app is meant to be fixed (only inner views like chat scroll).
-         Default --nunba-content-h stays 100vh, so browser + macOS render is
-         unchanged (the var only shrinks when the frameless chrome is active). */
-      :root { --nunba-content-h: 100vh; }
-      body.nunba-frameless-active { --nunba-content-h: calc(100vh - var(--nunba-titlebar-h, 32px)); }
-      body.nunba-frameless-active main { padding-top: var(--nunba-titlebar-h, 32px); box-sizing: border-box; }
-      body.nunba-frameless-active .sticky.top-0 { top: var(--nunba-titlebar-h, 32px); }
-      body.nunba-frameless-active .absolute.top-4 { top: calc(1rem + var(--nunba-titlebar-h, 32px)); }
-      body.nunba-frameless-active .fixed.top-0 { top: var(--nunba-titlebar-h, 32px); }
+      /* The custom titlebar is a fixed 32px overlay at z:10000.
+         Two visible bugs we were solving — and a third we just caused:
+           (a) chrome at top:0 / top:1rem was occluded by the strip;
+           (b) <main> padding-top:32px made the body 100vh+32px tall →
+               outer page scrollbar + chat input pushed below viewport.
+         Fix is to RESERVE the 32px at the document level instead of
+         padding INTO the existing layout:
+           1. html { padding-top:32px; height:100vh; box-sizing:border-box;
+              overflow:hidden } — the document content box becomes exactly
+              (100vh − 32px).  No outer scroller.
+           2. body { height:100% } — fills the new shorter document.
+           3. .h-screen / .min-h-screen / 100vh shells (chat, sidebar,
+              social layout) get clamped to (100vh − 32px) so full-height
+              panels fit without overflowing past the visible bottom edge.
+           4. position:fixed top-0 still references the unshrunk viewport
+              (CSS fixed-positioning is viewport-relative regardless of
+              html padding) → keep that single offset rule.
+           5. .sticky.top-0 + .absolute.top-4 now live inside the
+              shrunk body, so their natural top:0 / top:1rem positions are
+              already correct — no extra offset for them. */
+      html.nunba-frameless-active {
+        padding-top: var(--nunba-titlebar-h, 32px);
+        height: 100vh;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+      html.nunba-frameless-active body {
+        height: 100%;
+        margin: 0;
+      }
+      html.nunba-frameless-active .h-screen,
+      html.nunba-frameless-active .min-h-screen {
+        height: calc(100vh - var(--nunba-titlebar-h, 32px));
+        min-height: calc(100vh - var(--nunba-titlebar-h, 32px));
+      }
+      /* Cancel the now-redundant App.js paddingTop on <main> — the
+         html-level padding already reserves the titlebar gap. */
+      html.nunba-frameless-active main { padding-top: 0 !important; }
+      html.nunba-frameless-active .fixed.top-0 { top: var(--nunba-titlebar-h, 32px); }
     `;
     document.head.appendChild(style);
   }, []);
