@@ -1810,11 +1810,33 @@ def llm_status():
         best_idx = diag['best_model_index']
         best = MODEL_PRESETS[best_idx]
 
+        # Version-upgrade detection (#124/#134): does the installed llama.cpp
+        # binary meet the best model's min_build?  A too-old binary can't
+        # grammar-constrain tool-call output, which is the root of the 52%
+        # autogen toolcall-500 failure that blocks autonomous goal completion.
+        # Surfaced as an `version_upgrade` block + an 'upgrade_version' action so
+        # the frontend (and the self-heal coding agent) can actuate the upgrade
+        # via POST /api/llm/upgrade — agent-independent, app-wide capability.
+        version_upgrade = {"available": False, "current_build": None, "required_build": None}
+        try:
+            _ver_ok, _cur_build, _req_build = config.installer.check_version_for_model(best)
+            if (not _ver_ok) and _req_build:
+                version_upgrade = {
+                    "available": True,
+                    "current_build": _cur_build,
+                    "required_build": _req_build,
+                    # Staged swap may already be downloaded + waiting for restart.
+                    "pending_restart": bool(config.config.get("pending_llama_swap")),
+                }
+        except Exception:
+            pass
+
         return jsonify({
             "available": available,
             "llm_mode": config.get_llm_mode(),
             "cloud_configured": config.is_cloud_configured(),
             "first_run": config.is_first_run(),
+            "version_upgrade": version_upgrade,
             "model_name": preset.display_name if preset else None,
             "model_count": len(MODEL_PRESETS),
             "gpu_detected": diag['gpu_detected'],
@@ -1880,6 +1902,28 @@ def llm_auto_setup():
         return jsonify(result)
     except Exception as e:
         logging.error(f"Auto-setup failed: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/api/llm/upgrade', methods=["POST"])
+def llm_upgrade():
+    """Queue a llama.cpp binary upgrade to the latest release (#124/#134).
+
+    Applied at the next restart by LlamaConfig.apply_pending_llama_upgrade — we
+    do NOT swap live (the running server holds the binary on Windows and the
+    installer deletes-before-download).  Agent-independent + callable by the
+    self-heal coding agent when a goal needs grammar-constrained tool output the
+    current binary can't produce.
+    """
+    if not _is_local_request():
+        return jsonify({"error": "local only"}), 403
+    try:
+        from llama.llama_config import LlamaConfig
+        config = LlamaConfig()
+        result = config.queue_llama_upgrade()
+        return jsonify({"success": True, **result})
+    except Exception as e:
+        logging.error(f"LLM upgrade queue failed: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
 

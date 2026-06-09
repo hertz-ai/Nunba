@@ -1321,6 +1321,16 @@ class LlamaConfig:
 
     def _do_start_server(self, model_preset=None, force_new_port=False):
         """Internal server start — called by start_server() with lock protection."""
+        # #124/#134 — apply any queued llama.cpp binary upgrade BEFORE (re)start,
+        # but ONLY when no local llama-server is currently holding the binary.
+        # Gate on check_server_running() (a real llama-server on the port), NOT
+        # is_llm_available() — the latter returns True when a cloud API is
+        # configured, which would skip the LOCAL binary swap forever.
+        try:
+            if self.config.get('pending_llama_swap') and not self.check_server_running():
+                self.apply_pending_llama_upgrade()
+        except Exception as _upg_err:
+            logger.warning(f"[llama-upgrade] pending-apply check failed: {_upg_err}")
         # Get desired port
         desired_port = self.config.get("server_port", 8080)
 
@@ -2127,6 +2137,66 @@ class LlamaConfig:
                     freed = vm._allocations.pop('llm', 0)
                     if freed:
                         logger.info(f"Released VRAM allocation: llm = {freed:.1f}GB")
+
+    def queue_llama_upgrade(self) -> dict:
+        """Stage a llama.cpp binary upgrade to the latest GitHub release.
+
+        We do NOT swap the binary live.  The running llama-server (usually started
+        by a DIFFERENT process during warm-up, so this instance has no
+        ``server_process`` handle to stop) holds ``llama-server.exe`` open — on
+        Windows you can't overwrite a running binary — and ``update_llama_cpp``
+        deletes the old build before downloading.  So we just set a
+        ``pending_llama_swap`` flag; ``apply_pending_llama_upgrade`` runs it at the
+        next boot, before any server starts (file unlocked, single startup owner).
+
+        Returns {queued, current_build, message}.  Instant + side-effect-free
+        beyond the flag, so it's safe to call from the /api/llm/upgrade endpoint
+        or the self-heal coding agent.
+        """
+        try:
+            cur = self.installer.get_version()
+        except Exception:
+            cur = None
+        self.config["pending_llama_swap"] = True
+        self._save_config()
+        logger.info(f"[llama-upgrade] queued (current b{cur}) — applies on next restart")
+        return {
+            "queued": True,
+            "current_build": cur,
+            "message": "Upgrade will download and apply on next restart. Restart Nunba to apply.",
+        }
+
+    def apply_pending_llama_upgrade(self, progress_callback=None) -> bool:
+        """Apply a queued llama.cpp upgrade at boot — call BEFORE the server starts.
+
+        No-op unless ``pending_llama_swap`` is set.  Runs ``update_llama_cpp``
+        while no server is running (binary unlocked).  Clears the flag whether the
+        download succeeds or fails: a failed download falls through to the normal
+        first-run setup, which re-installs, so a bad release can never wedge boot
+        in a retry loop.  Returns True only on a successful swap.
+        """
+        if not self.config.get("pending_llama_swap"):
+            return False
+
+        def _report(msg):
+            logger.info(f"[llama-upgrade] {msg}")
+            if progress_callback:
+                try:
+                    progress_callback(msg)
+                except Exception:
+                    pass
+
+        _report("Applying queued llama.cpp upgrade before server start...")
+        ok = False
+        try:
+            ok = self.installer.update_llama_cpp(progress_callback=_report)
+            _report("Upgrade applied." if ok else "Upgrade download failed — keeping existing setup.")
+        except Exception as e:
+            _report(f"Upgrade failed: {e} — will fall back to normal setup")
+        finally:
+            self.config["pending_llama_swap"] = False
+            self._save_config()
+        return ok
 
     def switch_model(self, model_index: int) -> bool:
         """

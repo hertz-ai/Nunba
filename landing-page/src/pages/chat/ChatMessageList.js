@@ -212,6 +212,8 @@ const ChatMessageList = ({
   onExecutePlan,
   onSetupLlm,
   onConfigureLlm,
+  onUpgradeLlm,
+  onDismissUpgrade,
   // #508 — server-emitted dynamic stage text (latest priority=49 'Thinking'
   // event text, ~6 words).  Substituted into the CyclingVerb spinner so
   // the user sees real status ("Searching your message history…") instead
@@ -423,6 +425,76 @@ const ChatMessageList = ({
                   }}
                 >
                   I'll Configure
+                </button>
+              </div>
+            </div>
+          );
+        }
+
+        if (message.type === 'llm_upgrade_card') {
+          // Tier-1 (global) capability card: llama.cpp binary version upgrade.
+          // Queue-only — the swap applies at the next restart (the running server
+          // holds the binary open), so a queued card shows the restart hint.
+          const card = message.upgradeCard || {};
+          return (
+            <div
+              key={`llm-upgrade-${index}`}
+              className="rounded-lg p-6 shadow-sm animate-slide-in-left"
+              style={{
+                maxWidth: '100%',
+                backgroundColor: '#142a26',
+                color: '#FFFFFF',
+                border: '1px solid #00e89d',
+              }}
+            >
+              <div className="flex items-center gap-2 mb-3">
+                <span
+                  style={{ color: '#00e89d', fontWeight: 'bold', fontSize: '1.1em' }}
+                >
+                  AI Engine Upgrade
+                </span>
+                {(card.current_build || card.required_build) && (
+                  <span
+                    className="text-xs px-2 py-0.5 rounded-full"
+                    style={{ backgroundColor: '#00e89d22', color: '#00e89d' }}
+                  >
+                    {card.current_build ? `b${card.current_build}` : 'current'} → b
+                    {card.required_build || 'latest'}
+                  </span>
+                )}
+              </div>
+              {message.content && (
+                <p className="text-sm text-gray-300 mb-4">{message.content}</p>
+              )}
+              <div className="flex gap-3">
+                {card.queued ? (
+                  <button
+                    disabled
+                    className="px-4 py-2 rounded-lg text-sm font-semibold"
+                    style={{ backgroundColor: '#2a3a36', color: '#9fe', cursor: 'default' }}
+                  >
+                    Queued — restart to apply
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => onUpgradeLlm?.(card)}
+                    className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+                    style={{ backgroundColor: '#00b87f', color: '#fff', cursor: 'pointer' }}
+                  >
+                    Upgrade engine
+                  </button>
+                )}
+                <button
+                  onClick={() => onDismissUpgrade?.(card)}
+                  className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+                  style={{
+                    backgroundColor: 'transparent',
+                    color: '#999',
+                    border: '1px solid #555',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Dismiss
                 </button>
               </div>
             </div>

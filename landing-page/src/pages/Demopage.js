@@ -1160,6 +1160,37 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         const res = await fetch('/api/llm/status');
         if (!res.ok) return;
         const data = await res.json();
+
+        // Tier-1 (global) capability: llama.cpp binary version upgrade. Agent-
+        // independent — a newer binary helps EVERY agent (grammar-constrained
+        // tool output unblocks autonomous goals, #124/#134) — so it surfaces even
+        // when the LLM is already running fine, i.e. before the setup_needed gate.
+        // Dismiss is keyed by target build so a NEWER release re-surfaces later.
+        try {
+          const vu = data.version_upgrade;
+          if (vu && vu.available) {
+            const dismissKey = `hart_llm_upgrade_dismissed_b${vu.required_build || 'latest'}`;
+            if (!localStorage.getItem(dismissKey)) {
+              const queued = !!vu.pending_restart;
+              setMessages((prev) => {
+                if (prev.some((m) => m.type === 'llm_upgrade_card')) return prev;
+                return [...prev, {
+                  type: 'llm_upgrade_card',
+                  content: queued
+                    ? 'AI engine upgrade is queued — restart Nunba to apply.'
+                    : 'A newer local AI engine is available. Upgrading unlocks more reliable tool use for chat and autonomous agents.',
+                  upgradeCard: {
+                    current_build: vu.current_build,
+                    required_build: vu.required_build,
+                    queued,
+                    dismissKey,
+                  },
+                }];
+              });
+            }
+          }
+        } catch { /* version_upgrade is best-effort; never block setup on it */ }
+
         if (!data.setup_needed || !data.recommended) return;
 
         const rec = data.recommended;
@@ -4185,6 +4216,41 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     }
   }, []);
 
+  // Tier-1 global upgrade card actions. The endpoint only QUEUES the swap (it's
+  // applied at the next cold start — the running server holds the binary open),
+  // so success = "queued, restart to apply", not an in-place upgrade.
+  const handleUpgradeLlm = useCallback(async () => {
+    try {
+      const res = await fetch('/api/llm/upgrade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMessages((prev) => prev.map((m) =>
+          m.type === 'llm_upgrade_card'
+            ? { ...m,
+                content: 'AI engine upgrade queued — restart Nunba to apply.',
+                upgradeCard: { ...(m.upgradeCard || {}), queued: true } }
+            : m
+        ));
+        pushNotification({ type: 'success', message: 'AI engine upgrade queued', detail: 'Restart Nunba to apply.' });
+      } else {
+        pushNotification({ type: 'warning', message: data.message || 'Could not queue the upgrade.' });
+      }
+    } catch {
+      pushNotification({ type: 'warning', message: 'Could not reach the upgrade service. Try again from Settings.' });
+    }
+  }, []);
+
+  const handleDismissUpgrade = useCallback((upgradeCard) => {
+    try {
+      if (upgradeCard?.dismissKey) localStorage.setItem(upgradeCard.dismissKey, '1');
+    } catch { /* localStorage may be unavailable */ }
+    setMessages((prev) => prev.filter((m) => m.type !== 'llm_upgrade_card'));
+  }, []);
+
   const handleImageClick = (imageUrl) => {
     setUploadedImage(imageUrl);
   };
@@ -4957,6 +5023,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   onExecutePlan={handleExecutePlan}
                   onSetupLlm={handleSetupLlm}
                   onConfigureLlm={handleConfigureLlm}
+                  onUpgradeLlm={handleUpgradeLlm}
+                  onDismissUpgrade={handleDismissUpgrade}
                   latestThinkingText={latestThinkingText}
                   showThinkingTraces={showThinkingTraces}
                 />

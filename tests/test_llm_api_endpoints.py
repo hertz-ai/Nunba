@@ -50,6 +50,77 @@ class TestLLMStatus:
         data = resp.get_json()
         assert isinstance(data, dict)
 
+    def test_status_includes_version_upgrade(self, client):
+        """The global (Tier-1) upgrade card reads status.version_upgrade."""
+        resp = client.get('/api/llm/status')
+        if resp.status_code == 200:
+            data = resp.get_json()
+            assert 'version_upgrade' in data, \
+                "status must expose version_upgrade for the global upgrade card"
+            vu = data['version_upgrade']
+            assert isinstance(vu, dict) and 'available' in vu
+
+
+# ==========================================================================
+# 1b. llama.cpp self-upgrade actuator (#124/#134) — queue now, swap at boot
+# ==========================================================================
+class TestLlamaUpgradeActuator:
+    """Staged binary upgrade: the endpoint only sets a flag (instant, safe); the
+    swap runs at the next cold start when no server holds the binary open."""
+
+    def test_upgrade_endpoint_queues_pending_swap(self, client):
+        resp = client.post('/api/llm/upgrade', json={},
+                            content_type='application/json')
+        # local test client → _is_local_request() True; 200 queued, or 500 if the
+        # installer is unavailable in this env (still must return JSON, never hang).
+        assert resp.status_code in (200, 500)
+        data = resp.get_json()
+        assert data is not None
+        if resp.status_code == 200:
+            assert data.get('success') is True
+            assert data.get('queued') is True
+
+    def test_queue_sets_flag_and_apply_runs_installer_once(self):
+        from unittest.mock import MagicMock
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig()
+        cfg._save_config = MagicMock()          # don't touch disk
+        cfg.installer = MagicMock()
+        cfg.installer.get_version.return_value = "9180"
+        cfg.installer.update_llama_cpp.return_value = True
+
+        out = cfg.queue_llama_upgrade()
+        assert out['queued'] is True
+        assert cfg.config.get('pending_llama_swap') is True
+
+        applied = cfg.apply_pending_llama_upgrade()
+        assert applied is True
+        cfg.installer.update_llama_cpp.assert_called_once()
+        assert cfg.config.get('pending_llama_swap') is False, \
+            "applied upgrade must clear the flag so it doesn't re-run every boot"
+
+    def test_apply_is_noop_when_nothing_queued(self):
+        from unittest.mock import MagicMock
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig()
+        cfg._save_config = MagicMock()
+        cfg.installer = MagicMock()
+        cfg.config['pending_llama_swap'] = False
+        assert cfg.apply_pending_llama_upgrade() is False
+        cfg.installer.update_llama_cpp.assert_not_called()
+
+    def test_apply_clears_flag_even_when_download_fails(self):
+        """A bad release must NOT wedge boot in a retry loop — clear on failure too."""
+        from unittest.mock import MagicMock
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig()
+        cfg._save_config = MagicMock()
+        cfg.installer = MagicMock()
+        cfg.installer.update_llama_cpp.side_effect = RuntimeError("download 404")
+        cfg.config['pending_llama_swap'] = True
+        assert cfg.apply_pending_llama_upgrade() is False      # failed
+        assert cfg.config.get('pending_llama_swap') is False   # but cleared
+
 
 # ==========================================================================
 # 2. LLM Auto-Setup
