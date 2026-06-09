@@ -503,13 +503,29 @@ class LlamaInstaller:
 
             report(f"Downloading {tag}...")
 
-            # Clear existing build to force re-download
+            # Preserve the current build until the new one is confirmed. A
+            # failed download must NOT strand the box with no llama-server —
+            # apply_pending_llama_upgrade runs this UNATTENDED at boot, so a
+            # delete-then-download would brick the local LLM on a mid-download
+            # failure (API reachable, but the asset 404s / connection drops).
+            # Move-aside → download → commit-or-roll-back.
             bin_dir = self.install_dir / "build" / "bin" / "Release"
+            backup_dir = bin_dir.parent / "Release.bak"
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
             if bin_dir.exists():
-                shutil.rmtree(bin_dir)
+                bin_dir.rename(backup_dir)
 
             # Reuse existing download infrastructure
             success = self.try_download_prebuilt()
+
+            if not success and backup_dir.exists():
+                report("Download failed — restoring previous build")
+                if bin_dir.exists():
+                    shutil.rmtree(bin_dir, ignore_errors=True)
+                backup_dir.rename(bin_dir)
+            elif backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
 
             if success:
                 new_version = self.get_version()

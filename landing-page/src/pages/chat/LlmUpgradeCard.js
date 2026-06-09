@@ -42,7 +42,7 @@ const LlmUpgradeCard = ({ card, onUpgrade, onDismiss }) => {
       <p className="text-sm text-gray-300 mb-4">
         {card.queued
           ? 'AI engine upgrade is queued — restart Nunba to apply.'
-          : 'A newer local AI engine is available. Upgrading unlocks more reliable tool use for chat and autonomous agents.'}
+          : 'A newer local AI engine is available. Upgrading enables faster inference (speculative decoding) and the latest engine optimizations.'}
       </p>
       <div className="flex gap-3">
         {card.queued ? (

@@ -1322,12 +1322,17 @@ class LlamaConfig:
     def _do_start_server(self, model_preset=None, force_new_port=False):
         """Internal server start — called by start_server() with lock protection."""
         # #124/#134 — apply any queued llama.cpp binary upgrade BEFORE (re)start,
-        # but ONLY when no local llama-server is currently holding the binary.
+        # but ONLY when NO local llama-server is holding the (shared) binary.
         # Gate on check_server_running() (a real llama-server on the port), NOT
         # is_llm_available() — the latter returns True when a cloud API is
         # configured, which would skip the LOCAL binary swap forever.
+        # Check EVERY managed port: the main server AND the :8081 caption/draft
+        # server run from the same binary dir, so a swap while either is up
+        # would fail the move-aside (Windows locks the running .exe).
         try:
-            if self.config.get('pending_llama_swap') and not self.check_server_running():
+            _main_port = self.config.get("server_port", 8080)
+            _busy = self.check_server_running(_main_port) or self.check_server_running(8081)
+            if self.config.get('pending_llama_swap') and not _busy:
                 self.apply_pending_llama_upgrade()
         except Exception as _upg_err:
             logger.warning(f"[llama-upgrade] pending-apply check failed: {_upg_err}")
