@@ -71,6 +71,7 @@ import AgentSidebar from './chat/AgentSidebar';
 import PdfViewer from './chat/PdfViewer';
 import ChatInputBar from './chat/ChatInputBar';
 import ChatMessageList from './chat/ChatMessageList';
+import LlmUpgradeCard from './chat/LlmUpgradeCard';
 
 const HOSTED_URL = 'https://hevolve.hertzai.com';
 
@@ -1151,6 +1152,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // Proactive LLM status check — diagnose hardware + software state and act accordingly
   // Handles: GPU binary w/o GPU, CPU binary w/ GPU, GPU occupied, model too big,
   // mmproj missing, nothing available, etc. Server-side compute determines model choice.
+  // Tier-1 global capability card lives in component state (NOT the per-agent
+  // message stream) so it survives agent morphing. See LlmUpgradeCard.
+  const [versionUpgrade, setVersionUpgrade] = useState(null);
   const llmCheckedRef = useRef(false);
   useEffect(() => {
     if (llmCheckedRef.current) return;
@@ -1171,21 +1175,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           if (vu && vu.available) {
             const dismissKey = `hart_llm_upgrade_dismissed_b${vu.required_build || 'latest'}`;
             if (!localStorage.getItem(dismissKey)) {
-              const queued = !!vu.pending_restart;
-              setMessages((prev) => {
-                if (prev.some((m) => m.type === 'llm_upgrade_card')) return prev;
-                return [...prev, {
-                  type: 'llm_upgrade_card',
-                  content: queued
-                    ? 'AI engine upgrade is queued — restart Nunba to apply.'
-                    : 'A newer local AI engine is available. Upgrading unlocks more reliable tool use for chat and autonomous agents.',
-                  upgradeCard: {
-                    current_build: vu.current_build,
-                    required_build: vu.required_build,
-                    queued,
-                    dismissKey,
-                  },
-                }];
+              // Global state, NOT the per-agent message stream — the card must
+              // survive agent morphing (capability is agent-independent).
+              setVersionUpgrade({
+                current_build: vu.current_build,
+                required_build: vu.required_build,
+                queued: !!vu.pending_restart,
+                dismissKey,
               });
             }
           }
@@ -4228,13 +4224,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       });
       const data = await res.json();
       if (data.success) {
-        setMessages((prev) => prev.map((m) =>
-          m.type === 'llm_upgrade_card'
-            ? { ...m,
-                content: 'AI engine upgrade queued — restart Nunba to apply.',
-                upgradeCard: { ...(m.upgradeCard || {}), queued: true } }
-            : m
-        ));
+        setVersionUpgrade((v) => (v ? { ...v, queued: true } : v));
         pushNotification({ type: 'success', message: 'AI engine upgrade queued', detail: 'Restart Nunba to apply.' });
       } else {
         pushNotification({ type: 'warning', message: data.message || 'Could not queue the upgrade.' });
@@ -4248,7 +4238,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     try {
       if (upgradeCard?.dismissKey) localStorage.setItem(upgradeCard.dismissKey, '1');
     } catch { /* localStorage may be unavailable */ }
-    setMessages((prev) => prev.filter((m) => m.type !== 'llm_upgrade_card'));
+    setVersionUpgrade(null);
   }, []);
 
   const handleImageClick = (imageUrl) => {
@@ -4783,6 +4773,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 <NotificationBell />
                 <GpuTierBadge />
               </div>
+              {/* Tier-1 global capability card — rendered here (above the
+                  welcome/message ternary) so it persists across agent morphing,
+                  not inside the per-agent message stream. */}
+              <LlmUpgradeCard
+                card={versionUpgrade}
+                onUpgrade={handleUpgradeLlm}
+                onDismiss={handleDismissUpgrade}
+              />
               {messages.length === 0 ? (
                 <>
                   {guestNameConflict && (
@@ -5023,8 +5021,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   onExecutePlan={handleExecutePlan}
                   onSetupLlm={handleSetupLlm}
                   onConfigureLlm={handleConfigureLlm}
-                  onUpgradeLlm={handleUpgradeLlm}
-                  onDismissUpgrade={handleDismissUpgrade}
                   latestThinkingText={latestThinkingText}
                   showThinkingTraces={showThinkingTraces}
                 />
