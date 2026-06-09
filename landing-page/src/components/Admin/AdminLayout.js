@@ -210,7 +210,10 @@ export default function AdminLayout({children}) {
   return (
     <Box sx={{
       display: 'flex',
-      minHeight: '100vh',
+      // Frameless desktop: subtract the 32px titlebar so the admin shell fits the
+      // (100vh − titlebar) document instead of clipping its bottom (matches the
+      // other MUI shells — MainRoute/AgentChatPage/SocialLayout, commit 242dc10d).
+      minHeight: 'calc(100vh - var(--nunba-titlebar-h, 0px))',
       background: 'linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 50%, #0f0f1a 100%)',
     }}>
       <Helmet>

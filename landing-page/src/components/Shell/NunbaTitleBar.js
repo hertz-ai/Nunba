@@ -161,8 +161,14 @@ export default function NunbaTitleBar({ children }) {
       }
       html.nunba-frameless-active .h-screen,
       html.nunba-frameless-active .min-h-screen {
-        height: calc(100vh - var(--nunba-titlebar-h, 32px));
-        min-height: calc(100vh - var(--nunba-titlebar-h, 32px));
+        /* !important so this clamp beats tailwind's own .h-screen rule
+           (height:100vh !important in assets/css/tailwind.css). Without it
+           the clamp loses the cascade, the chat/sidebar/social shells stay a
+           full 100vh, overflow the (100vh − 32px) document, and the bottom
+           (chat input) is clipped by the titlebar height. This selector is
+           more specific, so among two !important rules it wins. */
+        height: calc(100vh - var(--nunba-titlebar-h, 32px)) !important;
+        min-height: calc(100vh - var(--nunba-titlebar-h, 32px)) !important;
       }
       /* Cancel the now-redundant App.js paddingTop on <main> — the
          html-level padding already reserves the titlebar gap. */
