@@ -135,7 +135,7 @@ import { Link } from 'react-router-dom';
 
 function NotFoundPage() {
   return (
-    <Box sx={{ minHeight: 'var(--nunba-content-h, 100vh)', bgcolor: '#0F0E17', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff', textAlign: 'center', px: 3 }}>
+    <Box sx={{ minHeight: 'calc(100vh - var(--nunba-titlebar-h, 0px))', bgcolor: '#0F0E17', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff', textAlign: 'center', px: 3 }}>
       <Helmet><title>404 — Page Not Found | Nunba</title><meta name="robots" content="noindex" /></Helmet>
       <Typography variant="h1" sx={{ fontSize: { xs: '4rem', sm: '6rem' }, fontWeight: 700, background: 'linear-gradient(135deg, #6C63FF, #FF6B6B)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', mb: 2 }}>404</Typography>
       <Typography variant="h5" sx={{ mb: 1, opacity: 0.87 }}>Page not found</Typography>
