@@ -1203,6 +1203,30 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         _build_sp = os.path.join('build', 'Nunba', 'python-embed', 'Lib', 'site-packages')
         _synced = 0
 
+        # Content-hash comparator — replaces the old size-only check.
+        # Same-size-different-content was silently skipping fixes in
+        # python-embed (2026-06-08: hevolvearmor/_loader.py fix
+        # 7202c38 sat in HARTOS for 24h but never reached the install
+        # because the loader file shape stayed the same byte count).
+        # SHA-256 is overkill for "is this the same file?" but it costs
+        # microseconds on 5-KB Python sources and is unambiguous.
+        import hashlib as _hashlib_sync
+
+        def _files_match(src_path, dst_path):
+            try:
+                _ss = os.path.getsize(src_path)
+                _ds = os.path.getsize(dst_path)
+            except OSError:
+                return False
+            if _ss != _ds:
+                return False
+            try:
+                with open(src_path, 'rb') as _sf, open(dst_path, 'rb') as _df:
+                    return (_hashlib_sync.sha256(_sf.read()).digest()
+                            == _hashlib_sync.sha256(_df.read()).digest())
+            except OSError:
+                return False
+
         # Sync top-level HARTOS .py modules (hart_intelligence_entry.py, create_recipe.py, etc.)
         for _fname in os.listdir(_hartos_src):
             if _fname.endswith('.py') and not _fname.startswith(('setup', 'embedded_main', 'conftest')):
@@ -1211,29 +1235,45 @@ def build_windows(python_exe, app_only=False, installer_only=False):
                     if os.path.isdir(_dst_dir):
                         _dst_file = os.path.join(_dst_dir, _fname)
                         if os.path.exists(_dst_file):
-                            # Only copy if source is newer or different size
-                            _src_size = os.path.getsize(_src_file)
-                            _dst_size = os.path.getsize(_dst_file)
-                            if _src_size != _dst_size:
+                            # Content-hash compare so same-size-different-content edits propagate.
+                            if not _files_match(_src_file, _dst_file):
                                 shutil.copy2(_src_file, _dst_file)
                                 _synced += 1
+                        else:
+                            shutil.copy2(_src_file, _dst_file)
+                            _synced += 1
 
-        # Sync HARTOS packages (integrations/, core/, security/, agent-ledger)
-        for _pkg_name in ['integrations', 'core', 'security']:
+        # Sync HARTOS packages.  Keep this list in lockstep with the
+        # set of Python-package dirs at the HARTOS repo root — every
+        # dir that ships into python-embed/Lib/site-packages/ MUST be
+        # synced here or a fix that lands inside it never reaches the
+        # install.  Past misses: hevolvearmor (2026-06-08 __file__
+        # loader fix sat in HARTOS for 24h while installs stayed
+        # broken because the dir wasn't in this list).  See
+        # tests/test_build_hartos_sync.py for the drift guard.
+        for _pkg_name in [
+                'integrations', 'core', 'security',
+                'hevolvearmor',     # encrypted-module loader (__file__ fix lives here)
+                'agent_ledger',     # task ledger ORM + APIs
+                'hevolve_database', # canonical DB models (when present locally)
+        ]:
             _pkg_src = os.path.join(_hartos_src, _pkg_name)
             if os.path.isdir(_pkg_src):
                 for _dst_dir in [_embed_sp, _build_sp]:
                     _pkg_dst = os.path.join(_dst_dir, _pkg_name)
                     if os.path.isdir(_pkg_dst):
-                        # Walk source and copy changed files
+                        # Walk source and copy changed files (content-hash compare).
                         for _root, _dirs, _files in os.walk(_pkg_src):
+                            # Skip __pycache__ — not a source dir.
+                            if '__pycache__' in _dirs:
+                                _dirs.remove('__pycache__')
                             for _f in _files:
                                 if _f.endswith('.py'):
                                     _rel = os.path.relpath(os.path.join(_root, _f), _pkg_src)
                                     _s = os.path.join(_root, _f)
                                     _d = os.path.join(_pkg_dst, _rel)
                                     if os.path.exists(_d):
-                                        if os.path.getsize(_s) != os.path.getsize(_d):
+                                        if not _files_match(_s, _d):
                                             os.makedirs(os.path.dirname(_d), exist_ok=True)
                                             shutil.copy2(_s, _d)
                                             _synced += 1
@@ -1247,6 +1287,56 @@ def build_windows(python_exe, app_only=False, installer_only=False):
             print_info(f"Synced {_synced} HARTOS file(s) into python-embed (source -> build)")
         else:
             print_info("HARTOS files in python-embed are up to date")
+
+        # ── Post-sync verification ───────────────────────────────────
+        # Spot-check load-bearing files in the bundled python-embed.
+        # The 2026-06-08 hevolvearmor __file__ regression sat in HARTOS
+        # main for 24+ hours but never reached an installer because the
+        # sync loop didn't include hevolvearmor/.  Now that it's
+        # included, this post-sync check is the second line of defense:
+        # if any bundled critical file fails its signature assertion,
+        # the build fails loud BEFORE shipping a broken installer.
+        # Extend ``_critical_signatures`` whenever a fix lands in a
+        # file whose presence is load-bearing for the install's first
+        # boot (loader hooks, bootstrap step ordering, gate hooks, …).
+        _critical_signatures = [
+            # path-relative-to-site-packages          : required substring
+            ('hevolvearmor/_loader.py',
+             "setdefault('__file__'"),
+            # Add future critical-fix markers below as needed.  Each
+            # entry costs one file read at build-time; keep the list
+            # short and load-bearing.
+        ]
+        _check_root = os.path.join('build', 'Nunba', 'python-embed',
+                                   'Lib', 'site-packages')
+        _crit_fail = []
+        for _rel_path, _marker in _critical_signatures:
+            _full = os.path.join(_check_root, _rel_path.replace('/', os.sep))
+            if not os.path.isfile(_full):
+                _crit_fail.append(
+                    f"{_rel_path}: file missing in bundled python-embed")
+                continue
+            try:
+                with open(_full, encoding='utf-8') as _cf:
+                    _content = _cf.read()
+                if _marker not in _content:
+                    _crit_fail.append(
+                        f"{_rel_path}: required marker not found "
+                        f"('{_marker[:40]}...').  Likely the sibling "
+                        f"HARTOS source has the fix but the snapshot "
+                        f"in python-embed is stale.  Inspect the "
+                        f"sync loop above + the HARTOS-side file.")
+            except OSError as _re:
+                _crit_fail.append(f"{_rel_path}: read failed: {_re}")
+        if _crit_fail:
+            print_error("Critical bundle verification FAILED:")
+            for _msg in _crit_fail:
+                print_error(f"  - {_msg}")
+            print_error("Refusing to ship; fix the sync gap and rerun.")
+            return False
+        print_info(
+            f"Post-sync verification PASSED "
+            f"({len(_critical_signatures)} critical file(s) match)")
 
     # Strip HevolveAI source from python-embed (proprietary — .pyc only)
     _compile_script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
