@@ -1251,14 +1251,41 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         # loader fix sat in HARTOS for 24h while installs stayed
         # broken because the dir wasn't in this list).  See
         # tests/test_build_hartos_sync.py for the drift guard.
+        #
+        # Layout detection: HARTOS uses two layouts side-by-side.
+        #   FLAT: HARTOS/{pkg}/__init__.py is the package itself
+        #         (integrations, core, security follow this).
+        #   NESTED: HARTOS/{pkg}/{pkg}/__init__.py — outer is the
+        #         project wrapper (pyproject.toml, setup.py, tests/),
+        #         inner is the Python package that ships.
+        #         hevolvearmor follows this (it's a separate Rust+Py
+        #         package vendored under HARTOS).  Pip-installing
+        #         from HARTOS/hevolvearmor/ produces
+        #         site-packages/hevolvearmor/ (the inner content
+        #         only) — the sync must mirror that, not copy the
+        #         outer wrapper into the install.
         for _pkg_name in [
                 'integrations', 'core', 'security',
                 'hevolvearmor',     # encrypted-module loader (__file__ fix lives here)
                 'agent_ledger',     # task ledger ORM + APIs
                 'hevolve_database', # canonical DB models (when present locally)
         ]:
-            _pkg_src = os.path.join(_hartos_src, _pkg_name)
-            if os.path.isdir(_pkg_src):
+            _pkg_outer = os.path.join(_hartos_src, _pkg_name)
+            if not os.path.isdir(_pkg_outer):
+                continue
+            # Prefer FLAT (outer is the package itself); fall back to
+            # NESTED (outer is a project wrapper around the package).
+            if os.path.isfile(os.path.join(_pkg_outer, '__init__.py')):
+                _pkg_src = _pkg_outer
+            elif os.path.isfile(os.path.join(_pkg_outer, _pkg_name, '__init__.py')):
+                _pkg_src = os.path.join(_pkg_outer, _pkg_name)
+            else:
+                print_warn(
+                    f"HARTOS sync: {_pkg_name} present but neither "
+                    f"FLAT nor NESTED layout matched — skipping; "
+                    f"contents will not refresh.")
+                continue
+            if True:
                 for _dst_dir in [_embed_sp, _build_sp]:
                     _pkg_dst = os.path.join(_dst_dir, _pkg_name)
                     if os.path.isdir(_pkg_dst):
