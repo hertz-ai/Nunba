@@ -4773,14 +4773,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                 <NotificationBell />
                 <GpuTierBadge />
               </div>
-              {/* Tier-1 global capability card — rendered here (above the
-                  welcome/message ternary) so it persists across agent morphing,
-                  not inside the per-agent message stream. */}
-              <LlmUpgradeCard
-                card={versionUpgrade}
-                onUpgrade={handleUpgradeLlm}
-                onDismiss={handleDismissUpgrade}
-              />
               {messages.length === 0 ? (
                 <>
                   {guestNameConflict && (
@@ -5027,6 +5019,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               )}
             </div>
           </div>
+
+          {/* In-progress / capability cards sit at the BOTTOM of the chat
+              column (above the input bar), consistent with conversations and
+              the other cards. Still global + state-driven (NOT in the per-agent
+              message stream) so it survives agent morphing. */}
+          <LlmUpgradeCard
+            card={versionUpgrade}
+            onUpgrade={handleUpgradeLlm}
+            onDismiss={handleDismissUpgrade}
+          />
 
           <ChatInputBar
             messageQueue={messageQueue}
