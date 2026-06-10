@@ -7245,6 +7245,33 @@ def main():
         if args.always_on_top:
             setup_always_on_top(_window)
 
+        # ── Frameless custom-chrome restore (Win-only) ─────────────────
+        # `frameless=True` strips WS_THICKFRAME (no resize edges) and makes
+        # maximize cover the taskbar.  win32_chrome.install_custom_chrome
+        # restores both via WS_THICKFRAME + a wndproc subclass that handles
+        # WM_NCCALCSIZE / WM_NCHITTEST / WM_GETMINMAXINFO — the same pattern
+        # Teams, Discord, and VSCode use.  Hooks `events.loaded` because the
+        # HWND only resolves once pywebview's GUI thread has run a tick.
+        if _use_frameless and sys.platform == 'win32':
+            from ctypes import windll as _wd_chrome
+            def _install_chrome():
+                try:
+                    if (hasattr(_window, 'original_window')
+                            and hasattr(_window.original_window, 'handle')):
+                        _hwnd = _window.original_window.handle
+                    elif hasattr(_window, 'handle'):
+                        _hwnd = _window.handle
+                    else:
+                        _hwnd = _wd_chrome.user32.FindWindowW(None, args.title)
+                    if not _hwnd:
+                        logger.warning("[CHROME] Could not resolve HWND for custom chrome")
+                        return
+                    from desktop.win32_chrome import install_custom_chrome
+                    install_custom_chrome(int(_hwnd), titlebar_height=32)
+                except Exception as _chrome_err:
+                    logger.warning("[CHROME] install_custom_chrome failed: %s", _chrome_err)
+            _window.events.loaded += _install_chrome
+
         # Set up system tray
         _tray_icon = setup_system_tray(_window)
         logger.info(f"System tray setup result: {_tray_icon is not None}")
