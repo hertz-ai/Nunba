@@ -75,6 +75,16 @@ import LlmUpgradeCard from './chat/LlmUpgradeCard';
 
 const HOSTED_URL = 'https://hevolve.hertzai.com';
 
+// Boot-time send queue is gated on engineReady ONLY for this long after the
+// chat mounts.  After the grace window, sends go through even if the local
+// engine still reports not-ready — because `available:false` is also the
+// stable state of a box whose llama.cpp needs a GPU-binary upgrade (chat still
+// works via the CPU binary / cloud), and the backend has its own
+// liveness/busy/down handling + "starting AI engine" stub.  Without this bound
+// a never-ready engine queued every message forever (regression from the #475
+// engineReady gate; the hook is realtime-reconciled, NOT sticky-true).
+const ENGINE_BOOT_GRACE_MS = 20000;
+
 /**
  * Determine if an agent is local (created via LLM pipeline)
  * vs cloud-only (fetched from mailer.hertzai.com).
@@ -156,6 +166,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   const [loading, setLoading] = useState(true);
   const [messageQueue, setMessageQueue] = useState([]); // Queue for messages sent while loading or while local engine is booting
   const lastMessageSentAtRef = useRef(0); // Timestamp of last sent message
+  // Bounded auto-retry counter for boot-window "Loading tools" fallbacks —
+  // reset on the first non-loading response. See the resultData.loading gate.
+  const loadingRetryRef = useRef(0);
+  // When this ChatInterface mounted — used to bound the engineReady send-gate
+  // to ENGINE_BOOT_GRACE_MS so a never-ready local engine can't queue forever.
+  const chatMountAtRef = useRef(Date.now());
   const [editingQueueId, setEditingQueueId] = useState(null); // Track which queue item is being edited
   // Local-engine readiness gate.  Defaults true (optimistic) — only flips
   // false when /api/llm/status reports `available:false`.  Once true,
@@ -806,11 +822,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     }
   }, [loading, engineReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Safety: flush stuck queue items after 10s if loading is still true ──
+  // ── Safety: force-drain a stuck queue ──
+  // The normal drain (effect above) only runs when `!loading && engineReady`.
+  // If the queue can't drain because a request is still in flight (loading) OR
+  // the local engine never reports ready (engineReady=false — e.g. a box whose
+  // llama.cpp needs a GPU-binary upgrade), force-send the next item after a
+  // bound.  For the engine-stuck case the bound must EXCEED ENGINE_BOOT_GRACE_MS
+  // so the forced re-send clears the send-gate (grace expired) instead of just
+  // re-queuing.  Without this an engine that never becomes ready stranded the
+  // queue forever.
   useEffect(() => {
-    if (messageQueue.length === 0 || !loading) return;
+    if (messageQueue.length === 0) return;
+    if (!loading && engineReady) return; // normal drain handles this
+    const delay = !engineReady ? ENGINE_BOOT_GRACE_MS + 1000 : 10000;
     const timer = setTimeout(() => {
-      // After 10s, if still loading and queue has items, force-send the next one
       setMessageQueue((prev) => {
         if (prev.length === 0) return prev;
         const [next, ...rest] = prev;
@@ -820,9 +845,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         }, 50);
         return rest;
       });
-    }, 10000);
+    }, delay);
     return () => clearTimeout(timer);
-  }, [messageQueue.length, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [messageQueue.length, loading, engineReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isTextModeRef = useRef(isTextMode);
   const waitingTextRef = useRef(waitingText);
@@ -3413,15 +3438,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     // Queue message when:
     //   - A previous request is in flight (loading) AND it's been less than
     //     10s since the last sent message (existing throttle behavior); OR
-    //   - The local engine is still booting (engineReady=false).
+    //   - The local engine reports not-ready (engineReady=false) AND we're
+    //     still within the boot-grace window after mount.
     //
-    // engineReady defaults to true and is sticky-true once observed ready,
-    // so steady-state behavior is identical to the pre-engineReady gate.
-    // The boot-time branch ignores the 10s throttle window — during boot
-    // there is no "previous request" to wait on; messages should buffer
-    // for the entire boot, not just 10s.
+    // engineReady is realtime-reconciled (hooks/useLocalEngineReady.js), NOT
+    // sticky-true: on a box whose llama.cpp needs a GPU-binary upgrade,
+    // /api/llm/status reports available:false indefinitely even though chat
+    // works.  Gating sends on it UNBOUNDED queued every message forever (the
+    // 10s safety-flush below only armed while `loading`).  So the engine gate
+    // only holds for ENGINE_BOOT_GRACE_MS — long enough to auto-flush a real
+    // cold boot, after which we trust the backend's own readiness handling.
     const timeSinceLastMsg = Date.now() - lastMessageSentAtRef.current;
-    if ((loading && timeSinceLastMsg < 10000) || !engineReady) {
+    const withinEngineBootGrace =
+      Date.now() - chatMountAtRef.current < ENGINE_BOOT_GRACE_MS;
+    if ((loading && timeSinceLastMsg < 10000) || (!engineReady && withinEngineBootGrace)) {
       setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
       setInputMessage('');
       return;
@@ -3697,6 +3727,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             }
             if (resultData.loading) {
               pushNotification({ type: 'info', message: 'Loading tools... try again in a moment' });
+              // Auto-retry: a message answered by the boot-window terminal
+              // fallback ("Loading tools...") used to DEAD-END — sent once,
+              // never retried ("hi queued forever", live 2026-06-10: the model
+              // takes ~2min to warm after boot and first sends land inside
+              // that window). Re-enqueue the original text (this closure still
+              // holds it) so the EXISTING queue drain re-sends it once the
+              // engine reports ready. Bounded so a permanently degraded
+              // backend can't loop.
+              if (loadingRetryRef.current < 3 && inputMessage && inputMessage.trim()) {
+                loadingRetryRef.current += 1;
+                setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
+              }
+            } else {
+              loadingRetryRef.current = 0;
             }
 
             // LiquidActionBar: if the Navigate_App tool fired, the backend
@@ -4651,21 +4695,26 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                           onError={handleVideoError}
                         />
                       ) : mediaMode === 'video' ? (
-                        /* Idle fallback: local agents carry NO filler videos
-                           (fillers are a cloud-agent feature — local prompt
-                           JSONs only have image_url), so videoUrl is null on
-                           /local and this branch used to render nothing: an
-                           empty black column reported as "idle videos not
-                           loading" (2026-06-10). Show the agent portrait when
-                           available, else the voice orb. */
+                        /* Idle fallback: built-in/local agents carry NO filler
+                           videos (fillers are a synced cloud-agent feature), so
+                           videoUrl is null on /local and this branch used to
+                           render nothing: an empty black column reported as
+                           "idle videos not loading" (2026-06-10). Show the agent
+                           portrait when available, else the voice orb.
+                           The built-in LOCAL_AGENTS/CLOUD_AGENTS expose their
+                           portrait as `avatar` (not `image_url`), while synced
+                           HARTOS agents use `image_url` — accept EITHER so the
+                           portrait shows for the default agent too, not just the
+                           orb. (Fix 2026-06-10: image_url-only check left every
+                           built-in agent on the bare orb.) */
                         <div className={`${
                           window.innerWidth <= 768
                             ? 'absolute top-0 inset-x-0 h-full'
                             : 'absolute inset-0'
                         } flex justify-center items-center`}>
-                          {currentAgent?.image_url ? (
+                          {(currentAgent?.image_url || currentAgent?.avatar) ? (
                             <img
-                              src={currentAgent.image_url}
+                              src={currentAgent.image_url || currentAgent.avatar}
                               alt={currentAgent?.name || 'agent'}
                               className="max-h-[80%] max-w-[70%] object-contain rounded-2xl opacity-90 animate-fade-in"
                             />
@@ -5154,6 +5203,25 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           In pywebview frameless mode, portal into NunbaTitleBar's right slot;
           in browser mode (titlebarSlot === null) render inline at top-1 right-2. */}
       {!embeddedMode && (() => {
+        // Display-mode (Audio Only / Video / Text) control. In FRAMELESS desktop
+        // mode it renders in the page BODY at top-right, just BELOW the window
+        // min/max/close buttons (see the separate block in the returned fragment)
+        // — the placement it had before the frameless titlebar shipped, which the
+        // user asked to restore — rather than crammed into the 32px titlebar row.
+        // In BROWSER mode (no titlebar) it stays inline in the toolbar's
+        // top-right cluster exactly as before.
+        const modeSelect = (
+          <select
+            value={mediaMode}
+            onChange={(e) => changeMediaMode(e.target.value)}
+            aria-label="Display mode"
+            className="bg-gray-800 text-white border border-gray-600 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 hover:bg-gray-700 transition-colors cursor-pointer flex-shrink-0"
+          >
+            <option value="audio" className="bg-gray-800 text-white">Audio Only</option>
+            <option value="video" className="bg-gray-800 text-white">Video Mode</option>
+            <option value="text" className="bg-gray-800 text-white">Text Mode</option>
+          </select>
+        );
         const toolbar = <div className={titlebarSlot ? "flex items-center gap-1.5 flex-wrap justify-end" : "absolute top-1 right-2 z-50 flex items-center gap-1.5 flex-wrap justify-end"}>
         {/* Install / Launch Companion buttons removed 2026-04-28:
             Nunba IS the companion app — pointing users to a separate
@@ -5200,24 +5268,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           </div>
         </div>
 
-        {/* Mode select (desktop only) */}
-        {screenWidth >= 768 && (
-          <select
-            value={mediaMode}
-            onChange={(e) => changeMediaMode(e.target.value)}
-            className="bg-gray-800 text-white border border-gray-600 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 hover:bg-gray-700 transition-colors cursor-pointer flex-shrink-0"
-          >
-            <option value="audio" className="bg-gray-800 text-white">
-              Audio Only
-            </option>
-            <option value="video" className="bg-gray-800 text-white">
-              Video Mode
-            </option>
-            <option value="text" className="bg-gray-800 text-white">
-              Text Mode
-            </option>
-          </select>
-        )}
+        {/* Display-mode select — visible in BOTH portrait and landscape
+            (previously gated on `screenWidth >= 768`, which hid it entirely in
+            portrait).  Inline here ONLY in browser mode; in frameless desktop
+            mode it renders below the titlebar via the fragment block below, so
+            it sits under the window buttons instead of inside the titlebar. */}
+        {!titlebarSlot && modeSelect}
 
         {/* Creation/Review Mode Animation */}
         {currentAgent?.agent_status && currentAgent.agent_status !== 'completed' && (
@@ -5258,7 +5314,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             (Demopage.js:1924) — keeping that gate, just dropping the
             on-screen indicator. */}
       </div>;
-        return titlebarSlot ? createPortal(toolbar, titlebarSlot) : toolbar;
+        return (
+          <>
+            {titlebarSlot ? createPortal(toolbar, titlebarSlot) : toolbar}
+            {/* Frameless desktop: the Audio/Video/Text selector sits at the
+                top-right of the page BODY, just under the window min/max/close
+                buttons.  The titlebar reserves the top 32px via html padding, so
+                `absolute top-1 right-2` here lands right below it — the position
+                this control had before the frameless titlebar shipped. */}
+            {titlebarSlot && (
+              <div className="absolute top-1 right-2 z-50 flex justify-end">
+                {modeSelect}
+              </div>
+            )}
+          </>
+        );
       })()}
 
       {/* Agent UI Overlay — floating glass cards for agent-pushed components */}
