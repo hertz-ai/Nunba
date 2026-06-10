@@ -4650,6 +4650,33 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                           onEnded={handleMediaEnded}
                           onError={handleVideoError}
                         />
+                      ) : mediaMode === 'video' ? (
+                        /* Idle fallback: local agents carry NO filler videos
+                           (fillers are a cloud-agent feature — local prompt
+                           JSONs only have image_url), so videoUrl is null on
+                           /local and this branch used to render nothing: an
+                           empty black column reported as "idle videos not
+                           loading" (2026-06-10). Show the agent portrait when
+                           available, else the voice orb. */
+                        <div className={`${
+                          window.innerWidth <= 768
+                            ? 'absolute top-0 inset-x-0 h-full'
+                            : 'absolute inset-0'
+                        } flex justify-center items-center`}>
+                          {currentAgent?.image_url ? (
+                            <img
+                              src={currentAgent.image_url}
+                              alt={currentAgent?.name || 'agent'}
+                              className="max-h-[80%] max-w-[70%] object-contain rounded-2xl opacity-90 animate-fade-in"
+                            />
+                          ) : (
+                            <VoiceVisualizer
+                              audioRef={audioRef}
+                              isActive={isPlayingResponse || tts.isSpeaking}
+                              size={window.innerWidth <= 768 ? Math.min(window.innerWidth * 0.35, 160) : Math.min(window.innerWidth * 0.2, 200)}
+                            />
+                          )}
+                        </div>
                       ) : mediaMode === 'audio' ? (
                         <>
                           {audioUrl && (
