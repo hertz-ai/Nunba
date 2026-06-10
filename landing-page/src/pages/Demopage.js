@@ -4613,7 +4613,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   ? (isTextMode ? 'w-0 overflow-hidden' : (mediaMode === 'video' || mediaMode === 'audio' ? 'w-[30%]' : 'w-0 overflow-hidden'))
                   : 'w-full'
               } ${
-                window.innerWidth <= 768 ? (isTextMode ? '' : (mediaMode === 'video' || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
+                window.innerWidth <= 768 ? (isTextMode ? '' : (mediaMode === 'video' ? 'h-[35vh] shrink-0' : mediaMode === 'audio' ? 'h-[22vh] min-h-[150px] max-h-[200px] shrink-0' : '')) : ''
               } relative flex justify-center items-center transition-all duration-300 md:sticky md:top-0 md:h-screen`}
               style={{ overflow: 'visible' }}
             >
@@ -4666,7 +4666,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                           )}
                           <div className={`${
                             window.innerWidth <= 768
-                              ? 'absolute top-0 inset-x-0 h-[35vh]'
+                              ? 'absolute top-0 inset-x-0 h-full'
                               : 'absolute inset-0'
                           } flex justify-center items-center`}>
                             <VoiceVisualizer
