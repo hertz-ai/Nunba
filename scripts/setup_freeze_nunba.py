@@ -1137,6 +1137,83 @@ def _build_import_to_pip_map(sp: str) -> dict[str, str]:
     return out
 
 
+# ── Self-heal corrupt sibling repos in python-embed ──
+# python-embed occasionally ends up with zero-filled .py copies of the sibling
+# repos (a partial/interrupted write the SHA skip-copy then locks in).  pip
+# can't repair them by name (they aren't on PyPI), so the validator
+# re-installs them FROM THE LOCAL CLONE with --force-reinstall, overwriting the
+# corruption.  Candidate paths mirror build.py's _install_* fns.
+def _sibling_repo_candidates(repo_name: str) -> list[str]:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return [
+        os.path.join(root, '..', repo_name),
+        os.path.join(os.path.expanduser('~'), 'PycharmProjects', repo_name),
+    ]
+
+
+# top-level package dirs each sibling repo provides in site-packages
+_SIBLING_REPO_PROVIDES = {
+    'hevolveai': {'hevolveai', 'embodied_ai'},
+    'Hevolve_Database': {'sql', 'crossbarhttp'},
+    'HARTOS': {
+        'integrations', 'security', 'core', 'agent_ledger', 'agent_identity',
+        'create_recipe', 'reuse_recipe', 'helper', 'helper_ledger',
+        'hart_intelligence', 'hart_intelligence_entry', 'lifecycle_hooks',
+        'threadlocal', 'hartos_bootstrap', 'recipe_experience',
+        'crossbar_server', 'cultural_wisdom', 'embedded_main',
+        'exception_collector', 'gather_agentdetails', 'hart_cli',
+        'hart_onboarding', 'hart_sdk', 'hart_version',
+    },
+}
+# dist-info base name → owning repo (for corrupt *.dist-info dirs)
+_SIBLING_DIST_TO_REPO = {
+    'hart_backend': 'HARTOS', 'hartos': 'HARTOS', 'agent_ledger': 'HARTOS',
+    'hevolveai': 'hevolveai', 'hevolve_database': 'Hevolve_Database',
+}
+
+
+def _owning_sibling_repo(pkg_dir: str):
+    """Return the sibling-repo clone name that provides `pkg_dir`, or None."""
+    name = pkg_dir
+    for _suf in ('.dist-info', '.egg-info'):
+        if name.endswith(_suf):
+            name = name[: -len(_suf)].rsplit('-', 1)[0]  # strip version
+            break
+    if name.lower() in _SIBLING_DIST_TO_REPO:
+        return _SIBLING_DIST_TO_REPO[name.lower()]
+    for _repo, _provides in _SIBLING_REPO_PROVIDES.items():
+        if name in _provides:
+            return _repo
+    return None
+
+
+def _reinstall_sibling_from_local(repo_name: str) -> bool:
+    """Force-reinstall a sibling repo from its local clone into python-embed,
+    overwriting any zero-filled corruption.  Returns True on success."""
+    import subprocess as _sp
+    sp = os.path.join("python-embed", "Lib", "site-packages")
+    for path in _sibling_repo_candidates(repo_name):
+        if (os.path.exists(os.path.join(path, 'setup.py'))
+                or os.path.exists(os.path.join(path, 'pyproject.toml'))):
+            print(f"  python-embed: self-heal — re-installing {repo_name} from "
+                  f"{os.path.normpath(path)} ...")
+            _r = _sp.run(
+                [sys.executable, "-m", "pip", "install", "--target", sp,
+                 "--upgrade", "--force-reinstall", "--no-deps",
+                 "--no-build-isolation", "--quiet", path],
+                capture_output=True, text=True, timeout=900,
+            )
+            if _r.returncode == 0:
+                print(f"  python-embed: {repo_name} re-installed OK")
+                return True
+            print(f"  python-embed: {repo_name} re-install FAILED: "
+                  f"{(_r.stderr or _r.stdout or '')[:300]}")
+            return False
+    print(f"  python-embed: {repo_name} local clone not found "
+          f"(looked in {[os.path.normpath(p) for p in _sibling_repo_candidates(repo_name)]})")
+    return False
+
+
 def _autorepair_corrupt_packages(corruption: list[tuple[str, str]]) -> int:
     """Auto-repair corrupt python-embed packages by deleting the package
     dir + pip-installing it again with --force-reinstall.  Mirrors the
@@ -1164,17 +1241,10 @@ def _autorepair_corrupt_packages(corruption: list[tuple[str, str]]) -> int:
     # deleting dist-info dirs (deletion races would empty it mid-loop).
     _import_to_pip = _build_import_to_pip_map(sp)
 
-    # Sibling repos are handled by the explicit re-install loop below
-    # — don't double-repair them here (would race the loop's own
-    # delete + pip install).
-    _SIBLING_NAMES = {
-        'hart-backend', 'hart_backend', 'hartos',
-        'hevolveai',
-        'hevolve-database', 'hevolve_database',
-        'agent-ledger', 'agent_ledger',
-    }
-
+    # Sibling repos aren't on PyPI — collect the ones with corruption and
+    # self-heal each ONCE from its local clone after the per-package loop.
     repaired = 0
+    _siblings_to_heal: set[str] = set()
     for pkg_dir in sorted(by_pkg.keys()):
         # Derive the pip distribution name.  Three rules in order:
         #   1) Exact match in import → pip map (handles
@@ -1195,11 +1265,17 @@ def _autorepair_corrupt_packages(corruption: list[tuple[str, str]]) -> int:
                     if _pip_name in _import_to_pip:
                         _pip_name = _import_to_pip[_pip_name]
                     break
-        if _pip_name.lower() in _SIBLING_NAMES:
-            print(
-                f"  python-embed: {pkg_dir} corrupt -- skipping autorepair "
-                f"(handled by sibling-deps loop below)"
-            )
+        # Sibling repos: self-heal from the local clone (force-reinstall
+        # overwrites the zero-filled copy).  Collected, healed once each below.
+        _repo = _owning_sibling_repo(pkg_dir)
+        if _repo is not None:
+            _siblings_to_heal.add(_repo)
+            continue
+        if pkg_dir.lower().startswith('hevolvearmor'):
+            # Rust+Py module synced (not pip-installed) by build.py's
+            # hevolvearmor loop (SHA content-comparator) — not ours to repair.
+            print(f"  python-embed: {pkg_dir} corrupt -- deferred to build.py "
+                  f"hevolvearmor sync")
             continue
         # Step 1: rm -rf the corrupt dir (pip --force-reinstall alone
         # can leave stray files from the broken install behind)
@@ -1232,6 +1308,11 @@ def _autorepair_corrupt_packages(corruption: list[tuple[str, str]]) -> int:
                 f"  python-embed: {_pip_name} repair FAILED: "
                 f"{(_r.stderr or _r.stdout or '')[:200]}"
             )
+    # Self-heal corrupt sibling repos from their local clones (force-reinstall
+    # overwrites the zero-filled files; only runs when corruption was found).
+    for _repo in sorted(_siblings_to_heal):
+        if _reinstall_sibling_from_local(_repo):
+            repaired += 1
     return repaired
 
 
