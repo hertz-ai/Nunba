@@ -123,6 +123,89 @@ class TestLlamaUpgradeActuator:
 
 
 # ==========================================================================
+# 1c. Version-aware binary resolution (#124 follow-through)
+# ==========================================================================
+class TestVersionAwareBinaryResolution:
+    """A stale system/trueflow binary must not shadow a freshly-upgraded
+    Nunba-managed one: with min_build given, find_llama_server prefers the
+    first candidate that satisfies it (live-witnessed: trueflow b8200 kept
+    serving while the upgraded b9581 sat unused in install_dir)."""
+
+    def _installer(self):
+        from llama.llama_installer import LlamaInstaller
+        LlamaInstaller._logged_paths.clear()
+        LlamaInstaller._version_cache.clear()
+        return LlamaInstaller()
+
+    def test_no_min_build_keeps_first_existing(self):
+        import pathlib
+        from unittest.mock import patch
+        inst = self._installer()
+        nunba_marker = str(inst.install_dir).lower()
+        def fake_exists(p):
+            s = str(p).lower()
+            return '.trueflow' in s or nunba_marker in s
+        with patch.object(pathlib.Path, 'exists', fake_exists):
+            found = inst.find_llama_server(check_system_first=True)
+        assert found and '.trueflow' in found.lower(), \
+            "without min_build the original first-existing order must hold"
+
+    def test_min_build_prefers_satisfying_candidate(self):
+        inst = self._installer()
+        nunba_marker = str(inst.install_dir).lower()
+        def fake_exists(p):
+            s = str(p).lower()
+            return '.trueflow' in s or nunba_marker in s
+        def fake_version(path=None):
+            s = str(path or '').lower()
+            if '.trueflow' in s:
+                return 8200
+            if nunba_marker in s:
+                return 9581
+            return None
+        import pathlib
+        from unittest.mock import patch
+        inst.get_version = fake_version
+        with patch.object(pathlib.Path, 'exists', fake_exists):
+            found = inst.find_llama_server(check_system_first=True, min_build=9180)
+        assert found and nunba_marker in found.lower(), \
+            f"should pick the b9581 nunba-managed binary, got {found}"
+
+    def test_min_build_falls_back_when_none_satisfies(self):
+        inst = self._installer()
+        nunba_marker = str(inst.install_dir).lower()
+        def fake_exists(p):
+            s = str(p).lower()
+            return '.trueflow' in s or nunba_marker in s
+        def fake_version(path=None):
+            return 8200  # everything old
+        import pathlib
+        from unittest.mock import patch
+        inst.get_version = fake_version
+        with patch.object(pathlib.Path, 'exists', fake_exists):
+            found = inst.find_llama_server(check_system_first=True, min_build=9180)
+        assert found and '.trueflow' in found.lower(), \
+            "no candidate satisfies -> keep first existing (warn-and-proceed)"
+
+    def test_get_version_mtime_cache_skips_respawn(self):
+        from unittest.mock import patch, MagicMock
+        from llama.llama_installer import LlamaInstaller
+        LlamaInstaller._version_cache.clear()
+        inst = LlamaInstaller()
+        fake = MagicMock()
+        fake.stdout, fake.stderr = 'version: 9581 (abc)', ''
+        with patch('llama.llama_installer.subprocess.run', return_value=fake) as run, \
+             patch('llama.llama_installer.os.path.getmtime', return_value=111.0):
+            assert inst.get_version('X:/fake/llama-server.exe') == 9581
+            assert inst.get_version('X:/fake/llama-server.exe') == 9581
+            assert run.call_count == 1, "second call must hit the mtime cache"
+        with patch('llama.llama_installer.subprocess.run', return_value=fake) as run2, \
+             patch('llama.llama_installer.os.path.getmtime', return_value=222.0):
+            assert inst.get_version('X:/fake/llama-server.exe') == 9581
+            assert run2.call_count == 1, "changed mtime must re-probe"
+
+
+# ==========================================================================
 # 2. LLM Auto-Setup
 # ==========================================================================
 class TestLLMAutoSetup:

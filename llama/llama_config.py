@@ -1541,6 +1541,22 @@ class LlamaConfig:
         # of a dead one.
         self._suppress_build_gated_features = False
         if model_preset.min_build is not None:
+            if not _use_zinc:
+                # The binary was resolved BEFORE the preset was known (first-
+                # existing wins, so a stale system/trueflow copy shadows a
+                # freshly-upgraded Nunba-managed one). Now that we know the
+                # model's min_build, re-resolve version-aware and switch if a
+                # satisfying binary exists — this is what makes the #124
+                # upgrade actually take effect instead of downloading an
+                # unused copy.
+                _best = self.installer.find_llama_server(
+                    check_system_first=True, min_build=model_preset.min_build)
+                if _best and _best != llama_server:
+                    logger.info(
+                        f"Switching llama-server for {model_preset.display_name}: "
+                        f"{_best} (meets b{model_preset.min_build}+) over "
+                        f"{llama_server}")
+                    llama_server = _best
             is_ok, cur_ver, req_ver = self.installer.check_version_for_model(
                 model_preset, llama_server
             )

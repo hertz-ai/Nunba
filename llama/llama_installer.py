@@ -181,6 +181,10 @@ class LlamaInstaller:
     # only logs INFO once even when many health probes / status
     # endpoints / start-server call sites all resolve it.
     _logged_paths: set[str] = set()
+    # path -> (mtime, build) — version-aware resolution probes every existing
+    # candidate, and /api/llm/status polls; cache by mtime so a binary is
+    # spawned with --version at most once until it changes on disk.
+    _version_cache: dict[str, tuple[float, int]] = {}
 
     def __init__(self, install_dir: str | None = None, models_dir: str | None = None):
         """
@@ -264,12 +268,21 @@ class LlamaInstaller:
 
         return "none"
 
-    def find_llama_server(self, check_system_first: bool = True) -> str | None:
+    def find_llama_server(self, check_system_first: bool = True,
+                          min_build: int | None = None) -> str | None:
         """
         Find llama-server executable
 
         Args:
             check_system_first: If True, check system/user installations before Nunba installation
+            min_build: When given, prefer the first candidate (in search order)
+                whose build satisfies it. Without this, a stale system binary
+                (e.g. trueflow b8200) shadows a freshly-upgraded Nunba-managed
+                one forever: update_llama_cpp downloads to install_dir, but
+                first-existing resolution never reaches it — the #124 upgrade
+                became a no-op and the upgrade card re-surfaced every boot.
+                Falls back to the first existing candidate when none satisfies
+                (model still loads on lower builds; perf features degrade).
 
         Returns:
             Path to llama-server executable or None if not found
@@ -314,29 +327,51 @@ class LlamaInstaller:
             # Check Nunba installation first, then system
             search_paths = nunba_paths + system_paths
 
-        for path in search_paths:
-            if path.exists():
-                # Log INFO on the FIRST successful resolve per (class, path)
-                # so boot-time visibility is preserved.  Subsequent calls
-                # for the same path log at DEBUG to avoid spamming the
-                # langchain.log every 5-7s when health probes / status
-                # endpoints poll.  Class-level set keeps the dedupe
-                # alive across LlamaInstaller() instances (the constructor
-                # is called from many sites in HARTOS+Nunba).
-                _path_str = str(path)
-                if _path_str not in LlamaInstaller._logged_paths:
-                    LlamaInstaller._logged_paths.add(_path_str)
-                    logger.info(f"Found llama-server at: {_path_str}")
-                else:
-                    logger.debug(f"Found llama-server at: {_path_str}")
-                # Update GPU support detection from the found binary's location
-                bin_dir = path.parent
-                cuda_dlls = list(bin_dir.glob("ggml-cuda*.dll")) + list(bin_dir.glob("ggml-cuda*.so"))
-                if cuda_dlls:
-                    self.binary_supports_gpu = True
-                elif "darwin" in self.os_name:
-                    self.binary_supports_gpu = True
-                return str(path)
+        _existing = [p for p in search_paths if p.exists()]
+        chosen = _existing[0] if _existing else None
+        if min_build is not None and _existing:
+            # Version-aware pass: first candidate (in search order) whose
+            # build satisfies min_build wins; none satisfying -> keep the
+            # first existing (warn-and-proceed semantics unchanged).
+            # get_version() is mtime-cached, so polling callers don't spawn
+            # a subprocess per candidate per call.
+            for p in _existing:
+                v = self.get_version(str(p))
+                if v is not None and v >= min_build:
+                    if p != _existing[0]:
+                        _key = f"verpick:{p}"
+                        if _key not in LlamaInstaller._logged_paths:
+                            LlamaInstaller._logged_paths.add(_key)
+                            logger.info(
+                                f"Version-aware resolve: {p} satisfies "
+                                f"b{min_build}+ — preferred over "
+                                f"{_existing[0]}")
+                    chosen = p
+                    break
+
+        if chosen is not None:
+            path = chosen
+            # Log INFO on the FIRST successful resolve per (class, path)
+            # so boot-time visibility is preserved.  Subsequent calls
+            # for the same path log at DEBUG to avoid spamming the
+            # langchain.log every 5-7s when health probes / status
+            # endpoints poll.  Class-level set keeps the dedupe
+            # alive across LlamaInstaller() instances (the constructor
+            # is called from many sites in HARTOS+Nunba).
+            _path_str = str(path)
+            if _path_str not in LlamaInstaller._logged_paths:
+                LlamaInstaller._logged_paths.add(_path_str)
+                logger.info(f"Found llama-server at: {_path_str}")
+            else:
+                logger.debug(f"Found llama-server at: {_path_str}")
+            # Update GPU support detection from the found binary's location
+            bin_dir = path.parent
+            cuda_dlls = list(bin_dir.glob("ggml-cuda*.dll")) + list(bin_dir.glob("ggml-cuda*.so"))
+            if cuda_dlls:
+                self.binary_supports_gpu = True
+            elif "darwin" in self.os_name:
+                self.binary_supports_gpu = True
+            return str(path)
 
         # Try to find in PATH (system-wide installations)
         try:
@@ -394,6 +429,16 @@ class LlamaInstaller:
         if not server_path:
             return None
 
+        # mtime-keyed cache — skip the subprocess unless the binary changed.
+        try:
+            _mtime = os.path.getmtime(server_path)
+        except OSError:
+            _mtime = None
+        if _mtime is not None:
+            _hit = LlamaInstaller._version_cache.get(server_path)
+            if _hit is not None and _hit[0] == _mtime:
+                return _hit[1]
+
         try:
             startupinfo = None
             creationflags = 0
@@ -416,14 +461,17 @@ class LlamaInstaller:
             )
             output = (result.stdout + result.stderr).strip()
 
-            # Try "version: NNNN" first (pre-built releases)
-            match = re.search(r'version:\s*(\d{4,})', output)
+            # Try "version: NNNN" first (pre-built releases), then "bNNNN"
+            # (source builds, git tags)
+            match = (re.search(r'version:\s*(\d{4,})', output)
+                     or re.search(r'b(\d{4,})', output))
             if match:
-                return int(match.group(1))
-            # Try "bNNNN" format (source builds, git tags)
-            match = re.search(r'b(\d{4,})', output)
-            if match:
-                return int(match.group(1))
+                build = int(match.group(1))
+                if _mtime is not None:
+                    # Cache only successes — a transient spawn failure must
+                    # not pin None until the binary changes.
+                    LlamaInstaller._version_cache[server_path] = (_mtime, build)
+                return build
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.debug(f"Version detection failed: {e}")
 
@@ -445,7 +493,12 @@ class LlamaInstaller:
         if required is None:
             return (True, None, None)
 
-        current = self.get_version(llama_server_path)
+        # No explicit path -> resolve version-aware, so this reports the
+        # binary that _do_start_server would actually pick. Otherwise a stale
+        # system binary shadows a satisfying Nunba-managed one and the status
+        # endpoint nags "upgrade available" forever after a successful upgrade.
+        server_path = llama_server_path or self.find_llama_server(min_build=required)
+        current = self.get_version(server_path)
 
         if current is None:
             logger.warning(

@@ -1156,13 +1156,25 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // message stream) so it survives agent morphing. See LlmUpgradeCard.
   const [versionUpgrade, setVersionUpgrade] = useState(null);
   const llmCheckedRef = useRef(false);
+  // On a fresh-install first boot the webview mounts BEFORE Flask listens, so
+  // a once-only check died silently and no card appeared until the next
+  // restart. Un-latch on failure and retry (bounded) until the backend
+  // answers once — mirrors the agentRetryTrigger pattern below.
+  const llmCheckAttemptsRef = useRef(0);
+  const [llmCheckRetry, setLlmCheckRetry] = useState(0);
   useEffect(() => {
     if (llmCheckedRef.current) return;
     llmCheckedRef.current = true;
+    const retryLater = () => {
+      llmCheckAttemptsRef.current += 1;
+      if (llmCheckAttemptsRef.current > 24) return; // ~2 min, then give up
+      llmCheckedRef.current = false;
+      setTimeout(() => setLlmCheckRetry((r) => r + 1), 5000);
+    };
     (async () => {
       try {
         const res = await fetch('/api/llm/status');
-        if (!res.ok) return;
+        if (!res.ok) { retryLater(); return; }
         const data = await res.json();
 
         // Tier-1 (global) capability: llama.cpp binary version upgrade. Agent-
@@ -1272,10 +1284,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
           }]);
         }
       } catch {
-        // Backend not ready yet — will show card when user sends first message
+        // Backend not ready yet (fresh-install first boot) — retry until it
+        // answers so the upgrade/setup cards fire without needing a restart.
+        retryLater();
       }
     })();
-  }, []);
+  }, [llmCheckRetry]);
 
   // Retry fetchPrompts when backend is offline and no agents loaded
   useEffect(() => {
