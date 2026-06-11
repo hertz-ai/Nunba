@@ -822,17 +822,38 @@ def after_request(response):
     # inject inline styles; migrating to nonce/hash CSP is a separate,
     # larger task.  blob: covers generated audio URLs used for synthesized
     # TTS playback.
+    #
+    # Live console audit (2026-06-11) caught the CSP blocking real features:
+    #   - media-src 'self' only -> idle filler videos served from
+    #     azurekong.hertzai.com (.mp4) were blocked, so cloud-agent idle
+    #     videos never rendered.  Allow media from the hertzai/hevolve CDNs
+    #     (same trust boundary already granted to connect-src).
+    #   - connect-src listed only `localhost`, but the streaming-STT
+    #     WebSocket binds 127.0.0.1 (ws://127.0.0.1:8005) — CSP treats
+    #     `localhost` and `127.0.0.1` as DIFFERENT origins, so the mic
+    #     stream was blocked.  Add the 127.0.0.1 loopback variants.
+    #   - style-src/font-src had no Google Fonts entry, so the Figtree
+    #     webfont (fonts.googleapis.com css + fonts.gstatic.com files) was
+    #     blocked.  Allow both font origins.
+    #   - script-src/connect-src had no analytics entry, so gtag.js
+    #     (the app's own GA property) failed to load.  Allow Google's
+    #     analytics/tag origins.
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
+        "https://www.googletagmanager.com https://www.google-analytics.com "
+        "https://ssl.google-analytics.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' data: https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https:; "
-        "media-src 'self' blob: data:; "
+        "media-src 'self' blob: data: https://*.hertzai.com https://*.hevolve.ai; "
         "connect-src 'self' "
         "http://localhost:* ws://localhost:* wss://localhost:* "
+        "http://127.0.0.1:* ws://127.0.0.1:* wss://127.0.0.1:* "
         "https://*.hertzai.com wss://*.hertzai.com "
         "https://hevolve.ai https://*.hevolve.ai wss://*.hevolve.ai "
-        "https://mcgroce.com https://*.mcgroce.com wss://*.mcgroce.com; "
+        "https://mcgroce.com https://*.mcgroce.com wss://*.mcgroce.com "
+        "https://www.google-analytics.com https://www.googletagmanager.com; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self'"
