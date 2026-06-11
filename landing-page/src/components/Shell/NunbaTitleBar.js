@@ -38,9 +38,23 @@ function isMacOS() {
   return /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
 }
 
+// The floating desktop-companion window loads the /voice-orb route in its OWN
+// frameless, TRANSPARENT pywebview window (app.py companion window → commit
+// 2c06d093 repointed it from /companion to /voice-orb).  /voice-orb is a real
+// route inside MainRoutes, which App.js wraps in <NunbaTitleBar>, so without
+// this guard the orb window would paint a 32px solid-black titlebar over the
+// transparent orb AND clamp its 100vh canvas to 100vh-32px.  Never render the
+// chrome there — the orb window has no window controls and isn't draggable via
+// a titlebar.
+function isVoiceOrbRoute() {
+  if (typeof window === 'undefined' || !window.location) return false;
+  return (window.location.pathname || '').startsWith('/voice-orb');
+}
+
 function shouldRenderTitleBar() {
-  // Render only in pywebview AND not on macOS (macOS keeps native chrome).
-  return isPywebview() && !isMacOS();
+  // Render only in pywebview, not on macOS (macOS keeps native chrome), and
+  // never on the transparent floating voice-orb companion window.
+  return isPywebview() && !isMacOS() && !isVoiceOrbRoute();
 }
 
 // ── Window control button (— / ☐ / ✕) ────────────────────────────────
