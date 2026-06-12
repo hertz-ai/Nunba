@@ -2059,6 +2059,67 @@ def print_summary():
         print("\n  Requirements: GTK 3.0, WebKit2GTK 4.0")
 
 
+def _acquire_build_lock():
+    """Refuse to start if another build is already running.
+
+    Two concurrent builds freeze into the SAME ``build/python-embed`` and
+    ``build/exe.*`` trees, corrupt each other's pip/cx_Freeze writes, and
+    produce NO installer (live failure 2026-06-11: a second
+    ``build.py --skip-acceptance`` collided with an in-flight build; both
+    exited with empty ``build/exe.*`` and no ``dist/*.exe``). The lock lives
+    in the system temp dir (never committed, survives the ``build/`` clean
+    step) and is released via atexit. A lock older than ``_MAX_BUILD_SECONDS``
+    is treated as stale (a previous build died/was killed) and reclaimed.
+    """
+    import atexit
+    import tempfile
+    import time
+    lock_path = os.path.join(tempfile.gettempdir(), 'nunba_build.lock')
+    _MAX_BUILD_SECONDS = 3600  # builds are ~15-30 min; >1h => dead, reclaim
+    if os.path.exists(lock_path):
+        pid, started = '?', 0.0
+        try:
+            with open(lock_path) as f:
+                _parts = f.read().strip().split('|')
+            pid = _parts[0]
+            started = float(_parts[1]) if len(_parts) > 1 else 0.0
+        except Exception:
+            pass
+        age = time.time() - started
+        alive = age < _MAX_BUILD_SECONDS
+        try:
+            import psutil
+            alive = psutil.pid_exists(int(pid)) and age < _MAX_BUILD_SECONDS
+        except Exception:
+            pass  # fall back to age-based staleness
+        if alive:
+            print(f"\n[BUILD-LOCK] Another build is already running "
+                  f"(PID {pid}, started {int(age)}s ago).", flush=True)
+            print("  Two concurrent builds corrupt python-embed/build and "
+                  "produce NO installer.", flush=True)
+            print(f"  Wait for it to finish, or if it is dead remove "
+                  f"{lock_path}", flush=True)
+            sys.exit(2)
+        print(f"[BUILD-LOCK] Reclaiming stale lock (PID {pid}, "
+              f"age {int(age)}s).", flush=True)
+    try:
+        with open(lock_path, 'w') as f:
+            f.write(f"{os.getpid()}|{time.time()}")
+    except Exception as e:
+        print(f"[BUILD-LOCK] Warning: could not write lock ({e}); "
+              f"proceeding without lock.", flush=True)
+        return
+
+    def _release():
+        try:
+            with open(lock_path) as f:
+                if f.read().strip().split('|')[0] == str(os.getpid()):
+                    os.remove(lock_path)
+        except Exception:
+            pass
+    atexit.register(_release)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Nunba Desktop App Build Script',
@@ -2113,6 +2174,10 @@ def main():
     # Change to project directory (build.py lives in scripts/)
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(project_dir)
+
+    # Refuse to start if another build is already running (concurrent builds
+    # corrupt the shared python-embed/build trees and produce no installer).
+    _acquire_build_lock()
 
     print(f"\nNunba Desktop App Build Script v{VERSION}", flush=True)
     print(f"Platform: {plat.system()} {plat.machine()}\n", flush=True)
