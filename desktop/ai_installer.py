@@ -305,6 +305,19 @@ class AIInstaller:
             except Exception as e:
                 logger.warning(f"CUDA torch check skipped: {e}")
 
+            # Step 0b: Install the CUDA runtime faster-whisper (CTranslate2)
+            # needs for GPU STT.  Separate from torch — faster-whisper runs on
+            # CTranslate2, which dlopens cuBLAS/cuDNN, not torch.  Best-effort:
+            # never blocks setup; on failure STT stays on CPU int8.
+            try:
+                from tts.package_installer import install_gpu_ctranslate2
+                self._report_progress("Checking speech-to-text GPU support...", 85)
+                ct2_ok, ct2_msg = install_gpu_ctranslate2(
+                    progress_cb=lambda msg: self._report_progress(msg, 85))
+                results.append(("CUDA ctranslate2 (STT)", ct2_ok, ct2_msg))
+            except Exception as e:
+                logger.warning(f"CUDA ctranslate2 check skipped: {e}")
+
         # 1. Piper voice — always pre-download (CPU fallback, ~20MB)
         self._report_progress("Setting up Piper TTS voice (CPU fallback)...", 86)
         p_ok, p_msg = self._install_piper_voice(force_reinstall)

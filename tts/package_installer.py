@@ -975,6 +975,107 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
     return ok, msg
 
 
+def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, str]:
+    """Install the CUDA runtime deps faster-whisper needs to run STT on GPU.
+
+    faster-whisper runs on CTranslate2, NOT torch — so a CUDA-enabled torch
+    is neither necessary nor sufficient for GPU whisper.  The
+    AUTHORITATIVE gate (HARTOS whisper_tool._get_faster_whisper_model)
+    is ``'cuda' in ctranslate2.get_supported_compute_types('cuda')``,
+    which only returns CUDA types when CTranslate2 can dlopen the NVIDIA
+    cuBLAS + cuDNN runtime libraries.  The CPU-only ctranslate2 PyPI
+    wheel ships without them, so on a fresh install STT silently falls
+    back to CPU int8 even on an RTX card.
+
+    This installs the missing runtime, into the SAME user-writable
+    ``~/.nunba/site-packages/`` target that ``install_gpu_torch`` uses,
+    reusing the same ``_run_pip`` (``--target`` + timeout + lock) plumbing:
+      - ``ctranslate2``        (upgraded — the CPU wheel stays, but a
+                                current build is needed for cuBLAS-12/cuDNN-9)
+      - ``nvidia-cublas-cu12``
+      - ``nvidia-cudnn-cu12==9.*`` (CTranslate2 4.x links cuDNN 9)
+
+    Best-effort by contract: NVIDIA-only, never raises, never blocks
+    boot.  On a CPU-only box it no-ops with a debug log.  Mirrors
+    ``install_gpu_torch``: same file-lock, same GPU detection
+    (vram_manager first, ``has_nvidia_gpu`` fallback), same
+    ``ensure_user_site_on_path`` + DLL-dir wiring + cache invalidation.
+    Like CUDA torch, the new libs activate fully on next start; this
+    run also wires the DLL dirs so a same-session re-probe can engage.
+    """
+    if not _acquire_file_lock('cuda_ctranslate2'):
+        return False, "Another process is already installing CUDA ctranslate2"
+
+    # Central GPU detection — one source of truth, same as install_gpu_torch.
+    # ctranslate2 CUDA is NVIDIA-only (no ROCm build), so AMD is a no-op too.
+    try:
+        from integrations.service_tools.vram_manager import vram_manager
+        gpu = vram_manager.detect_gpu()
+        is_nvidia = bool(gpu.get('cuda_available'))
+    except Exception:
+        is_nvidia = has_nvidia_gpu()
+
+    if not is_nvidia:
+        _release_file_lock('cuda_ctranslate2')
+        logger.debug(
+            "install_gpu_ctranslate2: no NVIDIA GPU — STT stays on CPU int8 "
+            "(no-op)")
+        return False, "No NVIDIA GPU detected"
+
+    if progress_cb:
+        progress_cb("Installing CUDA runtime for GPU speech-to-text "
+                    "(ctranslate2 + cuBLAS/cuDNN)...")
+
+    # Same _run_pip plumbing as install_gpu_torch: --target ~/.nunba/
+    # site-packages, --no-build-isolation, streaming + stall/wall-clock
+    # timeouts, file-lock-coordinated.  No parallel pip-target code.
+    # ``-U`` so an existing CPU-only ctranslate2 is upgraded in place to
+    # a build that links cuBLAS-12 / cuDNN-9 rather than being skipped.
+    ok, msg = _run_pip([
+        'install', '-U',
+        'ctranslate2',
+        'nvidia-cublas-cu12',
+        'nvidia-cudnn-cu12==9.*',
+    ], progress_cb, timeout=900)
+
+    if ok:
+        # Make the freshly-installed runtime usable this session, exactly
+        # as install_gpu_torch does for torch/lib: put user site on
+        # sys.path and add the NVIDIA DLL dirs to the Windows search path
+        # so CTranslate2 can dlopen cuBLAS/cuDNN.  Next boot, app.py's
+        # path setup + this same wiring re-establish it.
+        ensure_user_site_on_path()
+        _user_sp = get_user_site_packages()
+        if sys.platform == 'win32':
+            for _rel in (('nvidia', 'cublas', 'bin'),
+                         ('nvidia', 'cudnn', 'bin')):
+                _dll_dir = os.path.join(_user_sp, *_rel)
+                if os.path.isdir(_dll_dir):
+                    try:
+                        os.add_dll_directory(_dll_dir)
+                    except Exception:
+                        pass
+                    if _dll_dir not in os.environ.get('PATH', ''):
+                        os.environ['PATH'] = (
+                            _dll_dir + os.pathsep + os.environ.get('PATH', ''))
+
+        # Invalidate cached import checks so a re-probe sees the new libs.
+        _invalidate_import_cache()
+        logger.info(
+            "CUDA ctranslate2 runtime installed — faster-whisper will load "
+            "on GPU once the CTranslate2 CUDA probe re-runs (next STT load "
+            "or restart)")
+        if progress_cb:
+            progress_cb("GPU speech-to-text runtime ready — Whisper will use "
+                        "the GPU")
+    else:
+        logger.warning("CUDA ctranslate2 install failed (STT stays on CPU): %s",
+                       msg)
+
+    _release_file_lock('cuda_ctranslate2')
+    return ok, msg
+
+
 def install_backend_packages(backend: str,
                               progress_cb: Callable | None = None) -> tuple[bool, str]:
     """Install pip packages required for a TTS backend.
