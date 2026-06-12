@@ -158,6 +158,47 @@ describe('Window-control click handlers', () => {
   });
 });
 
+// ── GTK resize grips (Linux only) ────────────────────────────────────
+
+describe('Linux GTK resize grips', () => {
+  test('does NOT render resize grips on Windows (native hit-test owns resize)', () => {
+    mockPywebview();
+    setPlatform('Win32');
+    render(<NunbaTitleBar />);
+    expect(screen.queryByTestId('nunba-resize-grips')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('nunba-resize-left')).not.toBeInTheDocument();
+  });
+
+  test('renders 8 resize grips on Linux+pywebview', () => {
+    mockPywebview();
+    setPlatform('Linux x86_64');
+    render(<NunbaTitleBar />);
+    expect(screen.getByTestId('nunba-resize-grips')).toBeInTheDocument();
+    ['top', 'bottom', 'left', 'right',
+     'top-left', 'top-right', 'bottom-left', 'bottom-right'].forEach((edge) => {
+      expect(screen.getByTestId(`nunba-resize-${edge}`)).toBeInTheDocument();
+    });
+  });
+
+  test('grip mousedown (left button) calls window_begin_resize with the edge', () => {
+    const beginResize = jest.fn();
+    mockPywebview({ window_begin_resize: beginResize });
+    setPlatform('Linux x86_64');
+    render(<NunbaTitleBar />);
+    fireEvent.mouseDown(screen.getByTestId('nunba-resize-bottom-right'), { button: 0 });
+    expect(beginResize).toHaveBeenCalledWith('bottom-right');
+  });
+
+  test('grip mousedown with non-left button is ignored', () => {
+    const beginResize = jest.fn();
+    mockPywebview({ window_begin_resize: beginResize });
+    setPlatform('Linux x86_64');
+    render(<NunbaTitleBar />);
+    fireEvent.mouseDown(screen.getByTestId('nunba-resize-left'), { button: 2 });
+    expect(beginResize).not.toHaveBeenCalled();
+  });
+});
+
 // ── Liquid UI shell drift-guard ──────────────────────────────────────
 
 describe('Liquid UI shell parity', () => {

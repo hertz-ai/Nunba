@@ -57,6 +57,38 @@ function shouldRenderTitleBar() {
   return isPywebview() && !isMacOS() && !isVoiceOrbRoute();
 }
 
+// Heuristic Linux detection from the UA — used as the INITIAL guess before
+// the authoritative window_platform() bridge call resolves.  On Windows the
+// native WM_NCHITTEST subclass owns 8-way resize, so the JS grips must NOT
+// render (they would double-handle).  On Linux/GTK there is no native
+// caption/border, so the grips are the resize affordance.
+function looksLikeLinux() {
+  if (typeof navigator === 'undefined') return false;
+  const p = navigator.platform || '';
+  const ua = navigator.userAgent || '';
+  // Exclude Android (RN shell, never frameless desktop) — only desktop Linux.
+  if (/Android/i.test(ua)) return false;
+  return /Linux|X11/i.test(p) || /Linux/i.test(ua);
+}
+
+// The 8 resize grips for the GTK frameless window.  Each maps to a
+// Gdk.WindowEdge name the WindowApi.window_begin_resize() understands.
+// Thin invisible strips at the viewport edges + slightly larger corner
+// squares.  z-index sits ABOVE the app body but BELOW the 32px titlebar
+// (titlebar is z:10000) so the titlebar drag/buttons keep priority.
+const RESIZE_GRIP_PX = 6;
+const RESIZE_CORNER_PX = 12;
+const RESIZE_GRIPS = [
+  { edge: 'top', cursor: 'ns-resize', s: { top: 0, left: RESIZE_CORNER_PX, right: RESIZE_CORNER_PX, height: RESIZE_GRIP_PX } },
+  { edge: 'bottom', cursor: 'ns-resize', s: { bottom: 0, left: RESIZE_CORNER_PX, right: RESIZE_CORNER_PX, height: RESIZE_GRIP_PX } },
+  { edge: 'left', cursor: 'ew-resize', s: { left: 0, top: RESIZE_CORNER_PX, bottom: RESIZE_CORNER_PX, width: RESIZE_GRIP_PX } },
+  { edge: 'right', cursor: 'ew-resize', s: { right: 0, top: RESIZE_CORNER_PX, bottom: RESIZE_CORNER_PX, width: RESIZE_GRIP_PX } },
+  { edge: 'top-left', cursor: 'nwse-resize', s: { top: 0, left: 0, width: RESIZE_CORNER_PX, height: RESIZE_CORNER_PX } },
+  { edge: 'top-right', cursor: 'nesw-resize', s: { top: 0, right: 0, width: RESIZE_CORNER_PX, height: RESIZE_CORNER_PX } },
+  { edge: 'bottom-left', cursor: 'nesw-resize', s: { bottom: 0, left: 0, width: RESIZE_CORNER_PX, height: RESIZE_CORNER_PX } },
+  { edge: 'bottom-right', cursor: 'nwse-resize', s: { bottom: 0, right: 0, width: RESIZE_CORNER_PX, height: RESIZE_CORNER_PX } },
+];
+
 // ── Window control button (— / ☐ / ✕) ────────────────────────────────
 
 function WindowButton({ label, onClick, hoverBg, testId, children }) {
@@ -98,6 +130,10 @@ export default function NunbaTitleBar({ children }) {
   const [visible, setVisible] = useState(() => shouldRenderTitleBar());
   const slotRef = useRef(null);
   const [slot, setSlot] = useState(null);
+  // Whether to render the GTK resize grips.  Initial guess from the UA;
+  // corrected by the authoritative window_platform() bridge call below.
+  // Windows = false (native hit-test owns resize); Linux = true.
+  const [isLinux, setIsLinux] = useState(() => looksLikeLinux());
 
   // pywebview's api object may attach late; re-check on `pywebviewready` event.
   useEffect(() => {
@@ -105,6 +141,30 @@ export default function NunbaTitleBar({ children }) {
     const recheck = () => setVisible(shouldRenderTitleBar());
     window.addEventListener('pywebviewready', recheck);
     return () => window.removeEventListener('pywebviewready', recheck);
+  }, []);
+
+  // Resolve the authoritative host platform from the Python bridge.  Falls
+  // back to the UA heuristic if the bridge call is unavailable / rejects.
+  // The grips ONLY render on Linux (window_platform() === 'linux'); on
+  // Windows the WM_NCHITTEST subclass already owns 8-way resize so rendering
+  // them would double-handle.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    let cancelled = false;
+    const resolvePlatform = () => {
+      try {
+        const api = window.pywebview && window.pywebview.api;
+        if (!api || typeof api.window_platform !== 'function') return;
+        Promise.resolve(api.window_platform())
+          .then((plat) => { if (!cancelled && typeof plat === 'string') setIsLinux(plat === 'linux'); })
+          .catch(() => { /* keep UA heuristic */ });
+      } catch (exc) {
+        /* keep UA heuristic */
+      }
+    };
+    resolvePlatform();
+    window.addEventListener('pywebviewready', resolvePlatform);
+    return () => { cancelled = true; window.removeEventListener('pywebviewready', resolvePlatform); };
   }, []);
 
   // ── First-paint occlusion fix ────────────────────────────────────────
@@ -221,6 +281,24 @@ export default function NunbaTitleBar({ children }) {
     callApi('window_start_drag');
   }, [callApi]);
 
+  // Edge/corner grip mousedown → ask GTK to begin a native resize (Linux).
+  // Only wired when grips are rendered (isLinux), so it never fires on
+  // Windows where the native hit-test owns resize.
+  const handleResizeMouseDown = useCallback((edge) => (e) => {
+    // Left button only; let the WM take over the drag.
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      const api = window.pywebview && window.pywebview.api;
+      if (api && typeof api.window_begin_resize === 'function') {
+        api.window_begin_resize(edge);
+      }
+    } catch (exc) {
+      console.error('[NunbaTitleBar] window_begin_resize failed:', exc);
+    }
+  }, []);
+
   if (!visible) {
     // Browser mode: still render the provider so consumers see slot=null and
     // fall back to inline render.  No DOM emitted by the titlebar itself.
@@ -233,6 +311,29 @@ export default function NunbaTitleBar({ children }) {
 
   return (<>
     <TitleBarSlotProvider slot={slot}>{children || null}</TitleBarSlotProvider>
+    {/* GTK resize grips — Linux/X11 only.  On Windows the native
+        WM_NCHITTEST subclass owns 8-way resize, so these are NOT rendered
+        there (would double-handle).  Each grip starts a real WM resize via
+        WindowApi.window_begin_resize(edge) on left-button mousedown. */}
+    {isLinux && (
+      <div data-testid="nunba-resize-grips" aria-hidden style={{ position: 'fixed', inset: 0, zIndex: 9999, pointerEvents: 'none' }}>
+        {RESIZE_GRIPS.map((g) => (
+          <div
+            key={g.edge}
+            data-testid={`nunba-resize-${g.edge}`}
+            onMouseDown={handleResizeMouseDown(g.edge)}
+            style={{
+              position: 'fixed',
+              cursor: g.cursor,
+              pointerEvents: 'auto',
+              // Invisible — the cursor change communicates the affordance.
+              background: 'transparent',
+              ...g.s,
+            }}
+          />
+        ))}
+      </div>
+    )}
     <div
       data-testid="nunba-titlebar"
       style={{

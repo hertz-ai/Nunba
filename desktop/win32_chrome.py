@@ -158,6 +158,17 @@ if sys.platform == 'win32':
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
     user32.GetWindowRect.restype = wintypes.BOOL
 
+    # GetDpiForWindow is Win10 1607+.  Bind defensively — on older Windows
+    # the attribute is absent and we fall back to the system DPI (96).
+    try:
+        user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+        user32.GetDpiForWindow.restype = wintypes.UINT
+        _HAS_GETDPIFORWINDOW = True
+    except AttributeError:
+        _HAS_GETDPIFORWINDOW = False
+else:
+    _HAS_GETDPIFORWINDOW = False
+
 
 # ── Per-HWND state ────────────────────────────────────────────────────
 
@@ -177,6 +188,24 @@ def _resize_border_px() -> int:
             + user32.GetSystemMetrics(SM_CXPADDEDBORDER))
 
 
+def _dpi_scale(hwnd: int) -> float:
+    """Per-monitor DPI scale for `hwnd` (1.0 at 96 DPI).  Falls back to
+    1.0 when GetDpiForWindow is unavailable (pre-Win10 1607) or returns 0.
+
+    WM_NCHITTEST coordinates are physical pixels, but NunbaTitleBar.js
+    lays out its button cluster in CSS pixels.  We multiply the CSS width
+    by this scale to get the physical exclusion zone."""
+    if not _HAS_GETDPIFORWINDOW:
+        return 1.0
+    try:
+        dpi = user32.GetDpiForWindow(hwnd)
+        if dpi:
+            return dpi / 96.0
+    except Exception:
+        pass
+    return 1.0
+
+
 def _work_area(hwnd: int) -> 'RECT | None':
     """rcWork (monitor rect minus taskbar) for the monitor `hwnd` is on."""
     mon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
@@ -192,12 +221,34 @@ def _work_area(hwnd: int) -> 'RECT | None':
 # ── The subclassed wndproc ────────────────────────────────────────────
 
 
-def _make_wndproc(orig_wndproc_addr: int, titlebar_h: int):
+def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int, right_cluster_w_css: int):
     """Build a closure-bound WNDPROC that defers to `orig_wndproc_addr`
     for everything except the three messages we intercept.
 
-    `titlebar_h` is the height in pixels of the React-painted titlebar
-    drag region (currently 32 — matches NunbaTitleBar.js).
+    `titlebar_h_css` is the height, in CSS pixels, of the React-painted
+    titlebar drag region (32 — matches NunbaTitleBar.js).
+
+    `right_cluster_w_css` is the width, in CSS pixels, of the right-hand
+    window-button cluster (min/max/close — 3×46px ≈ 138px in
+    NunbaTitleBar.js).  Points inside the top strip BUT within this
+    distance of the right edge are returned as HTCLIENT, NOT HTCAPTION,
+    so the React buttons receive their native mouse-down/click instead
+    of Windows starting a caption drag.
+
+    Both CSS values are multiplied by the window's per-monitor DPI scale
+    at hit-test time (WM_NCHITTEST gives physical pixels, the React layout
+    is in CSS pixels).  Scaling per-hit (not once at install) keeps the
+    zones correct when the window is dragged between monitors of
+    different DPI.
+
+    Why the button exclusion matters: when WM_NCHITTEST returns HTCAPTION
+    for a point, Windows treats the subsequent WM_LBUTTONDOWN as the start
+    of a window-move (it synthesizes WM_NCLBUTTONDOWN/HTCAPTION) and the
+    hosted WebView2 child HWND never sees the click.  Relying on the React
+    buttons to "swallow the click first" is unreliable for a
+    caption-classified region — the click is consumed by the move loop.
+    Carving an HTCLIENT zone over the buttons is the correct fix and is
+    the same approach Teams/VSCode use for their caption-button strip.
     """
 
     border = _resize_border_px()
@@ -256,12 +307,22 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h: int):
                     if on_bot:
                         return HTBOTTOM
 
-                # Drag-region: top `titlebar_h` px of the window.  The React
-                # NunbaTitleBar sets pointer-events:auto on its window-button
-                # cluster, which will swallow clicks BEFORE the wndproc sees
-                # them, so we don't need to carve out a button exclusion here
-                # — the JS handlers fire first for clicks on the buttons.
+                # Drag-region: top `titlebar_h` px of the window is HTCAPTION
+                # (native drag + Aero Snap + double-click maximize) EXCEPT the
+                # rightmost `right_cluster_w` px, which is the React
+                # min/max/close button cluster.  That zone must be HTCLIENT so
+                # the WebView2 child HWND receives the click (a caption hit
+                # would let Windows eat the click as a move-drag — see the
+                # docstring).  The left wordmark + center spacer stay HTCAPTION
+                # so the whole non-button strip drags + snaps natively.
+                # CSS→physical: scale per-monitor so the zones stay aligned
+                # with the React layout at any DPI / after monitor moves.
+                scale = _dpi_scale(hwnd)
+                titlebar_h = int(round(titlebar_h_css * scale))
+                right_cluster_w = int(round(right_cluster_w_css * scale))
                 if y < rc.top + titlebar_h:
+                    if right_cluster_w > 0 and x >= rc.right - right_cluster_w:
+                        return HTCLIENT
                     return HTCAPTION
 
                 return HTCLIENT
@@ -298,8 +359,13 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h: int):
 # ── Public install ────────────────────────────────────────────────────
 
 
-def install_custom_chrome(hwnd: int, titlebar_height: int = 32) -> bool:
+def install_custom_chrome(hwnd: int, titlebar_height: int = 32,
+                          button_cluster_width: int = 138) -> bool:
     """Apply the WS_THICKFRAME + subclass to `hwnd`.  Idempotent.
+
+    `titlebar_height` and `button_cluster_width` are CSS pixels matching
+    NunbaTitleBar.js (32px row; 3×46px = 138px min/max/close cluster).
+    They are DPI-scaled to physical pixels inside the wndproc.
 
     Returns True on success.  Safe to call from any thread, but
     Windows requires the subclass run on the thread that owns the
@@ -329,7 +395,7 @@ def install_custom_chrome(hwnd: int, titlebar_height: int = 32) -> bool:
         #    returns the previous wndproc address; we keep it so the
         #    subclass can CallWindowProcW into it for unhandled messages.
         orig_addr = user32.GetWindowLongPtrW(hwnd, GWLP_WNDPROC)
-        new_proc = _make_wndproc(orig_addr, titlebar_height)
+        new_proc = _make_wndproc(orig_addr, titlebar_height, button_cluster_width)
 
         # WNDPROC is a Python callable wrapped by ctypes; cast it to
         # LONG_PTR for SetWindowLongPtrW.
@@ -345,10 +411,10 @@ def install_custom_chrome(hwnd: int, titlebar_height: int = 32) -> bool:
             | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER)
 
         # Pin the callback + orig addr so they survive past this stack frame.
-        _INSTALLED[hwnd] = (orig_addr, new_proc, titlebar_height)
+        _INSTALLED[hwnd] = (orig_addr, new_proc, titlebar_height, button_cluster_width)
         logger.info(
-            'install_custom_chrome: hwnd=%s titlebar_h=%s border=%s installed',
-            hwnd, titlebar_height, _resize_border_px())
+            'install_custom_chrome: hwnd=%s titlebar_h=%s buttons_w=%s border=%s installed',
+            hwnd, titlebar_height, button_cluster_width, _resize_border_px())
         return True
 
     except Exception:

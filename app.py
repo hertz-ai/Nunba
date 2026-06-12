@@ -7028,6 +7028,7 @@ def main():
             # Compose: mix WindowApi methods into the existing NunbaNativeApi.
             for _attr in ('window_minimize', 'window_toggle_maximize',
                           'window_close', 'window_start_drag',
+                          'window_begin_resize', 'window_platform',
                           'window_is_maximized'):
                 setattr(_native_api, _attr, getattr(_window_api, _attr))
 
