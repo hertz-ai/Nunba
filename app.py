@@ -7268,7 +7268,13 @@ def main():
                         logger.warning("[CHROME] Could not resolve HWND for custom chrome")
                         return
                     from desktop.win32_chrome import install_custom_chrome
-                    install_custom_chrome(int(_hwnd), titlebar_height=32)
+                    # slot_width carves the intelligence-chip slot (left of the
+                    # min/max/close cluster) to HTCLIENT so the WebView gets the
+                    # chip's clicks; NunbaTitleBar.js does drag-vs-click on it
+                    # (plain click → toggle preference; drag → window_start_drag
+                    # → native move).  138 (3×46 buttons) + 260 (slot) covers it.
+                    install_custom_chrome(int(_hwnd), titlebar_height=32,
+                                          button_cluster_width=138, slot_width=260)
                 except Exception as _chrome_err:
                     logger.warning("[CHROME] install_custom_chrome failed: %s", _chrome_err)
             _window.events.loaded += _install_chrome

@@ -64,6 +64,7 @@ WM_NCCALCSIZE = 0x0083
 WM_NCHITTEST = 0x0084
 WM_GETMINMAXINFO = 0x0024
 WM_DESTROY = 0x0002
+WM_NCLBUTTONDOWN = 0x00A1
 
 SWP_FRAMECHANGED = 0x0020
 SWP_NOMOVE = 0x0002
@@ -158,6 +159,15 @@ if sys.platform == 'win32':
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
     user32.GetWindowRect.restype = wintypes.BOOL
 
+    # For the JS-initiated native move (drag from the chip strip, which is
+    # carved to HTCLIENT — see begin_window_drag).
+    user32.ReleaseCapture.argtypes = []
+    user32.ReleaseCapture.restype = wintypes.BOOL
+
+    user32.SendMessageW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.SendMessageW.restype = ctypes.c_ssize_t
+
     # GetDpiForWindow is Win10 1607+.  Bind defensively — on older Windows
     # the attribute is absent and we fall back to the system DPI (96).
     try:
@@ -221,7 +231,8 @@ def _work_area(hwnd: int) -> 'RECT | None':
 # ── The subclassed wndproc ────────────────────────────────────────────
 
 
-def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int, right_cluster_w_css: int):
+def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int,
+                  right_cluster_w_css: int, slot_w_css: int = 0):
     """Build a closure-bound WNDPROC that defers to `orig_wndproc_addr`
     for everything except the three messages we intercept.
 
@@ -235,20 +246,34 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int, right_cluster_w_c
     so the React buttons receive their native mouse-down/click instead
     of Windows starting a caption drag.
 
-    Both CSS values are multiplied by the window's per-monitor DPI scale
-    at hit-test time (WM_NCHITTEST gives physical pixels, the React layout
-    is in CSS pixels).  Scaling per-hit (not once at install) keeps the
-    zones correct when the window is dragged between monitors of
+    `slot_w_css` is the width, in CSS pixels, of the right SLOT that sits
+    immediately to the LEFT of the button cluster — it hosts the Demopage
+    intelligence-preference chip (Local / Hybrid / Hive) + the Audio mode
+    dropdown (see NunbaTitleBar.js `nunba-titlebar-rightslot`).  Those
+    pixels are ALSO carved to HTCLIENT so the WebView2 child receives the
+    chip's mouse-down/click (a plain click toggles the preference).  The
+    chip can't be both HTCAPTION (native drag eats the click) AND clickable
+    on the same pixels, so we hand the pixels to the WebView and let JS do
+    drag-vs-click disambiguation: a real move calls
+    `WindowApi.window_start_drag()` → `begin_window_drag()` which kicks the
+    native move loop; a plain click falls through to the chip's onClick.
+    Total HTCLIENT right-zone width = right_cluster_w_css + slot_w_css.
+
+    All three CSS values are multiplied by the window's per-monitor DPI
+    scale at hit-test time (WM_NCHITTEST gives physical pixels, the React
+    layout is in CSS pixels).  Scaling per-hit (not once at install) keeps
+    the zones correct when the window is dragged between monitors of
     different DPI.
 
-    Why the button exclusion matters: when WM_NCHITTEST returns HTCAPTION
-    for a point, Windows treats the subsequent WM_LBUTTONDOWN as the start
-    of a window-move (it synthesizes WM_NCLBUTTONDOWN/HTCAPTION) and the
-    hosted WebView2 child HWND never sees the click.  Relying on the React
-    buttons to "swallow the click first" is unreliable for a
+    Why the button + slot exclusion matters: when WM_NCHITTEST returns
+    HTCAPTION for a point, Windows treats the subsequent WM_LBUTTONDOWN as
+    the start of a window-move (it synthesizes WM_NCLBUTTONDOWN/HTCAPTION)
+    and the hosted WebView2 child HWND never sees the click.  Relying on
+    the React buttons/chip to "swallow the click first" is unreliable for a
     caption-classified region — the click is consumed by the move loop.
-    Carving an HTCLIENT zone over the buttons is the correct fix and is
-    the same approach Teams/VSCode use for their caption-button strip.
+    Carving an HTCLIENT zone over the buttons (and now the chip slot) is
+    the correct fix and is the same approach Teams/VSCode use for their
+    caption-button strip.
     """
 
     border = _resize_border_px()
@@ -309,19 +334,23 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int, right_cluster_w_c
 
                 # Drag-region: top `titlebar_h` px of the window is HTCAPTION
                 # (native drag + Aero Snap + double-click maximize) EXCEPT the
-                # rightmost `right_cluster_w` px, which is the React
-                # min/max/close button cluster.  That zone must be HTCLIENT so
-                # the WebView2 child HWND receives the click (a caption hit
-                # would let Windows eat the click as a move-drag — see the
-                # docstring).  The left wordmark + center spacer stay HTCAPTION
-                # so the whole non-button strip drags + snaps natively.
+                # rightmost `right_cluster_w + slot_w` px, which is the React
+                # min/max/close button cluster PLUS the intelligence-chip slot
+                # immediately to its left.  That whole right-zone must be
+                # HTCLIENT so the WebView2 child HWND receives the click (a
+                # caption hit would let Windows eat the click as a move-drag —
+                # see the docstring).  The chip then does JS drag-vs-click:
+                # a plain click toggles the preference; a real drag calls
+                # window_start_drag() → begin_window_drag() to run the native
+                # move loop.  The left wordmark + center spacer stay HTCAPTION
+                # so the whole non-interactive strip drags + snaps natively.
                 # CSS→physical: scale per-monitor so the zones stay aligned
                 # with the React layout at any DPI / after monitor moves.
                 scale = _dpi_scale(hwnd)
                 titlebar_h = int(round(titlebar_h_css * scale))
-                right_cluster_w = int(round(right_cluster_w_css * scale))
+                right_client_w = int(round((right_cluster_w_css + slot_w_css) * scale))
                 if y < rc.top + titlebar_h:
-                    if right_cluster_w > 0 and x >= rc.right - right_cluster_w:
+                    if right_client_w > 0 and x >= rc.right - right_client_w:
                         return HTCLIENT
                     return HTCAPTION
 
@@ -360,12 +389,22 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int, right_cluster_w_c
 
 
 def install_custom_chrome(hwnd: int, titlebar_height: int = 32,
-                          button_cluster_width: int = 138) -> bool:
+                          button_cluster_width: int = 138,
+                          slot_width: int = 260) -> bool:
     """Apply the WS_THICKFRAME + subclass to `hwnd`.  Idempotent.
 
-    `titlebar_height` and `button_cluster_width` are CSS pixels matching
-    NunbaTitleBar.js (32px row; 3×46px = 138px min/max/close cluster).
-    They are DPI-scaled to physical pixels inside the wndproc.
+    `titlebar_height`, `button_cluster_width`, and `slot_width` are CSS
+    pixels matching NunbaTitleBar.js (32px row; 3×46px = 138px min/max/close
+    cluster; ~260px right slot hosting the intelligence-preference chip +
+    Audio dropdown).  They are DPI-scaled to physical pixels inside the
+    wndproc.
+
+    `slot_width` defaults to a generous 260px so the chip + Audio dropdown
+    are reliably covered without the SPA needing to report an exact width.
+    The slot zone is carved to HTCLIENT (same as the button cluster) so the
+    WebView receives the chip's mouse events; the SPA then disambiguates
+    drag (→ window_start_drag) from click (→ chip toggle).  Set to 0 to
+    restore the legacy behaviour (only the button cluster carved).
 
     Returns True on success.  Safe to call from any thread, but
     Windows requires the subclass run on the thread that owns the
@@ -395,7 +434,8 @@ def install_custom_chrome(hwnd: int, titlebar_height: int = 32,
         #    returns the previous wndproc address; we keep it so the
         #    subclass can CallWindowProcW into it for unhandled messages.
         orig_addr = user32.GetWindowLongPtrW(hwnd, GWLP_WNDPROC)
-        new_proc = _make_wndproc(orig_addr, titlebar_height, button_cluster_width)
+        new_proc = _make_wndproc(orig_addr, titlebar_height, button_cluster_width,
+                                 slot_width)
 
         # WNDPROC is a Python callable wrapped by ctypes; cast it to
         # LONG_PTR for SetWindowLongPtrW.
@@ -411,10 +451,13 @@ def install_custom_chrome(hwnd: int, titlebar_height: int = 32,
             | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER)
 
         # Pin the callback + orig addr so they survive past this stack frame.
-        _INSTALLED[hwnd] = (orig_addr, new_proc, titlebar_height, button_cluster_width)
+        _INSTALLED[hwnd] = (orig_addr, new_proc, titlebar_height,
+                            button_cluster_width, slot_width)
         logger.info(
-            'install_custom_chrome: hwnd=%s titlebar_h=%s buttons_w=%s border=%s installed',
-            hwnd, titlebar_height, button_cluster_width, _resize_border_px())
+            'install_custom_chrome: hwnd=%s titlebar_h=%s buttons_w=%s slot_w=%s '
+            'border=%s installed',
+            hwnd, titlebar_height, button_cluster_width, slot_width,
+            _resize_border_px())
         return True
 
     except Exception:
@@ -424,3 +467,41 @@ def install_custom_chrome(hwnd: int, titlebar_height: int = 32,
 
 def is_installed(hwnd: int) -> bool:
     return hwnd in _INSTALLED
+
+
+def begin_window_drag(hwnd: int) -> bool:
+    """Start the native window-move loop for `hwnd` from a JS-initiated
+    mouse-down — used when the drag begins over an HTCLIENT region (the
+    intelligence-chip slot) rather than a true HTCAPTION strip.
+
+    The chip slot is carved to HTCLIENT (see `_make_wndproc`) so the WebView
+    receives its clicks; the trade-off is that Windows will NOT auto-start a
+    move there.  When the SPA's drag-vs-click logic detects a real drag it
+    calls `WindowApi.window_start_drag()` → here, and we kick the OS move
+    loop manually with the classic `ReleaseCapture()` +
+    `SendMessage(WM_NCLBUTTONDOWN, HTCAPTION)` sequence.
+
+    This is the same trick Electron/CEF custom-titlebars use for the
+    "-webkit-app-region: drag isn't honoured" case.  Because the OS runs its
+    own modal move loop, this DOES get Aero Snap + multi-monitor edge
+    constraints for free (unlike a manual JS offset-follow drag).
+
+    Must run on the thread that owns the HWND (pywebview's GUI thread).
+    pywebview marshals js_api method calls onto that thread, so calling this
+    from `WindowApi.window_start_drag` is safe.
+
+    Returns True if the move message was dispatched.
+    """
+    if sys.platform != 'win32':
+        return False
+    if not hwnd:
+        return False
+    try:
+        # ReleaseCapture so the pending WebView mouse-capture doesn't fight
+        # the move loop, then tell the window a caption-button-down happened.
+        user32.ReleaseCapture()
+        user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
+        return True
+    except Exception:
+        logger.exception('begin_window_drag failed for hwnd=%s', hwnd)
+        return False

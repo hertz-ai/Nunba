@@ -78,6 +78,10 @@ function looksLikeLinux() {
 // (titlebar is z:10000) so the titlebar drag/buttons keep priority.
 const RESIZE_GRIP_PX = 6;
 const RESIZE_CORNER_PX = 12;
+
+// Pointer travel (in CSS px, summed |dx|+|dy|) past which a mouse-down on the
+// titlebar right slot is treated as a window-drag instead of a chip click.
+const DRAG_THRESHOLD_PX = 5;
 const RESIZE_GRIPS = [
   { edge: 'top', cursor: 'ns-resize', s: { top: 0, left: RESIZE_CORNER_PX, right: RESIZE_CORNER_PX, height: RESIZE_GRIP_PX } },
   { edge: 'bottom', cursor: 'ns-resize', s: { bottom: 0, left: RESIZE_CORNER_PX, right: RESIZE_CORNER_PX, height: RESIZE_GRIP_PX } },
@@ -270,15 +274,103 @@ export default function NunbaTitleBar({ children }) {
   const handleClose = useCallback(() => callApi('window_close'), [callApi]);
 
   // Double-click anywhere on the drag region toggles maximize (OS convention).
+  // The right slot (chip) and window-buttons cluster opt out — double-clicking
+  // a chip button must not maximize.
   const handleDragDoubleClick = useCallback((e) => {
     if (e.target.closest('[data-testid="nunba-window-buttons"]')) return;
+    if (e.target.closest('[data-testid="nunba-titlebar-rightslot"]')) return;
     handleMaximize();
   }, [handleMaximize]);
 
   // Mousedown safety net for backends that ignore -webkit-app-region.
+  // Skip the window-buttons cluster AND the right slot: the slot has its own
+  // drag-vs-click handler (handleSlotMouseDown) so the chip stays clickable;
+  // letting this fire there would start a native drag on every chip click.
   const handleDragMouseDown = useCallback((e) => {
     if (e.target.closest('[data-testid="nunba-window-buttons"]')) return;
+    if (e.target.closest('[data-testid="nunba-titlebar-rightslot"]')) return;
     callApi('window_start_drag');
+  }, [callApi]);
+
+  // ── Right-slot drag-vs-click ─────────────────────────────────────────
+  // The intelligence-preference chip (Local / Hybrid / Hive) is portaled
+  // into this slot.  On Windows frameless, the chip's pixels are carved to
+  // HTCLIENT (desktop/win32_chrome.py slot_width) so the WebView receives
+  // the click — but that means the OS no longer auto-drags the window from
+  // there.  We restore titlebar-like behaviour with JS drag-vs-click:
+  //   • a plain click (movement under DRAG_THRESHOLD_PX) falls through to
+  //     the chip button's own onClick → toggles the preference;
+  //   • a real drag (movement past the threshold) calls window_start_drag()
+  //     → begin_window_drag() runs the native move loop, and the pending
+  //     click is suppressed so the chip doesn't toggle on drop.
+  // Only active in pywebview (isPywebview()); browser mode is untouched.
+  // `dragging` tracks an in-flight gesture; `cleanup` holds the teardown for
+  // the active document listeners so we can also remove them on unmount (no
+  // leaked listeners across route changes / re-renders).
+  const slotDragRef = useRef({ startX: 0, startY: 0, dragging: false, cleanup: null });
+
+  // Tear down any in-flight drag listeners when the titlebar unmounts.
+  useEffect(() => () => {
+    const st = slotDragRef.current;
+    if (st && typeof st.cleanup === 'function') st.cleanup();
+  }, []);
+
+  const handleSlotMouseDown = useCallback((e) => {
+    // Left button only; ignore if pywebview bridge is absent (browser mode).
+    if (e.button !== 0) return;
+    if (!isPywebview()) return;
+    const state = slotDragRef.current;
+    // A previous gesture's listeners must be gone before we arm a new one,
+    // else two onMove handlers would each fire window_start_drag.
+    if (typeof state.cleanup === 'function') state.cleanup();
+    state.startX = e.clientX;
+    state.startY = e.clientY;
+    state.dragging = false;
+
+    const cleanup = () => {
+      document.removeEventListener('mousemove', onMove, true);
+      document.removeEventListener('mouseup', onUp, true);
+      state.cleanup = null;
+    };
+    const onMove = (mv) => {
+      if (state.dragging) return;
+      const dx = Math.abs(mv.clientX - state.startX);
+      const dy = Math.abs(mv.clientY - state.startY);
+      if (dx + dy > DRAG_THRESHOLD_PX) {
+        state.dragging = true;
+        // Hand off to the OS native move loop.  After this the WebView stops
+        // receiving mousemove (the OS modal move loop owns the pointer), so
+        // we can tear down our listeners immediately.
+        callApi('window_start_drag');
+        cleanup();
+      }
+    };
+    const onUp = () => {
+      cleanup();
+      if (state.dragging) {
+        // A drag just ended on top of the chip — block the synthetic click
+        // so the button's onClick doesn't toggle the preference on drop.
+        // One-shot, capture-phase, on the slot container.
+        const slotEl = slotRef.current;
+        if (slotEl) {
+          const suppress = (clk) => {
+            clk.stopPropagation();
+            clk.preventDefault();
+            slotEl.removeEventListener('click', suppress, true);
+          };
+          slotEl.addEventListener('click', suppress, true);
+          // Safety net: if no click event arrives (e.g. pointer left the
+          // element during the OS move), drop the suppressor next tick.
+          setTimeout(() => slotEl.removeEventListener('click', suppress, true), 0);
+        }
+        state.dragging = false;
+      }
+    };
+    state.cleanup = cleanup;
+    document.addEventListener('mousemove', onMove, true);
+    document.addEventListener('mouseup', onUp, true);
+    // Do NOT preventDefault here: a plain click must still reach the chip
+    // button's onClick.  We only intercept the click if a drag happened.
   }, [callApi]);
 
   // Edge/corner grip mousedown → ask GTK to begin a native resize (Linux).
@@ -396,7 +488,10 @@ export default function NunbaTitleBar({ children }) {
       {/* Center: empty draggable spacer (inherits drag from parent) */}
       <div style={{ flex: '1 1 auto' }} />
 
-      {/* Right slot for portal'd Demopage chip + Audio dropdown — opts out of drag */}
+      {/* Right slot for portal'd Demopage chip + Audio dropdown — opts out of
+          CSS drag, and runs JS drag-vs-click (handleSlotMouseDown) so a plain
+          click on a chip button toggles the preference while a drag from the
+          chip still moves the window (native move via window_start_drag). */}
       <div
         ref={(el) => {
           slotRef.current = el;
@@ -404,6 +499,7 @@ export default function NunbaTitleBar({ children }) {
           if (el !== slot) setSlot(el);
         }}
         data-testid="nunba-titlebar-rightslot"
+        onMouseDown={handleSlotMouseDown}
         style={{
           display: 'flex',
           alignItems: 'center',

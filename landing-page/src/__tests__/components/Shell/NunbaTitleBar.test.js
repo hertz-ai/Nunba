@@ -158,6 +158,70 @@ describe('Window-control click handlers', () => {
   });
 });
 
+// ── Right-slot (intelligence chip) drag-vs-click ──────────────────────
+//
+// The chip is portaled into nunba-titlebar-rightslot.  On the chip's pixels
+// the parent titlebar drag handler must NOT auto-start a drag (it would eat
+// the click), and the slot's own handler must only START a native move when
+// the pointer actually moves past the threshold — a plain click falls through
+// to the chip button so the preference toggles.
+
+describe('Right-slot drag-vs-click', () => {
+  test('plain mousedown on the slot (no movement) does NOT start a drag', () => {
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    const slot = screen.getByTestId('nunba-titlebar-rightslot');
+    fireEvent.mouseDown(slot, { button: 0, clientX: 100, clientY: 10 });
+    // No mousemove yet → no native drag kicked.
+    expect(window.pywebview.api.window_start_drag).not.toHaveBeenCalled();
+    fireEvent.mouseUp(document, { clientX: 100, clientY: 10 });
+    expect(window.pywebview.api.window_start_drag).not.toHaveBeenCalled();
+  });
+
+  test('parent titlebar drag handler ignores the slot (chip click stays live)', () => {
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    // A bare mousedown on the slot must not trigger the parent's
+    // handleDragMouseDown (which would call window_start_drag immediately and
+    // swallow the chip click).
+    const slot = screen.getByTestId('nunba-titlebar-rightslot');
+    fireEvent.mouseDown(slot, { button: 0, clientX: 120, clientY: 8 });
+    expect(window.pywebview.api.window_start_drag).not.toHaveBeenCalled();
+  });
+
+  test('dragging past the threshold starts a native window move', () => {
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    const slot = screen.getByTestId('nunba-titlebar-rightslot');
+    fireEvent.mouseDown(slot, { button: 0, clientX: 100, clientY: 10 });
+    // Move well past DRAG_THRESHOLD_PX (5) — document-level listener fires.
+    fireEvent.mouseMove(document, { clientX: 140, clientY: 12 });
+    expect(window.pywebview.api.window_start_drag).toHaveBeenCalledTimes(1);
+    fireEvent.mouseUp(document, { clientX: 140, clientY: 12 });
+  });
+
+  test('a tiny jiggle under the threshold does NOT start a drag', () => {
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    const slot = screen.getByTestId('nunba-titlebar-rightslot');
+    fireEvent.mouseDown(slot, { button: 0, clientX: 100, clientY: 10 });
+    // |dx|+|dy| = 2+1 = 3 < 5 → still a click, no drag.
+    fireEvent.mouseMove(document, { clientX: 102, clientY: 11 });
+    expect(window.pywebview.api.window_start_drag).not.toHaveBeenCalled();
+    fireEvent.mouseUp(document, { clientX: 102, clientY: 11 });
+    expect(window.pywebview.api.window_start_drag).not.toHaveBeenCalled();
+  });
+
+  test('right-button mousedown on the slot is ignored', () => {
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    const slot = screen.getByTestId('nunba-titlebar-rightslot');
+    fireEvent.mouseDown(slot, { button: 2, clientX: 100, clientY: 10 });
+    fireEvent.mouseMove(document, { clientX: 140, clientY: 12 });
+    expect(window.pywebview.api.window_start_drag).not.toHaveBeenCalled();
+  });
+});
+
 // ── GTK resize grips (Linux only) ────────────────────────────────────
 
 describe('Linux GTK resize grips', () => {

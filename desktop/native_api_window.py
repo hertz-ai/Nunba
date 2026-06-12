@@ -94,11 +94,20 @@ class WindowApi:
         """Begin a drag-move from a mouse-down on the titlebar drag region.
 
         Platform behaviour:
-          * Windows — the WM_NCHITTEST subclass in `desktop.win32_chrome`
-            already classifies the titlebar strip as HTCAPTION, so Windows
-            itself runs the native move + Aero Snap loop.  This JS call is a
-            harmless no-op fallback there (the OS started the drag on the
-            non-client mouse-down BEFORE the WebView2 child saw it).
+          * Windows — TWO cases:
+              (a) The HTCAPTION strip (wordmark + center spacer): Windows
+                  itself starts the native move + Aero Snap loop on the
+                  non-client mouse-down, so this JS call is a harmless no-op
+                  fallback (begin_window_drag returns True but the OS already
+                  owns the drag).
+              (b) The intelligence-chip slot: that zone is carved to
+                  HTCLIENT (so the WebView receives the chip's clicks — see
+                  desktop.win32_chrome._make_wndproc), which means Windows
+                  will NOT auto-start a move there.  When the SPA's
+                  drag-vs-click logic detects a real drag on the chip it
+                  calls here, and `begin_window_drag` kicks the native move
+                  loop via ReleaseCapture + WM_NCLBUTTONDOWN/HTCAPTION — the
+                  standard Electron/CEF custom-titlebar trick, snap-aware.
           * Linux/GTK — there is NO native caption, so we kick off a real
             window-manager move via `Gtk.Window.begin_move_drag(...)`.  That
             gives the same WM-driven move + edge-tiling (the GTK/Mutter/KWin
@@ -111,6 +120,14 @@ class WindowApi:
         w = self._window()
         if w is None:
             return False
+
+        # Windows: kick the native move loop ourselves.  Required for the
+        # HTCLIENT chip slot (the OS won't auto-start a move there); a no-op
+        # but harmless on the HTCAPTION strip (the OS already started one).
+        if sys.platform.startswith('win'):
+            if self._win_begin_drag(w):
+                return True
+            # fall through to pywebview's generic path if HWND was unresolved
 
         # Linux/GTK: prefer the native WM move (snap-aware).
         if sys.platform.startswith('linux'):
@@ -174,6 +191,40 @@ class WindowApi:
         if w is None:
             return False
         return bool(getattr(w, '_maximized', False))
+
+    # ── Windows native move (drag from HTCLIENT chip slot) ───────────────
+
+    @staticmethod
+    def _win_hwnd(w):
+        """Resolve the top-level HWND for a pywebview window on Windows.
+
+        Mirrors app.py's chrome-install HWND resolution: the winforms backend
+        exposes the Form handle as `w.original_window.handle`; some builds put
+        it directly on `w.handle`.  Returns an int HWND or None."""
+        try:
+            ow = getattr(w, 'original_window', None)
+            if ow is not None and getattr(ow, 'handle', None):
+                return int(ow.handle)
+            if getattr(w, 'handle', None):
+                return int(w.handle)
+        except Exception as exc:
+            logger.debug('win hwnd resolve failed: %s', exc)
+        return None
+
+    def _win_begin_drag(self, w) -> bool:
+        """Start the native move loop via desktop.win32_chrome.begin_window_drag.
+
+        Returns False (so the caller can fall through) if the HWND can't be
+        resolved or the chrome helper isn't importable."""
+        hwnd = self._win_hwnd(w)
+        if not hwnd:
+            return False
+        try:
+            from desktop.win32_chrome import begin_window_drag
+        except Exception as exc:
+            logger.debug('win32_chrome import failed: %s', exc)
+            return False
+        return begin_window_drag(hwnd)
 
     # ── GTK native move / resize (Linux only) ────────────────────────────
     #
