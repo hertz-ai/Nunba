@@ -7733,9 +7733,24 @@ def main():
         # below — if pywebview fires `restored` we get recovery immediately;
         # if it doesn't, the 500ms-polling watchdog still catches the
         # transition within ~1s.
+        #
+        # WINDOWS-ONLY (2026-06-12 macOS incident): the entire remount/
+        # black-screen machinery exists because WebView2 (Windows) suspends
+        # its compositor while hidden/iconic.  WKWebView (macOS) does NOT —
+        # un-minimise repaints natively, so macOS never needs this recovery.
+        # Worse, `_force_remount_and_paint` calls `_window.show()` +
+        # `_window.restore()`, and pywebview's Cocoa backend maps those to
+        # `NSApp.activateIgnoringOtherApps` + `makeKeyAndOrderFront` — which
+        # RE-ACTIVATES the app and re-emits `restored`, a self-sustaining
+        # loop that bounces the Dock icon continuously and yanks the window
+        # in front of whatever the user is actually working in.  Gate to
+        # win32 exactly like the taskbar-restore watchdog directly below
+        # (which already documents the same Windows-only rationale).
         try:
             _wv_events = getattr(_window, 'events', None)
-            if _wv_events is not None and hasattr(_wv_events, 'restored'):
+            if (sys.platform == 'win32'
+                    and _wv_events is not None
+                    and hasattr(_wv_events, 'restored')):
                 def _on_window_restored():
                     _trace("EVENT: on_restored fired")
                     threading.Thread(
