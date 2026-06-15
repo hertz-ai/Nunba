@@ -102,6 +102,44 @@ if _orig_pd is not None and not getattr(_orig_pd, '_hartos_guarded', False):
     _md_safe.packages_distributions = _safe_packages_distributions
 del _md_safe
 
+# ── macOS-only: frozen `-c` subprocess entry (behave like `python -c`) ──
+# HARTOS service supervisors (hevolveai_supervisor, gpu_worker,
+# diarization_service, …) start a child interpreter to run a snippet of
+# Python via ``subprocess.run([<python>, '-c', <code>])``.
+#
+# On WINDOWS the child is ``python-embed/python.exe`` — a real interpreter
+# that honours ``-c`` — so the frozen ``Nunba.exe`` is NEVER invoked with
+# ``-c``; this shim is deliberately gated OFF there (positive OS gate per
+# the cross-OS rule).  The macOS frozen ``.app`` ships NO python-embed, so
+# those supervisors' ``_resolve_python_exe()`` fall back to
+# ``sys.executable`` — which IS this GUI binary.
+#
+# Without this shim the macOS frozen exe ignores ``-c``, runs app.py's
+# __main__ GUI path instead, and the single-instance guard below pings the
+# live GUI's ``/api/focus`` on the supervisor's retry-backoff loop —
+# bouncing the Dock and stealing focus while the intended child server
+# (e.g. the HevolveAI uvicorn brain) never starts.  macOS incident
+# 2026-06-15: one run logged 82 ``/api/focus`` pings; user-visible as "the
+# window keeps stealing focus".  See tests/test_frozen_c_entry.py.
+# (Linux standalone has no python-embed either; extend this gate to it
+# only when Linux frozen becomes a supported spawn target.)
+#
+# Fix: on macOS, emulate ``python -c`` exactly.  Runs BEFORE the single-
+# instance guard (``_check_single_instance``) AND before the frozen
+# stdout/stderr redirect further below, so the child's output flows to the
+# supervisor's captured pipe, not a GUI log file.  The transformers
+# ``packages_distributions`` defang above already applied, so child
+# imports (hevolveai → transformers) inherit it.  An exception in the
+# exec'd code propagates to ``_early_crash_handler`` (installed above) →
+# logged + re-raised → non-zero exit, exactly as the supervisor expects.
+if sys.platform == 'darwin' and sys.argv[1:2] == ['-c']:
+    _c_code = sys.argv[2] if len(sys.argv) >= 3 else ''
+    # python -c semantics: argv[0] becomes '-c', remaining args follow.
+    sys.argv = ['-c'] + sys.argv[3:]
+    exec(compile(_c_code, '<frozen -c>', 'exec'),
+         {'__name__': '__main__', '__doc__': None})
+    sys.exit(0)
+
 # Block user site-packages for every subprocess, unconditionally.
 # Rationale (2026-04-25 incident): a stale hevolve_backend-0.0.1.dev339
 # wheel had dropped a partial ``core/`` package at
