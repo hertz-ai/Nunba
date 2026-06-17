@@ -102,3 +102,55 @@ def test_dash_c_argv_matches_python_semantics():
         f"argv did not match python -c semantics (rc={proc.returncode}); "
         f"stderr={proc.stderr[-400:]!r}"
     )
+
+
+# ── `-m` module entry (gpu_worker / TTS / STT / VLM / diarization / vision) ──
+# These spawn ``[<python>, '-u', '-m', <module>, *args]``.  On the frozen
+# macOS .app sys.executable is the GUI binary, so without the shim each spawn
+# booted the GUI and the single-instance guard stole focus every ~2s while a
+# worker (e.g. Whisper STT) retried.  The shim must run the module instead.
+
+def _run_m(*args, timeout=60):
+    """Invoke `python app.py <args>` (e.g. '-u','-m','calendar',...)."""
+    env = dict(os.environ)
+    env.pop("NUNBA_SKIP_SINGLE_INSTANCE", None)
+    return subprocess.run(
+        [sys.executable, _APP_PY, *args],
+        capture_output=True, text=True, timeout=timeout, env=env,
+    )
+
+
+def test_dash_m_runs_module_as_main():
+    """`app.py -m calendar 2025 1` runs the module (prints), not the GUI."""
+    proc = _run_m("-m", "calendar", "2025", "1")
+    assert proc.returncode == 0, (
+        f"expected the -m module to run (rc 0), got {proc.returncode}. "
+        f"stdout={proc.stdout[:200]!r} stderr={proc.stderr[-400:]!r}"
+    )
+    assert "2025" in proc.stdout, (
+        f"module stdout not forwarded / args not passed; stdout={proc.stdout!r}"
+    )
+
+
+def test_dash_u_m_skips_leading_u_flag():
+    """`-u` before `-m` must be skipped (gpu_worker spawns `-u -m <module>`)."""
+    proc = _run_m("-u", "-m", "calendar", "2025", "1")
+    assert proc.returncode == 0, (
+        f"-u -m did not run the module (rc={proc.returncode}); "
+        f"stdout={proc.stdout[:200]!r} stderr={proc.stderr[-400:]!r}"
+    )
+    assert "2025" in proc.stdout
+
+
+def test_dash_m_missing_module_fails_without_booting_gui():
+    """A missing `-m` module must fail fast (non-zero), NOT boot the GUI.
+
+    If the GUI booted it would hit the single-instance guard and exit 0
+    (stealing focus en route), or hang on webview.  A non-zero exit proves
+    runpy ran and raised ModuleNotFoundError on the worker path instead.
+    """
+    proc = _run_m("-m", "nunba_no_such_worker_module_zzz", timeout=30)
+    assert proc.returncode != 0, (
+        f"missing -m module unexpectedly exited 0 — GUI/single-instance path "
+        f"likely ran; stdout={proc.stdout[:200]!r} stderr={proc.stderr[-400:]!r}"
+    )

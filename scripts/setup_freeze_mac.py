@@ -916,7 +916,22 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
             # so the CI runner has something to triage with.  See
             # 2026-05-14 run 25852109063/build-macos: pre-fix the log
             # ended at the warning line with no actionable diagnostic.
-            _val_log_candidates = [
+            # app.py's --validate handler writes via core.platform_paths.
+            # get_log_dir() -- on macOS that is ~/Library/Logs/Nunba, NOT
+            # ~/Documents/Nunba/logs.  Probe the canonical dir FIRST (same
+            # source the app uses) so we read the real validate.log instead
+            # of falling back to early_boot_crash.log and misreporting the
+            # failure (2026-06-17: the Documents-only candidate list never
+            # matched, so a 2-line file-check failure looked like the brain
+            # torch crash-loop).  Keep the legacy paths as fallbacks.
+            _val_log_candidates = []
+            try:
+                from core.platform_paths import get_log_dir as _get_val_ld
+                _val_log_candidates.append(os.path.join(_get_val_ld(), 'validate.log'))
+            except Exception:
+                pass
+            _val_log_candidates += [
+                os.path.join(os.path.expanduser('~'), 'Library', 'Logs', 'Nunba', 'validate.log'),
                 os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs', 'validate.log'),
                 os.path.join(_build_dir, 'validate.log'),
             ]

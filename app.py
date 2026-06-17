@@ -102,43 +102,63 @@ if _orig_pd is not None and not getattr(_orig_pd, '_hartos_guarded', False):
     _md_safe.packages_distributions = _safe_packages_distributions
 del _md_safe
 
-# ── macOS-only: frozen `-c` subprocess entry (behave like `python -c`) ──
-# HARTOS service supervisors (hevolveai_supervisor, gpu_worker,
-# diarization_service, …) start a child interpreter to run a snippet of
-# Python via ``subprocess.run([<python>, '-c', <code>])``.
+# ── macOS-only: frozen `-c` / `-m` subprocess entry ──
+# HARTOS spawns child interpreters two ways:
+#   • supervisors (hevolveai_supervisor, …) run a snippet via
+#     ``subprocess.run([<python>, '-c', <code>])``;
+#   • ToolWorker/gpu_worker (TTS, Whisper STT, MiniCPM VLM),
+#     diarization_service and vision_service run a module via
+#     ``[<python>, '-u', '-m', <module>, *args]`` (and ``-m pip`` for
+#     runtime installs).
 #
 # On WINDOWS the child is ``python-embed/python.exe`` — a real interpreter
-# that honours ``-c`` — so the frozen ``Nunba.exe`` is NEVER invoked with
-# ``-c``; this shim is deliberately gated OFF there (positive OS gate per
+# that honours ``-c``/``-m`` — so the frozen ``Nunba.exe`` is NEVER invoked
+# this way; this shim is deliberately gated OFF there (positive OS gate per
 # the cross-OS rule).  The macOS frozen ``.app`` ships NO python-embed, so
-# those supervisors' ``_resolve_python_exe()`` fall back to
-# ``sys.executable`` — which IS this GUI binary.
+# those spawners' ``_resolve_python_exe()`` fall back to ``sys.executable``
+# — which IS this GUI binary.
 #
-# Without this shim the macOS frozen exe ignores ``-c``, runs app.py's
-# __main__ GUI path instead, and the single-instance guard below pings the
-# live GUI's ``/api/focus`` on the supervisor's retry-backoff loop —
-# bouncing the Dock and stealing focus while the intended child server
-# (e.g. the HevolveAI uvicorn brain) never starts.  macOS incident
-# 2026-06-15: one run logged 82 ``/api/focus`` pings; user-visible as "the
-# window keeps stealing focus".  See tests/test_frozen_c_entry.py.
+# Without this shim the macOS frozen exe ignores ``-c``/``-m``, runs app.py's
+# __main__ GUI path instead, and the single-instance guard below surfaces the
+# live GUI window (``/api/focus``) on each spawn — bouncing the Dock and
+# stealing focus while the intended child never runs.  ``-c`` was fixed
+# 2026-06-15 (82 → 0 focus pings).  ``-m`` was the remaining mechanism:
+# while STT streamed, gpu_worker respawned ``Nunba -u -m …whisper_tool``
+# every ~2s, each boot surfacing the window (incident 2026-06-17 —
+# "auto focus issue exits still").  See tests/test_frozen_c_entry.py.
 # (Linux standalone has no python-embed either; extend this gate to it
 # only when Linux frozen becomes a supported spawn target.)
 #
-# Fix: on macOS, emulate ``python -c`` exactly.  Runs BEFORE the single-
-# instance guard (``_check_single_instance``) AND before the frozen
-# stdout/stderr redirect further below, so the child's output flows to the
-# supervisor's captured pipe, not a GUI log file.  The transformers
-# ``packages_distributions`` defang above already applied, so child
-# imports (hevolveai → transformers) inherit it.  An exception in the
-# exec'd code propagates to ``_early_crash_handler`` (installed above) →
-# logged + re-raised → non-zero exit, exactly as the supervisor expects.
-if sys.platform == 'darwin' and sys.argv[1:2] == ['-c']:
-    _c_code = sys.argv[2] if len(sys.argv) >= 3 else ''
-    # python -c semantics: argv[0] becomes '-c', remaining args follow.
-    sys.argv = ['-c'] + sys.argv[3:]
-    exec(compile(_c_code, '<frozen -c>', 'exec'),
-         {'__name__': '__main__', '__doc__': None})
-    sys.exit(0)
+# Fix: on macOS, emulate ``python -c <code>`` / ``python -m <module>``
+# exactly.  Runs BEFORE the single-instance guard (``_check_single_instance``)
+# AND before the frozen stdout/stderr redirect further below, so the child's
+# output flows to the spawner's captured pipe, not a GUI log file.  An
+# exception in the child propagates to ``_early_crash_handler`` (installed
+# above) → logged + re-raised → non-zero exit, exactly as the spawner expects.
+if sys.platform == 'darwin' and len(sys.argv) > 1:
+    # Skip leading interpreter-only flags the spawners pass (gpu_worker uses
+    # ``-u``); PYTHONUNBUFFERED=1 is already set in the child env so honouring
+    # ``-u`` here is unnecessary, and the rest don't change __main__ semantics.
+    _shim_i = 1
+    while (_shim_i < len(sys.argv)
+           and sys.argv[_shim_i] in ('-u', '-S', '-E', '-O', '-OO', '-B', '-I')):
+        _shim_i += 1
+    _shim_rest = sys.argv[_shim_i:]
+    if _shim_rest[:1] == ['-c']:
+        _c_code = _shim_rest[1] if len(_shim_rest) >= 2 else ''
+        # python -c semantics: argv[0] becomes '-c', remaining args follow.
+        sys.argv = ['-c'] + _shim_rest[2:]
+        exec(compile(_c_code, '<frozen -c>', 'exec'),
+             {'__name__': '__main__', '__doc__': None})
+        sys.exit(0)
+    if _shim_rest[:1] == ['-m'] and len(_shim_rest) >= 2:
+        # python -m semantics: run the module as __main__.  runpy sets
+        # argv[0] to the module's file; argv[1:] are the post-module args.
+        import runpy as _runpy
+        _shim_mod = _shim_rest[1]
+        sys.argv = [_shim_mod] + _shim_rest[2:]
+        _runpy.run_module(_shim_mod, run_name='__main__', alter_sys=True)
+        sys.exit(0)
 
 # Block user site-packages for every subprocess, unconditionally.
 # Rationale (2026-04-25 incident): a stale hevolve_backend-0.0.1.dev339
@@ -2101,6 +2121,21 @@ if getattr(args, 'validate', False):
                 _vprint(f"  [OK]   {_fname} — {_desc} ({os.path.basename(_candidate)})")
                 _found = True
                 break
+        # cx_Freeze bundles top-level modules INTO lib/library.zip, not as
+        # loose files, so the path probes above miss them and report a FALSE
+        # "PACKAGING FAILURE" even though the module imports fine (Phase 1
+        # above already imported hart_intelligence + helper).  Confirm via the
+        # import system, which resolves library.zip members too.  macOS build
+        # 2026-06-17: hart_intelligence/helper live in library.zip -> a false
+        # 2x failure -> os._exit(1) -> DMG packaging skipped.
+        if not _found:
+            _modname = _fname[:-3] if _fname.endswith('.py') else _fname
+            try:
+                if importlib.util.find_spec(_modname) is not None:
+                    _vprint(f"  [OK]   {_fname} — {_desc} (importable via library.zip)")
+                    _found = True
+            except Exception:
+                pass  # find_spec can raise on a half-broken parent package
         if not _found:
             _fail.append((_fname, f"Required file missing: {_desc}"))
             _vprint(f"  [FAIL] {_fname} — MISSING ({_desc})")
