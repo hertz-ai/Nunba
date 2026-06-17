@@ -64,6 +64,11 @@ import {useTTS} from '../hooks/useTTS';
 //    so existing send behavior is unchanged when there is no boot to wait on.
 import {useLocalEngineReady} from '../hooks/useLocalEngineReady';
 
+// #161 — spaced backoff for re-sending a message the backend bounced with
+// loading:true (model warming). Single source for the retry-delay decision;
+// the React wiring (setTimeout + cleanup) lives below.
+import {loadingRetryDelayMs} from '../utils/loadingRetry';
+
 // ── Extracted sub-components ──
 import GpuTierBadge from '../components/chat/GpuTierBadge';
 import NotificationBell from '../components/Common/NotificationBell';
@@ -169,6 +174,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // Bounded auto-retry counter for boot-window "Loading tools" fallbacks —
   // reset on the first non-loading response. See the resultData.loading gate.
   const loadingRetryRef = useRef(0);
+  // #161 — pending setTimeout ids for the SPACED boot-window re-send. Tracked
+  // so a non-loading response (turn resolved) or unmount can cancel them; a
+  // stale retry must never resurface an old message after the turn is done.
+  const loadingRetryTimersRef = useRef([]);
   // When this ChatInterface mounted — used to bound the engineReady send-gate
   // to ENGINE_BOOT_GRACE_MS so a never-ready local engine can't queue forever.
   const chatMountAtRef = useRef(Date.now());
@@ -848,6 +857,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     }, delay);
     return () => clearTimeout(timer);
   }, [messageQueue.length, loading, engineReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // #161 — cancel any pending boot-window re-send timers on unmount so a
+  // spaced retry can't fire (and resurface a stale message) after the chat
+  // view is gone.
+  useEffect(() => () => {
+    loadingRetryTimersRef.current.forEach(clearTimeout);
+    loadingRetryTimersRef.current = [];
+  }, []);
 
   const isTextModeRef = useRef(isTextMode);
   const waitingTextRef = useRef(waitingText);
@@ -3726,20 +3743,34 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               pushNotification({ type: 'info', message: 'Using direct mode while tools load' });
             }
             if (resultData.loading) {
-              pushNotification({ type: 'info', message: 'Loading tools... try again in a moment' });
-              // Auto-retry: a message answered by the boot-window terminal
-              // fallback ("Loading tools...") used to DEAD-END — sent once,
-              // never retried ("hi queued forever", live 2026-06-10: the model
-              // takes ~2min to warm after boot and first sends land inside
-              // that window). Re-enqueue the original text (this closure still
-              // holds it) so the EXISTING queue drain re-sends it once the
-              // engine reports ready. Bounded so a permanently degraded
-              // backend can't loop.
-              if (loadingRetryRef.current < 3 && inputMessage && inputMessage.trim()) {
+              pushNotification({ type: 'info', message: "Warming up the local model — I'll send this automatically when it's ready." });
+              // #161 — boot-window re-send on SPACED backoff. The backend
+              // bounced this with loading:true (model still warming, ~2min).
+              // The old code re-enqueued 3× IMMEDIATELY, so all 3 attempts
+              // burned in seconds of fast round-trips and the message was
+              // dropped before the model was ready ("why the hell?", live
+              // 2026-06-17). loadingRetryDelayMs (single source, unit-tested)
+              // returns spaced delays that span the warm window, or null when
+              // exhausted (bounded — no infinite loop). The original text is
+              // captured here (closure-safe) and re-queued after the delay so
+              // the EXISTING queue drain sends it once ready. Timers are
+              // tracked so the else-branch / unmount can cancel a stale retry.
+              const _attempt = loadingRetryRef.current;
+              const _delay = loadingRetryDelayMs(_attempt);
+              const _text = (inputMessage || '').trim();
+              if (_delay !== null && _text) {
                 loadingRetryRef.current += 1;
-                setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
+                const _timer = setTimeout(() => {
+                  setMessageQueue((prev) => [...prev, { text: _text, id: Date.now() }]);
+                }, _delay);
+                loadingRetryTimersRef.current.push(_timer);
               }
             } else {
+              // Non-loading response → the model answered; cancel any pending
+              // boot-window retries for this turn and reset the counter so a
+              // stale timer can't resurface this message after it resolved.
+              loadingRetryTimersRef.current.forEach(clearTimeout);
+              loadingRetryTimersRef.current = [];
               loadingRetryRef.current = 0;
             }
 
