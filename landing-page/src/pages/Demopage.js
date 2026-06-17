@@ -65,9 +65,10 @@ import {useTTS} from '../hooks/useTTS';
 import {useLocalEngineReady} from '../hooks/useLocalEngineReady';
 
 // #161 — spaced backoff for re-sending a message the backend bounced with
-// loading:true (model warming). Single source for the retry-delay decision;
-// the React wiring (setTimeout + cleanup) lives below.
-import {loadingRetryDelayMs} from '../utils/loadingRetry';
+// loading:true (model warming). scheduleLoadingRetry is the single, unit-tested
+// source for the delay decision + the deferred re-enqueue; Demopage only tracks
+// the returned timer id for cleanup.
+import {scheduleLoadingRetry} from '../utils/loadingRetry';
 
 // ── Extracted sub-components ──
 import GpuTierBadge from '../components/chat/GpuTierBadge';
@@ -3755,14 +3756,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               // captured here (closure-safe) and re-queued after the delay so
               // the EXISTING queue drain sends it once ready. Timers are
               // tracked so the else-branch / unmount can cancel a stale retry.
-              const _attempt = loadingRetryRef.current;
-              const _delay = loadingRetryDelayMs(_attempt);
-              const _text = (inputMessage || '').trim();
-              if (_delay !== null && _text) {
+              const _timer = scheduleLoadingRetry(
+                loadingRetryRef.current,
+                inputMessage,
+                (text) => setMessageQueue((prev) => [...prev, { text, id: Date.now() }]),
+              );
+              if (_timer !== null) {
                 loadingRetryRef.current += 1;
-                const _timer = setTimeout(() => {
-                  setMessageQueue((prev) => [...prev, { text: _text, id: Date.now() }]);
-                }, _delay);
                 loadingRetryTimersRef.current.push(_timer);
               }
             } else {

@@ -25,3 +25,18 @@ export function loadingRetryDelayMs(attempt) {
     ? LOADING_RETRY_SCHEDULE_MS[attempt]
     : null;
 }
+
+// Schedule a single boot-window re-send: after the backoff delay for ``attempt``,
+// invoke ``reEnqueue(trimmedText)``. Returns the timer id to track for cleanup,
+// or ``null`` when there's nothing to schedule (retries exhausted, or empty
+// text). ``setTimeoutFn`` is injectable so the schedule decision + the trim +
+// the fire are unit-testable without rendering the chat component (the only
+// part left to the caller is push-the-id / clearTimeout-on-cleanup glue).
+export function scheduleLoadingRetry(attempt, text, reEnqueue, setTimeoutFn = setTimeout) {
+  const delay = loadingRetryDelayMs(attempt);
+  const trimmed = (text || '').trim();
+  if (delay === null || !trimmed || typeof reEnqueue !== 'function') {
+    return null;
+  }
+  return setTimeoutFn(() => reEnqueue(trimmed), delay);
+}
