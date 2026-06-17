@@ -505,3 +505,47 @@ def begin_window_drag(hwnd: int) -> bool:
     except Exception:
         logger.exception('begin_window_drag failed for hwnd=%s', hwnd)
         return False
+
+
+# edge name (matches NunbaTitleBar.js RESIZE_GRIPS) → Win32 resize hit-code
+_EDGE_HT = {
+    'left': HTLEFT, 'right': HTRIGHT, 'top': HTTOP, 'bottom': HTBOTTOM,
+    'top-left': HTTOPLEFT, 'top-right': HTTOPRIGHT,
+    'bottom-left': HTBOTTOMLEFT, 'bottom-right': HTBOTTOMRIGHT,
+}
+
+
+def begin_window_resize(hwnd: int, edge: str) -> bool:
+    """Start the native window-RESIZE loop for `hwnd` from a JS-initiated
+    mouse-down on a WebView edge grip.
+
+    Same ReleaseCapture + SendMessage(WM_NCLBUTTONDOWN, HT<edge>) trick as
+    begin_window_drag, but with a resize hit-code instead of HTCAPTION.
+
+    Why it's needed even though _make_wndproc's WM_NCHITTEST already returns
+    HTLEFT/HTRIGHT/etc. for the border: the hosted WebView2 child HWND fills
+    the client area to the very edge, so the cursor at the window border is
+    over the CHILD — the parent's WM_NCHITTEST is never consulted there and
+    OS edge-resize never starts.  The React grips (NunbaTitleBar.js) are thin
+    DOM strips at the viewport edges that DO receive the mousedown; they call
+    WindowApi.window_begin_resize(edge) → here, and we kick the OS's own modal
+    resize loop (correct cursors, Aero Snap, monitor-edge constraints).
+
+    Must run on the HWND's owning (pywebview GUI) thread; pywebview marshals
+    js_api calls there, so calling from WindowApi.window_begin_resize is safe.
+    """
+    if sys.platform != 'win32':
+        return False
+    if not hwnd:
+        return False
+    ht = _EDGE_HT.get((edge or '').strip().lower())
+    if ht is None:
+        logger.debug('begin_window_resize: unknown edge %r', edge)
+        return False
+    try:
+        user32.ReleaseCapture()
+        user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, ht, 0)
+        return True
+    except Exception:
+        logger.exception('begin_window_resize failed for hwnd=%s edge=%s', hwnd, edge)
+        return False

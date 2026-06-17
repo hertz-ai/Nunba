@@ -155,21 +155,25 @@ class WindowApi:
         `edge` is one of: 'left', 'right', 'top', 'bottom',
         'top-left', 'top-right', 'bottom-left', 'bottom-right'.
 
-        Linux/GTK ONLY.  On Windows the WM_NCHITTEST subclass already owns
-        8-way resize (the React edge grips are not rendered there — see
-        NunbaTitleBar.js), so this is a no-op returning False if somehow
-        called.  On GTK we map the edge to a `Gdk.WindowEdge` value and
-        call `Gtk.Window.begin_resize_drag(...)` so the window manager runs
-        the resize (correct cursors, monitor-edge constraints, snap).
+        Both Windows and Linux/GTK.  The React edge grips (NunbaTitleBar.js)
+        render on both because the hosted WebView child fills the client to
+        the edge and eats the OS resize border, so the parent's hit-test never
+        starts a resize on its own.  On Windows we kick the native resize loop
+        via win32_chrome.begin_window_resize (SendMessage WM_NCLBUTTONDOWN with
+        the matching HT<edge>); on GTK we map to a `Gdk.WindowEdge` and call
+        `Gtk.Window.begin_resize_drag(...)`.  Either way the WM/OS runs the
+        resize (correct cursors, monitor-edge constraints, snap).
 
         Returns True if a resize was dispatched.
         """
-        if not sys.platform.startswith('linux'):
-            return False
         w = self._window()
         if w is None:
             return False
-        return self._gtk_begin_resize(w, edge)
+        if sys.platform.startswith('win'):
+            return self._win_begin_resize(w, edge)
+        if sys.platform.startswith('linux'):
+            return self._gtk_begin_resize(w, edge)
+        return False
 
     def window_platform(self) -> str:
         """Report the host OS family so the SPA knows whether to render its
@@ -225,6 +229,24 @@ class WindowApi:
             logger.debug('win32_chrome import failed: %s', exc)
             return False
         return begin_window_drag(hwnd)
+
+    def _win_begin_resize(self, w, edge: str) -> bool:
+        """Start the native resize loop via desktop.win32_chrome.begin_window_resize.
+
+        The WebView2 child fills the client to the edge, so the OS never sees
+        the cursor reach the parent's WM_NCHITTEST resize border — the React
+        edge grip catches the mousedown and routes here.  Returns False (so the
+        caller can fall through) if the HWND can't be resolved or the helper
+        isn't importable."""
+        hwnd = self._win_hwnd(w)
+        if not hwnd:
+            return False
+        try:
+            from desktop.win32_chrome import begin_window_resize
+        except Exception as exc:
+            logger.debug('win32_chrome import failed: %s', exc)
+            return False
+        return begin_window_resize(hwnd, edge)
 
     # ── GTK native move / resize (Linux only) ────────────────────────────
     #
