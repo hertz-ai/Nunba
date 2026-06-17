@@ -344,6 +344,48 @@
         margin-top: 8px;
         font-family: system-ui, sans-serif;
       }
+      /* ── Always-present window controls (frameless pywebview shell) ──
+         The real custom titlebar lives INSIDE the React SPA (NunbaTitleBar).
+         If the SPA never mounts (slow/failed boot, chunk error, the
+         "Taking longer than expected" state) a frameless window would have
+         NO way to close / move / minimize — a trapped window.  This static
+         titlebar guarantees the 3 controls + drag from the very first paint,
+         and is removed once React's NunbaTitleBar takes over.  Revealed by
+         JS only inside pywebview on Win/Linux (macOS keeps native traffic
+         lights; a browser tab needs no chrome). */
+      #pre-react-titlebar {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        height: 32px;
+        z-index: 10001; /* above the splash loader (9999) so it's clickable */
+        display: none;
+        align-items: center;
+        justify-content: flex-end;
+        background: #0f0e17;
+        -webkit-app-region: drag;
+        app-region: drag;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #pre-react-titlebar .ptb-title {
+        position: absolute; left: 12px; top: 0; height: 32px;
+        display: flex; align-items: center; gap: 6px;
+        font: 600 11px/1 -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: #cfcaff; letter-spacing: 0.3px;
+      }
+      #pre-react-titlebar .ptb-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: linear-gradient(135deg, #6c63ff, #ff6b6b);
+      }
+      #pre-react-titlebar button {
+        -webkit-app-region: no-drag; app-region: no-drag;
+        width: 46px; height: 32px; border: none; background: transparent;
+        color: #cfcaff; cursor: pointer; display: flex;
+        align-items: center; justify-content: center; padding: 0; outline: none;
+        transition: background 0.12s ease;
+      }
+      #pre-react-titlebar button:hover { background: rgba(255, 255, 255, 0.08); }
+      #pre-react-titlebar button.ptb-close:hover { background: #e94560; }
     </style>
 
     <!-- Google Analytics (async — non-blocking) -->
@@ -384,6 +426,24 @@
         });
       });
     </script>
+    <!-- Always-present window controls — see #pre-react-titlebar CSS above.
+         Guarantees a frameless pywebview window stays closable / movable /
+         minimizable even if the React SPA (which owns the real NunbaTitleBar)
+         never mounts.  Hidden by default; revealed by the script below only in
+         pywebview on Win/Linux; removed when React mounts. -->
+    <div id="pre-react-titlebar">
+      <span class="ptb-title"><span class="ptb-dot"></span>Nunba</span>
+      <button class="ptb-min" aria-label="Minimize" title="Minimize">
+        <svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="5" width="8" height="1" fill="currentColor"/></svg>
+      </button>
+      <button class="ptb-max" aria-label="Maximize / Restore" title="Maximize / Restore">
+        <svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+      </button>
+      <button class="ptb-close" aria-label="Close" title="Close">
+        <svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.2"/><line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.2"/></svg>
+      </button>
+    </div>
+
     <!-- Pre-React splash — OUTSIDE #root so it renders instantly (not blocked by React/CSS).
          Visual base mirrors Agent.js hero: black bg + brand particle drift.  -->
     <div id="pre-react-loader">
@@ -486,6 +546,10 @@
               s.remove();
             }, 350);
           }
+          // React's NunbaTitleBar now owns the window chrome — drop the
+          // static fallback titlebar so the two don't stack.
+          var tb = document.getElementById('pre-react-titlebar');
+          if (tb) tb.remove();
           _mo.disconnect();
         }
       });
@@ -514,6 +578,45 @@
             });
         }
       }, 12000);
+    </script>
+
+    <!-- Wire the always-present window controls to pywebview's window API and
+         reveal them only inside a frameless pywebview window on Win/Linux.
+         This is the lifeline when the SPA (and its NunbaTitleBar) never mounts. -->
+    <script>
+      (function () {
+        var bar = document.getElementById('pre-react-titlebar');
+        if (!bar) return;
+        var isMac = /Mac|iPhone|iPad|iPod/i.test(
+          navigator.platform || navigator.userAgent || ''
+        );
+        function callWin(name) {
+          try {
+            var api = window.pywebview && window.pywebview.api;
+            if (api && typeof api[name] === 'function') api[name]();
+          } catch (e) {}
+        }
+        var b;
+        if ((b = bar.querySelector('.ptb-min')))
+          b.addEventListener('click', function () { callWin('window_minimize'); });
+        if ((b = bar.querySelector('.ptb-max')))
+          b.addEventListener('click', function () { callWin('window_toggle_maximize'); });
+        if ((b = bar.querySelector('.ptb-close')))
+          b.addEventListener('click', function () { callWin('window_close'); });
+        function reveal() {
+          if (isMac) return;
+          if (window.pywebview && window.pywebview.api) bar.style.display = 'flex';
+        }
+        reveal();
+        window.addEventListener('pywebviewready', reveal);
+        // pywebview's api object can attach a beat after the event on some
+        // backends — re-check briefly until it shows (or give up after ~10s).
+        var tries = 0;
+        var iv = setInterval(function () {
+          reveal();
+          if (++tries > 20 || bar.style.display === 'flex') clearInterval(iv);
+        }, 500);
+      })();
     </script>
   </body>
 </html>

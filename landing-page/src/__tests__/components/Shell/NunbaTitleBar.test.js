@@ -222,15 +222,21 @@ describe('Right-slot drag-vs-click', () => {
   });
 });
 
-// ── GTK resize grips (Linux only) ────────────────────────────────────
+// ── Resize grips (frameless Win + Linux) ─────────────────────────────
 
-describe('Linux GTK resize grips', () => {
-  test('does NOT render resize grips on Windows (native hit-test owns resize)', () => {
+describe('Frameless resize grips', () => {
+  test('renders 8 resize grips on Windows too (WebView2 eats the native hit-test edge)', () => {
+    // The hosted WebView fills the client to the edge, so the OS resize
+    // border is unreachable — the grips drive resize via window_begin_resize
+    // on Windows as well as Linux.
     mockPywebview();
     setPlatform('Win32');
     render(<NunbaTitleBar />);
-    expect(screen.queryByTestId('nunba-resize-grips')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('nunba-resize-left')).not.toBeInTheDocument();
+    expect(screen.getByTestId('nunba-resize-grips')).toBeInTheDocument();
+    ['top', 'bottom', 'left', 'right',
+     'top-left', 'top-right', 'bottom-left', 'bottom-right'].forEach((edge) => {
+      expect(screen.getByTestId(`nunba-resize-${edge}`)).toBeInTheDocument();
+    });
   });
 
   test('renders 8 resize grips on Linux+pywebview', () => {
