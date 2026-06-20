@@ -1614,6 +1614,28 @@ class LlamaConfig:
         # Cap threads to 75% of cores — leave headroom for OS + TTS
         max_threads = max(1, int((os.cpu_count() or 4) * 0.75))
 
+        # ── Parallel slots: cap to avoid unified-KV exhaustion ──
+        # llama-server defaults --parallel to "auto" and picked 4 slots on
+        # the live box (llama_server_8080.log:8 "n_parallel is set to auto,
+        # using n_parallel = 4 and kv_unified = true").  With kv_unified the
+        # whole n_ctx (12288) is ONE shared KV pool across ALL slots — it is
+        # NOT 12288 per slot.  Chat/agent prompts run ~4.4k tokens each
+        # (witnessed task.n_tokens = 4433), so ≥3 concurrent ones (draft +
+        # autogen experts + daemon) sum past 12288 and the server logs
+        # "failed to find free space in the KV cache" → prompt truncation +
+        # GPU thrash (~10 t/s) + HTTP 503 — i.e. the "no LLM response"
+        # outage.  Cap parallel so the pool can't be over-subscribed:
+        # default 2 (2 × 4.4k = 8.8k < 12288, with headroom) lets one chat
+        # turn and one background autogen slot coexist.  Env-tunable via
+        # HEVOLVE_LLAMA_PARALLEL (1 = max per-request ctx + serialize;
+        # raise only on a box launched with a bigger --ctx-size budget).
+        try:
+            n_parallel = int(os.environ.get('HEVOLVE_LLAMA_PARALLEL', '')
+                             or self.config.get('llama_parallel') or 2)
+        except (TypeError, ValueError):
+            n_parallel = 2
+        n_parallel = max(1, min(n_parallel, 4))
+
         # Build server command — zinc uses simpler CLI than llama.cpp
         if _use_zinc:
             cmd = [llama_server, '-m', model_path, '-p', str(desired_port)]
@@ -1626,6 +1648,9 @@ class LlamaConfig:
                 "--port", str(desired_port),
                 "--ctx-size", str(ctx_size),
                 "--threads", str(max_threads),
+                # Explicit cap (see n_parallel above) — overrides llama.cpp's
+                # "auto" (=4) that over-subscribed the shared kv_unified pool.
+                "--parallel", str(n_parallel),
                 "--host", "127.0.0.1",
                 "--jinja",
                 "--reasoning-format", "deepseek",
