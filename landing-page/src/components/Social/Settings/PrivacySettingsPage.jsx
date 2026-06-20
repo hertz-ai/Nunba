@@ -528,6 +528,173 @@ function AuditHistory({rows, expanded, onToggle}) {
 }
 
 // ── Main Page ────────────────────────────────────────────────────────────
+// ── Autonomous external posting (public_exposure consent) ────────────────
+// Self-contained card.  Reuses the SAME consentApi (`/api/social/consent`)
+// the cloud_capability section uses — no parallel data path, and zero changes
+// to the cloud_capability logic.  Default OFF; granting flips the server-side
+// gate that marketing_tools._external_post_allowed + federated_aggregator
+// enforce (fail-closed).  Revoke is an instant kill-switch.
+function PublicExposureConsentCard() {
+  const [active, setActive] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [understood, setUnderstood] = useState(false);
+  const [snack, setSnack] = useState(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await consentApi.list({
+        consent_type: 'public_exposure', active_only: true,
+      });
+      const rows = (res && (res.consents || (res.data && res.data.consents))) || [];
+      setActive(rows.some((r) => isActive(r)) || rows.length > 0);
+    } catch (e) {
+      setActive(false); // fail-closed display
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { if (confirmOpen) setUnderstood(false); }, [confirmOpen]);
+
+  const onGrant = useCallback(async () => {
+    setBusy(true);
+    try {
+      await consentApi.grant({consent_type: 'public_exposure', scope: '*'});
+      setSnack({severity: 'success', msg: 'Autonomous external posting enabled.'});
+      setConfirmOpen(false);
+      await refresh();
+    } catch (e) {
+      setSnack({severity: 'error', msg: 'Could not enable — please retry.'});
+    } finally {
+      setBusy(false);
+    }
+  }, [refresh]);
+
+  const onRevoke = useCallback(async () => {
+    setBusy(true);
+    try {
+      await consentApi.revoke({consent_type: 'public_exposure', scope: '*'});
+      setSnack({severity: 'success', msg: 'Autonomous external posting disabled.'});
+      await refresh();
+    } catch (e) {
+      setSnack({severity: 'error', msg: 'Could not disable — please retry.'});
+    } finally {
+      setBusy(false);
+    }
+  }, [refresh]);
+
+  return (
+    <Paper sx={{...glass, p: 2.5, mb: 2.5}} data-testid="public-exposure-card">
+      <Box sx={{display: 'flex', alignItems: 'center', gap: 1, mb: 1}}>
+        <Cloud sx={{color: '#6C63FF'}} />
+        <Typography variant="subtitle1" sx={{color: '#fff', fontWeight: 600}}>
+          Autonomous external posting
+        </Typography>
+        <Chip
+          size="small"
+          label={active ? 'Enabled' : 'Off'}
+          data-testid="public-exposure-status"
+          sx={{
+            ml: 'auto',
+            bgcolor: active ? STATUS_COLORS.active.bg : STATUS_COLORS.revoked.bg,
+            color: active ? STATUS_COLORS.active.fg : STATUS_COLORS.revoked.fg,
+            border: `1px solid ${active ? STATUS_COLORS.active.border : STATUS_COLORS.revoked.border}`,
+          }}
+        />
+      </Box>
+      <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.6)', mb: 2}}>
+        Lets your agents post on your behalf to external channels (your social
+        accounts, communities) to grow reach — without asking each time. Off by
+        default; nothing leaves the platform until you enable it. Reversible
+        anytime — revoking stops all autonomous external posting immediately.
+      </Typography>
+      {loading ? (
+        <CircularProgress size={18} />
+      ) : active ? (
+        <Button
+          onClick={onRevoke}
+          disabled={busy}
+          variant="outlined"
+          color="inherit"
+          startIcon={busy ? <CircularProgress size={16} /> : <HighlightOff />}
+          data-testid="public-exposure-revoke"
+        >
+          Disable external posting
+        </Button>
+      ) : (
+        <Button
+          onClick={() => setConfirmOpen(true)}
+          disabled={busy}
+          variant="contained"
+          startIcon={<Cloud />}
+          data-testid="public-exposure-grant"
+          sx={{bgcolor: '#6C63FF', '&:hover': {bgcolor: '#5A52E0'}}}
+        >
+          Enable external posting
+        </Button>
+      )}
+
+      <Dialog
+        open={confirmOpen}
+        onClose={busy ? undefined : () => setConfirmOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{fontWeight: 600}}>Enable autonomous external posting?</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{mb: 2}}>
+            Your agents will be able to publish posts to external channels under
+            your identity, on their own, to grow reach. You can revoke this at
+            any time and it stops immediately.
+          </DialogContentText>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={understood}
+                onChange={(e) => setUnderstood(e.target.checked)}
+                inputProps={{'data-testid': 'public-exposure-understand'}}
+              />
+            }
+            label="I understand my agents may post publicly on my behalf."
+          />
+        </DialogContent>
+        <DialogActions sx={{px: 3, pb: 2}}>
+          <Button onClick={() => setConfirmOpen(false)} disabled={busy} color="inherit">
+            Cancel
+          </Button>
+          <Button
+            onClick={onGrant}
+            disabled={!understood || busy}
+            variant="contained"
+            data-testid="public-exposure-confirm"
+            startIcon={busy ? <CircularProgress size={16} /> : <Cloud />}
+            sx={{bgcolor: '#6C63FF', '&:hover': {bgcolor: '#5A52E0'}}}
+          >
+            Enable
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Snackbar
+        open={Boolean(snack)}
+        autoHideDuration={4000}
+        onClose={() => setSnack(null)}
+        anchorOrigin={{vertical: 'bottom', horizontal: 'center'}}
+      >
+        {snack ? (
+          <Alert severity={snack.severity} onClose={() => setSnack(null)}>
+            {snack.msg}
+          </Alert>
+        ) : undefined}
+      </Snackbar>
+    </Paper>
+  );
+}
+
 export default function PrivacySettingsPage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -703,6 +870,8 @@ export default function PrivacySettingsPage() {
         is per-capability and reversible — revoking does not erase the audit
         trail.
       </Typography>
+
+      <PublicExposureConsentCard />
 
       {error && !snack && (
         <Alert severity="warning" sx={{mb: 2}}>
