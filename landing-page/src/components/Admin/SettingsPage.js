@@ -1259,6 +1259,47 @@ export default function SettingsPage() {
                       </Select>
                     </FormControl>
 
+                    {/* The autonomous copilot is NOT this key — it's the operator's
+                        own local Claude Code over MCP (no Anthropic key, nothing
+                        billed to Nunba). Steer them there instead of the API field. */}
+                    {aiProvider === 'anthropic' && (
+                      <Alert
+                        severity="info"
+                        icon={false}
+                        sx={{
+                          mb: 3,
+                          background: 'rgba(108,99,255,0.08)',
+                          border: '1px solid rgba(108,99,255,0.3)',
+                          color: 'rgba(255,255,255,0.85)',
+                        }}
+                      >
+                        <Typography sx={{fontWeight: 700, mb: 0.5, color: '#fff'}}>
+                          Driving your agents with Claude? You don't enter a key here.
+                        </Typography>
+                        <Typography variant="body2" sx={{mb: 1.5, color: 'rgba(255,255,255,0.7)'}}>
+                          The autonomous flywheel is co-piloted by <strong>your own local
+                          Claude Code</strong> over MCP — it watches, creates, dispatches,
+                          and steers goals with no Anthropic key (nothing billed to Nunba).
+                          The API-key field below is a <em>separate</em> setting, only for
+                          using a cloud LLM for inline chat replies.
+                        </Typography>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          component="a"
+                          href="/admin/integrations/claude-code"
+                          sx={{
+                            color: '#6C63FF',
+                            borderColor: 'rgba(108,99,255,0.5)',
+                            textTransform: 'none',
+                            '&:hover': {borderColor: '#6C63FF', background: 'rgba(108,99,255,0.1)'},
+                          }}
+                        >
+                          Connect my local Claude Code →
+                        </Button>
+                      </Alert>
+                    )}
+
                     <TextField
                       fullWidth
                       label="API Key"

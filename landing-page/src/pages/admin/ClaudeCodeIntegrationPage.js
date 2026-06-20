@@ -167,6 +167,28 @@ export default function ClaudeCodeIntegrationPage() {
         </Typography>
       </Box>
 
+      {/* Why this exists: the autonomous copilot is the operator's OWN local
+          Claude Code over MCP — no Anthropic key, nothing billed to Nunba. */}
+      <Alert
+        severity="info"
+        icon={false}
+        sx={{
+          mb: 2,
+          background: PURPLE_SOFT,
+          border: `1px solid ${PURPLE_BORDER}`,
+          color: 'rgba(255,255,255,0.85)',
+        }}
+      >
+        <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.85)'}}>
+          <strong>This is how Claude drives your agents</strong> — no Anthropic API
+          key, nothing billed to Nunba. Once connected, your local Claude Code
+          co-pilots the autonomous flywheel over MCP: <code>list_goals</code> /{' '}
+          <code>agent_status</code> to watch, <code>create_goal</code> /{' '}
+          <code>dispatch_goal</code> to drive, and <code>steer_goal</code> to inject
+          guidance into a running goal when it stalls.
+        </Typography>
+      </Alert>
+
       {error && (
         <Alert severity="error" sx={{mb: 2}}>
           {error}
