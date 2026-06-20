@@ -482,6 +482,32 @@ def is_cuda_torch() -> bool:
         return False
 
 
+def is_cuda_ctranslate2() -> bool:
+    """Check if the installed CTranslate2 can actually run STT on CUDA.
+
+    faster-whisper runs on CTranslate2 (NOT torch), so a CUDA torch is
+    neither necessary nor sufficient — this is the authoritative GPU-STT
+    gate, the SAME one ``whisper_tool._get_faster_whisper_model`` uses to
+    pick ``device='cuda'``: ``'cuda' in ctranslate2.get_supported_compute_types(
+    'cuda')``, which only returns CUDA types when CTranslate2 can dlopen the
+    NVIDIA cuBLAS/cuDNN runtime.  The CPU-only PyPI wheel returns none, so a
+    fresh install silently runs STT on CPU int8 until the CUDA runtime is
+    installed (see ``install_gpu_ctranslate2``).  Mirrors ``is_cuda_torch``:
+    prefers the user site (where the CUDA runtime is dropped) and never raises.
+    """
+    try:
+        ensure_user_site_on_path()
+    except Exception:
+        pass
+    try:
+        import ctranslate2
+        # get_supported_compute_types('cuda') raises on a broken/absent CUDA
+        # runtime — treat any failure as "not CUDA-capable".
+        return 'cuda' in ctranslate2.get_supported_compute_types('cuda')
+    except Exception:
+        return False
+
+
 def get_torch_variant() -> str:
     """Return 'cpu', 'cu124', etc. — checks user site-packages first."""
     user_torch = os.path.join(get_user_site_packages(), 'torch', 'version.py')

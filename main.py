@@ -5549,6 +5549,36 @@ def start_background_services():
             from tts.tts_engine import get_tts_engine
             engine = get_tts_engine()
 
+            # If GPU detected but the CUDA ctranslate2 runtime is missing,
+            # install it NOW so faster-whisper STT runs on GPU (float16)
+            # instead of CPU int8 — CPU int8 can't sustain realtime streaming
+            # (29s cold load + can't keep the interim cadence). Independent of
+            # CUDA torch: faster-whisper runs on CTranslate2, not torch. Gated
+            # by is_cuda_ctranslate2() so it's a no-op once installed.
+            try:
+                from tts.package_installer import has_nvidia_gpu, is_cuda_ctranslate2
+                if has_nvidia_gpu() and not is_cuda_ctranslate2():
+                    logging.info("STT: GPU detected — installing CUDA ctranslate2 for GPU whisper...")
+                    from tts.package_installer import install_gpu_ctranslate2
+                    def _ct2_progress(msg):
+                        logging.info(f"CUDA ctranslate2: {msg}")
+                        try:
+                            from integrations.social.realtime import publish_event
+                            publish_event('setup_progress', {
+                                'type': 'setup_progress',
+                                'job_type': 'cuda_ctranslate2',
+                                'status': 'loading',
+                                'message': msg,
+                            })
+                        except Exception:
+                            pass
+                    _ct2_ok, _ct2_msg = install_gpu_ctranslate2(progress_cb=_ct2_progress)
+                    logging.info(
+                        "CUDA ctranslate2 installed — GPU STT active on next restart"
+                        if _ct2_ok else f"CUDA ctranslate2 not installed: {_ct2_msg}")
+            except Exception as _ct2_err:
+                logging.debug(f"CUDA ctranslate2 auto-install skipped: {_ct2_err}")
+
             # If GPU detected but CUDA torch not installed, install it NOW
             # (blocking) so GPU TTS works on first launch. Shows progress via
             # WAMP push so the UI can display download status.
