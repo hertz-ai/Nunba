@@ -1822,6 +1822,29 @@ def llm_status():
     try:
         from llama.llama_config import MODEL_PRESETS, LlamaConfig
         config = LlamaConfig()
+
+        # PERF (audit #1): the send-gate poller (hooks/useLocalEngineReady,
+        # every 2-30s) reads only `available`.  The full path runs
+        # is_llm_available() — a REAL /v1/chat/completions generation (200-800ms
+        # + occupies a KV slot that contends with the n_parallel pool, so the
+        # poll can itself trigger "context exceeded") — PLUS diagnose() (GPU
+        # probe + binary glob + a `llama-server --version` subprocess) on EVERY
+        # poll.  Default to the cheap liveness path (one /health hit, no
+        # generation, no KV slot, no subprocess); gate the expensive
+        # verified-inference + full diagnosis behind ?full=1 (the setup /
+        # first-run UI passes it).  Liveness is the correct send-gate signal —
+        # the backend has its own busy / "starting AI engine" handling.
+        full = bool(request.args.get('full'))
+        if not full:
+            available = config.is_llm_server_running()  # /health, no generation
+            return jsonify({
+                "available": available,
+                "llm_mode": config.get_llm_mode(),
+                "cloud_configured": config.is_cloud_configured(),
+                "first_run": config.is_first_run(),
+                "setup_needed": not available and not config.is_cloud_configured(),
+            })
+
         available = config.is_llm_available()
         preset = config.get_selected_model_preset()
 

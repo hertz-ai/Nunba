@@ -1246,7 +1246,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     };
     (async () => {
       try {
-        const res = await fetch('/api/llm/status');
+        // ?full=1 — this one-shot setup/first-run check needs the full
+        // diagnosis (version_upgrade, recommended, diagnosis.action). The
+        // default /api/llm/status is now the cheap liveness path used by the
+        // send-gate poller (hooks/useLocalEngineReady); only this path pays the
+        // verified-inference + hardware diagnose cost.
+        const res = await fetch('/api/llm/status?full=1');
         if (!res.ok) { retryLater(); return; }
         const data = await res.json();
 
