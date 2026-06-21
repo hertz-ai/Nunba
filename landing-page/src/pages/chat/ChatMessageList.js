@@ -40,6 +40,18 @@ const ASSISTANT_MD_OPTS = {
 };
 
 
+// PERF-6 (audit #568): markdown-to-jsx re-parses the content string on EVERY
+// render.  Demopage re-renders this whole list on every SSE token, so without
+// memoization all n assistant bubbles re-parse their Markdown each token — yet
+// only the last (growing) bubble's content actually changes.  React.memo keyed
+// on the `content` string lets prior bubbles skip the re-parse entirely (the
+// dominant streaming cost).  ONE canonical assistant-markdown renderer — both
+// branches below use it (no parallel <Markdown> for assistant content).
+const AssistantMarkdown = React.memo(function AssistantMarkdown({content}) {
+  return <Markdown options={ASSISTANT_MD_OPTS}>{content || ''}</Markdown>;
+});
+
+
 
 // Timestamp format — ported from Hevolve.ai ConversationHistoryPanel.js
 function formatTimestamp(ts) {
@@ -612,9 +624,7 @@ const ChatMessageList = ({
                     <>
                       {isTextMode ? (
                         <div>
-                          <Markdown options={ASSISTANT_MD_OPTS}>
-                            {message.content || ''}
-                          </Markdown>
+                          <AssistantMarkdown content={message.content} />
                         </div>
                       ) : animatingMessageIndex === index && duration > 0 ? (
                         // Typewriter animation needs raw chars — Markdown
@@ -627,9 +637,7 @@ const ChatMessageList = ({
                         />
                       ) : (
                         <div>
-                          <Markdown options={ASSISTANT_MD_OPTS}>
-                            {message.content || ''}
-                          </Markdown>
+                          <AssistantMarkdown content={message.content} />
                         </div>
                       )}
                       {/* Intelligence source badge + timestamp.

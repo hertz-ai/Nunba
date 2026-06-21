@@ -63,9 +63,16 @@ jest.mock('lucide-react', () => ({
 // Mocking the public surface bypasses the CJS resolution path entirely.
 jest.mock('markdown-to-jsx', () => {
   const React = require('react');
+  // Record every parse (one push per render of the <Markdown> element) so the
+  // PERF-6 memoization test can assert an unchanged bubble is NOT re-parsed.
+  const Mock = ({children}) => {
+    Mock.calls.push(children);
+    return <div data-testid="markdown">{children}</div>;
+  };
+  Mock.calls = [];
   return {
     __esModule: true,
-    default: ({children}) => <div data-testid="markdown">{children}</div>,
+    default: Mock,
   };
 });
 
@@ -502,5 +509,43 @@ describe('ChatMessageList', () => {
       messages: [{type: 'assistant', content: 'Answer', source: 'hive_gpt'}],
     });
     expect(screen.getByText('Hive')).toBeInTheDocument();
+  });
+
+  // ── PERF-6: assistant Markdown memoization ───────────────────────────────
+  //
+  // markdown-to-jsx re-parses the content string on every render, and Demopage
+  // re-renders this whole list on every SSE token.  An unchanged (prior)
+  // assistant bubble must NOT re-parse when only the streaming bubble grows.
+  // AssistantMarkdown (React.memo on `content`) guarantees that.
+
+  it('does not re-parse an unchanged assistant bubble when another message changes', () => {
+    const Markdown = require('markdown-to-jsx').default;
+    Markdown.calls.length = 0;
+    const {rerender} = render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[
+          {type: 'assistant', content: 'AAA'},
+          {type: 'assistant', content: 'BBB'},
+        ]}
+      />
+    );
+    expect(Markdown.calls.filter((c) => c === 'AAA')).toHaveLength(1);
+    expect(Markdown.calls.filter((c) => c === 'BBB')).toHaveLength(1);
+
+    // Simulate a streaming token: ONLY the last bubble's content changes.
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[
+          {type: 'assistant', content: 'AAA'},
+          {type: 'assistant', content: 'BBB more'},
+        ]}
+      />
+    );
+    // The unchanged 'AAA' bubble was memoized — NOT re-parsed on the rerender.
+    expect(Markdown.calls.filter((c) => c === 'AAA')).toHaveLength(1);
+    // Only the changed bubble re-parsed.
+    expect(Markdown.calls.filter((c) => c === 'BBB more')).toHaveLength(1);
   });
 });
