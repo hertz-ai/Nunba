@@ -28,6 +28,35 @@ from llama.llama_installer import MODEL_PRESETS, LlamaInstaller, ModelPreset
 logger = logging.getLogger('NunbaLlamaConfig')
 
 
+# PERF-2 (audit #564): Nunba's raw log writers append unbounded — the
+# llama-server stdout/stderr log reached ~68MB.  ONE canonical rotation point
+# for Nunba raw log writers (no parallel rotation impl): rename → .old past the
+# cap, one backup generation.  We KEEP the llama log verbose — its slot /
+# "context size exceeded" lines are load-bearing diagnostics — and only BOUND
+# it.  Cap via HEVOLVE_RAW_LOG_MAX_MB (default 20).
+def _rotate_log_if_oversized(path: str, max_bytes: int | None = None) -> bool:
+    """Rename ``path`` → ``path + '.old'`` when it exceeds ``max_bytes``.
+
+    Best-effort, never raises; one backup generation (prior .old overwritten).
+    Returns True iff a rotation happened.  Sole rotation impl for Nunba's raw
+    log writers — callers must not re-implement it (DRY / no parallel path)."""
+    if max_bytes is None:
+        try:
+            max_bytes = max(1, int(os.environ.get('HEVOLVE_RAW_LOG_MAX_MB', '') or 20)) * 1024 * 1024
+        except ValueError:
+            max_bytes = 20 * 1024 * 1024
+    try:
+        if os.path.getsize(path) <= max_bytes:
+            return False
+    except OSError:
+        return False  # missing / unstatable → nothing to rotate
+    try:
+        os.replace(path, path + '.old')
+        return True
+    except OSError:
+        return False
+
+
 class ServerType:
     """Enum for server type detection"""
     NOT_RUNNING = "not_running"
@@ -1846,6 +1875,7 @@ class LlamaConfig:
             # Append-mode preserves history across restarts.  Write a
             # session-start banner so a tail can locate the current run.
             try:
+                _rotate_log_if_oversized(_llama_log_path)  # PERF-2: bound at spawn (across restarts)
                 _llama_log_fh = open(_llama_log_path, 'ab')
                 _banner = (
                     f"\n===== {time.strftime('%Y-%m-%dT%H:%M:%S')} "

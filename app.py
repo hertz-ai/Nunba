@@ -704,7 +704,21 @@ if getattr(sys, 'frozen', False):
     # other, so the post-restart evidence was unrecoverable 10 min later).
     # A run-separator banner distinguishes consecutive runs.
     try:
-        _frozen_log = open(os.path.join(_frozen_log_dir, 'frozen_debug.log'), 'a',
+        _frozen_log_path = os.path.join(_frozen_log_dir, 'frozen_debug.log')
+        # PERF-2 (audit #564): this capture reached ~688MB — unbounded append.
+        # Bound it at boot.  Canonical rotation is
+        # llama.llama_config._rotate_log_if_oversized; this is a DELIBERATE
+        # early-boot inline (os-only) — it runs before the bundle import path is
+        # fully set up, so we must NOT import a Nunba module here.  Keep ALL
+        # stdout/stderr AND buffering=1: this is the crash-traceback capture, so
+        # per-line flush (durability on a hard crash) is the whole point — we
+        # only cap the file, we do NOT trade crash forensics for fewer syscalls.
+        try:
+            if os.path.getsize(_frozen_log_path) > 20 * 1024 * 1024:
+                os.replace(_frozen_log_path, _frozen_log_path + '.old')
+        except OSError:
+            pass  # missing / read-only / locked → just open and append
+        _frozen_log = open(_frozen_log_path, 'a',
                            encoding='utf-8', buffering=1)  # line-buffered: every \n hits disk
         _atexit.register(_frozen_log.close)
         sys.stdout = _frozen_log
