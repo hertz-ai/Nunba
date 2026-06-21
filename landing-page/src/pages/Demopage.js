@@ -91,6 +91,26 @@ const HOSTED_URL = 'https://hevolve.hertzai.com';
 // engineReady gate; the hook is realtime-reconciled, NOT sticky-true).
 const ENGINE_BOOT_GRACE_MS = 20000;
 
+// Setup/install cards (CUDA torch, GPU-whisper ctranslate2, model downloads,
+// TTS engine setup) report SYSTEM-global state — they are NOT tied to the
+// selected agent.  But the Demopage chat is per-agent: switching agents saves
+// + clears + reloads the message list, which would wipe an in-flight setup
+// card.  This carries those cards across the switch, deduped by jobType (the
+// card id the setup_progress / tts_handshake handlers already key on):
+//   - same jobType in BOTH the carried set and the loaded history -> keep ONE
+//     (the carried/live copy wins; idempotent, like message dedup by id)
+//   - different jobTypes -> all kept (two distinct cards both render)
+// The caller filters out dismissed cards before carrying, so a user-dismissed
+// card is never resurrected.
+function mergeCarriedSetupCards(loaded, carried) {
+  if (!carried || carried.length === 0) return loaded || [];
+  const carriedKeys = new Set(carried.map((c) => c.jobType));
+  const loadedWithoutDupes = (loaded || []).filter(
+    (m) => !(m.type === 'setup_progress' && carriedKeys.has(m.jobType))
+  );
+  return [...loadedWithoutDupes, ...carried];
+}
+
 /**
  * Determine if an agent is local (created via LLM pipeline)
  * vs cloud-only (fetched from mailer.hertzai.com).
@@ -901,10 +921,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             saveMessagesToStorage(messages, currentAgent.prompt_id);
           }
 
-          logger.log(
-            `🧹 Clearing messages for agent switch to: ${matchedAgent.name}`
+          // Setup/install cards are system-global, not agent-scoped — carry
+          // the live (non-dismissed) ones across the switch instead of wiping
+          // them with the rest of the per-agent message list.
+          const carriedSetup = messages.filter(
+            (m) => m.type === 'setup_progress' && !m.dismissed
           );
-          setMessages([]);
+          logger.log(
+            `🧹 Clearing messages for agent switch to: ${matchedAgent.name} ` +
+            `(carrying ${carriedSetup.length} setup card(s))`
+          );
+          setMessages(carriedSetup);
 
           setCurrentAgent(matchedAgent);
           if (matchedAgent.prompt_id) {
@@ -918,7 +945,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             logger.log(
               `📥 Loading ${savedMessages.length} messages for agent: ${matchedAgent.name}`
             );
-            setMessages(savedMessages);
+            // Re-merge the carried system setup cards on top of the new
+            // agent's history, deduped by jobType: a same-id card collapses
+            // to one (idempotent), distinct cards all stay visible.
+            setMessages(mergeCarriedSetupCards(savedMessages, carriedSetup));
           }, 100);
 
           if (matchedAgent.fillers) {
