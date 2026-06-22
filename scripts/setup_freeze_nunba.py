@@ -1729,8 +1729,14 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
         import shutil as _shutil
         import tempfile as _tempfile
         _IGNORE_HEAVY = _shutil.ignore_patterns(
-            'compositor', 'venv', 'venv311', '.venv', 'node_modules',
-            '__pycache__', '.pytest_cache', '.mypy_cache', 'build', 'dist',
+            # Rust sub-projects + their build output (compositor 576M;
+            # claw_native 1.6G).  'target' catches any cargo build dir anywhere.
+            # None is a Python package (packages.find = core*/integrations*/
+            # security*/hart_sdk*/agent_ledger*), so the wheel never needs them.
+            'compositor', 'claw_native', 'target',
+            # dev venvs + caches + IDE/build artifacts
+            'venv', 'venv311', '.venv', 'node_modules', '__pycache__',
+            '.pytest_cache', '.mypy_cache', '.pycharm_plugin', 'build', 'dist',
             '*.egg-info',
             # binary blobs the wheel NEVER bundles (package-data is text/web
             # only: yaml/yml/json/txt/md/js/svg/css), so dropping them from the
