@@ -1716,6 +1716,46 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             ('Hevolve_Database', 'hevolve-database'),
             ('HARTOS/agent-ledger-opensource', 'agent-ledger'),
         ]
+
+        # Install each sibling from a TEMP COPY that excludes heavy non-Python
+        # dirs.  HARTOS now vendors the Rust compositor/, whose compositor/target
+        # is ~569 MB of tiny incremental-build artifacts; pip copies the WHOLE
+        # source tree to build the wheel (it does NOT honour .gitignore), and
+        # copying ~100k tiny files on Windows blew past the 900 s pip timeout.
+        # The wheel never included compositor anyway (packages.find =
+        # core*/integrations*/security*/...), so excluding it (+ venvs/caches/
+        # build artifacts) is correct and makes the copy fast.  .git (46 MB) is
+        # KEPT so setuptools_scm still stamps the version from the git tag.
+        import shutil as _shutil
+        import tempfile as _tempfile
+        _IGNORE_HEAVY = _shutil.ignore_patterns(
+            'compositor', 'venv', 'venv311', '.venv', 'node_modules',
+            '__pycache__', '.pytest_cache', '.mypy_cache', 'build', 'dist',
+            '*.egg-info',
+            # binary blobs the wheel NEVER bundles (package-data is text/web
+            # only: yaml/yml/json/txt/md/js/svg/css), so dropping them from the
+            # build copy is safe and keeps it lean:
+            '*.gguf', '*.bin', '*.safetensors', '*.onnx', '*.pt', '*.pth',
+            '*.ckpt', '*.db', '*.sqlite', '*.sqlite3', '*.zip', '*.tar',
+            '*.tar.gz', '*.tgz', '*.7z', '*.mp4', '*.mov', '*.iso')
+
+        def _pip_install_sibling(_sib_path):
+            """Copy the sibling minus the heavy dirs, then pip-install the copy
+            into python-embed.  Returns the pip CompletedProcess."""
+            _tmp = _tempfile.mkdtemp(prefix='hart-freeze-pkg-')
+            _dst = os.path.join(_tmp,
+                                os.path.basename(os.path.normpath(_sib_path)))
+            try:
+                _shutil.copytree(_sib_path, _dst, ignore=_IGNORE_HEAVY,
+                                 symlinks=True)
+                return subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--no-deps",
+                     "--no-build-isolation", "--force-reinstall",
+                     "--target", _embed_sp, "--upgrade", _dst],
+                    capture_output=True, text=True, timeout=900)
+            finally:
+                _shutil.rmtree(_tmp, ignore_errors=True)
+
         for _sib_dir, _pkg_name in _sibling_deps:
             _sib_path = os.path.join(_project_root, _sib_dir)
             if os.path.isdir(_sib_path) and (
@@ -1731,11 +1771,7 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                 # transformers/.../t3.py class of bug self-heals on
                 # every freeze build instead of being silently
                 # propagated by hash-equal source.
-                _r = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "--no-deps",
-                     "--no-build-isolation", "--force-reinstall",
-                     "--target", _embed_sp, "--upgrade", _sib_path],
-                    capture_output=True, text=True, timeout=900)
+                _r = _pip_install_sibling(_sib_path)
                 if _r.returncode == 0:
                     print(f"python-embed: {_pkg_name} updated OK")
                 else:
