@@ -22,12 +22,36 @@ export const marketingApi = {
 };
 
 // --- Auth ---
+// Attribute the captured ?ref (useReferral stashes it in localStorage as
+// `nunba_referral_code`) onto the signup payload so the backend's
+// /auth/register → DistributionService.use_referral_code + channel-attribution
+// (integrations/social/api.py:107) actually fire.  WITHOUT this the referral
+// funnel recorded ZERO: useReferral only POSTs the code when a JWT already
+// exists (visitor already logged in), but a NEW referred visitor signs up
+// FIRST, so the captured code never reached register().  Injecting at the
+// service layer covers every signup entry point (register + guestRegister) in
+// one place — no per-form duplication.
+const _attachReferral = (data) => {
+  try {
+    const ref =
+      (typeof localStorage !== 'undefined' &&
+        localStorage.getItem('nunba_referral_code')) || '';
+    if (ref && !(data && data.referral_code)) {
+      return {...(data || {}), referral_code: ref};
+    }
+  } catch {
+    /* storage blocked / SSR — send unchanged */
+  }
+  return data;
+};
+
 export const authApi = {
   login: (data) => socialApi.post('/auth/login', data),
-  register: (data) => socialApi.post('/auth/register', data),
+  register: (data) => socialApi.post('/auth/register', _attachReferral(data)),
   me: () => socialApi.get('/auth/me'),
   logout: () => socialApi.post('/auth/logout'),
-  guestRegister: (data) => socialApi.post('/auth/guest-register', data),
+  guestRegister: (data) =>
+    socialApi.post('/auth/guest-register', _attachReferral(data)),
   guestRecover: (data) => socialApi.post('/auth/guest-recover', data),
 };
 
