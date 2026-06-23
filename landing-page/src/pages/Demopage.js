@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
+import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -1857,7 +1858,32 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         return;
       }
 
-      if (Number(parsed.priority) === 49 && parsed.action === 'Thinking') {
+      // #508 split — canned pipeline PROGRESS stages (publish_chat_stage →
+      // action 'Status': "Loading your context…", "Recalling…", "Preparing
+      // tools…") drive ONLY the "analysing…" spinner override, never the
+      // Step container.  The priority-49 / action 'Thinking' container below
+      // is reserved for the model's ACTUAL reasoning, so canned milestones no
+      // longer masquerade as Thought-process steps.
+      if (Number(parsed.priority) === CHAT_BUBBLE_PRIORITY && parsed.action === CHAT_ACTION_STATUS) {
+        const statusReqId = parsed.request_id || 'unknown';
+        const curReqId = requestIdRef.current;
+        if (curReqId && statusReqId !== 'unknown' && statusReqId !== curReqId) {
+          return; // daemon/background status — not this user's turn
+        }
+        try {
+          const rawText = Array.isArray(parsed.text) ? parsed.text[0] : (parsed.text || '');
+          if (rawText) {
+            const words = String(rawText).trim().split(/\s+/);
+            const preview = words.slice(0, 6).join(' ') + (words.length > 6 ? '…' : '');
+            setLatestThinkingText(preview);
+            if (staleClearRef.current) clearTimeout(staleClearRef.current);
+            staleClearRef.current = setTimeout(() => setLatestThinkingText(''), 3000);
+          }
+        } catch {}
+        return;
+      }
+
+      if (Number(parsed.priority) === CHAT_BUBBLE_PRIORITY && parsed.action === CHAT_ACTION_THINKING) {
         const traceRequestId = parsed.request_id || 'unknown';
 
         // Only show thinking traces that belong to the current user chat request.
