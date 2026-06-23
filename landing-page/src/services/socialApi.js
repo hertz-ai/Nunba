@@ -358,6 +358,28 @@ export const webResearchApi = {
     webResearchClient.get('/web-research/audit', {params: {limit}}),
 };
 
+// --- Fleet OTA control (central "Update Control" panel) ---
+// Routes live at the /api root (NOT under /api/social) — same root the
+// NixOS hart-ota-check timer polls (centralEndpoint default /api/ota/latest).
+// Reuses webResearchClient's /api-rooted instance so there's one authed
+// client for root /api/* calls, not a parallel axios.
+export const otaApi = {
+  // GET /api/ota/latest?channel=<c> → {channel, flake_ref, commit, published_at}
+  // The current published pointer per channel (public; nodes poll this).
+  latest: (channel = 'stable') =>
+    webResearchClient.get('/ota/latest', {params: {channel}}),
+
+  // POST /api/ota/publish {channel, flake_ref, commit, tier?} (central-gated)
+  // One action → sets the channel pointer AND fans a signed firmware_update
+  // FleetCommand to every owned node. Nodes auto-pull + auto-apply next poll.
+  publish: (data) => webResearchClient.post('/ota/publish', data),
+
+  // GET /api/ota/nodes?channel=<c> → {nodes:[{node_id,rollout,...}], counts}
+  // Live per-node rollout phase: idle|queued|polled|applied|failed.
+  nodes: (channel = '') =>
+    webResearchClient.get('/ota/nodes', channel ? {params: {channel}} : {}),
+};
+
 // --- Agent Evolution ---
 export const evolutionApi = {
   get: (agentId) => socialApi.get(`/agents/${agentId}/evolution`),
