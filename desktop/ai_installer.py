@@ -37,77 +37,70 @@ def get_platform_name() -> str:
 
 def detect_gpu() -> dict:
     """
-    Detect GPU availability and type.
+    Detect GPU availability + type for THIS machine.
 
-    Returns:
-        Dict with:
-        - available: bool
-        - type: 'cuda', 'metal', or 'none'
-        - name: GPU name if available
-        - vram_gb: VRAM in GB (for CUDA)
+    Backend detection is DELEGATED to the canonical llama_installer detector
+    (DRY — one place knows NVIDIA→cuda / AMD·Intel→vulkan / Apple→metal); this
+    wrapper adds the VRAM + GPU name the TTS hardware-tiering reads.
+
+    Returns: {available: bool, type: 'cuda'|'vulkan'|'metal'|'none',
+              name: str|None, vram_gb: float}
+
+    NOTE: the GPU-TTS engines + faster-whisper CUDA runtime are torch/CTranslate2
+    CUDA-only; their install steps self-gate on an ACTUAL NVIDIA GPU
+    (has_nvidia_gpu()), so a 'vulkan' AMD box reports available=True for accurate
+    status yet never pulls CUDA wheels — and vram_gb stays 0 there, keeping it on
+    the CPU TTS tier (correct: those engines can't use a non-NVIDIA GPU anyway).
     """
-    result = {
-        "available": False,
-        "type": "none",
-        "name": None,
-        "vram_gb": 0
-    }
+    result = {"available": False, "type": "none", "name": None, "vram_gb": 0}
 
-    # macOS - Metal is always available on Apple Silicon and modern Intel Macs
-    if IS_MACOS:
-        # Check for Apple Silicon
-        if platform.machine() == "arm64":
-            result["available"] = True
-            result["type"] = "metal"
-            result["name"] = "Apple Silicon (Metal)"
-            return result
-        # Intel Macs with Metal
-        try:
-            import subprocess
-            check = subprocess.run(
-                ["system_profiler", "SPDisplaysDataType"],
-                capture_output=True, text=True, timeout=5
-            )
-            if "Metal" in check.stdout:
-                result["available"] = True
-                result["type"] = "metal"
-                result["name"] = "Intel Mac (Metal)"
-        except Exception:
-            pass
+    try:
+        from llama_installer import LlamaInstaller
+        backend = LlamaInstaller.detect_backend()
+    except Exception as e:
+        logger.debug(f"GPU backend detection failed: {e}")
+        backend = "none"
+
+    if backend == "none":
+        return result
+    result["available"] = True
+    result["type"] = backend
+
+    if backend == "metal":
+        result["name"] = "Apple Silicon (Metal)" if platform.machine() == "arm64" else "Metal"
         return result
 
-    # Windows/Linux - Check for CUDA
-    try:
-        import subprocess
-        si = None
-        cf = 0
-        if IS_WINDOWS:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0
-            cf = subprocess.CREATE_NO_WINDOW
+    if backend == "cuda":
+        # Pull the exact NVIDIA name + VRAM — drives the TTS engine tiering.
+        try:
+            import subprocess
+            si = None
+            cf = 0
+            if IS_WINDOWS:
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0
+                cf = subprocess.CREATE_NO_WINDOW
+            check = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+                startupinfo=si, creationflags=cf)
+            if check.returncode == 0 and check.stdout.strip():
+                parts = check.stdout.strip().split(",")
+                result["name"] = parts[0].strip()
+                if len(parts) > 1:
+                    vram_str = parts[1].strip()  # e.g. "8192 MiB"
+                    if "MiB" in vram_str:
+                        result["vram_gb"] = int(vram_str.replace("MiB", "").strip()) / 1024
+                    elif "GiB" in vram_str:
+                        result["vram_gb"] = float(vram_str.replace("GiB", "").strip())
+        except Exception as e:
+            logger.debug(f"CUDA VRAM probe failed: {e}")
+        return result
 
-        check = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=5,
-            startupinfo=si, creationflags=cf
-        )
-
-        if check.returncode == 0 and check.stdout.strip():
-            parts = check.stdout.strip().split(",")
-            result["available"] = True
-            result["type"] = "cuda"
-            result["name"] = parts[0].strip()
-            if len(parts) > 1:
-                # Parse VRAM (e.g., "8192 MiB")
-                vram_str = parts[1].strip()
-                if "MiB" in vram_str:
-                    result["vram_gb"] = int(vram_str.replace("MiB", "").strip()) / 1024
-                elif "GiB" in vram_str:
-                    result["vram_gb"] = float(vram_str.replace("GiB", "").strip())
-    except Exception as e:
-        logger.debug(f"CUDA detection failed: {e}")
-
+    # vulkan (AMD / Intel-Arc) — GPU present; VRAM not probed (the CUDA-only TTS
+    # path self-gates on NVIDIA, so 0 here correctly keeps TTS on the CPU tier).
+    result["name"] = "AMD/Intel GPU (Vulkan)"
     return result
 
 
