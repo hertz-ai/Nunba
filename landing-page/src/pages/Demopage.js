@@ -4749,7 +4749,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   ? (isTextMode ? 'w-0 overflow-hidden' : (mediaMode === 'video' || mediaMode === 'audio' ? 'w-[30%]' : 'w-0 overflow-hidden'))
                   : 'w-full'
               } ${
-                window.innerWidth <= 768 ? (isTextMode ? '' : (mediaMode === 'video' ? 'h-[35vh] shrink-0' : mediaMode === 'audio' ? 'h-[22vh] min-h-[150px] max-h-[200px] shrink-0' : '')) : ''
+                window.innerWidth <= 768 ? (isTextMode ? '' : (mediaMode === 'video' || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
               } relative flex justify-center items-center transition-all duration-300 md:sticky md:top-0 md:h-screen`}
               style={{ overflow: 'visible' }}
             >
@@ -4814,7 +4814,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                             <VoiceVisualizer
                               audioRef={audioRef}
                               isActive={isPlayingResponse || tts.isSpeaking}
-                              size={window.innerWidth <= 768 ? Math.min(window.innerWidth * 0.35, 160) : Math.min(window.innerWidth * 0.2, 200)}
+                              canvasMax="100%"
+                              size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
                             />
                           )}
                         </div>
@@ -4840,7 +4841,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                             <VoiceVisualizer
                               audioRef={audioRef}
                               isActive={isPlayingResponse || tts.isSpeaking}
-                              size={window.innerWidth <= 768 ? Math.min(window.innerWidth * 0.35, 160) : Math.min(window.innerWidth * 0.2, 200)}
+                              canvasMax="100%"
+                              size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
                             />
                           </div>
                         </>
