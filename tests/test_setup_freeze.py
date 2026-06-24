@@ -352,3 +352,50 @@ py-modules = [
         spec = importlib.util.find_spec('os')
         assert spec is not None
         assert spec.origin is not None
+
+
+# ---------------------------------------------------------------------------
+# 7. TTS bundle deps — chatterbox transitives that --no-deps skips
+# ---------------------------------------------------------------------------
+class TestTtsBundleDeps:
+    """Drift-guard: chatterbox(_turbo) imports pyloudnorm for loudness
+    normalisation, but ``_tts_deps`` installs chatterbox-tts with
+    --no-deps, so the transitive is skipped unless listed explicitly.
+    Witnessed 2026-06-24 as a runtime ModuleNotFoundError that the
+    gpu_worker self-heal then churned the GIL on.  If this tuple is ever
+    removed, chatterbox_turbo ships broken again."""
+
+    def _freeze_source(self):
+        from pathlib import Path
+        p = (Path(__file__).resolve().parents[1]
+             / 'scripts' / 'setup_freeze_nunba.py')
+        return p.read_text(encoding='utf-8')
+
+    def test_pyloudnorm_bundled_in_tts_deps(self):
+        src = self._freeze_source()
+        assert '("pyloudnorm", "pyloudnorm", "pyloudnorm", [])' in src, (
+            "pyloudnorm dropped from _tts_deps — chatterbox_turbo will "
+            "ModuleNotFoundError at load (it's a --no-deps transitive)."
+        )
+
+    def test_tts_deps_install_uses_no_deps(self):
+        """The drift-guard above only matters because --no-deps is used;
+        assert that invariant so the two stay coupled."""
+        src = self._freeze_source()
+        assert '"--no-deps"' in src
+
+    def test_pyloudnorm_bundled_in_all_os_freeze_scripts(self):
+        """Cross-OS rule: a build-script bundle change must apply to EVERY OS.
+        chatterbox(_turbo)'s pyloudnorm transitive (skipped by --no-deps) must
+        be bundled in the Windows, macOS AND Linux freeze scripts — else
+        chatterbox_turbo ships broken on whichever OS was missed."""
+        from pathlib import Path
+        scripts = Path(__file__).resolve().parents[1] / 'scripts'
+        for fname in ('setup_freeze_nunba.py', 'setup_freeze_mac.py',
+                      'setup_freeze_linux.py'):
+            src = (scripts / fname).read_text(encoding='utf-8')
+            assert '("pyloudnorm"' in src, (
+                f"pyloudnorm missing from {fname} — chatterbox_turbo will "
+                f"ModuleNotFoundError on that OS (a build-script bundle change "
+                f"must be applied to all OSs)."
+            )

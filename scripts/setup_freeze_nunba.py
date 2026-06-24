@@ -1929,6 +1929,15 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # Installing full torch here causes stack overflow: torch.__init__
             # loads _C.pyd → needs torch_cpu.dll → DLL loader recurses → crash.
             ("chatterbox-tts", "chatterbox-tts", "chatterbox", []),
+            # pyloudnorm — chatterbox(_turbo) imports it for loudness
+            # normalisation, but chatterbox-tts is installed --no-deps
+            # (loop below), so this transitive is skipped and the worker
+            # crashes at load with `ModuleNotFoundError: No module named
+            # 'pyloudnorm'` (witnessed 2026-06-24 — gpu_worker's runtime
+            # self-heal then churned the GIL).  Bundle it explicitly so
+            # chatterbox_turbo ships working; the numpy/scipy it needs are
+            # already present from the torch/TTS stack (--no-deps safe).
+            ("pyloudnorm", "pyloudnorm", "pyloudnorm", []),
             # Piper — canonical CPU-only TTS baseline.  ~30MB, no
             # transformers / torch / CUDA needed.  Bundled so the ladder
             # ALWAYS has a working last-resort engine when every GPU
