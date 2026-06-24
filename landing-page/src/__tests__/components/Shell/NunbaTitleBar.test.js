@@ -94,6 +94,20 @@ describe('NunbaTitleBar render guards', () => {
     expect(screen.getByTestId('nunba-window-buttons')).toBeInTheDocument();
   });
 
+  // Drift-guard (2026-06-24): the injected offset stylesheet must push MUI
+  // fixed AppBars + side Drawers below the 32px titlebar — else the admin
+  // header / sidebar top is occluded (they're MUI classes, NOT .fixed.top-0,
+  // so they escape the generic offset).
+  test('offset stylesheet reserves the titlebar for MUI AppBar + Drawer', () => {
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    const css = document.getElementById('nunba-titlebar-offsets')?.textContent || '';
+    expect(css).toContain('.MuiAppBar-positionFixed');
+    expect(css).toContain('.MuiDrawer-paperAnchorLeft');
+    // must offset by the titlebar-height var, not a hardcoded pixel value
+    expect(css).toMatch(/\.MuiAppBar-positionFixed\s*\{[^}]*top:\s*var\(--nunba-titlebar-h/);
+  });
+
   test('renders all 3 window control buttons', () => {
     mockPywebview();
     render(<NunbaTitleBar />);

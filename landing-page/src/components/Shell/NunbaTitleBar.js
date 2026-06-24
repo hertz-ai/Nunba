@@ -260,6 +260,22 @@ export default function NunbaTitleBar({ children }) {
          html-level padding already reserves the titlebar gap. */
       html.nunba-frameless-active main { padding-top: 0 !important; }
       html.nunba-frameless-active .fixed.top-0 { top: var(--nunba-titlebar-h, 32px); }
+      /* MUI fixed AppBars (e.g. AdminLayout's "Nunba Admin" header) + the
+         left/right/top Drawer papers are position:fixed at top:0.  Being MUI
+         classes (not Tailwind .fixed.top-0) they escaped the rule above, so
+         the titlebar covered the admin header + the sidebar's top edge
+         (reported 2026-06-24).  Push them below the strip; clamp the drawer
+         height so it doesn't overflow the (100vh − titlebar) document and clip
+         its last item.  Bottom-anchored drawers are intentionally untouched. */
+      html.nunba-frameless-active .MuiAppBar-positionFixed {
+        top: var(--nunba-titlebar-h, 32px);
+      }
+      html.nunba-frameless-active .MuiDrawer-paperAnchorLeft,
+      html.nunba-frameless-active .MuiDrawer-paperAnchorRight,
+      html.nunba-frameless-active .MuiDrawer-paperAnchorTop {
+        top: var(--nunba-titlebar-h, 32px);
+        height: calc(100vh - var(--nunba-titlebar-h, 32px));
+      }
     `;
     document.head.appendChild(style);
   }, []);

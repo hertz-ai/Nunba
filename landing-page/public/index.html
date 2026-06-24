@@ -388,6 +388,44 @@
       #pre-react-titlebar button.ptb-close:hover { background: #e94560; }
     </style>
 
+    <!-- Titlebar content-offset (frameless pywebview shell).  Mirrors the
+         rules NunbaTitleBar.js injects, but lives HERE so the 32px reservation
+         applies from FIRST PAINT — independent of whether React mounts (the
+         "Main window failed to start" / slow-boot case).  Gated on
+         html.nunba-frameless-active, set by the reveal script below (before
+         React) and toggled per-route by React's NunbaTitleBar (which REMOVES
+         it on titlebar-less routes like /voice-orb).  Inert in browser/macOS
+         mode (class never set there).  NunbaTitleBar's own injection guard
+         checks for #nunba-titlebar-offsets and SKIPS when this block is
+         present → single runtime source, no double-offset; its copy remains a
+         fallback (e.g. under Jest, where index.html isn't loaded). -->
+    <style id="nunba-titlebar-offsets">
+      html.nunba-frameless-active {
+        padding-top: var(--nunba-titlebar-h, 32px);
+        height: 100vh;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+      html.nunba-frameless-active body { height: 100%; margin: 0; }
+      html.nunba-frameless-active .h-screen,
+      html.nunba-frameless-active .min-h-screen {
+        height: calc(100vh - var(--nunba-titlebar-h, 32px)) !important;
+        min-height: calc(100vh - var(--nunba-titlebar-h, 32px)) !important;
+      }
+      html.nunba-frameless-active #root {
+        min-height: calc(100vh - var(--nunba-titlebar-h, 32px)) !important;
+      }
+      html.nunba-frameless-active main { padding-top: 0 !important; }
+      html.nunba-frameless-active .fixed.top-0 { top: var(--nunba-titlebar-h, 32px); }
+      html.nunba-frameless-active .MuiAppBar-positionFixed { top: var(--nunba-titlebar-h, 32px); }
+      html.nunba-frameless-active .MuiDrawer-paperAnchorLeft,
+      html.nunba-frameless-active .MuiDrawer-paperAnchorRight,
+      html.nunba-frameless-active .MuiDrawer-paperAnchorTop {
+        top: var(--nunba-titlebar-h, 32px);
+        height: calc(100vh - var(--nunba-titlebar-h, 32px));
+      }
+    </style>
+
     <!-- Google Analytics (async — non-blocking) -->
     <script
       async
@@ -605,7 +643,17 @@
           b.addEventListener('click', function () { callWin('window_close'); });
         function reveal() {
           if (isMac) return;
-          if (window.pywebview && window.pywebview.api) bar.style.display = 'flex';
+          if (window.pywebview && window.pywebview.api) {
+            bar.style.display = 'flex';
+            // Reserve the 32px titlebar strip at the DOCUMENT level NOW —
+            // before React mounts — so page content + MUI AppBars/Drawers never
+            // sit under the bar even if the SPA boots slowly or never mounts.
+            // React's NunbaTitleBar later toggles this same class per-route and
+            // REMOVES it on titlebar-less routes (e.g. /voice-orb), so the
+            // global default-on here is corrected for those exceptions.
+            document.documentElement.style.setProperty('--nunba-titlebar-h', '32px');
+            document.documentElement.classList.add('nunba-frameless-active');
+          }
         }
         reveal();
         window.addEventListener('pywebviewready', reveal);
