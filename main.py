@@ -5822,6 +5822,24 @@ if __name__ == '__main__':
         # Default to 127.0.0.1 (loopback only) for security; set
         # NUNBA_BIND_HOST=0.0.0.0 to expose on all interfaces.
         bind_host = os.environ.get('NUNBA_BIND_HOST', '127.0.0.1')
+        # HART OS native-daemon mode: bind a UNIX SOCKET instead of a TCP
+        # port so Nunba runs fully in-process inside the OS with NO host
+        # port occupied (steward 2026-07-09: "why shd we occupy host port
+        # if we can pack it within OS as a daemon process?").  LiquidUI
+        # reverse-proxies the socket same-origin.  Both Hypercorn (bind
+        # "unix:<path>") and Waitress (unix_socket=<path>) bind it
+        # natively; when unset the normal host:port path is unchanged.
+        _hart_socket = os.environ.get('HART_NUNBA_SOCKET', '').strip()
+        if _hart_socket:
+            # Remove a stale socket left by an unclean crash-exit so the
+            # rebind never fails with EADDRINUSE (systemd RuntimeDirectory
+            # usually pre-cleans it, but a crash-restart may not).
+            try:
+                if os.path.exists(_hart_socket):
+                    os.unlink(_hart_socket)
+            except OSError as _sock_err:
+                logging.warning("Could not remove stale socket %s: %s",
+                                _hart_socket, _sock_err)
         try:
             _worker_threads = int(os.environ.get('NUNBA_WORKER_THREADS', '128'))
         except (TypeError, ValueError):
@@ -5862,7 +5880,8 @@ if __name__ == '__main__':
             from hypercorn.middleware import AsyncioWSGIMiddleware
 
             config = Config()
-            config.bind = [f'{bind_host}:{args.port}']
+            config.bind = ([f'unix:{_hart_socket}'] if _hart_socket
+                           else [f'{bind_host}:{args.port}'])
             config.keep_alive_timeout = 120
             config.h11_max_incomplete_size = 16 * 1024 * 1024
             config.accesslog = None
@@ -5879,7 +5898,8 @@ if __name__ == '__main__':
                 await _hcserve(asgi_app, config)
 
             logging.info(
-                f"Starting Hypercorn (ASGI) on {bind_host}:{args.port} "
+                f"Starting Hypercorn (ASGI) on "
+                f"{('unix:' + _hart_socket) if _hart_socket else f'{bind_host}:{args.port}'} "
                 f"(executor_threads={_worker_threads})"
             )
             asyncio.run(_runner())
@@ -5895,22 +5915,26 @@ if __name__ == '__main__':
             try:
                 from waitress import serve
                 logging.info(
-                    f"Starting Waitress server on {bind_host}:{args.port} "
+                    f"Starting Waitress server on "
+                    f"{('unix:' + _hart_socket) if _hart_socket else f'{bind_host}:{args.port}'} "
                     f"(threads={_waitress_threads})"
                 )
                 # channel_timeout keeps slow clients from tying up a worker forever.
                 # cleanup_interval=30 keeps per-connection state from leaking on long
                 # SSE/chat streams.  Both chosen to match the 1.5s chat budget with
                 # generous safety margin for cold-start.
-                serve(
-                    app,
-                    host=bind_host,
-                    port=args.port,
+                # HART OS daemon mode binds the unix socket (host/port ignored
+                # by waitress when unix_socket is set); desktop keeps host:port.
+                _waitress_kwargs = dict(
                     threads=_waitress_threads,
                     channel_timeout=120,
                     cleanup_interval=30,
                     ident='Nunba',
                 )
+                if _hart_socket:
+                    serve(app, unix_socket=_hart_socket, **_waitress_kwargs)
+                else:
+                    serve(app, host=bind_host, port=args.port, **_waitress_kwargs)
             except ImportError:
                 logging.warning("waitress not available, falling back to Flask dev server")
                 app.run(debug=False, host=bind_host, port=args.port,
