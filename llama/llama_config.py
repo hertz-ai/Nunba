@@ -185,21 +185,39 @@ def scan_openai_compatible_ports(ports: list[int] = None) -> dict | None:
         Dict with endpoint info if found, None otherwise
     """
     if ports is None:
-        ports = [8080, 8081, 8082, 8000, 5000, 5001, 3000, 3001, 4000, 11434, 1234, 1337]
+        # Genuinely-EXTERNAL LLM servers only (Ollama 11434, LM Studio 1234,
+        # etc.).  EXCLUDE the app's OWN ports — the Flask backend (5000 desktop /
+        # 6777 OS) and the app-managed local llama-server (8080/8081/8082) — so
+        # the scan never adopts THIS app as its own "external LLM".  That
+        # false-adoption set use_external_llm=True pointing at a dead :8080 and
+        # SUPPRESSED the local llama.cpp install (the Flask SPA catch-all returns
+        # 200 for /v1/models, which fooled the old status-only check).
+        ports = [11434, 1234, 1337, 8000, 3000, 3001, 4000]
 
     for port in ports:
         try:
-            # Try OpenAI-compatible /v1/models endpoint
             url = f"http://localhost:{port}/v1/models"
             response = requests.get(url, timeout=1)
-            if response.status_code == 200:
-                logger.info(f"Found OpenAI-compatible endpoint on port {port}")
-                return {
-                    "name": f"OpenAI-compatible (port {port})",
-                    "base_url": f"http://localhost:{port}",
-                    "completions": f"http://localhost:{port}/v1/completions",
-                    "type": "openai"
-                }
+            if response.status_code != 200:
+                continue
+            # Require a REAL OpenAI /v1/models JSON (a non-empty list of models),
+            # not just any 200 — an HTML/SPA page also returns 200 and must NOT be
+            # mistaken for an LLM server.
+            try:
+                payload = response.json()
+            except Exception:
+                continue
+            models = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(models, list) or not models:
+                continue
+            logger.info(f"Found OpenAI-compatible LLM endpoint on port {port} "
+                        f"({len(models)} model(s))")
+            return {
+                "name": f"OpenAI-compatible (port {port})",
+                "base_url": f"http://localhost:{port}",
+                "completions": f"http://localhost:{port}/v1/completions",
+                "type": "openai"
+            }
         except Exception:
             pass
 
