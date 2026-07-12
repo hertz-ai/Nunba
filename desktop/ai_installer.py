@@ -61,17 +61,16 @@ def detect_gpu() -> dict:
         logger.debug(f"GPU backend detection failed: {e}")
         backend = "none"
 
-    if backend == "none":
-        return result
-    result["available"] = True
-    result["type"] = backend
-
     if backend == "metal":
+        result["available"] = True
+        result["type"] = backend
         result["name"] = "Apple Silicon (Metal)" if platform.machine() == "arm64" else "Metal"
         return result
 
     if backend == "cuda":
-        # Pull the exact NVIDIA name + VRAM — drives the TTS engine tiering.
+        result["available"] = True
+        result["type"] = backend
+        # Pull the exact NVIDIA name + VRAM — drives model sizing + TTS tiering.
         try:
             import subprocess
             si = None
@@ -96,11 +95,64 @@ def detect_gpu() -> dict:
                         result["vram_gb"] = float(vram_str.replace("GiB", "").strip())
         except Exception as e:
             logger.debug(f"CUDA VRAM probe failed: {e}")
-        return result
 
-    # vulkan (AMD / Intel-Arc) — GPU present; VRAM not probed (the CUDA-only TTS
-    # path self-gates on NVIDIA, so 0 here correctly keeps TTS on the CPU tier).
-    result["name"] = "AMD/Intel GPU (Vulkan)"
+    # ── WMI fallback (Windows) ──────────────────────────────────────────
+    # nvidia-smi ships with the CUDA/driver package and is OFTEN ABSENT on
+    # consumer laptops (or the driver is too old to install it) — so the
+    # backend detector above returns "none"/no-VRAM even though a real NVIDIA
+    # GPU is present (the 940MX case: detect said no-GPU, everything fell to
+    # CPU).  Win32_VideoController always enumerates the physical adapters, so
+    # use it to (a) find an NVIDIA/AMD/Intel GPU the CUDA probe missed and
+    # (b) fill VRAM from AdapterRAM when nvidia-smi didn't.  AdapterRAM is a
+    # 32-bit value that UNDER-reports cards >4 GB (wraps), so treat it as a
+    # FLOOR, never letting it shrink a good nvidia-smi reading.
+    if IS_WINDOWS and (not result["available"] or not result["vram_gb"]):
+        try:
+            import subprocess as _sp
+            _cf = _sp.CREATE_NO_WINDOW if IS_WINDOWS else 0
+            ps = _sp.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_VideoController | "
+                 "Select-Object Name,AdapterRAM | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=8, creationflags=_cf)
+            if ps.returncode == 0 and ps.stdout.strip():
+                import json as _json
+                data = _json.loads(ps.stdout)
+                if isinstance(data, dict):
+                    data = [data]
+                # Prefer a discrete NVIDIA/AMD GPU over the Intel iGPU.
+                def _rank(g):
+                    n = (g.get("Name") or "").lower()
+                    return (2 if ("nvidia" in n or "geforce" in n or "rtx" in n
+                                  or "quadro" in n) else
+                            1 if ("amd" in n or "radeon" in n) else 0)
+                best = max(data, key=_rank) if data else None
+                if best:
+                    n = (best.get("Name") or "").lower()
+                    is_nv = ("nvidia" in n or "geforce" in n or "rtx" in n
+                             or "quadro" in n)
+                    if not result["name"]:
+                        result["name"] = best.get("Name")
+                    if not result["type"] or result["type"] == "none":
+                        result["type"] = "cuda" if is_nv else "vulkan"
+                    result["available"] = True
+                    ram = best.get("AdapterRAM") or 0
+                    wmi_vram = round(ram / (1024 ** 3), 1) if ram else 0
+                    if wmi_vram and wmi_vram > result["vram_gb"]:
+                        result["vram_gb"] = wmi_vram
+                    logger.info("detect_gpu WMI fallback: %s, vram=%.1fGB (nvidia-smi absent)",
+                                result["name"], result["vram_gb"])
+        except Exception as e:
+            logger.debug(f"WMI GPU probe failed: {e}")
+
+    if not result["available"] and backend not in ("none",):
+        # backend said GPU but we couldn't name it — still report it present.
+        result["available"] = True
+        result["type"] = backend
+        result["name"] = result["name"] or "GPU"
+
+    if result["type"] == "vulkan" and not result["name"]:
+        result["name"] = "AMD/Intel GPU (Vulkan)"
     return result
 
 
@@ -137,6 +189,61 @@ class AIInstaller:
         self.piper_dir = self.tts_dir / "piper"
         self.vibevoice_dir = self.tts_dir / "vibevoice"
         self.tts_models_dir = self.base_dir / "models" / "tts"
+
+    def _select_model_for_compute(self):
+        """Pick the largest LLM preset that actually fits THIS machine.
+
+        Replaces the old hardcoded ``MODEL_PRESETS[0]`` (the 4B, "GPU >=4GB
+        VRAM") which dead-ended as "no compatible model found" on low-VRAM /
+        CPU boxes (the 940MX / 8GB case).  Sizes by VRAM when a usable GPU is
+        present, else by CPU capability — and NEVER returns nothing: the
+        smallest preset (0.8B, "runs on anything") is the floor.
+        """
+        from llama_installer import MODEL_PRESETS  # local import (same as install_all)
+        try:
+            import psutil
+            ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+            cores = psutil.cpu_count(logical=False) or psutil.cpu_count() or 2
+        except Exception:
+            ram_gb, cores = 8.0, 2
+        vram = float(self.gpu_info.get("vram_gb", 0) or 0)
+        # Only treat the GPU as usable for INFERENCE at >=4GB: the 256K-context
+        # VL models need real headroom, and a tiny/old card (e.g. 940MX 2GB,
+        # compute 5.0) is unreliable for llama.cpp CUDA — CPU is steadier there.
+        has_gpu = bool(self.gpu_info.get("available")) and vram >= 4.0
+
+        by_size = sorted(MODEL_PRESETS, key=lambda p: p.size_mb)  # 0.8B -> 35B
+
+        def _find(frag):
+            for p in by_size:
+                if frag in p.display_name:
+                    return p
+            return None
+
+        if has_gpu:
+            # Largest preset whose weights fit VRAM with ~1.5GB KV/context head.
+            budget_mb = max(0.0, vram - 1.5) * 1024
+            chosen = by_size[0]
+            for p in by_size:
+                if p.size_mb <= budget_mb:
+                    chosen = p
+            why = f"GPU {vram:.1f}GB VRAM"
+        else:
+            # No usable GPU -> CPU.  A big model may FIT RAM yet be unusably slow
+            # on a weak CPU, so size by CAPABILITY: small/old box -> 0.8B.
+            if cores <= 4 or ram_gb < 12:
+                chosen = _find("0.8B") or by_size[0]
+            elif ram_gb < 24:
+                chosen = _find("2B VL") or _find("2B") or by_size[0]
+            else:
+                chosen = _find("4B") or by_size[-1]
+            why = (f"CPU ({cores} cores, {ram_gb:.0f}GB RAM)"
+                   + (f"; GPU {vram:.1f}GB present but <4GB, inference stays on CPU"
+                      if vram else ""))
+
+        logger.info("Selected LLM preset '%s' (%.0fMB) for compute: %s",
+                    chosen.display_name, chosen.size_mb, why)
+        return chosen
 
     def _report_progress(self, message: str, percent: int = 0):
         """Report progress to callback and logger"""
@@ -195,8 +302,11 @@ class AIInstaller:
             if not skip_model:
                 self._report_progress("Checking LLM model...", 45)
 
-                # Use recommended model (vision+text)
-                default_model = MODEL_PRESETS[0]  # Qwen3.5-4B VL (Recommended)
+                # Compute-aware pick (was hardcoded MODEL_PRESETS[0] = the 4B,
+                # which needs GPU >=4GB VRAM and dead-ended as "no compatible
+                # model" on low-VRAM / CPU boxes).  Picks the largest preset that
+                # fits THIS machine; floor is the 0.8B ("runs on anything").
+                default_model = self._select_model_for_compute()
                 model_path = self.models_dir / default_model.file_name
 
                 if model_path.exists() and not force_reinstall:
