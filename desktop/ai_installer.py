@@ -284,15 +284,14 @@ class AIInstaller:
             else:
                 self._report_progress("Downloading llama.cpp binary...", 15)
 
-                def download_progress(downloaded, total):
-                    if total > 0:
-                        pct = 15 + int((downloaded / total) * 25)
-                        self._report_progress(
-                            f"Downloading llama.cpp: {downloaded/1024/1024:.1f}MB / {total/1024/1024:.1f}MB",
-                            pct
-                        )
-
-                success = installer.download_and_install(download_progress)
+                # install_llama_cpp takes a STATUS-MESSAGE callback
+                # (Callable[[str], None]), NOT (downloaded, total).  The old
+                # `installer.download_and_install(...)` referenced a method that
+                # does NOT exist on LlamaInstaller, so the LLM binary install
+                # ALWAYS failed ("no attribute 'download_and_install'") — which
+                # is why auto-setup never produced a llama-server / model.
+                success = installer.install_llama_cpp(
+                    lambda m: self._report_progress(str(m), 30))
                 if not success:
                     return False, "Failed to install llama.cpp binary"
 
@@ -314,32 +313,21 @@ class AIInstaller:
                 else:
                     self._report_progress(f"Downloading model: {default_model.display_name}...", 50)
 
-                    def model_progress(downloaded, total):
-                        if total > 0:
-                            pct = 50 + int((downloaded / total) * 30)
-                            self._report_progress(
-                                f"Downloading model: {downloaded/1024/1024:.1f}MB / {total/1024/1024:.1f}MB",
-                                pct
-                            )
+                    def model_progress(dl_mb, total_mb, status=""):
+                        # download_model reports MB (not bytes) + a status string
+                        # (Callable[[int, int, str]]).  The old 2-arg callback +
+                        # (repo_id, file_name, cb) call had the wrong signature.
+                        pct = 50 + (int(dl_mb / total_mb * 30) if total_mb else 0)
+                        self._report_progress(
+                            f"Downloading {default_model.display_name}: "
+                            f"{dl_mb}MB / {total_mb}MB", pct)
 
-                    success = installer.download_model(
-                        default_model.repo_id,
-                        default_model.file_name,
-                        model_progress
-                    )
+                    # download_model takes (preset, callback) and fetches the
+                    # vision mmproj for the preset ITSELF — no separate call.
+                    success = installer.download_model(default_model, model_progress)
 
                     if not success:
                         return False, f"Failed to download model: {default_model.display_name}"
-
-                    # Download vision projector if needed
-                    if default_model.has_vision and default_model.mmproj_file:
-                        self._report_progress("Downloading vision projector...", 82)
-                        success = installer.download_model(
-                            default_model.repo_id,
-                            default_model.mmproj_file
-                        )
-                        if not success:
-                            logger.warning("Vision projector download failed (vision may not work)")
 
                 # Qwen3.5-0.8B caption / draft model — dedicated llama-server
                 # on port 8081 used by VisionService (live frame captioning,
@@ -348,23 +336,22 @@ class AIInstaller:
                 # mobilevlm / clip via lightweight_backend; draft-first chat
                 # just uses the main 4B standalone.
                 try:
-                    _qwen08b_file = 'Qwen3.5-0.8B-UD-Q4_K_XL.gguf'
-                    _qwen08b_mmproj = 'mmproj-Qwen3.5-0.8B-F16.gguf'
-                    _qwen08b_repo = 'unsloth/Qwen3.5-0.8B-GGUF'
-                    _qwen08b_path = self.models_dir / _qwen08b_file
-                    if _qwen08b_path.exists() and not force_reinstall:
-                        self._report_progress(
-                            "Qwen3.5-0.8B (vision + draft) already present", 83)
-                    else:
-                        self._report_progress(
-                            "Downloading Qwen3.5-0.8B (vision + draft, ~750MB)...", 83)
-                        ok = installer.download_model(_qwen08b_repo, _qwen08b_file)
-                        if ok:
-                            installer.download_model(_qwen08b_repo, _qwen08b_mmproj)
+                    from llama_installer import MODEL_PRESETS as _MP
+                    _p08 = next((p for p in _MP if "0.8B" in p.display_name), None)
+                    # Skip if the 0.8B IS the main model just downloaded above.
+                    if _p08 and _p08.display_name != default_model.display_name:
+                        _qwen08b_path = self.models_dir / _p08.file_name
+                        if _qwen08b_path.exists() and not force_reinstall:
+                            self._report_progress(
+                                "Qwen3.5-0.8B (vision + draft) already present", 83)
                         else:
-                            logger.warning(
-                                "Qwen3.5-0.8B download failed — vision will fall "
-                                "back to MiniCPM; draft-first chat will use 4B only")
+                            self._report_progress(
+                                "Downloading Qwen3.5-0.8B (vision + draft, ~750MB)...", 83)
+                            # download_model(preset) — fetches weights + mmproj.
+                            if not installer.download_model(_p08):
+                                logger.warning(
+                                    "Qwen3.5-0.8B download failed — vision will fall "
+                                    "back to MiniCPM; draft-first chat uses the main model")
                 except Exception as _qe:
                     logger.warning(f"Qwen3.5-0.8B step non-fatal error: {_qe}")
 
