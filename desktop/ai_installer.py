@@ -35,6 +35,86 @@ def get_platform_name() -> str:
     return platform.system()
 
 
+# The llama.cpp CUDA prebuilt binaries are compiled with CUDA 12, which needs an
+# NVIDIA driver >= 527.41 on Windows / >= 525.60 on Linux.  An older driver (e.g.
+# the 940MX's 2018 417.35 = CUDA 10) CANNOT load a CUDA-12 build — the GPU is
+# real, the DRIVER is the blocker.  We detect this so we can (a) keep inference on
+# CPU and (b) GUIDE the user to update their driver, instead of silently ignoring
+# a usable GPU or crashing trying to load CUDA on an ancient driver.
+_CUDA12_MIN_DRIVER_WIN = 527.41
+_NVIDIA_DRIVER_URL = "https://www.nvidia.com/Download/index.aspx"
+
+
+def _win_nvidia_driver_number(driver_version):
+    """Decode a Win32 NVIDIA driver string ('25.21.14.1735') to the real driver
+    number (417.35) — the last 5 digits are 'XXXYY' -> XXX.YY.  None if unparseable."""
+    import re
+    digits = re.sub(r"\D", "", driver_version or "")
+    if len(digits) < 5:
+        return None
+    last5 = digits[-5:]
+    try:
+        return float(f"{last5[:3]}.{last5[3:]}")
+    except ValueError:
+        return None
+
+
+def _gpu_driver_guidance(gpu_name, driver_desc, cuda_desc):
+    return (f"{gpu_name or 'Your NVIDIA GPU'} is detected, but its driver "
+            f"({driver_desc}) supports only {cuda_desc} — too old for GPU "
+            f"acceleration (a CUDA 12 driver is required). Running on CPU for now. "
+            f"Update your NVIDIA driver to enable GPU acceleration: {_NVIDIA_DRIVER_URL}")
+
+
+def _nvidia_cuda_readiness(gpu_name):
+    """Is the installed NVIDIA driver new enough to LOAD a CUDA-12 llama.cpp build?
+
+    Returns (ok: bool, driver_str: str|None, guidance: str|None).  Prefers
+    nvidia-smi (Linux/HART OS + any box that has it, which reports the max CUDA
+    directly); falls back to decoding the Windows WMI driver version.  When it
+    genuinely cannot tell, returns (False, None, None) — conservative (stay on
+    CPU) but WITHOUT nagging the user about an unknown.
+    """
+    import subprocess
+    # nvidia-smi: authoritative "CUDA Version: X.Y" (the max the driver supports).
+    try:
+        cf = getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0
+        out = subprocess.run(["nvidia-smi"], capture_output=True, text=True,
+                             timeout=6, creationflags=cf)
+        if out.returncode == 0 and out.stdout:
+            import re
+            mc = re.search(r"CUDA Version:\s*([0-9]+)\.([0-9]+)", out.stdout)
+            md = re.search(r"Driver Version:\s*([0-9.]+)", out.stdout)
+            drv = md.group(1) if md else None
+            if mc:
+                ok = int(mc.group(1)) >= 12
+                g = None if ok else _gpu_driver_guidance(
+                    gpu_name, drv or "installed", f"CUDA {mc.group(1)}.{mc.group(2)}")
+                return ok, drv, g
+    except Exception:
+        pass
+    # Windows fallback: decode the WMI driver version → driver number → CUDA era.
+    if IS_WINDOWS:
+        try:
+            cf = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            ps = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance Win32_VideoController | "
+                 "Where-Object {$_.Name -match 'NVIDIA'} | "
+                 "Select-Object -First 1).DriverVersion"],
+                capture_output=True, text=True, timeout=8, creationflags=cf)
+            drvnum = _win_nvidia_driver_number((ps.stdout or "").strip())
+            if drvnum:
+                ok = drvnum >= _CUDA12_MIN_DRIVER_WIN
+                g = None if ok else _gpu_driver_guidance(
+                    gpu_name, f"{drvnum:.2f}",
+                    "CUDA 10/11" if drvnum >= 411 else "an old CUDA")
+                return ok, f"{drvnum:.2f}", g
+        except Exception:
+            pass
+    return False, None, None
+
+
 def detect_gpu() -> dict:
     """
     Detect GPU availability + type for THIS machine.
@@ -151,6 +231,24 @@ def detect_gpu() -> dict:
         result["type"] = backend
         result["name"] = result["name"] or "GPU"
 
+    # ── Driver adequacy + user guidance (detect-and-guide, not silent-upgrade) ──
+    # A real NVIDIA GPU on a too-old driver can't load a CUDA-12 llama.cpp build,
+    # so we flag it: inference stays on CPU and `gpu_guidance` tells the user how
+    # to unlock the GPU (update the driver).  metal / vulkan / no-GPU never hit
+    # the CUDA-driver gate, so they default to ok.
+    result["driver_cuda_ok"] = True
+    result["driver_version"] = None
+    result["gpu_guidance"] = None
+    if result["available"] and result["type"] == "cuda":
+        ok, drv, guidance = _nvidia_cuda_readiness(result["name"])
+        result["driver_cuda_ok"] = ok
+        result["driver_version"] = drv
+        result["gpu_guidance"] = guidance
+        if not ok:
+            result["inference"] = "cpu"   # GPU real, driver too old → CPU
+            if guidance:
+                logger.info("GPU present but driver too old for CUDA — %s", guidance)
+
     if result["type"] == "vulkan" and not result["name"]:
         result["name"] = "AMD/Intel GPU (Vulkan)"
     return result
@@ -207,10 +305,12 @@ class AIInstaller:
         except Exception:
             ram_gb, cores = 8.0, 2
         vram = float(self.gpu_info.get("vram_gb", 0) or 0)
-        # Only treat the GPU as usable for INFERENCE at >=4GB: the 256K-context
-        # VL models need real headroom, and a tiny/old card (e.g. 940MX 2GB,
-        # compute 5.0) is unreliable for llama.cpp CUDA — CPU is steadier there.
-        has_gpu = bool(self.gpu_info.get("available")) and vram >= 4.0
+        driver_ok = self.gpu_info.get("driver_cuda_ok", True)
+        # Treat the GPU as usable for INFERENCE only when it has >=4GB VRAM AND a
+        # CUDA-12-capable driver.  A too-old driver (e.g. the 940MX's 2018 417.35)
+        # can't load a CUDA build at all, so inference stays on CPU regardless of
+        # VRAM (detect_gpu already surfaced the "update your driver" guidance).
+        has_gpu = bool(self.gpu_info.get("available")) and vram >= 4.0 and driver_ok
 
         by_size = sorted(MODEL_PRESETS, key=lambda p: p.size_mb)  # 0.8B -> 35B
 
@@ -237,9 +337,14 @@ class AIInstaller:
                 chosen = _find("2B VL") or _find("2B") or by_size[0]
             else:
                 chosen = _find("4B") or by_size[-1]
-            why = (f"CPU ({cores} cores, {ram_gb:.0f}GB RAM)"
-                   + (f"; GPU {vram:.1f}GB present but <4GB, inference stays on CPU"
-                      if vram else ""))
+            if vram and not driver_ok:
+                gpu_note = (f"; GPU {vram:.1f}GB present but its driver is too old "
+                            f"for CUDA — update the driver to use it")
+            elif vram:
+                gpu_note = f"; GPU {vram:.1f}GB present but <4GB, inference stays on CPU"
+            else:
+                gpu_note = ""
+            why = f"CPU ({cores} cores, {ram_gb:.0f}GB RAM){gpu_note}"
 
         logger.info("Selected LLM preset '%s' (%.0fMB) for compute: %s",
                     chosen.display_name, chosen.size_mb, why)
@@ -505,9 +610,17 @@ class AIInstaller:
         self._report_progress(f"Starting AI components installation on {get_platform_name()}", 0)
         self._report_progress(f"GPU: {self.gpu_info['name'] or 'Not detected'}", 2)
 
+        # Detect-and-guide: if a real GPU is present but its driver is too old for
+        # a CUDA build, surface the "update your driver" guidance to the user (we
+        # run on CPU meanwhile — never a silent driver replacement).
+        _gpu_guidance = self.gpu_info.get("gpu_guidance")
+        if _gpu_guidance:
+            self._report_progress(_gpu_guidance, 3)
+
         results = {
             "platform": get_platform_name(),
             "gpu": self.gpu_info,
+            "gpu_guidance": _gpu_guidance,
             "components": {},
             "external_llm": None
         }
