@@ -115,6 +115,66 @@ def _nvidia_cuda_readiness(gpu_name):
     return False, None, None
 
 
+def _win_gpu_vram_gb_from_registry() -> float:
+    """Best-effort TRUE VRAM (GB) for the largest display adapter via the
+    Windows registry HardwareInformation.qwMemorySize — a 64-bit value that,
+    unlike WMI Win32_VideoController.AdapterRAM, does NOT wrap at 4 GB.
+
+    Returns the largest adapter memory found, or 0.0 when unavailable.  Pure
+    read, never raises.  Used only as a FLOOR by the WMI fallback below when
+    AdapterRAM under-reports (nvidia-smi absent + >=4 GB card = M2 bug).
+    """
+    if not IS_WINDOWS:
+        return 0.0
+    try:
+        import winreg
+    except Exception:
+        return 0.0
+    best_bytes = 0
+    roots = (
+        r"SYSTEM\CurrentControlSet\Control\Video",
+        r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}",
+    )
+    for root in roots:
+        try:
+            base = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, root)
+        except OSError:
+            continue
+        try:
+            i = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(base, i)
+                except OSError:
+                    break
+                i += 1
+                for leaf in (sub + r"\0000", sub):
+                    try:
+                        k = winreg.OpenKey(base, leaf)
+                    except OSError:
+                        continue
+                    try:
+                        for val_name in ("HardwareInformation.qwMemorySize",
+                                         "HardwareInformation.MemorySize"):
+                            try:
+                                v, _t = winreg.QueryValueEx(k, val_name)
+                            except OSError:
+                                continue
+                            if isinstance(v, bytes):
+                                v = int.from_bytes(v, "little") if v else 0
+                            try:
+                                v = int(v)
+                            except (TypeError, ValueError):
+                                v = 0
+                            if v > best_bytes:
+                                best_bytes = v
+                    finally:
+                        k.Close()
+        finally:
+            base.Close()
+    return round(best_bytes / (1024 ** 3), 1) if best_bytes else 0.0
+
+
 def detect_gpu() -> dict:
     """
     Detect GPU availability + type for THIS machine.
@@ -217,7 +277,15 @@ def detect_gpu() -> dict:
                         result["type"] = "cuda" if is_nv else "vulkan"
                     result["available"] = True
                     ram = best.get("AdapterRAM") or 0
-                    wmi_vram = round(ram / (1024 ** 3), 1) if ram else 0
+                    wmi_vram = round(ram / (1024 ** 3), 1) if ram and ram > 0 else 0
+                    # AdapterRAM is a 32-bit field that wraps (or reports a
+                    # negative) for >=4 GB cards, zeroing a real discrete GPU.
+                    # Fall back to the 64-bit registry qwMemorySize so a
+                    # >=4 GB card isn't forced to CPU by a wrapped reading (M2).
+                    if wmi_vram < 4.0:
+                        reg_vram = _win_gpu_vram_gb_from_registry()
+                        if reg_vram > wmi_vram:
+                            wmi_vram = reg_vram
                     if wmi_vram and wmi_vram > result["vram_gb"]:
                         result["vram_gb"] = wmi_vram
                     logger.info("detect_gpu WMI fallback: %s, vram=%.1fGB (nvidia-smi absent)",

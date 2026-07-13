@@ -124,6 +124,30 @@ def _scan_via_canonical_resolver() -> dict | None:
     }
 
 
+def _openai_models_or_none(response) -> list | None:
+    """Return the model list from a genuine OpenAI ``/v1/models`` 200
+    response, else ``None``.
+
+    A real llama.cpp / LM Studio / vLLM server answers HTTP 200 with a
+    JSON body ``{"data": [ ...models... ]}`` (a non-empty list).  An
+    HTML/SPA catch-all — the app's OWN Flask (5000/6777) or a dead
+    :8080 — ALSO returns 200 for ``/v1/models``, so status alone is not
+    enough.  Single validator shared by both ``scan_existing_llm_endpoints``
+    and ``scan_openai_compatible_ports`` (Gate 4 / DRY: one gate, no
+    parallel "is this a real LLM 200?" implementations).
+    """
+    if response.status_code != 200:
+        return None
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(models, list) or not models:
+        return None
+    return models
+
+
 def scan_existing_llm_endpoints() -> dict | None:
     """
     Scan for existing LLM endpoints on the system.
@@ -156,7 +180,14 @@ def scan_existing_llm_endpoints() -> dict | None:
             logger.debug(f"Checking {endpoint['name']} at {health_url}")
 
             response = requests.get(health_url, timeout=2)
-            if response.status_code == 200:
+            # OpenAI-type entries probe /v1/models, which an HTML/SPA catch-all
+            # (the app's own Flask, or a dead :8080) also answers 200 — require a
+            # real JSON model list, the SAME gate as scan_openai_compatible_ports.
+            if endpoint["type"] == "openai":
+                valid = _openai_models_or_none(response) is not None
+            else:
+                valid = response.status_code == 200
+            if valid:
                 logger.info(f"Found existing LLM endpoint: {endpoint['name']} at {endpoint['base_url']}")
                 return {
                     "name": endpoint["name"],
@@ -198,17 +229,11 @@ def scan_openai_compatible_ports(ports: list[int] = None) -> dict | None:
         try:
             url = f"http://localhost:{port}/v1/models"
             response = requests.get(url, timeout=1)
-            if response.status_code != 200:
-                continue
             # Require a REAL OpenAI /v1/models JSON (a non-empty list of models),
             # not just any 200 — an HTML/SPA page also returns 200 and must NOT be
-            # mistaken for an LLM server.
-            try:
-                payload = response.json()
-            except Exception:
-                continue
-            models = payload.get("data") if isinstance(payload, dict) else None
-            if not isinstance(models, list) or not models:
+            # mistaken for an LLM server.  Shared gate: _openai_models_or_none.
+            models = _openai_models_or_none(response)
+            if not models:
                 continue
             logger.info(f"Found OpenAI-compatible LLM endpoint on port {port} "
                         f"({len(models)} model(s))")
@@ -668,6 +693,31 @@ class LlamaConfig:
         diag['mmproj_needed'] = best_preset.has_vision and bool(best_preset.mmproj_file)
         if diag['mmproj_needed']:
             diag['mmproj_available'] = self.installer.get_mmproj_path(best_preset) is not None
+
+        # ── Compute-fit ↔ downloaded coherence ─────────────────────
+        # The compute-best model may not be on disk (install-time
+        # _select_model_for_compute fitted this box to the 0.8B, so only the
+        # 0.8B was downloaded).  Advertising / booting the bigger "best" would
+        # (a) show the wrong model on the setup card and (b) let auto_load try
+        # to start a model that isn't downloaded while a fitting one is.  Prefer
+        # the largest DOWNLOADED model that fits — the SAME helper auto_setup
+        # uses (live disk check), no parallel selection.
+        if not diag['best_model_downloaded']:
+            alt_idx = self._find_best_downloaded_model(diag['compute_budget_mb'])
+            if alt_idx is not None and alt_idx != best_idx:
+                best_idx = alt_idx
+                best_preset = MODEL_PRESETS[best_idx]
+                diag['best_model_index'] = best_idx
+                diag['best_model_name'] = best_preset.display_name
+                diag['best_model_size_mb'] = best_preset.size_mb
+                diag['best_model_downloaded'] = True
+                diag['best_model_fits_compute'] = (
+                    best_preset.size_mb <= diag['compute_budget_mb'])
+                diag['mmproj_needed'] = (
+                    best_preset.has_vision and bool(best_preset.mmproj_file))
+                diag['mmproj_available'] = (
+                    self.installer.get_mmproj_path(best_preset) is not None
+                    if diag['mmproj_needed'] else False)
 
         # ── Build-version check (existing binary, build number floor) ──
         # If a binary is already installed and no CPU/CUDA mismatch was
