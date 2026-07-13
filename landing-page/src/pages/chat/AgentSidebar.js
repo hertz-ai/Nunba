@@ -179,7 +179,7 @@ const AgentSidebar = ({
                       )}
                     </div>
                     <div className="flex flex-col min-w-0 flex-1">
-                      <span className={`truncate sm:text-base md:text-[1.2rem] ${_unread > 0 ? 'font-semibold' : ''}`}>
+                      <span title={chat?.name} className={`truncate text-sm sm:text-sm md:text-base 2xl:text-[1.2rem] ${_unread > 0 ? 'font-semibold' : ''}`}>
                         {chat?.name}
                       </span>
                       {_lastTask && (
