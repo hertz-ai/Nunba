@@ -100,7 +100,7 @@ const AgentSidebar = ({
       <div
         onMouseEnter={onMouseEnterSidebar}
         onMouseLeave={onMouseLeaveSidebar}
-        className={`sticky top-0 self-start group w-[20%] sm:w-[30%] md:w-[15%] lg:w-[20%] text-gray-300 p-4 flex flex-col h-screen overflow-hidden ${
+        className={`sticky top-0 self-start group w-[20%] sm:w-[30%] md:w-[15%] lg:w-[20%] min-w-[16rem] text-gray-300 p-4 flex flex-col h-screen overflow-hidden ${
           showContent ? 'bg-gray-900' : ''
         }`}
       >
