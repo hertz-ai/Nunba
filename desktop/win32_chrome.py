@@ -483,8 +483,7 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int,
             if msg == WM_NCLBUTTONDOWN and wparam == HTMAXBUTTON:
                 return 0  # swallow the press; act on release
             if msg == WM_NCLBUTTONUP and wparam == HTMAXBUTTON:
-                user32.ShowWindow(
-                    hwnd, SW_RESTORE if _is_maximized(hwnd) else SW_MAXIMIZE)
+                toggle_maximize(hwnd)  # native work-area clamp (single source)
                 return 0
 
             if msg == WM_GETMINMAXINFO:
@@ -605,6 +604,34 @@ def install_custom_chrome(hwnd: int, titlebar_height: int = 32,
 
 def is_installed(hwnd: int) -> bool:
     return hwnd in _INSTALLED
+
+
+def toggle_maximize(hwnd: int) -> bool:
+    """Toggle native maximize/restore for `hwnd`; return the NEW maximized
+    state (True = now maximized).
+
+    Uses raw ShowWindow(SW_MAXIMIZE / SW_RESTORE) — NOT pywebview's WinForms
+    maximize() — so the WM_GETMINMAXINFO handler installed by
+    install_custom_chrome clamps the maximized rect to the monitor WORK AREA:
+    the window sits ABOVE the taskbar, like a normal framed app.  A
+    FormBorderStyle.None form maximized via WinForms WindowState instead covers
+    the FULL screen (hiding the taskbar) and re-applies its own frame style,
+    fighting the custom chrome.
+
+    Single source of truth for the native maximize toggle: both the caption
+    maximize-button (WM_NCLBUTTONUP / HTMAXBUTTON in the wndproc) and the JS
+    WindowApi.window_toggle_maximize call here.  Must run on the HWND's owning
+    (pywebview GUI) thread; pywebview marshals js_api calls there.
+    """
+    if sys.platform != 'win32' or not hwnd:
+        return False
+    now_max = _is_maximized(hwnd)
+    try:
+        user32.ShowWindow(hwnd, SW_RESTORE if now_max else SW_MAXIMIZE)
+    except Exception:
+        logger.exception('toggle_maximize failed for hwnd=%s', hwnd)
+        return now_max
+    return not now_max
 
 
 def begin_window_drag(hwnd: int) -> bool:

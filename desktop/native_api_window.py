@@ -59,6 +59,33 @@ class WindowApi:
         if w is None:
             return False
         try:
+            # Windows: drive maximize/restore through the SAME native ShowWindow
+            # path the caption max-button uses (win32_chrome.toggle_maximize) so
+            # the maximized rect is clamped to the monitor WORK AREA by the
+            # installed WM_GETMINMAXINFO handler and sits ABOVE the taskbar.
+            # pywebview's WinForms maximize() re-maximizes the
+            # FormBorderStyle.None form to the FULL screen (covering the taskbar)
+            # and fights the custom chrome, so it must NOT be used here.  Native
+            # ShowWindow also sets IsZoomed, which app.py's remount-restore guard
+            # relies on to preserve the maximized state across React remounts.
+            if sys.platform.startswith('win'):
+                hwnd = self._win_hwnd(w)
+                if hwnd:
+                    try:
+                        from desktop.win32_chrome import toggle_maximize
+                        new_state = toggle_maximize(hwnd)
+                    except Exception as exc:
+                        logger.debug('win toggle_maximize failed: %s', exc)
+                        new_state = None
+                    if new_state is not None:
+                        try:
+                            w._maximized = new_state
+                        except Exception:
+                            pass
+                        return True
+                    # else: HWND helper unavailable — fall through to pywebview
+
+            # Linux/macOS (and Windows only if the HWND couldn't be resolved):
             # pywebview exposes `maximize()` + `restore()`; track which by
             # checking the current window-state hint when available.
             state = getattr(w, '_maximized', False)
