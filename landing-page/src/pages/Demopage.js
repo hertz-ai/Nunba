@@ -123,7 +123,7 @@ const isLocalAgent = (agent) => {
 
 /* TypeWriterForSubtitle and ThinkingProcessContainer extracted to ./chat/ */
 
-const ChatInterface = ({agentData, embeddedMode, onReady}) => {
+const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) => {
   const navigate = useNavigate();
   const location = useLocation();
   const {agentName} = useParams();
@@ -4799,11 +4799,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                            portrait shows for the default agent too, not just the
                            orb. (Fix 2026-06-10: image_url-only check left every
                            built-in agent on the bare orb.) */
-                        <div className={`${
-                          window.innerWidth <= 768
-                            ? 'absolute top-0 inset-x-0 h-full'
-                            : 'absolute inset-0'
-                        } flex justify-center items-center`}>
+                        <div className="absolute top-0 inset-x-0 h-full flex justify-center items-center">
                           {(currentAgent?.image_url || currentAgent?.avatar) ? (
                             <img
                               src={currentAgent.image_url || currentAgent.avatar}
@@ -4833,11 +4829,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                               style={{display: 'none'}}
                             />
                           )}
-                          <div className={`${
-                            window.innerWidth <= 768
-                              ? 'absolute top-0 inset-x-0 h-full'
-                              : 'absolute inset-0'
-                          } flex justify-center items-center`}>
+                          <div className="absolute top-0 inset-x-0 h-full flex justify-center items-center">
                             <VoiceVisualizer
                               audioRef={audioRef}
                               isActive={isPlayingResponse || tts.isSpeaking}
@@ -5410,7 +5402,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       </div>;
         return (
           <>
-            {titlebarSlot ? createPortal(toolbar, titlebarSlot) : toolbar}
+            {titlebarSlot
+              ? (chatActive ? createPortal(toolbar, titlebarSlot) : null)
+              : toolbar}
             {/* Frameless desktop: the Audio/Video/Text selector sits at the
                 top-right of the page BODY, just under the window min/max/close
                 buttons.  The titlebar reserves the top 32px via html padding, so

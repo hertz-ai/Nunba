@@ -3618,6 +3618,29 @@ def health_alias():
     return backend_health()
 
 
+# B3: GPU driver-adequacy guidance for the chat GPU badge.  detect_gpu()
+# (desktop.ai_installer) flags a real NVIDIA GPU whose driver is too old for a
+# CUDA-12 llama.cpp build: inference silently stays on CPU.  Surface WHY next to
+# the "CPU" badge so the user knows a driver update would accelerate it, instead
+# of blaming the product.  Cached because the driver identity is static per
+# process and detect_gpu() shells out (nvidia-smi + WMI) — it must not run on
+# every 60s /backend/health poll.
+_GPU_GUIDANCE_UNSET = object()
+_gpu_guidance_cached = _GPU_GUIDANCE_UNSET
+
+
+def _gpu_driver_guidance():
+    global _gpu_guidance_cached
+    if _gpu_guidance_cached is _GPU_GUIDANCE_UNSET:
+        try:
+            from desktop.ai_installer import detect_gpu
+            _gpu_guidance_cached = detect_gpu().get('gpu_guidance')
+        except Exception as e:
+            logging.debug(f"/backend/health: GPU guidance unavailable: {e}")
+            _gpu_guidance_cached = None
+    return _gpu_guidance_cached
+
+
 @app.route('/backend/health', methods=["GET"])
 def backend_health():
     """Return backend + GPU tier diagnostics for the chat UI badge.
@@ -3674,6 +3697,9 @@ def backend_health():
         'vram_total_gb': round(vram_total, 2),
         'vram_free_gb': round(vram_free, 2),
         'speculation_enabled': speculation_enabled,
+        # B3: driver-too-old guidance so the "CPU" badge can explain a GPU that
+        # is present but unusable (None when the GPU is fine / absent).
+        'gpu_guidance': _gpu_driver_guidance(),
     }), 200
 
 

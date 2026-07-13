@@ -160,7 +160,7 @@ const ChatInputBar = ({
         </div>
       )}
 
-      <div className="flex items-center w-[95%] relative ml-1">
+      <div className="flex flex-wrap sm:flex-nowrap items-center gap-y-1.5 w-[95%] relative ml-1">
         {/* /h Agent mention dropdown */}
         {showAgentMentionList && (
           <div className="absolute bottom-full left-0 w-64 max-h-48 overflow-y-auto bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 mb-1">
