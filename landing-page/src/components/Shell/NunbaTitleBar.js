@@ -469,11 +469,10 @@ export default function NunbaTitleBar({ children }) {
         zIndex: 10000,
         display: 'flex',
         alignItems: 'center',
-        // Solid canon black — gradient was reading as "not fully black" in
-        // the install; user asked for full black background.  #0F0E17 is the
-        // Hevolve canon palette anchor.  No bottom border so the strip blends
-        // seamlessly into the dark app body below.
-        background: '#0F0E17',
+        // Full black, always, everywhere (steward: #0F0E17 "looks like not
+        // black").  Pure #000 so the strip reads as true black and blends
+        // seamlessly into the dark app body below (no bottom border).
+        background: '#000',
         borderBottom: 'none',
         userSelect: 'none',
         WebkitUserSelect: 'none',
