@@ -656,6 +656,48 @@ def maximize(hwnd: int) -> bool:
     return True
 
 
+def snap_to_work_area(hwnd, width_frac=None, edge='right'):
+    """Frame-aware snap: place the window flush inside the CURRENT monitor's
+    WORK AREA (taskbar-excluded) in PHYSICAL pixels via SetWindowPos, so the
+    window ALWAYS reaches the taskbar regardless of pywebview's logical
+    create_window / resize rounding — which lands the default portrait dock
+    ~39px short of the taskbar (bottom at 689 instead of the 728 work-area
+    bottom).
+
+    Height is always the full work-area height.  Horizontal placement:
+      edge='full'          -> spans the whole work-area width
+      edge='right'/'left'  -> a width_frac-wide dock flush to that edge
+    width_frac is a fraction of the work-area WIDTH (DPI-proof — the work area
+    is already physical), e.g. 709/2560 for the portrait right-dock.
+
+    Aero Snap + Win11 Snap Layouts already come from the preserved native frame
+    (philosophy B, cbd6daeb) for USER-driven snaps; this restores the same
+    work-area awareness for the DEFAULT / programmatic (auto-layout) placement,
+    which the native frame does not cover.  Returns True on dispatch.
+    """
+    if sys.platform != 'win32' or not hwnd:
+        return False
+    wa = _work_area(hwnd)
+    if wa is None:
+        return False
+    wa_w = wa.right - wa.left
+    wa_h = wa.bottom - wa.top
+    if edge == 'full' or not width_frac:
+        x, w = wa.left, wa_w
+    else:
+        w = max(200, min(wa_w, round(wa_w * float(width_frac))))
+        x = (wa.right - w) if edge == 'right' else wa.left
+    try:
+        user32.SetWindowPos(hwnd, 0, x, wa.top, w, wa_h,
+                            SWP_NOZORDER | SWP_NOACTIVATE)
+    except Exception:
+        logger.exception('snap_to_work_area failed for hwnd=%s', hwnd)
+        return False
+    logger.info('snap_to_work_area: hwnd=%s -> %sx%s at (%s,%s) edge=%s',
+                hwnd, w, wa_h, x, wa.top, edge)
+    return True
+
+
 def begin_window_drag(hwnd: int) -> bool:
     """Start the native window-move loop for `hwnd` from a JS-initiated
     mouse-down — used when the drag begins over an HTCLIENT region (the

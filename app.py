@@ -3755,12 +3755,15 @@ def calculate_sidebar_position(side='right', sidebar_width=480):
 
 
 def apply_window_positioning(window_instance, position_info):
-    """Correct window position after first page load.
+    """Correct window position + size after first page load.
 
-    pywebview's create_window() already sets the correct size using logical
-    (DPI-normalised) values, so we only call move() here — NOT resize().
-    resize() interprets values as physical pixels on the EdgeChromium backend,
-    which would shrink the window by the DPI scale factor.
+    pywebview's create_window() does NOT reliably land the requested size on the
+    frameless EdgeChromium window — the default portrait dock ends ~39px short
+    of the taskbar (bottom 689 vs the 728 work-area bottom).  So on Windows we
+    frame-aware SNAP the window to the monitor WORK AREA in PHYSICAL pixels
+    (win32_chrome.snap_to_work_area -> SetWindowPos), which is DPI-proof and
+    always reaches the taskbar.  Non-Windows / sidebar / explicit --x/--y keep
+    the reposition-only move() (create_window size is trusted there).
     """
     _applied = [False]
 
@@ -3798,8 +3801,28 @@ def apply_window_positioning(window_instance, position_info):
             logger.info(f"on_loaded move: screen={screen_w}x{screen_h}, "
                         f"pos=({x},{y}), mode={mode}")
 
-            # Only reposition — do NOT resize (create_window already set size)
-            window_instance.move(x, y)
+            # Frame-aware snap to the monitor WORK AREA (physical px) so the
+            # window actually reaches the taskbar.  pywebview's logical
+            # create_window lands the default portrait dock ~39px short (bottom
+            # 689 vs the 728 work-area bottom).  The preserved native frame
+            # (philosophy B) gives Aero Snap / Snap Layouts for USER-driven
+            # snaps, but NOT this programmatic default placement — so we snap it
+            # ourselves.  Only the default right-dock is snapped; sidebar /
+            # explicit --x/--y keep the reposition-only path.
+            snapped = False
+            if (sys.platform.startswith('win') and mode != 'sidebar'
+                    and position_info.get('custom_x') is None):
+                hwnd = _resolve_hwnd(window_instance)
+                if hwnd:
+                    try:
+                        from desktop.win32_chrome import snap_to_work_area
+                        snapped = snap_to_work_area(
+                            hwnd, width_frac=709 / 2560, edge='right')
+                    except Exception as _se:
+                        logger.debug("snap_to_work_area failed, using move(): %s", _se)
+            if not snapped:
+                # Non-Windows / no-HWND / sidebar / custom: reposition only.
+                window_instance.move(x, y)
 
             logger.info("Window positioning applied successfully")
         except Exception as e:
