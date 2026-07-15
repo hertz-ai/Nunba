@@ -4931,12 +4931,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               )}
             </div>
 
+            {/* Chat side — the conversation column OWNS the scrolling message
+                list AND the pinned composer, so the composer is width-bound to
+                the chat column and can never leak under the media pane. flex-1
+                pairs with the fixed-width media pane for a fluid, complementary
+                split in BOTH orientations. The chat width is no longer gated on
+                videoUrl/window.innerWidth — that gating was the source of the
+                audio-mode overlap (chat went md:w-full over the 30% pane) and the
+                full-width composer that leaked under the right pane. */}
+            <div className="flex-1 min-w-0 min-h-0 flex flex-col">
             <div
-              className={`flex-1 w-full min-h-0 ${
-                !isTextMode && videoUrl && !uploadedImage && !uploadedPdf && window.innerWidth > 768
-                  ? 'md:w-[60%]'
-                  : 'md:w-full'
-              } overflow-x-clip overflow-y-auto pt-2 md:pt-0`}
+              className="flex-1 w-full min-h-0 overflow-x-clip overflow-y-auto pt-2 md:pt-0"
             >
               {/* Chat header bar — GPU tier badge surfaces the speculation-capability
                   boundary (see components/chat/GpuTierBadge.jsx for the product-owner +
@@ -5194,7 +5199,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 />
               )}
             </div>
-          </div>
 
           {/* In-progress / capability cards sit at the BOTTOM of the chat
               column (above the input bar), consistent with conversations and
@@ -5251,6 +5255,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             showThinkingTraces={showThinkingTraces}
             onToggleShowThinkingTraces={toggleShowThinkingTraces}
           />
+            </div>
+          </div>
         </div>
       </div>
       {!isAuthenticated && (
