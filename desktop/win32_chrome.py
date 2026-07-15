@@ -634,6 +634,28 @@ def toggle_maximize(hwnd: int) -> bool:
     return not now_max
 
 
+def maximize(hwnd: int) -> bool:
+    """Maximize `hwnd` via raw ShowWindow(SW_MAXIMIZE) so the installed
+    WM_GETMINMAXINFO handler clamps the maximized rect to the monitor WORK
+    AREA — the window sits ABOVE the taskbar.  Unlike toggle_maximize this
+    ALWAYS maximizes (never restores), for the tray / protocol / fullscreen
+    "maximize" actions that must not toggle.
+
+    Same reason as toggle_maximize: pywebview's WinForms maximize() re-maximizes
+    the FormBorderStyle.None form to the FULL screen (covering the taskbar) and
+    fights the custom chrome, so those call sites must route here instead.
+    Returns True if dispatched.
+    """
+    if sys.platform != 'win32' or not hwnd:
+        return False
+    try:
+        user32.ShowWindow(hwnd, SW_MAXIMIZE)
+    except Exception:
+        logger.exception('maximize failed for hwnd=%s', hwnd)
+        return False
+    return True
+
+
 def begin_window_drag(hwnd: int) -> bool:
     """Start the native window-move loop for `hwnd` from a JS-initiated
     mouse-down — used when the drag begins over an HTCLIENT region (the

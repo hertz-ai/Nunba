@@ -6190,10 +6190,59 @@ def get_server_info():
 
     return {"device_id": "Unknown"}
 
+def _resolve_hwnd(window_instance):
+    """Best-effort HWND for a pywebview window on Windows.  Mirrors the resolver
+    the caption max-button path uses (original_window.handle -> handle ->
+    FindWindowW by title), consolidated so the maximize helpers below don't each
+    re-implement it."""
+    if sys.platform != 'win32' or window_instance is None:
+        return 0
+    try:
+        import ctypes as _ct
+        ow = getattr(window_instance, 'original_window', None)
+        if ow is not None and getattr(ow, 'handle', None):
+            return int(ow.handle)
+        if getattr(window_instance, 'handle', None):
+            return int(window_instance.handle)
+        return int(_ct.windll.user32.FindWindowW(None, args.title) or 0)
+    except Exception as _e:
+        logger.debug("_resolve_hwnd failed: %s", _e)
+        return 0
+
+def _clamped_maximize(window_instance):
+    """Maximize respecting the taskbar WORK AREA.
+
+    On Windows, drive through win32_chrome's clamped SW_MAXIMIZE — the installed
+    WM_GETMINMAXINFO handler keeps the window ABOVE the taskbar, the SAME path
+    the caption max-button (WindowApi.window_toggle_maximize) uses.  pywebview's
+    WinForms maximize() re-maximizes the frameless form to the FULL screen and
+    covers the taskbar, so it is only the non-Windows / no-HWND fallback.  This
+    is the single maximize path for every programmatic maximize (fullscreen
+    toggle, tray menu, nunba://maximize) — no parallel taskbar-covering route."""
+    if window_instance is None:
+        return
+    try:
+        if sys.platform.startswith('win'):
+            hwnd = _resolve_hwnd(window_instance)
+            if hwnd:
+                try:
+                    from desktop.win32_chrome import maximize as _win_max
+                    if _win_max(hwnd):
+                        try:
+                            window_instance._maximized = True
+                        except Exception:
+                            pass
+                        return
+                except Exception as _e:
+                    logger.debug("clamped maximize path failed, falling back: %s", _e)
+        window_instance.maximize()
+    except Exception as _e:
+        logger.error("_clamped_maximize failed: %s", _e)
+
 def toggle_fullscreen(window_instance):
     """Toggle between fullscreen and normal window"""
     try:
-        window_instance.maximize()
+        _clamped_maximize(window_instance)
     except Exception as e:
         logger.error(f"Error maximizing window: {str(e)}")
         logger.error(traceback.format_exc())
@@ -6427,7 +6476,7 @@ def setup_system_tray(window_instance):
                 logger.info("Maximize selected from system tray menu")
                 try:
                     window_instance.show()
-                    window_instance.maximize()
+                    _clamped_maximize(window_instance)
                 except Exception as e:
                     logger.error(f"Error maximizing window: {e}")
             threading.Thread(target=_do_maximize, daemon=True).start()
@@ -8408,7 +8457,7 @@ def handle_protocol_launch():
             args.background = False  # Make sure it's not hidden
             if _window:
                 _window.show()
-                _window.maximize()
+                _clamped_maximize(_window)
         # Handle agent parameter if provided
         agent_name = params.get('agent', [None])[0] if params.get('agent') else None
         if agent_name:
