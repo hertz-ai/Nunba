@@ -919,6 +919,30 @@ def _safe_tk_update_early(root, budget_ms=50):
     except Exception:
         pass
 
+
+def _proportional_splash(screen_w, screen_h, art_w, art_h, width_frac=0.34):
+    """Size a splash/flash window proportional to the SCREEN (resolution + DPI
+    aware) instead of a fixed pixel box.
+
+    The process is DPI-aware (SetProcessDpiAwareness above), so winfo_screen* is
+    PHYSICAL px — a fixed 900px splash therefore looks huge on a 1366x768 panel
+    (66% wide) and tiny on a 4K / high-DPI display (~23%).  This returns a box
+    that is a constant FRACTION of the screen, preserving the artwork aspect
+    (art_w:art_h), centered.  Callers scale their overlaid elements (text
+    offsets, progress bar, fonts) by (w / design_baseline) so the whole splash
+    scales as one unit.  Returns (w, h, x, y).
+    """
+    aspect = (art_h / art_w) if art_w else 0.62
+    w = int(screen_w * width_frac)
+    h = int(w * aspect)
+    max_h = int(screen_h * 0.6)
+    if h > max_h and aspect:
+        h = max_h
+        w = int(h / aspect)
+    x = max(0, (screen_w - w) // 2)
+    y = max(0, (screen_h - h) // 2)
+    return w, h, x, y
+
 _early_splash = None
 _eroot = None
 
@@ -948,15 +972,19 @@ if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--accepta
             from PIL import Image as _ESImg
             from PIL import ImageTk as _ESTk
             _es_img = _ESImg.open(_esp_path)
-            _ESW, _ESH = _es_img.size
-            if _ESW > 900 or _ESH > 560:
-                _es_img = _es_img.resize((900, 560), _ESImg.LANCZOS)
-                _ESW, _ESH = 900, 560
+            _es_ow, _es_oh = _es_img.size
+            # Proportional to the screen (resolution + DPI aware) instead of a
+            # fixed 900x560 box, which looked huge on low-res panels and tiny on
+            # high-DPI displays.  _es_scale (relative to the 900px design the
+            # bar/text below were tuned for) scales those overlays to match.
+            _ESW, _ESH, _esx, _esy = _proportional_splash(
+                _eroot.winfo_screenwidth(), _eroot.winfo_screenheight(),
+                _es_ow, _es_oh)
+            _es_scale = _ESW / 900.0
+            _es_img = _es_img.resize((_ESW, _ESH), _ESImg.LANCZOS)
             _es_top = _estk.Toplevel(_eroot)
             _es_top.overrideredirect(True)
             _es_top.attributes('-topmost', True)
-            _esx = (_es_top.winfo_screenwidth() - _ESW) // 2
-            _esy = (_es_top.winfo_screenheight() - _ESH) // 2
             _es_top.geometry(f"{_ESW}x{_ESH}+{_esx}+{_esy}")
             _es_photo = _ESTk.PhotoImage(_es_img)
             _es_canvas = _estk.Canvas(_es_top, width=_ESW, height=_ESH,
@@ -966,33 +994,37 @@ if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--accepta
             _es_canvas._ref = _es_photo
             _es_status = _estk.StringVar(value='Starting up...')
             _es_status_id = _es_canvas.create_text(
-                _ESW // 2, _ESH - 32, text='Starting up...',
-                font=('Bahnschrift Light', 10), fill='#72757E', anchor='center')
+                _ESW // 2, _ESH - int(32 * _es_scale), text='Starting up...',
+                font=('Bahnschrift Light', max(8, int(10 * _es_scale))),
+                fill='#72757E', anchor='center')
             def _es_on_status(*_a):
                 try:
                     _es_canvas.itemconfig(_es_status_id, text=_es_status.get())
                 except Exception:
                     pass
             _es_status.trace_add('write', _es_on_status)
-            _es_bar_y = _ESH - 14
-            _es_bar_w = 220
+            _es_bh = max(2, int(3 * _es_scale))       # bar thickness
+            _es_ind = max(24, int(40 * _es_scale))    # moving indicator width
+            _es_step = max(2, int(4 * _es_scale))     # animation step
+            _es_bar_y = _ESH - int(14 * _es_scale)
+            _es_bar_w = int(220 * _es_scale)
             _es_bar_x = (_ESW - _es_bar_w) // 2
             _es_canvas.create_rectangle(_es_bar_x, _es_bar_y,
-                                         _es_bar_x + _es_bar_w, _es_bar_y + 3,
+                                         _es_bar_x + _es_bar_w, _es_bar_y + _es_bh,
                                          fill='#1A1929', outline='')
             _es_bar_rect = _es_canvas.create_rectangle(
-                _es_bar_x, _es_bar_y, _es_bar_x + 40, _es_bar_y + 3,
+                _es_bar_x, _es_bar_y, _es_bar_x + _es_ind, _es_bar_y + _es_bh,
                 fill='#6C63FF', outline='')
             _es_anim = {'pos': 0, 'dir': 1}
             def _es_animate():
                 try:
-                    _es_anim['pos'] += _es_anim['dir'] * 4
-                    if _es_anim['pos'] >= _es_bar_w - 40:
+                    _es_anim['pos'] += _es_anim['dir'] * _es_step
+                    if _es_anim['pos'] >= _es_bar_w - _es_ind:
                         _es_anim['dir'] = -1
                     elif _es_anim['pos'] <= 0:
                         _es_anim['dir'] = 1
                     px = _es_bar_x + _es_anim['pos']
-                    _es_canvas.coords(_es_bar_rect, px, _es_bar_y, px + 40, _es_bar_y + 3)
+                    _es_canvas.coords(_es_bar_rect, px, _es_bar_y, px + _es_ind, _es_bar_y + _es_bh)
                     _es_top.after(30, _es_animate)
                 except Exception:
                     pass
