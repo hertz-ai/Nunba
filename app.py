@@ -1030,8 +1030,26 @@ if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--accepta
                     pass
             _es_animate()
             _safe_tk_update_early(_eroot)
-            _eroot.after(300000, lambda: _eroot.destroy())
+            # Fallback auto-destroy cut 5min -> 45s: if the normal
+            # close-on-webview-ready path does not fire, the splash self-clears
+            # fast instead of lingering (orphaned) on the desktop for minutes.
+            _eroot.after(45000, lambda: _eroot.destroy())
             _early_splash = (_eroot, _es_top, _es_canvas, _es_status, _es_photo)
+            # ALWAYS tear the splash down on interpreter exit (clean quit,
+            # window-close, SIGTERM/SIGINT) so it is never left orphaned on
+            # screen. A hard TerminateProcess/-Force kill skips atexit; the 45s
+            # fallback + prompt close-on-ready + the OS reclaiming the window
+            # cover that case.
+            try:
+                import atexit as _es_atexit
+                def _es_destroy_on_exit(_r=_eroot):
+                    try:
+                        _r.destroy()
+                    except Exception:
+                        pass  # already gone at exit — benign
+                _es_atexit.register(_es_destroy_on_exit)
+            except Exception:
+                pass
         else:
             _eroot.destroy()
     except Exception:
@@ -8254,8 +8272,8 @@ window.addEventListener('unhandledrejection', function(e) {
             _splash_update('Hevolve Hive Agent Runtime Ready')
             time.sleep(0.5)
             _close_splash()
-        except Exception:
-            pass
+        except Exception as _cs_e:
+            logger.warning(f"[STARTUP] _close_splash failed (splash may linger): {_cs_e}")
 
         if not start_hidden and _window and sys.platform == 'win32':
             def _bring_to_front():
@@ -8612,11 +8630,15 @@ def _show_splash():
         root.attributes('-topmost', True)
 
         # Splash dimensions
-        W, H = 900, 560
+        # Proportional to the screen (resolution + DPI aware), same as the early
+        # splash: a fixed 900x560 looked huge on low-res and tiny on high-DPI.
+        # _sp_scale (vs the 900px design) scales the overlaid text + bar to match;
+        # run_splash_animation() below already renders relative to W,H.
+        W, H, x, y = _proportional_splash(
+            root.winfo_screenwidth(), root.winfo_screenheight(), 900, 560)
+        _sp_scale = W / 900.0
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
-        x = (sw - W) // 2
-        y = (sh - H) // 2
         root.geometry(f"{W}x{H}+{x}+{y}")
         root.configure(bg='#0A0914')
 
@@ -8660,8 +8682,9 @@ def _show_splash():
         # ── Status text — drawn on canvas (NOT Label widget) so it blends ──
         status_var = tk.StringVar(value='Starting up...')
         _status_text_id = canvas.create_text(
-            W // 2, H - 32, text='Starting up...',
-            font=('Bahnschrift Light', 9), fill='#72757E', anchor='center')
+            W // 2, H - int(32 * _sp_scale), text='Starting up...',
+            font=('Bahnschrift Light', max(8, int(9 * _sp_scale))),
+            fill='#72757E', anchor='center')
 
         # Bind StringVar changes to update canvas text
         def _on_status_change(*_args):
@@ -8671,25 +8694,28 @@ def _show_splash():
                 pass
         status_var.trace_add('write', _on_status_change)
 
-        # ── Progress bar (animated) ──
-        bar_y = H - 14
-        bar_w = 220
+        # ── Progress bar (animated) — scaled with the splash ──
+        _sp_bh = max(2, int(3 * _sp_scale))
+        _sp_ind = max(24, int(40 * _sp_scale))
+        _sp_step = max(2, int(4 * _sp_scale))
+        bar_y = H - int(14 * _sp_scale)
+        bar_w = int(220 * _sp_scale)
         bar_x = (W - bar_w) // 2
-        canvas.create_rectangle(bar_x, bar_y, bar_x + bar_w, bar_y + 3,
+        canvas.create_rectangle(bar_x, bar_y, bar_x + bar_w, bar_y + _sp_bh,
                                 fill='#1A1929', outline='')
-        progress_rect = canvas.create_rectangle(bar_x, bar_y, bar_x + 40, bar_y + 3,
+        progress_rect = canvas.create_rectangle(bar_x, bar_y, bar_x + _sp_ind, bar_y + _sp_bh,
                                                 fill='#6C63FF', outline='')
         _anim_state = {'pos': 0, 'dir': 1}
 
         def _animate():
             try:
-                _anim_state['pos'] += _anim_state['dir'] * 4
-                if _anim_state['pos'] >= bar_w - 40:
+                _anim_state['pos'] += _anim_state['dir'] * _sp_step
+                if _anim_state['pos'] >= bar_w - _sp_ind:
                     _anim_state['dir'] = -1
                 elif _anim_state['pos'] <= 0:
                     _anim_state['dir'] = 1
                 px = bar_x + _anim_state['pos']
-                canvas.coords(progress_rect, px, bar_y, px + 40, bar_y + 3)
+                canvas.coords(progress_rect, px, bar_y, px + _sp_ind, bar_y + _sp_bh)
                 root.after(30, _animate)
             except tk.TclError:
                 pass  # Window already destroyed
