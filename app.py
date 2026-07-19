@@ -7391,7 +7391,17 @@ def main():
         # HWND only resolves once pywebview's GUI thread has run a tick.
         if _use_frameless and sys.platform == 'win32':
             from ctypes import windll as _wd_chrome
+            _chrome_done = [False]
             def _install_chrome():
+                # Native frame PARITY for the frameless window (work-area maximize
+                # CLAMP, resize edges, Aero Snap via WM_NCCALCSIZE/GETMINMAXINFO/
+                # NCHITTEST) MUST be enforced.  A single events.loaded hook was
+                # silently NOT firing on the shipped build (no [CHROME] log, live
+                # maximize covered the taskbar), so this now ALSO hooks events.shown
+                # (fires reliably once the window is visible), guards to install
+                # exactly once, and ALWAYS logs the outcome so it is verifiable.
+                if _chrome_done[0]:
+                    return
                 try:
                     if (hasattr(_window, 'original_window')
                             and hasattr(_window.original_window, 'handle')):
@@ -7409,11 +7419,16 @@ def main():
                     # chip's clicks; NunbaTitleBar.js does drag-vs-click on it
                     # (plain click → toggle preference; drag → window_start_drag
                     # → native move).  138 (3×46 buttons) + 260 (slot) covers it.
-                    install_custom_chrome(int(_hwnd), titlebar_height=32,
-                                          button_cluster_width=138, slot_width=260)
+                    _ok = install_custom_chrome(int(_hwnd), titlebar_height=32,
+                                                button_cluster_width=138, slot_width=260)
+                    _chrome_done[0] = bool(_ok)
+                    logger.info("[CHROME] install_custom_chrome -> %s (hwnd=%s); "
+                                "native frame parity / work-area maximize clamp %s",
+                                _ok, _hwnd, "ENFORCED" if _ok else "NOT active")
                 except Exception as _chrome_err:
                     logger.warning("[CHROME] install_custom_chrome failed: %s", _chrome_err)
             _window.events.loaded += _install_chrome
+            _window.events.shown += _install_chrome
 
         # Set up system tray
         _tray_icon = setup_system_tray(_window)
