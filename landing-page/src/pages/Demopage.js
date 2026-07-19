@@ -4750,7 +4750,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   : 'w-full'
               } ${
                 window.innerWidth <= 768 ? (isTextMode ? '' : (mediaMode === 'video' || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
-              } relative flex justify-center items-center transition-all duration-300 md:sticky md:top-0 md:h-screen`}
+              } relative flex justify-center items-center transition-all duration-300 md:h-full`}
               style={{ overflow: 'visible' }}
             >
               {!isTextMode && (
@@ -4931,15 +4931,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               )}
             </div>
 
-            {/* Chat side — the conversation column OWNS the scrolling message
-                list AND the pinned composer, so the composer is width-bound to
-                the chat column and can never leak under the media pane. flex-1
-                pairs with the fixed-width media pane for a fluid, complementary
-                split in BOTH orientations. The chat width is no longer gated on
-                videoUrl/window.innerWidth — that gating was the source of the
-                audio-mode overlap (chat went md:w-full over the 30% pane) and the
-                full-width composer that leaked under the right pane. */}
-            <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+            {/* Chat column — messages scroll here; flex-1 fills the row beside
+                the fixed-width media (orb) pane. The composer + its demarcator
+                line live BELOW the whole [messages | orb] row and span the FULL
+                width, so the media pane is md:h-full (NOT h-screen) and never
+                overflows down into the composer band. */}
             <div
               className="flex-1 w-full min-h-0 overflow-x-clip overflow-y-auto pt-2 md:pt-0"
             >
@@ -5199,6 +5195,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 />
               )}
             </div>
+          </div>
 
           {/* In-progress / capability cards sit at the BOTTOM of the chat
               column (above the input bar), consistent with conversations and
@@ -5255,8 +5252,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             showThinkingTraces={showThinkingTraces}
             onToggleShowThinkingTraces={toggleShowThinkingTraces}
           />
-            </div>
-          </div>
         </div>
       </div>
       {!isAuthenticated && (
