@@ -114,6 +114,29 @@ Source: `HARTOS/integrations/agent_engine/autoresearch_loop.py`, `auto_evolve.py
 
 ---
 
+## The Hive World Model - one learner across every task, modality, and input
+
+The auto-evolve loop above is how a single Nunba gets better. The World Model is the thing that gets better: one learner that does not care whether the input is a typed question, a photo, a spoken sentence, a live camera frame, or a robot's sensor reading. All of it feeds the same intelligence, and it keeps learning from all of it without forgetting what came before. HARTOS is the operating system wrapped around that learner. It runs the models, drives the vision and robotics stack, manages the device itself, and routes every one of those signals into the same brain. That is what makes it versatile instead of narrow, and embodied instead of stuck in a chat box.
+
+**One model, not one per job.**
+- **Task-agnostic.** It is not trained for a fixed menu of tasks. It picks up new ones as they appear, and reuses or combines what it already knows without being told which task it is on.
+- **Modality-agnostic.** Text, images, audio, actions, and time are all first-class inputs to the same model. A photo and a paragraph teach the same brain; you are not stitching a separate model per sense.
+- **Input-agnostic.** A chat turn, an expert correction, a camera frame, or a skill shared by another node all become the same kind of experience it can learn from.
+
+**Incremental and continual.** There is no nightly retrain. It learns a little at a time, in the moment, the way a person does from a conversation, and new learning does not erase old skills.
+
+**Embodied, because HARTOS is the OS.** The same learner takes sensor and camera input, not just chat, and HARTOS runs the vision, robotics, and device layers around it. The intelligence perceives and acts in the world it lives on. Chat is one input among many.
+
+**Learned by the Hive, without your data leaving.** Every opted-in node teaches the shared model together. Nodes never exchange raw data or model weights; they share only derived, signed, privacy-scoped learning that a scope guard clears before anything leaves the machine. Contributions are weighted so no single entity can dominate the result or own it.
+
+**Opt-in and earned.** Participation is a setting, cloud egress needs explicit consent, and anything kept local never leaves. Access to the shared learning is earned by contributing verified compute, on a simple rule of no contribution, no learning. Contributing compute or a learned skill pays spark into your wallet, with revenue split 90% to contributors, 9% to regional hosts, 1% to hevolve.ai.
+
+**Honest status.** The learner itself is HevolveAI, shipped as a signed, closed-source native component loaded at runtime; when it is absent, HARTOS runs safe no-op fallbacks, so nothing here depends on holding it. What lives in these repos is the operating system around it: the bridge that feeds it, the consent and contribution gates, the privacy-scoped federation of derived learning, and the reward economy. The Hive shares learning, never your raw data and never model weights.
+
+Source (integration layer): `integrations/agent_engine/world_model_bridge.py`, `federated_aggregator.py`, `continual_learner_gate.py`, `integrations/social/resonance_engine.py`.
+
+---
+
 ## Quick install
 
 All builds are automated, signed, and listed at **[docs.hevolve.ai/downloads](https://docs.hevolve.ai/downloads/)**.
@@ -272,7 +295,7 @@ This is what makes Nunba's tagline truthful: *A Friend, A Well Wisher, Your Loca
 ## Privacy, sovereignty, and the mission
 
 - **All AI runs locally by default.** Cloud providers are opt-in, per-turn, encrypted vault.
-- **Your conversations never enter a training corpus.** Federated deltas carry weight updates, not text.
+- **Your conversations never enter a training corpus.** Federated learning carries derived, privacy-scoped signals, never your text and never your model weights.
 - **Owner override.** Pause, resume, or veto any in-flight auto-evolution. Disable the loop entirely if you want.
 - **The constitutional filter is in code, not policy.** `cultural_wisdom.py` ships 32 traits as a tuple; `hive_guardrails.py` enforces banned-skill categories at every commit. Latency loses to safety. Throughput loses to safety. Every time.
 - **Mission anchor:** *AI amplifies human agency. Never concentrates power. Never enables harm. Order is safety > sovereignty > realtime > throughput.*
