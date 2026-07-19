@@ -229,7 +229,7 @@ const AgentSidebar = ({
               </button>
             )}
 
-            <div className="mt-auto space-y-4 absolute bottom-0">
+            <div className="space-y-4 mt-4">
               <div
                 onClick={toggleDropdown}
                 className="flex items-center gap-2 cursor-pointer mb-5"
