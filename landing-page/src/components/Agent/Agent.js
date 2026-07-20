@@ -558,7 +558,7 @@ const AgentPage = () => {
                 transition: 'opacity 2s ease-in-out, filter 1.8s ease-in-out 0.3s',
                 zIndex: 20, pointerEvents: heroVisible ? 'none' : 'auto',
             }}>
-                <Demopage agentData={agentData} onReady={() => setDemoReady(true)} />
+                <Demopage agentData={agentData} onReady={() => setDemoReady(true)} chatActive={!heroVisible} />
             </div>
         </div>
     );

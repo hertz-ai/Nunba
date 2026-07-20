@@ -248,10 +248,34 @@ export default function NunbaTitleBar({ children }) {
         height: calc(100vh - var(--nunba-titlebar-h, 32px)) !important;
         min-height: calc(100vh - var(--nunba-titlebar-h, 32px)) !important;
       }
+      /* index.html hard-codes #root { min-height: 100vh } inline.  Inside the
+         padded (100vh − 32px) document that overflows the bottom by 32px, and
+         html{overflow:hidden} clips it — so the chat input / bottom row gets
+         cut off (worst in portrait/narrow, where the layout is tallest). Clamp
+         #root to the reserved height so it fills exactly, no bottom clip. */
+      html.nunba-frameless-active #root {
+        min-height: calc(100vh - var(--nunba-titlebar-h, 32px)) !important;
+      }
       /* Cancel the now-redundant App.js paddingTop on <main> — the
          html-level padding already reserves the titlebar gap. */
       html.nunba-frameless-active main { padding-top: 0 !important; }
       html.nunba-frameless-active .fixed.top-0 { top: var(--nunba-titlebar-h, 32px); }
+      /* MUI fixed AppBars (e.g. AdminLayout's "Nunba Admin" header) + the
+         left/right/top Drawer papers are position:fixed at top:0.  Being MUI
+         classes (not Tailwind .fixed.top-0) they escaped the rule above, so
+         the titlebar covered the admin header + the sidebar's top edge
+         (reported 2026-06-24).  Push them below the strip; clamp the drawer
+         height so it doesn't overflow the (100vh − titlebar) document and clip
+         its last item.  Bottom-anchored drawers are intentionally untouched. */
+      html.nunba-frameless-active .MuiAppBar-positionFixed {
+        top: var(--nunba-titlebar-h, 32px);
+      }
+      html.nunba-frameless-active .MuiDrawer-paperAnchorLeft,
+      html.nunba-frameless-active .MuiDrawer-paperAnchorRight,
+      html.nunba-frameless-active .MuiDrawer-paperAnchorTop {
+        top: var(--nunba-titlebar-h, 32px);
+        height: calc(100vh - var(--nunba-titlebar-h, 32px));
+      }
     `;
     document.head.appendChild(style);
   }, []);
@@ -403,11 +427,19 @@ export default function NunbaTitleBar({ children }) {
 
   return (<>
     <TitleBarSlotProvider slot={slot}>{children || null}</TitleBarSlotProvider>
-    {/* GTK resize grips — Linux/X11 only.  On Windows the native
-        WM_NCHITTEST subclass owns 8-way resize, so these are NOT rendered
-        there (would double-handle).  Each grip starts a real WM resize via
-        WindowApi.window_begin_resize(edge) on left-button mousedown. */}
-    {isLinux && (
+    {/* Resize grips — frameless Win AND Linux.  The native WM_NCHITTEST
+        subclass returns the resize codes, but the hosted WebView2 child fills
+        the client to the very edge and intercepts the mouse there, so the OS
+        resize border is never reached — resize "doesn't work" despite the
+        subclass installing.  These thin invisible DOM strips DO receive the
+        edge mousedown and start a real native resize loop via
+        WindowApi.window_begin_resize(edge) (Win: SendMessage WM_NCLBUTTONDOWN
+        HT<edge>; Linux/GTK: begin_resize_drag).  Rendered whenever the
+        frameless titlebar is visible (never on macOS / browser, which return
+        early above).  z-index 9999 sits below the 32px titlebar (10000), so
+        L/R/B + bottom corners resize; the top strip stays drag (acceptable —
+        bottom-right is the canonical resize handle). */}
+    {(
       <div data-testid="nunba-resize-grips" aria-hidden style={{ position: 'fixed', inset: 0, zIndex: 9999, pointerEvents: 'none' }}>
         {RESIZE_GRIPS.map((g) => (
           <div
@@ -437,11 +469,10 @@ export default function NunbaTitleBar({ children }) {
         zIndex: 10000,
         display: 'flex',
         alignItems: 'center',
-        // Solid canon black — gradient was reading as "not fully black" in
-        // the install; user asked for full black background.  #0F0E17 is the
-        // Hevolve canon palette anchor.  No bottom border so the strip blends
-        // seamlessly into the dark app body below.
-        background: '#0F0E17',
+        // Full black, always, everywhere (steward: #0F0E17 "looks like not
+        // black").  Pure #000 so the strip reads as true black and blends
+        // seamlessly into the dark app body below (no bottom border).
+        background: '#000',
         borderBottom: 'none',
         userSelect: 'none',
         WebkitUserSelect: 'none',

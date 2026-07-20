@@ -12,8 +12,13 @@ import React, { useRef, useEffect, useCallback } from 'react';
  */
 const PTS = 180;
 
-const VoiceVisualizer = function({ audioRef, isActive, size, style }) {
+const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax }) {
   size = size || 200;
+  // Per-consumer cap on how much of the parent the orb may fill.  Defaults to
+  // 80% (breathing room) for standalone uses (e.g. VoiceOrbPage) so they are
+  // UNCHANGED; Demopage's media column passes '100%' so the orb fills the
+  // column and matches the idle video's footprint (no empty padding).
+  canvasMax = canvasMax || '80%';
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const analyserRef = useRef(null);
@@ -226,7 +231,7 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style }) {
     React.createElement('canvas', {
       ref: canvasRef,
       width: size * 2, height: size * 2,
-      style: { width: size, height: size, maxWidth: '80%', maxHeight: '80%' },
+      style: { width: size, height: size, maxWidth: canvasMax, maxHeight: canvasMax },
     }),
     isActive ? React.createElement('div', {
       style: {

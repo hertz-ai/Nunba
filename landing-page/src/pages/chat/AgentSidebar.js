@@ -100,7 +100,7 @@ const AgentSidebar = ({
       <div
         onMouseEnter={onMouseEnterSidebar}
         onMouseLeave={onMouseLeaveSidebar}
-        className={`sticky top-0 self-start group w-[20%] sm:w-[30%] md:w-[15%] lg:w-[20%] text-gray-300 p-4 flex flex-col h-screen overflow-hidden ${
+        className={`sticky top-0 self-start group w-[20%] sm:w-[30%] md:w-[15%] lg:w-[20%] min-w-[16rem] text-gray-300 p-4 flex flex-col h-screen overflow-hidden ${
           showContent ? 'bg-gray-900' : ''
         }`}
       >
@@ -179,7 +179,7 @@ const AgentSidebar = ({
                       )}
                     </div>
                     <div className="flex flex-col min-w-0 flex-1">
-                      <span className={`truncate sm:text-base md:text-[1.2rem] ${_unread > 0 ? 'font-semibold' : ''}`}>
+                      <span title={chat?.name} className={`truncate text-sm sm:text-sm md:text-base 2xl:text-[1.2rem] ${_unread > 0 ? 'font-semibold' : ''}`}>
                         {chat?.name}
                       </span>
                       {_lastTask && (
@@ -229,7 +229,7 @@ const AgentSidebar = ({
               </button>
             )}
 
-            <div className="mt-auto space-y-4 absolute bottom-0">
+            <div className="space-y-4 mt-4">
               <div
                 onClick={toggleDropdown}
                 className="flex items-center gap-2 cursor-pointer mb-5"

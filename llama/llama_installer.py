@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -204,69 +205,112 @@ class LlamaInstaller:
         self.gpu_available = self._detect_gpu()
         self.binary_supports_gpu = False  # Will be set during installation
 
-    def _detect_gpu(self) -> str:
-        """Detect available GPU acceleration (CUDA on Windows/Linux, Metal on macOS)"""
+    @staticmethod
+    def _no_window() -> tuple:
+        """(startupinfo, creationflags) that suppress a console window on Windows.
+        DRY: every subprocess in this module needs the same pair on win32."""
+        if sys.platform == 'win32':
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0  # SW_HIDE
+            return si, subprocess.CREATE_NO_WINDOW
+        return None, 0
+
+    @staticmethod
+    def detect_backend(os_name: str | None = None) -> str:
+        """Detect the best llama.cpp GPU BACKEND for the hardware this runs on —
+        the SINGLE source of truth (ai_installer.detect_gpu delegates here, then
+        adds VRAM). Static so callers need no installer instance / install-dir
+        side effects. Returns:
+          'cuda'   — NVIDIA. Windows gets the turnkey bundled-cudart CUDA build;
+                     Linux has no CUDA prebuilt, so the asset picker uses Vulkan
+                     (which runs on NVIDIA too) — see _select_release_assets.
+          'vulkan' — AMD or Intel-Arc discrete GPU. Vulkan is the UNIVERSAL GPU
+                     backend: no vendor runtime (no ROCm/oneAPI), runs on any
+                     modern GPU — the portable "just works" path for non-NVIDIA.
+          'metal'  — Apple Silicon / Metal-capable Mac.
+          'none'   — no usable GPU → CPU build.
+        """
+        os_name = (os_name or platform.system()).lower()
         try:
-            if "darwin" in self.os_name:
-                # macOS - Metal is always available on modern Macs
+            if "darwin" in os_name:
                 return "metal"
-            elif "windows" in self.os_name or "linux" in self.os_name:
-                # Check for CUDA via nvidia-smi
+            if "windows" not in os_name and "linux" not in os_name:
+                return "none"
+
+            si, cf = LlamaInstaller._no_window()
+
+            # 1. NVIDIA first — fastest, and Windows ships a turnkey CUDA build.
+            try:
+                result = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                    capture_output=True, text=True, timeout=3,
+                    startupinfo=si, creationflags=cf)
+                if result.returncode == 0 and result.stdout.strip():
+                    logger.debug(f"NVIDIA GPU detected: {result.stdout.strip()}")
+                    return "cuda"
+            except Exception:
+                pass
+
+            # 2. AMD via rocm-smi → Vulkan (portable; no ROCm runtime required).
+            try:
+                result = subprocess.run(
+                    ["rocm-smi", "--showproductname"],
+                    capture_output=True, text=True, timeout=3,
+                    startupinfo=si, creationflags=cf)
+                if result.returncode == 0 and result.stdout.strip():
+                    logger.debug(f"AMD GPU detected (rocm-smi) → vulkan")
+                    return "vulkan"
+            except Exception:
+                pass
+
+            # 3. Linux: lspci for an AMD or Intel-Arc display controller.
+            if "linux" in os_name:
                 try:
-                    si = None
-                    cf = 0
-                    if sys.platform == 'win32':
-                        si = subprocess.STARTUPINFO()
-                        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                        si.wShowWindow = 0
-                        cf = subprocess.CREATE_NO_WINDOW
                     result = subprocess.run(
-                        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                        capture_output=True,
-                        text=True,
-                        timeout=3,
-                        startupinfo=si,
-                        creationflags=cf
-                    )
+                        ['lspci'], capture_output=True, text=True, timeout=5,
+                        startupinfo=si, creationflags=cf)
                     if result.returncode == 0:
-                        logger.debug(f"GPU detected: {result.stdout.strip()}")
-                        return "cuda"
+                        for line in result.stdout.splitlines():
+                            up = line.upper()
+                            if not ('VGA' in up or 'DISPLAY' in up or '3D' in up):
+                                continue
+                            if any(x in up for x in ('AMD', 'ATI', 'RADEON')):
+                                logger.debug("AMD GPU detected (lspci) → vulkan")
+                                return "vulkan"
+                            # Intel DISCRETE (Arc/DG2); weak iGPUs stay on CPU.
+                            if 'INTEL' in up and any(x in up for x in ('ARC', 'DG2', 'BATTLEMAGE')):
+                                logger.debug("Intel Arc detected (lspci) → vulkan")
+                                return "vulkan"
                 except Exception:
                     pass
-                # Check for AMD GPU via rocm-smi (Linux primarily)
-                # RDNA3/RDNA4 consumer GPUs use zinc (Vulkan), not ROCm
+
+            # 4. Windows: wmic for an AMD Radeon / Intel-Arc discrete GPU.
+            if "windows" in os_name:
                 try:
                     result = subprocess.run(
-                        ["rocm-smi", "--showproductname"],
-                        capture_output=True, text=True, timeout=3,
-                        startupinfo=si, creationflags=cf
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        gpu_name = result.stdout.strip().upper()
-                        logger.debug(f"AMD GPU detected: {gpu_name}")
-                        # RDNA3/RDNA4 consumer cards → zinc (Vulkan, no ROCm needed)
-                        # MI-series data center cards → rocm (traditional HIP/ROCm)
-                        if any(x in gpu_name for x in ['RDNA', 'RX 9', 'RX 7', 'AI PRO']):
-                            return "zinc"
-                        return "rocm"
+                        ["wmic", "path", "win32_VideoController", "get", "name"],
+                        capture_output=True, text=True, timeout=5,
+                        startupinfo=si, creationflags=cf)
+                    if result.returncode == 0:
+                        up = result.stdout.upper()
+                        if 'RADEON' in up or ('AMD' in up and 'GRAPHICS' in up):
+                            logger.debug("AMD GPU detected (wmic) → vulkan")
+                            return "vulkan"
+                        if 'ARC' in up:  # Intel Arc discrete
+                            logger.debug("Intel Arc detected (wmic) → vulkan")
+                            return "vulkan"
                 except Exception:
                     pass
-                # Fallback: lspci for AMD GPUs without rocm-smi
-                if "linux" in self.os_name:
-                    try:
-                        result = subprocess.run(
-                            ['lspci'], capture_output=True, text=True, timeout=5,
-                            startupinfo=si, creationflags=cf)
-                        if result.returncode == 0:
-                            for line in result.stdout.splitlines():
-                                if 'AMD' in line and ('VGA' in line or 'Display' in line):
-                                    return "zinc"  # assume consumer AMD → zinc
-                    except Exception:
-                        pass
         except Exception as e:
             logger.debug(f"GPU detection failed: {e}")
 
         return "none"
+
+    def _detect_gpu(self) -> str:
+        """Instance shim → detect_backend(self.os_name) (back-compat for the
+        __init__ caller; the real logic lives in the static detect_backend)."""
+        return self.detect_backend(self.os_name)
 
     def find_llama_server(self, check_system_first: bool = True,
                           min_build: int | None = None) -> str | None:
@@ -366,11 +410,9 @@ class LlamaInstaller:
                 logger.debug(f"Found llama-server at: {_path_str}")
             # Update GPU support detection from the found binary's location
             bin_dir = path.parent
-            cuda_dlls = list(bin_dir.glob("ggml-cuda*.dll")) + list(bin_dir.glob("ggml-cuda*.so"))
-            if cuda_dlls:
-                self.binary_supports_gpu = True
-            elif "darwin" in self.os_name:
-                self.binary_supports_gpu = True
+            # GPU support = ANY ggml backend lib (cuda/vulkan/hip/rocm/metal), not
+            # CUDA alone — a Vulkan build (AMD/Intel/NVIDIA) is GPU-capable too.
+            self.binary_supports_gpu = self._binary_has_gpu_support(bin_dir, self.os_name)
             return str(path)
 
         # Try to find in PATH (system-wide installations)
@@ -649,42 +691,145 @@ class LlamaInstaller:
         logger.info(f"Download complete: {dest_path} ({actual_size} bytes)")
 
     @staticmethod
-    def _extract_release_zip(zip_path: Path, bin_dir: Path) -> int:
-        """Extract a release zip into bin_dir, handling both flat and nested structures."""
-        import zipfile as zf_mod
-        with zf_mod.ZipFile(str(zip_path), 'r') as zf:
-            names = zf.namelist()
-            # Detect if files are in a subdirectory
-            prefix = ""
+    def _binary_has_gpu_support(bin_dir: Path, os_name: str) -> bool:
+        """True if the llama.cpp build in bin_dir ships a GPU backend library
+        (ggml-cuda / ggml-vulkan / ggml-hip / ggml-rocm / ggml-metal). macOS
+        links Metal into the binary, so a macOS build is always GPU-capable.
+        Used to decide whether a CPU-only binary on a GPU box must be re-pulled."""
+        if "darwin" in os_name:
+            return True
+        for stem in ("ggml-cuda", "ggml-vulkan", "ggml-hip", "ggml-rocm", "ggml-metal"):
+            if list(bin_dir.glob(stem + "*.dll")) or list(bin_dir.glob(stem + "*.so")):
+                return True
+        return False
+
+    def _select_release_assets(self, asset_map: dict, tag_name: str) -> tuple:
+        """Pick the llama.cpp release assets for THIS OS + detected GPU backend.
+
+        Returns ``(asset_names, accel)`` — the ordered archives to download (main
+        build + any companion cudart) and the acceleration actually chosen
+        ('cuda' | 'vulkan' | 'metal' | 'cpu').
+
+        Corrections over the legacy inline logic this replaces:
+          * OS-correct extension — ``.zip`` on Windows, ``.tar.gz`` on Linux/macOS.
+            The old code hardcoded ``.zip`` everywhere, so every Linux/macOS
+            prebuilt download 404'd into a slow build-from-source.
+          * Vulkan is the UNIVERSAL GPU fallback — AMD/Intel always use it, and
+            NVIDIA falls back to it where no CUDA asset exists for the platform
+            (Linux ships NO ``ubuntu-cuda`` prebuilt at all).
+          * CUDA version resolved DYNAMICALLY from the assets (12.4 / 13.3 / …),
+            preferring the LOWEST (widest GPU-driver compatibility), instead of a
+            hardcoded guess that rots when upstream bumps the toolkit.
+        """
+        gpu = self.gpu_available
+
+        if "windows" in self.os_name:
+            cpu = f"llama-{tag_name}-bin-win-cpu-x64.zip"
+            vulkan = f"llama-{tag_name}-bin-win-vulkan-x64.zip"
+            if gpu == "cuda":
+                cuda_assets = sorted(
+                    (n for n in asset_map
+                     if re.match(rf"^llama-{re.escape(tag_name)}-bin-win-cuda-[\d.]+-x64\.zip$", n)),
+                    key=lambda n: tuple(int(x) for x in n.split("cuda-")[1].split("-x64")[0].split(".")))
+                if cuda_assets:
+                    main = cuda_assets[0]  # lowest CUDA version = widest driver compat
+                    out = [main]
+                    ver = main.split("cuda-")[1].split("-x64")[0]
+                    cudart = f"cudart-llama-bin-win-cuda-{ver}-x64.zip"
+                    if cudart in asset_map:
+                        out.append(cudart)  # bundled CUDA runtime → turnkey, no toolkit
+                    return out, "cuda"
+                if vulkan in asset_map:
+                    return [vulkan], "vulkan"  # NVIDIA but no CUDA asset → Vulkan
+            elif gpu == "vulkan":
+                if vulkan in asset_map:
+                    return [vulkan], "vulkan"
+            return ([cpu], "cpu") if cpu in asset_map else ([], "cpu")
+
+        if "darwin" in self.os_name:
+            arch = platform.machine().lower()
+            primary = (f"llama-{tag_name}-bin-macos-"
+                       f"{'arm64' if arch in ('arm64', 'aarch64') else 'x64'}.tar.gz")
+            if primary in asset_map:
+                return [primary], "metal"
+            alt = f"llama-{tag_name}-bin-macos-arm64.tar.gz"  # x86 → arm64 via Rosetta 2
+            if alt in asset_map:
+                return [alt], "metal"
+            return [], "cpu"
+
+        # Linux — there is NO ubuntu-cuda prebuilt; Vulkan covers every GPU vendor.
+        cpu = f"llama-{tag_name}-bin-ubuntu-x64.tar.gz"
+        vulkan = f"llama-{tag_name}-bin-ubuntu-vulkan-x64.tar.gz"
+        if gpu in ("cuda", "vulkan") and vulkan in asset_map:
+            return [vulkan], "vulkan"
+        return ([cpu], "cpu") if cpu in asset_map else ([], "cpu")
+
+    @staticmethod
+    def _extract_release_archive(archive_path: Path, bin_dir: Path) -> int:
+        """Extract a llama.cpp release archive into bin_dir, flattening a single
+        top-level directory. Handles BOTH layouts — Windows ``.zip`` and
+        Linux/macOS ``.tar.gz`` — because the old zip-only extractor silently
+        failed on every Linux/macOS download. Returns the number of files written."""
+        import stat as _stat
+        name_l = archive_path.name.lower()
+        count = 0
+
+        def _flatten_prefix(names: list) -> str:
             for n in names:
                 if "/" in n and not n.endswith("/"):
-                    prefix = n.split("/")[0] + "/"
-                    break
+                    return n.split("/")[0] + "/"
+            return ""
 
-            count = 0
-            for name in names:
-                if name.endswith("/"):
-                    continue
-                basename = name[len(prefix):] if prefix and name.startswith(prefix) else name
-                if not basename:
-                    continue
-                dest = bin_dir / basename
-                with zf.open(name) as src:
-                    with open(str(dest), 'wb') as dst:
-                        dst.write(src.read())
-                if sys.platform != "win32" and not basename.endswith(".dll"):
-                    import stat
-                    dest.chmod(dest.stat().st_mode | stat.S_IEXEC)
-                count += 1
-        zip_path.unlink()
+        def _write(base: str, data: bytes, executable: bool):
+            nonlocal count
+            if not base:
+                return
+            dest = bin_dir / base
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with open(str(dest), 'wb') as dst:
+                dst.write(data)
+            if sys.platform != "win32" and executable:
+                dest.chmod(dest.stat().st_mode | _stat.S_IEXEC)
+            count += 1
+
+        if name_l.endswith(".zip"):
+            import zipfile
+            with zipfile.ZipFile(str(archive_path), 'r') as zf:
+                names = [n for n in zf.namelist() if not n.endswith("/")]
+                prefix = _flatten_prefix(names)
+                for n in names:
+                    base = n[len(prefix):] if prefix and n.startswith(prefix) else n
+                    with zf.open(n) as src:
+                        _write(base, src.read(), not base.lower().endswith(".dll"))
+        elif name_l.endswith((".tar.gz", ".tgz", ".tar")):
+            import tarfile
+            mode = "r:" if name_l.endswith(".tar") else "r:gz"
+            with tarfile.open(str(archive_path), mode) as tf:
+                files = [m for m in tf.getmembers() if m.isfile()]
+                prefix = _flatten_prefix([m.name for m in files])
+                for m in files:
+                    base = m.name[len(prefix):] if prefix and m.name.startswith(prefix) else m.name
+                    src = tf.extractfile(m)
+                    if src is None:
+                        continue
+                    is_lib = base.lower().endswith((".so", ".dylib", ".metal", ".metallib"))
+                    _write(base, src.read(), bool(m.mode & 0o111) or not is_lib)
+        else:
+            logger.error(f"Unsupported archive type: {archive_path.name}")
+            archive_path.unlink(missing_ok=True)
+            return 0
+
+        archive_path.unlink(missing_ok=True)
         return count
 
     def try_download_prebuilt(self) -> bool:
         """
-        Try to download prebuilt llama.cpp binaries from GitHub releases
+        Download the prebuilt llama.cpp build matching THIS OS + detected GPU
+        backend from GitHub releases. Returns True on success.
 
-        Returns:
-            True if successful, False otherwise
+        The OS/GPU → asset mapping lives in _select_release_assets (testable in
+        isolation); extraction handles both .zip (Windows) and .tar.gz
+        (Linux/macOS) via _extract_release_archive.
         """
         try:
             logger.info("Checking for prebuilt binaries...")
@@ -703,109 +848,36 @@ class LlamaInstaller:
 
             logger.info(f"Latest release: {tag_name}")
 
-            # Determine the right binary for this platform
-            use_cuda = self.gpu_available == "cuda"
-            assets = release_data.get('assets', [])
-            asset_map = {a['name']: a for a in assets}
+            asset_map = {a['name']: a for a in release_data.get('assets', [])}
 
-            # Build list of zips to download (main binary + optional cudart)
-            zips_to_download = []
-
-            if "windows" in self.os_name:
-                if use_cuda:
-                    # Try CUDA 12.4 first, then 13.1, then any CUDA, then CPU
-                    cuda_candidates = [
-                        f"llama-{tag_name}-bin-win-cuda-12.4-x64.zip",
-                        f"llama-{tag_name}-bin-win-cuda-13.1-x64.zip",
-                    ]
-                    main_asset = None
-                    for candidate in cuda_candidates:
-                        if candidate in asset_map:
-                            main_asset = candidate
-                            break
-                    if not main_asset:
-                        # Try any CUDA asset
-                        for name in asset_map:
-                            if name.startswith(f"llama-{tag_name}-bin-win-cuda") and name.endswith("-x64.zip"):
-                                main_asset = name
-                                break
-                    if main_asset:
-                        zips_to_download.append(main_asset)
-                        # Also download matching cudart DLLs
-                        cuda_ver = main_asset.split("cuda-")[1].split("-x64")[0] if "cuda-" in main_asset else None
-                        if cuda_ver:
-                            cudart_name = f"cudart-llama-bin-win-cuda-{cuda_ver}-x64.zip"
-                            if cudart_name in asset_map:
-                                zips_to_download.append(cudart_name)
-                    else:
-                        logger.info("No CUDA binary available, falling back to CPU")
-                        use_cuda = False
-
-                if not use_cuda:
-                    cpu_name = f"llama-{tag_name}-bin-win-cpu-x64.zip"
-                    if cpu_name in asset_map:
-                        zips_to_download.append(cpu_name)
-
-            elif "darwin" in self.os_name:
-                import platform
-                arch = platform.machine().lower()
-                if arch in ('arm64', 'aarch64'):
-                    macos_name = f"llama-{tag_name}-bin-macos-arm64.zip"
-                else:
-                    macos_name = f"llama-{tag_name}-bin-macos-x64.zip"
-                if macos_name in asset_map:
-                    zips_to_download.append(macos_name)
-                elif macos_name != f"llama-{tag_name}-bin-macos-arm64.zip":
-                    # x86_64 not found, try arm64 (Rosetta 2 can run it)
-                    fallback = f"llama-{tag_name}-bin-macos-arm64.zip"
-                    if fallback in asset_map:
-                        zips_to_download.append(fallback)
-                        logger.info("x86_64 binary not found, using arm64 via Rosetta 2")
-
-            else:  # Linux
-                if use_cuda:
-                    cuda_candidates = [
-                        f"llama-{tag_name}-bin-ubuntu-cuda-12.4-x64.zip",
-                        f"llama-{tag_name}-bin-ubuntu-cuda-13.1-x64.zip",
-                    ]
-                    main_asset = None
-                    for candidate in cuda_candidates:
-                        if candidate in asset_map:
-                            main_asset = candidate
-                            break
-                    if main_asset:
-                        zips_to_download.append(main_asset)
-                    else:
-                        logger.info("No CUDA binary available, falling back to CPU")
-                        use_cuda = False
-
-                if not use_cuda:
-                    cpu_name = f"llama-{tag_name}-bin-ubuntu-x64.zip"
-                    if cpu_name in asset_map:
-                        zips_to_download.append(cpu_name)
-
-            if not zips_to_download:
-                logger.warning(f"No compatible assets found in release {tag_name}")
+            # Pick the archives for this OS + GPU backend (correct extension,
+            # Vulkan-universal GPU fallback, dynamic CUDA version, cudart runtime).
+            assets, accel = self._select_release_assets(asset_map, tag_name)
+            if not assets:
+                logger.warning(
+                    f"No compatible {self.os_name}/{self.gpu_available} asset in "
+                    f"release {tag_name}")
                 return False
+            logger.info(f"Selected {accel} build: {', '.join(assets)}")
 
             # Create install directory and bin dir
             self.install_dir.mkdir(parents=True, exist_ok=True)
             bin_dir = self.install_dir / "build" / "bin" / "Release"
             bin_dir.mkdir(parents=True, exist_ok=True)
 
-            # Download and extract each zip directly into bin_dir
+            # Download + extract each archive directly into bin_dir
             total_files = 0
-            for zip_name in zips_to_download:
-                download_url = asset_map[zip_name].get('browser_download_url')
+            for asset_name in assets:
+                download_url = asset_map[asset_name].get('browser_download_url')
                 if not download_url:
                     continue
 
-                logger.info(f"Downloading: {zip_name}")
-                zip_path = self.install_dir / zip_name
-                self.download_file_with_progress(download_url, zip_path)
+                logger.info(f"Downloading: {asset_name}")
+                archive_path = self.install_dir / asset_name
+                self.download_file_with_progress(download_url, archive_path)
 
-                logger.info(f"Extracting: {zip_name}")
-                count = self._extract_release_zip(zip_path, bin_dir)
+                logger.info(f"Extracting: {asset_name}")
+                count = self._extract_release_archive(archive_path, bin_dir)
                 total_files += count
                 logger.info(f"  Extracted {count} files")
 
@@ -813,18 +885,11 @@ class LlamaInstaller:
                 logger.error("No files extracted from release")
                 return False
 
-            # Set GPU support flag
-            got_cuda = any("cuda" in z.lower() for z in zips_to_download)
-            if got_cuda:
-                self.binary_supports_gpu = True
-                logger.info(f"Installed CUDA-enabled llama.cpp ({total_files} files)")
-            elif "darwin" in self.os_name:
-                self.binary_supports_gpu = True
-                logger.info(f"Installed macOS llama.cpp with Metal ({total_files} files)")
-            else:
-                self.binary_supports_gpu = False
-                logger.info(f"Installed CPU-only llama.cpp ({total_files} files)")
-
+            # GPU flag follows the acceleration the picker actually chose.
+            self.binary_supports_gpu = accel in ("cuda", "vulkan", "metal")
+            logger.info(
+                f"Installed {accel} llama.cpp ({total_files} files, "
+                f"GPU={'yes' if self.binary_supports_gpu else 'no'})")
             return True
 
         except Exception as e:
@@ -877,11 +942,16 @@ class LlamaInstaller:
 
             # Configure with CMake
             logger.info("Configuring build (CMake)...")
-            use_cuda = self.gpu_available == "cuda"
+            # Enable the GGML backend for the detected GPU. cuda needs the CUDA
+            # toolkit; vulkan needs the Vulkan SDK — both best-effort (this
+            # build-from-source path is the LAST resort when no prebuilt matched);
+            # cmake fails loudly if the SDK is absent and the caller degrades.
+            gpu = self.gpu_available
             cmake_args = [
                 "cmake", "..",
                 "-DBUILD_SHARED_LIBS=OFF",
-                f"-DGGML_CUDA={'ON' if use_cuda else 'OFF'}",
+                f"-DGGML_CUDA={'ON' if gpu == 'cuda' else 'OFF'}",
+                f"-DGGML_VULKAN={'ON' if gpu == 'vulkan' else 'OFF'}",
                 "-DLLAMA_CURL=OFF",
                 "-DLLAMA_BUILD_SERVER=ON"
             ]
@@ -916,29 +986,32 @@ class LlamaInstaller:
         if self.is_installed():
             server_path = self.find_llama_server()
             logger.info(f"llama.cpp is already installed at {server_path}")
-            # Detect GPU support by checking for ggml-cuda DLL next to binary
+            # Detect GPU support across ALL backends (cuda/vulkan/hip/rocm/metal).
             self.binary_supports_gpu = False
             if server_path:
                 bin_dir = Path(server_path).parent
-                cuda_dlls = list(bin_dir.glob("ggml-cuda*.dll")) + list(bin_dir.glob("ggml-cuda*.so"))
-                if cuda_dlls:
-                    self.binary_supports_gpu = True
-                    logger.info(f"Existing binary has CUDA support ({cuda_dlls[0].name})")
-                elif "darwin" in self.os_name:
-                    self.binary_supports_gpu = True  # Metal on macOS
-                else:
-                    logger.info("Existing binary is CPU-only (no ggml-cuda DLL found)")
-                    # If GPU is available but binary doesn't support it, re-download
-                    if self.gpu_available == "cuda":
-                        logger.info("GPU available but binary is CPU-only — downloading CUDA build")
+                self.binary_supports_gpu = self._binary_has_gpu_support(bin_dir, self.os_name)
+                if self.binary_supports_gpu:
+                    logger.info("Existing binary has GPU support")
+                elif self.gpu_available != "none":
+                    # A GPU is present but the installed binary is CPU-only — pull the
+                    # matching accelerated build (Vulkan for AMD/Intel, CUDA for
+                    # NVIDIA). THIS is the "install the GPU version as it sees fit for
+                    # the hardware" self-heal: an old CPU-only install on a GPU box.
+                    logger.info(
+                        f"GPU available ({self.gpu_available}) but binary is CPU-only "
+                        f"— downloading the accelerated build")
+                    if progress_callback:
+                        progress_callback(f"Upgrading to {self.gpu_available}-enabled build...")
+                    if self.try_download_prebuilt():
                         if progress_callback:
-                            progress_callback("Upgrading to CUDA-enabled build...")
-                        if self.try_download_prebuilt():
-                            if progress_callback:
-                                msg = "CUDA build installed!" if self.binary_supports_gpu else "Installed (CPU-only)"
-                                progress_callback(msg)
-                            return True
-                        logger.warning("CUDA download failed, continuing with CPU-only binary")
+                            progress_callback(
+                                "GPU build installed!" if self.binary_supports_gpu
+                                else "Installed (CPU-only)")
+                        return True
+                    logger.warning("GPU build download failed, continuing with CPU-only binary")
+                else:
+                    logger.info("Existing binary is CPU-only (no GPU detected)")
             if progress_callback:
                 progress_callback("llama.cpp is already installed")
             return True
@@ -1244,6 +1317,22 @@ def install_on_first_run(
     # Install llama.cpp
     if not installer.install_llama_cpp(progress_callback):
         return False, None
+
+    # Provision the GPU runtime faster-whisper STT needs, at the SAME first-run
+    # moment as the llama.cpp binary — so GPU speech-to-text installs alongside
+    # the GPU LLM rather than silently falling back to CPU int8 (not realtime).
+    # faster-whisper runs on CTranslate2 (cuBLAS/cuDNN), independent of torch.
+    # Best-effort + idempotent: no-ops on CPU boxes and when already installed.
+    try:
+        from tts.package_installer import (
+            has_nvidia_gpu, is_cuda_ctranslate2, install_gpu_ctranslate2,
+        )
+        if has_nvidia_gpu() and not is_cuda_ctranslate2():
+            if progress_callback:
+                progress_callback("Installing CUDA runtime for GPU speech-to-text...")
+            install_gpu_ctranslate2(progress_cb=progress_callback)
+    except Exception as _ct2_err:
+        logger.debug(f"GPU ctranslate2 first-run install skipped: {_ct2_err}")
 
     # Download default model
     if default_model_index < len(MODEL_PRESETS):

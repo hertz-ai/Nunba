@@ -160,6 +160,7 @@ const AdminAgentDashboard = lazyRetry(() => import('./components/Admin/AgentDash
 const AdminRevenue = lazyRetry(() => import('./components/Admin/RevenueAnalyticsPage'));
 const AdminContentTasks = lazyRetry(() => import('./components/Admin/ContentTasksPage'));
 const AdminNetworkNodes = lazyRetry(() => import('./pages/admin/NetworkNodesPage'));
+const AdminUpdateControl = lazyRetry(() => import('./pages/admin/UpdateControlPage'));
 const AdminModelManagement = lazyRetry(() => import('./pages/admin/ModelManagementPage'));
 const AdminProviderManagement = lazyRetry(() => import('./pages/admin/ProviderManagementPage'));
 const AdminTaskLedger = lazyRetry(() => import('./pages/admin/TaskLedgerPage'));
@@ -624,6 +625,7 @@ function MainRoutes() {
         <Route path="/admin/revenue" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="central" fallback="/admin"><AdminRevenue /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/content-tasks" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminContentTasks /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/network-nodes" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="central" fallback="/admin"><AdminNetworkNodes /></RoleGuard></AdminLayout></Suspense>} />
+        <Route path="/admin/update-control" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="central" fallback="/admin"><AdminUpdateControl /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/models" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminModelManagement /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/providers" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminProviderManagement /></RoleGuard></AdminLayout></Suspense>} />
         <Route path="/admin/task-ledger" element={<Suspense fallback={<PageSkeleton dark />}><AdminLayout><RoleGuard minRole="guest" fallback="/social"><AdminTaskLedger /></RoleGuard></AdminLayout></Suspense>} />

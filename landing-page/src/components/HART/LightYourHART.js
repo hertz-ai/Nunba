@@ -102,7 +102,14 @@ const styles = {
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    overflow: 'hidden',
+    // Was overflow:'hidden' — in a fixed, vertically-centered flex column that
+    // clipped BOTH ends when the content (e.g. the language chips) was taller
+    // than the viewport (portrait / small frameless window), so options like
+    // "English" became unreachable with no scroll. overflowY:'auto' + the
+    // content's `my:'auto'` below keep it centered when it fits AND let it
+    // scroll to reach every option when it doesn't.
+    overflowY: 'auto',
+    overflowX: 'hidden',
     cursor: 'default',
     userSelect: 'none',
   },
@@ -121,6 +128,13 @@ const styles = {
     justifyContent: 'center',
     textAlign: 'center',
     px: 4,
+    // my:'auto' centers the block when it fits and — unlike the parent's
+    // justifyContent:'center' — still lets the scroll container reach the top
+    // AND bottom when the content overflows (the Chromium centered-flex-scroll
+    // clip). py gives breathing room so the first/last option isn't flush to
+    // the scroll edge.
+    my: 'auto',
+    py: 3,
     maxWidth: 600,
     width: '100%',
   },

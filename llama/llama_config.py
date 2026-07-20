@@ -28,6 +28,35 @@ from llama.llama_installer import MODEL_PRESETS, LlamaInstaller, ModelPreset
 logger = logging.getLogger('NunbaLlamaConfig')
 
 
+# PERF-2 (audit #564): Nunba's raw log writers append unbounded — the
+# llama-server stdout/stderr log reached ~68MB.  ONE canonical rotation point
+# for Nunba raw log writers (no parallel rotation impl): rename → .old past the
+# cap, one backup generation.  We KEEP the llama log verbose — its slot /
+# "context size exceeded" lines are load-bearing diagnostics — and only BOUND
+# it.  Cap via HEVOLVE_RAW_LOG_MAX_MB (default 20).
+def _rotate_log_if_oversized(path: str, max_bytes: int | None = None) -> bool:
+    """Rename ``path`` → ``path + '.old'`` when it exceeds ``max_bytes``.
+
+    Best-effort, never raises; one backup generation (prior .old overwritten).
+    Returns True iff a rotation happened.  Sole rotation impl for Nunba's raw
+    log writers — callers must not re-implement it (DRY / no parallel path)."""
+    if max_bytes is None:
+        try:
+            max_bytes = max(1, int(os.environ.get('HEVOLVE_RAW_LOG_MAX_MB', '') or 20)) * 1024 * 1024
+        except ValueError:
+            max_bytes = 20 * 1024 * 1024
+    try:
+        if os.path.getsize(path) <= max_bytes:
+            return False
+    except OSError:
+        return False  # missing / unstatable → nothing to rotate
+    try:
+        os.replace(path, path + '.old')
+        return True
+    except OSError:
+        return False
+
+
 class ServerType:
     """Enum for server type detection"""
     NOT_RUNNING = "not_running"
@@ -95,6 +124,30 @@ def _scan_via_canonical_resolver() -> dict | None:
     }
 
 
+def _openai_models_or_none(response) -> list | None:
+    """Return the model list from a genuine OpenAI ``/v1/models`` 200
+    response, else ``None``.
+
+    A real llama.cpp / LM Studio / vLLM server answers HTTP 200 with a
+    JSON body ``{"data": [ ...models... ]}`` (a non-empty list).  An
+    HTML/SPA catch-all — the app's OWN Flask (5000/6777) or a dead
+    :8080 — ALSO returns 200 for ``/v1/models``, so status alone is not
+    enough.  Single validator shared by both ``scan_existing_llm_endpoints``
+    and ``scan_openai_compatible_ports`` (Gate 4 / DRY: one gate, no
+    parallel "is this a real LLM 200?" implementations).
+    """
+    if response.status_code != 200:
+        return None
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(models, list) or not models:
+        return None
+    return models
+
+
 def scan_existing_llm_endpoints() -> dict | None:
     """
     Scan for existing LLM endpoints on the system.
@@ -127,7 +180,14 @@ def scan_existing_llm_endpoints() -> dict | None:
             logger.debug(f"Checking {endpoint['name']} at {health_url}")
 
             response = requests.get(health_url, timeout=2)
-            if response.status_code == 200:
+            # OpenAI-type entries probe /v1/models, which an HTML/SPA catch-all
+            # (the app's own Flask, or a dead :8080) also answers 200 — require a
+            # real JSON model list, the SAME gate as scan_openai_compatible_ports.
+            if endpoint["type"] == "openai":
+                valid = _openai_models_or_none(response) is not None
+            else:
+                valid = response.status_code == 200
+            if valid:
                 logger.info(f"Found existing LLM endpoint: {endpoint['name']} at {endpoint['base_url']}")
                 return {
                     "name": endpoint["name"],
@@ -156,21 +216,33 @@ def scan_openai_compatible_ports(ports: list[int] = None) -> dict | None:
         Dict with endpoint info if found, None otherwise
     """
     if ports is None:
-        ports = [8080, 8081, 8082, 8000, 5000, 5001, 3000, 3001, 4000, 11434, 1234, 1337]
+        # Genuinely-EXTERNAL LLM servers only (Ollama 11434, LM Studio 1234,
+        # etc.).  EXCLUDE the app's OWN ports — the Flask backend (5000 desktop /
+        # 6777 OS) and the app-managed local llama-server (8080/8081/8082) — so
+        # the scan never adopts THIS app as its own "external LLM".  That
+        # false-adoption set use_external_llm=True pointing at a dead :8080 and
+        # SUPPRESSED the local llama.cpp install (the Flask SPA catch-all returns
+        # 200 for /v1/models, which fooled the old status-only check).
+        ports = [11434, 1234, 1337, 8000, 3000, 3001, 4000]
 
     for port in ports:
         try:
-            # Try OpenAI-compatible /v1/models endpoint
             url = f"http://localhost:{port}/v1/models"
             response = requests.get(url, timeout=1)
-            if response.status_code == 200:
-                logger.info(f"Found OpenAI-compatible endpoint on port {port}")
-                return {
-                    "name": f"OpenAI-compatible (port {port})",
-                    "base_url": f"http://localhost:{port}",
-                    "completions": f"http://localhost:{port}/v1/completions",
-                    "type": "openai"
-                }
+            # Require a REAL OpenAI /v1/models JSON (a non-empty list of models),
+            # not just any 200 — an HTML/SPA page also returns 200 and must NOT be
+            # mistaken for an LLM server.  Shared gate: _openai_models_or_none.
+            models = _openai_models_or_none(response)
+            if not models:
+                continue
+            logger.info(f"Found OpenAI-compatible LLM endpoint on port {port} "
+                        f"({len(models)} model(s))")
+            return {
+                "name": f"OpenAI-compatible (port {port})",
+                "base_url": f"http://localhost:{port}",
+                "completions": f"http://localhost:{port}/v1/completions",
+                "type": "openai"
+            }
         except Exception:
             pass
 
@@ -621,6 +693,31 @@ class LlamaConfig:
         diag['mmproj_needed'] = best_preset.has_vision and bool(best_preset.mmproj_file)
         if diag['mmproj_needed']:
             diag['mmproj_available'] = self.installer.get_mmproj_path(best_preset) is not None
+
+        # ── Compute-fit ↔ downloaded coherence ─────────────────────
+        # The compute-best model may not be on disk (install-time
+        # _select_model_for_compute fitted this box to the 0.8B, so only the
+        # 0.8B was downloaded).  Advertising / booting the bigger "best" would
+        # (a) show the wrong model on the setup card and (b) let auto_load try
+        # to start a model that isn't downloaded while a fitting one is.  Prefer
+        # the largest DOWNLOADED model that fits — the SAME helper auto_setup
+        # uses (live disk check), no parallel selection.
+        if not diag['best_model_downloaded']:
+            alt_idx = self._find_best_downloaded_model(diag['compute_budget_mb'])
+            if alt_idx is not None and alt_idx != best_idx:
+                best_idx = alt_idx
+                best_preset = MODEL_PRESETS[best_idx]
+                diag['best_model_index'] = best_idx
+                diag['best_model_name'] = best_preset.display_name
+                diag['best_model_size_mb'] = best_preset.size_mb
+                diag['best_model_downloaded'] = True
+                diag['best_model_fits_compute'] = (
+                    best_preset.size_mb <= diag['compute_budget_mb'])
+                diag['mmproj_needed'] = (
+                    best_preset.has_vision and bool(best_preset.mmproj_file))
+                diag['mmproj_available'] = (
+                    self.installer.get_mmproj_path(best_preset) is not None
+                    if diag['mmproj_needed'] else False)
 
         # ── Build-version check (existing binary, build number floor) ──
         # If a binary is already installed and no CPU/CUDA mismatch was
@@ -1614,6 +1711,28 @@ class LlamaConfig:
         # Cap threads to 75% of cores — leave headroom for OS + TTS
         max_threads = max(1, int((os.cpu_count() or 4) * 0.75))
 
+        # ── Parallel slots: cap to avoid unified-KV exhaustion ──
+        # llama-server defaults --parallel to "auto" and picked 4 slots on
+        # the live box (llama_server_8080.log:8 "n_parallel is set to auto,
+        # using n_parallel = 4 and kv_unified = true").  With kv_unified the
+        # whole n_ctx (12288) is ONE shared KV pool across ALL slots — it is
+        # NOT 12288 per slot.  Chat/agent prompts run ~4.4k tokens each
+        # (witnessed task.n_tokens = 4433), so ≥3 concurrent ones (draft +
+        # autogen experts + daemon) sum past 12288 and the server logs
+        # "failed to find free space in the KV cache" → prompt truncation +
+        # GPU thrash (~10 t/s) + HTTP 503 — i.e. the "no LLM response"
+        # outage.  Cap parallel so the pool can't be over-subscribed:
+        # default 2 (2 × 4.4k = 8.8k < 12288, with headroom) lets one chat
+        # turn and one background autogen slot coexist.  Env-tunable via
+        # HEVOLVE_LLAMA_PARALLEL (1 = max per-request ctx + serialize;
+        # raise only on a box launched with a bigger --ctx-size budget).
+        try:
+            n_parallel = int(os.environ.get('HEVOLVE_LLAMA_PARALLEL', '')
+                             or self.config.get('llama_parallel') or 2)
+        except (TypeError, ValueError):
+            n_parallel = 2
+        n_parallel = max(1, min(n_parallel, 4))
+
         # Build server command — zinc uses simpler CLI than llama.cpp
         if _use_zinc:
             cmd = [llama_server, '-m', model_path, '-p', str(desired_port)]
@@ -1626,6 +1745,9 @@ class LlamaConfig:
                 "--port", str(desired_port),
                 "--ctx-size", str(ctx_size),
                 "--threads", str(max_threads),
+                # Explicit cap (see n_parallel above) — overrides llama.cpp's
+                # "auto" (=4) that over-subscribed the shared kv_unified pool.
+                "--parallel", str(n_parallel),
                 "--host", "127.0.0.1",
                 "--jinja",
                 "--reasoning-format", "deepseek",
@@ -1821,6 +1943,7 @@ class LlamaConfig:
             # Append-mode preserves history across restarts.  Write a
             # session-start banner so a tail can locate the current run.
             try:
+                _rotate_log_if_oversized(_llama_log_path)  # PERF-2: bound at spawn (across restarts)
                 _llama_log_fh = open(_llama_log_path, 'ab')
                 _banner = (
                     f"\n===== {time.strftime('%Y-%m-%dT%H:%M:%S')} "

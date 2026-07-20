@@ -6,30 +6,45 @@ to resize, and (b) maximizes to the full monitor rect — covering the
 taskbar — instead of the work area.  This module restores both, WITHOUT
 giving up the dark React-painted titlebar.
 
-Mechanism (same pattern Teams / Discord / VSCode use):
+Mechanism — "preserve the native frame, reclaim only the caption" (the
+pattern Windows Terminal's NonClientIslandWindow + Microsoft's official
+custom title-bar sample use).  Philosophy B: let Windows keep owning the
+hard parts; we only hide the caption pixels and paint React over them.
 
-  1. Add WS_THICKFRAME back to the window style — Windows then draws
-     the invisible 8px resize border at all four edges.  Combined with
-     `WS_SYSMENU`, Alt+Space → standard system menu also works again.
+  1. Promote the pywebview WS_POPUP window to a proper OVERLAPPED window:
+     clear WS_POPUP and add WS_CAPTION + WS_THICKFRAME + WS_SYSMENU + the
+     min/max boxes.  WS_CAPTION is load-bearing — it's what makes Windows
+     manage work-area maximize, Aero Snap, Win11 Snap Layouts,
+     maximize/minimize animations and the DWM drop shadow.  A bare
+     WS_POPUP+WS_THICKFRAME window gets none of those, which is exactly why
+     the older re-implemented versions never behaved natively.
 
-  2. Subclass the window proc to intercept three messages:
+  2. Subclass the window proc; DefWindowProc keeps owning everything except
+     the caption strip + a few overrides:
 
-       WM_NCCALCSIZE   — eat the non-client area so DWM doesn't paint
-                         the native titlebar over our React strip.
-                         (Returning 0 with `wParam=TRUE` means "the
-                         entire window rect is client area".)
+       WM_NCCALCSIZE    — let DefWindowProc inset the standard frame, then
+                          move the client top back to the window top so the
+                          React titlebar paints over the caption.  The
+                          left/right/bottom resize borders stay non-client →
+                          native resize.  (When maximized, add top padding so
+                          the titlebar isn't clipped by the maximized
+                          overhang.)
 
-       WM_NCHITTEST    — for points in the top `titlebar_height` pixels
-                         (excluding the React window-button cluster on
-                         the right), return HTCAPTION so the OS handles
-                         drag-to-move natively.  For points within
-                         `resize_border` of an edge, return the matching
-                         HTLEFT/RIGHT/TOP/BOTTOM/etc. so OS resize works.
-                         Everything else → HTCLIENT.
+       WM_NCHITTEST     — defer to DefWindowProc (native resize borders +
+                          corners); only when it returns HTCLIENT inside the
+                          titlebar strip do we override: the maximize button
+                          → HTMAXBUTTON (Win11 Snap-Layouts flyout), min/close
+                          + chip slot → HTCLIENT, the rest → HTCAPTION (native
+                          drag + Aero Snap).
 
-       WM_GETMINMAXINFO — clamp ptMaxSize / ptMaxPosition to the work
-                          area of the monitor the window is currently
-                          on, so maximize stops at the taskbar.
+       WM_NC*BUTTON/MOVE — we draw the maximize button in React, so we eat the
+                          NC button messages for HTMAXBUTTON and drive
+                          maximize/restore + hover ourselves (else DefWindowProc
+                          paints its own glyph over the React button).
+
+       WM_GETMINMAXINFO  — belt-and-suspenders clamp of ptMaxSize/Position to
+                          the current monitor's work area (a captioned window
+                          already does this natively).
 
 Cross-platform: this module is a no-op outside Windows.  Callers must
 gate on `sys.platform == 'win32'` AND `use_frameless()` before invoking.
@@ -55,6 +70,8 @@ logger = logging.getLogger('nunba.win32_chrome')
 GWL_STYLE = -16
 GWLP_WNDPROC = -4
 
+WS_POPUP = 0x80000000
+WS_CAPTION = 0x00C00000        # WS_BORDER | WS_DLGFRAME
 WS_THICKFRAME = 0x00040000
 WS_SYSMENU = 0x00080000
 WS_MAXIMIZEBOX = 0x00010000
@@ -65,6 +82,9 @@ WM_NCHITTEST = 0x0084
 WM_GETMINMAXINFO = 0x0024
 WM_DESTROY = 0x0002
 WM_NCLBUTTONDOWN = 0x00A1
+WM_NCLBUTTONUP = 0x00A2
+WM_NCMOUSEMOVE = 0x00A0
+WM_NCMOUSELEAVE = 0x02A2
 
 SWP_FRAMECHANGED = 0x0020
 SWP_NOMOVE = 0x0002
@@ -75,6 +95,8 @@ SWP_NOOWNERZORDER = 0x0200
 
 HTCLIENT = 1
 HTCAPTION = 2
+HTMINBUTTON = 8
+HTMAXBUTTON = 9   # Win11 Snap Layouts: the hover flyout anchors here
 HTLEFT = 10
 HTRIGHT = 11
 HTTOP = 12
@@ -83,11 +105,21 @@ HTTOPRIGHT = 14
 HTBOTTOM = 15
 HTBOTTOMLEFT = 16
 HTBOTTOMRIGHT = 17
+HTCLOSE = 20
 
 MONITOR_DEFAULTTONEAREST = 0x00000002
 
 SM_CXSIZEFRAME = 32
+SM_CYSIZEFRAME = 33
 SM_CXPADDEDBORDER = 92
+
+SW_MAXIMIZE = 3
+SW_RESTORE = 9
+
+# TrackMouseEvent flags — needed so WM_NCMOUSELEAVE is delivered after a
+# WM_NCMOUSEMOVE over the maximize button (so the hover highlight clears).
+TME_LEAVE = 0x00000002
+TME_NONCLIENT = 0x00000010
 
 
 # ── Structures ────────────────────────────────────────────────────────
@@ -115,6 +147,20 @@ class MONITORINFO(ctypes.Structure):
                 ('rcMonitor', RECT),
                 ('rcWork', RECT),
                 ('dwFlags', wintypes.DWORD)]
+
+
+class NCCALCSIZE_PARAMS(ctypes.Structure):
+    # rgrc[0] on entry (wParam=TRUE) = proposed new window rect; on exit it
+    # must hold the new CLIENT rect.  We let DefWindowProc fill it, then move
+    # the top back up to reclaim the caption strip for the React titlebar.
+    _fields_ = [('rgrc', RECT * 3), ('lppos', ctypes.c_void_p)]
+
+
+class TRACKMOUSEEVENT(ctypes.Structure):
+    _fields_ = [('cbSize', wintypes.DWORD),
+                ('dwFlags', wintypes.DWORD),
+                ('hwndTrack', wintypes.HWND),
+                ('dwHoverTime', wintypes.DWORD)]
 
 
 WNDPROC = ctypes.WINFUNCTYPE(
@@ -168,6 +214,17 @@ if sys.platform == 'win32':
         wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.SendMessageW.restype = ctypes.c_ssize_t
 
+    # Native maximize/restore (we drive these ourselves for the React
+    # maximize button so DefWindowProc doesn't paint its own glyph over it).
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
+
+    user32.IsZoomed.argtypes = [wintypes.HWND]
+    user32.IsZoomed.restype = wintypes.BOOL
+
+    user32.TrackMouseEvent.argtypes = [ctypes.POINTER(TRACKMOUSEEVENT)]
+    user32.TrackMouseEvent.restype = wintypes.BOOL
+
     # GetDpiForWindow is Win10 1607+.  Bind defensively — on older Windows
     # the attribute is absent and we fall back to the system DPI (96).
     try:
@@ -182,7 +239,7 @@ else:
 
 # ── Per-HWND state ────────────────────────────────────────────────────
 
-# Map HWND → (original_wndproc_addr, kept_wndproc_callback, titlebar_h, right_cluster_w)
+# Map HWND → (original_wndproc_addr, kept_wndproc_callback, titlebar_h, button_cluster_w, slot_w)
 # The callback ref keeps the WNDPROC C function alive — without this it would be GC'd
 # and the next message into the subclass would jump into freed memory.
 _INSTALLED = {}
@@ -226,6 +283,83 @@ def _work_area(hwnd: int) -> 'RECT | None':
     if not user32.GetMonitorInfoW(mon, ctypes.byref(info)):
         return None
     return info.rcWork
+
+
+# Snap-Layouts maximize-button hover, per HWND.  Set by the wndproc on NC
+# mouse-move/leave over HTMAXBUTTON; read by WindowApi.window_max_hover so the
+# React maximize button can mirror the highlight (CSS :hover can't fire over a
+# non-client pixel).
+_MAX_HOVER = {}
+
+
+def _is_maximized(hwnd: int) -> bool:
+    """True if the window is maximized (IsZoomed)."""
+    try:
+        return bool(user32.IsZoomed(hwnd))
+    except Exception:
+        return False
+
+
+def _set_max_hover(hwnd: int, on: bool) -> None:
+    """Record max-button hover + (on enter) request WM_NCMOUSELEAVE so we
+    learn when the cursor leaves the non-client maximize button."""
+    _MAX_HOVER[hwnd] = on
+    if on:
+        try:
+            tme = TRACKMOUSEEVENT()
+            tme.cbSize = ctypes.sizeof(TRACKMOUSEEVENT)
+            tme.dwFlags = TME_LEAVE | TME_NONCLIENT
+            tme.hwndTrack = hwnd
+            tme.dwHoverTime = 0
+            user32.TrackMouseEvent(ctypes.byref(tme))
+        except Exception:
+            pass
+
+
+def get_max_button_hover(hwnd: int) -> bool:
+    """Public: is the cursor over the (non-client) maximize button right now?
+    WindowApi exposes this to the React titlebar for hover parity."""
+    return bool(_MAX_HOVER.get(hwnd, False))
+
+
+def _classify_hit(x, y, rc, native_hit, *, titlebar_h, button_w,
+                  right_client_w):
+    """Refine DefWindowProc's WM_NCHITTEST for the reclaimed caption strip.
+
+    Approach B keeps the native frame, so DefWindowProc already returns the
+    correct code for every parent-owned (non-client) pixel — the
+    left/right/bottom resize borders + their corners — and HTCLIENT for the
+    client area (incl. the caption strip we reclaimed for the React titlebar).
+    Edge/corner resize is therefore left ENTIRELY to DefWindowProc (truly
+    native — no hardcoded border math, no parallel path).
+
+    We override ONLY when DefWindowProc says HTCLIENT *and* the point is in
+    the titlebar strip:
+      * maximize button (middle of the cluster) → HTMAXBUTTON (Snap Layouts)
+      * min/close + chip slot                   → HTCLIENT (React owns click)
+      * the rest of the strip                   → HTCAPTION (native drag/snap)
+
+    The one child-covered edge (the reclaimed top) is resized via the React
+    top grip → begin_window_resize, the same JS path the sides used to need.
+
+    Pure (no Win32 calls): ``native_hit`` is computed by the wndproc via
+    DefWindowProc and passed in, so this stays unit-testable.  ``rc`` is any
+    object with .left/.top/.right/.bottom.  ``button_w`` is one window-button
+    width (physical px); the maximize button is the MIDDLE of the min/max/close
+    cluster (Windows order, left→right).  ``right_client_w`` = (button-cluster
+    + chip-slot) width carved to HTCLIENT.
+    """
+    if native_hit != HTCLIENT:
+        return native_hit  # native resize borders/corners — DefWindowProc owns it
+    if y < rc.top + titlebar_h:
+        max_left = rc.right - 2 * button_w
+        max_right = rc.right - button_w
+        if max_left <= x < max_right:
+            return HTMAXBUTTON
+        if right_client_w > 0 and x >= rc.right - right_client_w:
+            return HTCLIENT
+        return HTCAPTION
+    return HTCLIENT
 
 
 # ── The subclassed wndproc ────────────────────────────────────────────
@@ -276,85 +410,81 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int,
     caption-button strip.
     """
 
-    border = _resize_border_px()
+    # Maximize button = middle third of the min/max/close cluster.
+    button_w_css = max(1, right_cluster_w_css // 3)
 
     def proc(hwnd, msg, wparam, lparam):
         try:
-            if msg == WM_NCCALCSIZE:
-                # When wParam=TRUE, lParam is an NCCALCSIZE_PARAMS* whose
-                # first RECT is the proposed window rect on entry and must
-                # be updated to the client rect on exit.  Returning 0 with
-                # rgrc unchanged means "client area = full window rect" —
-                # i.e. zero non-client area, no native chrome.  This is
-                # exactly the "extended client area" trick.
-                if wparam:
-                    return 0
+            if msg == WM_NCCALCSIZE and wparam:
+                # Philosophy B: keep the native frame, reclaim ONLY the caption.
+                # Let DefWindowProc inset the standard frame (caption + resize
+                # borders), then move the client top back to the window top so
+                # the React titlebar paints over the caption strip — while the
+                # left/right/bottom resize borders stay native, so Windows owns
+                # resize, work-area maximize, Aero Snap, animations + shadow.
+                params = ctypes.cast(
+                    lparam, ctypes.POINTER(NCCALCSIZE_PARAMS)).contents
+                orig_top = params.rgrc[0].top
+                ret = user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+                if ret != 0:
+                    return ret
+                params.rgrc[0].top = orig_top
+                # A maximized window's rect overhangs the work area by the
+                # frame border on every edge; without compensating, the top
+                # `border` px of the titlebar would be clipped above the
+                # screen.  Push the client top down so content starts at the
+                # work-area top (the Windows-Terminal maximized-padding fix).
+                if _is_maximized(hwnd):
+                    params.rgrc[0].top += (
+                        user32.GetSystemMetrics(SM_CYSIZEFRAME)
+                        + user32.GetSystemMetrics(SM_CXPADDEDBORDER))
                 return 0
 
             if msg == WM_NCHITTEST:
-                # lParam packs (screen_y << 16) | screen_x.  Sign-extend
-                # because the cursor can be on a left/top monitor with
-                # negative coordinates.
+                # Let DefWindowProc do the REAL hit-test first — it owns the
+                # native resize borders/corners (those pixels stay non-client
+                # under our caption-only WM_NCCALCSIZE, so they reach the parent
+                # and resize natively).  We only refine the client area.
+                native = user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+                if native != HTCLIENT:
+                    return native
+                # Client hit (incl. the reclaimed caption strip).  lParam packs
+                # (screen_y << 16) | screen_x; sign-extend for left/top monitors
+                # at negative coordinates.  CSS→physical per-monitor scale keeps
+                # the zones aligned with the React layout at any DPI.  Drag strip
+                # → HTCAPTION (native drag + Aero Snap); maximize button (middle
+                # of the cluster) → HTMAXBUTTON (Win11 Snap-Layouts flyout);
+                # min/close + chip slot → HTCLIENT (the WebView2 child gets them).
                 x = ctypes.c_short(lparam & 0xFFFF).value
                 y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
-
                 rc = RECT()
                 if not user32.GetWindowRect(hwnd, ctypes.byref(rc)):
                     return HTCLIENT
-
-                # Resize edges — only when NOT maximized (Windows convention).
-                # We check by comparing window rect to work area: a maximized
-                # frameless+thickframe window has window rect == work area.
-                wa = _work_area(hwnd)
-                maximized = (wa is not None
-                             and rc.left == wa.left and rc.top == wa.top
-                             and rc.right == wa.right and rc.bottom == wa.bottom)
-
-                if not maximized:
-                    on_left = x < rc.left + border
-                    on_right = x >= rc.right - border
-                    on_top = y < rc.top + border
-                    on_bot = y >= rc.bottom - border
-                    if on_top and on_left:
-                        return HTTOPLEFT
-                    if on_top and on_right:
-                        return HTTOPRIGHT
-                    if on_bot and on_left:
-                        return HTBOTTOMLEFT
-                    if on_bot and on_right:
-                        return HTBOTTOMRIGHT
-                    if on_left:
-                        return HTLEFT
-                    if on_right:
-                        return HTRIGHT
-                    if on_top:
-                        return HTTOP
-                    if on_bot:
-                        return HTBOTTOM
-
-                # Drag-region: top `titlebar_h` px of the window is HTCAPTION
-                # (native drag + Aero Snap + double-click maximize) EXCEPT the
-                # rightmost `right_cluster_w + slot_w` px, which is the React
-                # min/max/close button cluster PLUS the intelligence-chip slot
-                # immediately to its left.  That whole right-zone must be
-                # HTCLIENT so the WebView2 child HWND receives the click (a
-                # caption hit would let Windows eat the click as a move-drag —
-                # see the docstring).  The chip then does JS drag-vs-click:
-                # a plain click toggles the preference; a real drag calls
-                # window_start_drag() → begin_window_drag() to run the native
-                # move loop.  The left wordmark + center spacer stay HTCAPTION
-                # so the whole non-interactive strip drags + snaps natively.
-                # CSS→physical: scale per-monitor so the zones stay aligned
-                # with the React layout at any DPI / after monitor moves.
                 scale = _dpi_scale(hwnd)
-                titlebar_h = int(round(titlebar_h_css * scale))
-                right_client_w = int(round((right_cluster_w_css + slot_w_css) * scale))
-                if y < rc.top + titlebar_h:
-                    if right_client_w > 0 and x >= rc.right - right_client_w:
-                        return HTCLIENT
-                    return HTCAPTION
+                return _classify_hit(
+                    x, y, rc, native,
+                    titlebar_h=int(round(titlebar_h_css * scale)),
+                    button_w=int(round(button_w_css * scale)),
+                    right_client_w=int(round(
+                        (right_cluster_w_css + slot_w_css) * scale)),
+                )
 
-                return HTCLIENT
+            # Snap Layouts: we draw the maximize button (React), so eat the NC
+            # button messages for HTMAXBUTTON and drive maximize/restore + hover
+            # ourselves.  The HTMAXBUTTON hit-test above is what makes Windows
+            # show the flyout; eating these stops DefWindowProc from painting
+            # its own maximize glyph over our React button.
+            if msg == WM_NCMOUSEMOVE and wparam == HTMAXBUTTON:
+                _set_max_hover(hwnd, True)
+                return 0
+            if msg == WM_NCMOUSELEAVE:
+                _set_max_hover(hwnd, False)
+                # fall through to default leave handling
+            if msg == WM_NCLBUTTONDOWN and wparam == HTMAXBUTTON:
+                return 0  # swallow the press; act on release
+            if msg == WM_NCLBUTTONUP and wparam == HTMAXBUTTON:
+                toggle_maximize(hwnd)  # native work-area clamp (single source)
+                return 0
 
             if msg == WM_GETMINMAXINFO:
                 # Clamp maximize to the work area of the current monitor.
@@ -374,6 +504,7 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int,
 
             if msg == WM_DESTROY:
                 _INSTALLED.pop(hwnd, None)
+                _MAX_HOVER.pop(hwnd, None)
                 # fall through to original
 
         except Exception:
@@ -422,12 +553,18 @@ def install_custom_chrome(hwnd: int, titlebar_height: int = 32,
         return True
 
     try:
-        # 1. Add WS_THICKFRAME + WS_SYSMENU + min/max boxes back.  This
-        #    is what gives us OS-managed resize hit-testing AND a working
-        #    Alt+Space system menu without showing native titlebar pixels
-        #    (because WM_NCCALCSIZE will eat them).
+        # 1. Promote the pywebview WS_POPUP window to a proper OVERLAPPED
+        #    window: clear WS_POPUP and add WS_CAPTION + WS_THICKFRAME +
+        #    WS_SYSMENU + min/max boxes.  WS_CAPTION is the load-bearing bit —
+        #    it's what gives Windows-managed work-area maximize, Aero Snap,
+        #    Win11 Snap Layouts, maximize/minimize animations and the DWM drop
+        #    shadow.  A bare WS_POPUP + WS_THICKFRAME window (the old approach)
+        #    gets none of those, which is why the re-implemented versions never
+        #    behaved natively.  The caption pixels never show because
+        #    WM_NCCALCSIZE reclaims them for the React titlebar.
         style = user32.GetWindowLongPtrW(hwnd, GWL_STYLE)
-        new_style = style | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX
+        new_style = ((style & ~WS_POPUP) | WS_CAPTION | WS_THICKFRAME
+                     | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX)
         user32.SetWindowLongPtrW(hwnd, GWL_STYLE, new_style)
 
         # 2. Subclass the wndproc.  SetWindowLongPtrW with GWLP_WNDPROC
@@ -469,6 +606,98 @@ def is_installed(hwnd: int) -> bool:
     return hwnd in _INSTALLED
 
 
+def toggle_maximize(hwnd: int) -> bool:
+    """Toggle native maximize/restore for `hwnd`; return the NEW maximized
+    state (True = now maximized).
+
+    Uses raw ShowWindow(SW_MAXIMIZE / SW_RESTORE) — NOT pywebview's WinForms
+    maximize() — so the WM_GETMINMAXINFO handler installed by
+    install_custom_chrome clamps the maximized rect to the monitor WORK AREA:
+    the window sits ABOVE the taskbar, like a normal framed app.  A
+    FormBorderStyle.None form maximized via WinForms WindowState instead covers
+    the FULL screen (hiding the taskbar) and re-applies its own frame style,
+    fighting the custom chrome.
+
+    Single source of truth for the native maximize toggle: both the caption
+    maximize-button (WM_NCLBUTTONUP / HTMAXBUTTON in the wndproc) and the JS
+    WindowApi.window_toggle_maximize call here.  Must run on the HWND's owning
+    (pywebview GUI) thread; pywebview marshals js_api calls there.
+    """
+    if sys.platform != 'win32' or not hwnd:
+        return False
+    now_max = _is_maximized(hwnd)
+    try:
+        user32.ShowWindow(hwnd, SW_RESTORE if now_max else SW_MAXIMIZE)
+    except Exception:
+        logger.exception('toggle_maximize failed for hwnd=%s', hwnd)
+        return now_max
+    return not now_max
+
+
+def maximize(hwnd: int) -> bool:
+    """Maximize `hwnd` via raw ShowWindow(SW_MAXIMIZE) so the installed
+    WM_GETMINMAXINFO handler clamps the maximized rect to the monitor WORK
+    AREA — the window sits ABOVE the taskbar.  Unlike toggle_maximize this
+    ALWAYS maximizes (never restores), for the tray / protocol / fullscreen
+    "maximize" actions that must not toggle.
+
+    Same reason as toggle_maximize: pywebview's WinForms maximize() re-maximizes
+    the FormBorderStyle.None form to the FULL screen (covering the taskbar) and
+    fights the custom chrome, so those call sites must route here instead.
+    Returns True if dispatched.
+    """
+    if sys.platform != 'win32' or not hwnd:
+        return False
+    try:
+        user32.ShowWindow(hwnd, SW_MAXIMIZE)
+    except Exception:
+        logger.exception('maximize failed for hwnd=%s', hwnd)
+        return False
+    return True
+
+
+def snap_to_work_area(hwnd, width_frac=None, edge='right'):
+    """Frame-aware snap: place the window flush inside the CURRENT monitor's
+    WORK AREA (taskbar-excluded) in PHYSICAL pixels via SetWindowPos, so the
+    window ALWAYS reaches the taskbar regardless of pywebview's logical
+    create_window / resize rounding — which lands the default portrait dock
+    ~39px short of the taskbar (bottom at 689 instead of the 728 work-area
+    bottom).
+
+    Height is always the full work-area height.  Horizontal placement:
+      edge='full'          -> spans the whole work-area width
+      edge='right'/'left'  -> a width_frac-wide dock flush to that edge
+    width_frac is a fraction of the work-area WIDTH (DPI-proof — the work area
+    is already physical), e.g. 709/2560 for the portrait right-dock.
+
+    Aero Snap + Win11 Snap Layouts already come from the preserved native frame
+    (philosophy B, cbd6daeb) for USER-driven snaps; this restores the same
+    work-area awareness for the DEFAULT / programmatic (auto-layout) placement,
+    which the native frame does not cover.  Returns True on dispatch.
+    """
+    if sys.platform != 'win32' or not hwnd:
+        return False
+    wa = _work_area(hwnd)
+    if wa is None:
+        return False
+    wa_w = wa.right - wa.left
+    wa_h = wa.bottom - wa.top
+    if edge == 'full' or not width_frac:
+        x, w = wa.left, wa_w
+    else:
+        w = max(200, min(wa_w, round(wa_w * float(width_frac))))
+        x = (wa.right - w) if edge == 'right' else wa.left
+    try:
+        user32.SetWindowPos(hwnd, 0, x, wa.top, w, wa_h,
+                            SWP_NOZORDER | SWP_NOACTIVATE)
+    except Exception:
+        logger.exception('snap_to_work_area failed for hwnd=%s', hwnd)
+        return False
+    logger.info('snap_to_work_area: hwnd=%s -> %sx%s at (%s,%s) edge=%s',
+                hwnd, w, wa_h, x, wa.top, edge)
+    return True
+
+
 def begin_window_drag(hwnd: int) -> bool:
     """Start the native window-move loop for `hwnd` from a JS-initiated
     mouse-down — used when the drag begins over an HTCLIENT region (the
@@ -504,4 +733,48 @@ def begin_window_drag(hwnd: int) -> bool:
         return True
     except Exception:
         logger.exception('begin_window_drag failed for hwnd=%s', hwnd)
+        return False
+
+
+# edge name (matches NunbaTitleBar.js RESIZE_GRIPS) → Win32 resize hit-code
+_EDGE_HT = {
+    'left': HTLEFT, 'right': HTRIGHT, 'top': HTTOP, 'bottom': HTBOTTOM,
+    'top-left': HTTOPLEFT, 'top-right': HTTOPRIGHT,
+    'bottom-left': HTBOTTOMLEFT, 'bottom-right': HTBOTTOMRIGHT,
+}
+
+
+def begin_window_resize(hwnd: int, edge: str) -> bool:
+    """Start the native window-RESIZE loop for `hwnd` from a JS-initiated
+    mouse-down on a WebView edge grip.
+
+    Same ReleaseCapture + SendMessage(WM_NCLBUTTONDOWN, HT<edge>) trick as
+    begin_window_drag, but with a resize hit-code instead of HTCAPTION.
+
+    Why it's needed even though _make_wndproc's WM_NCHITTEST already returns
+    HTLEFT/HTRIGHT/etc. for the border: the hosted WebView2 child HWND fills
+    the client area to the very edge, so the cursor at the window border is
+    over the CHILD — the parent's WM_NCHITTEST is never consulted there and
+    OS edge-resize never starts.  The React grips (NunbaTitleBar.js) are thin
+    DOM strips at the viewport edges that DO receive the mousedown; they call
+    WindowApi.window_begin_resize(edge) → here, and we kick the OS's own modal
+    resize loop (correct cursors, Aero Snap, monitor-edge constraints).
+
+    Must run on the HWND's owning (pywebview GUI) thread; pywebview marshals
+    js_api calls there, so calling from WindowApi.window_begin_resize is safe.
+    """
+    if sys.platform != 'win32':
+        return False
+    if not hwnd:
+        return False
+    ht = _EDGE_HT.get((edge or '').strip().lower())
+    if ht is None:
+        logger.debug('begin_window_resize: unknown edge %r', edge)
+        return False
+    try:
+        user32.ReleaseCapture()
+        user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, ht, 0)
+        return True
+    except Exception:
+        logger.exception('begin_window_resize failed for hwnd=%s edge=%s', hwnd, edge)
         return False

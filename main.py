@@ -1822,6 +1822,29 @@ def llm_status():
     try:
         from llama.llama_config import MODEL_PRESETS, LlamaConfig
         config = LlamaConfig()
+
+        # PERF (audit #1): the send-gate poller (hooks/useLocalEngineReady,
+        # every 2-30s) reads only `available`.  The full path runs
+        # is_llm_available() — a REAL /v1/chat/completions generation (200-800ms
+        # + occupies a KV slot that contends with the n_parallel pool, so the
+        # poll can itself trigger "context exceeded") — PLUS diagnose() (GPU
+        # probe + binary glob + a `llama-server --version` subprocess) on EVERY
+        # poll.  Default to the cheap liveness path (one /health hit, no
+        # generation, no KV slot, no subprocess); gate the expensive
+        # verified-inference + full diagnosis behind ?full=1 (the setup /
+        # first-run UI passes it).  Liveness is the correct send-gate signal —
+        # the backend has its own busy / "starting AI engine" handling.
+        full = bool(request.args.get('full'))
+        if not full:
+            available = config.is_llm_server_running()  # /health, no generation
+            return jsonify({
+                "available": available,
+                "llm_mode": config.get_llm_mode(),
+                "cloud_configured": config.is_cloud_configured(),
+                "first_run": config.is_first_run(),
+                "setup_needed": not available and not config.is_cloud_configured(),
+            })
+
         available = config.is_llm_available()
         preset = config.get_selected_model_preset()
 
@@ -3595,6 +3618,29 @@ def health_alias():
     return backend_health()
 
 
+# B3: GPU driver-adequacy guidance for the chat GPU badge.  detect_gpu()
+# (desktop.ai_installer) flags a real NVIDIA GPU whose driver is too old for a
+# CUDA-12 llama.cpp build: inference silently stays on CPU.  Surface WHY next to
+# the "CPU" badge so the user knows a driver update would accelerate it, instead
+# of blaming the product.  Cached because the driver identity is static per
+# process and detect_gpu() shells out (nvidia-smi + WMI) — it must not run on
+# every 60s /backend/health poll.
+_GPU_GUIDANCE_UNSET = object()
+_gpu_guidance_cached = _GPU_GUIDANCE_UNSET
+
+
+def _gpu_driver_guidance():
+    global _gpu_guidance_cached
+    if _gpu_guidance_cached is _GPU_GUIDANCE_UNSET:
+        try:
+            from desktop.ai_installer import detect_gpu
+            _gpu_guidance_cached = detect_gpu().get('gpu_guidance')
+        except Exception as e:
+            logging.debug(f"/backend/health: GPU guidance unavailable: {e}")
+            _gpu_guidance_cached = None
+    return _gpu_guidance_cached
+
+
 @app.route('/backend/health', methods=["GET"])
 def backend_health():
     """Return backend + GPU tier diagnostics for the chat UI badge.
@@ -3651,6 +3697,9 @@ def backend_health():
         'vram_total_gb': round(vram_total, 2),
         'vram_free_gb': round(vram_free, 2),
         'speculation_enabled': speculation_enabled,
+        # B3: driver-too-old guidance so the "CPU" badge can explain a GPU that
+        # is present but unusable (None when the GPU is fine / absent).
+        'gpu_guidance': _gpu_driver_guidance(),
     }), 200
 
 
@@ -5549,6 +5598,36 @@ def start_background_services():
             from tts.tts_engine import get_tts_engine
             engine = get_tts_engine()
 
+            # If GPU detected but the CUDA ctranslate2 runtime is missing,
+            # install it NOW so faster-whisper STT runs on GPU (float16)
+            # instead of CPU int8 — CPU int8 can't sustain realtime streaming
+            # (29s cold load + can't keep the interim cadence). Independent of
+            # CUDA torch: faster-whisper runs on CTranslate2, not torch. Gated
+            # by is_cuda_ctranslate2() so it's a no-op once installed.
+            try:
+                from tts.package_installer import has_nvidia_gpu, is_cuda_ctranslate2
+                if has_nvidia_gpu() and not is_cuda_ctranslate2():
+                    logging.info("STT: GPU detected — installing CUDA ctranslate2 for GPU whisper...")
+                    from tts.package_installer import install_gpu_ctranslate2
+                    def _ct2_progress(msg):
+                        logging.info(f"CUDA ctranslate2: {msg}")
+                        try:
+                            from integrations.social.realtime import publish_event
+                            publish_event('setup_progress', {
+                                'type': 'setup_progress',
+                                'job_type': 'cuda_ctranslate2',
+                                'status': 'loading',
+                                'message': msg,
+                            })
+                        except Exception:
+                            pass
+                    _ct2_ok, _ct2_msg = install_gpu_ctranslate2(progress_cb=_ct2_progress)
+                    logging.info(
+                        "CUDA ctranslate2 installed — GPU STT active on next restart"
+                        if _ct2_ok else f"CUDA ctranslate2 not installed: {_ct2_msg}")
+            except Exception as _ct2_err:
+                logging.debug(f"CUDA ctranslate2 auto-install skipped: {_ct2_err}")
+
             # If GPU detected but CUDA torch not installed, install it NOW
             # (blocking) so GPU TTS works on first launch. Shows progress via
             # WAMP push so the UI can display download status.
@@ -5769,6 +5848,24 @@ if __name__ == '__main__':
         # Default to 127.0.0.1 (loopback only) for security; set
         # NUNBA_BIND_HOST=0.0.0.0 to expose on all interfaces.
         bind_host = os.environ.get('NUNBA_BIND_HOST', '127.0.0.1')
+        # HART OS native-daemon mode: bind a UNIX SOCKET instead of a TCP
+        # port so Nunba runs fully in-process inside the OS with NO host
+        # port occupied (steward 2026-07-09: "why shd we occupy host port
+        # if we can pack it within OS as a daemon process?").  LiquidUI
+        # reverse-proxies the socket same-origin.  Both Hypercorn (bind
+        # "unix:<path>") and Waitress (unix_socket=<path>) bind it
+        # natively; when unset the normal host:port path is unchanged.
+        _hart_socket = os.environ.get('HART_NUNBA_SOCKET', '').strip()
+        if _hart_socket:
+            # Remove a stale socket left by an unclean crash-exit so the
+            # rebind never fails with EADDRINUSE (systemd RuntimeDirectory
+            # usually pre-cleans it, but a crash-restart may not).
+            try:
+                if os.path.exists(_hart_socket):
+                    os.unlink(_hart_socket)
+            except OSError as _sock_err:
+                logging.warning("Could not remove stale socket %s: %s",
+                                _hart_socket, _sock_err)
         try:
             _worker_threads = int(os.environ.get('NUNBA_WORKER_THREADS', '128'))
         except (TypeError, ValueError):
@@ -5809,7 +5906,8 @@ if __name__ == '__main__':
             from hypercorn.middleware import AsyncioWSGIMiddleware
 
             config = Config()
-            config.bind = [f'{bind_host}:{args.port}']
+            config.bind = ([f'unix:{_hart_socket}'] if _hart_socket
+                           else [f'{bind_host}:{args.port}'])
             config.keep_alive_timeout = 120
             config.h11_max_incomplete_size = 16 * 1024 * 1024
             config.accesslog = None
@@ -5826,7 +5924,8 @@ if __name__ == '__main__':
                 await _hcserve(asgi_app, config)
 
             logging.info(
-                f"Starting Hypercorn (ASGI) on {bind_host}:{args.port} "
+                f"Starting Hypercorn (ASGI) on "
+                f"{('unix:' + _hart_socket) if _hart_socket else f'{bind_host}:{args.port}'} "
                 f"(executor_threads={_worker_threads})"
             )
             asyncio.run(_runner())
@@ -5842,22 +5941,26 @@ if __name__ == '__main__':
             try:
                 from waitress import serve
                 logging.info(
-                    f"Starting Waitress server on {bind_host}:{args.port} "
+                    f"Starting Waitress server on "
+                    f"{('unix:' + _hart_socket) if _hart_socket else f'{bind_host}:{args.port}'} "
                     f"(threads={_waitress_threads})"
                 )
                 # channel_timeout keeps slow clients from tying up a worker forever.
                 # cleanup_interval=30 keeps per-connection state from leaking on long
                 # SSE/chat streams.  Both chosen to match the 1.5s chat budget with
                 # generous safety margin for cold-start.
-                serve(
-                    app,
-                    host=bind_host,
-                    port=args.port,
+                # HART OS daemon mode binds the unix socket (host/port ignored
+                # by waitress when unix_socket is set); desktop keeps host:port.
+                _waitress_kwargs = dict(
                     threads=_waitress_threads,
                     channel_timeout=120,
                     cleanup_interval=30,
                     ident='Nunba',
                 )
+                if _hart_socket:
+                    serve(app, unix_socket=_hart_socket, **_waitress_kwargs)
+                else:
+                    serve(app, host=bind_host, port=args.port, **_waitress_kwargs)
             except ImportError:
                 logging.warning("waitress not available, falling back to Flask dev server")
                 app.run(debug=False, host=bind_host, port=args.port,

@@ -94,6 +94,20 @@ describe('NunbaTitleBar render guards', () => {
     expect(screen.getByTestId('nunba-window-buttons')).toBeInTheDocument();
   });
 
+  // Drift-guard (2026-06-24): the injected offset stylesheet must push MUI
+  // fixed AppBars + side Drawers below the 32px titlebar — else the admin
+  // header / sidebar top is occluded (they're MUI classes, NOT .fixed.top-0,
+  // so they escape the generic offset).
+  test('offset stylesheet reserves the titlebar for MUI AppBar + Drawer', () => {
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    const css = document.getElementById('nunba-titlebar-offsets')?.textContent || '';
+    expect(css).toContain('.MuiAppBar-positionFixed');
+    expect(css).toContain('.MuiDrawer-paperAnchorLeft');
+    // must offset by the titlebar-height var, not a hardcoded pixel value
+    expect(css).toMatch(/\.MuiAppBar-positionFixed\s*\{[^}]*top:\s*var\(--nunba-titlebar-h/);
+  });
+
   test('renders all 3 window control buttons', () => {
     mockPywebview();
     render(<NunbaTitleBar />);
@@ -222,15 +236,21 @@ describe('Right-slot drag-vs-click', () => {
   });
 });
 
-// ── GTK resize grips (Linux only) ────────────────────────────────────
+// ── Resize grips (frameless Win + Linux) ─────────────────────────────
 
-describe('Linux GTK resize grips', () => {
-  test('does NOT render resize grips on Windows (native hit-test owns resize)', () => {
+describe('Frameless resize grips', () => {
+  test('renders 8 resize grips on Windows too (WebView2 eats the native hit-test edge)', () => {
+    // The hosted WebView fills the client to the edge, so the OS resize
+    // border is unreachable — the grips drive resize via window_begin_resize
+    // on Windows as well as Linux.
     mockPywebview();
     setPlatform('Win32');
     render(<NunbaTitleBar />);
-    expect(screen.queryByTestId('nunba-resize-grips')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('nunba-resize-left')).not.toBeInTheDocument();
+    expect(screen.getByTestId('nunba-resize-grips')).toBeInTheDocument();
+    ['top', 'bottom', 'left', 'right',
+     'top-left', 'top-right', 'bottom-left', 'bottom-right'].forEach((edge) => {
+      expect(screen.getByTestId(`nunba-resize-${edge}`)).toBeInTheDocument();
+    });
   });
 
   test('renders 8 resize grips on Linux+pywebview', () => {

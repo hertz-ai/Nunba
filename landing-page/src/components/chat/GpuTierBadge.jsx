@@ -227,9 +227,17 @@ export default function GpuTierBadge({className = '', style = {}}) {
     return tierMeta.description;
   })();
 
-  const fullDescription = detailLine
+  // B3: driver-adequacy guidance from /backend/health (detect_gpu). When a
+  // real GPU is present but its driver is too old for CUDA, inference silently
+  // falls back to CPU — surface WHY next to the "CPU" chip so the user knows a
+  // driver update would accelerate it, rather than blaming the product.
+  const guidanceLine = (health && !error && health.gpu_guidance) ? health.gpu_guidance : '';
+  const baseDescription = detailLine
     ? `${effectiveDescription} Current: ${detailLine}.`
     : effectiveDescription;
+  const fullDescription = guidanceLine
+    ? `${guidanceLine} — ${baseDescription}`
+    : baseDescription;
 
   const chip = (
     <Chip

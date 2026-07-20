@@ -20,6 +20,7 @@ import SettingsIcon from '@mui/icons-material/Settings';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import StorageIcon from '@mui/icons-material/Storage';
 import SyncIcon from '@mui/icons-material/Sync';
+import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import {
   Drawer,
@@ -57,6 +58,7 @@ const adminNav = [
   {label: 'Agents Live', path: '/admin/agent-dashboard', icon: <SmartToyIcon />},
   {label: 'Content Tasks', path: '/admin/content-tasks', icon: <BuildIcon />},
   {label: 'Network Nodes', path: '/admin/network-nodes', icon: <HubIcon />, minRole: 'central'},
+  {label: 'Update Control', path: '/admin/update-control', icon: <SystemUpdateAltIcon />, minRole: 'central'},
   {label: 'Models', path: '/admin/models', icon: <MemoryIcon />},
   {label: 'Providers', path: '/admin/providers', icon: <CloudIcon />},
   {label: 'Task Ledger', path: '/admin/task-ledger', icon: <BuildIcon />},

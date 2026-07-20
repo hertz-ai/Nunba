@@ -22,12 +22,36 @@ export const marketingApi = {
 };
 
 // --- Auth ---
+// Attribute the captured ?ref (useReferral stashes it in localStorage as
+// `nunba_referral_code`) onto the signup payload so the backend's
+// /auth/register → DistributionService.use_referral_code + channel-attribution
+// (integrations/social/api.py:107) actually fire.  WITHOUT this the referral
+// funnel recorded ZERO: useReferral only POSTs the code when a JWT already
+// exists (visitor already logged in), but a NEW referred visitor signs up
+// FIRST, so the captured code never reached register().  Injecting at the
+// service layer covers every signup entry point (register + guestRegister) in
+// one place — no per-form duplication.
+const _attachReferral = (data) => {
+  try {
+    const ref =
+      (typeof localStorage !== 'undefined' &&
+        localStorage.getItem('nunba_referral_code')) || '';
+    if (ref && !(data && data.referral_code)) {
+      return {...(data || {}), referral_code: ref};
+    }
+  } catch {
+    /* storage blocked / SSR — send unchanged */
+  }
+  return data;
+};
+
 export const authApi = {
   login: (data) => socialApi.post('/auth/login', data),
-  register: (data) => socialApi.post('/auth/register', data),
+  register: (data) => socialApi.post('/auth/register', _attachReferral(data)),
   me: () => socialApi.get('/auth/me'),
   logout: () => socialApi.post('/auth/logout'),
-  guestRegister: (data) => socialApi.post('/auth/guest-register', data),
+  guestRegister: (data) =>
+    socialApi.post('/auth/guest-register', _attachReferral(data)),
   guestRecover: (data) => socialApi.post('/auth/guest-recover', data),
 };
 
@@ -356,6 +380,28 @@ export const webResearchApi = {
   // GET /api/web-research/audit?limit=N → {ok, records: [{ts, tool, platform, ...}]}
   audit: (limit = 100) =>
     webResearchClient.get('/web-research/audit', {params: {limit}}),
+};
+
+// --- Fleet OTA control (central "Update Control" panel) ---
+// Routes live at the /api root (NOT under /api/social) — same root the
+// NixOS hart-ota-check timer polls (centralEndpoint default /api/ota/latest).
+// Reuses webResearchClient's /api-rooted instance so there's one authed
+// client for root /api/* calls, not a parallel axios.
+export const otaApi = {
+  // GET /api/ota/latest?channel=<c> → {channel, flake_ref, commit, published_at}
+  // The current published pointer per channel (public; nodes poll this).
+  latest: (channel = 'stable') =>
+    webResearchClient.get('/ota/latest', {params: {channel}}),
+
+  // POST /api/ota/publish {channel, flake_ref, commit, tier?} (central-gated)
+  // One action → sets the channel pointer AND fans a signed firmware_update
+  // FleetCommand to every owned node. Nodes auto-pull + auto-apply next poll.
+  publish: (data) => webResearchClient.post('/ota/publish', data),
+
+  // GET /api/ota/nodes?channel=<c> → {nodes:[{node_id,rollout,...}], counts}
+  // Live per-node rollout phase: idle|queued|polled|applied|failed.
+  nodes: (channel = '') =>
+    webResearchClient.get('/ota/nodes', channel ? {params: {channel}} : {}),
 };
 
 // --- Agent Evolution ---

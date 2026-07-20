@@ -126,6 +126,15 @@ tests/Nunba_Test_Scenarios.pdf
 agent_data/
 langchain_config.json
 
+# Runtime / ML / UI-test artifacts (machine-generated, not source) — root-only
+# so nested test-fixture dirs named data/ are unaffected.
+/data/
+/checkpoints/
+/runs/
+/.uitest_shots/
+/.uitest_nunba_harness.py
+/.uitest_nunba_interact.py
+
 # MCP server config (local dev tool)
 .mcp.json
 

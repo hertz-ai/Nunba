@@ -776,6 +776,15 @@ export default function NunbaChatProvider({children}) {
         try {
           updateMsgById(msgId, {status: 'sending', error: null});
           const res = await chatApi.chat({
+            // request_id is FOUNDATIONAL: the backend foreground gate
+            // (_chat_request_is_genuine -> is_genuine_user_request) treats an
+            // empty request_id as BACKGROUND, so a "hi" sent without one is
+            // misclassified as daemon work — enter_foreground never fires, the
+            // autonomous daemon never yields the llama slot, and the turn
+            // starves (live: llm_outbound.jsonl rid='' + 200s daemon calls
+            // holding both slots).  Send the per-turn msgId as the id; the
+            // response handler already round-trips data.request_id || msgId.
+            request_id: msgId,
             text: text.trim(),
             user_id: userId,
             agent_id: currentAgent?.prompt_id || 'local_assistant',

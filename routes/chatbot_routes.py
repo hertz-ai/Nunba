@@ -3155,9 +3155,18 @@ def chat_route():
             except Exception as e:
                 logger.warning(f'LangChain pipeline unavailable, falling back to raw llama: {e}')
 
-        # --- Tier 2: Fallback to raw llama-server ---
-        # Try 0.8B draft first (fast, always available), then 4B.
-        # The 4B may be stuck serving daemon autogen goals.
+        # --- Tier 2: Fallback to raw llama-server (HARTOS Tier-1 unavailable) ---
+        # Try the 0.8B draft first, then the 4B.  The 0.8B is frequently NOT
+        # running: should_boot_draft() returning enabled is only a DECISION —
+        # the separate draft server (start_caption_server on :8081) actually
+        # comes up only when its 0.8B preset + the llama-server binary + spare
+        # VRAM are all present.  On a single-model box (e.g. 8 GB already
+        # holding the 4B + mmproj + KV + TTS) it does NOT, so :8081 isn't
+        # listening and this probe instant-fails (connection-refused, ~ms, not
+        # the 5 s timeout) straight through to the 4B.  In that state the 4B is
+        # the ONLY model — it serves chat draft+main passes AND vision caption —
+        # so a daemon mid-turn here means both tiers fail and we surface the
+        # "busy" stub below.
         try:
             from llama.llama_config import check_llama_health, get_llama_endpoint
             messages = [{"role": "user", "content": text}]

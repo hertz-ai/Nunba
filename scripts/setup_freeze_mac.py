@@ -485,6 +485,9 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
         _tts_stt_deps = [
             ("torchaudio", "torchaudio", "torchaudio"),
             ("chatterbox-tts", "chatterbox-tts", "chatterbox"),
+            # chatterbox(_turbo) transitive that --no-deps (below) skips — bundle
+            # it so chatterbox_turbo loads (parity with setup_freeze_nunba.py).
+            ("pyloudnorm", "pyloudnorm", "pyloudnorm"),
             ("parler-tts", "parler-tts", "parler_tts"),
             ("faster-whisper", "faster-whisper", "faster_whisper"),
             ("ctranslate2", "ctranslate2", "ctranslate2"),

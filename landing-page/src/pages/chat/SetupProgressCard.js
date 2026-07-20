@@ -51,6 +51,9 @@ const JOB_LABELS = {
   tts_setup_cosyvoice3: 'CosyVoice3',
   tts_setup_f5: 'F5-TTS',
   tts_setup_piper: 'Piper TTS',
+  // Non-TTS setup job (STT + LLM + model downloads) surfaced through the same
+  // card by the /api/ai/bootstrap poll — give it a human label.
+  bootstrap: 'AI models',
 };
 
 const ACCENT = '#6C63FF';
@@ -76,24 +79,48 @@ export default function SetupProgressCard({
   // verified handshake — install-complete alone keeps us yellow.
   const handshakeReady = handshake?.status === 'ready';
   const handshakeFailed = handshake?.status === 'failed';
+  // TTS engine installs earn "Ready" only via a verified voice handshake.
+  // Everything else routed through this card (the `bootstrap` job: STT / LLM /
+  // model downloads) has NO handshake, so its install-complete IS terminal.
+  // Without this the bootstrap card never reached a terminal state — it
+  // lingered on "Setting up…" with no dismiss control, while TTS cards got ✕.
+  const expectsHandshake = jobType.startsWith('tts_setup_');
+  const isReady = handshakeReady || (!expectsHandshake && isComplete && !installFailed);
   const isFailed = installFailed || handshakeFailed;
   // Estimate progress: most installs have 6-10 steps
   const estimatedTotal = 8;
-  const progressPercent = handshakeReady
+  const progressPercent = isReady
     ? 100
     : Math.min(95, (steps.length / estimatedTotal) * 100);
 
   useEffect(() => {
-    // Delay the completion message until we have a definite
-    // verdict — isComplete alone is a proxy signal; only the
-    // handshake (or a hard install failure) is terminal.
-    if (handshakeReady || handshakeFailed || installFailed) {
+    // Delay the completion message until we have a definite verdict —
+    // isComplete alone is a proxy signal; only the handshake (TTS) or a hard
+    // install failure is terminal.  For non-TTS cards (bootstrap) install-
+    // complete IS that verdict (folded into isReady).
+    if (isReady || handshakeFailed || installFailed) {
       const timer = setTimeout(() => setShowComplete(true), 300);
       return () => clearTimeout(timer);
     }
     setShowComplete(false);
     return undefined;
-  }, [handshakeReady, handshakeFailed, installFailed]);
+  }, [isReady, handshakeFailed, installFailed]);
+
+  // B4: done/ready cards shouldn't linger.  Once a card reaches a SUCCESSFUL
+  // terminal state, auto-collapse it (soft-dismiss via the caller's onDismiss)
+  // after a short grace period so the chat returns to the conversation.  Failed
+  // cards stay — they carry Retry / Switch-engine actions.  Read onDismiss via
+  // a ref so the parent re-rendering the message list on every SSE token can't
+  // keep resetting the timer.
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+  useEffect(() => {
+    if (!isReady) return undefined;
+    const t = setTimeout(() => {
+      if (typeof onDismissRef.current === 'function') onDismissRef.current();
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [isReady]);
 
   // Auto-scroll to latest step
   useEffect(() => {
@@ -133,13 +160,12 @@ export default function SetupProgressCard({
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
           <Box sx={{
             width: 8, height: 8, borderRadius: '50%',
-            background: handshakeReady
+            background: isReady
               ? '#2ECC71'
               : (isFailed ? '#E74C3C' : ACCENT),
-            // Keep pulsing until we have a terminal verdict — either
-            // verified-ready or a confirmed failure. Install-complete
-            // alone is not terminal.
-            animation: (handshakeReady || isFailed) ? 'none' : 'pulse 1.5s infinite',
+            // Keep pulsing until we have a terminal verdict — verified-ready
+            // (TTS), install-complete (bootstrap), or a confirmed failure.
+            animation: (isReady || isFailed) ? 'none' : 'pulse 1.5s infinite',
             '@keyframes pulse': {
               '0%, 100%': { opacity: 1 },
               '50%': { opacity: 0.4 },
@@ -152,11 +178,11 @@ export default function SetupProgressCard({
             letterSpacing: '0.02em',
             flex: 1,
           }}>
-            {handshakeReady
+            {isReady
               ? `${label} Ready`
               : isFailed
                 ? `${label} Failed`
-                : isComplete
+                : (expectsHandshake && isComplete)
                   ? `Verifying ${label} voice...`
                   : `Setting up ${label}...`}
           </Typography>
@@ -164,7 +190,7 @@ export default function SetupProgressCard({
               verdict. Calling onDismiss is the caller's signal to mark
               the message as dismissed in chat state (soft-delete: the
               record stays, the bubble just stops rendering). */}
-          {typeof onDismiss === 'function' && (handshakeReady || isFailed) && (
+          {typeof onDismiss === 'function' && (isReady || isFailed) && (
             <Tooltip title="Dismiss" placement="left" arrow>
               <IconButton
                 size="small"
@@ -245,7 +271,7 @@ export default function SetupProgressCard({
           <Fade in timeout={600}>
             <Box>
               <Typography sx={{
-                color: handshakeReady
+                color: isReady
                   ? '#2ECC71'
                   : '#E74C3C',
                 fontSize: '0.8rem',
@@ -253,13 +279,17 @@ export default function SetupProgressCard({
                 mt: 1,
                 textAlign: 'center',
               }}>
-                {handshakeReady
-                  ? `Voice engine ready — next message will use ${label}`
+                {isReady
+                  ? (expectsHandshake
+                      ? `Voice engine ready — next message will use ${label}`
+                      : `${label} ready`)
                   : handshakeFailed
                     // Surface the ACTUAL engine error rather than a
                     // green lie.  Truncated so the banner stays small.
                     ? `Voice check failed — ${label}: ${(handshake?.err || 'no audio produced').slice(0, 120)}`
-                    : `${label} unavailable — using fallback voice engine`}
+                    : (expectsHandshake
+                        ? `${label} unavailable — using fallback voice engine`
+                        : `${label} setup incomplete`)}
               </Typography>
 
               {/* Retry / Switch engine buttons on handshake failure. */}

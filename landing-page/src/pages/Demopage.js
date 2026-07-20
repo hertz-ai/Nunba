@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { BOOK_PARSING_URL, UPLOAD_FILE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
+import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -64,6 +65,12 @@ import {useTTS} from '../hooks/useTTS';
 //    so existing send behavior is unchanged when there is no boot to wait on.
 import {useLocalEngineReady} from '../hooks/useLocalEngineReady';
 
+// #161 — spaced backoff for re-sending a message the backend bounced with
+// loading:true (model warming). scheduleLoadingRetry is the single, unit-tested
+// source for the delay decision + the deferred re-enqueue; Demopage only tracks
+// the returned timer id for cleanup.
+import {scheduleLoadingRetry} from '../utils/loadingRetry';
+
 // ── Extracted sub-components ──
 import GpuTierBadge from '../components/chat/GpuTierBadge';
 import NotificationBell from '../components/Common/NotificationBell';
@@ -85,6 +92,26 @@ const HOSTED_URL = 'https://hevolve.hertzai.com';
 // engineReady gate; the hook is realtime-reconciled, NOT sticky-true).
 const ENGINE_BOOT_GRACE_MS = 20000;
 
+// Setup/install cards (CUDA torch, GPU-whisper ctranslate2, model downloads,
+// TTS engine setup) report SYSTEM-global state — they are NOT tied to the
+// selected agent.  But the Demopage chat is per-agent: switching agents saves
+// + clears + reloads the message list, which would wipe an in-flight setup
+// card.  This carries those cards across the switch, deduped by jobType (the
+// card id the setup_progress / tts_handshake handlers already key on):
+//   - same jobType in BOTH the carried set and the loaded history -> keep ONE
+//     (the carried/live copy wins; idempotent, like message dedup by id)
+//   - different jobTypes -> all kept (two distinct cards both render)
+// The caller filters out dismissed cards before carrying, so a user-dismissed
+// card is never resurrected.
+function mergeCarriedSetupCards(loaded, carried) {
+  if (!carried || carried.length === 0) return loaded || [];
+  const carriedKeys = new Set(carried.map((c) => c.jobType));
+  const loadedWithoutDupes = (loaded || []).filter(
+    (m) => !(m.type === 'setup_progress' && carriedKeys.has(m.jobType))
+  );
+  return [...loadedWithoutDupes, ...carried];
+}
+
 /**
  * Determine if an agent is local (created via LLM pipeline)
  * vs cloud-only (fetched from mailer.hertzai.com).
@@ -96,7 +123,7 @@ const isLocalAgent = (agent) => {
 
 /* TypeWriterForSubtitle and ThinkingProcessContainer extracted to ./chat/ */
 
-const ChatInterface = ({agentData, embeddedMode, onReady}) => {
+const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) => {
   const navigate = useNavigate();
   const location = useLocation();
   const {agentName} = useParams();
@@ -169,6 +196,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
   // Bounded auto-retry counter for boot-window "Loading tools" fallbacks —
   // reset on the first non-loading response. See the resultData.loading gate.
   const loadingRetryRef = useRef(0);
+  // #161 — pending setTimeout ids for the SPACED boot-window re-send. Tracked
+  // so a non-loading response (turn resolved) or unmount can cancel them; a
+  // stale retry must never resurface an old message after the turn is done.
+  const loadingRetryTimersRef = useRef([]);
   // When this ChatInterface mounted — used to bound the engineReady send-gate
   // to ENGINE_BOOT_GRACE_MS so a never-ready local engine can't queue forever.
   const chatMountAtRef = useRef(Date.now());
@@ -849,6 +880,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     return () => clearTimeout(timer);
   }, [messageQueue.length, loading, engineReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // #161 — cancel any pending boot-window re-send timers on unmount so a
+  // spaced retry can't fire (and resurface a stale message) after the chat
+  // view is gone.
+  useEffect(() => () => {
+    loadingRetryTimersRef.current.forEach(clearTimeout);
+    loadingRetryTimersRef.current = [];
+  }, []);
+
   const isTextModeRef = useRef(isTextMode);
   const waitingTextRef = useRef(waitingText);
   const thinkingStartTimeRef = useRef(thinkingStartTime);
@@ -883,10 +922,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             saveMessagesToStorage(messages, currentAgent.prompt_id);
           }
 
-          logger.log(
-            `🧹 Clearing messages for agent switch to: ${matchedAgent.name}`
+          // Setup/install cards are system-global, not agent-scoped — carry
+          // the live (non-dismissed) ones across the switch instead of wiping
+          // them with the rest of the per-agent message list.
+          const carriedSetup = messages.filter(
+            (m) => m.type === 'setup_progress' && !m.dismissed
           );
-          setMessages([]);
+          logger.log(
+            `🧹 Clearing messages for agent switch to: ${matchedAgent.name} ` +
+            `(carrying ${carriedSetup.length} setup card(s))`
+          );
+          setMessages(carriedSetup);
 
           setCurrentAgent(matchedAgent);
           if (matchedAgent.prompt_id) {
@@ -900,7 +946,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
             logger.log(
               `📥 Loading ${savedMessages.length} messages for agent: ${matchedAgent.name}`
             );
-            setMessages(savedMessages);
+            // Re-merge the carried system setup cards on top of the new
+            // agent's history, deduped by jobType: a same-id card collapses
+            // to one (idempotent), distinct cards all stay visible.
+            setMessages(mergeCarriedSetupCards(savedMessages, carriedSetup));
           }, 100);
 
           if (matchedAgent.fillers) {
@@ -1198,7 +1247,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
     };
     (async () => {
       try {
-        const res = await fetch('/api/llm/status');
+        // ?full=1 — this one-shot setup/first-run check needs the full
+        // diagnosis (version_upgrade, recommended, diagnosis.action). The
+        // default /api/llm/status is now the cheap liveness path used by the
+        // send-gate poller (hooks/useLocalEngineReady); only this path pays the
+        // verified-inference + hardware diagnose cost.
+        const res = await fetch('/api/llm/status?full=1');
         if (!res.ok) { retryLater(); return; }
         const data = await res.json();
 
@@ -1804,7 +1858,32 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
         return;
       }
 
-      if (Number(parsed.priority) === 49 && parsed.action === 'Thinking') {
+      // #508 split — canned pipeline PROGRESS stages (publish_chat_stage →
+      // action 'Status': "Loading your context…", "Recalling…", "Preparing
+      // tools…") drive ONLY the "analysing…" spinner override, never the
+      // Step container.  The priority-49 / action 'Thinking' container below
+      // is reserved for the model's ACTUAL reasoning, so canned milestones no
+      // longer masquerade as Thought-process steps.
+      if (Number(parsed.priority) === CHAT_BUBBLE_PRIORITY && parsed.action === CHAT_ACTION_STATUS) {
+        const statusReqId = parsed.request_id || 'unknown';
+        const curReqId = requestIdRef.current;
+        if (curReqId && statusReqId !== 'unknown' && statusReqId !== curReqId) {
+          return; // daemon/background status — not this user's turn
+        }
+        try {
+          const rawText = Array.isArray(parsed.text) ? parsed.text[0] : (parsed.text || '');
+          if (rawText) {
+            const words = String(rawText).trim().split(/\s+/);
+            const preview = words.slice(0, 6).join(' ') + (words.length > 6 ? '…' : '');
+            setLatestThinkingText(preview);
+            if (staleClearRef.current) clearTimeout(staleClearRef.current);
+            staleClearRef.current = setTimeout(() => setLatestThinkingText(''), 3000);
+          }
+        } catch {}
+        return;
+      }
+
+      if (Number(parsed.priority) === CHAT_BUBBLE_PRIORITY && parsed.action === CHAT_ACTION_THINKING) {
         const traceRequestId = parsed.request_id || 'unknown';
 
         // Only show thinking traces that belong to the current user chat request.
@@ -3726,20 +3805,33 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               pushNotification({ type: 'info', message: 'Using direct mode while tools load' });
             }
             if (resultData.loading) {
-              pushNotification({ type: 'info', message: 'Loading tools... try again in a moment' });
-              // Auto-retry: a message answered by the boot-window terminal
-              // fallback ("Loading tools...") used to DEAD-END — sent once,
-              // never retried ("hi queued forever", live 2026-06-10: the model
-              // takes ~2min to warm after boot and first sends land inside
-              // that window). Re-enqueue the original text (this closure still
-              // holds it) so the EXISTING queue drain re-sends it once the
-              // engine reports ready. Bounded so a permanently degraded
-              // backend can't loop.
-              if (loadingRetryRef.current < 3 && inputMessage && inputMessage.trim()) {
+              pushNotification({ type: 'info', message: "Warming up the local model — I'll send this automatically when it's ready." });
+              // #161 — boot-window re-send on SPACED backoff. The backend
+              // bounced this with loading:true (model still warming, ~2min).
+              // The old code re-enqueued 3× IMMEDIATELY, so all 3 attempts
+              // burned in seconds of fast round-trips and the message was
+              // dropped before the model was ready ("why the hell?", live
+              // 2026-06-17). loadingRetryDelayMs (single source, unit-tested)
+              // returns spaced delays that span the warm window, or null when
+              // exhausted (bounded — no infinite loop). The original text is
+              // captured here (closure-safe) and re-queued after the delay so
+              // the EXISTING queue drain sends it once ready. Timers are
+              // tracked so the else-branch / unmount can cancel a stale retry.
+              const _timer = scheduleLoadingRetry(
+                loadingRetryRef.current,
+                inputMessage,
+                (text) => setMessageQueue((prev) => [...prev, { text, id: Date.now() }]),
+              );
+              if (_timer !== null) {
                 loadingRetryRef.current += 1;
-                setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
+                loadingRetryTimersRef.current.push(_timer);
               }
             } else {
+              // Non-loading response → the model answered; cancel any pending
+              // boot-window retries for this turn and reset the counter so a
+              // stale timer can't resurface this message after it resolved.
+              loadingRetryTimersRef.current.forEach(clearTimeout);
+              loadingRetryTimersRef.current = [];
               loadingRetryRef.current = 0;
             }
 
@@ -4657,8 +4749,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                   ? (isTextMode ? 'w-0 overflow-hidden' : (mediaMode === 'video' || mediaMode === 'audio' ? 'w-[30%]' : 'w-0 overflow-hidden'))
                   : 'w-full'
               } ${
-                window.innerWidth <= 768 ? (isTextMode ? '' : (mediaMode === 'video' ? 'h-[35vh] shrink-0' : mediaMode === 'audio' ? 'h-[22vh] min-h-[150px] max-h-[200px] shrink-0' : '')) : ''
-              } relative flex justify-center items-center transition-all duration-300 md:sticky md:top-0 md:h-screen`}
+                window.innerWidth <= 768 ? (isTextMode ? '' : (mediaMode === 'video' || mediaMode === 'audio' ? 'h-[35vh] shrink-0' : '')) : ''
+              } relative flex justify-center items-center transition-all duration-300 md:h-full`}
               style={{ overflow: 'visible' }}
             >
               {!isTextMode && (
@@ -4707,11 +4799,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                            portrait shows for the default agent too, not just the
                            orb. (Fix 2026-06-10: image_url-only check left every
                            built-in agent on the bare orb.) */
-                        <div className={`${
-                          window.innerWidth <= 768
-                            ? 'absolute top-0 inset-x-0 h-full'
-                            : 'absolute inset-0'
-                        } flex justify-center items-center`}>
+                        <div className="absolute top-0 inset-x-0 h-full flex justify-center items-center">
                           {(currentAgent?.image_url || currentAgent?.avatar) ? (
                             <img
                               src={currentAgent.image_url || currentAgent.avatar}
@@ -4722,7 +4810,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                             <VoiceVisualizer
                               audioRef={audioRef}
                               isActive={isPlayingResponse || tts.isSpeaking}
-                              size={window.innerWidth <= 768 ? Math.min(window.innerWidth * 0.35, 160) : Math.min(window.innerWidth * 0.2, 200)}
+                              canvasMax="100%"
+                              size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
                             />
                           )}
                         </div>
@@ -4740,15 +4829,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
                               style={{display: 'none'}}
                             />
                           )}
-                          <div className={`${
-                            window.innerWidth <= 768
-                              ? 'absolute top-0 inset-x-0 h-full'
-                              : 'absolute inset-0'
-                          } flex justify-center items-center`}>
+                          <div className="absolute top-0 inset-x-0 h-full flex justify-center items-center">
                             <VoiceVisualizer
                               audioRef={audioRef}
                               isActive={isPlayingResponse || tts.isSpeaking}
-                              size={window.innerWidth <= 768 ? Math.min(window.innerWidth * 0.35, 160) : Math.min(window.innerWidth * 0.2, 200)}
+                              canvasMax="100%"
+                              size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
                             />
                           </div>
                         </>
@@ -4845,12 +4931,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
               )}
             </div>
 
+            {/* Chat column — messages scroll here; flex-1 fills the row beside
+                the fixed-width media (orb) pane. The composer + its demarcator
+                line live BELOW the whole [messages | orb] row and span the FULL
+                width, so the media pane is md:h-full (NOT h-screen) and never
+                overflows down into the composer band. */}
             <div
-              className={`flex-1 w-full min-h-0 ${
-                !isTextMode && videoUrl && !uploadedImage && !uploadedPdf && window.innerWidth > 768
-                  ? 'md:w-[60%]'
-                  : 'md:w-full'
-              } overflow-x-clip overflow-y-auto pt-2 md:pt-0`}
+              className="flex-1 w-full min-h-0 overflow-x-clip overflow-y-auto pt-2 md:pt-0"
             >
               {/* Chat header bar — GPU tier badge surfaces the speculation-capability
                   boundary (see components/chat/GpuTierBadge.jsx for the product-owner +
@@ -5316,7 +5403,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady}) => {
       </div>;
         return (
           <>
-            {titlebarSlot ? createPortal(toolbar, titlebarSlot) : toolbar}
+            {titlebarSlot
+              ? (chatActive ? createPortal(toolbar, titlebarSlot) : null)
+              : toolbar}
             {/* Frameless desktop: the Audio/Video/Text selector sits at the
                 top-right of the page BODY, just under the window min/max/close
                 buttons.  The titlebar reserves the top 32px via html padding, so

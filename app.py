@@ -762,7 +762,21 @@ if getattr(sys, 'frozen', False):
     # other, so the post-restart evidence was unrecoverable 10 min later).
     # A run-separator banner distinguishes consecutive runs.
     try:
-        _frozen_log = open(os.path.join(_frozen_log_dir, 'frozen_debug.log'), 'a',
+        _frozen_log_path = os.path.join(_frozen_log_dir, 'frozen_debug.log')
+        # PERF-2 (audit #564): this capture reached ~688MB — unbounded append.
+        # Bound it at boot.  Canonical rotation is
+        # llama.llama_config._rotate_log_if_oversized; this is a DELIBERATE
+        # early-boot inline (os-only) — it runs before the bundle import path is
+        # fully set up, so we must NOT import a Nunba module here.  Keep ALL
+        # stdout/stderr AND buffering=1: this is the crash-traceback capture, so
+        # per-line flush (durability on a hard crash) is the whole point — we
+        # only cap the file, we do NOT trade crash forensics for fewer syscalls.
+        try:
+            if os.path.getsize(_frozen_log_path) > 20 * 1024 * 1024:
+                os.replace(_frozen_log_path, _frozen_log_path + '.old')
+        except OSError:
+            pass  # missing / read-only / locked → just open and append
+        _frozen_log = open(_frozen_log_path, 'a',
                            encoding='utf-8', buffering=1)  # line-buffered: every \n hits disk
         _atexit.register(_frozen_log.close)
         sys.stdout = _frozen_log
@@ -963,6 +977,30 @@ def _safe_tk_update_early(root, budget_ms=50):
     except Exception:
         pass
 
+
+def _proportional_splash(screen_w, screen_h, art_w, art_h, width_frac=0.34):
+    """Size a splash/flash window proportional to the SCREEN (resolution + DPI
+    aware) instead of a fixed pixel box.
+
+    The process is DPI-aware (SetProcessDpiAwareness above), so winfo_screen* is
+    PHYSICAL px — a fixed 900px splash therefore looks huge on a 1366x768 panel
+    (66% wide) and tiny on a 4K / high-DPI display (~23%).  This returns a box
+    that is a constant FRACTION of the screen, preserving the artwork aspect
+    (art_w:art_h), centered.  Callers scale their overlaid elements (text
+    offsets, progress bar, fonts) by (w / design_baseline) so the whole splash
+    scales as one unit.  Returns (w, h, x, y).
+    """
+    aspect = (art_h / art_w) if art_w else 0.62
+    w = int(screen_w * width_frac)
+    h = int(w * aspect)
+    max_h = int(screen_h * 0.6)
+    if h > max_h and aspect:
+        h = max_h
+        w = int(h / aspect)
+    x = max(0, (screen_w - w) // 2)
+    y = max(0, (screen_h - h) // 2)
+    return w, h, x, y
+
 _early_splash = None
 _eroot = None
 
@@ -992,15 +1030,19 @@ if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--accepta
             from PIL import Image as _ESImg
             from PIL import ImageTk as _ESTk
             _es_img = _ESImg.open(_esp_path)
-            _ESW, _ESH = _es_img.size
-            if _ESW > 900 or _ESH > 560:
-                _es_img = _es_img.resize((900, 560), _ESImg.LANCZOS)
-                _ESW, _ESH = 900, 560
+            _es_ow, _es_oh = _es_img.size
+            # Proportional to the screen (resolution + DPI aware) instead of a
+            # fixed 900x560 box, which looked huge on low-res panels and tiny on
+            # high-DPI displays.  _es_scale (relative to the 900px design the
+            # bar/text below were tuned for) scales those overlays to match.
+            _ESW, _ESH, _esx, _esy = _proportional_splash(
+                _eroot.winfo_screenwidth(), _eroot.winfo_screenheight(),
+                _es_ow, _es_oh)
+            _es_scale = _ESW / 900.0
+            _es_img = _es_img.resize((_ESW, _ESH), _ESImg.LANCZOS)
             _es_top = _estk.Toplevel(_eroot)
             _es_top.overrideredirect(True)
             _es_top.attributes('-topmost', True)
-            _esx = (_es_top.winfo_screenwidth() - _ESW) // 2
-            _esy = (_es_top.winfo_screenheight() - _ESH) // 2
             _es_top.geometry(f"{_ESW}x{_ESH}+{_esx}+{_esy}")
             _es_photo = _ESTk.PhotoImage(_es_img)
             _es_canvas = _estk.Canvas(_es_top, width=_ESW, height=_ESH,
@@ -1010,40 +1052,62 @@ if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--accepta
             _es_canvas._ref = _es_photo
             _es_status = _estk.StringVar(value='Starting up...')
             _es_status_id = _es_canvas.create_text(
-                _ESW // 2, _ESH - 32, text='Starting up...',
-                font=('Bahnschrift Light', 10), fill='#72757E', anchor='center')
+                _ESW // 2, _ESH - int(32 * _es_scale), text='Starting up...',
+                font=('Bahnschrift Light', max(8, int(10 * _es_scale))),
+                fill='#72757E', anchor='center')
             def _es_on_status(*_a):
                 try:
                     _es_canvas.itemconfig(_es_status_id, text=_es_status.get())
                 except Exception:
                     pass
             _es_status.trace_add('write', _es_on_status)
-            _es_bar_y = _ESH - 14
-            _es_bar_w = 220
+            _es_bh = max(2, int(3 * _es_scale))       # bar thickness
+            _es_ind = max(24, int(40 * _es_scale))    # moving indicator width
+            _es_step = max(2, int(4 * _es_scale))     # animation step
+            _es_bar_y = _ESH - int(14 * _es_scale)
+            _es_bar_w = int(220 * _es_scale)
             _es_bar_x = (_ESW - _es_bar_w) // 2
             _es_canvas.create_rectangle(_es_bar_x, _es_bar_y,
-                                         _es_bar_x + _es_bar_w, _es_bar_y + 3,
+                                         _es_bar_x + _es_bar_w, _es_bar_y + _es_bh,
                                          fill='#1A1929', outline='')
             _es_bar_rect = _es_canvas.create_rectangle(
-                _es_bar_x, _es_bar_y, _es_bar_x + 40, _es_bar_y + 3,
+                _es_bar_x, _es_bar_y, _es_bar_x + _es_ind, _es_bar_y + _es_bh,
                 fill='#6C63FF', outline='')
             _es_anim = {'pos': 0, 'dir': 1}
             def _es_animate():
                 try:
-                    _es_anim['pos'] += _es_anim['dir'] * 4
-                    if _es_anim['pos'] >= _es_bar_w - 40:
+                    _es_anim['pos'] += _es_anim['dir'] * _es_step
+                    if _es_anim['pos'] >= _es_bar_w - _es_ind:
                         _es_anim['dir'] = -1
                     elif _es_anim['pos'] <= 0:
                         _es_anim['dir'] = 1
                     px = _es_bar_x + _es_anim['pos']
-                    _es_canvas.coords(_es_bar_rect, px, _es_bar_y, px + 40, _es_bar_y + 3)
+                    _es_canvas.coords(_es_bar_rect, px, _es_bar_y, px + _es_ind, _es_bar_y + _es_bh)
                     _es_top.after(30, _es_animate)
                 except Exception:
                     pass
             _es_animate()
             _safe_tk_update_early(_eroot)
-            _eroot.after(300000, lambda: _eroot.destroy())
+            # Fallback auto-destroy cut 5min -> 45s: if the normal
+            # close-on-webview-ready path does not fire, the splash self-clears
+            # fast instead of lingering (orphaned) on the desktop for minutes.
+            _eroot.after(45000, lambda: _eroot.destroy())
             _early_splash = (_eroot, _es_top, _es_canvas, _es_status, _es_photo)
+            # ALWAYS tear the splash down on interpreter exit (clean quit,
+            # window-close, SIGTERM/SIGINT) so it is never left orphaned on
+            # screen. A hard TerminateProcess/-Force kill skips atexit; the 45s
+            # fallback + prompt close-on-ready + the OS reclaiming the window
+            # cover that case.
+            try:
+                import atexit as _es_atexit
+                def _es_destroy_on_exit(_r=_eroot):
+                    try:
+                        _r.destroy()
+                    except Exception:
+                        pass  # already gone at exit — benign
+                _es_atexit.register(_es_destroy_on_exit)
+            except Exception:
+                pass
         else:
             _eroot.destroy()
     except Exception:
@@ -3814,12 +3878,15 @@ def calculate_sidebar_position(side='right', sidebar_width=480):
 
 
 def apply_window_positioning(window_instance, position_info):
-    """Correct window position after first page load.
+    """Correct window position + size after first page load.
 
-    pywebview's create_window() already sets the correct size using logical
-    (DPI-normalised) values, so we only call move() here — NOT resize().
-    resize() interprets values as physical pixels on the EdgeChromium backend,
-    which would shrink the window by the DPI scale factor.
+    pywebview's create_window() does NOT reliably land the requested size on the
+    frameless EdgeChromium window — the default portrait dock ends ~39px short
+    of the taskbar (bottom 689 vs the 728 work-area bottom).  So on Windows we
+    frame-aware SNAP the window to the monitor WORK AREA in PHYSICAL pixels
+    (win32_chrome.snap_to_work_area -> SetWindowPos), which is DPI-proof and
+    always reaches the taskbar.  Non-Windows / sidebar / explicit --x/--y keep
+    the reposition-only move() (create_window size is trusted there).
     """
     _applied = [False]
 
@@ -3857,8 +3924,28 @@ def apply_window_positioning(window_instance, position_info):
             logger.info(f"on_loaded move: screen={screen_w}x{screen_h}, "
                         f"pos=({x},{y}), mode={mode}")
 
-            # Only reposition — do NOT resize (create_window already set size)
-            window_instance.move(x, y)
+            # Frame-aware snap to the monitor WORK AREA (physical px) so the
+            # window actually reaches the taskbar.  pywebview's logical
+            # create_window lands the default portrait dock ~39px short (bottom
+            # 689 vs the 728 work-area bottom).  The preserved native frame
+            # (philosophy B) gives Aero Snap / Snap Layouts for USER-driven
+            # snaps, but NOT this programmatic default placement — so we snap it
+            # ourselves.  Only the default right-dock is snapped; sidebar /
+            # explicit --x/--y keep the reposition-only path.
+            snapped = False
+            if (sys.platform.startswith('win') and mode != 'sidebar'
+                    and position_info.get('custom_x') is None):
+                hwnd = _resolve_hwnd(window_instance)
+                if hwnd:
+                    try:
+                        from desktop.win32_chrome import snap_to_work_area
+                        snapped = snap_to_work_area(
+                            hwnd, width_frac=709 / 2560, edge='right')
+                    except Exception as _se:
+                        logger.debug("snap_to_work_area failed, using move(): %s", _se)
+            if not snapped:
+                # Non-Windows / no-HWND / sidebar / custom: reposition only.
+                window_instance.move(x, y)
 
             logger.info("Window positioning applied successfully")
         except Exception as e:
@@ -6249,10 +6336,59 @@ def get_server_info():
 
     return {"device_id": "Unknown"}
 
+def _resolve_hwnd(window_instance):
+    """Best-effort HWND for a pywebview window on Windows.  Mirrors the resolver
+    the caption max-button path uses (original_window.handle -> handle ->
+    FindWindowW by title), consolidated so the maximize helpers below don't each
+    re-implement it."""
+    if sys.platform != 'win32' or window_instance is None:
+        return 0
+    try:
+        import ctypes as _ct
+        ow = getattr(window_instance, 'original_window', None)
+        if ow is not None and getattr(ow, 'handle', None):
+            return int(ow.handle)
+        if getattr(window_instance, 'handle', None):
+            return int(window_instance.handle)
+        return int(_ct.windll.user32.FindWindowW(None, args.title) or 0)
+    except Exception as _e:
+        logger.debug("_resolve_hwnd failed: %s", _e)
+        return 0
+
+def _clamped_maximize(window_instance):
+    """Maximize respecting the taskbar WORK AREA.
+
+    On Windows, drive through win32_chrome's clamped SW_MAXIMIZE — the installed
+    WM_GETMINMAXINFO handler keeps the window ABOVE the taskbar, the SAME path
+    the caption max-button (WindowApi.window_toggle_maximize) uses.  pywebview's
+    WinForms maximize() re-maximizes the frameless form to the FULL screen and
+    covers the taskbar, so it is only the non-Windows / no-HWND fallback.  This
+    is the single maximize path for every programmatic maximize (fullscreen
+    toggle, tray menu, nunba://maximize) — no parallel taskbar-covering route."""
+    if window_instance is None:
+        return
+    try:
+        if sys.platform.startswith('win'):
+            hwnd = _resolve_hwnd(window_instance)
+            if hwnd:
+                try:
+                    from desktop.win32_chrome import maximize as _win_max
+                    if _win_max(hwnd):
+                        try:
+                            window_instance._maximized = True
+                        except Exception:
+                            pass
+                        return
+                except Exception as _e:
+                    logger.debug("clamped maximize path failed, falling back: %s", _e)
+        window_instance.maximize()
+    except Exception as _e:
+        logger.error("_clamped_maximize failed: %s", _e)
+
 def toggle_fullscreen(window_instance):
     """Toggle between fullscreen and normal window"""
     try:
-        window_instance.maximize()
+        _clamped_maximize(window_instance)
     except Exception as e:
         logger.error(f"Error maximizing window: {str(e)}")
         logger.error(traceback.format_exc())
@@ -6486,7 +6622,7 @@ def setup_system_tray(window_instance):
                 logger.info("Maximize selected from system tray menu")
                 try:
                     window_instance.show()
-                    window_instance.maximize()
+                    _clamped_maximize(window_instance)
                 except Exception as e:
                     logger.error(f"Error maximizing window: {e}")
             threading.Thread(target=_do_maximize, daemon=True).start()
@@ -7328,7 +7464,17 @@ def main():
         # HWND only resolves once pywebview's GUI thread has run a tick.
         if _use_frameless and sys.platform == 'win32':
             from ctypes import windll as _wd_chrome
+            _chrome_done = [False]
             def _install_chrome():
+                # Native frame PARITY for the frameless window (work-area maximize
+                # CLAMP, resize edges, Aero Snap via WM_NCCALCSIZE/GETMINMAXINFO/
+                # NCHITTEST) MUST be enforced.  A single events.loaded hook was
+                # silently NOT firing on the shipped build (no [CHROME] log, live
+                # maximize covered the taskbar), so this now ALSO hooks events.shown
+                # (fires reliably once the window is visible), guards to install
+                # exactly once, and ALWAYS logs the outcome so it is verifiable.
+                if _chrome_done[0]:
+                    return
                 try:
                     if (hasattr(_window, 'original_window')
                             and hasattr(_window.original_window, 'handle')):
@@ -7346,11 +7492,16 @@ def main():
                     # chip's clicks; NunbaTitleBar.js does drag-vs-click on it
                     # (plain click → toggle preference; drag → window_start_drag
                     # → native move).  138 (3×46 buttons) + 260 (slot) covers it.
-                    install_custom_chrome(int(_hwnd), titlebar_height=32,
-                                          button_cluster_width=138, slot_width=260)
+                    _ok = install_custom_chrome(int(_hwnd), titlebar_height=32,
+                                                button_cluster_width=138, slot_width=260)
+                    _chrome_done[0] = bool(_ok)
+                    logger.info("[CHROME] install_custom_chrome -> %s (hwnd=%s); "
+                                "native frame parity / work-area maximize clamp %s",
+                                _ok, _hwnd, "ENFORCED" if _ok else "NOT active")
                 except Exception as _chrome_err:
                     logger.warning("[CHROME] install_custom_chrome failed: %s", _chrome_err)
             _window.events.loaded += _install_chrome
+            _window.events.shown += _install_chrome
 
         # Set up system tray
         _tray_icon = setup_system_tray(_window)
@@ -8224,8 +8375,8 @@ window.addEventListener('unhandledrejection', function(e) {
             _splash_update('Hevolve Hive Agent Runtime Ready')
             time.sleep(0.5)
             _close_splash()
-        except Exception:
-            pass
+        except Exception as _cs_e:
+            logger.warning(f"[STARTUP] _close_splash failed (splash may linger): {_cs_e}")
 
         if not start_hidden and _window and sys.platform == 'win32':
             def _bring_to_front():
@@ -8482,7 +8633,7 @@ def handle_protocol_launch():
             args.background = False  # Make sure it's not hidden
             if _window:
                 _window.show()
-                _window.maximize()
+                _clamped_maximize(_window)
         # Handle agent parameter if provided
         agent_name = params.get('agent', [None])[0] if params.get('agent') else None
         if agent_name:
@@ -8582,11 +8733,15 @@ def _show_splash():
         root.attributes('-topmost', True)
 
         # Splash dimensions
-        W, H = 900, 560
+        # Proportional to the screen (resolution + DPI aware), same as the early
+        # splash: a fixed 900x560 looked huge on low-res and tiny on high-DPI.
+        # _sp_scale (vs the 900px design) scales the overlaid text + bar to match;
+        # run_splash_animation() below already renders relative to W,H.
+        W, H, x, y = _proportional_splash(
+            root.winfo_screenwidth(), root.winfo_screenheight(), 900, 560)
+        _sp_scale = W / 900.0
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
-        x = (sw - W) // 2
-        y = (sh - H) // 2
         root.geometry(f"{W}x{H}+{x}+{y}")
         root.configure(bg='#0A0914')
 
@@ -8630,8 +8785,9 @@ def _show_splash():
         # ── Status text — drawn on canvas (NOT Label widget) so it blends ──
         status_var = tk.StringVar(value='Starting up...')
         _status_text_id = canvas.create_text(
-            W // 2, H - 32, text='Starting up...',
-            font=('Bahnschrift Light', 9), fill='#72757E', anchor='center')
+            W // 2, H - int(32 * _sp_scale), text='Starting up...',
+            font=('Bahnschrift Light', max(8, int(9 * _sp_scale))),
+            fill='#72757E', anchor='center')
 
         # Bind StringVar changes to update canvas text
         def _on_status_change(*_args):
@@ -8641,25 +8797,28 @@ def _show_splash():
                 pass
         status_var.trace_add('write', _on_status_change)
 
-        # ── Progress bar (animated) ──
-        bar_y = H - 14
-        bar_w = 220
+        # ── Progress bar (animated) — scaled with the splash ──
+        _sp_bh = max(2, int(3 * _sp_scale))
+        _sp_ind = max(24, int(40 * _sp_scale))
+        _sp_step = max(2, int(4 * _sp_scale))
+        bar_y = H - int(14 * _sp_scale)
+        bar_w = int(220 * _sp_scale)
         bar_x = (W - bar_w) // 2
-        canvas.create_rectangle(bar_x, bar_y, bar_x + bar_w, bar_y + 3,
+        canvas.create_rectangle(bar_x, bar_y, bar_x + bar_w, bar_y + _sp_bh,
                                 fill='#1A1929', outline='')
-        progress_rect = canvas.create_rectangle(bar_x, bar_y, bar_x + 40, bar_y + 3,
+        progress_rect = canvas.create_rectangle(bar_x, bar_y, bar_x + _sp_ind, bar_y + _sp_bh,
                                                 fill='#6C63FF', outline='')
         _anim_state = {'pos': 0, 'dir': 1}
 
         def _animate():
             try:
-                _anim_state['pos'] += _anim_state['dir'] * 4
-                if _anim_state['pos'] >= bar_w - 40:
+                _anim_state['pos'] += _anim_state['dir'] * _sp_step
+                if _anim_state['pos'] >= bar_w - _sp_ind:
                     _anim_state['dir'] = -1
                 elif _anim_state['pos'] <= 0:
                     _anim_state['dir'] = 1
                 px = bar_x + _anim_state['pos']
-                canvas.coords(progress_rect, px, bar_y, px + 40, bar_y + 3)
+                canvas.coords(progress_rect, px, bar_y, px + _sp_ind, bar_y + _sp_bh)
                 root.after(30, _animate)
             except tk.TclError:
                 pass  # Window already destroyed
