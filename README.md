@@ -418,9 +418,9 @@ PRs welcome. CLAUDE.md documents the change protocol (10 standing gates: intent 
 
 ## Community
 
-- 💬 [Discord](https://discord.gg/hevolve)
+- 🐛 [Issues](https://github.com/hertz-ai/Nunba/issues) — bugs, questions, feature requests. Templates will ask for the details that avoid a round trip.
+- 🤝 [Contributing](CONTRIBUTING.md) — where the interesting problems are
 - 📚 [Docs](https://docs.hevolve.ai)
-- 🐛 [Issues](https://github.com/hertz-ai/Nunba/issues)
 - 🌐 [hevolve.ai](https://hevolve.ai)
 
 ---
