@@ -39,6 +39,88 @@ It runs **entirely on your machine** - local LLM (Qwen3.5-VL or any GGUF), local
 
 ---
 
+> **Status: public alpha.** The desktop app, the agent runtime and the
+> channel adapters are in daily use; APIs still move. Issues and PRs are
+> genuinely wanted — see [Contributing](CONTRIBUTING.md).
+
+---
+
+## Table of Contents
+
+- [Why Nunba?](#why-nunba)
+- [Quick install](#quick-install)
+- [The auto-evolve loop](#-the-auto-evolve-loop)
+- [The Hive World Model](#the-hive-world-model---one-learner-across-every-task-modality-and-input)
+- [Architecture](#architecture)
+- [What you can actually do with it](#what-you-can-actually-do-with-it)
+- [How this differs from Ollama / LM Studio](#how-is-this-different-from-ollama--lm-studio--hermes-agent)
+- [Repository layout](#repository-layout)
+- [Configuration](#configuration)
+- [Platforms](#platforms)
+- [Contributing](#contributing)
+- [Community](#community)
+- [License](#license)
+
+---
+
+## Why Nunba?
+
+Every capable AI assistant today asks you to accept the same two things: a
+monthly bill, and that everything you type is processed on somebody else's
+machine. Most people accept both because the local alternatives were, until
+recently, meaningfully worse.
+
+That gap has closed faster than the arrangement has changed. Quantisation,
+distillation and speculative decoding now put a genuinely useful model on
+hardware people already own — and the same techniques that cut a provider's
+serving cost are what make a laptop viable.
+
+Nunba is what follows from that. A model runs on your machine, so there is no
+per-answer cost to pass on and nothing to transmit. That is also why it is
+free and stays free: not generosity, just where the computation happens.
+
+**What is actually different here** is that the agent improves while you use
+it, in runtime rather than in a nightly retrain, and the improvement is
+federated — your Hive gets better without any node seeing another's data.
+That loop is the thing worth reading the rest of this README for.
+
+**If you are here to contribute:** the interesting problems are the
+auto-evolve loop (`autoresearch_loop.py`), the constitutional filter that
+gates every self-improvement (`hive_guardrails.py`), and the 31 channel
+adapters. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Quick install
+
+All builds are automated, signed, and listed at **[docs.hevolve.ai/downloads](https://docs.hevolve.ai/downloads/)**.
+
+| Platform | Download | Notes |
+|---|---|---|
+| **Windows 10/11** | [Nunba_Setup.exe](https://github.com/hertz-ai/Nunba/releases/latest/download/Nunba_Setup.exe) | Azure Trusted Signing. AI Setup Wizard auto-detects GPU + pulls the right model. |
+| **macOS 13+** | [Nunba_Setup.dmg](https://github.com/hertz-ai/Nunba/releases/latest/download/Nunba_Setup.dmg) | Notarized. Apple Silicon native. |
+| **Linux (any distro)** | [Nunba-x86_64.AppImage](https://github.com/hertz-ai/Nunba/releases/latest/download/Nunba-x86_64.AppImage) | `chmod +x` and run. |
+| **Linux (.deb)** | [Releases](https://github.com/hertz-ai/Nunba/releases/latest) | Debian / Ubuntu. `sudo dpkg -i nunba_*.deb`. |
+| **HART OS backend** (headless) | [hevolve-install.exe](https://github.com/hertz-ai/HARTOS/releases/latest/download/hevolve-install.exe) / [pip](https://docs.hevolve.ai/downloads/) | Run as a server; point any OpenAI-compatible client at `:6777`. |
+
+### From source (developers)
+
+```bash
+git clone https://github.com/hertz-ai/Nunba.git
+cd Nunba
+python -m venv .venv && .venv/Scripts/activate    # Windows
+# source .venv/bin/activate                       # macOS / Linux
+pip install -r requirements.txt
+pip install -e ../HARTOS                          # or: pip install hart-backend
+cd landing-page && npm install && npm run build && cd ..
+python main.py --port 5000                        # dev mode
+# or: python scripts/build.py                     # full installer
+```
+
+After install, the **AI Setup Wizard** detects your GPU + VRAM and pulls the right model. On a 6GB card it ships single-model + Indic Parler. On 8GB+ you get the full draft-first stack (Qwen3-4B main + Qwen3-0.8B draft) and Chatterbox Turbo expressive English.
+
+---
+
 ## ☉ The auto-evolve loop
 
 The single most important thing about HARTOS - and what no other local AI does today.
@@ -137,35 +219,6 @@ Source (integration layer): `integrations/agent_engine/world_model_bridge.py`, `
 
 ---
 
-## Quick install
-
-All builds are automated, signed, and listed at **[docs.hevolve.ai/downloads](https://docs.hevolve.ai/downloads/)**.
-
-| Platform | Download | Notes |
-|---|---|---|
-| **Windows 10/11** | [Nunba_Setup.exe](https://github.com/hertz-ai/Nunba/releases/latest/download/Nunba_Setup.exe) | Azure Trusted Signing. AI Setup Wizard auto-detects GPU + pulls the right model. |
-| **macOS 13+** | [Nunba_Setup.dmg](https://github.com/hertz-ai/Nunba/releases/latest/download/Nunba_Setup.dmg) | Notarized. Apple Silicon native. |
-| **Linux (any distro)** | [Nunba-x86_64.AppImage](https://github.com/hertz-ai/Nunba/releases/latest/download/Nunba-x86_64.AppImage) | `chmod +x` and run. |
-| **Linux (.deb)** | [Releases](https://github.com/hertz-ai/Nunba/releases/latest) | Debian / Ubuntu. `sudo dpkg -i nunba_*.deb`. |
-| **HART OS backend** (headless) | [hevolve-install.exe](https://github.com/hertz-ai/HARTOS/releases/latest/download/hevolve-install.exe) / [pip](https://docs.hevolve.ai/downloads/) | Run as a server; point any OpenAI-compatible client at `:6777`. |
-
-### From source (developers)
-
-```bash
-git clone https://github.com/hertz-ai/Nunba.git
-cd Nunba
-python -m venv .venv && .venv/Scripts/activate    # Windows
-# source .venv/bin/activate                       # macOS / Linux
-pip install -r requirements.txt
-pip install -e ../HARTOS                          # or: pip install hart-backend
-cd landing-page && npm install && npm run build && cd ..
-python main.py --port 5000                        # dev mode
-# or: python scripts/build.py                     # full installer
-```
-
-After install, the **AI Setup Wizard** detects your GPU + VRAM and pulls the right model. On a 6GB card it ships single-model + Indic Parler. On 8GB+ you get the full draft-first stack (Qwen3-4B main + Qwen3-0.8B draft) and Chatterbox Turbo expressive English.
-
----
 
 ## Architecture
 
