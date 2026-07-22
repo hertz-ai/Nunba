@@ -1,0 +1,47 @@
+name: Feature request
+description: Propose a capability or a change in behaviour
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: >
+        Describe the situation you are in, not the solution you have in mind.
+        The best feature requests we get are the ones where the proposed fix
+        turns out to be the second-best idea in the issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Workarounds, other tools, or why the current behaviour blocks you.
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Compatible with the project's constraints
+      description: >
+        These are hard lines — a proposal that needs one of them will be
+        declined regardless of merit.
+      options:
+        - label: Does not require sending user data off-device
+          required: true
+        - label: Does not make a cloud provider mandatory
+          required: true
+
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Would you like to implement it
+      options:
+        - label: I am willing to open a PR for this

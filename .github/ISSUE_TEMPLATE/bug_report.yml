@@ -1,0 +1,89 @@
+name: Bug report
+description: Something behaves differently from how it is documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issues do **not** belong here — see
+        [SECURITY.md](../blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >
+        Exact steps. If it only happens sometimes, say how often — an
+        intermittent bug is a different investigation from a deterministic
+        one, and knowing which saves a reviewer a day.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it
+      options:
+        - Windows installer (Nunba_Setup.exe)
+        - macOS (.dmg)
+        - Linux AppImage
+        - Linux .deb
+        - Android (Google Play)
+        - From source
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: OS version and GPU/VRAM
+      description: >
+        Engines are tiered on VRAM, so "6GB" and "8GB" are genuinely
+        different products. "CPU only" is a valid answer.
+      placeholder: "Windows 11 23H2, RTX 4060 8GB"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: When does it happen
+      description: A failure during first-run model download is a different bug from one during chat.
+      options:
+        - During install
+        - During first-run model download
+        - During chat
+        - Voice / speech
+        - Vision / camera / screenshot
+        - Channels (Discord, WhatsApp, Telegram, ...)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: >
+        Logs are at `~/Documents/Nunba/logs/`. Paste the text, not a
+        screenshot. Redact any API keys. A crash before the log file opens is
+        itself useful — say so.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues
+          required: true
+        - label: This is not a security vulnerability
+          required: true
