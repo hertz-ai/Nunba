@@ -48,6 +48,7 @@ It runs **entirely on your machine** - local LLM (Qwen3.5-VL or any GGUF), local
 ## Table of Contents
 
 - [Why Nunba?](#why-nunba)
+- [What it looks like](#what-it-looks-like)
 - [Quick install](#quick-install)
 - [The auto-evolve loop](#-the-auto-evolve-loop)
 - [The Hive World Model](#the-hive-world-model---one-learner-across-every-task-modality-and-input)
@@ -88,6 +89,39 @@ That loop is the thing worth reading the rest of this README for.
 auto-evolve loop (`autoresearch_loop.py`), the constitutional filter that
 gates every self-improvement (`hive_guardrails.py`), and the 31 channel
 adapters. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## What it looks like
+
+<p align="center">
+  <img src="docs/screenshots/nunba-desktop.png" alt="Nunba on desktop: a sidebar of agents, a chat surface, and a Local / Hybrid / Hive switch in the top right" width="820">
+</p>
+
+Look at the top right of that screenshot. **Local · Hybrid · Hive** is a
+switch, and it decides where your words are processed:
+
+- **Local** — the model runs on this machine. Nothing is transmitted, because
+  there is nowhere for it to go.
+- **Hybrid** — local for most turns, a provider you supply a key for when a
+  task genuinely needs one.
+- **Hive** — your own peers, federated. Learnings are shared as deltas; raw
+  data never leaves any node.
+
+Every assistant makes this decision for you and does not show it. Here it is
+one control, visible on the first screen, and you can change it mid
+conversation. That is the whole "who decides" argument reduced to a toggle
+you can actually flip.
+
+The line under the title is checkable rather than decorative:
+*Encrypted · AI learns locally · No single entity controls the model* — the
+source is public, so the claim can be read rather than trusted.
+
+<p align="center">
+  <img src="docs/screenshots/nunba-mobile.png" alt="The same interface on a phone, with the Local / Hybrid / Hive switch still the first control on screen" width="300">
+</p>
+
+Same build on Android, and the switch is still the first thing on screen.
 
 ---
 
