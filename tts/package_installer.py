@@ -347,7 +347,10 @@ _installing = {}  # backend → True while installing
 # on top of the one still downloading from the prior boot — 3 concurrent
 # 2.5GB downloads racing for disk (observed 2026-04-16).
 _INSTALL_LOCK_DIR = os.path.join(os.path.expanduser('~'), '.nunba')
-_INSTALL_LOCK_STALE_S = 900  # 15 min — pip timeout is also 900s
+_INSTALL_LOCK_STALE_S = 3600  # 60 min — the CUDA torch wheel is 2.5 GB; a slow
+                              # network legitimately holds the lock far past 15 min,
+                              # and expiring it early lets a second boot stack a
+                              # concurrent 2.5 GB download on the first (observed).
 
 
 def _acquire_file_lock(name: str) -> bool:
@@ -689,10 +692,18 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
                 break
             now = _time.monotonic()
             # Heartbeat: tell the UI something is still happening.
-            if progress_cb and (now - state['last_beat_t']) >= heartbeat_s:
+            if (now - state['last_beat_t']) >= heartbeat_s:
                 pkg = state['current_pkg'] or 'packages'
-                progress_cb(f"pip: {pkg} (elapsed {int(now - t0)}s)")
+                if progress_cb:
+                    progress_cb(f"pip: {pkg} (elapsed {int(now - t0)}s)")
                 state['last_beat_t'] = now
+                # A large binary wheel (torch, parler_tts) is silent BOTH
+                # during download (one "Downloading..." line then nothing)
+                # AND during extraction (pip unpacks 2.5 GB before printing
+                # "Successfully installed"). The process is provably alive at
+                # each heartbeat, so reset the stall clock here — otherwise the
+                # stall detector below kills a healthy multi-minute torch pull.
+                state['last_line_t'] = now
             # Stall detection: no stdout line for stall_timeout seconds.
             if (now - state['last_line_t']) >= stall_timeout:
                 proc.kill()
@@ -890,10 +901,14 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
     _torch_index = ('https://download.pytorch.org/whl/rocm6.2' if gpu_type == 'amd'
                      else 'https://download.pytorch.org/whl/cu124')
     _target = get_user_site_packages()
+    # timeout=3600 / stall_timeout=1800: pip emits ONE "Downloading..." line
+    # then goes silent for the whole 2.5 GB transfer, so the default 120s stall
+    # killer fires mid-download every time on a slow link. 1800s gives runway for
+    # the full wheel; the 3600s hard timeout still kills a genuinely hung pip.
     ok, msg = _run_pip([
         'install', 'torch', 'torchaudio',
         '--index-url', _torch_index,
-    ], progress_cb, timeout=900)
+    ], progress_cb, timeout=3600, stall_timeout=1800)
 
     # Fallback: if C: is full (ENOSPC), retry to D: drive.
     # CUDA torch is 2.5GB — C: often has <5GB free on 500GB disks
@@ -908,7 +923,7 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
             'install', 'torch', 'torchaudio',
             '--index-url', _torch_index,
             '--target', _d_target, '--no-deps',
-        ], progress_cb, timeout=900)
+        ], progress_cb, timeout=3600, stall_timeout=1800)
         if ok:
             _target = _d_target
             logger.info("CUDA torch installed to D: drive successfully")
