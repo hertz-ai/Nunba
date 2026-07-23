@@ -4466,6 +4466,7 @@ def register_routes(app):
         if '..' in filename or '/' in filename or '\\' in filename:
             abort(400)
         # Cache search dirs for 30s — engine dirs don't change often
+        import tempfile as _tempfile
         import time as _t
         now = _t.time()
         if _tts_search_dirs is None or now - _tts_search_dirs_ts > 30:
@@ -4476,6 +4477,14 @@ def register_routes(app):
                 _home / '.nunba' / 'vibevoice' / 'cache',
                 _home / '.nunba' / 'tts_cache' / 'presynth',
                 _home / '.nunba' / 'tts_cache',
+                # _fire_nunba_tts's synthesize_text() call can land here
+                # depending on which backend/fallback path handled the
+                # request — some write via bare tempfile.NamedTemporaryFile
+                # (system temp dir) instead of one of the app's own cache
+                # dirs above.  Without this, that audio_url 404s and the
+                # <audio> element throws "operation not supported" trying
+                # to decode the JSON error body as audio.
+                Path(_tempfile.gettempdir()),
             ]
             _tts_search_dirs_ts = now
         search_dirs = _tts_search_dirs

@@ -49,6 +49,11 @@ CORE_DEPS = {
     "pyautogui": "0.9.54",
     "pyperclip": "1.11.0",
     "pillow": "12.1.1",
+    # Native mic capture fallback (app.py NunbaNativeApi.native_mic_record) --
+    # used when WKWebView denies getUserMedia() (macOS, frozen build over
+    # HTTP).  Was imported by app.py without ever being declared here, so a
+    # fresh install silently lacked it until someone hit the fallback path.
+    "sounddevice": "0.5.5",
     # API framework
     "uvicorn": "0.40.0",
     "fastapi": "0.133.0",

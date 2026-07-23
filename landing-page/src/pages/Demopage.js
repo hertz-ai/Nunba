@@ -2554,7 +2554,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     const _origErr = console.error;
     const _send = (level, args) => {
       const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
-      if (msg.includes('[TTS]') || msg.includes('[SSE]')) {
+      if (msg.includes('[TTS]') || msg.includes('[SSE]') || msg.includes('[VIDEO]') || msg.includes('[STT]')) {
         fetch('/api/jslog', { method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({level, msg}) }).catch(() => {});
       }
@@ -3013,8 +3013,30 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // MediaRecorder fallback refs (used when Web Speech API is unavailable, e.g. macOS WKWebView)
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  // True while the native pywebview mic bridge is actively recording —
+  // lets handleStop() know to call native_mic_stop() instead of (or in
+  // addition to) recognitionRef/mediaRecorderRef.
+  const nativeMicActiveRef = useRef(false);
+  // True while native_mic_stop()'s transcribe round-trip is in flight —
+  // isRecording stays true during this window (so the UI still shows
+  // "busy"), so a second click on the now-showing-stop button would
+  // otherwise re-enter handleStop and, since nativeMicActiveRef already
+  // flipped false, fall through to clearing isRecording/micBusyRef early
+  // — reopening the race with the still-pending native_mic_stop() call.
+  const nativeMicStoppingRef = useRef(false);
+  // True from the instant handleStart is clicked until the mic interaction
+  // is fully resolved (recording confirmed active, or every tier failed).
+  // isRecording alone isn't enough to guard re-clicks: every tier has an
+  // async gap (getUserMedia/fetch/native_mic_start round-trip) BEFORE
+  // isRecording flips true, and a re-click during that gap raced past the
+  // isRecording check and hit the Python side's "already recording" guard
+  // repeatedly.  This ref closes that window synchronously.
+  const micBusyRef = useRef(false);
 
   const handleStart = () => {
+    if (isRecording || micBusyRef.current) return;
+    micBusyRef.current = true;
+
     // Barge-in: if TTS is playing, stop it before starting mic
     if (tts.isSpeaking) {
       tts.stop();
@@ -3031,26 +3053,28 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // and a live 'not-allowed'/'service-not-allowed' error) so the fallback
     // logic isn't duplicated.
     const _useNativeMic = () => {
-      if (!(window.pywebview && window.pywebview.api && window.pywebview.api.native_mic_record)) {
+      if (!(window.pywebview && window.pywebview.api && window.pywebview.api.native_mic_start)) {
         alert('Microphone is not available. Please check System Settings > Privacy > Microphone.');
+        micBusyRef.current = false;
         return;
       }
       console.log('[STT] Using native pywebview mic capture');
-      setInputMessage('Listening (5s)...');
-      setIsRecording(true);
-      window.pywebview.api.native_mic_record(5).then((result) => {
-        setIsRecording(false);
-        if (result && !result.startsWith('__ERROR__')) {
-          setInputMessage(result);
-          setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 500);
+      // Talk for as long as you need — click the mic button again (handleStop)
+      // to end the recording and transcribe. Safety-capped server-side at 30s.
+      setInputMessage('Listening... (click mic again to stop)');
+      window.pywebview.api.native_mic_start().then((result) => {
+        if (result === 'ok') {
+          nativeMicActiveRef.current = true;
+          setIsRecording(true);
         } else {
           setInputMessage('');
-          console.warn('[STT] Native mic error:', result);
+          micBusyRef.current = false;
+          console.warn('[STT] Native mic start failed:', result);
         }
       }).catch((err) => {
-        setIsRecording(false);
         setInputMessage('');
-        console.error('[STT] Native mic call failed:', err);
+        micBusyRef.current = false;
+        console.error('[STT] Native mic start call failed:', err);
       });
     };
 
@@ -3201,6 +3225,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
       let committedText = '';
       let autoSendTimer = null;
+      // onend fires right after onerror (per spec, every error ends the
+      // session) — when onerror hands off to _useNativeMic(), onend must
+      // NOT clear micBusyRef, or it would release the guard while the
+      // native mic's own async start is still pending, reopening the
+      // exact "already recording" race this guard exists to prevent.
+      let _handedOffToNativeMic = false;
 
       recognition.onresult = (event) => {
         // Iterate from event.resultIndex (NOT 0): with continuous=true,
@@ -3245,9 +3275,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // Permission denied (expected under macOS WKWebView over HTTP) —
         // fall through to the native mic bridge instead of dead-ending.
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          _handedOffToNativeMic = true;
           setIsRecording(false);
           recognitionRef.current = null;
-          _useNativeMic();
+          _useNativeMic(); // manages micBusyRef itself from here on
+        } else {
+          // Other error types (aborted, no-speech, network, ...) have no
+          // further fallback — release the busy guard so the next click
+          // can retry instead of being silently ignored forever.
+          setIsRecording(false);
+          recognitionRef.current = null;
+          micBusyRef.current = false;
         }
       };
 
@@ -3259,6 +3297,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           setInputMessage('');
         }
         setIsRecording(false);
+        if (!_handedOffToNativeMic) micBusyRef.current = false;
       };
 
       recognition.start();
@@ -3272,13 +3311,47 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   handleStartRef.current = handleStart;
 
   const handleStop = () => {
+    // A stop is already in flight (native mic transcribing) — ignore
+    // further clicks until it resolves, instead of re-entering below.
+    if (nativeMicStoppingRef.current) return;
+
     if (recognitionRef.current) {
       recognitionRef.current.stop();
     }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
+    if (nativeMicActiveRef.current && window.pywebview?.api?.native_mic_stop) {
+      nativeMicActiveRef.current = false;
+      nativeMicStoppingRef.current = true;
+      setInputMessage('Transcribing...');
+      // Keep isRecording/micBusyRef true until the stop+transcribe
+      // round-trip actually finishes — clearing them synchronously here
+      // (like the other tiers do) would let a re-click during
+      // transcription race a fresh native_mic_start() against this still-
+      // in-flight native_mic_stop(), hitting "already recording" again.
+      window.pywebview.api.native_mic_stop().then((result) => {
+        if (result && !result.startsWith('__ERROR__')) {
+          setInputMessage(result);
+          setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 500);
+        } else {
+          setInputMessage('');
+          console.warn('[STT] Native mic error:', result);
+        }
+        nativeMicStoppingRef.current = false;
+        setIsRecording(false);
+        micBusyRef.current = false;
+      }).catch((err) => {
+        setInputMessage('');
+        console.error('[STT] Native mic stop call failed:', err);
+        nativeMicStoppingRef.current = false;
+        setIsRecording(false);
+        micBusyRef.current = false;
+      });
+      return;
+    }
     setIsRecording(false);
+    micBusyRef.current = false;
   };
 
   // ── Wake word ("Hey Nunba") — reuses same SpeechRecognition API ──
@@ -3398,10 +3471,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           video: { width: 640, height: 480, frameRate: 5 },
         });
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+        console.log('[VIDEO] getUserMedia OK, tracks=', stream.getVideoTracks().length);
 
-        // Connect to VisionService WebSocket (port 5460)
-        const wsPort = 5460;
-        const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
         const video = document.createElement('video');
         video.srcObject = stream;
         video.muted = true;
@@ -3412,34 +3483,139 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         canvas.height = 480;
         const ctx = canvas.getContext('2d');
 
-        ws.onopen = () => {
-          // Send user_id first, then video_start
-          ws.send(userId);
-          ws.send('video_start');
+        const stopCommon = () => {
+          stream.getTracks().forEach(t => t.stop());
+          video.srcObject = null;
         };
 
-        // Stream frames at 5 FPS — backend discards what it can't process
-        const interval = setInterval(() => {
-          if (ws.readyState !== WebSocket.OPEN || cancelled) return;
-          ctx.drawImage(video, 0, 0, 640, 480);
-          canvas.toBlob((blob) => {
-            if (blob && ws.readyState === WebSocket.OPEN) {
-              blob.arrayBuffer().then(buf => ws.send(buf));
+        // HTTP fallback transport — only used when the WebSocket path
+        // below fails to connect. WKWebView (macOS desktop) hard-blocks
+        // ws:// from the http://127.0.0.1 page with a synchronous
+        // SecurityError ("The operation is insecure") that no
+        // WKPreference/ATS key unlocks, so `new WebSocket(...)` throws
+        // before ever reaching onopen there. POSTs to the existing
+        // /api/vision/frame endpoint instead, which writes to the same
+        // frame store the WebSocket handler uses. Windows (WebView2) and
+        // Linux (WebKitGTK) don't have this restriction and never reach
+        // this path — they keep streaming over the WebSocket unchanged.
+        let fallbackStarted = false;
+        let framesSent = 0;
+        const startHttpFallback = () => {
+          if (fallbackStarted || cancelled) return;
+          fallbackStarted = true;
+          console.log('[VIDEO] HTTP fallback active, posting to', `/api/vision/frame?user_id=${userId}&channel=camera`);
+          let inFlight = false;
+          const frameUrl = `/api/vision/frame?user_id=${encodeURIComponent(userId)}&channel=camera`;
+          const interval = setInterval(() => {
+            if (cancelled || inFlight) return;
+            ctx.drawImage(video, 0, 0, 640, 480);
+            canvas.toBlob((blob) => {
+              if (!blob || cancelled) return;
+              inFlight = true;
+              fetch(frameUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'image/jpeg' },
+                body: blob,
+              }).then((res) => {
+                if (!res.ok) {
+                  console.warn(`[VIDEO] frame POST rejected: ${res.status} ${res.statusText}`);
+                } else {
+                  framesSent += 1;
+                  if (framesSent === 1 || framesSent % 25 === 0) {
+                    console.log(`[VIDEO] frame POST ok (#${framesSent}, ${blob.size}B)`);
+                  }
+                }
+              }).catch((err) => {
+                console.warn('[VIDEO] frame POST failed:', err.message);
+              }).finally(() => { inFlight = false; });
+            }, 'image/jpeg', 0.6); // quality 0.6 = ~20-40KB per frame
+          }, 200); // 200ms = 5 FPS
+          frameStreamRef.current = {
+            stop: () => { clearInterval(interval); stopCommon(); },
+          };
+        };
+
+        // Primary transport: VisionService WebSocket (port 5460) — unchanged
+        // behavior for every platform where it already works.
+        try {
+          const wsPort = 5460;
+          const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+          let wsInterval = null;
+
+          ws.onopen = () => {
+            console.log('[VIDEO] WebSocket connected, streaming via ws');
+            // Send user_id first, then video_start
+            ws.send(userId);
+            ws.send('video_start');
+          };
+          ws.onerror = () => {
+            console.warn('[VIDEO] WebSocket onerror, switching to HTTP fallback');
+            if (wsInterval) clearInterval(wsInterval);
+            try { ws.close(); } catch {}
+            startHttpFallback();
+          };
+          ws.onclose = (ev) => {
+            // Some WebKit builds close without ever firing onerror or
+            // onopen (handshake refused silently) — treat an unopened
+            // close the same as an error so we still fall back.
+            if (!fallbackStarted && !cancelled) {
+              console.warn(`[VIDEO] WebSocket closed before use (code=${ev.code}), switching to HTTP fallback`);
+              if (wsInterval) clearInterval(wsInterval);
+              startHttpFallback();
             }
-          }, 'image/jpeg', 0.6); // quality 0.6 = ~20-40KB per frame
-        }, 200); // 200ms = 5 FPS
+          };
 
-        frameStreamRef.current = {
-          stop: () => {
-            clearInterval(interval);
-            try { ws.send('video_stop'); } catch {}
-            ws.close();
-            stream.getTracks().forEach(t => t.stop());
-            video.srcObject = null;
-          },
-        };
+          // Stream frames at 5 FPS — backend discards what it can't process
+          wsInterval = setInterval(() => {
+            if (ws.readyState !== WebSocket.OPEN || cancelled) return;
+            ctx.drawImage(video, 0, 0, 640, 480);
+            canvas.toBlob((blob) => {
+              if (blob && ws.readyState === WebSocket.OPEN) {
+                blob.arrayBuffer().then(buf => ws.send(buf));
+              }
+            }, 'image/jpeg', 0.6); // quality 0.6 = ~20-40KB per frame
+          }, 200); // 200ms = 5 FPS
+
+          frameStreamRef.current = {
+            stop: () => {
+              if (wsInterval) clearInterval(wsInterval);
+              try { ws.send('video_stop'); } catch {}
+              ws.close();
+              stopCommon();
+            },
+          };
+        } catch (wsErr) {
+          // Synchronous SecurityError — WKWebView (macOS). Fall back to HTTP.
+          console.warn('[VIDEO] WebSocket construction threw, falling back to HTTP:', wsErr.message);
+          startHttpFallback();
+        }
       } catch (err) {
-        console.warn('Video frame streaming failed:', err.message);
+        console.warn('[VIDEO] getUserMedia/streaming setup failed:', err.name, err.message);
+        // Native camera fallback — WKWebView (macOS) routes camera access
+        // through its OWN TCC identity. If that identity's camera grant
+        // was never made (or got reset), getUserMedia rejects silently
+        // with NO OS permission prompt at all — no WKWebView preference
+        // fixes that. native_camera_start() opens the camera through the
+        // Python process's OWN TCC identity instead (same escape hatch
+        // native_mic_start already uses for the mic via sounddevice),
+        // which triggers a real permission prompt if one's still needed.
+        if (window.pywebview?.api?.native_camera_start) {
+          console.log('[VIDEO] Falling back to native camera capture');
+          window.pywebview.api.native_camera_start(userId).then((result) => {
+            if (result === 'ok') {
+              console.log('[VIDEO] native camera capture started');
+              frameStreamRef.current = {
+                stop: () => {
+                  window.pywebview.api.native_camera_stop().catch(() => {});
+                },
+              };
+            } else {
+              console.warn('[VIDEO] native_camera_start failed:', result);
+            }
+          }).catch((nativeErr) => {
+            console.warn('[VIDEO] native_camera_start call failed:', nativeErr.message);
+          });
+        }
       }
     };
 

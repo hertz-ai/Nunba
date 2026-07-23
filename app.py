@@ -7270,41 +7270,90 @@ def main():
         if sys.platform == 'darwin':
             class NunbaNativeApi:
                 def __init__(self):
+                    import threading as _threading
                     self._recording = False
+                    self._stream = None
+                    self._frames = []
+                    self._sample_rate = 16000
+                    self._max_frames = self._sample_rate * 30  # 30s safety cap
+                    self._frame_count = 0
+                    self._lock = _threading.Lock()
+                    self._cam_running = False
+                    self._cam_thread = None
 
-                def native_mic_record(self, duration_sec=5):
-                    """Record audio via sounddevice + transcribe via Whisper.
-                    Called from JS when getUserMedia is unavailable
-                    (macOS WKWebView http).  Returns transcribed text
-                    or '__ERROR__:<msg>' string."""
-                    import tempfile
-                    import wave
-                    # Cap duration_sec at 30s — JS-supplied value, must
-                    # be bounded or a malicious 86400 wedges the bridge
-                    # thread for a day.
-                    try:
-                        _d = int(duration_sec or 5)
-                    except (TypeError, ValueError):
-                        _d = 5
-                    _d = max(1, min(_d, 30))
+                def native_mic_start(self):
+                    """Start a non-blocking mic recording via sounddevice.
+                    Called from JS when getUserMedia is unavailable (macOS
+                    WKWebView http).  Call native_mic_stop() to end the
+                    recording and get the transcribed text — this lets the
+                    user talk for as long as they need instead of being cut
+                    off at a fixed duration.  Still safety-capped at 30s
+                    (via the streaming callback below) in case stop is never
+                    called.  Returns 'ok' or '__ERROR__:<msg>'."""
                     try:
                         import sounddevice as sd
                     except ImportError:
                         return '__ERROR__:sounddevice not installed'
+                    with self._lock:
+                        if self._recording:
+                            return '__ERROR__:already recording'
+                        self._frames = []
+                        self._frame_count = 0
+                        self._recording = True
+
+                    def _callback(indata, frames, time_info, status):
+                        with self._lock:
+                            if not self._recording:
+                                raise sd.CallbackStop
+                            self._frames.append(indata.copy())
+                            self._frame_count += frames
+                            if self._frame_count >= self._max_frames:
+                                self._recording = False
+                                raise sd.CallbackStop
+
                     try:
-                        sample_rate = 16000
-                        logger.info(f"[NATIVE-MIC] Recording {_d}s at {sample_rate}Hz...")
-                        audio = sd.rec(int(_d * sample_rate),
-                                       samplerate=sample_rate,
-                                       channels=1, dtype='int16',
-                                       blocking=True)
+                        self._stream = sd.InputStream(
+                            samplerate=self._sample_rate, channels=1,
+                            dtype='int16', callback=_callback,
+                        )
+                        self._stream.start()
+                        logger.info("[NATIVE-MIC] Recording started (stream mode)")
+                        return 'ok'
+                    except Exception as e:
+                        with self._lock:
+                            self._recording = False
+                        logger.error(f"[NATIVE-MIC] Start failed: {e}")
+                        return f'__ERROR__:{e}'
+
+                def native_mic_stop(self):
+                    """Stop the recording started by native_mic_start() and
+                    transcribe whatever was captured via Whisper.  Returns
+                    transcribed text or '__ERROR__:<msg>' string."""
+                    import tempfile
+                    import wave
+                    with self._lock:
+                        self._recording = False
+                    if self._stream is not None:
+                        try:
+                            self._stream.stop()
+                            self._stream.close()
+                        except Exception:
+                            pass
+                        self._stream = None
+                    with self._lock:
+                        frames, self._frames = self._frames, []
+                    if not frames:
+                        return '__ERROR__:no audio captured'
+                    try:
+                        import numpy as np
+                        audio = np.concatenate(frames, axis=0)
                         logger.info(f"[NATIVE-MIC] Recorded {len(audio)} samples")
                         tmp = tempfile.NamedTemporaryFile(suffix='.wav',
                                                           delete=False)
                         with wave.open(tmp.name, 'wb') as wf:
                             wf.setnchannels(1)
                             wf.setsampwidth(2)
-                            wf.setframerate(sample_rate)
+                            wf.setframerate(self._sample_rate)
                             wf.writeframes(audio.tobytes())
                         try:
                             from integrations.service_tools.whisper_tool import whisper_transcribe
@@ -7320,8 +7369,105 @@ def main():
                             except OSError:
                                 pass
                     except Exception as e:
-                        logger.error(f"[NATIVE-MIC] Error: {e}")
+                        logger.error(f"[NATIVE-MIC] Stop/transcribe error: {e}")
                         return f'__ERROR__:{e}'
+
+                def native_camera_start(self, user_id=''):
+                    """Start native camera capture via OpenCV, streaming
+                    JPEG frames into VisionService's frame store at ~5 FPS
+                    by POSTing to the existing /api/vision/frame HTTP
+                    endpoint. Called from JS when getUserMedia({video})
+                    is unavailable.  WKWebView routes camera access
+                    through its OWN TCC identity — if that identity was
+                    never granted camera access (or the grant was reset),
+                    getUserMedia rejects silently with no OS prompt at
+                    all, no matter what WKWebView preferences are set.
+                    cv2.VideoCapture opens the camera through the Python
+                    process's OWN TCC identity instead — exactly the
+                    same escape hatch native_mic_start already uses for
+                    the microphone via sounddevice — which triggers a
+                    real permission prompt if one is still needed.
+                    Returns 'ok' or '__ERROR__:<msg>'."""
+                    try:
+                        import cv2
+                    except ImportError:
+                        return '__ERROR__:opencv not installed'
+                    with self._lock:
+                        if self._cam_running:
+                            return '__ERROR__:already recording'
+                        self._cam_running = True
+                    # AVFoundation doesn't always release the device
+                    # instantly on cap.release() (native_camera_stop) —
+                    # toggling video mode off then quickly back on can
+                    # open() before the OS has finished freeing it from
+                    # the previous session. Retry briefly before giving up
+                    # rather than treating that transient race as a real
+                    # permission/hardware failure.
+                    cap = None
+                    for _attempt in range(4):
+                        cap = cv2.VideoCapture(0)
+                        if cap.isOpened():
+                            break
+                        cap.release()
+                        cap = None
+                        time.sleep(0.3)
+                    if cap is None:
+                        with self._lock:
+                            self._cam_running = False
+                        logger.error(
+                            "[NATIVE-CAM] Could not open camera "
+                            "(device busy or access denied)")
+                        return '__ERROR__:camera unavailable'
+
+                    def _loop():
+                        import urllib.request
+                        try:
+                            while True:
+                                with self._lock:
+                                    if not self._cam_running:
+                                        break
+                                ok, frame = cap.read()
+                                if not ok:
+                                    time.sleep(0.1)
+                                    continue
+                                ok2, buf = cv2.imencode(
+                                    '.jpg', frame,
+                                    [cv2.IMWRITE_JPEG_QUALITY, 60])
+                                if ok2:
+                                    try:
+                                        url = (
+                                            'http://127.0.0.1:5000'
+                                            '/api/vision/frame'
+                                            f'?user_id={user_id}&channel=camera'
+                                        )
+                                        req = urllib.request.Request(
+                                            url, data=buf.tobytes(),
+                                            headers={'Content-Type':
+                                                     'image/jpeg'},
+                                            method='POST')
+                                        urllib.request.urlopen(req, timeout=1)
+                                    except Exception:
+                                        pass
+                                time.sleep(0.2)  # ~5 FPS
+                        finally:
+                            cap.release()
+                            logger.info("[NATIVE-CAM] Recording stopped")
+
+                    import threading as _thread_mod
+                    self._cam_thread = _thread_mod.Thread(
+                        target=_loop, daemon=True)
+                    self._cam_thread.start()
+                    logger.info(
+                        f"[NATIVE-CAM] Recording started for "
+                        f"user_id={user_id}")
+                    return 'ok'
+
+                def native_camera_stop(self):
+                    """Stop the recording started by native_camera_start().
+                    Returns 'ok'."""
+                    with self._lock:
+                        self._cam_running = False
+                    return 'ok'
 
                 def native_file_pick(self, accept='image'):
                     """Open native macOS NSOpenPanel via pywebview.
