@@ -12,6 +12,22 @@ import React, { useRef, useEffect, useCallback } from 'react';
  */
 const PTS = 180;
 
+// Demopage.js's TTS playback element (#nunba-tts-audio) is a manually
+// managed DOM singleton that persists for the whole app session, outside
+// React's tree — but VoiceVisualizer mounts/unmounts with every media-mode
+// switch (video ↔ audio), since it lives in different ternary branches.
+// `createMediaElementSource()` can only ever be called ONCE per audio
+// element for its entire lifetime — a second call on an already-claimed
+// element throws (silently swallowed below). Closing the AudioContext on
+// unmount (as this component used to) made that worse: once closed, the
+// element's audio has nowhere left to route and playback goes silent
+// FOREVER, in every mode, not just the one that triggered the unmount.
+// Caching the {ctx, source, analyser} graph per audio element here — keyed
+// by the element itself, outside any single component instance — lets
+// every VoiceVisualizer mount reuse the one graph that element is allowed
+// to ever have, and nothing ever closes it early.
+const _voiceGraphCache = new WeakMap();
+
 const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax }) {
   size = size || 200;
   // Per-consumer cap on how much of the parent the orb may fill.  Defaults to
@@ -31,32 +47,34 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
 
   const connectAnalyser = useCallback(function() {
     if (!audioRef || !audioRef.current) return;
+    const el = audioRef.current;
     // Already connected to THIS audio element — skip
-    if (sourceRef.current && lastAudioEl.current === audioRef.current) return;
+    if (sourceRef.current && lastAudioEl.current === el) return;
     try {
-      // Reuse existing AudioContext, create new source for new audio element
-      let ctx = audioCtxRef.current;
-      if (!ctx || ctx.state === 'closed') {
-        ctx = new (window.AudioContext || window.webkitAudioContext)();
-        audioCtxRef.current = ctx;
+      // This exact element already has a graph from a PRIOR VoiceVisualizer
+      // mount (or a different instance entirely) — reuse it. Attempting
+      // ctx.createMediaElementSource(el) again here would throw, since an
+      // element can only ever be claimed by one MediaElementSourceNode.
+      const cached = _voiceGraphCache.get(el);
+      if (cached && cached.ctx.state !== 'closed') {
+        audioCtxRef.current = cached.ctx;
+        analyserRef.current = cached.analyser;
+        sourceRef.current = cached.source;
+        lastAudioEl.current = el;
+        return;
       }
-      // Disconnect old source if switching audio elements
-      if (sourceRef.current) {
-        try { sourceRef.current.disconnect(); } catch(e) {}
-        sourceRef.current = null;
-      }
-      let analyser = analyserRef.current;
-      if (!analyser) {
-        analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.8;
-        analyser.connect(ctx.destination);
-        analyserRef.current = analyser;
-      }
-      const source = ctx.createMediaElementSource(audioRef.current);
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.8;
+      analyser.connect(ctx.destination);
+      const source = ctx.createMediaElementSource(el);
       source.connect(analyser);
+      _voiceGraphCache.set(el, { ctx, source, analyser });
+      audioCtxRef.current = ctx;
+      analyserRef.current = analyser;
       sourceRef.current = source;
-      lastAudioEl.current = audioRef.current;
+      lastAudioEl.current = el;
     } catch(e) { /* synthetic fallback */ }
   }, [audioRef]);
 
@@ -215,9 +233,12 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
   useEffect(function() {
     return function() {
       if (animRef.current) cancelAnimationFrame(animRef.current);
-      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
-        try { audioCtxRef.current.close(); } catch(e) {}
-      }
+      // Deliberately NOT closing audioCtxRef here — it's shared (cached in
+      // _voiceGraphCache) with whichever audio element it's bound to, which
+      // typically outlives this component instance across media-mode
+      // switches. Closing it here silenced that element's audio forever
+      // (see _voiceGraphCache comment above) since a MediaElementSourceNode
+      // can never be recreated once its element has been claimed.
     };
   }, []);
 

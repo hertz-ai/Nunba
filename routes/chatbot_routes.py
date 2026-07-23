@@ -1946,7 +1946,10 @@ def voice_transcribe():
         audio_file.save(tmp.name)
         tmp.close()
 
-        from integrations.service_tools.whisper_tool import whisper_transcribe
+        from integrations.service_tools.whisper_tool import (
+            _faster_whisper_transcribe,
+            whisper_transcribe,
+        )
         # STT language resolution (fix for 2026-04-15 Romanised-Tamil
         # regression, caused by prior fix 07da0fb):
         #
@@ -1967,10 +1970,24 @@ def voice_transcribe():
         # while not forcing English on opportunistic multilingual use.
         _pref_lang = request.form.get('preferred_lang') or request.args.get('preferred_lang')
         _should_hint = bool(_pref_lang) and _pref_lang.split('-')[0].lower() not in ('', 'en', 'auto')
-        result = json.loads(
-            whisper_transcribe(tmp.name, language=_pref_lang) if _should_hint
-            else whisper_transcribe(tmp.name)
-        )
+        # Preferred path: in-process faster-whisper call.  Avoids the
+        # ToolWorker subprocess, which can't start under cx_Freeze on macOS
+        # (frozen binary has no `-m module` entry — single-instance guard
+        # re-fires and the worker exits 0 before the model loads).
+        _in_proc = None
+        try:
+            _in_proc = _faster_whisper_transcribe(
+                tmp.name, language=_pref_lang if _should_hint else None
+            )
+        except Exception as _fw_err:
+            logger.warning(f"In-process faster-whisper failed, falling back: {_fw_err}")
+        if _in_proc:
+            result = json.loads(_in_proc)
+        else:
+            result = json.loads(
+                whisper_transcribe(tmp.name, language=_pref_lang) if _should_hint
+                else whisper_transcribe(tmp.name)
+            )
 
         # Sync STT model state with catalog on first successful transcribe
         try:
@@ -2932,6 +2949,11 @@ def chat_route():
                 _needs_tools = bool(langchain_prompt_id or create_agent
                                     or agentic_execute or agentic_plan
                                     or autonomous_creation)
+                logger.info(
+                    f"hevolve_chat dispatch: media_mode={media_mode} "
+                    f"text[:160]={text[:160]!r} "
+                    f"conv_id={conversation_id} casual={not _needs_tools}"
+                )
                 result = hevolve_chat(
                     text=text,
                     user_id=str(user_id),
@@ -4444,6 +4466,7 @@ def register_routes(app):
         if '..' in filename or '/' in filename or '\\' in filename:
             abort(400)
         # Cache search dirs for 30s — engine dirs don't change often
+        import tempfile as _tempfile
         import time as _t
         now = _t.time()
         if _tts_search_dirs is None or now - _tts_search_dirs_ts > 30:
@@ -4454,6 +4477,14 @@ def register_routes(app):
                 _home / '.nunba' / 'vibevoice' / 'cache',
                 _home / '.nunba' / 'tts_cache' / 'presynth',
                 _home / '.nunba' / 'tts_cache',
+                # _fire_nunba_tts's synthesize_text() call can land here
+                # depending on which backend/fallback path handled the
+                # request — some write via bare tempfile.NamedTemporaryFile
+                # (system temp dir) instead of one of the app's own cache
+                # dirs above.  Without this, that audio_url 404s and the
+                # <audio> element throws "operation not supported" trying
+                # to decode the JSON error body as audio.
+                Path(_tempfile.gettempdir()),
             ]
             _tts_search_dirs_ts = now
         search_dirs = _tts_search_dirs

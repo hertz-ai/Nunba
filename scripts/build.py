@@ -45,6 +45,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 
 # Force unbuffered output so build logs appear in real time (not held until exit).
@@ -568,6 +569,43 @@ def _install_hevolve_database(python_exe):
     )
 
 
+def _torch_constraints_file():
+    """Write a pip *constraints* file pinning torch/torchaudio/torchvision to
+    Nunba's requirements.txt versions, and return its path (or None).
+
+    Why this exists: HevolveAI declares a loose `torch>=2.1.0` floor
+    (requirements.txt / setup.py).  When `_install_embodied_ai` runs `pip
+    install <hevolveai>` with deps, pip's resolver honours that floor and
+    silently UPGRADES the torch that install_dependencies() already pinned
+    (torch==2.10.0) to the newest available (2.11.0) — uninstalling the
+    matched 2.10.0 pair in the process.  The frozen bundle then ships
+    torchaudio 2.10.0 against torch 2.11.0 (ABI mismatch) with torch itself
+    excluded from lib/, so the first /chat request hits the torch/torchaudio
+    native path and hard-crashes the app (no Python traceback).
+
+    Passing this file as `pip install -c <file>` makes Nunba's pins
+    authoritative over HevolveAI's floor WITHOUT touching its other deps —
+    DRY: the versions come from requirements.txt, not a second hardcoded copy.
+    """
+    req = os.path.join(os.path.dirname(_scripts_dir), 'requirements.txt')
+    pins = []
+    try:
+        with open(req, encoding='utf-8') as fh:
+            for line in fh:
+                s = line.strip()
+                if s.lower().startswith(('torch==', 'torchaudio==', 'torchvision==')):
+                    pins.append(s)
+    except OSError:
+        return None
+    if not pins:
+        return None
+    fd, path = tempfile.mkstemp(prefix='nunba_torch_constraints_', suffix='.txt')
+    with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+        fh.write('\n'.join(pins) + '\n')
+    print_info(f"torch constraint pins (vs HevolveAI's torch>=2.1.0): {', '.join(pins)}")
+    return path
+
+
 def _install_embodied_ai(python_exe):
     """Install HevolveAI (Embodied Continual Learner With Hiveintelligence) from local sibling first.
 
@@ -579,7 +617,14 @@ def _install_embodied_ai(python_exe):
 
     Falls back to git install only if local sibling is unavailable (requires
     the user's git credentials for private repo access).
+
+    Always passes `-c <torch-constraints>` so HevolveAI's loose `torch>=2.1.0`
+    floor cannot clobber Nunba's pinned torch==2.10.0 / torchaudio==2.10.0 pair
+    (see `_torch_constraints_file` for the crash this prevents).
     """
+    _constraints = _torch_constraints_file()
+    _c_args = ['-c', _constraints] if _constraints else []
+
     # Try local sibling first
     candidates = [
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'hevolveai'),
@@ -588,15 +633,15 @@ def _install_embodied_ai(python_exe):
     for path in candidates:
         if os.path.exists(os.path.join(path, 'setup.py')):
             if run_command(
-                [python_exe, '-m', 'pip', 'install', path],
-                "Installing embodied-ai from local project...",
+                [python_exe, '-m', 'pip', 'install', *_c_args, path],
+                "Installing embodied-ai from local project (torch pins constrained)...",
                 check=False,
             ):
                 return
 
     # Fallback: pip install from GitHub
     run_command(
-        [python_exe, '-m', 'pip', 'install',
+        [python_exe, '-m', 'pip', 'install', *_c_args,
          'embodied-ai@git+https://github.com/hertz-ai/HevolveAI.git@main'],
         "Installing HevolveAI (Continual Learner)...",
         check=False,
@@ -1656,29 +1701,16 @@ def build_macos(python_exe, app_only=False, installer_only=False):
             shutil.copytree(_macos_share, _resources_share)
             print_info("Copied tcl/tk scripts to Contents/Resources/share/")
 
-        # -- Thin universal binaries to arm64 on Apple Silicon --
-        # cx_Freeze bundles a universal Python executable but .so extensions are
-        # arm64-only.  If the OS picks the x86_64 slice the .so files fail to
-        # load.  Thinning both the launcher and libPython forces arm64.
-        import platform as _plat
-        import tempfile
-        if _plat.machine() == 'arm64' and shutil.which('lipo'):
-            _python_lib = os.path.join(app_path, 'Contents', 'MacOS', 'lib', 'Python')
-            for _bin in [exe_path, _python_lib]:
-                if not os.path.exists(_bin):
-                    continue
-                try:
-                    _arch_out = subprocess.check_output(['lipo', '-archs', _bin], text=True).strip()
-                    if 'x86_64' in _arch_out and 'arm64' in _arch_out:
-                        _tmp = os.path.join(tempfile.gettempdir(), os.path.basename(_bin) + '.arm64')
-                        subprocess.run(['lipo', _bin, '-thin', 'arm64', '-output', _tmp], check=True)
-                        # Sign in temp location (avoids codesign treating it as bundle root)
-                        subprocess.run(['codesign', '--force', '--sign', '-', _tmp], check=True)
-                        os.replace(_tmp, _bin)
-                        os.chmod(_bin, 0o755)
-                        print_info(f"Thinned to arm64 + re-signed: {os.path.basename(_bin)}")
-                except Exception as _e:
-                    print_warn(f"lipo thin failed for {os.path.basename(_bin)}: {_e}")
+        # NOTE: lipo thinning of Nunba + lib/Python is handled by
+        # setup_freeze_mac.py's post-build hook.  Running it again here
+        # would cause double-lipo and stale sigs.
+
+        # NOTE: .dylibs flattening and ad-hoc codesign are handled by
+        # setup_freeze_mac.py's post-build hook.  Duplicating the sign here
+        # (without --remove-signature first) leaves stale CDHashes on .so files
+        # and dyld rejects them at load time with
+        #   "code signature not valid for use in process: Trying to load an unsigned library"
+        # Leave signing to setup_freeze_mac.py.
 
         print_info(f"Build successful: {app_path}")
 
@@ -1787,6 +1819,8 @@ def sign_macos():
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
     <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
 </dict>
 </plist>''')

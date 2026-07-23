@@ -102,6 +102,64 @@ if _orig_pd is not None and not getattr(_orig_pd, '_hartos_guarded', False):
     _md_safe.packages_distributions = _safe_packages_distributions
 del _md_safe
 
+# ── macOS-only: frozen `-c` / `-m` subprocess entry ──
+# HARTOS spawns child interpreters two ways:
+#   • supervisors (hevolveai_supervisor, …) run a snippet via
+#     ``subprocess.run([<python>, '-c', <code>])``;
+#   • ToolWorker/gpu_worker (TTS, Whisper STT, MiniCPM VLM),
+#     diarization_service and vision_service run a module via
+#     ``[<python>, '-u', '-m', <module>, *args]`` (and ``-m pip`` for
+#     runtime installs).
+#
+# On WINDOWS the child is ``python-embed/python.exe`` — a real interpreter
+# that honours ``-c``/``-m`` — so the frozen ``Nunba.exe`` is NEVER invoked
+# this way; this shim is deliberately gated OFF there (positive OS gate per
+# the cross-OS rule).  The macOS frozen ``.app`` ships NO python-embed, so
+# those spawners' ``_resolve_python_exe()`` fall back to ``sys.executable``
+# — which IS this GUI binary.
+#
+# Without this shim the macOS frozen exe ignores ``-c``/``-m``, runs app.py's
+# __main__ GUI path instead, and the single-instance guard below surfaces the
+# live GUI window (``/api/focus``) on each spawn — bouncing the Dock and
+# stealing focus while the intended child never runs.  ``-c`` was fixed
+# 2026-06-15 (82 → 0 focus pings).  ``-m`` was the remaining mechanism:
+# while STT streamed, gpu_worker respawned ``Nunba -u -m …whisper_tool``
+# every ~2s, each boot surfacing the window (incident 2026-06-17 —
+# "auto focus issue exits still").  See tests/test_frozen_c_entry.py.
+# (Linux standalone has no python-embed either; extend this gate to it
+# only when Linux frozen becomes a supported spawn target.)
+#
+# Fix: on macOS, emulate ``python -c <code>`` / ``python -m <module>``
+# exactly.  Runs BEFORE the single-instance guard (``_check_single_instance``)
+# AND before the frozen stdout/stderr redirect further below, so the child's
+# output flows to the spawner's captured pipe, not a GUI log file.  An
+# exception in the child propagates to ``_early_crash_handler`` (installed
+# above) → logged + re-raised → non-zero exit, exactly as the spawner expects.
+if sys.platform == 'darwin' and len(sys.argv) > 1:
+    # Skip leading interpreter-only flags the spawners pass (gpu_worker uses
+    # ``-u``); PYTHONUNBUFFERED=1 is already set in the child env so honouring
+    # ``-u`` here is unnecessary, and the rest don't change __main__ semantics.
+    _shim_i = 1
+    while (_shim_i < len(sys.argv)
+           and sys.argv[_shim_i] in ('-u', '-S', '-E', '-O', '-OO', '-B', '-I')):
+        _shim_i += 1
+    _shim_rest = sys.argv[_shim_i:]
+    if _shim_rest[:1] == ['-c']:
+        _c_code = _shim_rest[1] if len(_shim_rest) >= 2 else ''
+        # python -c semantics: argv[0] becomes '-c', remaining args follow.
+        sys.argv = ['-c'] + _shim_rest[2:]
+        exec(compile(_c_code, '<frozen -c>', 'exec'),
+             {'__name__': '__main__', '__doc__': None})
+        sys.exit(0)
+    if _shim_rest[:1] == ['-m'] and len(_shim_rest) >= 2:
+        # python -m semantics: run the module as __main__.  runpy sets
+        # argv[0] to the module's file; argv[1:] are the post-module args.
+        import runpy as _runpy
+        _shim_mod = _shim_rest[1]
+        sys.argv = [_shim_mod] + _shim_rest[2:]
+        _runpy.run_module(_shim_mod, run_name='__main__', alter_sys=True)
+        sys.exit(0)
+
 # Block user site-packages for every subprocess, unconditionally.
 # Rationale (2026-04-25 incident): a stale hevolve_backend-0.0.1.dev339
 # wheel had dropped a partial ``core/`` package at
@@ -275,11 +333,79 @@ if getattr(sys, 'frozen', False):
     _import_stack = []
     _orig_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
 
+    # Write EVERY import entry to a file — tail shows the last-reached module
+    # when the process hangs or crashes.  Line-buffered so even a kill -9 leaves
+    # the trace on disk.
+    _imp_log_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs', 'import_trace.log')
+    try:
+        os.makedirs(os.path.dirname(_imp_log_path), exist_ok=True)
+        _imp_log = open(_imp_log_path, 'w', encoding='utf-8', buffering=1)
+    except OSError:
+        _imp_log = None
+
+    # Circuit breaker: detect runaway re-imports of the same module
+    # (transformers 5.x has a known bug that re-imports convert_slow_tokenizer
+    # 60M+ times in cx_Freeze).  After N consecutive identical imports at the
+    # same depth, raise ImportError to break the caller's loop.
+    _last_name = [None]
+    _last_depth = [0]
+    _consec = [0]
+    _CIRCUIT_LIMIT = 5000
+
     def _trace_import(name, *args, **kwargs):
         _import_depth[0] += 1
         if _import_depth[0] > _max_depth[0]:
             _max_depth[0] = _import_depth[0]
         _import_stack.append(name)
+        # Skip circuit-breaker counter for already-loaded modules — an
+        # `__import__` call for a cached module is just a sys.modules lookup
+        # and doesn't indicate runaway recursion.  Without this guard, legit
+        # hot-loop heartbeat imports (e.g., HARTOS resource_governor pulling
+        # security.node_watchdog every 5s tick) falsely trip the breaker.
+        _already_loaded = name in sys.modules
+        if not _already_loaded and name == _last_name[0] and _import_depth[0] == _last_depth[0]:
+            _consec[0] += 1
+            if _consec[0] > _CIRCUIT_LIMIT:
+                # Capture state BEFORE doing anything that might re-enter
+                # _trace_import — `import traceback`, `os.path.join`, etc. all
+                # call __import__, which resets _consec/_last_name to garbage.
+                _cb_consec = _consec[0]
+                _cb_depth = _import_depth[0]
+                _cb_name = name
+                _cb_stack = list(_import_stack[-30:])
+                # Walk Python frames directly (no traceback module — re-enters).
+                _frames = []
+                _f = sys._getframe(1)
+                while _f is not None and len(_frames) < 60:
+                    _co = _f.f_code
+                    _frames.append(f"  {_co.co_filename}:{_f.f_lineno} in {_co.co_name}")
+                    _f = _f.f_back
+                _dump_path = '/tmp/nunba_import_loop_traceback.txt'
+                try:
+                    _fd = os.open(_dump_path,
+                                  os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+                    _msg = (f"CIRCUIT BREAKER: {_cb_name} repeated {_cb_consec}x"
+                            f" at depth {_cb_depth}\n\n"
+                            f"=== Python call stack (innermost first) ===\n"
+                            + "\n".join(_frames) +
+                            f"\n\n=== Import stack (last 30) ===\n")
+                    for _i, _m in enumerate(_cb_stack):
+                        _msg += f"{_i}: {_m}\n"
+                    os.write(_fd, _msg.encode('utf-8', 'replace'))
+                    os.fsync(_fd)
+                    os.close(_fd)
+                except Exception:
+                    pass
+                os._exit(98)
+        else:
+            _last_name[0] = name
+            _last_depth[0] = _import_depth[0]
+            _consec[0] = 0
+        if _imp_log is not None:
+            try:
+                _imp_log.write(f"{_import_depth[0]:3d} ENTER {name}\n")
+            except Exception:
+                pass
         if _import_depth[0] > 900:
             # About to overflow — dump the chain to disk before os._exit
             # (os._exit skips atexit + stdio flush, so we must flush ourselves
@@ -306,6 +432,11 @@ if getattr(sys, 'frozen', False):
         finally:
             _import_stack.pop()
             _import_depth[0] -= 1
+            if _imp_log is not None:
+                try:
+                    _imp_log.write(f"{_import_depth[0]:3d} LEAVE {name}\n")
+                except Exception:
+                    pass
 
     if hasattr(__builtins__, '__import__'):
         __builtins__.__import__ = _trace_import
@@ -781,6 +912,10 @@ import os
 import sys
 
 _t = getattr(__import__('builtins'), '_nunba_trace', lambda m: None)
+# In dev (non-frozen) mode, _trace was never defined — provide a no-op so
+# the rest of app.py can call it unconditionally.
+if '_trace' not in dir():
+    _trace = _t  # noqa: F811
 _t("PATH isolation starting")
 
 # === Frozen executable PATH isolation ===
@@ -1363,6 +1498,47 @@ if getattr(sys, 'frozen', False):
     # at build time (see scripts/build.py:_patch_transformers_at_build).
     # No runtime file I/O needed.  Kept as a one-line trace point so boot
     # telemetry stays aligned with the old timeline.
+
+    # ── Patch transformers/utils/import_utils.py hasattr-recursion bug ──
+    # _LazyModule.__getattr__ calls `hasattr(transformers_module, candidate_name)`
+    # which re-enters __getattr__ and infinite-loops on cx_Freeze macOS builds.
+    # Replace with vars() __dict__ lookup that doesn't trigger __getattr__.
+    try:
+        import importlib.util as _ilu_iu
+        _iu_spec = _ilu_iu.find_spec('transformers.utils.import_utils')
+        if _iu_spec and _iu_spec.origin:
+            _iu_path = _iu_spec.origin
+            with open(_iu_path, encoding='utf-8') as _f:
+                _iu_src = _f.read()
+            _iu_bad = 'if transformers_module and hasattr(transformers_module, candidate_name):\n                                        base_tokenizer_class = getattr(transformers_module, candidate_name)'
+            _iu_good = ('_td = vars(transformers_module) if transformers_module else {}\n'
+                        '                                    if candidate_name in _td:\n'
+                        '                                        base_tokenizer_class = _td[candidate_name]')
+            if _iu_bad in _iu_src:
+                with open(_iu_path, 'w', encoding='utf-8') as _f:
+                    _f.write(_iu_src.replace(_iu_bad, _iu_good))
+    except Exception:
+        pass
+
+    # ── Pre-resolve transformers.GPT2TokenizerFast (cx_Freeze macOS hang fix) ──
+    # transformers 5.x replaces sys.modules['transformers'] with a _LazyModule
+    # whose __getattr__ has a recursion bug when used from inside cx_Freeze on
+    # macOS: langchain_core.language_models.base does `from transformers import
+    # GPT2TokenizerFast`, the lazy lookup falls into convert_slow_tokenizer
+    # repeatedly (60M+ iterations observed) and the process hangs.
+    # Windows/Linux frozen builds don't exhibit this — scope to macOS only.
+    if sys.platform == 'darwin':
+        try:
+            import transformers as _tf_pre  # triggers LazyModule install
+            from transformers.models.gpt2.tokenization_gpt2_fast import (
+                GPT2TokenizerFast as _GPT2TF_pre,
+            )
+            try:
+                object.__setattr__(_tf_pre, 'GPT2TokenizerFast', _GPT2TF_pre)
+            except Exception:
+                _tf_pre.GPT2TokenizerFast = _GPT2TF_pre
+        except Exception:
+            pass
 
 # ── Deferred frozen fixes — run AFTER splash is shown ──
 def _run_frozen_import_fixes():
@@ -2127,6 +2303,21 @@ if getattr(args, 'validate', False):
                 _vprint(f"  [OK]   {_fname} — {_desc} ({os.path.basename(_candidate)})")
                 _found = True
                 break
+        # cx_Freeze bundles top-level modules INTO lib/library.zip, not as
+        # loose files, so the path probes above miss them and report a FALSE
+        # "PACKAGING FAILURE" even though the module imports fine (Phase 1
+        # above already imported hart_intelligence + helper).  Confirm via the
+        # import system, which resolves library.zip members too.  macOS build
+        # 2026-06-17: hart_intelligence/helper live in library.zip -> a false
+        # 2x failure -> os._exit(1) -> DMG packaging skipped.
+        if not _found:
+            _modname = _fname[:-3] if _fname.endswith('.py') else _fname
+            try:
+                if importlib.util.find_spec(_modname) is not None:
+                    _vprint(f"  [OK]   {_fname} — {_desc} (importable via library.zip)")
+                    _found = True
+            except Exception:
+                pass  # find_spec can raise on a half-broken parent package
         if not _found:
             _fail.append((_fname, f"Required file missing: {_desc}"))
             _vprint(f"  [FAIL] {_fname} — MISSING ({_desc})")
@@ -4026,7 +4217,7 @@ def ensure_working_directory():
 # Lightweight Flask — serves React SPA immediately while main.py imports.
 # Has just enough routes for the webview to show the UI (static files + SPA catch-all).
 # The full flask_app (with chat, social, admin routes) replaces it after import.
-gui_app = Flask(__name__)
+gui_app = Flask(__name__, static_folder=None)
 
 # Serve React SPA from gui_app so webview shows UI before main.py finishes
 _gui_build_dir = os.path.join(
@@ -4176,6 +4367,16 @@ def _import_main_app():
     for h in logging.getLogger().handlers + _setup_logger.handlers:
         if hasattr(h, 'flush'):
             h.flush()
+
+    # Clear stale SQLAlchemy metadata to prevent "Table already defined" errors
+    # in frozen builds where import order differs from dev.
+    try:
+        from sqlalchemy.orm import declarative_base
+        from sql.models import Base as _sql_base
+        if hasattr(_sql_base, 'metadata'):
+            _sql_base.metadata.clear()
+    except Exception:
+        pass
 
     # Load main.py as a module
     spec = importlib.util.spec_from_file_location("main_module", main_path)
@@ -7069,41 +7270,90 @@ def main():
         if sys.platform == 'darwin':
             class NunbaNativeApi:
                 def __init__(self):
+                    import threading as _threading
                     self._recording = False
+                    self._stream = None
+                    self._frames = []
+                    self._sample_rate = 16000
+                    self._max_frames = self._sample_rate * 30  # 30s safety cap
+                    self._frame_count = 0
+                    self._lock = _threading.Lock()
+                    self._cam_running = False
+                    self._cam_thread = None
 
-                def native_mic_record(self, duration_sec=5):
-                    """Record audio via sounddevice + transcribe via Whisper.
-                    Called from JS when getUserMedia is unavailable
-                    (macOS WKWebView http).  Returns transcribed text
-                    or '__ERROR__:<msg>' string."""
-                    import tempfile
-                    import wave
-                    # Cap duration_sec at 30s — JS-supplied value, must
-                    # be bounded or a malicious 86400 wedges the bridge
-                    # thread for a day.
-                    try:
-                        _d = int(duration_sec or 5)
-                    except (TypeError, ValueError):
-                        _d = 5
-                    _d = max(1, min(_d, 30))
+                def native_mic_start(self):
+                    """Start a non-blocking mic recording via sounddevice.
+                    Called from JS when getUserMedia is unavailable (macOS
+                    WKWebView http).  Call native_mic_stop() to end the
+                    recording and get the transcribed text — this lets the
+                    user talk for as long as they need instead of being cut
+                    off at a fixed duration.  Still safety-capped at 30s
+                    (via the streaming callback below) in case stop is never
+                    called.  Returns 'ok' or '__ERROR__:<msg>'."""
                     try:
                         import sounddevice as sd
                     except ImportError:
                         return '__ERROR__:sounddevice not installed'
+                    with self._lock:
+                        if self._recording:
+                            return '__ERROR__:already recording'
+                        self._frames = []
+                        self._frame_count = 0
+                        self._recording = True
+
+                    def _callback(indata, frames, time_info, status):
+                        with self._lock:
+                            if not self._recording:
+                                raise sd.CallbackStop
+                            self._frames.append(indata.copy())
+                            self._frame_count += frames
+                            if self._frame_count >= self._max_frames:
+                                self._recording = False
+                                raise sd.CallbackStop
+
                     try:
-                        sample_rate = 16000
-                        logger.info(f"[NATIVE-MIC] Recording {_d}s at {sample_rate}Hz...")
-                        audio = sd.rec(int(_d * sample_rate),
-                                       samplerate=sample_rate,
-                                       channels=1, dtype='int16',
-                                       blocking=True)
+                        self._stream = sd.InputStream(
+                            samplerate=self._sample_rate, channels=1,
+                            dtype='int16', callback=_callback,
+                        )
+                        self._stream.start()
+                        logger.info("[NATIVE-MIC] Recording started (stream mode)")
+                        return 'ok'
+                    except Exception as e:
+                        with self._lock:
+                            self._recording = False
+                        logger.error(f"[NATIVE-MIC] Start failed: {e}")
+                        return f'__ERROR__:{e}'
+
+                def native_mic_stop(self):
+                    """Stop the recording started by native_mic_start() and
+                    transcribe whatever was captured via Whisper.  Returns
+                    transcribed text or '__ERROR__:<msg>' string."""
+                    import tempfile
+                    import wave
+                    with self._lock:
+                        self._recording = False
+                    if self._stream is not None:
+                        try:
+                            self._stream.stop()
+                            self._stream.close()
+                        except Exception:
+                            pass
+                        self._stream = None
+                    with self._lock:
+                        frames, self._frames = self._frames, []
+                    if not frames:
+                        return '__ERROR__:no audio captured'
+                    try:
+                        import numpy as np
+                        audio = np.concatenate(frames, axis=0)
                         logger.info(f"[NATIVE-MIC] Recorded {len(audio)} samples")
                         tmp = tempfile.NamedTemporaryFile(suffix='.wav',
                                                           delete=False)
                         with wave.open(tmp.name, 'wb') as wf:
                             wf.setnchannels(1)
                             wf.setsampwidth(2)
-                            wf.setframerate(sample_rate)
+                            wf.setframerate(self._sample_rate)
                             wf.writeframes(audio.tobytes())
                         try:
                             from integrations.service_tools.whisper_tool import whisper_transcribe
@@ -7119,8 +7369,105 @@ def main():
                             except OSError:
                                 pass
                     except Exception as e:
-                        logger.error(f"[NATIVE-MIC] Error: {e}")
+                        logger.error(f"[NATIVE-MIC] Stop/transcribe error: {e}")
                         return f'__ERROR__:{e}'
+
+                def native_camera_start(self, user_id=''):
+                    """Start native camera capture via OpenCV, streaming
+                    JPEG frames into VisionService's frame store at ~5 FPS
+                    by POSTing to the existing /api/vision/frame HTTP
+                    endpoint. Called from JS when getUserMedia({video})
+                    is unavailable.  WKWebView routes camera access
+                    through its OWN TCC identity — if that identity was
+                    never granted camera access (or the grant was reset),
+                    getUserMedia rejects silently with no OS prompt at
+                    all, no matter what WKWebView preferences are set.
+                    cv2.VideoCapture opens the camera through the Python
+                    process's OWN TCC identity instead — exactly the
+                    same escape hatch native_mic_start already uses for
+                    the microphone via sounddevice — which triggers a
+                    real permission prompt if one is still needed.
+                    Returns 'ok' or '__ERROR__:<msg>'."""
+                    try:
+                        import cv2
+                    except ImportError:
+                        return '__ERROR__:opencv not installed'
+                    with self._lock:
+                        if self._cam_running:
+                            return '__ERROR__:already recording'
+                        self._cam_running = True
+                    # AVFoundation doesn't always release the device
+                    # instantly on cap.release() (native_camera_stop) —
+                    # toggling video mode off then quickly back on can
+                    # open() before the OS has finished freeing it from
+                    # the previous session. Retry briefly before giving up
+                    # rather than treating that transient race as a real
+                    # permission/hardware failure.
+                    cap = None
+                    for _attempt in range(4):
+                        cap = cv2.VideoCapture(0)
+                        if cap.isOpened():
+                            break
+                        cap.release()
+                        cap = None
+                        time.sleep(0.3)
+                    if cap is None:
+                        with self._lock:
+                            self._cam_running = False
+                        logger.error(
+                            "[NATIVE-CAM] Could not open camera "
+                            "(device busy or access denied)")
+                        return '__ERROR__:camera unavailable'
+
+                    def _loop():
+                        import urllib.request
+                        try:
+                            while True:
+                                with self._lock:
+                                    if not self._cam_running:
+                                        break
+                                ok, frame = cap.read()
+                                if not ok:
+                                    time.sleep(0.1)
+                                    continue
+                                ok2, buf = cv2.imencode(
+                                    '.jpg', frame,
+                                    [cv2.IMWRITE_JPEG_QUALITY, 60])
+                                if ok2:
+                                    try:
+                                        url = (
+                                            'http://127.0.0.1:5000'
+                                            '/api/vision/frame'
+                                            f'?user_id={user_id}&channel=camera'
+                                        )
+                                        req = urllib.request.Request(
+                                            url, data=buf.tobytes(),
+                                            headers={'Content-Type':
+                                                     'image/jpeg'},
+                                            method='POST')
+                                        urllib.request.urlopen(req, timeout=1)
+                                    except Exception:
+                                        pass
+                                time.sleep(0.2)  # ~5 FPS
+                        finally:
+                            cap.release()
+                            logger.info("[NATIVE-CAM] Recording stopped")
+
+                    import threading as _thread_mod
+                    self._cam_thread = _thread_mod.Thread(
+                        target=_loop, daemon=True)
+                    self._cam_thread.start()
+                    logger.info(
+                        f"[NATIVE-CAM] Recording started for "
+                        f"user_id={user_id}")
+                    return 'ok'
+
+                def native_camera_stop(self):
+                    """Stop the recording started by native_camera_start().
+                    Returns 'ok'."""
+                    with self._lock:
+                        self._cam_running = False
+                    return 'ok'
 
                 def native_file_pick(self, accept='image'):
                     """Open native macOS NSOpenPanel via pywebview.
@@ -7884,9 +8231,24 @@ def main():
         # below — if pywebview fires `restored` we get recovery immediately;
         # if it doesn't, the 500ms-polling watchdog still catches the
         # transition within ~1s.
+        #
+        # WINDOWS-ONLY (2026-06-12 macOS incident): the entire remount/
+        # black-screen machinery exists because WebView2 (Windows) suspends
+        # its compositor while hidden/iconic.  WKWebView (macOS) does NOT —
+        # un-minimise repaints natively, so macOS never needs this recovery.
+        # Worse, `_force_remount_and_paint` calls `_window.show()` +
+        # `_window.restore()`, and pywebview's Cocoa backend maps those to
+        # `NSApp.activateIgnoringOtherApps` + `makeKeyAndOrderFront` — which
+        # RE-ACTIVATES the app and re-emits `restored`, a self-sustaining
+        # loop that bounces the Dock icon continuously and yanks the window
+        # in front of whatever the user is actually working in.  Gate to
+        # win32 exactly like the taskbar-restore watchdog directly below
+        # (which already documents the same Windows-only rationale).
         try:
             _wv_events = getattr(_window, 'events', None)
-            if _wv_events is not None and hasattr(_wv_events, 'restored'):
+            if (sys.platform == 'win32'
+                    and _wv_events is not None
+                    and hasattr(_wv_events, 'restored')):
                 def _on_window_restored():
                     _trace("EVENT: on_restored fired")
                     threading.Thread(
@@ -8875,6 +9237,9 @@ if __name__ == "__main__":
             try:
                 _import_main_app()
             except BaseException as e:
+                import traceback as _tb
+                logger.error(f"[STARTUP] main.py import exception: {type(e).__name__}: {e}")
+                logger.error(f"[STARTUP] main.py import traceback:\n{''.join(_tb.format_exception(e))}")
                 _import_error[0] = e
 
         _import_thread = threading.Thread(target=_bg_import, daemon=True,
