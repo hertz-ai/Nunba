@@ -283,6 +283,11 @@ _optional_packages = [
     "langchain", "langchain_core", "langchain_community", "langchain_openai",
     "cryptography", "sentry_sdk",
     "google.auth", "google.oauth2",
+    # app.py's native_camera_start/native_mic_start (WKWebView TCC fallback,
+    # own process identity for camera/mic) — unlike Windows/Linux, macOS
+    # doesn't exclude cv2 (no PIL.ImageGrab fallback available) and
+    # actually needs sounddevice's own bundled PortAudio binary.
+    "cv2", "sounddevice",
 ]
 for _pkg in _optional_packages:
     if _ilu.find_spec(_pkg):
