@@ -583,7 +583,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // to avoid the TDZ error — see comment near line 222.)
   const refresh_token = localStorage.getItem('refresh_token');
   const isAuthenticated = (decryptedUserId && token) || isGuestMode;
-  const effectiveUserId = isGuestMode ? guestUserId : decryptedUserId;
+  // Always fall back to 'guest' so we never ship empty/null user_id to chat
+  // OR camera-frame POST.  Earlier behavior left this nullable, which caused
+  // a silent mismatch: camera-frame POST applied its own 'guest' fallback
+  // while chat sent ''. VisionService stored the frame under 'guest' but
+  // chat_route looked it up under '' → 'no frame in store' → video-mode
+  // LLM had no visual context.  Defaulting here means every consumer of
+  // effectiveUserId sees the same non-empty value.  Cross-platform.
+  const effectiveUserId = (isGuestMode ? guestUserId : decryptedUserId) || 'guest';
   const [uploadedPdf, setUploadedPdf] = useState(null);
   const [pdfurl, setPdfurl] = useState(null);
   const [worker, setWorker] = useState(null);
@@ -3204,23 +3211,30 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // newly-changed results begin in this event — that's what we
         // want for the current segment only. Matches the correct pattern
         // already in hooks/useSpeechRecognition.js:187.
+        //
+        // ACCUMULATE (+=), don't reassign: if the user speaks two phrases
+        // close together before the auto-send timer below fires, the next
+        // onresult event's resultIndex window only contains the newly
+        // finalized segment — reassigning committedText here would silently
+        // drop everything finalized in a prior firing of this same handler.
         let interim = '';
-        let finalText = '';
+        let newFinal = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i];
-          if (result.isFinal) finalText += result[0].transcript;
+          if (result.isFinal) newFinal += result[0].transcript;
           else interim += result[0].transcript;
         }
-        committedText = finalText;
+        if (newFinal) committedText += newFinal;
         setInputMessage(committedText + interim);
 
-        const lastResult = event.results[event.results.length - 1];
-        if (lastResult.isFinal) {
+        // Re-arm autosend only when THIS event delivered new final text.
+        if (newFinal) {
           clearTimeout(autoSendTimer);
           autoSendTimer = setTimeout(() => {
             if (committedText.trim() && handleSendRef.current) {
               handleSendRef.current();
               committedText = '';
+              setInputMessage('');
             }
           }, 1000);
         }
@@ -3242,6 +3256,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         if (committedText.trim() && handleSendRef.current) {
           handleSendRef.current();
           committedText = '';
+          setInputMessage('');
         }
         setIsRecording(false);
       };
