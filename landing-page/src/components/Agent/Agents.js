@@ -7,10 +7,22 @@ import Footer from '../footer';
 import Navbar from '../navbar';
 
 import './agents.css';
-import {X} from 'lucide-react';
+import {X, Search, ArrowRight, Sparkles} from 'lucide-react';
 
 import AgentPoster from '../../assets/images/AgentPoster.png';
 import {chatApi} from '../../services/socialApi';
+
+// Hevolve brand spectrum: the steward's six hues. Each card is tinted with one
+// of these (by grid position) so the gallery reads as a spectrum rather than a
+// single monochrome wash. Canonical source: hartResponsive.css (--hv-*).
+const SPECTRUM = [
+  ['#00E6C3', '0, 230, 195'], // teal
+  ['#29C5FF', '41, 197, 255'], // cyan
+  ['#3B82F6', '59, 130, 246'], // blue
+  ['#9B5CFF', '155, 92, 255'], // violet
+  ['#FF2E9A', '255, 46, 154'], // magenta
+  ['#FFC83D', '255, 200, 61'], // amber
+];
 
 const Agents = ({
   isOverlay = false,
@@ -22,7 +34,6 @@ const Agents = ({
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredAgents, setFilteredAgents] = useState([]);
-  const navigate = useNavigate();
 
   useEffect(() => {
     const fetchAgents = async () => {
@@ -70,77 +81,80 @@ const Agents = ({
   if (loading) {
     return (
       <div
-        className={`flex flex-col items-center justify-center gap-3 ${isOverlay ? 'text-white p-12' : 'min-h-[50vh]'}`}
+        className={`agents-page agents-loading ${
+          isOverlay ? 'text-white px-6 pb-8' : 'min-h-[50vh] px-4'
+        }`}
       >
-        <div className="flex gap-1.5">
-          {[0, 1, 2].map((i) => (
-            <span
-              key={i}
-              className="w-2.5 h-2.5 rounded-full"
-              style={{
-                background: 'linear-gradient(135deg, #6C63FF, #9B94FF)',
-                animation: 'agentDotPulse 1.2s ease-in-out infinite',
-                animationDelay: `${i * 150}ms`,
-              }}
-            />
+        <div className="agents-grid">
+          {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+            <SkeletonCard key={i} />
           ))}
         </div>
-        <span className="text-sm text-gray-400 tracking-wide">
-          Loading agents...
-        </span>
-        <style>{`
-                    @keyframes agentDotPulse {
-                        0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
-                        40% { opacity: 1; transform: scale(1.2); }
-                    }
-                `}</style>
       </div>
     );
   }
 
+  const count = filteredAgents.length;
+  const countLabel = `${count} agent${count === 1 ? '' : 's'}`;
+
   if (isOverlay) {
     return (
       <div
-        className="fixed inset-0 w-full z-50 flex justify-center items-center overflow-y-auto"
-        style={{background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)'}}
+        className="agents-page fixed inset-0 w-full z-50 flex justify-center items-center overflow-y-auto"
+        style={{background: 'rgba(0,0,0,0.78)', backdropFilter: 'blur(10px)'}}
       >
         <div
-          className="bg-gray-900 rounded-2xl shadow-2xl max-h-[95vh] w-[95vw] max-w-4xl flex flex-col"
-          style={{border: '1px solid rgba(108, 99, 255, 0.1)'}}
+          className="rounded-3xl shadow-2xl max-h-[95vh] w-[95vw] max-w-5xl flex flex-col overflow-hidden"
+          style={{
+            background:
+              'linear-gradient(180deg, rgba(20,24,32,0.98), rgba(13,17,23,0.98))',
+            border: '1px solid rgba(255,255,255,0.08)',
+          }}
         >
-          <div className="flex justify-between items-center p-5 border-b border-gray-800">
-            <h2 className="text-xl font-bold text-white">All Agents</h2>
+          <div
+            className="flex justify-between items-center p-5"
+            style={{borderBottom: '1px solid rgba(255,255,255,0.07)'}}
+          >
+            <div className="flex items-center gap-3">
+              <h2 className="text-xl font-bold text-white">All Agents</h2>
+              <span className="agents-search__count" style={{margin: 0}}>
+                {countLabel}
+              </span>
+            </div>
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-white rounded-full p-1 transition-colors"
+              aria-label="Close"
+              className="text-gray-400 hover:text-white rounded-full p-1.5 transition-colors"
             >
               <X className="w-6 h-6" />
             </button>
           </div>
 
           {/* Search Bar */}
-          <div className="flex justify-center m-4">
-            <input
-              type="text"
-              placeholder="Search agents..."
-              value={searchQuery}
-              onChange={handleSearchChange}
-              className="p-3 rounded-xl border border-gray-700 bg-gray-800/80 text-white placeholder-gray-500 w-full max-w-md focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all duration-200"
-            />
+          <div className="flex justify-center px-5 pt-4">
+            <div className="agents-search">
+              <Search className="agents-search__icon" />
+              <input
+                type="text"
+                placeholder="Search agents..."
+                value={searchQuery}
+                onChange={handleSearchChange}
+                className="agents-search__input"
+              />
+            </div>
           </div>
 
           {/* Agents Grid */}
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="flex-1 overflow-y-auto px-3 pb-4">
             <div className="agents-grid">
               {filteredAgents.length === 0 ? (
-                <div className="no-agents-message text-white">
-                  No agents match your search. Please try a different query.
-                </div>
+                <EmptyState query={searchQuery} />
               ) : (
                 filteredAgents.map((agent, index) => (
                   <AgentCard
                     key={index}
                     agent={agent}
+                    index={index}
                     isOverlay={true}
                     onSelect={() => onAgentSelect(agent)}
                   />
@@ -159,28 +173,49 @@ const Agents = ({
       <div className="bg-[#212A31]">
         <Navbar />
 
-        <div className="min-h-screen bg-[#212A31] pt-28">
+        <div className="agents-page min-h-screen bg-[#212A31] pt-28 pb-16">
+          {/* Header */}
+          <header className="agents-header">
+            <span className="agents-header__eyebrow">
+              <Sparkles /> HART OS Agents
+            </span>
+            <h1 className="agents-header__title">Explore Agents</h1>
+            <p className="agents-header__subtitle">
+              Pick an agent trained for a specific craft and start a
+              conversation. Each one learns once, then works for you.
+            </p>
+          </header>
+
           {/* Search Bar */}
-          <div className="flex justify-center mb-8">
-            <input
-              type="text"
-              placeholder="Search agents..."
-              value={searchQuery}
-              onChange={handleSearchChange}
-              className="p-3 rounded-xl border border-gray-700 bg-gray-800/80 text-white placeholder-gray-500 w-full max-w-md focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all duration-200"
-            />
+          <div className="flex flex-col items-center mt-9 mb-1 px-4">
+            <div className="agents-search">
+              <Search className="agents-search__icon" />
+              <input
+                type="text"
+                placeholder="Search agents..."
+                value={searchQuery}
+                onChange={handleSearchChange}
+                className="agents-search__input"
+              />
+            </div>
+            {count > 0 && <span className="agents-search__count">{countLabel}</span>}
           </div>
 
-          <div className="agents-grid">
-            {filteredAgents.length === 0 ? (
-              <div className="no-agents-message">
-                No agents match your search. Please try a different query.
-              </div>
-            ) : (
-              filteredAgents.map((agent, index) => (
-                <AgentCard key={index} agent={agent} isOverlay={false} />
-              ))
-            )}
+          <div className="max-w-6xl mx-auto px-2">
+            <div className="agents-grid">
+              {filteredAgents.length === 0 ? (
+                <EmptyState query={searchQuery} />
+              ) : (
+                filteredAgents.map((agent, index) => (
+                  <AgentCard
+                    key={index}
+                    agent={agent}
+                    index={index}
+                    isOverlay={false}
+                  />
+                ))
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -190,8 +225,34 @@ const Agents = ({
   );
 };
 
-const AgentCard = ({agent, isOverlay = false, onSelect = () => {}}) => {
+const SkeletonCard = () => (
+  <div className="skeleton-card" aria-hidden="true">
+    <div className="skeleton-card__media shimmer" />
+    <div className="skeleton-card__body">
+      <div className="skeleton-line is-title shimmer" />
+      <div className="skeleton-line shimmer" />
+      <div className="skeleton-line is-short shimmer" />
+    </div>
+  </div>
+);
+
+const EmptyState = ({query = ''}) => (
+  <div className="agents-empty">
+    <div className="agents-empty__icon">
+      <Search />
+    </div>
+    <p className="agents-empty__title">No agents found</p>
+    <p className="agents-empty__hint">
+      {query
+        ? 'Nothing matches that search. Try a different term.'
+        : 'No agents are available right now. Check back soon.'}
+    </p>
+  </div>
+);
+
+const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) => {
   const navigate = useNavigate();
+  const accent = SPECTRUM[index % SPECTRUM.length];
 
   const handleButtonClick = () => {
     if (isOverlay) {
@@ -207,81 +268,58 @@ const AgentCard = ({agent, isOverlay = false, onSelect = () => {}}) => {
     });
   };
 
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleButtonClick();
+    }
+  };
+
+  const description =
+    agent.video_text && agent.video_text !== 'This is Static Description'
+      ? agent.video_text
+      : 'An AI agent ready to help. Tap to start a conversation.';
+
   return (
-    <div
+    <article
       onClick={handleButtonClick}
-      className="relative flex flex-col overflow-hidden rounded-md cursor-pointer group"
-      style={{
-        background: '#212A31',
-        border: '1px solid rgba(108, 99, 255, 0.12)',
-        backdropFilter: 'blur(16px)',
-        transition: 'all 0.3s cubic-bezier(0.2, 0, 0, 1)',
-        boxShadow: '0 4px 24px rgba(0,0,0,0.2)',
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.transform = 'translateY(-4px)';
-        e.currentTarget.style.boxShadow =
-          '0 12px 40px rgba(108, 99, 255, 0.2), 0 0 0 1px rgba(108, 99, 255, 0.15)';
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.transform = 'translateY(0)';
-        e.currentTarget.style.boxShadow = '0 4px 24px rgba(0,0,0,0.2)';
-      }}
+      onKeyDown={handleKeyDown}
+      role="button"
+      tabIndex={0}
+      aria-label={`Talk to ${agent.name}`}
+      className="agent-card"
+      style={{'--accent': accent[0], '--accent-rgb': accent[1]}}
     >
-      {/* Image */}
-      <div className="relative overflow-hidden" style={{aspectRatio: '4/3'}}>
+      {/* Media */}
+      <div className="agent-card__media">
         <img
           src={agent.teacher_image_url || agent.image_url || AgentPoster}
-          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+          className="agent-card__img"
           alt={agent.name}
+          loading="lazy"
         />
-        {/* Gradient overlay */}
-        <div
-          className="absolute inset-0"
-          style={{
-            background: 'linear-gradient(to top, #212A31 0%, transparent 50%)',
-          }}
-        />
+        <div className="agent-card__scrim" />
+        <div className="agent-card__glow" />
       </div>
 
       {/* Content */}
-      <div className="px-6 pt-4 pb-12 flex flex-col justify-center items-center relative">
-        <h3 className="font-bold text-xl mb-2 text-center text-white">
-          {agent.name}
-        </h3>
-        <h3 className="text-slate-400 text-center line-clamp-1">
-          {agent.video_text && agent.video_text !== 'This is Static Description'
-            ? agent.video_text
-            : 'Agent description goes here.'}
-        </h3>
-      </div>
+      <div className="agent-card__body">
+        <h3 className="agent-card__name">{agent.name}</h3>
+        <p className="agent-card__desc">{description}</p>
 
-      {/* CTA Button */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          handleButtonClick();
-        }}
-        className="absolute bottom-0 left-0 w-full text-white font-semibold py-2.5 text-sm tracking-wide transition-all duration-200 active:scale-95"
-        style={{
-          background: 'linear-gradient(135deg, #6C63FF, #9B94FF)',
-          borderRadius: '0 0 6px 6px',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background =
-            'linear-gradient(135deg, #5A52E0, #8A83F0)';
-          e.currentTarget.style.boxShadow =
-            '0 -4px 16px rgba(108, 99, 255, 0.3)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background =
-            'linear-gradient(135deg, #6C63FF, #9B94FF)';
-          e.currentTarget.style.boxShadow = 'none';
-        }}
-      >
-        Talk To Agent
-      </button>
-    </div>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleButtonClick();
+          }}
+          className="agent-card__cta"
+        >
+          <span>Talk to agent</span>
+          <ArrowRight />
+        </button>
+      </div>
+    </article>
   );
 };
 
