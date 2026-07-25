@@ -168,7 +168,7 @@ build_exe_options = {
         "zipfile", "platform", "typing", "socket",
         "llama.llama_installer", "llama.llama_config", "llama.llama_health_endpoint",
         "desktop.tray_handler", "desktop.platform_utils", "tts.piper_tts",
-        "tts.vibevoice_tts", "tts.tts_engine", "desktop.ai_installer",
+        "tts.vibevoice_tts", "tts.tts_engine", "tts.package_installer", "desktop.ai_installer",
         "desktop.crash_reporter", "desktop.config",
         "routes.hartos_backend_adapter",
         "desktop.ai_key_vault",

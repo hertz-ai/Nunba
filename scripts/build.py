@@ -757,9 +757,11 @@ def build_react_landing_page():
     _node_heap_mb = os.environ.get('NUNBA_NODE_HEAP_MB', '8192')
     env['NODE_OPTIONS'] = f'--max-old-space-size={_node_heap_mb}'
 
+    # stdin=DEVNULL: on Windows CI npm can emit 'Terminate batch job (Y/N)?'
+    # and block forever waiting on a console that will never answer.
     result = subprocess.run(
         [npm_cmd, 'run', 'build'],
-        cwd=landing_dir, env=env, check=False
+        cwd=landing_dir, env=env, check=False, stdin=subprocess.DEVNULL
     )
     if result.returncode != 0:
         print_error("React build failed! Fix the build errors before freezing.")
@@ -1735,6 +1737,9 @@ def build_macos(python_exe, app_only=False, installer_only=False):
             print_info("Using create-dmg...")
             cmd = [
                 'create-dmg',
+                # hdiutil internet-enable is blocked on CI runners; without this
+                # flag create-dmg fails the DMG step there.
+                '--no-internet-enable',
                 '--volname', 'Nunba',
                 '--window-pos', '200', '120',
                 '--window-size', '600', '400',
@@ -1849,6 +1854,9 @@ def sign_macos():
         if result.returncode == 0:
             cmd = [
                 'create-dmg',
+                # hdiutil internet-enable is blocked on CI runners; without this
+                # flag create-dmg fails the DMG step there.
+                '--no-internet-enable',
                 '--volname', 'Nunba',
                 '--window-pos', '200', '120',
                 '--window-size', '600', '400',
