@@ -270,6 +270,36 @@ if not _ilu_pre.find_spec("agent_ledger"):
     else:
         print("WARNING: agent_ledger package not found — distributed agent features unavailable")
 
+# Include HARTOS package directories (integrations, core, security), mirroring
+# setup_freeze_nunba.py:899.  Listing them in `packages` below is NOT enough:
+# once HARTOS is pip-installed editable they resolve through a PEP 660
+# __editable__ finder, which cx_Freeze cannot trace, so it bundles nothing and
+# the frozen .app dies at --validate with
+# "ModuleNotFoundError: No module named 'security'".  Copying the directories is
+# the only reliable way to get them into the bundle.  Candidate order matches
+# the Windows script plus the CI checkout path, since build.yml checks HARTOS
+# out to _deps/HARTOS and the ../HARTOS symlink is created with `|| true`.
+_hartos_packages = [
+    ("integrations", "integrations"),
+    ("core", "core"),
+    ("security", "security"),
+]
+_hartos_roots = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'HARTOS'),
+    os.path.join('_deps', 'HARTOS'),
+    'hartos_backend_src',
+]
+for _pkg_dir, _pkg_name in _hartos_packages:
+    for _root in _hartos_roots:
+        _candidate = os.path.join(_root, _pkg_dir)
+        if os.path.isdir(_candidate) and os.path.isfile(os.path.join(_candidate, '__init__.py')):
+            build_exe_options["include_files"].append(
+                (os.path.normpath(_candidate), _pkg_name))
+            print(f"Including HARTOS package {_pkg_name} <- {os.path.normpath(_candidate)}")
+            break
+    else:
+        print(f"WARNING: HARTOS package {_pkg_name} not found in any of {_hartos_roots}")
+
 # ── Conditionally include optional packages ──
 import importlib.util as _ilu
 
