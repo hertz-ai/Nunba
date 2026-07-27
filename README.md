@@ -46,7 +46,10 @@ cpu-only, evicting the least recently used when something new needs room.
 A 10GB+ CUDA card unlocks speculative decoding, a 0.8B draft speaking while
 the main model verifies. Smaller GPUs run the main model alone. Without CUDA,
 chat runs on CPU with a compact main model, 0.8B or 2B class, and swapping in
-any other GGUF is configuration, not surgery. Voices scale the same way: the
+any other GGUF is configuration, not surgery. That machine is not stuck with
+what it can hold: the agent runs the same, and a question the local model
+should not take can be handed whole to a peer running something bigger, when
+a peer on your Hive has opted in to offering it. Voices scale the same way: the
 full ladder on bigger machines, the lighter engines on a 6GB card.
 
 ---
