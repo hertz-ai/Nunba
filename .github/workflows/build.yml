@@ -438,23 +438,42 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt 2>&1 | tail -5
-          for dep_dir in ../hevolveai ../HARTOS; do
+
+          # Install from _deps/ directly rather than through ../<name>, the
+          # same way build-windows does.  The "Symlink sibling repos" step
+          # above creates ../HARTOS with `ln -s ... || true`, so a failure
+          # there is masked: pip then gets a path that does not resolve,
+          # `pip install -e ../HARTOS` quietly no-ops, and HARTOS's packages
+          # never land on sys.path.  cx_Freeze cannot then import `security`,
+          # which surfaced far downstream as the build-macos failure
+          # "ModuleNotFoundError: No module named 'security'" during
+          # scripts/build.py --validate.  Pointing pip at _deps/ removes the
+          # symlink as a failure point entirely.
+          for dep_dir in _deps/hevolveai _deps/HARTOS; do
             if [ -f "$dep_dir/pyproject.toml" ] || [ -f "$dep_dir/setup.py" ]; then
-              echo "Installing $(basename $dep_dir) from source..."
+              echo "Installing $(basename $dep_dir) from $dep_dir..."
               pip install --no-deps -e "$dep_dir" 2>&1 | tail -2
             fi
           done
-          if [ -f "../Hevolve_Database/setup.py" ]; then
+
+          if [ -f "_deps/Hevolve_Database/setup.py" ]; then
             echo "Installing Hevolve_Database from source (setup.py)..."
-            pip install --no-deps -e "../Hevolve_Database" 2>&1 | tail -3
+            pip install --no-deps -e "_deps/Hevolve_Database" 2>&1 | tail -3
           fi
-          if [ -d "../Hevolve_Database/sql" ]; then
+          # Always create .pth as belt-and-suspenders (editable installs can silently break)
+          if [ -d "_deps/Hevolve_Database/sql" ]; then
             SITE_PKG=$(python -c "import site; print(site.getsitepackages()[0])")
-            HEVOLVE_DB_PATH=$(cd ../Hevolve_Database && pwd)
+            HEVOLVE_DB_PATH=$(python -c "import os; print(os.path.abspath('_deps/Hevolve_Database'))")
             echo "$HEVOLVE_DB_PATH" > "$SITE_PKG/hevolve_database.pth"
             echo "Added Hevolve_Database to Python path via .pth: $HEVOLVE_DB_PATH"
           fi
+
+          # Hard-fail here rather than 8 minutes later inside cx_Freeze.
+          # `security` is the package whose absence produced the original
+          # failure, and `sql` mirrors the check build-windows already makes.
           python -c "import sql; print('sql OK:', sql.__file__)"
+          python -c "import security; print('security OK:', security.__file__)"
+          python -c "import core; print('core OK:', core.__file__)"
 
       - name: Build Nunba
         run: python scripts/build.py full --skip-wizard
