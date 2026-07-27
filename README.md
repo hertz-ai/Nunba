@@ -39,7 +39,10 @@ Hybrid exists for exactly that. Most of what people ask in a day is not that.
 | **macOS 13+** | not attached yet | The dmg build currently hangs in CI and the current release ships without it. Watch [Releases](https://github.com/hertz-ai/Nunba/releases); building from source works today. |
 | **Backend only** (headless) | [HART OS](https://github.com/hertz-ai/HARTOS) | Run the runtime from source and point any OpenAI-compatible client at `:6777`. |
 
-**What your machine gets you.** The wizard sizes the install to the hardware.
+**What your machine gets you.** The wizard sizes the install to the hardware,
+and at runtime the VRAM manager decides what loads where, checking each
+model's budget against free memory and placing it gpu, cpu-offload or
+cpu-only, evicting the least recently used when something new needs room.
 A 10GB+ CUDA card unlocks speculative decoding, a 0.8B draft speaking while
 the main model verifies. Smaller GPUs run the main model alone. Without CUDA,
 chat runs on CPU with a compact main model, 0.8B or 2B class, and swapping in
