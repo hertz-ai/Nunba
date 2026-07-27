@@ -40,12 +40,11 @@ Hybrid exists for exactly that. Most of what people ask in a day is not that.
 | **Backend only** (headless) | [HART OS](https://github.com/hertz-ai/HARTOS) | Run the runtime from source and point any OpenAI-compatible client at `:6777`. |
 
 **What your machine gets you.** The wizard sizes the install to the hardware.
-On 8GB with integrated graphics you get the draft-first stack, a 0.8B draft
-speaking while the 4B main verifies, with first token around 700ms on the CPU
-path. On a CUDA card it lands nearer 300ms. On a 6GB card the wizard ships a
-single model and the lighter voices. Resident-memory numbers and the
-trade-offs are written up in
-[the 8GB breakdown](https://hevolve.ai/blog/run-local-ai-on-8gb-ram).
+A 10GB+ CUDA card unlocks speculative decoding, a 0.8B draft speaking while
+the main model verifies. Smaller GPUs run the main model alone. Without CUDA,
+chat runs on CPU with a compact main model, 0.8B or 2B class, and swapping in
+any other GGUF is configuration, not surgery. Voices scale the same way: the
+full ladder on bigger machines, the lighter engines on a 6GB card.
 
 ---
 
