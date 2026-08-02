@@ -1916,6 +1916,12 @@ def _load_indicator():
 # Global variable to track system tray status
 _tray_icon = None
 _window = None  # Global window reference
+# The HTTP server thread, promoted to module scope so the MAIN THREAD can park
+# on it after main() returns.  See the park block at the bottom of __main__:
+# if the main thread is allowed to finish while this thread is still serving,
+# CPython tears down every ThreadPoolExecutor and the backend answers 500 to
+# everything while the port stays bound.
+_flask_thread = None
 _window_visible = True  # Track window visibility for hotkey toggle
 _last_clipboard = ""  # Last clipboard content for clipboard monitor
 
@@ -7111,7 +7117,10 @@ def main():
     _splash_update('Starting server...')
     # Start Flask server in a separate thread with error handling
     try:
+        global _flask_thread
         flask_thread = threading.Thread(target=start_flask, daemon=True)
+        _flask_thread = flask_thread          # module scope: the main thread
+                                              # parks on this after main()
         flask_thread.start()
         logger.info("Flask thread started successfully")
     except Exception as ex:
@@ -9424,6 +9433,49 @@ if __name__ == "__main__":
         main()
 
         logger.info("=== main() FUNCTION COMPLETED ===")
+
+        # ── PARK: the app lives in the tray; the main thread must NOT finish ──
+        # webview.start() returns when the window is closed, but closing only
+        # HIDES to the system tray (on_closed) — the app is still meant to
+        # serve. Letting the main thread fall off the end here is what broke
+        # the backend, and the chain is CPython's, not ours:
+        #
+        #   main thread finishes
+        #     -> threading._shutdown()
+        #     -> concurrent.futures.thread._python_exit()   (_register_atexit)
+        #        sets the GLOBAL _shutdown and puts None on every pool queue
+        #     -> each _worker wakes, sees it, and sets
+        #        executor._shutdown = True                  (thread.py:38)
+        #     -> Hypercorn's WSGI middleware submits EVERY request to the event
+        #        loop's DEFAULT executor (`run_in_executor(None, ...)`, the pool
+        #        installed at the _hc_runner above), so submit() now raises
+        #        RuntimeError('cannot schedule new futures after shutdown')
+        #        (thread.py:170) and every route returns 500.
+        #
+        # The port stays bound and SSE keeps logging "broadcast" successes, so
+        # the app looks perfectly healthy while serving nothing — a false-healthy
+        # state, not a crash. Measured on 2026-08-02: ZERO ASGI errors in the
+        # 8 minutes before this line, 138 in the seconds after; the first landed
+        # 216ms after "main() FUNCTION COMPLETED". The WAMP eventbus and the
+        # agent daemon fail the same way, for the same reason.
+        #
+        # Quitting is os._exit(0) from the tray menu (on_quit_clicked), which
+        # bypasses interpreter finalisation entirely — so parking here is simply
+        # "run until the user actually quits", and never delays a real exit.
+        if _flask_thread is not None and _flask_thread.is_alive():
+            logger.info(
+                "Main thread parking: window closed but the backend is still "
+                "serving (tray mode). Quit via the tray menu to exit."
+            )
+            try:
+                while _flask_thread.is_alive():
+                    # Bounded join so a KeyboardInterrupt is still deliverable
+                    # on the main thread instead of blocking uninterruptibly.
+                    _flask_thread.join(timeout=1.0)
+            except KeyboardInterrupt:
+                logger.info("Interrupted while parked — exiting")
+                os._exit(0)
+            logger.info("Backend thread ended — main thread resuming shutdown")
 
     except KeyboardInterrupt:
         logger.info("Application interrupted by user")

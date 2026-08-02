@@ -225,3 +225,103 @@ class TestDPINormalization:
         raw = 1920
         scale = 96 / 96.0
         assert round(raw / scale) == 1920
+
+
+# ==========================================================================
+# Tray mode: the main thread must NOT finish while the backend serves
+# ==========================================================================
+class TestMainThreadParkKeepsBackendAlive:
+    """The backend dies the instant the main thread finishes — proven here.
+
+    LIVE INCIDENT 2026-08-02: closing the window (which only HIDES to the
+    tray) let main() return, the main thread ended, and from that moment
+    EVERY HTTP request returned 500 while :5000 stayed bound. Measured in
+    frozen_debug.log: 0 ASGI errors in the 8 minutes before, 138 in the
+    seconds after, the first landing 216ms after "main() FUNCTION COMPLETED".
+    The app looked perfectly healthy and served nothing.
+
+    The chain is CPython's, not ours:
+      main thread finishes
+        -> threading._shutdown()
+        -> concurrent.futures.thread._python_exit()  (registered via
+           threading._register_atexit, runs BEFORE non-daemon threads join)
+           sets the GLOBAL _shutdown and puts None on every pool queue
+        -> each _worker wakes, sees it, sets executor._shutdown = True
+           (thread.py:38)
+        -> Hypercorn's WSGI middleware submits every request to the event
+           loop's DEFAULT executor (app.py::_hc_runner installs it), so
+           submit() raises RuntimeError('cannot schedule new futures after
+           shutdown') (thread.py:170) forever after.
+
+    These run REAL subprocesses because the hazard only exists when the main
+    thread genuinely reaches the end of the module — it cannot be provoked
+    from inside a pytest function. The 'bug' case asserts the hazard is REAL
+    (a non-vacuous guard: if it ever stops failing, the park in app.py may be
+    reconsidered); the 'park' case asserts the fix removes it.
+    """
+
+    SCRIPT = '''
+import asyncio, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor
+MODE = sys.argv[1]
+RESULTS, STOP, DONE = [], threading.Event(), threading.Event()
+
+async def _server():
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=4))
+    while not STOP.is_set():
+        try:
+            await loop.run_in_executor(None, lambda: "served")
+            RESULTS.append("OK")
+        except RuntimeError as e:
+            RESULTS.append("FAIL:%s" % e)
+        await asyncio.sleep(0.05)
+
+def _srv():
+    try:
+        asyncio.run(_server())
+    except BaseException as e:
+        RESULTS.append("LOOPDEAD:%s" % type(e).__name__)
+
+def _tray():
+    time.sleep(3.0)
+    STOP.set(); time.sleep(0.3)
+    print("FAIL=%d" % sum(1 for r in RESULTS if r != "OK"), flush=True)
+    DONE.set()
+
+tray = threading.Thread(target=_tray, daemon=False); tray.start()
+threading.Thread(target=_srv, daemon=True).start()
+time.sleep(1.2)
+if MODE == "park":
+    while not DONE.is_set():
+        tray.join(timeout=0.2)
+'''
+
+    def _run(self, mode, tmp_path):
+        import subprocess
+        script = tmp_path / "park_repro.py"
+        script.write_text(self.SCRIPT)
+        out = subprocess.run([sys.executable, str(script), mode],
+                             capture_output=True, text=True, timeout=45)
+        line = [l for l in out.stdout.splitlines() if l.startswith("FAIL=")]
+        assert line, f"repro produced no verdict: {out.stdout!r} {out.stderr!r}"
+        return int(line[-1].split("=")[1])
+
+    def test_main_thread_exit_really_kills_the_default_executor(self, tmp_path):
+        """The hazard is REAL — this is why app.py parks.
+
+        If this ever reports zero failures, CPython's teardown changed and the
+        park may be revisited. Until then it must fail, or the park below is
+        guarding nothing.
+        """
+        failures = self._run("bug", tmp_path)
+        assert failures > 0, (
+            "expected the default executor to die once the main thread "
+            "finished; it did not, so this guard has gone vacuous")
+
+    def test_parking_the_main_thread_keeps_the_executor_usable(self, tmp_path):
+        """THE FIX: park and every request keeps being served."""
+        failures = self._run("park", tmp_path)
+        assert failures == 0, (
+            f"{failures} submissions failed while the main thread was parked — "
+            f"the backend would be returning 500s in tray mode")
