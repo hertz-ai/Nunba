@@ -257,6 +257,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const currentAgentRef = useRef(currentAgent);
   const handleSendRef = useRef(null); // Stable ref for queue processor
   const handleStartRef = useRef(null); // Stable ref for auto-start mic when STT ready
+  // Stable ref for the echo-cancellation gate in processor.onaudioprocess.
+  // That callback is assigned ONCE, so it closes over the render that created
+  // it: `tts` is a fresh object from useTTS() every render and
+  // isPlayingResponse is a captured primitive, so reading them directly there
+  // pins them at their start-of-capture values (both false) and the gate never
+  // fires. Same reason handleSendRef exists two lines up.
+  const ttsActiveRef = useRef(false);
   const [duration, setDuration] = useState(0);
   const [showTooltip, setShowTooltip] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -3148,8 +3155,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         processor.onaudioprocess = (e) => {
           if (!wsReady) return;
           // Echo cancellation: don't send mic audio while TTS is playing
-          // (prevents the agent from hearing its own voice)
-          if (tts.isSpeaking || isPlayingResponse) return;
+          // (prevents the agent from hearing its own voice).
+          //
+          // Read through the ref, NOT `tts.isSpeaking || isPlayingResponse`
+          // directly: this callback is assigned once, so a direct read is
+          // pinned to the render that created it and stays false forever.
+          // Live 2026-08-04 on shipped build #4 — the gate was present and
+          // still the composer filled with 7x "(swoosh)" plus a card reading
+          // "Smiling face with smiling eyes ... [Music]", i.e. Nunba
+          // transcribing its own TTS (emoji spoken as its unicode name, and a
+          // Whisper non-speech tag). With auto-send at :3122 firing 1s after
+          // each final transcript, that closed into a self-driving loop.
+          if (ttsActiveRef.current) return;
           let float32 = e.inputBuffer.getChannelData(0);
 
           // Resample if AudioContext gave a different rate than 16kHz
@@ -4600,6 +4617,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   // Keep ref in sync for queue processor
   handleSendRef.current = handleSend;
+
+  // Keep the echo-cancellation gate fed with LIVE playback state — see
+  // ttsActiveRef's declaration. Assigned in render body (not an effect) so it
+  // is already current by the time the next audio frame is processed.
+  ttsActiveRef.current = tts.isSpeaking || isPlayingResponse;
 
   // ── Manual retry for failed messages ──
   const handleRetryMessage = useCallback((messageId) => {
