@@ -252,19 +252,33 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
     React.createElement('canvas', {
       ref: canvasRef,
       width: size * 2, height: size * 2,
-      // aspectRatio keeps the orb CIRCULAR when a cap bites.
-      // maxWidth and maxHeight are independent constraints: in a column
-      // narrower than `size`, maxWidth clamps the width while maxHeight leaves
-      // the height alone, so the square canvas renders as an oval. Measured
-      // 2026-08-04 at a 1920x1080 viewport: size computed 537.6, height
-      // rendered 538, width rendered 479 (the column) -> aspect 0.890.
-      // With aspectRatio the clamped axis pulls the other one with it, so the
-      // orb stays square at any column width. This is what #592's "SQUARE"
-      // half asked for; the "LARGER" half was already delivered by 72780cd4
-      // (479px here vs the old 160-200px cap).
+      // The backing store above is SQUARE (size*2 x size*2). Whatever shape the
+      // CSS box takes, the browser stretches that square into it — so a
+      // non-square box does not crop the orb, it draws it as an ellipse.
+      //
+      // Keeping the box square is therefore the whole job, and `aspectRatio`
+      // ALONE does not do it: per CSS sizing, aspect-ratio is ignored when both
+      // width and height are definite. The previous revision set
+      // `width: size, height: size, aspectRatio: '1 / 1'` and was inert —
+      // measured 2026-08-04 at a 1920x1080 viewport, WITH that aspectRatio
+      // live in the shipped bundle: width 479 (maxWidth clamped it to the
+      // media column), height 538 (`size` = min(.28vw, .68vh) = 537.6,
+      // unclamped because maxHeight resolves against a tall column) ->
+      // aspect 0.890, a visible vertical ellipse.
+      //
+      // So exactly one axis is declared and the other is derived: width takes
+      // the cap, `height: auto` + aspect-ratio follows it. maxHeight is gone on
+      // purpose — a second independent cap is what broke squareness in the
+      // first place, and the vertical bound already lives in `size` itself
+      // (Demopage passes min(innerWidth*.28, innerHeight*.68)).
+      //
+      // #592's "LARGER" half was already delivered by 72780cd4 (479px here vs
+      // the old 160-200px cap); this is the "SQUARE" half.
+      // Guarded by cypress/e2e/voice-orb-landscape.cy.js, which measures
+      // getBoundingClientRect and fails on aspect != 1 +/- 0.08.
       style: {
-        width: size, height: size, aspectRatio: '1 / 1',
-        maxWidth: canvasMax, maxHeight: canvasMax,
+        width: size, maxWidth: canvasMax,
+        height: 'auto', aspectRatio: '1 / 1',
       },
     }),
     isActive ? React.createElement('div', {
