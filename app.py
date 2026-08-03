@@ -5460,11 +5460,55 @@ def start_flask():
             else:
                 return jsonify({"success": False, "error": "Indicator module not available"})
 
+        # Serialises /api/focus so concurrent requests can't stack up on the
+        # UI thread.  See api_focus below for why that mattered.
+        _focus_lock = threading.Lock()
+
         @_serving_app.route('/api/focus', methods=['GET', 'POST'])
         def api_focus():
-            """Bring the webview window to the foreground (called by duplicate instances)."""
-            try:
-                if _window is not None:
+            """Bring the webview window to the foreground (called by duplicate instances).
+
+            Runs the window work on a short-lived worker and answers immediately.
+
+            WHY (2026-08-03, task #593 — this used to hard-hang the whole app):
+            launching Nunba a second time makes the new process ping this
+            endpoint (single-instance guard, ~line 781) and then exit.  The
+            RUNNING instance would wedge permanently, with no error anywhere.
+
+            py-spy on the hung process showed:
+                set_on_top (webview/platforms/winforms.py)
+                on_top     (webview/window.py)
+                api_focus  (app.py)
+            plus two more /api/focus requests queued behind it.  MainThread was
+            in its ordinary create_window message-loop frame — byte-identical to
+            a dump of a HEALTHY process — so the UI thread was NOT stalled and
+            "the message loop isn't pumping" was the wrong diagnosis.
+
+            The real cause is that pywebview's WinForms backend implements
+            on_top as a bare ``i.TopMost = on_top`` with NO Invoke marshalling.
+            Writing a WinForms property from this Flask worker thread is an
+            illegal cross-thread handle operation, and it blocks forever rather
+            than raising.  The 0.5s Timer that set it back to False raced the
+            same unsafe write from a THIRD thread.
+
+            Fix: never touch ``_window.on_top`` off the UI thread.  Win32
+            SetWindowPos IS safe cross-thread, so the topmost nudge goes
+            through the canonical desktop.platform_utils helper instead.  The
+            remaining pywebview calls are moved off the request thread so a
+            future blocking call degrades this endpoint instead of consuming
+            Waitress workers.
+            """
+            if _window is None:
+                return jsonify({"focused": False, "error": "no window"})
+
+            # Non-blocking: a focus request already in flight is enough.  The
+            # 3-deep pile-up above is what turned one blocked call into a
+            # whole-app hang, so coalesce instead of queueing.
+            if not _focus_lock.acquire(blocking=False):
+                return jsonify({"focused": True, "coalesced": True})
+
+            def _do_focus():
+                try:
                     _window.show()  # unhide if started in background mode
                     _window.restore()
                     # Load /local if page was never loaded (background start)
@@ -5474,12 +5518,25 @@ def start_flask():
                             _window.load_url(f"http://localhost:{args.port}/local")
                     except Exception:
                         pass
-                    _window.on_top = True
-                    import threading as _thr
-                    _thr.Timer(0.5, lambda: setattr(_window, 'on_top', False)).start()
-                return jsonify({"focused": True})
-            except Exception as e:
-                return jsonify({"focused": False, "error": str(e)})
+                    # Topmost nudge via Win32, NOT via _window.on_top.
+                    # No-op on macOS/Linux (helper is Windows-gated); show() +
+                    # restore() already raise the window on those platforms.
+                    _hwnd = _resolve_hwnd(_window)
+                    if _hwnd:
+                        from desktop.platform_utils import set_window_always_on_top
+                        set_window_always_on_top(_hwnd, True)
+                        threading.Timer(
+                            0.5,
+                            lambda: set_window_always_on_top(_hwnd, False),
+                        ).start()
+                except Exception as e:
+                    logger.debug("api_focus worker failed: %s", e)
+                finally:
+                    _focus_lock.release()
+
+            threading.Thread(
+                target=_do_focus, name='api-focus', daemon=True).start()
+            return jsonify({"focused": True})
 
         @_serving_app.route('/api/storage/set', methods = ['POST', 'OPTIONS'])
         def set_storage():
