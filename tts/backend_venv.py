@@ -475,6 +475,15 @@ def install_into_venv(
                     f"failed: {err[-400:]!r}"
                 )
 
+    # A successful install is the one transition that can flip this backend from
+    # "cannot import" to "can" — drop the cached probe so the UI reflects it on
+    # the very next poll instead of up to _VENV_PROBE_TTL_S later.
+    #
+    # Only the success path invalidates, deliberately.  The failure returns above
+    # leave the venv unimportable, which is exactly what any cached value already
+    # says; and if a partial install broke a previously-healthy venv, the TTL
+    # bounds that staleness without needing four more call sites.
+    invalidate_venv_probe_cache(backend)
     return True, f"installed {len(packages)} package(s) into venv {backend!r}"
 
 
@@ -535,6 +544,38 @@ def invoke_in_venv(
 
 # ── is_venv_healthy ─────────────────────────────────────────────────
 
+# The import probe below spawns the venv's own python and imports a package —
+# for indic_parler that means transformers + torch, ~1.2s a go.  `/tts/engines`
+# calls this once per venv-backed backend (8 of them), so an uncached probe cost
+# a MEASURED 9-20s per request on the shipped build 2026-08-04 (16.29 / 9.43 /
+# 9.22s, against <= 1.06s for every other GET route).
+#
+# A venv's importability only changes when something installs into or wipes it,
+# and both of those invalidate explicitly below.  The TTL is just a ceiling on
+# staleness if some other path mutates a venv without saying so.
+#
+# Same fix shape as #597 (/api/admin/models 23.08s -> 0.24s, llama/llama_config.py).
+_VENV_PROBE_TTL_S = 60.0
+
+# (backend, probe_module) -> (monotonic_stamp, healthy).  ABSENCE means "never
+# probed" — deliberately not a 0.0 stamp: time.monotonic() is uptime-based, so
+# on a freshly-booted box `now - 0.0` can look like a fresh entry and hand back
+# an answer before any probe ran (the 5fa1ca01 sentinel bug, caught in review).
+_venv_probe_cache: dict[tuple[str, str], tuple[float, bool]] = {}
+
+
+def invalidate_venv_probe_cache(backend: str | None = None) -> None:
+    """Drop cached import-probe results — all, or just one backend's.
+
+    Called from every site that changes what a venv can import, so the cache
+    never outlives the truth: ensure_venv, install_into_venv, wipe_venv.
+    """
+    if backend is None:
+        _venv_probe_cache.clear()
+        return
+    for key in [k for k in _venv_probe_cache if k[0] == backend]:
+        del _venv_probe_cache[key]
+
 
 def is_venv_healthy(backend: str, probe_module: str | None = None) -> bool:
     """Return True iff the backend venv exists and can import its main module.
@@ -554,11 +595,26 @@ def is_venv_healthy(backend: str, probe_module: str | None = None) -> bool:
         return False
     if probe_module is None:
         return True
+
+    # NOTE the ordering: the pyexe.is_file() gate above is deliberately OUTSIDE
+    # the cache.  A wiped venv is then seen immediately rather than TTL seconds
+    # later — only the "can it import" answer is worth caching, never "does it
+    # exist".
+    key = (backend, probe_module)
+    now = time.monotonic()
+    cached = _venv_probe_cache.get(key)
+    if cached is not None and (now - cached[0]) < _VENV_PROBE_TTL_S:
+        return cached[1]
+
     rc, _, _ = invoke_in_venv(
         backend, probe_module, [], timeout=_IMPORT_PROBE_TIMEOUT,
         _probe_mode=True,
     )
-    return rc == 0
+    healthy = rc == 0
+    # Cache the negative too: a FAILING probe is the slow one, because it waits
+    # out the whole import before erroring.
+    _venv_probe_cache[key] = (now, healthy)
+    return healthy
 
 
 # ── wipe_venv ────────────────────────────────────────────────────────
@@ -579,3 +635,12 @@ def wipe_venv(backend: str) -> None:
         return
     logger.info("Wiping venv for backend %r at %s", backend, vpath)
     shutil.rmtree(vpath, ignore_errors=True)
+    # Forget-Me / admin reinstall just deleted the venv.  The `pyexe.is_file()`
+    # gate in is_venv_healthy already reports this immediately (it is not
+    # cached), but drop the stale probe entry too so a re-install cannot be
+    # answered from a pre-wipe result.
+    #
+    # ensure_venv is intentionally NOT wired: creating an empty venv cannot make
+    # a probe module importable, and a wipe->recreate cycle is already covered
+    # here.
+    invalidate_venv_probe_cache(backend)
