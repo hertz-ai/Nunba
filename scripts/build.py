@@ -2269,6 +2269,53 @@ def main():
                 )
         except ImportError:
             pass  # psutil not installed — skip soft check
+        # Build dir in use — HARD fail, and fail NOW.
+        #
+        # cx_Freeze wipes build/<name>/ before writing.  If a Nunba is running
+        # FROM that directory the OS holds its image + DLLs open, the wipe
+        # fails, and the whole build dies on:
+        #     error: the build_exe directory cannot be cleaned
+        # 2026-08-03: that cost ~35 minutes — every dependency resolved, all
+        # 17 hart-backend modules collected, THEN it died.  The condition was
+        # knowable in the first second.
+        #
+        # Cross-platform by construction: psutil.exe() works on Windows, macOS
+        # and Linux, and the path comparison is via Path, not separators.
+        try:
+            from pathlib import Path as _Path_bd
+
+            import psutil as _psutil_bd
+            _build_root = _Path_bd(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ) / 'build'
+            _blockers = []
+            for _p in _psutil_bd.process_iter(['pid']):
+                try:
+                    _exe = _p.exe()
+                except (_psutil_bd.AccessDenied, _psutil_bd.NoSuchProcess,
+                        OSError):
+                    continue  # not ours / vanished — cannot be our blocker
+                if not _exe:
+                    continue
+                try:
+                    _Path_bd(_exe).relative_to(_build_root)
+                except ValueError:
+                    continue  # not under build/
+                _blockers.append((_p.pid, _exe))
+            if _blockers:
+                _lines = '\n'.join(
+                    f"    pid {_pid}  {_exe}" for _pid, _exe in _blockers
+                )
+                sys.exit(
+                    "[PREFLIGHT] Refusing to build: a process is RUNNING FROM "
+                    "the build output directory, so cx_Freeze cannot clean "
+                    f"it:\n{_lines}\n"
+                    "  Close that app (or stop the process) and re-run.  "
+                    "Failing now instead of after the ~35-minute dependency "
+                    "phase.",
+                )
+        except ImportError:
+            pass  # psutil not installed — cannot check; cx_Freeze will report
         # Stale pip-build-env cleanup — prevents cumulative %TEMP% bloat
         try:
             import glob as _glob_pf
