@@ -2153,10 +2153,23 @@ def _acquire_build_lock():
         return
 
     def _release():
+        # The read handle must be CLOSED before os.remove() runs.  Deleting a
+        # file this same process still has open is fine on POSIX but raises
+        # WinError 32 on Windows, and the `except` below swallowed it silently
+        # — so on the primary build platform the lock was never released.
+        # Observed 2026-08-04: build.py PID 34232 exited 0 after writing
+        # Output/Nunba_Setup.exe and left `34232|...` behind in %TEMP%.
+        #
+        # It self-heals only because acquire reclaims a lock whose PID is dead;
+        # but that check is `pid_exists(pid) and age < 3600`, and Windows
+        # recycles PIDs, so a reused PID inside the hour makes the NEXT build
+        # refuse to start with exit 2 for no real reason.
+        # Guarded by tests/test_build_lock_release.py.
         try:
             with open(lock_path) as f:
-                if f.read().strip().split('|')[0] == str(os.getpid()):
-                    os.remove(lock_path)
+                _owner = f.read().strip().split('|')[0]
+            if _owner == str(os.getpid()):
+                os.remove(lock_path)
         except Exception:
             pass
     atexit.register(_release)
