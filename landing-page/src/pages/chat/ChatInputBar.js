@@ -224,7 +224,17 @@ const ChatInputBar = ({
           onFocus={handleFocus}
           onBlur={handleBlur}
           onKeyPress={handleKeyPress}
-          className="w-full text-black border bg-[#fff8ea] text-base border-gray-200 rounded-lg px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.15)] break-words overflow-wrap-anywhere whitespace-pre-wrap transition-all duration-200"
+          // Task #233 (reopened 2026-08-03): this was `text-black bg-[#fff8ea]
+          // border-gray-200` — a bright cream panel wedged between the dark
+          // chat surface above and the dark toolbar below.  #233 removed it in
+          // 7b4466915; 57ad232f7 ("ChatInputBar revert") put it back.
+          //
+          // Matched to THIS FILE's own surfaces rather than a new colour:
+          // lines 86/87/167/182 already use bg-gray-800 / bg-gray-900
+          // unconditionally.  No `dark:` variant is used here because the
+          // composer is dark-only by design — adding one would imply a light
+          // theme this component does not have.
+          className="w-full text-gray-100 border bg-gray-800 text-base border-gray-700 rounded-lg px-4 py-3 resize-none placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.15)] break-words overflow-wrap-anywhere whitespace-pre-wrap transition-all duration-200"
           style={{
             minHeight: '44px',
             maxHeight: '200px',
