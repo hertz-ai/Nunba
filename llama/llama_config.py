@@ -1340,6 +1340,12 @@ class LlamaConfig:
         Format matches TrueFlow's ServerStatus data class so both apps
         can discover each other's servers.
         """
+        # Liveness just changed — drop the cached port probe so the next
+        # check_llama_health() re-probes instead of reporting the previous state
+        # for up to _LLAMA_PORT_TTL_S.  This is the single chokepoint for both
+        # transitions: spawn calls us with True, stop_server with False.
+        invalidate_llama_port_cache()
+
         actual_port = port or self.config.get("server_port", 8080)
         status = {
             "running": running,
@@ -2597,28 +2603,83 @@ def _get_cached_config():
     return _cached_config
 
 
-def _find_live_llama_port() -> int | None:
+# Short TTL for the port-scan result.  Deliberately small: this is a LIVENESS
+# probe, so a stale "alive" is worse than a redundant scan.  3s collapses the
+# per-model storm below while still noticing a dead llama within one UI refresh.
+_LLAMA_PORT_TTL_S = 3.0
+# None means "never probed".  NOT 0.0: time.monotonic() is uptime-based, so on a
+# freshly-booted box it can itself be < _LLAMA_PORT_TTL_S, and `now - 0.0` would
+# then look like a fresh cache entry — the first call would return the initial
+# None without ever hitting the network.
+_llama_port_probed_at: float | None = None
+_llama_port_cached: int | None = None
+
+
+def invalidate_llama_port_cache() -> None:
+    """Force the next liveness probe to hit the network.
+
+    Call after anything that changes whether a llama-server is listening —
+    `_write_server_status` does this for both spawn and stop.  Tests that mock
+    `requests.get` also need it, because a preceding unmocked call can leave a
+    real result cached inside the TTL.
+    """
+    global _llama_port_probed_at
+    _llama_port_probed_at = None
+
+
+def _find_live_llama_port(force: bool = False) -> int | None:
     """Probe known llama.cpp ports (config + 8082/8081/8080) and return
-    the FIRST one whose /health answers 200.  Updates the module-level
-    `_last_healthy_llama_port` so get_llama_endpoint() returns the
-    matching URL.  Single source of truth for "which port is live".
+    the FIRST one whose /health answers 200.  Single source of truth for
+    "which port is live".  Result is cached for _LLAMA_PORT_TTL_S.
+
+    Args:
+        force: skip the cache and re-probe (use after start/stop of a server).
 
     Returns:
         Port number (int) if any responds, else None.
+
+    PERF (task #597, profiled 2026-08-03): this used to re-scan on EVERY call
+    and had no cache — `_last_healthy_llama_port` was written but never read
+    back.  models/orchestrator.LlamaLoader.is_loaded() calls it once PER MODEL,
+    and model_orchestrator.get_status() loops every catalog entry, so
+    GET /api/admin/models paid the full scan N times.  With 8081 and 8082 shut,
+    each scan burns two 1s timeouts before reaching the live 8080 — measured
+    22s for one request (py-spy caught all three samples parked in
+    create_connection under _find_live_llama_port).
+
+    Two other costs fixed here:
+      * `localhost` -> `127.0.0.1`.  On Windows localhost resolves to ::1 AND
+        127.0.0.1; a closed port can burn the whole timeout on the IPv6 attempt
+        before falling back.  Pinning IPv4 skips that.
+      * timeout 1s -> 0.4s.  This is loopback; a llama-server that has not
+        accepted a connection in 400ms is not "just slow".
+
+    NEGATIVE results are cached too — otherwise a fully-stopped llama (the worst
+    case, all four ports dead) still pays 4 timeouts per model.
     """
-    global _last_healthy_llama_port
+    global _last_healthy_llama_port, _llama_port_probed_at, _llama_port_cached
+    now = time.monotonic()
+    if (not force and _llama_port_probed_at is not None
+            and (now - _llama_port_probed_at) < _LLAMA_PORT_TTL_S):
+        return _llama_port_cached
+
     config = _get_cached_config()
     config_port = config.config.get("server_port", 8080)
+    found: int | None = None
     for _port in dict.fromkeys([config_port, 8082, 8081, 8080]):
         try:
             response = requests.get(
-                f"http://localhost:{_port}/health", timeout=1)
+                f"http://127.0.0.1:{_port}/health", timeout=0.4)
             if response.status_code == 200:
                 _last_healthy_llama_port = _port
-                return _port
+                found = _port
+                break
         except Exception:
             continue
-    return None
+
+    _llama_port_cached = found
+    _llama_port_probed_at = now
+    return found
 
 
 def check_llama_health() -> bool:
@@ -2629,7 +2690,6 @@ def check_llama_health() -> bool:
         True if llama.cpp server is available and responding, False otherwise
     """
     return _find_live_llama_port() is not None
-    return False
 
 
 def get_llama_endpoint() -> str:

@@ -337,7 +337,14 @@ class TestScanEndpoints:
 
         from llama.llama_config import scan_existing_llm_endpoints
 
-        with patch("llama.llama_config.requests.get", side_effect=req.exceptions.ConnectionError):
+        # scan_existing_llm_endpoints tries the CANONICAL resolver first
+        # (core.health_probe.probe_llm), which does not go through
+        # llama.llama_config.requests — on a box with a live llama-server it
+        # returns a real endpoint and this test's requests.get patch never
+        # applies. Neutralise it so we test what the name says: no legacy
+        # third-party endpoint reachable -> None.
+        with patch("llama.llama_config._scan_via_canonical_resolver", return_value=None), \
+             patch("llama.llama_config.requests.get", side_effect=req.exceptions.ConnectionError):
             result = scan_existing_llm_endpoints()
             assert result is None
 
@@ -346,6 +353,10 @@ class TestScanEndpoints:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        # A bare 200 is no longer enough: an HTML/SPA catch-all (the app's own
+        # Flask, or a dead :8080) also answers 200 for /v1/models, so
+        # _openai_models_or_none demands a real non-empty {"data": [...]} list.
+        mock_resp.json.return_value = {"data": [{"id": "test-model"}]}
 
         with patch("llama.llama_config.requests.get", return_value=mock_resp):
             result = scan_openai_compatible_ports(ports=[12345])

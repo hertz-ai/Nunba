@@ -152,6 +152,11 @@ class TestCheckLlamaHealth:
 
     def test_false_when_no_server(self):
         """When no LLM server is running, health should be False."""
+        # test_returns_bool above does a REAL probe; on a box with a live
+        # llama-server that caches a True inside _LLAMA_PORT_TTL_S and this
+        # mocked call would read it back instead of probing. See #597.
+        import llama.llama_config as _lc
+        _lc.invalidate_llama_port_cache()
         with patch('llama.llama_config.requests.get', side_effect=ConnectionError):
             result = check_llama_health()
         assert result is False
