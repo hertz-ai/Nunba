@@ -70,21 +70,30 @@ describe('#592 voice orb fills the media column in landscape', () => {
         expectedMin: 0.15,
         oldCappedPx: 200,
       };
-      cy.writeFile('cypress/reports/592-orb-landscape.json', report);
-      cy.log(JSON.stringify(report));
+      // Write BEFORE asserting, and assert INSIDE the .then so the queued
+      // write actually runs. A bare synchronous expect() throws before
+      // Cypress drains the command queue, so the report never lands and a
+      // failing run tells you nothing about the numbers — which is exactly
+      // what happened on the first run of this spec.
+      cy.writeFile('cypress/reports/592-orb-landscape.json', report).then(() => {
+        cy.log(JSON.stringify(report));
 
-      // Old behaviour: a constant 160-200px cap => ratio ~0.10 at 1920.
-      // New behaviour: min(0.28*1920, 0.68*1080) = 537.6 => ratio ~0.28.
-      // 0.15 sits cleanly between the two, so this fails on the old cap and
-      // passes on the fix without being brittle about exact px.
-      expect(
-        best.width,
-        `orb ${Math.round(best.width)}px in a ${W}px viewport — the pre-72780cd4 build capped it at ~160-200px`,
-      ).to.be.greaterThan(W * 0.15);
+        // Old behaviour: a constant 160-200px cap => ratio ~0.10 at 1920.
+        // New behaviour: min(0.28*1920, 0.68*1080) = 537.6 => ratio ~0.28.
+        // 0.15 sits cleanly between the two, so this fails on the old cap and
+        // passes on the fix without being brittle about exact px.
+        expect(
+          best.width,
+          `orb ${Math.round(best.width)}px in a ${W}px viewport — the pre-72780cd4 build capped it at ~160-200px`,
+        ).to.be.greaterThan(W * 0.15);
 
-      // Square: the 80% canvasMax on a non-square column used to distort it.
-      const aspect = best.width / best.height;
-      expect(aspect, `orb aspect ${aspect.toFixed(3)} — should be square`).to.be.closeTo(1, 0.08);
+        // Square: the 80% canvasMax on a non-square column used to distort it.
+        const aspect = best.width / best.height;
+        expect(
+          aspect,
+          `orb ${Math.round(best.width)}x${Math.round(best.height)} — aspect ${aspect.toFixed(3)}, should be square`,
+        ).to.be.closeTo(1, 0.08);
+      });
     });
   });
 

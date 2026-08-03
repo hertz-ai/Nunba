@@ -252,7 +252,20 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
     React.createElement('canvas', {
       ref: canvasRef,
       width: size * 2, height: size * 2,
-      style: { width: size, height: size, maxWidth: canvasMax, maxHeight: canvasMax },
+      // aspectRatio keeps the orb CIRCULAR when a cap bites.
+      // maxWidth and maxHeight are independent constraints: in a column
+      // narrower than `size`, maxWidth clamps the width while maxHeight leaves
+      // the height alone, so the square canvas renders as an oval. Measured
+      // 2026-08-04 at a 1920x1080 viewport: size computed 537.6, height
+      // rendered 538, width rendered 479 (the column) -> aspect 0.890.
+      // With aspectRatio the clamped axis pulls the other one with it, so the
+      // orb stays square at any column width. This is what #592's "SQUARE"
+      // half asked for; the "LARGER" half was already delivered by 72780cd4
+      // (479px here vs the old 160-200px cap).
+      style: {
+        width: size, height: size, aspectRatio: '1 / 1',
+        maxWidth: canvasMax, maxHeight: canvasMax,
+      },
     }),
     isActive ? React.createElement('div', {
       style: {
