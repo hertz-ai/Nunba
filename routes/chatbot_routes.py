@@ -3215,10 +3215,24 @@ def chat_route():
             # If draft didn't respond, try 4B (may be slow/stuck)
             if not response_text and check_llama_health():
                 endpoint = get_llama_endpoint()
+                # This is a COMPLETION, so it carries the canonical LLM budget
+                # from core.http_pool rather than a local literal.  The 30s
+                # literal that was here is not enough: measured 2026-08-04 on
+                # the frozen build, a one-word reply through THIS path took
+                # 30.86s wall and only just landed inside its own 30s timeout.
+                # A slightly longer generation would have raised ReadTimeout,
+                # been swallowed by the `except Exception` below as
+                # "Local Llama error", and fallen through — the same failure
+                # shape as the HARTOS-side 15s bug fixed in 600c7301.
+                # Same constant as agentic_router / self_chat / worker_loop /
+                # mcp_server (all 120s) — no new number, no second budget.
+                # The 8081 draft probe above keeps its 5s: that one is a
+                # deliberate fast-fallback, not a completion we wait on.
+                from core.http_pool import LLM_COMPLETION_TIMEOUT
                 response = requests.post(
                     f"{endpoint}/v1/chat/completions",
                     json=_payload,
-                    timeout=30,
+                    timeout=LLM_COMPLETION_TIMEOUT,
                 )
                 result = response.json()
                 response_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
