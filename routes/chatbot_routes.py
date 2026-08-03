@@ -4192,7 +4192,22 @@ def _get_hart_user_id():
             return payload.get('user_id')
         except Exception:
             pass
-    return request.json.get('user_id') or request.args.get('user_id')
+    # get_json(silent=True), never the bare `request.json` property: the latter
+    # RAISES 415 UnsupportedMediaType when the Content-Type is not JSON, and it
+    # raises again on an empty body even when it IS.  Two of the four routes
+    # sharing this helper are GETs (/api/hart/profile, /api/hart/check) which
+    # carry no body at all, so the raise fired while evaluating the LEFT operand
+    # and the `or request.args.get(...)` fallback below was unreachable dead
+    # code — despite being exactly the fallback a GET needs.
+    #
+    # Live 2026-08-04: GET /api/hart/profile returned 500 with the 415 text,
+    # because the route's broad `except Exception -> 500` relabelled a
+    # content-type problem as a server fault.  /api/hart/check hid the same
+    # failure by degrading to {"check":"local"}.
+    #
+    # silent=True is already this file's convention (9 uses vs this single bare
+    # property), so the fallback now works as written.
+    return (request.get_json(silent=True) or {}).get('user_id') or request.args.get('user_id')
 
 
 def hart_advance():
