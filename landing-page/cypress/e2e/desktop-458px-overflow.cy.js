@@ -47,6 +47,24 @@ const stubBaseline = () => {
   cy.intercept('GET', '**/api/social/encounters/suggestions', {statusCode: 200, body: {success: true, data: []}});
 };
 
+
+/**
+ * Seed the HART onboarding keys so the app renders the CHAT view, not the
+ * first-run language picker.
+ *
+ * Agent.js:285 gates on `hartSealed`, which useAuthSession.js:118 derives as
+ * localStorage 'hart_sealed' === 'true'. Clicking through the picker did not
+ * advance it; setting the state directly does.
+ */
+const seedHart = (win) => {
+  win.localStorage.setItem('hart_sealed', 'true');
+  win.localStorage.setItem('hart_language', 'en');
+  win.localStorage.setItem('hart_name', 'CypressProbe');
+  win.localStorage.setItem('hart_emoji', '✨');
+  win.localStorage.setItem('guest_mode', 'true');
+  win.localStorage.setItem('guest_user_id', 'cypress-595-probe');
+};
+
 /**
  * Get past first-run onboarding to the actual chat view.
  *
@@ -99,7 +117,7 @@ describe('#595 desktop narrow-viewport overflow', () => {
   it(`measures horizontal overflow at the app's own ${NUNBA_W}px width`, () => {
     stubBaseline();
     cy.viewport(NUNBA_W, NUNBA_H);
-    cy.visit(`${APP}/local`, {failOnStatusCode: false});
+    cy.visit(`${APP}/local`, {failOnStatusCode: false, onBeforeLoad: seedHart});
     reachChatView();
 
     cy.window().then((win) => {
@@ -157,7 +175,7 @@ describe('#595 desktop narrow-viewport overflow', () => {
   it('does not overflow at desktop width (control — proves the bug is width-specific)', () => {
     stubBaseline();
     cy.viewport(1280, 800);
-    cy.visit(`${APP}/local`, {failOnStatusCode: false});
+    cy.visit(`${APP}/local`, {failOnStatusCode: false, onBeforeLoad: seedHart});
     reachChatView();
     cy.window().then((win) => {
       const r = measureOverflow(win);
@@ -173,7 +191,7 @@ describe('#595 desktop narrow-viewport overflow', () => {
   it.skip(`[ARM ON FIX] no horizontal overflow at ${NUNBA_W}px`, () => {
     stubBaseline();
     cy.viewport(NUNBA_W, NUNBA_H);
-    cy.visit(`${APP}/local`, {failOnStatusCode: false});
+    cy.visit(`${APP}/local`, {failOnStatusCode: false, onBeforeLoad: seedHart});
     reachChatView();
     cy.window().then((win) => {
       const r = measureOverflow(win);
