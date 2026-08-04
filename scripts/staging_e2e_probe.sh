@@ -16,8 +16,9 @@ TOKEN="${NUNBA_MCP_BEARER:-staging-e2e-token-do-not-use-in-prod}"
 FAIL=0
 
 log()  { printf '\033[36m[probe]\033[0m %s\n' "$*"; }
-pass() { printf '\033[32m  OK\033[0m    %s\n' "$*"; }
+pass() { printf '\033[32m  OK\033[0m    %s\n' "$*"; PASSED=$((PASSED+1)); }
 fail() { printf '\033[31m  FAIL\033[0m  %s\n' "$*"; FAIL=$((FAIL+1)); }
+PASSED=0
 
 # JSON assertions used to shell out to `jq`.  jq is present on the GitHub
 # ubuntu runners but is NOT installed with Git for Windows, so this script
@@ -218,7 +219,11 @@ assert_json_field "GET /api/hive/session/tasks (Hive task queue)" GET \
 # ---- Summary ------------------------------------------------------------
 echo
 if [[ "$FAIL" -eq 0 ]]; then
-    printf '\033[32m[probe] all 8 probes passed\033[0m\n'
+    # Count, don't hardcode.  This said "all 8 probes passed" while running 11
+    # — the literal was written when there were 8 and never moved.  A summary
+    # that states a number it does not measure is the same defect this file's
+    # readiness gate exists to prevent, one line lower.
+    printf '\033[32m[probe] all %d checks passed\033[0m\n' "$PASSED"
     exit 0
 else
     printf '\033[31m[probe] %d probe(s) failed -- see above\033[0m\n' "$FAIL"
