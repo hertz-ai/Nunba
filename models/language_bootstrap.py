@@ -116,7 +116,15 @@ def _create_plan(language: str, gpu_info: dict) -> dict:
         Otherwise status='selecting' pending execution.
       - No compatible model → status='skipped'.
     """
-    from models.orchestrator import get_orchestrator
+    try:
+        from models.orchestrator import get_orchestrator
+    except ImportError:
+        # Orchestrator module absent entirely — same outcome as it being
+        # present but uninitialised, so fall through to the no-plan result
+        # below rather than propagating.  Without this the bare import
+        # raised ModuleNotFoundError and never reached the `orch is None`
+        # guard two lines down, which is the case it exists to cover.
+        return {}
     orch = get_orchestrator()
     if orch is None:
         return {}
