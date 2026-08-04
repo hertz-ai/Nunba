@@ -398,6 +398,24 @@ build_exe_options = {
         "routes.auth",  # Shared auth decorator (require_local_or_token)
         "routes.chatbot_routes",  # Chatbot routes module
         "routes.kids_media_routes",  # Kids media generation routes
+        # main.py is NOT a cx_Freeze entry point — it ships as source and is
+        # exec'd by app.py:_import_main_app(), so nothing it imports is traced.
+        # Listing a sibling like routes.auth does NOT pull these in; each
+        # module needs its own entry.  Guarded by
+        # tests/test_freeze_packages_complete.py::
+        # test_main_py_first_party_imports_are_bundled.
+        "routes.spa_fallback",  # 404-vs-SPA decision (#618).  Module-scope
+                        # import in main.py, so its absence killed the WHOLE
+                        # Flask app: 2026-08-04 23:43:14 gui_app.log
+                        # "ModuleNotFoundError: No module named
+                        # 'routes.spa_fallback' / Continuing with lightweight
+                        # gui_app" — the boot stub then answered every request
+                        # with 503 "Nunba is waking up..." and the SPA showed
+                        # "Something's off on our end."
+        "routes.kids_game_recommendation",  # main.py:4441, imported inside
+                        # try/except Exception — the same ModuleNotFoundError
+                        # was swallowed into a debug line, so this blueprint
+                        # silently never registered in ANY frozen build.
 
         # core / integrations / security are HARTOS packages.  They are
         # NOT listed here on purpose — see the matching excludes[] entry

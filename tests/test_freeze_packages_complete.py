@@ -31,7 +31,8 @@ import sys
 
 import pytest
 
-_SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+_SCRIPTS = os.path.join(_REPO, 'scripts')
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
@@ -383,4 +384,154 @@ def test_setup_freeze_excludes_does_not_list_sympy():
     pytest.fail(
         "Could not locate build_exe_options['excludes'] in "
         "scripts/setup_freeze_nunba.py — test needs updating."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# GENERAL Gate 6 guard: every first-party module main.py imports must
+# actually reach the bundle.
+#
+# Every guard above names ONE module (sympy) or one family (HARTOS).
+# That catches a regression only if someone predicted it in advance.
+# The recurring failure is the opposite: a NEW first-party module that
+# nobody thought to declare.
+#
+# It bites specifically through main.py because main.py is NOT a
+# cx_Freeze entry point — it ships as source and is exec'd at runtime
+# by app.py:_import_main_app().  cx_Freeze therefore never traces its
+# imports, so `packages[]` is the ONLY thing that puts main.py's
+# dependencies in the bundle.
+#
+# Two live proofs, both found 2026-08-05 by reading gui_app.log rather
+# than trusting a green test run:
+#
+#   routes.spa_fallback  (added 5079ea89, module scope)
+#       2026-08-04 23:43:14 - ERROR - [STARTUP] main.py import exception:
+#           ModuleNotFoundError: No module named 'routes.spa_fallback'
+#       [STARTUP] Continuing with lightweight gui_app
+#     -> the real Flask app never loads, app.py's boot stub answers
+#        every request (/api/* -> 503 "Nunba is waking up..."), and the
+#        SPA renders "Something's off on our end. Try refreshing."
+#
+#   routes.kids_game_recommendation  (pre-existing, main.py:4441)
+#       imported inside `try/except Exception` -> the same
+#       ModuleNotFoundError is swallowed into a debug line, so the kids
+#       recommendation blueprint has silently never registered in ANY
+#       frozen build.  No crash, no log, no symptom: strictly worse.
+#
+# THE PREDICATE.  A module reaches the bundle when cx_Freeze can see
+# it: it is listed verbatim in packages[], or it is statically imported
+# (transitively) by something that is — seeded from packages[] plus
+# app.py, the one entry point cx_Freeze really does trace.
+#
+# Directory walking is deliberately NOT part of that closure, and this
+# is the whole correctness of the guard.  Listing `routes.auth` bundles
+# that MODULE, not its siblings.  A first draft of this test did walk
+# `routes/` whenever any `routes.*` entry appeared, and it passed on
+# both defects above — a guard that cannot fail for the bug it names.
+# Only names listed verbatim in packages[] that are directories expand
+# to their tree.
+#
+# Validated against the real bundle before landing: over main.py's 24
+# first-party imports the predicate flagged exactly the two modules
+# missing from build/Nunba/lib/, and nothing else.  Zero false
+# positives — so a failure here is a real missing module, not noise.
+# ─────────────────────────────────────────────────────────────────────
+
+def _first_party_packages() -> set[str]:
+    """Top-level Nunba packages (a dir with __init__.py), minus tests."""
+    return {
+        d for d in os.listdir(_REPO)
+        if os.path.isdir(os.path.join(_REPO, d))
+        and os.path.exists(os.path.join(_REPO, d, '__init__.py'))
+    } - {'tests'}
+
+
+def _module_source(dotted: str) -> str | None:
+    rel = dotted.replace('.', os.sep)
+    for cand in (rel + '.py', os.path.join(rel, '__init__.py')):
+        full = os.path.join(_REPO, cand)
+        if os.path.exists(full):
+            return full
+    return None
+
+
+def _first_party_imports(source_path: str, first_party: set[str]) -> set[str]:
+    """Absolute first-party modules imported anywhere in `source_path`.
+
+    Function-local imports count: cx_Freeze's tracer follows them, and
+    more importantly a deferred import still explodes at call time.
+    """
+    try:
+        with open(source_path, encoding='utf-8', errors='replace') as fh:
+            tree = ast.parse(fh.read(), filename=source_path)
+    except (OSError, SyntaxError):
+        return set()
+
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            found.add(node.module)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                found.add(alias.name)
+    return {m for m in found if m.split('.')[0] in first_party}
+
+
+def _bundle_reachable(first_party: set[str]) -> set[str]:
+    """Modules cx_Freeze will place in the bundle (see predicate above)."""
+    queue = list(_first_party_imports(os.path.join(_REPO, 'app.py'), first_party))
+
+    for declared in _extract_packages_list_from_setup_freeze():
+        if declared.split('.')[0] not in first_party:
+            continue
+        as_dir = os.path.join(_REPO, declared.replace('.', os.sep))
+        if os.path.isdir(as_dir):
+            # Listed verbatim AND a package -> cx_Freeze takes the tree.
+            for root, _dirs, files in os.walk(as_dir):
+                if '__pycache__' in root:
+                    continue
+                for fn in files:
+                    if fn.endswith('.py'):
+                        rel = os.path.relpath(os.path.join(root, fn), _REPO)
+                        queue.append(
+                            rel[:-3].replace(os.sep, '.').replace('.__init__', ''))
+        else:
+            queue.append(declared)          # a single module, siblings excluded
+
+    seen: set[str] = set()
+    while queue:
+        mod = queue.pop()
+        if mod in seen:
+            continue
+        seen.add(mod)
+        src = _module_source(mod)
+        if src:
+            queue.extend(_first_party_imports(src, first_party) - seen)
+    return seen
+
+
+def test_main_py_first_party_imports_are_bundled():
+    """Gate 6, enforced mechanically instead of remembered.
+
+    main.py ships as source and is exec'd by app.py, so cx_Freeze never
+    traces it.  Anything it imports that packages[] does not reach is
+    absent from the frozen build: a hard ModuleNotFoundError at module
+    scope, or a silently dead feature inside a try/except.
+    """
+    first_party = _first_party_packages()
+    reachable = _bundle_reachable(first_party)
+    imported = _first_party_imports(os.path.join(_REPO, 'main.py'), first_party)
+
+    missing = sorted(imported - reachable)
+    assert not missing, (
+        "main.py imports first-party module(s) that will NOT be in the frozen "
+        f"bundle: {missing}.\n"
+        "main.py is not a cx_Freeze entry point — it ships as source and is "
+        "exec'd by app.py:_import_main_app(), so its imports are never traced. "
+        "Add each module to build_exe_options['packages'] in "
+        "scripts/setup_freeze_nunba.py (CLAUDE.md Change Protocol, Gate 6).\n"
+        "At module scope this kills the whole Flask app and leaves the boot "
+        "stub serving 503s; inside a try/except it silently disables the "
+        "feature with no symptom at all."
     )
