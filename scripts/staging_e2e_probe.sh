@@ -198,6 +198,23 @@ assert_json_field "POST /api/admin/diag/thread-dump has threads_dumped" POST \
 assert_json_field "GET /backend/health has gpu_tier" GET \
     /backend/health 'isinstance(d.get("gpu_tier"), str)'
 
+# ---- 9-10. Hive session hop --------------------------------------------
+# Nunba -> HARTOS -> Hive.  Routes are taken from the blueprint that defines
+# them, HARTOS/integrations/coding_agent/claude_hive_session.py:1339-1401:
+#   connect | disconnect | status | pause | resume | scope | tasks
+#   | task/<task_id>/result
+# Only the two GET verbs are probed — the rest mutate session state, which a
+# health probe has no business doing.
+#
+# Probing invented route names cost two wrong "hive is down" reports earlier
+# (a `/list` verb that never existed).  A 404 from a name nobody implemented
+# looks exactly like a 404 from a broken feature, so the endpoint list is
+# derived from the source of truth rather than from memory.
+assert_json_field "GET /api/hive/session/status (Nunba->HARTOS->Hive)" GET \
+    /api/hive/session/status 'isinstance(d, dict) and "capabilities" in d'
+assert_json_field "GET /api/hive/session/tasks (Hive task queue)" GET \
+    /api/hive/session/tasks 'isinstance(d, dict) and "pending" in d and "completed" in d'
+
 # ---- Summary ------------------------------------------------------------
 echo
 if [[ "$FAIL" -eq 0 ]]; then
