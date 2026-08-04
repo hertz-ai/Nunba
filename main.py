@@ -3857,6 +3857,11 @@ API_ENDPOINTS = {
     'ai', 'health', 'prompts', 'agents', 'chat', 'backend', 'media'
 }
 
+# Companion rule to API_ENDPOINTS: paths that must 404 instead of falling back
+# to the SPA shell.  Lives in routes/spa_fallback.py rather than here so it can
+# be unit-tested without importing main (which pulls in torch/sympy/transformers).
+from routes.spa_fallback import first_path_segment, is_asset_path  # noqa: E402
+
 # Landing-Page routes - redirect to hevolve.ai when online, /local when offline
 @app.route('/')
 def serve_landing_page_root():
@@ -4354,11 +4359,19 @@ def handle_404(e):
     """Handle 404 errors by serving static files or React app for client-side routing"""
     from flask import send_from_directory
     path = request.path
-    first_segment = path.split('/')[1] if len(path.split('/')) > 1 else ''
+    first_segment = first_path_segment(path)
 
     # Return 404 for API routes
     if first_segment in API_ENDPOINTS:
         return jsonify({'error': 'API endpoint not found', 'path': path}), 404
+
+    # A missing asset is a missing FILE, not a client-side route.  Answering it
+    # with index.html makes the browser cache HTML under a .js/.css URL as a
+    # perfectly valid 200, so a stale or never-shipped bundle keeps being
+    # served and no revalidation can dislodge it (#618, measured 2026-08-04:
+    # GET /static/js/main.66d05810.js -> 200 with index.html's exact 20597 B).
+    if is_asset_path(path):
+        return jsonify({'error': 'Asset not found', 'path': path}), 404
 
     # Check if the file exists in the build directory (for root-level files like hevolve-widget.js)
     # Remove leading slash for file path
