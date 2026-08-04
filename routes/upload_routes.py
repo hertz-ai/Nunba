@@ -134,7 +134,21 @@ def _describe_image_via_llm(image_path, prompt=None):
                 ],
             }
         ],
-        "max_tokens": 300,
+        # Qwen3.5 is a HYBRID REASONING model: it writes its chain-of-thought
+        # into a separate `reasoning_content` field and only afterwards fills
+        # `content`.  We read `content`, so if the budget runs out mid-thought
+        # we get "" back with no error at all.  Measured live 2026-08-04 with
+        # the JSON-classification prompt below:
+        #     max_tokens=300  -> finish=length, content=0,   reasoning=1242
+        #     max_tokens=2000 -> finish=stop,   content=178, reasoning=6228
+        # Describing an image is not a reasoning task, so turn thinking off
+        # rather than pay for it.  Verified on this server: reasoning went
+        # 760 -> 0 chars and the call got FASTER.  (`reasoning_effort: none`
+        # was also tried and is NOT honoured here — don't substitute it.)
+        "chat_template_kwargs": {"enable_thinking": False},
+        # Headroom, not the fix: 300 suffices once thinking is off, but a
+        # future model or a longer prompt should degrade to slow, not empty.
+        "max_tokens": 1024,
         "temperature": 0.3,
     }
 
@@ -146,8 +160,23 @@ def _describe_image_via_llm(image_path, prompt=None):
         )
         if resp.status_code == 200:
             data = resp.json()
-            content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
-            return content.strip()
+            choice = (data.get('choices') or [{}])[0]
+            message = choice.get('message') or {}
+            content = (message.get('content') or '').strip()
+            if not content:
+                # THE signature of the bug above.  Never let this be silent
+                # again — an empty description used to surface as
+                # {"category":"unknown","description":""} with nothing logged.
+                logger.warning(
+                    "Vision inference produced EMPTY content "
+                    "(finish_reason=%s, reasoning_content=%d chars). The model "
+                    "likely spent the whole max_tokens=%s budget thinking; "
+                    "raise the budget or keep enable_thinking disabled.",
+                    choice.get('finish_reason'),
+                    len(message.get('reasoning_content') or ''),
+                    payload.get('max_tokens'),
+                )
+            return content
         logger.warning(f"Vision inference returned {resp.status_code}: {resp.text[:200]}")
     except req.ConnectionError:
         logger.info("llama.cpp not running — skipping vision inference")
