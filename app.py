@@ -2241,6 +2241,74 @@ if getattr(args, 'validate', False):
         'sql.database', 'sql.models',
     ]
 
+    # ── Phase 1b: every first-party module main.py ACTUALLY imports ──
+    #
+    # The list above is hand-maintained and the comment above it claims it
+    # "replays the real import chain exactly — if it works here, it works at
+    # runtime."  It does not.  It names 2 of the 8 `routes.*` modules main.py
+    # imports, and never imports main.py itself.  That gap is not theoretical:
+    #
+    #   2026-08-04 23:28:23 -> 23:29:28  acceptance rc=0   (installer gate PASSED)
+    #   2026-08-04 23:43:14  same bundle: ModuleNotFoundError: routes.spa_fallback
+    #                        -> "Continuing with lightweight gui_app"
+    #
+    # The build's own gate went green on a bundle whose main.py could not load,
+    # so the desktop app served its boot stub — 503 "Nunba is waking up..." on
+    # every /api/* call — until someone read gui_app.log by hand.
+    #
+    # main.py is the one module that MUST import: app.py execs it at startup
+    # (_import_main_app), and if it raises, there is no Flask app at all.  It is
+    # also invisible to cx_Freeze's tracer, because it ships as source rather
+    # than as a frozen entry point — so nothing else checks it either.
+    #
+    # Derive the list instead of curating it: parse the shipped main.py and
+    # import every first-party module it names.  A new `from routes.x import y`
+    # is then covered the day it is written, with nobody remembering to edit a
+    # list here.  Redundant with entries above by design — sys.modules makes a
+    # repeat import free, and overlap is much cheaper than a gap.
+    #
+    # Counterpart, not duplicate: tests/test_freeze_packages_complete.py checks
+    # the same property STATICALLY against packages[] and runs in CI without a
+    # build.  This one checks ACTUAL resolvability inside the frozen runtime,
+    # which is the only place cx_Freeze's real behaviour is observable
+    # (CLAUDE.md, Build-Validator Mandate).
+    try:
+        import ast as _val_ast
+        # Top-level first-party packages.  Deliberately a package-level list,
+        # not a module-level one: these five change about once a year, while
+        # the modules inside them changed twice this week.  The drift that bit
+        # us was per-module, and this removes it.
+        _FIRST_PARTY = ('routes', 'desktop', 'llama', 'models', 'tts')
+        _derived = []
+        for _entry in ('main.py', 'wamp_router.py'):   # the source-shipped files
+            _entry_path = os.path.join(_base, _entry)
+            if not os.path.isfile(_entry_path):
+                continue
+            with open(_entry_path, encoding='utf-8', errors='replace') as _ef:
+                _etree = _val_ast.parse(_ef.read(), filename=_entry_path)
+            for _node in _val_ast.walk(_etree):
+                if isinstance(_node, _val_ast.ImportFrom) and _node.module and _node.level == 0:
+                    _cand = _node.module
+                elif isinstance(_node, _val_ast.Import):
+                    for _alias in _node.names:
+                        if _alias.name.split('.')[0] in _FIRST_PARTY and _alias.name not in _chain:
+                            _derived.append(_alias.name)
+                    continue
+                else:
+                    continue
+                if _cand.split('.')[0] in _FIRST_PARTY and _cand not in _chain:
+                    _derived.append(_cand)
+        _derived = sorted(set(_derived))
+        if _derived:
+            _vprint(f"  (+{len(_derived)} first-party modules derived from "
+                    f"main.py/wamp_router.py imports)")
+            _chain.extend(_derived)
+    except Exception as _derive_err:
+        # Never let the derivation itself fail the build — but say so loudly,
+        # because a silent skip here restores the exact blind spot it closes.
+        _vprint(f"  [WARN] could not derive main.py imports ({_derive_err}) — "
+                f"validation is back to the hand-maintained list only")
+
     # NameError = code references an undefined name (e.g. missing import logging)
     # This IS a packaging/code error, NOT a config issue.
     _PACKAGING_ERRORS = (ImportError, ModuleNotFoundError, SyntaxError,
