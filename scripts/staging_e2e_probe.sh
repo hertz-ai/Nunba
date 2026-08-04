@@ -12,7 +12,45 @@
 set -euo pipefail
 
 BASE="${NUNBA_BASE:-http://localhost:5000}"
-TOKEN="${NUNBA_MCP_BEARER:-staging-e2e-token-do-not-use-in-prod}"
+
+# MCP bearer resolution, in the SAME order the server uses
+# (HARTOS integrations/mcp/mcp_http_bridge.py:71-72):
+#   1. $NUNBA_MCP_BEARER          — CI / docker-compose injects this
+#   2. the on-disk token file     — %LOCALAPPDATA%/Nunba/mcp.token (Windows)
+#                                   ~/.nunba/mcp.token             (Unix)
+#   3. a placeholder that will correctly 403
+#
+# WHY (2) EXISTS: without it this suite's verdict depended on invisible shell
+# state.  Runs from a shell that happened to export NUNBA_MCP_BEARER scored
+# 15/15; the identical suite, same machine, same app process, same commit,
+# scored 14/15 from a shell that did not — and the failure text ("got 403
+# want 200") reads like an app regression when the app was behaving
+# perfectly, correctly rejecting a placeholder token.  That is the #619
+# shape: a check whose result is decided by shell provenance rather than by
+# the thing under test.  Reading the file the server itself names makes the
+# probe self-sufficient and the result reproducible.
+_mcp_token_path() {
+    if [[ -n "${LOCALAPPDATA:-}" ]]; then
+        printf '%s/Nunba/mcp.token' "$LOCALAPPDATA"
+    else
+        printf '%s/.nunba/mcp.token' "$HOME"
+    fi
+}
+if [[ -n "${NUNBA_MCP_BEARER:-}" ]]; then
+    TOKEN="$NUNBA_MCP_BEARER"
+    TOKEN_SRC='env NUNBA_MCP_BEARER'
+else
+    _tok_file="$(_mcp_token_path)"
+    if [[ -r "$_tok_file" ]]; then
+        # strip trailing newline/CR — the file is written without one, but a
+        # stray CRLF on Windows would silently corrupt the Authorization header
+        TOKEN="$(tr -d '\r\n' < "$_tok_file")"
+        TOKEN_SRC="file $_tok_file"
+    else
+        TOKEN='staging-e2e-token-do-not-use-in-prod'
+        TOKEN_SRC="placeholder (no env var, and $_tok_file unreadable)"
+    fi
+fi
 FAIL=0
 
 log()  { printf '\033[36m[probe]\033[0m %s\n' "$*"; }
@@ -97,6 +135,10 @@ assert_json_field() {
 }
 
 log "Target: $BASE"
+# Report the SOURCE, never the token itself.  When the authed MCP check
+# fails, this line is what distinguishes "the app rejected a real token"
+# (a genuine defect) from "we sent a placeholder" (a harness gap).
+log "MCP bearer: $TOKEN_SRC"
 
 # ---- 0. Readiness gate: is the REAL app answering, or the boot stub? -----
 # On desktop, app.py serves a placeholder Flask app (`gui_app`) until main.py
