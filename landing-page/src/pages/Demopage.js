@@ -149,6 +149,36 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const videoRef = useRef(null);
   const audioRef = useRef(null);
   const textareaRef = useRef(null);
+  // Viewport tick — forces a re-render on window resize.
+  //
+  // WHY: the VoiceVisualizer `size=` props below read window.innerWidth /
+  // innerHeight INLINE during render.  React does not re-render on resize, so
+  // whatever the viewport measured at first paint was frozen forever:
+  //   - opening the desktop window minimized pinned the orb at ~126px and it
+  //     stayed there after restore;
+  //   - resizing portrait -> landscape kept the PORTRAIT formula's value
+  //     (min(innerHeight*.32, innerWidth*.9)), so landscape rendered at a
+  //     portrait size until something else happened to re-render.
+  // Both reported live 2026-08-04.
+  //
+  // This fixes ONLY the staleness.  The two size formulas are unchanged, so
+  // portrait keeps its portrait bound and landscape keeps its landscape one —
+  // deliberately not a sizing-behaviour change.
+  const [, _bumpViewport] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const onResize = () => {
+      // Coalesce the resize storm into one re-render per frame.
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => { raf = 0; _bumpViewport((t) => t + 1); });
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      window.removeEventListener('resize', onResize);
+    };
+  }, []);
+
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [pdffileUrl, setpdfFileUrl] = useState(null);
@@ -5246,6 +5276,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                               audioRef={audioRef}
                               isActive={isPlayingResponse || tts.isSpeaking}
                               canvasMax="100%"
+                              /* Restored 2026-08-04 after removing it broke
+                                 PORTRAIT.  The <=768 branch is a DIFFERENT
+                                 formula from landscape (0.32h/0.9w vs
+                                 0.28w/0.68h), so this prop was the only
+                                 portrait-aware bound — dropping it left
+                                 portrait unbounded.  It is now a CAP that
+                                 VoiceVisualizer mins against its measured
+                                 container, not the orb's size, so squareness
+                                 and resize-tracking still hold. */
                               size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
                             />
                           )}
@@ -5269,6 +5308,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                               audioRef={audioRef}
                               isActive={isPlayingResponse || tts.isSpeaking}
                               canvasMax="100%"
+                              /* Restored 2026-08-04 after removing it broke
+                                 PORTRAIT.  The <=768 branch is a DIFFERENT
+                                 formula from landscape (0.32h/0.9w vs
+                                 0.28w/0.68h), so this prop was the only
+                                 portrait-aware bound — dropping it left
+                                 portrait unbounded.  It is now a CAP that
+                                 VoiceVisualizer mins against its measured
+                                 container, not the orb's size, so squareness
+                                 and resize-tracking still hold. */
                               size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
                             />
                           </div>

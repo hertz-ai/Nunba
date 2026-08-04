@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 
 /**
  * VoiceVisualizer — Smooth sine-wave circular amplitude with neon glow.
@@ -11,6 +11,13 @@ import React, { useRef, useEffect, useCallback } from 'react';
  * - 60fps, zero shadowBlur, zero canvas filter
  */
 const PTS = 180;
+
+// Historical default edge, used only when the container cannot be measured and
+// the caller gave no explicit size.  `size` is NO LONGER defaulted to this:
+// it is an optional CAP now, and defaulting it would silently pin every
+// container-driven orb to 200px — the same class of bug as the frozen
+// window.innerWidth this replaced.
+const ORB_FALLBACK_PX = 200;
 
 // Demopage.js's TTS playback element (#nunba-tts-audio) is a manually
 // managed DOM singleton that persists for the whole app session, outside
@@ -28,8 +35,48 @@ const PTS = 180;
 // to ever have, and nothing ever closes it early.
 const _voiceGraphCache = new WeakMap();
 
+// Resolve a CSS-ish cap ('80%', '100%', '240px', 240) to px against a basis.
+// Returns Infinity for anything unparseable so it drops out of a Math.min()
+// instead of silently zeroing the orb.
+export function _capToPx(cap, basisPx) {
+  if (cap == null) return Infinity;
+  if (typeof cap === 'number') return isFinite(cap) ? cap : Infinity;
+  const s = String(cap).trim();
+  if (s.endsWith('%')) {
+    const pct = parseFloat(s);
+    return isFinite(pct) && basisPx > 0 ? (basisPx * pct) / 100 : Infinity;
+  }
+  const px = parseFloat(s);
+  return isFinite(px) ? px : Infinity;
+}
+
+// THE sizing decision, kept pure so it can be tested without a canvas or a
+// layout engine (jsdom has neither — which is why VoiceOrbPage.test.jsx mocks
+// this component outright, and why the previous orb guard could only ever
+// assert aspect in a real browser).
+//
+// Largest square that fits: min(containerW, containerH, size, canvasMax).
+// A 0/unmeasurable container axis is IGNORED rather than winning the min, so a
+// pre-layout frame or a display:none parent degrades to `size` instead of
+// collapsing the orb to nothing.
+export function computeOrbEdge(containerW, containerH, size, canvasMax) {
+  const bounds = [];
+  if (typeof size === 'number' && isFinite(size) && size > 0) bounds.push(size);
+  if (containerW > 1) bounds.push(containerW);
+  if (containerH > 1) bounds.push(containerH);
+  const cap = _capToPx(canvasMax, containerW);
+  if (isFinite(cap) && cap > 0) bounds.push(cap);
+  // Nothing measurable and no explicit size: fall back to the historical
+  // default rather than 1px.
+  if (!bounds.length) return ORB_FALLBACK_PX;
+  return Math.max(1, Math.floor(Math.min.apply(null, bounds)));
+}
+
 const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax }) {
-  size = size || 200;
+  // `size` is an optional CAP, not the orb's size.  Deliberately NOT defaulted
+  // (it used to be `size || 200`): the orb is driven by the box it lives in,
+  // and a default would cap every container-driven consumer at 200px.
+  // LightYourHART.js:1155 still passes size={100} to get a small fixed orb.
   // Per-consumer cap on how much of the parent the orb may fill.  Defaults to
   // 80% (breathing room) for standalone uses (e.g. VoiceOrbPage) so they are
   // UNCHANGED; Demopage's media column passes '100%' so the orb fills the
@@ -242,16 +289,84 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
     };
   }, []);
 
+  // ── Square edge, measured from the BOX we actually live in ──────────────
+  //
+  // `size` cannot be the sole authority.  Demopage computes it inline during
+  // render as min(window.innerWidth*.28, window.innerHeight*.68) with NO
+  // resize listener (Demopage.js:5249,5272), so whatever the viewport happened
+  // to be at first paint is frozen forever.  Measured 2026-08-04 on the
+  // desktop: the window was restored from minimized AFTER mount, `size` stayed
+  // pinned at ~126, and the orb rendered 125x125 while the media column was
+  // several hundred px wide.  The browser, opened at full size, got 382.
+  // Same bundle, same code — only the value of innerWidth at mount differed.
+  //
+  // So measure the container and take the largest square that fits:
+  // min(containerW, containerH).  That is self-describing, reacts to resize,
+  // and needs no viewport arithmetic.  `size` is retained as an explicit CAP
+  // for callers that want a deliberately small orb (LightYourHART.js:1155
+  // passes size={100} and no canvasMax — it must stay 100).
+  //
+  // Both axes are set to the SAME definite px value, so squareness is true by
+  // construction rather than inferred.  That is what makes this different from
+  // 54505caf, which asked `aspect-ratio` to derive one axis and got overruled
+  // by flex sizing.  No maxWidth/maxHeight here on purpose: a second,
+  // independent cap per axis is exactly what produced the 479x538 ellipse.
+  const boxRef = useRef(null);
+  const [edge, setEdge] = useState(
+    typeof size === 'number' && size > 0 ? size : ORB_FALLBACK_PX,
+  );
+
+  // useLayoutEffect, NOT useEffect: this must measure and commit BEFORE the
+  // browser paints.  With useEffect the first frame shows the fallback size and
+  // the orb then visibly grows to full size once the observer fires — reported
+  // 2026-08-04 as "after a while it becomes full" in landscape.  The final size
+  // was always right; only the first painted frame was wrong.  Running the
+  // measurement in the layout phase makes the correct size the FIRST thing
+  // drawn, so there is no visible resize step.
+  useLayoutEffect(() => {
+    const el = boxRef.current;
+    if (!el) return undefined;
+
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      // Guard a 0/unmeasurable box (parent with indefinite height, display:none,
+      // pre-layout first frame): fall back to `size` rather than collapsing to
+      // nothing.  A 0px orb is a worse failure than a slightly-wrong one.
+      const next = computeOrbEdge(r.width, r.height, size, canvasMax);
+      setEdge((prev) => (prev === next ? prev : next));
+    };
+
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      // jsdom / very old browsers: fall back to the window event so the value
+      // still tracks resize instead of freezing (the original defect).
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [size, canvasMax]);
+
   return React.createElement('div', {
+    ref: boxRef,
     style: Object.assign({
       width: '100%', height: '100%',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       flexDirection: 'column',
+      // Anchor for the absolutely-positioned "Speaking" label below.  The
+      // label used to be an in-flow SIBLING of the canvas in this column flex
+      // box, so `justifyContent: center` centred the PAIR — the orb sat half
+      // the label's height above true centre while speaking and snapped back
+      // when it stopped.  Taking the label out of flow makes the canvas the
+      // only thing being centred, so the orb is symmetric on both axes and
+      // does not move when speaking toggles.
+      position: 'relative',
     }, style || {}),
   },
     React.createElement('canvas', {
       ref: canvasRef,
-      width: size * 2, height: size * 2,
+      width: edge * 2, height: edge * 2,
       // The backing store above is SQUARE (size*2 x size*2). Whatever shape the
       // CSS box takes, the browser stretches that square into it — so a
       // non-square box does not crop the orb, it draws it as an ellipse.
@@ -266,24 +381,47 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
       // unclamped because maxHeight resolves against a tall column) ->
       // aspect 0.890, a visible vertical ellipse.
       //
-      // So exactly one axis is declared and the other is derived: width takes
-      // the cap, `height: auto` + aspect-ratio follows it. maxHeight is gone on
-      // purpose — a second independent cap is what broke squareness in the
-      // first place, and the vertical bound already lives in `size` itself
-      // (Demopage passes min(innerWidth*.28, innerHeight*.68)).
+      // 54505caf then tried "declare one axis, derive the other" (width: size,
+      // height: auto, aspect-ratio 1/1).  That produced a TRUE square and lost
+      // the size: inside this column flex container an auto-height item is
+      // shrunk on the main axis, and with `size` frozen at mount (see the
+      // measurement hook above) the desktop collapsed to 125x125 while the
+      // browser, on the pre-fix bundle, still showed 333x382.  Square was
+      // bought with area — and the guard only asserted aspect, so it passed.
       //
-      // #592's "LARGER" half was already delivered by 72780cd4 (479px here vs
-      // the old 160-200px cap); this is the "SQUARE" half.
-      // Guarded by cypress/e2e/voice-orb-landscape.cy.js, which measures
-      // getBoundingClientRect and fails on aspect != 1 +/- 0.08.
+      // Current rule: ONE measured value, `edge` = min(containerW, containerH,
+      // size, canvasMax), applied to both axes.  Square is structural, area is
+      // maximal, and it reacts to resize.
+      //
+      // Backing store is edge*2 (retina) and the draw loop reads canvas.width /
+      // canvas.height every frame, so a resize re-rasterises cleanly.
+      //
+      // Guarded by __tests__/components/VoiceVisualizer.size.test.jsx, which
+      // asserts aspect == 1 AND that the orb actually fills the container's
+      // short side — the second half is the one that was missing.
       style: {
-        width: size, maxWidth: canvasMax,
-        height: 'auto', aspectRatio: '1 / 1',
+        // BOTH axes definite and EQUAL -> square by construction.  No
+        // aspect-ratio (it is ignored when both axes are definite, which is
+        // what made 54505caf inert), and no maxWidth/maxHeight (two
+        // independent per-axis caps are what produced the 479x538 ellipse).
+        // `edge` already folded the container box and canvasMax into one value.
+        width: edge, height: edge,
+        // Do not let the column flex container shrink us on the main axis:
+        // that shrinking is what turned a correct 333 into a collapsed 125.
+        flexShrink: 0,
       },
     }),
     isActive ? React.createElement('div', {
       style: {
-        marginTop: 4, textAlign: 'center',
+        // Out of flow (see `position: relative` on the wrapper).  As an in-flow
+        // sibling this pushed the orb off-centre by half its own height, and
+        // only while speaking — so the orb drifted up on TTS start and dropped
+        // back on end.  Anchored under the orb's bottom edge instead, so the
+        // canvas is the only centred child and its centre never moves.
+        position: 'absolute',
+        top: `calc(50% + ${Math.round(edge / 2) + 6}px)`,
+        left: 0, right: 0,
+        textAlign: 'center',
         fontSize: 8, letterSpacing: 4, textTransform: 'uppercase', fontWeight: 700,
         background: 'linear-gradient(90deg,#6C63FF,#00D2FF)', WebkitBackgroundClip: 'text',
         WebkitTextFillColor: 'transparent', backgroundClip: 'text', opacity: 0.7,
