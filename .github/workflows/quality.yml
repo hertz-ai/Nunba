@@ -326,6 +326,17 @@ jobs:
           FLASK_PID=$(cat /tmp/flask.pid 2>/dev/null || echo "")
           if [ -n "$FLASK_PID" ] && kill -0 "$FLASK_PID" 2>/dev/null; then
             echo "Flask PID $FLASK_PID is alive"
+            # ALIVE IS NOT SERVING.  This branch used to print only the line
+            # above and stop, so the log was surfaced for a CRASHED Flask but
+            # never for a HUNG one — and hung-but-alive is precisely what
+            # yields the confusing 404 described at the top of this step
+            # (nothing bound yet / still booting).  The diagnostic covered one
+            # of the two failure modes it exists to explain.  Probe readiness
+            # and dump the log when the process is up but not answering.
+            if ! curl -sf -o /dev/null http://localhost:5000/health; then
+              echo "::warning::Flask PID $FLASK_PID is ALIVE but /health is not 200 — hung or still booting; /tmp/flask.log:"
+              tail -100 /tmp/flask.log || true
+            fi
           else
             echo "::warning::Flask PID $FLASK_PID is DEAD before Cypress; /tmp/flask.log:"
             tail -100 /tmp/flask.log || true
@@ -516,8 +527,12 @@ jobs:
 
       - name: Start Flask backend (Windows)
         shell: bash
+        # Redirect to flask.log exactly as the Linux job does (:300).  Without
+        # it this shard produced NO server output at all, so a boot failure
+        # here was undebuggable — the only symptom was Cypress's wait-on
+        # timing out with a 404.  Build-script changes apply to every OS.
         run: |
-          python main.py --port 5000 &
+          python main.py --port 5000 > flask.log 2>&1 &
           echo $! > flask.pid
         env:
           NUNBA_BIND_HOST: '127.0.0.1'
