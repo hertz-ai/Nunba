@@ -32,7 +32,10 @@ Usage in tests:
     def test_draft_blocked_on_8gb(synthetic_cuda):
         synthetic_cuda(total_gb=8.0, free_gb=6.0)
         from llama.llama_config import LlamaConfig
-        assert LlamaConfig.should_boot_draft() is False
+        # refresh=True is REQUIRED in tests: should_boot_draft() memoizes the
+        # boot decision (task #614), so without it a second test in the same
+        # process asserts against the first test's cached answer.
+        assert LlamaConfig.should_boot_draft(refresh=True) is False
 
 Scope
 ─────

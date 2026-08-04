@@ -18,6 +18,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -442,8 +443,61 @@ class LlamaConfig:
         except Exception as e:
             logger.debug(f"draft_decision log skipped: {e}")
 
+    # ── Memoized boot decision (PERF-18 / task #614) ─────────────────────
+    # This is a BOOT decision: main.py:641 calls it once and main.py:652
+    # starts the draft server on the result.  Nothing re-reads it afterwards
+    # to start or stop that server.
+    #
+    # /backend/health (main.py:3678) also reports it, and that endpoint is
+    # polled.  Re-deriving per poll caused two defects, measured live on an
+    # 8 GB box over 38.5 h:
+    #
+    #   1. PERF — 5,528 GPU probes + mkdir + appends to draft_decision.jsonl
+    #      (985 KB, one line every ~25 s, unbounded, no rotation), plus two
+    #      INFO emits fanned across four log files, from five threads.
+    #   2. CORRECTNESS — the gate branches on `free >= 1.0` and free VRAM
+    #      fluctuates, so successive polls could report speculation_enabled
+    #      true then false while the actual boot state never changed.  Health
+    #      must mirror what BOOTED, not re-decide.
+    #
+    # So: compute once, memoize, and let the boot path force a real decision
+    # with refresh=True.  Same fix shape as #597 / #605 / #572.
+    _DRAFT_DECISION_CACHE: bool | None = None
+    _DRAFT_DECISION_LOCK = threading.Lock()
+
     @staticmethod
-    def should_boot_draft() -> bool:
+    def reset_draft_decision_cache() -> None:
+        """Drop the memoized boot decision so the next call re-derives.
+
+        Used by the test batteries (which sweep many synthetic VRAM rows
+        through one process) and available to a boot retry that genuinely
+        needs to re-decide.
+        """
+        with LlamaConfig._DRAFT_DECISION_LOCK:
+            LlamaConfig._DRAFT_DECISION_CACHE = None
+
+    @staticmethod
+    def should_boot_draft(*, refresh: bool = False) -> bool:
+        """Return the draft-boot decision, computing it at most once.
+
+        Args:
+            refresh: force a fresh decision against current VRAM and emit a
+                new drift-monitor line.  The boot path uses this; polled
+                readers (``/backend/health``) must not.
+
+        The lock serialises the boot thread against concurrent health polls
+        so the GPU probe and the jsonl append happen exactly once even when
+        health beats boot to the first call.
+        """
+        with LlamaConfig._DRAFT_DECISION_LOCK:
+            if not refresh and LlamaConfig._DRAFT_DECISION_CACHE is not None:
+                return LlamaConfig._DRAFT_DECISION_CACHE
+            decision = LlamaConfig._decide_draft_boot()
+            LlamaConfig._DRAFT_DECISION_CACHE = decision
+            return decision
+
+    @staticmethod
+    def _decide_draft_boot() -> bool:
         """Whether the system has enough VRAM to run a separate draft model.
 
         Cohort-aware gate (post-2acf21a rework):
@@ -470,7 +524,10 @@ class LlamaConfig:
         for them is by design — it reclaims ~1 GB so Parler loads.
 
         Every call emits one JSON line to
-        ~/Documents/Nunba/logs/draft_decision.jsonl (drift monitor).
+        ~/Documents/Nunba/logs/draft_decision.jsonl (drift monitor).  Callers
+        must reach this through ``should_boot_draft()``, which memoizes it —
+        calling it directly per request is what made that file grow by 3,445
+        lines/day (task #614).
         """
         # Defaults for the log line if VRAM detection itself fails.
         lang = LlamaConfig._read_preferred_lang()

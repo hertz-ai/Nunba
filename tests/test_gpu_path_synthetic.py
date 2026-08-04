@@ -28,27 +28,27 @@ class TestShouldBootDraftThreshold:
     def test_8gb_card_does_not_boot_draft(self, synthetic_cuda):
         synthetic_cuda(total_gb=8.0, free_gb=6.5)
         from llama.llama_config import LlamaConfig
-        assert LlamaConfig.should_boot_draft() is False, (
+        assert LlamaConfig.should_boot_draft(refresh=True) is False, (
             "8GB card must NOT boot draft — leaves no room for TTS"
         )
 
     def test_10gb_card_boots_draft(self, synthetic_cuda):
         synthetic_cuda(total_gb=10.0, free_gb=6.0)
         from llama.llama_config import LlamaConfig
-        assert LlamaConfig.should_boot_draft() is True, (
+        assert LlamaConfig.should_boot_draft(refresh=True) is True, (
             "10GB card with 6GB free is exactly at the dual-boot threshold"
         )
 
     def test_16gb_card_boots_draft(self, synthetic_cuda):
         synthetic_cuda(total_gb=16.0, free_gb=12.0)
         from llama.llama_config import LlamaConfig
-        assert LlamaConfig.should_boot_draft() is True
+        assert LlamaConfig.should_boot_draft(refresh=True) is True
 
     def test_10gb_but_no_free_vram_falls_back(self, synthetic_cuda):
         """Total ≥10GB but <1GB free → main-only (TTS/vision already loaded)."""
         synthetic_cuda(total_gb=10.0, free_gb=0.5)
         from llama.llama_config import LlamaConfig
-        assert LlamaConfig.should_boot_draft() is False
+        assert LlamaConfig.should_boot_draft(refresh=True) is False
 
     def test_no_cuda_never_boots_draft(self, monkeypatch):
         """CUDA missing → draft boot must refuse."""
@@ -66,7 +66,7 @@ class TestShouldBootDraftThreshold:
             sys.modules, "integrations.service_tools.vram_manager", mod,
         )
         from llama.llama_config import LlamaConfig
-        assert LlamaConfig.should_boot_draft() is False
+        assert LlamaConfig.should_boot_draft(refresh=True) is False
 
 
 # ══════════════════════════════════════════════════════════════════════

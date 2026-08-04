@@ -638,7 +638,11 @@ def _deferred_platform_init():
     else:
         try:
             from llama.llama_config import LlamaConfig
-            _boot_draft = LlamaConfig.should_boot_draft()
+            # refresh=True: this is THE boot decision — derive it fresh and
+            # emit the drift-monitor line.  Everything after this (notably
+            # /backend/health) reads the memoized value so a polled endpoint
+            # can't re-decide under us.  See task #614.
+            _boot_draft = LlamaConfig.should_boot_draft(refresh=True)
         except Exception:
             _boot_draft = True  # safe default if detection fails
 
@@ -3675,6 +3679,10 @@ def backend_health():
 
     try:
         from llama.llama_config import LlamaConfig
+        # NO refresh= here.  This endpoint is polled; it must report the
+        # memoized BOOT decision, not re-derive one.  Re-deriving made
+        # speculation_enabled flip with transient free-VRAM dips and appended
+        # a jsonl line + GPU probe per poll (task #614).
         speculation_enabled = bool(LlamaConfig.should_boot_draft())
     except Exception as e:
         logging.debug(f"/backend/health: should_boot_draft unavailable: {e}")

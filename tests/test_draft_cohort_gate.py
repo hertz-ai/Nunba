@@ -139,7 +139,11 @@ def gate(monkeypatch):
         monkeypatch.setattr(LlamaConfig, '_read_active_tts',
                             staticmethod(lambda: tts))
         recorded.clear()
-        decision = LlamaConfig.should_boot_draft()
+        # refresh=True: this battery sweeps many synthetic VRAM rows through
+        # one process, and should_boot_draft() memoizes its boot decision
+        # (task #614).  Without the refresh, row 2 onward would assert against
+        # row 1's cached answer and the matrix would be vacuously green.
+        decision = LlamaConfig.should_boot_draft(refresh=True)
         return (decision, list(recorded)) if return_log else decision
 
     return _run
