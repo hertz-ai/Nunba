@@ -2254,7 +2254,13 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
             if _ret.returncode != 0:
                 # Win32GUI exes often crash during Python teardown (0xC0000005 = access
                 # violation) AFTER validation completes. Check validate.log for actual results.
-                _log_says_good = _val_log and 'Failed: 0' in open(_val_log, encoding='utf-8').read()
+                # Canonical verdict reader — NOT a substring search.  A log
+                # ending "Failed: 8" still contains "Failed: 0" from earlier
+                # clean groups, which is how build7 shipped green.
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                from _validate_verdict import validate_log_is_clean
+                _log_says_good = bool(_val_log) and validate_log_is_clean(
+                    open(_val_log, encoding='utf-8').read())
                 if _log_says_good:
                     print(f"\n[INFO] Exe exited with code {_ret.returncode} (teardown crash), "
                           f"but validate.log shows 0 failures — build is good.\n")

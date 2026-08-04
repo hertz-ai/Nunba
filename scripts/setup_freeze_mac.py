@@ -1017,7 +1017,12 @@ if "build" in sys.argv or "bdist_mac" in sys.argv or "bdist_dmg" in sys.argv:
                     for _c in _val_log_candidates:
                         print(f"  - {_c}")
                     print("  Frozen binary may have crashed before opening the log file.")
-                _log_says_good = _log_text and 'Failed: 0' in _log_text
+                # Canonical verdict reader — NOT a substring search.  A log
+                # ending "Failed: 8" still contains "Failed: 0" from earlier
+                # clean groups, which is how build7 shipped green (2026-08-04).
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                from _validate_verdict import validate_log_is_clean
+                _log_says_good = validate_log_is_clean(_log_text)
                 # Exit code 98 = transformers __getattr__ recursion circuit
                 # breaker.  This fires AFTER --validate completes its import
                 # checks (the validate.log already has [OK] lines) when
