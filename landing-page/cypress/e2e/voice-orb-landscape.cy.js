@@ -238,11 +238,31 @@ describe('#592 voice orb fills the media column in landscape', () => {
           const tops = [...new Set(btns.map((r) => Math.round(r.top / 6) * 6))];
           const rowRect = root.getBoundingClientRect();
           const rightmost = Math.max(...btns.map((r) => r.right));
+          // #617b's OTHER half: "the icon list sits UNDER the orb column".
+          // Measure horizontal overlap between the strip and the media column
+          // — "under" means sharing the column's x-range, not merely being
+          // lower down the page. Reported as a fraction of the strip's own
+          // width so the number means the same thing at every viewport.
+          const orb = $ta[0].ownerDocument.querySelector('canvas');
+          const col = orb ? mediaColumnOf(orb) : null;
+          let underColumn = null;
+          if (col) {
+            const c = col.getBoundingClientRect();
+            const sL = Math.min(...btns.map((r) => r.left));
+            const sR = rightmost;
+            const overlap = Math.max(0, Math.min(sR, c.right) - Math.max(sL, c.left));
+            underColumn = {
+              stripX: [Math.round(sL), Math.round(sR)],
+              columnX: [Math.round(c.left), Math.round(c.right)],
+              overlapFrac: +(overlap / Math.max(1, sR - sL)).toFixed(3),
+            };
+          }
           return {
             w,
             buttons: btns.length,
             rowCount: tops.length,
             overflowsPx: Math.round(Math.max(0, rightmost - rowRect.right)),
+            underColumn,
           };
         })
         .then((r) => rows.push(r));
