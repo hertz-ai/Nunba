@@ -200,6 +200,68 @@ describe('#592 voice orb fills the media column in landscape', () => {
     });
   });
 
+  /**
+   * #617(b): "the whole icon list sits UNDER the orb column and wraps to the
+   * next row Claude-style when width is insufficient (flex-wrap, dynamic)."
+   *
+   * ChatInputBar.js:164 is `flex flex-wrap sm:flex-nowrap`, i.e. wrapping is
+   * gated on the 640px breakpoint rather than on whether the icons actually
+   * fit. That is a class string though, not behaviour — so measure it: count
+   * distinct rows by grouping the composer's buttons on their top offset, and
+   * record whether the row overflows its container at each width.
+   *
+   * Buttons are found structurally (all buttons in the bottom third, grouped
+   * by geometry) rather than by class or aria-label, so this cannot silently
+   * become a no-op selector — the failure mode the dead `mediaMode` seed in
+   * this same file already demonstrated.
+   *
+   * REPORTS BEFORE IT ASSERTS. The point is to characterise real behaviour
+   * across widths; a bare pass/fail would hide whether icons wrap, shrink, or
+   * spill.
+   */
+  it('#617b characterise icon-strip wrapping across widths', () => {
+    const widths = [1920, 1100, 800, 700, 640, 560, 420];
+    const rows = [];
+
+    const measureAt = (w) =>
+      cy.viewport(w, 900)
+        .then(() => cy.visit(`${APP}/local`, {failOnStatusCode: false, onBeforeLoad: seedHart}))
+        .then(() => cy.get('textarea[placeholder="Message..."]', {timeout: 20000}).should('exist'))
+        .then(($ta) => {
+          // composer root = nearest ancestor that also contains buttons
+          let root = $ta[0].parentElement;
+          while (root && root.querySelectorAll('button').length < 3) root = root.parentElement;
+          if (!root) return {w, rows: null, note: 'composer root not found'};
+          const btns = [...root.querySelectorAll('button')]
+            .map((b) => b.getBoundingClientRect())
+            .filter((r) => r.width > 0 && r.height > 0);
+          const tops = [...new Set(btns.map((r) => Math.round(r.top / 6) * 6))];
+          const rowRect = root.getBoundingClientRect();
+          const rightmost = Math.max(...btns.map((r) => r.right));
+          return {
+            w,
+            buttons: btns.length,
+            rowCount: tops.length,
+            overflowsPx: Math.round(Math.max(0, rightmost - rowRect.right)),
+          };
+        })
+        .then((r) => rows.push(r));
+
+    widths.reduce((chain, w) => chain.then(() => measureAt(w)), cy.wrap(null)).then(() => {
+      cy.writeFile('cypress/reports/617b-icon-wrap.json', {viewportHeights: 900, rows}).then(() => {
+        cy.log(JSON.stringify(rows));
+        // The only hard requirement: icons must never spill outside their
+        // container at ANY width. Whether they achieve that by wrapping or by
+        // shrinking is a design choice; silently overflowing is not.
+        const spilling = rows.filter((r) => r && r.overflowsPx > 2);
+        expect(
+          spilling.map((r) => `${r.w}px:+${r.overflowsPx}`).join(' '),
+          'icon strip overflows its container at these widths',
+        ).to.eq('');
+      });
+    });
+  });
+
   it('composer is dark, not the cream #fff8ea (#233 revert guard)', () => {
     cy.get('textarea[placeholder="Message..."]', {timeout: 20000})
       .should('exist')
