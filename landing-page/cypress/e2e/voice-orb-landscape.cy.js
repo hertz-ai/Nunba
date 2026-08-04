@@ -51,9 +51,44 @@ describe('#592 voice orb fills the media column in landscape', () => {
     cy.visit(`${APP}/local`, {failOnStatusCode: false, onBeforeLoad: seedHart});
   });
 
+  /**
+   * PRECONDITION for every measurement below: the bundle the page is EXECUTING
+   * must be one the server actually serves.
+   *
+   * This is not hypothetical. On 2026-08-05, Chrome on the dev box executed
+   * /static/js/main.66d05810.js — 2,472,483 bytes of it — while the server
+   * 404'd that exact path and served main.04ab9965.js to every other client.
+   * Byte-level confirmed: same URL, same length (20593), same offset (12337),
+   * eight different characters. A second Flask on :5000, service workers,
+   * Cache Storage and HTTP caching were each ruled out by direct test; the
+   * Chrome-side mechanism was never identified.
+   *
+   * A whole session was spent measuring that phantom and reasoning about code
+   * that had not shipped in days (see memory/feedback_vacuous_guards.md).
+   *
+   * Deliberately NOT a hardcoded hash — that would go stale on every build and
+   * become the next false failure. Assert the PROPERTY: whatever bundle this
+   * page is running, the server can serve it. A browser executing a 404 fails
+   * here instead of silently producing numbers about dead code.
+   */
+  const assertLiveBundle = () =>
+    cy.document().then((doc) => {
+      const el = [...doc.querySelectorAll('script[src]')].find((s) => /main\.[0-9a-f]{6,}\.js/.test(s.src));
+      expect(el, 'a main.<hash>.js bundle should be on the page').to.exist;
+      const path = new URL(el.src).pathname;
+      return cy.request({url: `${APP}${path}`, failOnStatusCode: false}).then((res) => {
+        expect(
+          res.status,
+          `page is executing ${path} but the server answers ${res.status} for it — ` +
+          'measuring this DOM would describe code that is not shipped',
+        ).to.eq(200);
+      });
+    });
+
   it('renders the orb canvas at a usable fraction of the viewport', () => {
     // The orb is a <canvas> inside the media column.
     cy.get('canvas', {timeout: 20000}).should('exist');
+    assertLiveBundle();
 
     cy.get('canvas').then(($c) => {
       // Pick the largest canvas — other canvases (charts) may exist.
