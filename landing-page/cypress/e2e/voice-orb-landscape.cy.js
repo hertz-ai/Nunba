@@ -36,7 +36,31 @@ const seedHart = (win) => {
   win.localStorage.setItem('guest_mode', 'true');
   win.localStorage.setItem('guest_user_id', 'cypress-592-probe');
   // Audio Only -> the VoiceVisualizer branch (mediaMode === 'audio').
-  win.localStorage.setItem('mediaMode', 'audio');
+  // The key is `nunba_media_mode` — Demopage.js:636 reads exactly that, and
+  // :741 writes it. This spec previously seeded `mediaMode`, which no component
+  // ever reads: a seed that looks deliberate and does nothing. It "worked" only
+  // because 'audio' is the `|| 'audio'` default, so the test passed for a
+  // reason unrelated to what it claimed to set up — and setting VIDEO mode the
+  // same way would silently have measured audio mode instead.
+  win.localStorage.setItem('nunba_media_mode', 'audio');
+};
+
+/** Seed as above but in video mode, to compare column footprints (#617a). */
+const seedHartVideo = (win) => {
+  seedHart(win);
+  win.localStorage.setItem('nunba_media_mode', 'video');
+};
+
+/**
+ * The media column is the element Demopage.js:5211-5219 sizes with `w-[30%]`
+ * for BOTH video and audio (and w-0 for text). Locate it structurally — as the
+ * positioned ancestor of the orb/video — rather than by class string, so a
+ * Tailwind refactor does not silently turn this into a no-op selector.
+ */
+const mediaColumnOf = (el) => {
+  let n = el.parentElement;
+  while (n && !(n.className || '').toString().includes('justify-center')) n = n.parentElement;
+  return n;
 };
 
 const stub = () => {
@@ -128,6 +152,50 @@ describe('#592 voice orb fills the media column in landscape', () => {
           aspect,
           `orb ${Math.round(best.width)}x${Math.round(best.height)} — aspect ${aspect.toFixed(3)}, should be square`,
         ).to.be.closeTo(1, 0.08);
+      });
+    });
+  });
+
+  /**
+   * #617(a), the user's words: "orb width must equal the RIGHT PANEL width —
+   * the same footprint the IDLE VIDEO fills in video mode. Switching modes must
+   * not change the column's visual width."
+   *
+   * Two separable claims, measured separately because they can fail apart:
+   *   1. the COLUMN is the same width in audio and video mode
+   *   2. the ORB fills that column
+   *
+   * Claim 1 is structural — Demopage.js:5214 gives both modes `w-[30%]`. Claim 2
+   * is the one that can drift, and the numbers are reported either way so a
+   * failure says how far off it is rather than just "not equal".
+   */
+  it('#617a media column is the same width in audio and video mode', () => {
+    const measure = (seed) =>
+      cy.visit(`${APP}/local`, {failOnStatusCode: false, onBeforeLoad: seed})
+        .then(() => cy.get('canvas, video', {timeout: 20000}).should('exist'))
+        .then(($el) => {
+          const col = mediaColumnOf($el[0]);
+          expect(col, 'media column ancestor should be findable').to.exist;
+          return {col: col.getBoundingClientRect().width, inner: $el[0].getBoundingClientRect().width};
+        });
+
+    measure(seedHart).then((audio) => {
+      measure(seedHartVideo).then((video) => {
+        const report = {
+          viewport: {w: W, h: H},
+          audio: {columnW: Math.round(audio.col), orbW: Math.round(audio.inner)},
+          video: {columnW: Math.round(video.col)},
+          columnDeltaPx: Math.round(Math.abs(audio.col - video.col)),
+          orbFillsColumn: +(audio.inner / audio.col).toFixed(3),
+        };
+        cy.writeFile('cypress/reports/617-column-parity.json', report).then(() => {
+          cy.log(JSON.stringify(report));
+          // Claim 1: switching modes must not change the column width.
+          expect(
+            Math.abs(audio.col - video.col),
+            `media column ${Math.round(audio.col)}px in audio vs ${Math.round(video.col)}px in video`,
+          ).to.be.lessThan(2);
+        });
       });
     });
   });
