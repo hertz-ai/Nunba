@@ -886,8 +886,6 @@ if getattr(sys, 'frozen', False):
 
             def _rotate(self):
                 # Close first: Windows refuses os.replace on an open handle.
-                # Any failure degrades to "keep appending" rather than losing
-                # the stream — a fat log beats no crash forensics.
                 try:
                     self._fh.close()
                 except (OSError, ValueError):
@@ -896,12 +894,39 @@ if getattr(sys, 'frozen', False):
                     os.replace(self._path, self._path + '.old')
                 except OSError:
                     pass
+                # Reset the counter BEFORE the reopen attempt.  It used to be
+                # set only on the success path, so a failed reopen left _n
+                # above the cap and turned ONE failed rotation into a full
+                # rotate attempt (close + replace + open) on EVERY subsequent
+                # write — a dead stream that also thrashed the disk.
+                self._n = 0
                 try:
                     self._fh = open(self._path, 'a', encoding='utf-8',
                                     buffering=1)
-                    self._n = 0
                 except OSError:
-                    pass
+                    # self._fh is ALREADY CLOSED here.  Leaving it closed made
+                    # every later write raise "ValueError: I/O operation on
+                    # closed file" for the rest of the process — and since
+                    # sys.stdout IS this object, autogen's print() died on
+                    # every chat turn (autogen/io/console.py:21), HARTOS never
+                    # finished booting, and the desktop app served its
+                    # "Nunba is waking up..." stub forever.  Shipped in
+                    # 633fb913; the old comment claimed this degraded to "keep
+                    # appending", but after a failed reopen there is nothing
+                    # left to append to.
+                    #
+                    # Windows is the realistic trigger: subprocesses
+                    # (llama-server, langchain) INHERIT this handle, and an
+                    # inherited handle keeps the file locked, so the reopen
+                    # raises PermissionError.
+                    #
+                    # Degrade to a sink that still ACCEPTS writes.  Losing the
+                    # log is bad; taking stdout — and with it every autogen
+                    # turn — down with it is far worse.
+                    try:
+                        self._fh = open(os.devnull, 'w')
+                    except OSError:
+                        pass
 
             def close(self):
                 try:

@@ -119,3 +119,105 @@ def test_frozen_debug_rotation_is_reachable_mid_session():
                    if isinstance(n, ast.FunctionDef) and n.name == '_rotate'), None)
     assert rotate is not None, '_CappedStream must define _rotate()'
     assert 'os.replace' in ast.unparse(rotate), '_rotate must actually replace'
+
+
+def _capped_stream_cls():
+    """Compile the REAL _CappedStream out of app.py and return the class.
+
+    It lives inside app.py's ``if frozen:`` block, so it cannot be imported —
+    which is why every guard above can only assert its SHAPE.  A shape
+    assertion cannot catch a behavioural defect (that is exactly how the
+    405MB-in-one-session bug survived its own drift-guard).  Exec the real
+    class body so the tests below exercise shipped code, not a replica.
+    """
+    import ast
+
+    tree = ast.parse(_app_src())
+    node = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.ClassDef) and n.name == '_CappedStream')
+    ns = {'os': os}
+    exec(compile(ast.Module(body=[node], type_ignores=[]),
+                 '<app.py:_CappedStream>', 'exec'), ns)
+    return ns['_CappedStream']
+
+
+def test_failed_reopen_does_not_kill_the_stream(tmp_path, monkeypatch):
+    """A failed reopen must NOT leave the sink permanently dead.
+
+    Regression shipped in 633fb913.  ``_rotate()`` closes ``self._fh`` FIRST
+    (Windows refuses os.replace on an open handle), then reopens inside
+    ``try/except OSError``.  app.py:863 notes that subprocesses (llama-server,
+    langchain) INHERIT this handle — and on Windows an inherited handle keeps
+    the file locked, so the reopen can raise PermissionError.  The except
+    swallowed it and left ``self._fh`` CLOSED, so every later write raised
+    ``ValueError: I/O operation on closed file`` for the rest of the process.
+
+    ``sys.stdout`` IS this object, so autogen's ``print()`` died on every chat
+    turn (autogen/io/console.py:21), HARTOS never finished booting, and the
+    desktop app served its "Nunba is waking up..." stub indefinitely — which
+    the SPA renders as "Something's off on our end."
+
+    The docstring claimed failures "degrade to keep appending".  They did not:
+    after a failed reopen there is nothing left to append to.
+    """
+    cls = _capped_stream_cls()
+    p = tmp_path / 'frozen_debug.log'
+    s = cls(str(p), 64)           # tiny cap so one write rotates
+
+    real_open = open
+
+    def locked_open(path, *a, **kw):
+        # __init__ already opened the file before this patch, so ONLY the
+        # post-rotation reopen hits this.  devnull (a different path) is
+        # deliberately still allowed through.
+        if str(path) == str(p):
+            raise PermissionError(32, 'locked by an inheriting subprocess')
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr('builtins.open', locked_open)
+
+    s.write('x' * 200)            # over cap -> rotate -> reopen raises
+    s.write('still alive\n')      # must NOT raise ValueError
+    s.write('and again\n')
+
+
+def test_failed_reopen_does_not_retry_on_every_write(tmp_path, monkeypatch):
+    """After a failed reopen the byte counter must be reset.
+
+    ``_n`` was only zeroed inside the reopen ``try``, so a failed rotation
+    left it above the cap — turning ONE failed rotation into a rotate attempt
+    (close + os.replace + open) on EVERY subsequent write.  A dead stream that
+    also thrashes the filesystem.
+    """
+    cls = _capped_stream_cls()
+    p = tmp_path / 'frozen_debug.log'
+    s = cls(str(p), 64)
+
+    real_open = open
+    replaces = {'n': 0}
+    real_replace = os.replace
+
+    def counting_replace(src, dst, *a, **kw):
+        replaces['n'] += 1
+        return real_replace(src, dst, *a, **kw)
+
+    def locked_open(path, *a, **kw):
+        if str(path) == str(p):
+            raise PermissionError(32, 'locked')
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(os, 'replace', counting_replace)
+    monkeypatch.setattr('builtins.open', locked_open)
+
+    s.write('x' * 200)            # one rotation
+    for _ in range(20):
+        s.write('more\n')         # 20 x 5 = 100 bytes against a 64-byte cap
+
+    # Rotations must track BYTES, not writes.  100 bytes over a 64-byte cap
+    # legitimately earns one more rotation, so 2 is correct here — the bug was
+    # that a failed reopen left _n above the cap, making every single write
+    # re-attempt a rotation (21 for this sequence).
+    assert replaces['n'] <= 3, (
+        f'rotation attempted {replaces["n"]}x for 21 writes — a failed reopen '
+        'must reset the counter, or every write re-attempts a rotation'
+    )
