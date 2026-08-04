@@ -199,7 +199,54 @@ assert_json_field "POST /api/admin/diag/thread-dump has threads_dumped" POST \
 assert_json_field "GET /backend/health has gpu_tier" GET \
     /backend/health 'isinstance(d.get("gpu_tier"), str)'
 
-# ---- 9-10. Hive session hop --------------------------------------------
+# ---- 9-12. Hevolve AI hop (social / canonical DB) ----------------------
+# Nunba -> HARTOS -> Hevolve AI.  The suite previously "covered" this leg with
+# the hub/install supply-chain probes, but those are HARTOS admin endpoints —
+# the Hevolve AI layer is the social/DB tier backed by hevolve-database's
+# SocialUser/SocialPost.  Nothing exercised it, and nothing exercised auth.
+#
+# Needs a real JWT, so: log in to a fixed probe account, and only register if
+# that fails.  Login-first keeps the steady state side-effect free — a health
+# probe that creates a DB row on every run is a leak, not a check.
+#
+# Routes are read out of HARTOS/integrations/social/api.py.  `/users/me` is NOT
+# one of them (it is `/auth/me`); probing the invented name returned 404 and
+# would have been reported as a broken feature, which is exactly the mistake
+# that produced two false "hive is down" writeups.
+PROBE_USER="${NUNBA_PROBE_USER:-e2e_probe_fixed}"
+PROBE_PASS="${NUNBA_PROBE_PASS:-Probe!Pass123}"
+_login_body="{\"username\":\"$PROBE_USER\",\"password\":\"$PROBE_PASS\"}"
+_jwt="$(curl -sS -X POST "$BASE/api/social/auth/login" -H 'Content-Type: application/json' \
+        -d "$_login_body" --max-time 40 2>/dev/null \
+        | "$PY" -c 'import json,sys
+try: print(json.load(sys.stdin).get("data",{}).get("token") or "")
+except Exception: print("")' 2>/dev/null)"
+if [[ -z "$_jwt" ]]; then
+    curl -sS -X POST "$BASE/api/social/auth/register" -H 'Content-Type: application/json' \
+        -d "{\"username\":\"$PROBE_USER\",\"email\":\"$PROBE_USER@probe.local\",\"password\":\"$PROBE_PASS\"}" \
+        --max-time 40 >/dev/null 2>&1
+    _jwt="$(curl -sS -X POST "$BASE/api/social/auth/login" -H 'Content-Type: application/json' \
+            -d "$_login_body" --max-time 40 2>/dev/null \
+            | "$PY" -c 'import json,sys
+try: print(json.load(sys.stdin).get("data",{}).get("token") or "")
+except Exception: print("")' 2>/dev/null)"
+fi
+
+if [[ -n "$_jwt" ]]; then
+    pass "social auth: register+login yielded a JWT (${#_jwt} chars)"
+    assert_json_field "GET /api/social/auth/me (Nunba->HARTOS->Hevolve AI)" GET \
+        /api/social/auth/me 'isinstance(d.get("data"), dict) and "username" in d["data"]' \
+        -H "Authorization: Bearer $_jwt"
+    assert_json_field "GET /api/social/feed (canonical SocialPost)" GET \
+        /api/social/feed 'isinstance(d.get("data"), list)' \
+        -H "Authorization: Bearer $_jwt"
+    # The gate must DISCRIMINATE, not merely exist: same route, no token.
+    assert_status "GET /api/social/auth/me (no auth) -> 401" 401 GET /api/social/auth/me
+else
+    fail "social auth: could not obtain a JWT — Hevolve AI hop not exercised"
+fi
+
+# ---- 13-14. Hive session hop -------------------------------------------
 # Nunba -> HARTOS -> Hive.  Routes are taken from the blueprint that defines
 # them, HARTOS/integrations/coding_agent/claude_hive_session.py:1339-1401:
 #   connect | disconnect | status | pause | resume | scope | tasks
