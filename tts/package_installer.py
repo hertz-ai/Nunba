@@ -585,6 +585,43 @@ def ensure_user_site_on_path():
                 os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
 
 
+def pip_made_progress(prev_io, cur_io) -> bool:
+    """Did the child process actually move bytes between two samples?
+
+    The independent progress signal the stall detector needs.  pip runs with
+    --progress-bar off, so a large wheel prints one "Downloading..." line and
+    then says nothing for the whole transfer AND the multi-minute extraction
+    (79dcd068: the 2.5 GB CUDA torch wheel).  "No stdout" therefore cannot
+    distinguish working from hung — but a working pip is always moving bytes.
+
+    FAILS OPEN (returns True) when either sample is unavailable: psutil can
+    lose the child to a permission error or a race with exit, and killing a
+    healthy multi-GB install over a missing metric is worse than waiting.  The
+    absolute wall-clock ceiling still bounds the run.  This is the OPPOSITE
+    choice from scripts/_validate_verdict.py, which fails CLOSED — there,
+    waving a bad build through ships it; here, a false kill destroys a good
+    install.
+    """
+    if prev_io is None or cur_io is None:
+        return True
+    try:
+        return (cur_io.read_bytes > prev_io.read_bytes
+                or cur_io.write_bytes > prev_io.write_bytes)
+    except AttributeError:
+        return True
+
+
+def _child_io_counters(pid):
+    """Best-effort psutil io_counters() for `pid`; None when unavailable."""
+    try:
+        import psutil
+        return psutil.Process(pid).io_counters()
+    except Exception:
+        # psutil missing, process already gone, or a platform without
+        # io_counters — the caller treats None as "assume progress".
+        return None
+
+
 def _run_pip(args: list[str], progress_cb: Callable | None = None,
              timeout: int = 900,
              stall_timeout: int = 120,
@@ -665,6 +702,8 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
             'lines': [],
             'current_pkg': '',
         }
+        # Baseline for the byte-movement progress signal (pip_made_progress).
+        _prev_io = _child_io_counters(proc.pid)
 
         def _drain():
             assert proc.stdout is not None
@@ -692,19 +731,32 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
                 break
             now = _time.monotonic()
             # Heartbeat: tell the UI something is still happening.
+            #
+            # This drives the UI ONLY.  It must never touch last_line_t:
+            # heartbeat_s (20) < stall_timeout (120), so resetting the stall
+            # clock here made `now - last_line_t` unable to ever reach the
+            # threshold, and the proc.kill() below was UNREACHABLE for as long
+            # as that line existed.  The heartbeat proves the PROCESS is alive
+            # (poll() returned None); it says nothing about pip making
+            # PROGRESS.  Two different facts — see pip_made_progress().
             if (now - state['last_beat_t']) >= heartbeat_s:
                 pkg = state['current_pkg'] or 'packages'
                 if progress_cb:
                     progress_cb(f"pip: {pkg} (elapsed {int(now - t0)}s)")
                 state['last_beat_t'] = now
-                # A large binary wheel (torch, parler_tts) is silent BOTH
-                # during download (one "Downloading..." line then nothing)
-                # AND during extraction (pip unpacks 2.5 GB before printing
-                # "Successfully installed"). The process is provably alive at
-                # each heartbeat, so reset the stall clock here — otherwise the
-                # stall detector below kills a healthy multi-minute torch pull.
+
+            # Real progress signal.  A large binary wheel (torch, parler_tts)
+            # is silent on stdout during BOTH download and extraction
+            # (79dcd068), but it is moving bytes the whole time.  Byte
+            # movement — not the clock — is what keeps a healthy multi-minute
+            # pull alive here, which preserves that fix for a real reason.
+            _cur_io = _child_io_counters(proc.pid)
+            if pip_made_progress(_prev_io, _cur_io):
                 state['last_line_t'] = now
-            # Stall detection: no stdout line for stall_timeout seconds.
+            _prev_io = _cur_io
+
+            # Stall detection: no stdout line AND no bytes moved for
+            # stall_timeout seconds.  Reachable again.
             if (now - state['last_line_t']) >= stall_timeout:
                 proc.kill()
                 drain.join(timeout=2)
