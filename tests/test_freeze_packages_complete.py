@@ -511,27 +511,68 @@ def _bundle_reachable(first_party: set[str]) -> set[str]:
     return seen
 
 
-def test_main_py_first_party_imports_are_bundled():
+# Files that ship as SOURCE at the bundle root instead of being frozen
+# entry points.  cx_Freeze traces app.py; these it never sees, so
+# packages[] is the only thing that satisfies their imports.
+#   main.py         exec'd by app.py:_import_main_app()
+#   wamp_router.py  spawned as the WAMP router subprocess
+# Pinned by test_source_shipped_entry_points_are_still_just_these so the
+# list cannot drift out from under the guard.
+SOURCE_SHIPPED_ENTRY_POINTS = ('main.py', 'wamp_router.py')
+
+_BUNDLE_ROOT = os.path.join(_REPO, 'build', 'Nunba')
+
+
+@pytest.mark.parametrize('entry', SOURCE_SHIPPED_ENTRY_POINTS)
+def test_source_shipped_entry_point_imports_are_bundled(entry):
     """Gate 6, enforced mechanically instead of remembered.
 
-    main.py ships as source and is exec'd by app.py, so cx_Freeze never
-    traces it.  Anything it imports that packages[] does not reach is
-    absent from the frozen build: a hard ModuleNotFoundError at module
-    scope, or a silently dead feature inside a try/except.
+    These files ship as source, so cx_Freeze never traces them.  Anything
+    they import that packages[] does not reach is absent from the frozen
+    build: a hard ModuleNotFoundError at module scope, or a silently dead
+    feature inside a try/except.
     """
-    first_party = _first_party_packages()
-    reachable = _bundle_reachable(first_party)
-    imported = _first_party_imports(os.path.join(_REPO, 'main.py'), first_party)
+    path = os.path.join(_REPO, entry)
+    if not os.path.exists(path):
+        pytest.fail(
+            f"{entry} is listed in SOURCE_SHIPPED_ENTRY_POINTS but is missing "
+            "from the repo — was it moved?  Update the tuple to match."
+        )
 
-    missing = sorted(imported - reachable)
+    first_party = _first_party_packages()
+    missing = sorted(
+        _first_party_imports(path, first_party) - _bundle_reachable(first_party))
     assert not missing, (
-        "main.py imports first-party module(s) that will NOT be in the frozen "
+        f"{entry} imports first-party module(s) that will NOT be in the frozen "
         f"bundle: {missing}.\n"
-        "main.py is not a cx_Freeze entry point — it ships as source and is "
-        "exec'd by app.py:_import_main_app(), so its imports are never traced. "
-        "Add each module to build_exe_options['packages'] in "
-        "scripts/setup_freeze_nunba.py (CLAUDE.md Change Protocol, Gate 6).\n"
-        "At module scope this kills the whole Flask app and leaves the boot "
-        "stub serving 503s; inside a try/except it silently disables the "
-        "feature with no symptom at all."
+        f"{entry} is not a cx_Freeze entry point — it ships as source, so its "
+        "imports are never traced.  Add each module to "
+        "build_exe_options['packages'] in scripts/setup_freeze_nunba.py "
+        "(CLAUDE.md Change Protocol, Gate 6).\n"
+        "At module scope this kills the process that loads it — for main.py "
+        "that is the entire Flask app, leaving the boot stub serving 503s.  "
+        "Inside a try/except it silently disables the feature with no symptom."
+    )
+
+
+def test_source_shipped_entry_points_are_still_just_these():
+    """The pinned tuple must match what the bundle actually ships.
+
+    Without this, adding a third source-shipped .py would leave it
+    unguarded and the parametrized test above would still be green — the
+    guard would quietly stop covering the thing it exists to cover.
+
+    Skips when no local bundle is present (CI has no build/), so it is an
+    assertion where it can be one and silent where it cannot — never a
+    false failure.
+    """
+    if not os.path.isdir(_BUNDLE_ROOT):
+        pytest.skip('no local build/Nunba — nothing to compare against')
+
+    shipped = {f for f in os.listdir(_BUNDLE_ROOT) if f.endswith('.py')}
+    assert shipped == set(SOURCE_SHIPPED_ENTRY_POINTS), (
+        f"bundle root ships {sorted(shipped)} but SOURCE_SHIPPED_ENTRY_POINTS "
+        f"is {sorted(SOURCE_SHIPPED_ENTRY_POINTS)}.  Any .py at the bundle root "
+        "runs untraced by cx_Freeze; add it to the tuple so its imports are "
+        "checked too."
     )
