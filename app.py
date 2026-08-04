@@ -844,13 +844,80 @@ if getattr(sys, 'frozen', False):
         # stdout/stderr AND buffering=1: this is the crash-traceback capture, so
         # per-line flush (durability on a hard crash) is the whole point — we
         # only cap the file, we do NOT trade crash forensics for fewer syscalls.
+        _FROZEN_LOG_CAP = 20 * 1024 * 1024
+
+        class _CappedStream:
+            """Line-buffered stdout/stderr sink that rotates DURING a session.
+
+            The boot-time check below bounds this file ACROSS runs.  It cannot
+            bound it WITHIN one: after it runs, sys.stdout/sys.stderr stay bound
+            to the same append handle for the whole process lifetime, and
+            desktop Nunba runs for days.  Measured 2026-08-04: .old rotated at
+            31MB on the 09:31 boot, live file at 405MB ~8.5h later, with C: at
+            2.8GB free.  The PERF-2 drift-guard could not catch it — it asserts
+            the string 'os.replace(_frozen_log_path' is PRESENT, which stays
+            true for a rotation that never fires again.
+
+            Byte count is tracked in-process so the common path costs no extra
+            syscall.  Everything except write/close delegates to the live
+            handle via __getattr__, so fileno()/isatty()/encoding keep working
+            for subprocess spawns (llama-server, langchain) that inherit it.
+            Line buffering is preserved deliberately: this is the crash-
+            traceback capture, so per-line durability is the whole point.
+            """
+
+            _fh = None  # class attr: __getattr__ must not recurse pre-__init__
+
+            def __init__(self, path, cap):
+                self._path = path
+                self._cap = cap
+                self._fh = open(path, 'a', encoding='utf-8', buffering=1)
+                try:
+                    self._n = os.path.getsize(path)
+                except OSError:
+                    self._n = 0
+
+            def write(self, s):
+                n = self._fh.write(s)
+                self._n += len(s)
+                if self._n > self._cap:
+                    self._rotate()
+                return n
+
+            def _rotate(self):
+                # Close first: Windows refuses os.replace on an open handle.
+                # Any failure degrades to "keep appending" rather than losing
+                # the stream — a fat log beats no crash forensics.
+                try:
+                    self._fh.close()
+                except (OSError, ValueError):
+                    pass
+                try:
+                    os.replace(self._path, self._path + '.old')
+                except OSError:
+                    pass
+                try:
+                    self._fh = open(self._path, 'a', encoding='utf-8',
+                                    buffering=1)
+                    self._n = 0
+                except OSError:
+                    pass
+
+            def close(self):
+                try:
+                    self._fh.close()
+                except (OSError, ValueError):
+                    pass
+
+            def __getattr__(self, name):
+                return getattr(self._fh, name)
+
         try:
-            if os.path.getsize(_frozen_log_path) > 20 * 1024 * 1024:
+            if os.path.getsize(_frozen_log_path) > _FROZEN_LOG_CAP:
                 os.replace(_frozen_log_path, _frozen_log_path + '.old')
         except OSError:
             pass  # missing / read-only / locked → just open and append
-        _frozen_log = open(_frozen_log_path, 'a',
-                           encoding='utf-8', buffering=1)  # line-buffered: every \n hits disk
+        _frozen_log = _CappedStream(_frozen_log_path, _FROZEN_LOG_CAP)
         _atexit.register(_frozen_log.close)
         sys.stdout = _frozen_log
         sys.stderr = _frozen_log
