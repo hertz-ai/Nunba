@@ -37,16 +37,34 @@ logger = logging.getLogger(__name__)
 # but HTTP proxy to port 6777 is allowed if the service is running externally.
 _BUNDLED_MODE = bool(os.environ.get('NUNBA_BUNDLED') or getattr(sys, 'frozen', False))
 
-# Enable HARTOS tracing by default in Nunba.  AGENT_ENGINE is OPT-IN
-# (2026-04-19 regression fix): having it default-true caused a 244s cold-
-# boot stall in frozen builds because `init_agent_engine` transitively
-# pulls autogen → openai → langchain → transformers → sympy at import time,
-# and that chain races with Nunba's own `hartos-init` thread (below).  Flat
-# desktop users get no benefit from it (it's a hive/central-tier daemon),
-# so default-off is the correct default.  Hive deployments can set the env
-# var explicitly.  Smoking gun: HARTOS commit 41d99d6 ("master key changes
-# with embodied Ai integration", 2026-02-12) added the unconditional
-# init_agent_engine(app) call to init_social.
+# Enable HARTOS tracing by default in Nunba.
+#
+# HISTORY, and two parts of it no longer hold. AGENT_ENGINE was made OPT-IN by
+# a 2026-04-19 regression fix: default-true caused a 244s cold-boot stall in
+# frozen builds because `init_agent_engine` transitively pulled
+# autogen → openai → langchain → transformers → sympy at IMPORT time, racing
+# Nunba's own `hartos-init` thread below.  Smoking gun was HARTOS commit
+# 41d99d6 ("master key changes with embodied Ai integration", 2026-02-12),
+# which added the unconditional init_agent_engine(app) call to init_social.
+#
+# 1. The import chain is no longer eager.  HARTOS
+#    integrations/agent_engine/__init__.py now imports only `os` and `logging`
+#    at module scope; every heavy dependency sits inside a function, and a
+#    comment there says so explicitly.  The 244s stall is not a reason to keep
+#    this off any more, whatever else is.
+#
+# 2. "Flat desktop users get no benefit from it (it's a hive/central-tier
+#    daemon)" is not the architecture.  Any machine running Nunba or HARTOS is
+#    a hive node, flat included.  The FederatedAggregator that reports a node
+#    into hive-census lives in agent_engine, so a desktop with the engine off
+#    registers as a peer and never federates: it appears in the peer table and
+#    contributes nothing.  Measured on the live network, hive-census reported
+#    ONE node against 66 registered peers, for exactly this class of reason.
+#
+# What is still true is the gate in app.py: the engine is enabled only when an
+# LLM is configured, because agent_daemon's tick path uses speculative dispatch
+# and starting it without a reachable LLM emits errors.  That is a real
+# constraint and is left alone here.
 os.environ.setdefault('AGENT_LIGHTNING_ENABLED', 'true')
 
 # Configuration
