@@ -5286,6 +5286,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                                  container, not the orb's size, so squareness
                                  and resize-tracking still hold. */
                               size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
+                              /* #617a — how much of the canvas the RESTING orb
+                                 fills.  The canvas already matches the media
+                                 column (measured 478px canvas in a 479px
+                                 column at 1920x1080), but at the 0.25 default
+                                 the visible circle is only half of it, so in
+                                 this `w-[30%] h-full` pane (479x939) the orb
+                                 reads as a dot in an empty column — what the
+                                 user reported on 2026-08-05 and 08-06.
+                                 0.38 puts the resting circle at ~76% of the
+                                 column, matching the annotated target; the
+                                 peak envelope rescales itself to the
+                                 remaining headroom, so nothing clips.
+                                 PORTRAIT keeps 0.25: that pane is short and
+                                 wide, and the orb already fills it. */
+                              fill={window.innerWidth <= 768 ? 0.25 : 0.38}
                             />
                           )}
                         </div>
@@ -5318,6 +5333,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                                  container, not the orb's size, so squareness
                                  and resize-tracking still hold. */
                               size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
+                              /* #617a — how much of the canvas the RESTING orb
+                                 fills.  The canvas already matches the media
+                                 column (measured 478px canvas in a 479px
+                                 column at 1920x1080), but at the 0.25 default
+                                 the visible circle is only half of it, so in
+                                 this `w-[30%] h-full` pane (479x939) the orb
+                                 reads as a dot in an empty column — what the
+                                 user reported on 2026-08-05 and 08-06.
+                                 0.38 puts the resting circle at ~76% of the
+                                 column, matching the annotated target; the
+                                 peak envelope rescales itself to the
+                                 remaining headroom, so nothing clips.
+                                 PORTRAIT keeps 0.25: that pane is short and
+                                 wide, and the orb already fills it. */
+                              fill={window.innerWidth <= 768 ? 0.25 : 0.38}
                             />
                           </div>
                         </>

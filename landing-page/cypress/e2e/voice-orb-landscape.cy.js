@@ -157,6 +157,81 @@ describe('#592 voice orb fills the media column in landscape', () => {
   });
 
   /**
+   * #617a, second half — the VISIBLE orb, not the canvas box.
+   *
+   * WHY A SEPARATE TEST.  Every other measurement here reads
+   * getBoundingClientRect, which describes the <canvas> ELEMENT.  The user
+   * cannot see that element; they see the circle painted inside it.  Those
+   * two numbers were 478px and 239px on the shipped build — the canvas filled
+   * its column perfectly while the orb looked like a dot, and every existing
+   * assertion passed.  A DOM-only spec is structurally blind to this: it can
+   * only ever confirm the box, never the pixels.
+   *
+   * So read the pixels.  getImageData is available because the canvas is
+   * painted with same-origin drawing calls only (no external images), so it
+   * is never tainted.
+   *
+   * The ratio is deliberate rather than a pixel count: it must hold at any
+   * landscape size.  Pre-fix the lit extent was ~0.65 of the canvas
+   * (baseR = 0.25W => a circle half the canvas, plus the +70 glow); post-fix
+   * (fill = 0.38) it is ~0.91.  0.75 sits between the two, so this test is
+   * RED on the old build and GREEN on the new one.
+   */
+  it('#617a the painted orb — not just its canvas — fills the column', () => {
+    cy.get('canvas', {timeout: 20000}).should('exist');
+    assertLiveBundle();
+
+    cy.get('canvas').then(($c) => {
+      let el = null;
+      $c.each((_i, n) => {
+        const r = n.getBoundingClientRect();
+        if (!el || r.width * r.height >
+            el.getBoundingClientRect().width * el.getBoundingClientRect().height) el = n;
+      });
+
+      const w = el.width, h = el.height;          // backing store
+      const ctx = el.getContext('2d');
+      const data = ctx.getImageData(0, 0, w, h).data;
+      // Alpha 40/255: catches the ring and its fill, ignores the faintest
+      // tail of the outer glow so the number tracks the orb people see.
+      const A = 40;
+      let minX = w, maxX = -1, minY = h, maxY = -1;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (data[(y * w + x) * 4 + 3] > A) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      const litW = maxX - minX + 1, litH = maxY - minY + 1;
+      const report = {
+        canvasBacking: {w, h},
+        canvasCss: {w: Math.round(el.getBoundingClientRect().width)},
+        litExtent: {w: litW, h: litH},
+        litFraction: +(litW / w).toFixed(3),
+        alphaThreshold: A,
+      };
+      cy.writeFile('cypress/reports/617-orb-painted.json', report).then(() => {
+        cy.log(JSON.stringify(report));
+        expect(maxX, 'nothing was painted on the orb canvas').to.be.greaterThan(-1);
+        expect(
+          litW / w,
+          `painted orb spans ${litW}px of a ${w}px canvas ` +
+          `(${(100 * litW / w).toFixed(1)}%) — it must fill the canvas, not sit as a dot inside it`,
+        ).to.be.greaterThan(0.75);
+        // Still round: a non-square lit box means one axis got stretched.
+        expect(
+          litW / litH,
+          `painted orb ${litW}x${litH} — should stay circular`,
+        ).to.be.closeTo(1, 0.1);
+      });
+    });
+  });
+
+  /**
    * #617(a), the user's words: "orb width must equal the RIGHT PANEL width —
    * the same footprint the IDLE VIDEO fills in video mode. Switching modes must
    * not change the column's visual width."
@@ -195,6 +270,18 @@ describe('#592 voice orb fills the media column in landscape', () => {
             Math.abs(audio.col - video.col),
             `media column ${Math.round(audio.col)}px in audio vs ${Math.round(video.col)}px in video`,
           ).to.be.lessThan(2);
+
+          // Claim 2 — THE ONE THE USER ACTUALLY ASKED FOR, and until now the
+          // one this spec computed and then threw away.  `orbFillsColumn` was
+          // written to the report and never asserted, so "#617a passes" only
+          // ever meant "both modes use the same w-[30%] class" — a string
+          // shared by both branches, i.e. an assertion that cannot fail for
+          // the defect it is named after.  Assert the ratio.
+          expect(
+            audio.inner / audio.col,
+            `orb ${Math.round(audio.inner)}px in a ${Math.round(audio.col)}px column ` +
+            `(${(100 * audio.inner / audio.col).toFixed(1)}%) — the orb must fill the media column`,
+          ).to.be.greaterThan(0.95);
         });
       });
     });
@@ -277,6 +364,23 @@ describe('#592 voice orb fills the media column in landscape', () => {
         expect(
           spilling.map((r) => `${r.w}px:+${r.overflowsPx}`).join(' '),
           'icon strip overflows its container at these widths',
+        ).to.eq('');
+
+        // #617b's ACTUAL requirement: "the icon list sits UNDER the orb
+        // column".  `overlapFrac` was computed above and — like
+        // orbFillsColumn in #617a — only ever written to a report.  A spec
+        // that measures the right number and asserts a weaker one is not a
+        // guard.  Assert it at the wide viewports, where there is room for
+        // the strip to reach the column; below the 640px breakpoint the
+        // layout stacks and "under the column" stops being meaningful.
+        const wide = rows.filter((r) => r && r.w >= 1100 && r.underColumn);
+        expect(wide.length, 'expected measurements at >=1100px').to.be.greaterThan(0);
+        const notUnder = wide.filter((r) => r.underColumn.overlapFrac < 0.05);
+        expect(
+          notUnder
+            .map((r) => `${r.w}px: strip x${r.underColumn.stripX} vs column x${r.underColumn.columnX}`)
+            .join(' | '),
+          'the icon strip does not reach under the orb column at these widths',
         ).to.eq('');
       });
     });

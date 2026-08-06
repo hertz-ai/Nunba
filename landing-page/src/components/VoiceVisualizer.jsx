@@ -11,6 +11,11 @@ import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from
  * - 60fps, zero shadowBlur, zero canvas filter
  */
 const PTS = 180;
+// `rectified` value treated as a FULL peak excursion (it is unbounded above —
+// all bands saturated reaches ~200). Calibrated at 100 so the default
+// fill=0.25 reproduces the pre-#617 amplitude to within ~2%; see the comment
+// at the oR[] assignment.
+const PEAK_FULL = 100;
 
 // Historical default edge, used only when the container cannot be measured and
 // the caller gave no explicit size.  `size` is NO LONGER defaulted to this:
@@ -72,7 +77,7 @@ export function computeOrbEdge(containerW, containerH, size, canvasMax) {
   return Math.max(1, Math.floor(Math.min.apply(null, bounds)));
 }
 
-const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax }) {
+const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, fill }) {
   // `size` is an optional CAP, not the orb's size.  Deliberately NOT defaulted
   // (it used to be `size || 200`): the orb is driven by the box it lives in,
   // and a default would cap every container-driven consumer at 200px.
@@ -82,6 +87,22 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
   // UNCHANGED; Demopage's media column passes '100%' so the orb fills the
   // column and matches the idle video's footprint (no empty padding).
   canvasMax = canvasMax || '80%';
+  // Fraction of the canvas the RESTING orb occupies (radius = W * fill, so the
+  // visible circle is 2*fill of the canvas edge).
+  //
+  // WHY THIS IS A PROP AND NOT A CONSTANT.  0.25 — a resting orb at HALF the
+  // canvas — is right for a small pane: the other half is headroom the
+  // waveform needs when speaking.  But Demopage's media column is `w-[30%]
+  // h-full` (measured 479x939 at 1920x1080), so the same 0.25 puts a 239px
+  // circle in a 939px-tall void and the orb reads as a dot in an empty column
+  // (#617, user screenshots 2026-08-05/06).  A bigger pane wants a bigger
+  // resting orb, and only the CALLER knows how big its pane is.
+  //
+  // Default 0.25 keeps every existing consumer byte-identical — LightYourHART
+  // (size={100}), VoiceOrbPage, and the Hevolve web build, whose copy of this
+  // component the user confirmed renders correctly.  ONE implementation, the
+  // caller picks the proportion; no second orb.
+  fill = (typeof fill === 'number' && fill > 0 && fill < 0.5) ? fill : 0.25;
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const analyserRef = useRef(null);
@@ -131,7 +152,18 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
     const ctx = canvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
     const cx = W / 2, cy = H / 2;
-    const baseR = W * 0.25;
+    const baseR = W * fill;
+    // Outermost radius the orb may reach. 0.49 (not 0.5) keeps the stroke and
+    // the outer gradient inside the backing store instead of shaving them off
+    // at the edge.
+    const maxR = W * 0.49;
+    // Peak headroom in px. Derived from what is ACTUALLY left between the
+    // resting orb and the canvas edge, so the speaking envelope fits at ANY
+    // `fill`. The old form — `rectified * (baseR / 100)` — scaled the
+    // excursion off baseR alone and so had no idea where the edge was: at
+    // rectified ~200 (all bands saturated) it asked for 0.75W on a canvas
+    // whose half-extent is 0.5W, i.e. it CLIPPED. This cannot.
+    const peakHeadroom = Math.max(0, maxR - baseR);
     const freqData = new Uint8Array(256);
     const s = stateRef.current;
     const oR = outerR.current;
@@ -208,8 +240,14 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
           s.trebleCur * 16 * Math.sin(11 * a - t * 1.8 * d);
         const soft = 8;
         const rectified = (wave * wave) / (Math.abs(wave) + soft);
-        // Scale amplitude relative to canvas size
-        oR[i] = baseR + rectified * (baseR / 100);
+        // Map the excursion into the headroom that actually exists.
+        // PEAK_FULL=100 is calibrated so the DEFAULT fill=0.25 reproduces the
+        // previous amplitude to within ~2%: old peak at rectified 88 was
+        // 0.25W + 88*(0.25W/100) = 0.470W; new is 0.25W + 0.88*0.24W = 0.461W.
+        // Existing consumers therefore look unchanged, while a larger `fill`
+        // automatically gets a proportionally gentler excursion instead of
+        // saturating against the edge.
+        oR[i] = baseR + Math.min(rectified / PEAK_FULL, 1) * peakHeadroom;
         if (oR[i] > maxPeakR) maxPeakR = oR[i];
       }
 
@@ -275,7 +313,11 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax })
 
     render();
     return function() { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [isActive, connectAnalyser]);
+    // `fill` sizes baseR + peakHeadroom, both captured by the render closure,
+    // so a change must re-run this effect or the orb keeps drawing at the old
+    // proportion (the stale-closure shape that made the echo gate inert in
+    // 328ae594).
+  }, [isActive, connectAnalyser, fill]);
 
   useEffect(function() {
     return function() {
