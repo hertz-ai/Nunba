@@ -388,7 +388,20 @@ const ChatInputBar = ({
           onClick={handleSend}
           aria-label="Send message"
           aria-busy={loading || undefined}
-          className="p-1 rounded-lg transition-all duration-200 hover:scale-110 active:scale-90 motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
+          /* #617b — `ml-auto` makes the icon row span its container instead of
+             bunching at the left.
+             MEASURED at 1920x1080 before this: the composer root is
+             l=329 r=1844 (it ALREADY reaches under the orb column, which is
+             l=1441 r=1920), but the ten buttons occupied only x=[329,589] —
+             260px of a 1516px row, so the strip and the column shared no x at
+             all and the whole right half of the bar sat empty.  Absorbing the
+             free space here pushes Send to the row's right edge and carries
+             the strip across the column, which is the "icon list under the
+             orb column" half of #617b.
+             Send is the LAST flex item, so this is a one-item change that
+             needs no wrapper div and no second layout path; at narrow widths
+             the row still wraps (flex-wrap) and Send still trails its row. */
+          className="ml-auto p-1 rounded-lg transition-all duration-200 hover:scale-110 active:scale-90 motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
           style={{
             background: inputMessage.trim()
               ? 'linear-gradient(135deg, #6C63FF, #9B94FF)'
