@@ -366,21 +366,28 @@ describe('#592 voice orb fills the media column in landscape', () => {
           'icon strip overflows its container at these widths',
         ).to.eq('');
 
-        // #617b's ACTUAL requirement: "the icon list sits UNDER the orb
-        // column".  `overlapFrac` was computed above and — like
-        // orbFillsColumn in #617a — only ever written to a report.  A spec
-        // that measures the right number and asserts a weaker one is not a
-        // guard.  Assert it at the wide viewports, where there is room for
-        // the strip to reach the column; below the 640px breakpoint the
-        // layout stacks and "under the column" stops being meaningful.
+        // #617b's ACTUAL requirement: "the WHOLE icon list sits UNDER the
+        // orb column".  The previous bar here — bbox overlapFrac >= 0.05 —
+        // was satisfiable by the ml-auto Send button ALONE: Send sat under
+        // the column, the ten icons stayed bunched at the far left, and the
+        // strip's bounding box spanned the gap, scoring 0.27.  Verified on
+        // the 2026-08-07 install: the shipped layout passed this spec while
+        // visibly contradicting the requirement.  A bar the wrong layout
+        // clears is not a guard, so the assertion is now CONTAINMENT: at
+        // wide viewports every button must sit inside the column's x-range
+        // (±8px for rounding).  Below 1100px the column is narrower than
+        // the strip and containment is geometrically impossible; those
+        // widths stay report-only, as before.
         const wide = rows.filter((r) => r && r.w >= 1100 && r.underColumn);
         expect(wide.length, 'expected measurements at >=1100px').to.be.greaterThan(0);
-        const notUnder = wide.filter((r) => r.underColumn.overlapFrac < 0.05);
+        const notUnder = wide.filter((r) =>
+          r.underColumn.stripX[0] < r.underColumn.columnX[0] - 8
+          || r.underColumn.stripX[1] > r.underColumn.columnX[1] + 8);
         expect(
           notUnder
             .map((r) => `${r.w}px: strip x${r.underColumn.stripX} vs column x${r.underColumn.columnX}`)
             .join(' | '),
-          'the icon strip does not reach under the orb column at these widths',
+          'the whole icon strip must sit INSIDE the orb column x-range at these widths',
         ).to.eq('');
       });
     });

@@ -161,7 +161,15 @@ const ChatInputBar = ({
         </div>
       )}
 
-      <div className="flex flex-wrap sm:flex-nowrap items-center gap-y-1.5 w-[95%] relative ml-1">
+      {/* #617b — `md:justify-end` right-aligns the WHOLE icon strip once the
+          orb column exists beside the chat (Demopage flips to two-pane at
+          `md:`), so the strip lands under the column instead of bunching at
+          the far left.  Verified live 2026-08-07 before this: only Send
+          (ml-auto) reached the column; the ten icons stayed at x≈[329,589]
+          while the column was x≈[1441,1920].  Below `md:` the row keeps its
+          stacked-layout behaviour (icons left, Send pushed right, flex-wrap
+          below `sm:`) — untouched. */}
+      <div className="flex flex-wrap sm:flex-nowrap items-center md:justify-end gap-y-1.5 w-[95%] relative ml-1">
         {/* /h Agent mention dropdown */}
         {showAgentMentionList && (
           <div className="absolute bottom-full left-0 w-64 max-h-48 overflow-y-auto bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 mb-1">
@@ -388,20 +396,15 @@ const ChatInputBar = ({
           onClick={handleSend}
           aria-label="Send message"
           aria-busy={loading || undefined}
-          /* #617b — `ml-auto` makes the icon row span its container instead of
-             bunching at the left.
-             MEASURED at 1920x1080 before this: the composer root is
-             l=329 r=1844 (it ALREADY reaches under the orb column, which is
-             l=1441 r=1920), but the ten buttons occupied only x=[329,589] —
-             260px of a 1516px row, so the strip and the column shared no x at
-             all and the whole right half of the bar sat empty.  Absorbing the
-             free space here pushes Send to the row's right edge and carries
-             the strip across the column, which is the "icon list under the
-             orb column" half of #617b.
-             Send is the LAST flex item, so this is a one-item change that
-             needs no wrapper div and no second layout path; at narrow widths
-             the row still wraps (flex-wrap) and Send still trails its row. */
-          className="ml-auto p-1 rounded-lg transition-all duration-200 hover:scale-110 active:scale-90 motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
+          /* #617b — `ml-auto` pushes Send to the right edge in the STACKED
+             (<md) layout only.  At `md:` and up it must yield (`md:ml-0`):
+             an auto margin absorbs the row's free space BEFORE
+             justify-content is consulted, so leaving it active would pin the
+             ten icons back at the far left and silently defeat the
+             container's `md:justify-end` — which is exactly the layout that
+             shipped on 2026-08-07 (Send under the orb column, icons bunched
+             left, empty middle) when ml-auto was the ONLY alignment. */
+          className="ml-auto md:ml-0 p-1 rounded-lg transition-all duration-200 hover:scale-110 active:scale-90 motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
           style={{
             background: inputMessage.trim()
               ? 'linear-gradient(135deg, #6C63FF, #9B94FF)'
