@@ -3864,6 +3864,7 @@ from routes.spa_fallback import (  # noqa: E402
     SPA_SHELL_CACHE_CONTROL,
     first_path_segment,
     is_asset_path,
+    is_spa_page_override,
 )
 
 # Landing-Page routes - redirect to hevolve.ai when online, /local when offline
@@ -4372,8 +4373,12 @@ def handle_404(e):
     path = request.path
     first_segment = first_path_segment(path)
 
-    # Return 404 for API routes
-    if first_segment in API_ENDPOINTS:
+    # Return 404 for API routes — UNLESS the exact path is an SPA page that
+    # merely shares its first segment with an API namespace.  `/agents` is the
+    # Agents Hub page while /agents/sync etc. are real APIs; classifying the
+    # bare page path as API served raw JSON on deep link / F5 (task #628,
+    # found live by route-smoke.cy.js 2026-08-07).
+    if first_segment in API_ENDPOINTS and not is_spa_page_override(path):
         return jsonify({'error': 'API endpoint not found', 'path': path}), 404
 
     # A missing asset is a missing FILE, not a client-side route.  Answering it

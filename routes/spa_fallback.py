@@ -27,6 +27,24 @@ source of truth, not a second copy of the rule.
 # there is no client-side route it could still resolve to.
 ASSET_PREFIXES = frozenset({'static', 'fonts'})
 
+# Paths that are BOTH an API namespace and an SPA page — the same first
+# segment speaks two vocabularies.  `agents` sits in main.API_ENDPOINTS
+# because real top-level APIs live under it (/agents/sync, /agents/migrate,
+# /agents/contact — chatbot_routes.py:4478+), so a missing /agents/* call
+# must 404 as JSON, not cache HTML under an API URL (the #618 trap).  But the
+# EXACT path /agents is the Agents Hub PAGE (MainRoute.js), and classifying
+# it as API meant a deep link or F5 on the hub showed raw
+# {"error":"API endpoint not found"} — found live by route-smoke.cy.js on
+# 2026-08-07 (task #628).  The override wins only on the exact page path;
+# everything deeper keeps the API rule.
+SPA_PAGE_OVERRIDES = frozenset({'/agents'})
+
+
+def is_spa_page_override(path):
+    """True when `path` is exactly a page that shares its prefix with APIs."""
+    return (path or '').rstrip('/') in SPA_PAGE_OVERRIDES
+
+
 # Cache policy for every response that carries the SPA SHELL (index.html).
 # `no-cache` = the client may store it but MUST revalidate before reuse; the
 # shell Response carries no validators, so revalidation is a full refetch of

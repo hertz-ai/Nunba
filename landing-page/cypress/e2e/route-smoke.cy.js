@@ -26,6 +26,12 @@ const APP = Cypress.env('APP_URL') || Cypress.config('baseUrl') || 'http://127.0
 
 const ROUTES = [
   '/local',
+  // /agents is the task #628 regression proof: the bare path is the Agents
+  // Hub PAGE while /agents/sync etc. are real APIs.  handle_404 used to
+  // classify the page path as API and answer raw JSON on deep link / F5;
+  // SPA_PAGE_OVERRIDES (routes/spa_fallback.py) now carves out the exact
+  // page path.  If this visit ever fails on content-type again, that carve-
+  // out regressed.
   '/agents',
   '/voice-orb',
   '/social',
@@ -64,8 +70,21 @@ describe('route smoke — every desktop route mounts without the error banner', 
       // The shell always serves; the question is whether React mounted the
       // route.  #root gaining children is the mount signal.
       cy.get('#root', {timeout: 30000}).children().should('have.length.greaterThan', 0);
+      // A ONE-SHOT innerText read here raced the route's first paint: the
+      // 2026-08-07 run scored textLen 0 on 16 routes that real-browser
+      // screenshots prove render fully (mount fires before content paints,
+      // and route guards render an empty wrapper for a beat).  `should` with
+      // a callback RETRIES until the assertion holds or times out — the
+      // Cypress-native way to wait for content the way a user does.
+      cy.get('body', {timeout: 20000}).should(($b) => {
+        expect($b.text().trim().length, `${route} visible text`).to.be.greaterThan(20);
+      });
       cy.document().then((doc) => {
-        const text = doc.body.innerText || '';
+        // textContent, not innerText: in the headless AUT iframe innerText
+        // computes as '' for content that textContent (and real screenshots)
+        // prove is present — the 2026-08-07 run reported text=0 on 16 routes
+        // whose retrying textContent assertion had just PASSED.
+        const text = (doc.body.textContent || '').trim();
         const row = {
           route,
           ms: Date.now() - t0,
@@ -75,7 +94,6 @@ describe('route smoke — every desktop route mounts without the error banner', 
         results.push(row);
         cy.log(JSON.stringify(row));
         expect(row.errorBanner, `${route} shows the ApiErrorBanner`).to.eq(false);
-        expect(row.textLen, `${route} rendered no visible text`).to.be.greaterThan(20);
       });
     });
   });
