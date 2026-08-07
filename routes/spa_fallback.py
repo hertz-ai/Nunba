@@ -27,6 +27,19 @@ source of truth, not a second copy of the rule.
 # there is no client-side route it could still resolve to.
 ASSET_PREFIXES = frozenset({'static', 'fonts'})
 
+# Cache policy for every response that carries the SPA SHELL (index.html).
+# `no-cache` = the client may store it but MUST revalidate before reuse; the
+# shell Response carries no validators, so revalidation is a full refetch of
+# ~20KB.  Without this the shell has NO Cache-Control at all, and Chromium
+# (browser AND the installed WebView2) heuristically reuses a cached shell
+# whose old hash-named bundle still exists on disk after an upgrade — the app
+# then executes the PREVIOUS version's JS with zero errors.  Measured live
+# 2026-08-07: a fresh install served main.e6517cb7.js, while Chrome executed
+# main.430a6f8a.js from a cached shell.  Hash-named /static/* assets are
+# immutable by construction and deliberately keep their default caching —
+# only the shell must always revalidate.
+SPA_SHELL_CACHE_CONTROL = 'no-cache'
+
 
 def first_path_segment(path):
     """``/static/js/app.js`` -> ``'static'``; ``/`` and ``''`` -> ``''``."""

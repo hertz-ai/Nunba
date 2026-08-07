@@ -3860,7 +3860,11 @@ API_ENDPOINTS = {
 # Companion rule to API_ENDPOINTS: paths that must 404 instead of falling back
 # to the SPA shell.  Lives in routes/spa_fallback.py rather than here so it can
 # be unit-tested without importing main (which pulls in torch/sympy/transformers).
-from routes.spa_fallback import first_path_segment, is_asset_path  # noqa: E402
+from routes.spa_fallback import (  # noqa: E402
+    SPA_SHELL_CACHE_CONTROL,
+    first_path_segment,
+    is_asset_path,
+)
 
 # Landing-Page routes - redirect to hevolve.ai when online, /local when offline
 @app.route('/')
@@ -3976,7 +3980,12 @@ def _render_spa_index(build_dir: str):
         )
         return None
     html_text = _inject_guest_id_into_html(html_text)
-    return Response(html_text, 200, content_type='text/html; charset=utf-8')
+    resp = Response(html_text, 200, content_type='text/html; charset=utf-8')
+    # The shell must never be reused without revalidation — a cached shell
+    # keeps executing the previous build's bundle after an upgrade (see
+    # routes.spa_fallback.SPA_SHELL_CACHE_CONTROL for the measured incident).
+    resp.headers['Cache-Control'] = SPA_SHELL_CACHE_CONTROL
+    return resp
 
 
 @app.route('/local')
@@ -4336,7 +4345,9 @@ def serve_static_file(path):
     rendered = _render_spa_index(LANDING_PAGE_BUILD_DIR)
     if rendered is not None:
         return rendered
-    return send_from_directory(LANDING_PAGE_BUILD_DIR, 'index.html')
+    raw = send_from_directory(LANDING_PAGE_BUILD_DIR, 'index.html')
+    raw.headers['Cache-Control'] = SPA_SHELL_CACHE_CONTROL
+    return raw
 
 # Static file routes (must be explicit to not conflict with API routes)
 @app.route('/static/<path:path>')
