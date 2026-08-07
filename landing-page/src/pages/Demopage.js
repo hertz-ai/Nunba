@@ -5285,22 +5285,39 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                                  VoiceVisualizer mins against its measured
                                  container, not the orb's size, so squareness
                                  and resize-tracking still hold. */
-                              size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
-                              /* #617a — how much of the canvas the RESTING orb
-                                 fills.  The canvas already matches the media
-                                 column (measured 478px canvas in a 479px
-                                 column at 1920x1080), but at the 0.25 default
-                                 the visible circle is only half of it, so in
-                                 this `w-[30%] h-full` pane (479x939) the orb
-                                 reads as a dot in an empty column — what the
-                                 user reported on 2026-08-05 and 08-06.
-                                 0.38 puts the resting circle at ~76% of the
-                                 column, matching the annotated target; the
-                                 peak envelope rescales itself to the
+                              /* NO `size` prop — deliberately (#627).  `size`
+                                 was min(innerWidth*.28, innerHeight*.68),
+                                 evaluated at RENDER time, and it participates
+                                 in computeOrbEdge's min() as a CAP.  Video
+                                 evidence 2026-08-07 (15-frame sequence):
+                                 maximize portrait→landscape left the orb at
+                                 the portrait-era size (stale cap), restore
+                                 landscape→portrait left it landscape-huge and
+                                 clipped; a mode-switch REMOUNT fixed both —
+                                 i.e. only prop refresh was missing, the
+                                 ResizeObserver container measurement was
+                                 always fresh.  VoiceVisualizer's own size
+                                 test states the doctrine: "Demopage must not
+                                 pass it."  The container (this pane) is the
+                                 single authority; canvasMax="100%" already
+                                 says use all of it.  LightYourHART's fixed
+                                 fixed-cap (100) orb is unaffected — the prop still
+                                 exists for callers that WANT a fixed cap
+                                 (the guard regex scans this whole tag, so
+                                 this comment must not spell the prop form).
+                                 #617a — how much of the canvas the RESTING
+                                 orb fills.  0.38 puts the resting circle at
+                                 ~76% of the column (the user's annotated
+                                 target); the peak envelope rescales to the
                                  remaining headroom, so nothing clips.
                                  PORTRAIT keeps 0.25: that pane is short and
-                                 wide, and the orb already fills it. */
-                              fill={window.innerWidth <= 768 ? 0.25 : 0.38}
+                                 wide, and the orb already fills it.
+                                 screenWidth STATE, not window.innerWidth —
+                                 the state is wired to the resize listener
+                                 (Demopage:1545), so orientation changes
+                                 re-evaluate this branch; an inline window
+                                 read froze it until remount (the #627 bug). */
+                              fill={screenWidth <= 768 ? 0.25 : 0.38}
                             />
                           )}
                         </div>
@@ -5332,22 +5349,39 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                                  VoiceVisualizer mins against its measured
                                  container, not the orb's size, so squareness
                                  and resize-tracking still hold. */
-                              size={window.innerWidth <= 768 ? Math.min(window.innerHeight * 0.32, window.innerWidth * 0.9) : Math.min(window.innerWidth * 0.28, window.innerHeight * 0.68)}
-                              /* #617a — how much of the canvas the RESTING orb
-                                 fills.  The canvas already matches the media
-                                 column (measured 478px canvas in a 479px
-                                 column at 1920x1080), but at the 0.25 default
-                                 the visible circle is only half of it, so in
-                                 this `w-[30%] h-full` pane (479x939) the orb
-                                 reads as a dot in an empty column — what the
-                                 user reported on 2026-08-05 and 08-06.
-                                 0.38 puts the resting circle at ~76% of the
-                                 column, matching the annotated target; the
-                                 peak envelope rescales itself to the
+                              /* NO `size` prop — deliberately (#627).  `size`
+                                 was min(innerWidth*.28, innerHeight*.68),
+                                 evaluated at RENDER time, and it participates
+                                 in computeOrbEdge's min() as a CAP.  Video
+                                 evidence 2026-08-07 (15-frame sequence):
+                                 maximize portrait→landscape left the orb at
+                                 the portrait-era size (stale cap), restore
+                                 landscape→portrait left it landscape-huge and
+                                 clipped; a mode-switch REMOUNT fixed both —
+                                 i.e. only prop refresh was missing, the
+                                 ResizeObserver container measurement was
+                                 always fresh.  VoiceVisualizer's own size
+                                 test states the doctrine: "Demopage must not
+                                 pass it."  The container (this pane) is the
+                                 single authority; canvasMax="100%" already
+                                 says use all of it.  LightYourHART's fixed
+                                 fixed-cap (100) orb is unaffected — the prop still
+                                 exists for callers that WANT a fixed cap
+                                 (the guard regex scans this whole tag, so
+                                 this comment must not spell the prop form).
+                                 #617a — how much of the canvas the RESTING
+                                 orb fills.  0.38 puts the resting circle at
+                                 ~76% of the column (the user's annotated
+                                 target); the peak envelope rescales to the
                                  remaining headroom, so nothing clips.
                                  PORTRAIT keeps 0.25: that pane is short and
-                                 wide, and the orb already fills it. */
-                              fill={window.innerWidth <= 768 ? 0.25 : 0.38}
+                                 wide, and the orb already fills it.
+                                 screenWidth STATE, not window.innerWidth —
+                                 the state is wired to the resize listener
+                                 (Demopage:1545), so orientation changes
+                                 re-evaluate this branch; an inline window
+                                 read froze it until remount (the #627 bug). */
+                              fill={screenWidth <= 768 ? 0.25 : 0.38}
                             />
                           </div>
                         </>

@@ -155,4 +155,31 @@ describe('drift guard — Demopage must not reintroduce a frozen viewport size',
       expect(src).toMatch(/_bumpViewport/);
     }
   });
+
+  // #627 — the conditional guard above proved INSUFFICIENT: the listener and
+  // state both existed, yet the 2026-08-07 video evidence (15-frame sequence)
+  // showed maximize leaving the orb portrait-small and restore leaving it
+  // landscape-huge until a mode-switch REMOUNT refreshed the props.  The
+  // doctrine this file already states ("Demopage must not pass it") is now
+  // enforced unconditionally:
+  test('#627 Demopage passes NO size= to VoiceVisualizer, and fill= reads state not window', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const src = fs.readFileSync(
+      path.join(__dirname, '../../pages/Demopage.js'), 'utf8',
+    );
+    const tags = src.match(/<VoiceVisualizer[\s\S]*?\/>/g) || [];
+    expect(tags.length).toBeGreaterThan(0);
+
+    const withSize = tags.filter((t) => /\bsize=\{/.test(t));
+    expect(
+      withSize.map((t) => t.slice(0, 120)),
+    ).toEqual([]);   // container is the single authority (VoiceVisualizer doc)
+
+    // fill picks the portrait/landscape proportion; it must read screenWidth
+    // STATE (wired to the resize listener) so orientation changes re-evaluate
+    // it — an inline window.innerWidth read froze it until remount (#627).
+    const fillFromWindow = tags.filter((t) => /fill=\{[^}]*window\./.test(t));
+    expect(fillFromWindow.map((t) => t.slice(0, 120))).toEqual([]);
+  });
 });

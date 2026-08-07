@@ -150,20 +150,15 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const W = canvas.width, H = canvas.height;
-    const cx = W / 2, cy = H / 2;
-    const baseR = W * fill;
-    // Outermost radius the orb may reach. 0.49 (not 0.5) keeps the stroke and
-    // the outer gradient inside the backing store instead of shaving them off
-    // at the edge.
-    const maxR = W * 0.49;
-    // Peak headroom in px. Derived from what is ACTUALLY left between the
-    // resting orb and the canvas edge, so the speaking envelope fits at ANY
-    // `fill`. The old form — `rectified * (baseR / 100)` — scaled the
-    // excursion off baseR alone and so had no idea where the edge was: at
-    // rectified ~200 (all bands saturated) it asked for 0.75W on a canvas
-    // whose half-extent is 0.5W, i.e. it CLIPPED. This cannot.
-    const peakHeadroom = Math.max(0, maxR - baseR);
+    // Geometry is derived INSIDE render(), per frame — not here (#627).  The
+    // canvas attrs (edge*2) change whenever the measured edge changes: on the
+    // first layout measure (initial state is the 200px fallback now that
+    // Demopage passes no `size`), and on every orientation resize.  Setting
+    // width/height CLEARS the canvas, and a loop that captured W/cx/baseR at
+    // effect time keeps painting the OLD geometry into the NEW store —
+    // measured 2026-08-07: a 306px ring at the 400px-era centre inside a
+    // 956px canvas (32%).  The comment further down always CLAIMED per-frame
+    // reads; the code had drifted from its own doc.
     const freqData = new Uint8Array(256);
     const s = stateRef.current;
     const oR = outerR.current;
@@ -172,6 +167,23 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
 
     function render() {
       animRef.current = requestAnimationFrame(render);
+      // Per-frame geometry (#627): W/H track the CURRENT backing store, so a
+      // canvas resized by the layout measure re-rasterises at the right size
+      // and centre on the very next frame.
+      const W = canvas.width, H = canvas.height;
+      const cx = W / 2, cy = H / 2;
+      const baseR = W * fill;
+      // Outermost radius the orb may reach. 0.49 (not 0.5) keeps the stroke
+      // and the outer gradient inside the backing store instead of shaving
+      // them off at the edge.
+      const maxR = W * 0.49;
+      // Peak headroom in px. Derived from what is ACTUALLY left between the
+      // resting orb and the canvas edge, so the speaking envelope fits at ANY
+      // `fill`. The old form — `rectified * (baseR / 100)` — scaled the
+      // excursion off baseR alone and so had no idea where the edge was: at
+      // rectified ~200 (all bands saturated) it asked for 0.75W on a canvas
+      // whose half-extent is 0.5W, i.e. it CLIPPED. This cannot.
+      const peakHeadroom = Math.max(0, maxR - baseR);
       s.time += 0.02;
       // Reconnect if audio element changed (new pre-synth line)
       if (isActive && audioRef && audioRef.current && lastAudioEl.current !== audioRef.current) {
@@ -366,10 +378,15 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
   // measurement in the layout phase makes the correct size the FIRST thing
   // drawn, so there is no visible resize step.
   useLayoutEffect(() => {
-    const el = boxRef.current;
-    if (!el) return undefined;
+    if (!boxRef.current) return undefined;
 
     const measure = () => {
+      // Read the ref FRESH on every call, never a closure-captured node
+      // (#627): if React swaps the wrapper between effect runs, a captured
+      // node keeps reporting the rect of a detached element — the stale-
+      // reference shape from #621.
+      const el = boxRef.current;
+      if (!el) return;
       const r = el.getBoundingClientRect();
       // Guard a 0/unmeasurable box (parent with indefinite height, display:none,
       // pre-layout first frame): fall back to `size` rather than collapsing to
@@ -379,15 +396,23 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
     };
 
     measure();
+    // Window resize listener ALWAYS, not only when ResizeObserver is missing
+    // (#627).  RO is layout-driven and remains primary, but the 2026-08-07
+    // video evidence showed orientation changes in the desktop WebView leaving
+    // the orb at the previous orientation's size until a remount; a belt-and-
+    // braces window listener costs one no-op setEdge when RO already handled
+    // it, and covers any embedder where RO delivery lags the resize.
+    window.addEventListener('resize', measure);
     if (typeof ResizeObserver === 'undefined') {
-      // jsdom / very old browsers: fall back to the window event so the value
-      // still tracks resize instead of freezing (the original defect).
-      window.addEventListener('resize', measure);
+      // jsdom / very old browsers: the window event above is the only tracker.
       return () => window.removeEventListener('resize', measure);
     }
     const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
+    ro.observe(boxRef.current);
+    return () => {
+      window.removeEventListener('resize', measure);
+      ro.disconnect();
+    };
   }, [size, canvasMax]);
 
   return React.createElement('div', {
