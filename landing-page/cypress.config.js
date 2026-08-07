@@ -36,6 +36,22 @@ module.exports = defineConfig({
     },
 
     setupNodeEvents(on, config) {
+      // Fake media devices — Demopage AUTO-STARTS the microphone ~4s after
+      // mount (the voice-first bootstrap poll, Demopage.js:516).  Against a
+      // LIVE backend that getUserMedia raises Chrome's permission prompt,
+      // which freezes the renderer: measured 2026-08-07, chat-agent-selection
+      // + chat-llm-status wedged >45min mid-spec with 45s CDP timeouts.  The
+      // fake flags auto-grant a synthetic mic so the prompt never exists.
+      // Harmless in CI (stubbed backends never reach getUserMedia) and for
+      // every other spec.
+      on('before:browser:launch', (browser = {}, launchOptions) => {
+        if (browser.family === 'chromium') {
+          launchOptions.args.push('--use-fake-ui-for-media-stream');
+          launchOptions.args.push('--use-fake-device-for-media-stream');
+        }
+        return launchOptions;
+      });
+
       // Mochawesome reporter
       require('cypress-mochawesome-reporter/plugin')(on);
 

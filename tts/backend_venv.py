@@ -555,7 +555,14 @@ def invoke_in_venv(
 # staleness if some other path mutates a venv without saying so.
 #
 # Same fix shape as #597 (/api/admin/models 23.08s -> 0.24s, llama/llama_config.py).
-_VENV_PROBE_TTL_S = 60.0
+#
+# 60s proved too small a ceiling in practice (#608): the admin models page and
+# TTS settings both re-hit /tts/engines minutes apart, so users kept landing on
+# the 13.5-43s cold path.  The invalidation audit for #608 confirmed every venv
+# mutation path calls invalidate_venv_probe_cache() explicitly, so the TTL
+# carries no correctness weight — 10 minutes keeps the worst silent-mutation
+# staleness bounded while making repeat visits warm.
+_VENV_PROBE_TTL_S = 600.0
 
 # (backend, probe_module) -> (monotonic_stamp, healthy).  ABSENCE means "never
 # probed" — deliberately not a 0.0 stamp: time.monotonic() is uptime-based, so
