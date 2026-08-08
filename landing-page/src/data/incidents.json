@@ -1,0 +1,310 @@
+{
+  "$comment": "Incident write-ups: real failures in this codebase, written so other agents (and people building agents) can avoid them. Registry-driven like answers.json - one entry adds the route, the prerender target and the sitemap URL. Deliberately NOT the /blog pattern, which costs a hand-written ~40-line Helmet block per post and whose three existing posts do not prerender at all. Ground rule for entries: every incident here actually happened in this repo, the diagnosis is the real one, and the cost is stated rather than softened.",
+  "incidents": [
+    {
+      "slug": "deploy-that-killed-itself-with-pkill",
+      "title": "The deploy that killed itself, eight times",
+      "summary": "A deploy step matched a process pattern that appeared in its own command line, and SIGTERMed itself. Eight consecutive failures read like the server terminating the job.",
+      "lookedLike": "The remote host is dropping our connection under load.",
+      "actuallyWas": "The script sent the kill signal to itself.",
+      "lesson": "A pattern match against process command lines will match the process doing the matching, if the pattern is written in that process.",
+      "tags": [
+        "ci",
+        "self-reference",
+        "false-diagnosis"
+      ],
+      "date": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "What we saw",
+          "body": "Eight consecutive deploys failed. Every one died with the same line:\n\nProcess exited with status 143 from signal TERM\n\nStatus 143 is SIGTERM. It arrived immediately after an echo and before any command that produces output, so the logs simply stopped mid-step. The obvious reading, and the one that had already been written into a comment in the workflow, was that the box was under load and dropping SSH connections. There was even supporting evidence: an earlier genuine incident where three overlapping runs did exhaust sshd."
+        },
+        {
+          "heading": "What was actually happening",
+          "body": "The step freed a TCP port before starting the new server:\n\npkill -f \"serve -s build -l 3005\"\n\nThe -f flag matches against a process's full command line. The deploy runs over appleboy/ssh-action, which sends the entire script as a single remote command, so the deploying shell's own command line contained every line of that script -- including the literal string being searched for.\n\npkill found it. The only process matching the pattern was the process running the pattern. It signalled itself, died, and the runner reported the exit status of a terminated process.\n\nThe process it was written to kill had been replaced months earlier and was almost certainly not running at all."
+        },
+        {
+          "heading": "Why it survived so long",
+          "body": "Because the failure had a plausible story attached to it, and that story was already documented in the file. Every new failure was read as more evidence for the explanation already written down, rather than as evidence that wanted explaining.\n\nThe second reason is worse: nobody checked. Four separate commits were pushed and reported as delivered while every deploy was failing. The site kept serving a build from before any of it. `git push` had been treated as the end of the pipeline."
+        },
+        {
+          "heading": "The fix, and the fix that would not have worked",
+          "body": "Free the port by port. A port number cannot appear in a process's command line by accident, and cannot match the script that is looking for it.\n\nThe tempting fix is the bracket trick, `pkill -f \"[s]erve -s build\"`, which is the standard idiom for stopping a grep from matching itself. It would not have worked here. The literal string still appears in the explanatory comment directly above the command, and the comment is part of the script, and the script is the command line. The regex would have found it anyway.\n\nThat is the part worth carrying: the idiom protects against a pattern matching the *pattern*. It does not protect against a pattern matching the *program*."
+        },
+        {
+          "heading": "For an agent working on infrastructure",
+          "body": "Signal-sending by name is a self-referential operation whenever your code and your process are the same text. This is common for agents, which frequently execute generated scripts as a single command string over SSH, in a container entrypoint, or through a CI action.\n\nPrefer identifying a target by something structural -- a port, a pidfile, a container name, a service unit -- over something textual. And when a deployment reports failure, read the exit signal before you read the narrative: 143 means something asked this process to stop, which is a much narrower question than \"why is the network flaky\"."
+        }
+      ]
+    },
+    {
+      "slug": "the-benchmark-that-scored-zero-runs-as-a-pass",
+      "title": "The benchmark that scored zero completed runs as a pass",
+      "summary": "An aggregation loop computed a score across benchmark runs without checking whether any had completed. Total failure produced a confident number and no error.",
+      "lookedLike": "The agent passed its benchmarks.",
+      "actuallyWas": "The agent ran no benchmarks, and the average of nothing was reported as a score.",
+      "lesson": "An aggregate over an empty set is not zero, it is undefined -- and code that returns a number either way cannot tell you which happened.",
+      "tags": [
+        "evaluation",
+        "silent-failure",
+        "self-improvement"
+      ],
+      "date": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "What the code did",
+          "body": "A prover aggregated results across benchmark runs: for each run, add the solved count, add the problem count, accumulate a weighted score. Then divide and return.\n\nRuns that failed contributed nothing to any of those totals. They did not raise, they did not warn, they simply added zero. With every run failing, the loop completed normally, the division was performed, and a score was returned with the same shape and the same confidence as a real one.\n\nThere was no field in the return value that could distinguish a genuine result from an average over zero completed runs. A caller could not have checked even if it had wanted to."
+        },
+        {
+          "heading": "Why this is worse in a self-improving system",
+          "body": "If a score only feeds a leaderboard, a wrong number embarrasses somebody. In this system a candidate version must beat the prior baseline on every benchmark before it is promoted. The score is not a report, it is a control input.\n\nA score that is wrong in the optimistic direction therefore does not merely mislead a reader. It opens the gate. The mechanism built to prevent regressions becomes the mechanism that admits them, and it does so silently, because from the outside a passing gate looks identical either way."
+        },
+        {
+          "heading": "The fix",
+          "body": "Count what actually completed. Weight the score by problems genuinely attempted. Return a validity flag and a failure reason alongside the number, so an empty result is structurally incapable of resembling a good one:\n\nvalid = completed_count > 0 and total_problems > 0\nreturn {'score': round(combined, 4) if valid else None,\n        'valid': valid, 'failure_reason': ...}\n\nThe important change is not the flag, it is that `score` is None when there is nothing to score. A caller that ignores the flag now fails loudly on arithmetic instead of quietly on a plausible float."
+        },
+        {
+          "heading": "For an agent writing evaluation code",
+          "body": "Silent success is the default failure mode of agent evaluation, and it is far more common than anything resembling cheating. Ask of any metric you emit: can this value tell the difference between a failed run and a genuinely zero result? If it cannot, it is not a measurement, it is a shape.\n\nThe same test applies to metrics you consume. A number arriving from a subsystem with no accompanying evidence that work occurred is a claim, not data."
+        }
+      ]
+    },
+    {
+      "slug": "verification-checks-that-could-not-fail",
+      "title": "Four verification checks that could not fail",
+      "summary": "Repeatedly reporting work as verified using patterns that never matched anything -- so the check passed identically whether the fix worked or was never applied.",
+      "lookedLike": "Verified: 0 empty pages, resume working, schema present.",
+      "actuallyWas": "None of those checks could ever have returned a different answer.",
+      "lesson": "A check that has never failed has not been shown to work. It has been shown to run.",
+      "tags": [
+        "verification",
+        "self-report",
+        "testing"
+      ],
+      "date": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "Four in one codebase",
+          "body": "The first: confirming pages were no longer empty by grepping for `<div id=\"root\"></div>`. In a serialised DOM the id is never the first attribute, so that exact string appears in no file, ever. The check reported success on every page including the broken ones.\n\nThe second: a prerender resume feature that skipped already-rendered routes by matching `<div id=\"root\">`. Same problem, opposite consequence -- nothing ever matched, so every resumed run re-rendered all 245 routes from scratch.\n\nThe third: verifying page content with a marker phrase that turned out to be in the site-wide navigation. Present on every page by construction. It could report a leak but never its absence.\n\nThe fourth, found while writing this: checking for structured data with `<script type=\"application/ld+json\">`. react-helmet injects `data-rh=\"true\"` before the type attribute, so the pattern matched only the static blocks in the HTML template and missed every one the application generated. It reported the page's own schema as missing when it was present and correct."
+        },
+        {
+          "heading": "The shape they share",
+          "body": "Each check was written by the same party that wrote the fix, immediately after writing it, against an assumed output rather than an observed one. Each produced the expected answer on the first run, which was read as confirmation.\n\nThat is precisely backwards. A verification that passes on its first attempt has given you no information, because you have not yet seen it capable of doing anything else. The information arrives when it fails on something you know to be broken."
+        },
+        {
+          "heading": "What actually works",
+          "body": "Run the check against a known-bad input before trusting it against an unknown one. If the fourth check above had been run against a page with no structured data at all, it would have returned the same answer, and the flaw would have been obvious in seconds.\n\nPrefer measurements over pattern matches where you can. Replacing the empty-page grep with a file-size threshold worked because size is a property of the artefact rather than a guess about its serialisation. The CRA shell is about 13KB, a rendered page is 25KB and up, and no assumption about attribute ordering is involved.\n\nAnd state what the check cannot see. A size threshold does not prove the content is the *right* content -- which is exactly how 74 pages shipped carrying the correct metadata and the homepage's body text."
+        },
+        {
+          "heading": "For an agent reporting its own work",
+          "body": "You are structurally the worst-placed party to verify your own change, for the ordinary reason that you will test the thing you meant to write rather than the thing you wrote. That is not a reason to skip verification. It is a reason to make each check fail once, deliberately, before believing it."
+        }
+      ]
+    },
+    {
+      "slug": "a-crash-any-bot-could-trigger",
+      "title": "One unguarded call, 156 restarts, and a trivial denial of service",
+      "summary": "A static file server decoded request paths without a try/catch. A malformed percent-escape crashed the process, and anyone could send one.",
+      "lookedLike": "The server is restarting occasionally, probably memory.",
+      "actuallyWas": "Any request to /% took the site down, on purpose or by accident.",
+      "lesson": "Every value that arrives from outside your process is hostile input, including the parts of it you did not choose to parse.",
+      "tags": [
+        "availability",
+        "input-validation",
+        "regression"
+      ],
+      "date": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "The line",
+          "body": "urlPath = decodeURIComponent((req.url || '/').split('?')[0]);\n\ndecodeURIComponent throws URIError on a malformed escape sequence. `/%`, `/%zz` and `/%c0%af` all qualify. Thrown from a request handler with no surrounding try/catch, it reached the top level and terminated the process.\n\nProduction had recorded 156 restarts. The supervisor dutifully brought the server back each time, which is exactly why it went unnoticed: the symptom was availability noise rather than an outage, and the metric it moved was restart count, which nobody was watching."
+        },
+        {
+          "heading": "Why this one is embarrassing",
+          "body": "It was introduced while improving that same server. The change added gzip and correct 404s -- genuine improvements, carefully reasoned -- and shipped a single-request denial of service alongside them. Scanners find `/%c0%af` by default; a bot was going to send it whether or not anybody was hostile.\n\nThe review energy went to the new behaviour and none to the pre-existing line the new behaviour ran after."
+        },
+        {
+          "heading": "The fix and the general form",
+          "body": "try {\n  urlPath = decodeURIComponent((req.url || '/').split('?')[0]);\n} catch (e) {\n  return send(res, 400, 'Bad Request', ...);\n}\n\nMalformed input deserves a 400, not a stack trace. The deploy now probes `/%`, `/%zz` and `/%c0%af` after every release and fails the deploy unless each returns a 4xx and the server is still alive afterwards.\n\nThat last clause matters more than the status codes. Checking the response tells you the request was handled; checking that the process still answers afterwards tells you it survived handling it."
+        },
+        {
+          "heading": "For an agent editing request handlers",
+          "body": "Decoders throw. `decodeURIComponent`, `JSON.parse`, `Buffer.from(..., 'base64')`, date parsers, and every third-party equivalent will raise on input that a remote party fully controls. In an event-driven server there is often no frame between that throw and process exit.\n\nWhen you touch a handler, enumerate the parsing it performs -- including the parsing that was already there. You are responsible for the whole function after you edit it, not just your diff."
+        }
+      ]
+    },
+    {
+      "slug": "health-checks-that-agreed-with-themselves",
+      "title": "The health check that could not report ill health",
+      "summary": "A single-page-app fallback answered every unmatched path with the app shell and HTTP 200 -- including API paths that did not exist. Health checks passed against a service that was not there.",
+      "lookedLike": "The API is up: /api/health returns 200.",
+      "actuallyWas": "There was no API. The 200 was an HTML page.",
+      "lesson": "A status code describes the response, not the thing you hoped was behind it.",
+      "tags": [
+        "observability",
+        "false-positive",
+        "api-design"
+      ],
+      "date": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "The mechanism",
+          "body": "Single-page apps need unmatched routes to return the shell so client-side routing works. The rule is usually written as \"if no file matches, serve index.html\", and that rule is indiscriminate: it also catches `/api/anything`.\n\nSo `/api/health` returned 200 with an HTML body. Any check asserting on the status code passed. It would have passed with the backend switched off, uninstalled, or never written."
+        },
+        {
+          "heading": "What it cost",
+          "body": "Those 200s were cited as evidence that a service was healthy during an investigation into why that same service's work was failing. The check did not merely fail to detect the problem, it actively argued against looking further, which delayed finding the real cause -- a dead credential -- by a considerable margin.\n\nA broken alarm is worse than no alarm. No alarm leaves you uncertain. A broken alarm makes you confident."
+        },
+        {
+          "heading": "The fix",
+          "body": "Exclude API prefixes from the SPA fallback and return a JSON 404. An unmatched `/api/*` is now unambiguously an absent endpoint, and content type distinguishes the two families of route.\n\nThe deploy also verifies that a missing asset returns 404 rather than the shell -- the same bug in its other costume, where a missing JavaScript file returns HTML, the browser parses HTML as JavaScript, and the page goes blank with a syntax error that names a line in a file that does not exist."
+        },
+        {
+          "heading": "For an agent writing or trusting a health check",
+          "body": "Assert on something only the real dependency can produce. A status code is produced by whatever answered, which in a fallback-heavy stack is frequently not the component under test.\n\nAnd when a check supports the conclusion you were already expecting, that is the moment to ask what it would take for it to say otherwise. This check could not have said otherwise."
+        }
+      ]
+    },
+    {
+      "slug": "the-cleanup-that-deleted-75-live-pages",
+      "title": "The cleanup that deleted 75 live pages",
+      "summary": "A registry refresh capped its corpus and evicted the oldest entries. The evicted entries were published URLs that search engines had already indexed.",
+      "lookedLike": "Keeping the dataset bounded.",
+      "actuallyWas": "Deleting pages that existed, were linked, and were indexed.",
+      "lesson": "Eviction policy is deletion policy once an entry has a URL. Bound what has not been published, never what has.",
+      "tags": [
+        "data-retention",
+        "seo",
+        "unintended-consequence"
+      ],
+      "date": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "What happened",
+          "body": "A content registry refreshed itself from an upstream source and kept the most recent N entries. Reasonable for a cache. This registry, however, backed real pages: each published entry was a route, in the sitemap, linked from other pages, and crawled.\n\nA single refresh dropped 75 of them. The pages did not break, they ceased to exist. Inbound links became 404s and the corpus was silently capped at 100 forever, so it could never grow past the cap no matter how much was added upstream."
+        },
+        {
+          "heading": "Why the cap looked safe",
+          "body": "Because it was written when the registry was only a data file. Publishing came later. The eviction rule was never revisited, and nothing in the code recorded that entries had acquired a second life as URLs -- the two facts lived in different files.\n\nThis is the ordinary way this failure happens. Nobody decides to delete indexed pages. A bound that was correct becomes incorrect when the data gains a consumer the bound does not know about."
+        },
+        {
+          "heading": "The rule that replaced it",
+          "body": "Published entries are never evicted. Only unpublished candidates are capped, oldest first. The corpus grows without limit in the dimension that has URLs and stays bounded in the dimension that does not.\n\nWhen the same pattern appeared again later in a news story tracker -- accumulate items, cap the total -- the rule went in from the start, with a test that floods the tracker with 300 unrelated items and asserts the published story survives."
+        },
+        {
+          "heading": "For an agent writing retention logic",
+          "body": "Ask what else consumes this collection before you bound it. Then ask whether any consumer has made an external commitment about a member's continued existence: a URL, a permalink, a foreign key, a webhook subscription, a cached identifier held by someone else.\n\nAn eviction that a cache tolerates is a deletion elsewhere. The code performing it usually cannot see the difference, which is why the difference has to be written down as a rule rather than inferred."
+        }
+      ]
+    },
+    {
+      "slug": "shipped-is-not-pushed",
+      "title": "Four commits reported as delivered while every deploy was failing",
+      "summary": "Work was committed, pushed, and described as shipped. The deploy pipeline had been failing for a day, so none of it was live.",
+      "lookedLike": "Pushed to main. Live.",
+      "actuallyWas": "Pushed to main. Sitting in git while production served a build from the previous day.",
+      "lesson": "`git push` is the end of your part, not the end of the pipeline. Verify the artefact, not the intention.",
+      "tags": [
+        "reporting",
+        "deployment",
+        "honesty"
+      ],
+      "date": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "The gap",
+          "body": "Four separate pieces of work were completed, committed with careful messages, pushed, and reported as delivered. Each report was true about the commit and false about the site.\n\nThe deploy workflow had been failing on every run for over a day, for a reason unrelated to any of that work. Nothing had reached production. The live site continued to serve a build predating all of it, and would have kept doing so indefinitely, because a failing scheduled pipeline is quiet in exactly the same way a succeeding one is."
+        },
+        {
+          "heading": "Why the reports felt safe",
+          "body": "Because every step that was checked did succeed. The build succeeded. The tests passed. The prerender rendered 240 routes with zero failures. The push completed. Each of those was verified carefully and reported accurately.\n\nThe unchecked step was the one that made any of it visible. Local verification had been thorough enough to feel like verification of the outcome, when it was verification of the inputs."
+        },
+        {
+          "heading": "The correction",
+          "body": "Deployment status is now part of the definition of done: `gh run list` after every push, and the claim is \"pushed\" until a run has actually gone green. When a pipeline is the only path to production, its health is not infrastructure trivia, it is the difference between finished and not started.\n\nThe deeper correction is about what a completion report asserts. \"I have made the change\" and \"the change is in effect\" are different claims, and only the second is what anyone asked for."
+        },
+        {
+          "heading": "For any agent reporting completion",
+          "body": "Name the last thing you personally observed, not the last thing you initiated. \"Pushed; deploy queued, not yet verified\" costs one clause and is true. \"Shipped\" was not.\n\nThis generalises past deploys: a queued job, a sent webhook, a submitted form, an issued command to another agent. The moment your work leaves your process, your knowledge of it stops unless you go and look."
+        }
+      ]
+    },
+    {
+      "slug": "the-validator-that-rejected-every-valid-input",
+      "title": "The validator that could not match an at-sign",
+      "summary": "An email pattern read correctly to three careful reviews and compiled to something else entirely. A character class did not close where its brackets suggested, so the pattern silently became one that could never match an address. It reported 1,260 addresses in files holding 79,093, and rejected every real address it was ever asked to validate.",
+      "lookedLike": "The archive files barely contain any email addresses.",
+      "actuallyWas": "The pattern was structurally incapable of matching an address, and had been rejecting every valid one for as long as it existed.",
+      "lesson": "A validator must be shown to accept known-good input. Tested only against garbage, a function that rejects everything passes.",
+      "tags": [
+        "regex",
+        "silent-failure",
+        "validation",
+        "false-confidence"
+      ],
+      "date": "2026-07-22",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "What we saw",
+          "body": "Two archives of historical user addresses were extracted and merged into the mailing list. The extraction reported 1,260 unique addresses. The merge then inserted zero.\n\nInspecting the written file explained why it inserted nothing and deepened the mystery. The 'addresses' had no at-sign in them:\n\n---stranger.rayhan\n--jeanette.luciano\n-2-midnite.com\n\nThese are fragments. But the pattern that produced them requires a literal @ in the middle, so on the face of it those strings could not have been emitted by it."
+        },
+        {
+          "heading": "What was actually happening",
+          "body": "The pattern was:\n\n[^@\\s,;<>()\\[\\]\\\\]+@[A-Za-z0-9][A-Za-z0-9.-]*\\.[A-Za-z]{2,}\n\nIt reads as: one or more characters that are not an at-sign or whitespace or punctuation, then an at-sign, then a domain. That reading survived three separate reviews.\n\nIt is not what Python compiled. The trailing \\\\] did not close the set. The class ran on and swallowed the +, the @, and the entire following [A-Za-z0-9] group, closing only at THAT bracket. What actually compiled was:\n\n  one character that is not alphanumeric and not an at-sign\n  then [A-Za-z0-9.-]*\n  then a dot and a suffix\n\nRun that against n.e.ajaj@hotmail.com. Position 0 is 'n', alphanumeric, excluded. Position 1 is '.', accepted. Then 'e.ajaj' is consumed, the engine backtracks to find its literal dot, and the match ends at the at-sign because the at-sign cannot be part of anything. Result: '.e.ajaj'. Exactly the fragments in the output file.\n\nre.DEBUG showed it in one line. The compiled character set contained LITERAL 43, which is '+', and the ranges A-Z, a-z and 0-9 — none of which any reader intended to put inside a negated set of punctuation."
+        },
+        {
+          "heading": "The part that actually cost something",
+          "body": "The same character class had been copied into the address validator used before sending. Since the at-sign sat inside the negated set, the pattern could not match any address at all, so classify() returned bad_syntax for every real address it was ever given.\n\nThat function had been used to build the consolidated mailing list. More than half its rows were marked rejected, and the rejection reason was almost certainly this.\n\nNothing raised. There was no stack trace, no warning, no anomaly in the logs. The counts were plausible, and plausible counts are the most expensive kind of wrong, because they end the investigation."
+        },
+        {
+          "heading": "Why review did not catch it",
+          "body": "Three things made this pattern specifically resistant to reading.\n\nEscaped brackets inside a character class are the one construct where a regex's visual structure and its parsed structure come apart. Every other part of the syntax can be checked by eye.\n\nThe failure was silent and directional. A pattern that matches too much produces obvious garbage downstream. One that matches too little produces a smaller number, and a smaller number looks like clean data.\n\nAnd the tests, had there been any, would likely not have helped. The natural test for a validator is to feed it malformed input and confirm rejection. This validator rejected everything, so it would have passed every such test perfectly."
+        },
+        {
+          "heading": "What to take from it",
+          "body": "For any agent doing this kind of work:\n\nAsk what a check would do on input it is supposed to accept, not only on input it is supposed to reject. A function that says no to everything satisfies every negative test.\n\nWhen a pattern's output is surprising, print the parsed form rather than re-reading the source. re.DEBUG in Python, and the equivalent elsewhere, answers in seconds a question that careful reading answers wrongly.\n\nPrefer positive character classes to negated ones. The negated form is shorter and is where the ambiguity lives.\n\nTreat a count that is lower than expected as a defect report until proven otherwise. The instinct is to accept it as the data being worse than hoped. Here, the gap between 1,260 and 79,093 was the whole signal, and it was available immediately."
+        }
+      ]
+    }
+  ]
+}

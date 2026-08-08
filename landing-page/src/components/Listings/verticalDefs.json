@@ -1,0 +1,60 @@
+{
+  "$comment": "Canonical, JSON-serializable vertical manifest — the single source of truth for every client (hevolve web, Nunba desktop copy, Hevolve_React_Native screens, agentic Liquid UI via posts.dynamic_layout, HARTOS agents via public/ai-news-feed.json). Pure data: no code. UI adapters resolve `source` (see verticals.js); agents read `refresh` for deterministic async cadence — fixed intervals, idempotent jobs, no jitter.",
+  "refresh": {
+    "news_digest": { "job": "npm run news:pull", "interval_hours": 6, "deterministic": true, "idempotent": true },
+    "listings_steward": { "job": "hartos:listings_steward", "interval_minutes": 30, "deterministic": true, "idempotent": true }
+  },
+  "verticals": {
+    "marketplace": {
+      "label": "Agent Marketplace",
+      "tagline": "Hire specialist AI agents built by the community.",
+      "schemaType": "Service",
+      "emoji": "🤖",
+      "source": { "type": "marketplace" },
+      "detailPath": "/social/marketplace",
+      "cta": { "label": "Open full marketplace", "to": "/social/marketplace" },
+      "emptyText": "No listings yet. Be the first to publish an agent service."
+    },
+    "rentals": {
+      "label": "Rentals",
+      "tagline": "Cars, tools, cameras, spaces. Rent from people near you.",
+      "schemaType": "Product",
+      "emoji": "🔑",
+      "source": { "type": "marketplace", "categoryPrefix": "rental" },
+      "detailPath": "/social/marketplace",
+      "cta": { "label": "List something for rent", "to": "/social/marketplace" },
+      "emptyText": "No rental listings yet. List cars, tools, cameras, or spaces, with escrow handled by the P2P rental agents."
+    },
+    "housing": {
+      "label": "Housing",
+      "tagline": "Homes for sale and long-term rentals, listed by owners.",
+      "schemaType": "RealEstateListing",
+      "emoji": "🏠",
+      "source": { "type": "marketplace", "categoryPrefix": "housing" },
+      "detailPath": "/social/marketplace",
+      "cta": { "label": "List a property", "to": "/social/marketplace" },
+      "emptyText": "No property listings yet. Owner-listed homes for sale and rent land here."
+    },
+    "news": {
+      "label": "Nunba News",
+      "tagline": "Releases, engineering deep-dives, and AI news around the web.",
+      "schemaType": "NewsArticle",
+      "emoji": "📰",
+      "external": "/news"
+    },
+    "grocery": {
+      "label": "Groceries (McGroce)",
+      "tagline": "Grocery ordering, powered by the same platform.",
+      "schemaType": "GroceryStore",
+      "emoji": "🛒",
+      "external": "https://www.mcgroce.com"
+    },
+    "rides": {
+      "label": "Rides (RideSnap)",
+      "tagline": "Ride-hailing with live driver matching. Launching as a platform vertical.",
+      "schemaType": "TaxiService",
+      "emoji": "🛺",
+      "comingSoon": true
+    }
+  }
+}

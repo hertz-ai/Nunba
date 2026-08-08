@@ -170,6 +170,31 @@ const AdminClaudeCodeIntegration = lazyRetry(() => import('./pages/admin/ClaudeC
 // the HART OS glass-shell iframe (transparent, no chrome).
 const VoiceOrbPage = lazyRetry(() => import('./components/VoiceOrb/VoiceOrbPage'));
 
+/* The public content layer, ported from Hevolve web.
+ *
+ * These pages existed only there, so every content link in this app was a
+ * dead end: the social sidebar could offer Research or News and this router
+ * had nothing to answer with. The page files travelled unchanged -- they
+ * import their header and footer by relative path, so they pick up THIS
+ * app's chrome rather than dragging the website's marketing nav across.
+ *
+ * Each page declares its own <title>, description and canonical through
+ * PageMeta, which wraps the same react-helmet-async this file uses, so no
+ * Helmet block is needed at the route. */
+const NewsIndex = lazyRetry(() => import('./pages/News/NewsIndex'));
+const NewsArticlePage = lazyRetry(() => import('./pages/News/NewsArticlePage'));
+const ResearchIndex = lazyRetry(() => import('./pages/Research/ResearchIndex'));
+const ResearchPaperPage = lazyRetry(() => import('./pages/Research/ResearchPaperPage'));
+const AnswerIndex = lazyRetry(() => import('./pages/Answers/AnswerIndex'));
+const AnswerPage = lazyRetry(() => import('./pages/Answers/AnswerPage'));
+const IncidentIndex = lazyRetry(() => import('./pages/Incidents/IncidentIndex'));
+const IncidentPage = lazyRetry(() => import('./pages/Incidents/IncidentPage'));
+const ListingsPage = lazyRetry(() => import('./components/Listings/ListingsPage'));
+const BlogIndex = lazyRetry(() => import('./pages/blogs/BlogIndex'));
+const BlogDynamicPage = lazyRetry(() => import('./pages/blogs/DynamicPage'));
+const HiveCensus = lazyRetry(() => import('./pages/HiveCensus'));
+const Press = lazyRetry(() => import('./pages/Press'));
+
 function MainRoutes() {
   return (
     <>
@@ -545,6 +570,33 @@ function MainRoutes() {
         {/* Mindstory SDK + Pupit documentation */}
         <Route path="/docs" element={<Suspense fallback={<PageSkeleton />}><><Helmet><title>Mindstory SDK Documentation | Hevolve AI</title><meta name="description" content="Mindstory multimodal SDK — completions API, Pupit video player, website plugin documentation." /></Helmet><PupitDocs /></></Suspense>} />
         <Route path="/pupit" element={<Suspense fallback={<PageSkeleton dark />}><><Helmet><title>Pupit AI — Video Generation | Hevolve AI</title><meta name="description" content="Generate AI-powered talking head videos with Pupit." /></Helmet><PupitAi /></></Suspense>} />
+
+        {/* ── Public content layer (ported from Hevolve web) ──
+         *
+         * Index and detail declared together for each family. A detail route
+         * without its index is a page reachable only by typing the URL, and
+         * an index without its detail is a list of links to the 404 handler;
+         * both have shipped before, which is why they are written as pairs. */}
+        <Route path="/news" element={<Suspense fallback={<PageSkeleton />}><NewsIndex /></Suspense>} />
+        <Route path="/news/:slug" element={<Suspense fallback={<PageSkeleton />}><NewsArticlePage /></Suspense>} />
+
+        <Route path="/research" element={<Suspense fallback={<PageSkeleton />}><ResearchIndex /></Suspense>} />
+        <Route path="/research/:slug" element={<Suspense fallback={<PageSkeleton />}><ResearchPaperPage /></Suspense>} />
+
+        <Route path="/answers" element={<Suspense fallback={<PageSkeleton />}><AnswerIndex /></Suspense>} />
+        <Route path="/answers/:slug" element={<Suspense fallback={<PageSkeleton />}><AnswerPage /></Suspense>} />
+
+        <Route path="/incidents" element={<Suspense fallback={<PageSkeleton />}><IncidentIndex /></Suspense>} />
+        <Route path="/incidents/:slug" element={<Suspense fallback={<PageSkeleton />}><IncidentPage /></Suspense>} />
+
+        <Route path="/listings" element={<Suspense fallback={<PageSkeleton />}><ListingsPage /></Suspense>} />
+        <Route path="/listings/:vertical" element={<Suspense fallback={<PageSkeleton />}><ListingsPage /></Suspense>} />
+
+        <Route path="/blog" element={<Suspense fallback={<PageSkeleton />}><BlogIndex /></Suspense>} />
+        <Route path="/blog/:slug" element={<Suspense fallback={<PageSkeleton />}><BlogDynamicPage /></Suspense>} />
+
+        <Route path="/hive" element={<Suspense fallback={<PageSkeleton />}><HiveCensus /></Suspense>} />
+        <Route path="/press" element={<Suspense fallback={<PageSkeleton />}><Press /></Suspense>} />
 
         <Route path="/social" element={<Suspense fallback={<PageSkeleton dark variant="feed" />}><SocialHome /></Suspense>}>
           {/* Open routes — guests and anonymous can read */}

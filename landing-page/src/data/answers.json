@@ -1,0 +1,359 @@
+{
+  "$comment": "Question-shaped pages: what people actually search, answered from the research corpus. Paper titles have no search demand ('AlphaWiSE: Adaptive Weight Interpolation' is nobody's query), so these are the entry points and src/data/researchPapers.json is the evidence layer they cite. citedPapers holds slugs from that registry; AnswerPage renders them as internal links, which is also what finally gives 200 paper pages a reason to be crawled. Demand here is INFERRED from corpus coverage, not measured - Search Console has no property for hevolve.ai yet, so nobody has query data. Treat the list as a hypothesis to validate, not a keyword plan.\n\nCONTENT STANDARD (added 2026-07-23; applies to anything writing here, human or agent). A page earns its place by being USABLE, not by being right. Measured against the pages that already work:\n  * Answer in the shortAnswer. A reader who stops there should have the answer, not a promise of one.\n  * Carry numbers you measured. The three strongest pages here average ~5 digits per 100 words; the three weakest have none. That gap is the difference between reference and essay, and essays do not get cited.\n  * Prefer a table or a threshold to a paragraph. 'whisper-base 0.5 GB' beats 'lightweight models are available'.\n  * Say where the number came from -- shipped code, a log, a probe you ran. A figure with no provenance is decoration.\n  * Include what it does NOT solve. Every page here states its own limits; that is what makes the rest credible.\n  * Never invent a measurement. If it was not run, say it was not run. An unverifiable number is worse than an honest gap because it discredits the verifiable ones beside it.\nAGENTS: content_gen_tools.py takes a bare `prompt` and sets no standard of its own, so this comment IS the standard -- reference it rather than restating it in a prompt, or the two drift and nobody notices which one shipped.\n  VOICE (added 2026-07-27; applies to anything writing here, human or agent). Readers decide in about one sentence whether text was written or assembled, and they discount assembled text before reading the argument. So: no em dashes or en dashes in prose, use a full stop or a comma. No 'it is not X, it is Y' reversals. No three-item rhythms where two items would do. Do not open with 'Here's the thing' or close by restating the opening. Vary sentence length, because uniform medium sentences are the loudest tell. Semicolons are rare in real writing, prefer a full stop. Avoid delve, leverage, robust, seamless, unlock, elevate, landscape, realm, testament, tapestry. Bullets only for real lists, never for prose chopped into fragments. Write what a person would say out loud to a colleague. CAUTION: do not bulk-fix old pages with a regex. Tried 2026-07-27 and it broke an 'Either/or' sentence into a fragment and destroyed the column alignment in the ASCII tables, where a dash is a separator and not punctuation. Fix prose by hand, one page at a time, and leave table interiors alone.",
+  "answers": [
+    {
+      "slug": "can-a-brain-computer-interface-read-your-thoughts",
+      "question": "Can a brain-computer interface actually read your thoughts?",
+      "shortAnswer": "Not in the way the phrase suggests. Current systems decode a narrow, trained-for set of intentions from brain signals. They do not read language you have not agreed to produce, and accuracy falls apart the moment conditions change.",
+      "topic": "bci",
+      "updatedAt": "2026-07-21",
+      "sections": [
+        {
+          "heading": "What decoding actually means",
+          "body": "A brain-computer interface does not receive thoughts. It records electrical activity, usually from the scalp, and a model learns to associate patterns in that activity with a small set of categories it was trained on: imagining moving your left hand versus your right, attending to one flickering light versus another, naming a pictured object.\n\nThat last one is worth sitting with, because it is the closest thing to reading words. Work on decoding semantic categories during picture naming asks whether meaning is recoverable from EEG while somebody speaks aloud. Recovering the category of a word a person is deliberately producing, in a lab, wired up, is a real result and a long way from reading unspoken thought."
+        },
+        {
+          "heading": "Why it stops working when anything changes",
+          "body": "The honest limitation in this field is not accuracy on a good day, it is what happens on a different day. Signals drift between sessions, between people, and between recording setups, and a decoder trained on one distribution degrades on another.\n\nThis is why so much current work is about adaptation rather than raw performance: methods that realign an implanted decoder as signals shift, and approaches for adapting across datasets when the original training data cannot be shared for privacy reasons. A system that needs recalibrating every morning is not reading your mind, it is being retaught your handwriting."
+        },
+        {
+          "heading": "The claim that quietly does not hold",
+          "body": "There is a recurring claim that one decoding pipeline is broadly best. Tested properly across many configurations and hundreds of thousands of subject-level results, average rankings turn out to hide per-subject reality: a method can top the table overall and still be the wrong choice for a great many individuals.\n\nFor a technology worn by one person at a time, that distinction is the whole game. The average does not use the device."
+        },
+        {
+          "heading": "So what is it good for",
+          "body": "The useful applications are the ones that accept a narrow vocabulary and make it count: assistive control for people who cannot move, rehabilitation after stroke or in cerebral palsy, and clinical monitoring such as detecting burst suppression in intensive care or spotting seizures in EEG.\n\nThose are not diminished goals. Restoring a reliable yes and no to somebody who has lost speech is worth more than a machine that guesses at your inner monologue, which is not what any of this currently does."
+        }
+      ],
+      "citedPapers": [
+        "decoding-semantic-categories-from-picture-naming-eeg",
+        "average-rankings-mask-per-subject-optimality-a-friedman-nemenyi-benchm",
+        "test-time-adaptation-of-spiking-neural-networks-for-intracortical-neur",
+        "an-enhanced-source-free-unsupervised-domain-adaptation-framework-for-c",
+        "evaluation-of-eeg-foundation-models-for-event-based-burst-suppression",
+        "what-holds-back-brain-computer-interfaces-uncovering-challenges-and-op",
+        "sensory-restoration-via-brain-computer-interfaces-a-unified-2-x-2-fram"
+      ]
+    },
+    {
+      "slug": "do-ai-agents-actually-work-or-fail-silently",
+      "question": "Why do AI agents fail silently, and is it the model or the prompt?",
+      "shortAnswer": "Almost always one of two things, and they need different fixes. Either the model is being asked for a job it was never trusted with, such as a 0.8B assigned drafting, captioning and click-target grounding rather than primary reasoning, or the prompt is under-specified and the model resolves the ambiguity silently instead of asking.",
+      "topic": "ai",
+      "updatedAt": "2026-07-21",
+      "sections": [
+        {
+          "heading": "Cause one: the model size was never suited to that job",
+          "body": "Sub-1B models are not small versions of large ones. They are good at a specific, bounded class of work, and the class matters more than the parameter count.\n\nWhat a 0.6B-1B model does reliably:\n\n  * drafting tokens for a larger model to verify\n  * captioning an image\n  * locating a UI element on screen for a click target\n  * classifying into a small fixed set\n\nWhat it does not do reliably:\n\n  * hold a multi-step plan across turns\n  * decide when a task is finished\n  * keep a tool-call schema stable under long context\n\nThe pattern is that the first list is bounded and checkable, there is a right answer and something can verify it. The second is open-ended. A model asked for open-ended work outside its range still answers, fluently, and has no way to return 'I am the wrong size for this'.\n\nServing systems encode this as capability tiers rather than raw size: a model declares a minimum tier and is refused below it. A refused load looks identical to an agent doing nothing, unless the refusal is surfaced."
+        },
+        {
+          "heading": "Why speculative decoding shows the shape of the fix",
+          "body": "Speculative decoding is worth understanding even if you never configure it, because it is the clearest example of a small model used safely.\n\nA small draft model proposes tokens. A larger model verifies them. Wrong proposals are discarded before anyone sees them. The result is a fast reply that is still the large model's answer, commonly around 40% faster, with the small model's errors filtered out by construction, not by luck.\n\nRun that same small model unsupervised on the same task and nothing filters anything. Same weights, same prompt. The difference between reliable and silently wrong is entirely whether something checks the output.\n\nThat generalises: any step in an agent loop with no verifier produces invisible failures, whatever size produced them. The useful question is not 'is this model big enough' but 'what checks this step, and would it notice'."
+        },
+        {
+          "heading": "Cause two: the prompt left a decision unmade",
+          "body": "The other half is not the model at all.\n\nWhen a prompt leaves something ambiguous, a model resolves it. It does not flag it, and it usually resolves it the same way every time, which is why prompt-caused failures are so easy to mistake for model limitations. They look deterministic, because they are.\n\nThe distinguishing test is cheap. Run the same task several times:\n\n  * fails identically each run           -> the prompt made the decision\n  * degrades as the task gets longer     -> size, context or attention\n  * fails only past some step count      -> the loop, not the model\n\nSwapping in a larger model is the usual first move and it is the wrong one for the first case. A bigger model resolves the same ambiguity, more fluently, and the failure survives the upgrade, now with better prose around it."
+        },
+        {
+          "heading": "Why 'silently' is the operative word",
+          "body": "Every mechanism above shares a property: the failure produces a plausible output rather than an error.\n\nA crash is cheap. It stops, it names a line, someone fixes it. A silent failure produces something shaped correctly, passes downstream, and only shows up as a number that looks slightly off, long after the run.\n\nThree that recur, all cheap to prevent:\n\n  * A check that cannot fail. A validator tested only against bad input will pass even if it rejects everything. Test that it ACCEPTS known-good input. That is the test that can catch a reject-everything bug.\n  * A swallowed exception. `except: continue` in a selection loop turns 'every candidate errored' into 'no candidates found', the same outcome as an empty list, and a completely different cause.\n  * A detection fallback with no signal. When capability detection fails and quietly falls back, behaviour degrades correctly and reports nothing. The fallback is right. The silence is the bug.\n\nNone of these need better models. They need the failure to be loud."
+        },
+        {
+          "heading": "What this page does not claim",
+          "body": "There are no failure rates here by parameter count, because that would need a benchmark this page has not run. 'A 1B model fails N% of agentic tasks' is the kind of figure that gets quoted for years after being invented once, and one invented number discredits every measured one beside it.\n\nWhat is asserted is structural: which classes of work are bounded and checkable, why capability tiers gate loading, and why a verified draft is safe where an unverified one is not. Those are design rationales, not empirical accuracy claims.\n\nThe prompt-versus-size diagnostic is a heuristic, offered as one. It is worth running because it is cheap and it separates two problems that get treated as one, not because it is proven."
+        }
+      ],
+      "citedPapers": [
+        "from-plausible-to-actionable-a-position-on-llm-self-explanations",
+        "craft-clustering-rubrics-to-diagnose-weak-llm-capabilities-and-generat",
+        "presentation-not-mechanism-a-render-confound-in-deprecation-aware-memo",
+        "when-do-multi-agent-systems-help-an-information-bottleneck-perspective",
+        "the-honest-quorum-problem-epistemic-byzantine-fault-tolerance-for-agen",
+        "how-do-vlms-fail-vision-operation-misalignment-in-compositional-vqa"
+      ]
+    },
+    {
+      "slug": "what-is-an-ai-native-operating-system",
+      "question": "What is an AI-native operating system?",
+      "shortAnswer": "An OS where the model is a system service rather than an app you open. It probes what the hardware can actually run, serves language, vision and speech to every application over a shared bus, and adapts itself to the machine instead of asking the machine to meet a spec.",
+      "topic": "hive",
+      "updatedAt": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "image": "/images/answers/ai-native-os.svg",
+      "imageAlt": "Applications call a shared Model Bus, which serves language, vision and speech from models selected to fit the detected hardware.",
+      "sections": [
+        {
+          "heading": "The difference from 'an OS with AI in it'",
+          "body": "Most systems described as AI-powered ship an assistant: a separate application, usually talking to somebody else's server, that can drive a few OS functions. The operating system underneath is unchanged. Remove the assistant and everything still works the way it did.\n\nAI-native inverts that. Inference becomes a service the system provides, the way it provides a filesystem or a network stack. An application does not bundle a model or hold an API key. It asks the OS, and the OS decides which model answers, running locally where it can. In HART OS that service is the Model Bus, reachable over a socket, D-Bus or HTTP, and it speaks the OpenAI protocol at :6777/v1/chat/completions so existing code can point at it without being rewritten.\n\nThe practical consequence is that the model is shared. Ten applications on one machine do not each load their own copy or each pay their own API bill."
+        },
+        {
+          "heading": "Adapting to the machine, not the other way around",
+          "body": "The word native is doing real work in that phrase. The system probes what the device can genuinely do and picks accordingly, rather than publishing a minimum spec and refusing anything below it. Heavy speech engines are skipped on cards with 6GB or less. A 0.8B draft model answers in roughly 300ms while a 4B model verifies behind it, so a consumer laptop feels like a hosted API rather than a compromise.\n\nThis is where a research corpus stops being decorative. Whether a capable model fits on ordinary hardware is an active field: quality-aware weight quantization for serving mixture-of-experts models, extreme low-bit compression, distillation that transfers behaviour rather than weights, and inference accelerators that move the floor itself. An AI-native OS is a bet that this line keeps moving, and a design that benefits automatically when it does."
+        },
+        {
+          "heading": "One runtime, three shapes, including robots",
+          "body": "The same Python codebase runs flat on a single laptop with SQLite, regional across a LAN, or central as a cloud mesh, with the topology detected rather than configured into a separate product. The runtime that drives a desktop also drives embodied hardware, so a robot's access to language and vision is another Model Bus call rather than a parallel stack somebody has to maintain.\n\nThat matters more than it sounds. Most of the cost in this space is not the model, it is maintaining four integrations of the same capability for four form factors."
+        },
+        {
+          "heading": "What we would not claim",
+          "body": "AI-native is close to meaningless as a marketing word, so it is worth separating what is load-bearing from what is not. The parts that exist as code are the hardware probing, the shared bus, the OpenAI-compatible endpoint, the topology detection, and a guardrail hash re-verified every 300 seconds alongside Ed25519 release signing.\n\nThe learner that improves across the network is a signed, closed-source native component loaded at runtime. When it is absent the system runs safe no-op fallbacks. We would rather say that plainly than let an architecture diagram imply more than is shipping."
+        }
+      ],
+      "citedPapers": [
+        "pagedweight-efficient-moe-llm-serving-with-dynamic-quality-aware-weigh",
+        "bisco-llm-lookup-free-binary-spherical-coding-for-extreme-low-bit-larg",
+        "on-policy-delta-distillation",
+        "nifa-nonlinear-imc-enhanced-fpga-for-efficient-ml-inference",
+        "dpnext-a-lightweight-multi-scale-feature-fusion-framework-for-efficien",
+        "llm-powered-agentic-ai-for-5g6g-networks-a-tutorial-and-survey-on-arch"
+      ]
+    },
+    {
+      "slug": "can-ai-agents-share-what-they-learn-without-sharing-your-data",
+      "question": "Can AI agents share what they learn without sharing your data?",
+      "shortAnswer": "Partly, and the caveats are the interesting part. Sharing derived updates instead of raw data is a genuine privacy improvement, but those updates leak more than people assume, and a shared pool can be poisoned by whoever contributes to it. Both problems have partial defences and neither is solved.",
+      "topic": "hive",
+      "updatedAt": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "image": "/images/answers/federated-delta.svg",
+      "imageAlt": "What leaves a device in federated learning: a signed, scope-checked delta, while raw conversations, files and model weights stay local.",
+      "sections": [
+        {
+          "heading": "What actually crosses the wire",
+          "body": "In a federated setup the thing that leaves your machine is not your data, it is a delta: a summary of how your local model changed after learning from what you did. The raw material stays where it was produced. Many nodes send deltas, something merges them, and everyone receives a model better than the one they had.\n\nIn the Hive that merge is deliberately equal-weighted. Contribution is floored with log1p(interactions) rather than scaled by hardware tier, so a Raspberry Pi node and a GPU rack carry the same vote at equal participation. That is a decision about who the network belongs to rather than an optimisation, and it is the kind of claim that is easy to make and easy to check by reading federated_aggregator.py."
+        },
+        {
+          "heading": "The part most explanations skip: deltas leak",
+          "body": "The comfortable version of this story stops at 'only gradients are shared'. The research does not stop there. Property inference attacks recover attributes of training data from what a model exposes, and poisoned code contributions can be used to widen that leakage deliberately. Membership information turns out to be measurable in the geometry of learned embeddings, which is a long way from the intuition that an embedding is anonymous.\n\nSo 'no raw data leaves the device' is true and insufficient. It is a real reduction in exposure, not a guarantee of privacy. Anyone who tells you federated means private without qualification has either not read this literature or is counting on you not having."
+        },
+        {
+          "heading": "The other direction: what gets into the pool",
+          "body": "A shared learner has a second exposure that has nothing to do with privacy. If contributions shape the result, contributions are an attack surface. Pretraining data can be poisoned through what amounts to computational propaganda, and a federation with open membership inherits that problem by construction.\n\nThe defences that exist are unglamorous and mostly about admission rather than detection. A peer presents a guardrail hash at handshake and a mismatch refuses the connection, re-verified every 300 seconds. Access to shared learning is gated on verified compute contribution, so participation costs something. A benchmark prover exists so a node cannot federate a score it did not earn. None of that makes poisoning impossible. It makes it expensive and attributable, which is the realistic goal."
+        },
+        {
+          "heading": "What we run, stated plainly",
+          "body": "Nodes exchange derived, signed, privacy-scoped learning that a scope guard clears before it leaves the machine. They do not exchange raw data and they do not exchange model weights. Participation is opt-in, cloud egress needs explicit consent, and anything kept local stays local.\n\nOne limitation worth stating: the weight-level gradient sync interface exists but is not active. What is live is delta and signal federation, not full gradient sharing. This describes what runs, not the roadmap."
+        }
+      ],
+      "citedPapers": [
+        "development-and-design-of-flkit-a-structured-onboarding-toolkit-for-fe",
+        "code-poisoning-property-inference-attacks",
+        "quantifying-training-membership-information-in-the-hyperspherical-embe",
+        "pretraining-data-can-be-poisoned-through-computational-propaganda",
+        "alphawise-adaptive-weight-interpolation-for-continual-multimodal-repre",
+        "on-policy-delta-distillation"
+      ]
+    },
+    {
+      "slug": "how-do-you-stop-ai-agents-faking-benchmark-results",
+      "question": "How do you stop AI agents from faking their own benchmark results?",
+      "shortAnswer": "You stop trusting the number and start verifying the run. A self-reported score is an unverified claim, and the common failure is not deliberate fraud but a scoring bug that reports success while the underlying work returned nothing. We shipped exactly that bug, which is why this page exists.",
+      "topic": "hive",
+      "updatedAt": "2026-07-21",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "Why this matters more when agents improve themselves",
+          "body": "If a system only reports scores to a leaderboard, a wrong number embarrasses somebody. If a system uses scores to decide whether to promote its own next version, a wrong number becomes the thing it optimises toward.\n\nThat is the situation in any self-improving setup, and it is ours: a candidate change has to beat the prior baseline on every benchmark by a margin or it is rejected. That makes the benchmark a control system. A score that is wrong in the optimistic direction does not merely mislead a reader, it lets a worse version through the gate."
+        },
+        {
+          "heading": "The failure we actually hit",
+          "body": "In July 2026 we found a scoring path that aggregated results across benchmark runs without checking whether any run had completed. Runs that failed contributed nothing to the totals, and the aggregate was then computed and returned as though it were a real measurement. There was no error, no warning, and no way for a caller to tell a genuine score from an average over zero completed runs. It looked like a pass.\n\nThe fix is not clever. Count completed runs, weight the score by problems actually attempted, and return a validity flag with a failure reason instead of a bare number, so an empty result is structurally incapable of looking like a good one. Five regression tests now cover it.\n\nWe describe our own bug here because it is the most useful thing we know about this question. Silent success is the default failure mode of agent evaluation, and it is far more common than anybody cheating."
+        },
+        {
+          "heading": "Verifying the run, not the number",
+          "body": "Across a network the problem changes shape. A node can report any score it likes, and if scores earn standing then reporting good ones is rewarded. The answer is to make the claim checkable: a proof that a benchmark was actually run against the claimed model and the claimed dataset, so a fabricated score fails verification instead of propagating.\n\nThe research is arriving at the same conclusion from the other side. Leaderboard position is a poor guide to trustworthiness, evaluation methods themselves need auditing before their outputs mean anything, and independent certification is argued for precisely because self-report does not scale as a trust mechanism. Domain benchmarks built by practitioners rather than model builders exist because the people who build a system are the worst placed to set its passing grade."
+        },
+        {
+          "heading": "What to ask of any agent benchmark",
+          "body": "Three questions get you most of the way. Can the score tell a failed run apart from a zero score? Can somebody other than the party reporting it reproduce the run? And does anything downstream act on the number automatically, because if so it is a control input and deserves the scrutiny of one.\n\nMost agent scores in circulation, including ones we published before finding this, fail the first question."
+        }
+      ],
+      "citedPapers": [
+        "can-we-trust-item-response-theory-for-ai-evaluation",
+        "beyond-the-leaderboard-design-lessons-for-trustworthy-multimodal-vqa",
+        "a-methodology-for-auditable-trustworthiness-levels-in-ai-lifecycle-gov",
+        "closing-the-ai-trust-gap-the-case-for-independent-certification-for-tr",
+        "medfailbench-a-clinician-built-open-source-benchmark-for-medical-ai-sa",
+        "code-poisoning-property-inference-attacks"
+      ]
+    },
+    {
+      "slug": "what-is-democratic-ai",
+      "question": "What is democratic AI, and how would you know if you had it?",
+      "shortAnswer": "Democratic AI means the people using a model are the people who decide about it. Free access does not establish that on its own. The testable conditions are four: your input stays yours, nobody can change the terms underneath you, it keeps working if the vendor stops, and you can inspect what it does. Only weights you hold and run on your own hardware satisfy all four, which is why the argument is really about where inference happens rather than about price.",
+      "topic": "hive",
+      "updatedAt": "2026-07-22",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "image": "/images/answers/democratic-ai.svg",
+      "imageAlt": "A four-condition comparison. A free hosted tier gives access but fails on privacy, terms, survivability and inspectability. Open weights on your own hardware satisfy all four.",
+      "sections": [
+        {
+          "heading": "Free is not the same as democratic",
+          "body": "Almost every announcement that uses the word means one thing by it: the model is now available at no cost, or at low cost, to more people. That is broadened access, and it is genuinely worth something. It is not the same claim.\n\nAccess answers the question can I use this. Democratic answers a different question: who decides. Who decides what the model will refuse, what it costs next year, whether the version you depend on keeps existing, whether your conversations are retained, and whether you can check any of it. A free tier leaves every one of those with the vendor. The user is a beneficiary of a decision, not a party to it.\n\nThis distinction matters because the two get argued as though they were the same, and the weaker claim is used to retire the stronger one. A model given away for free is still a model you are a guest of."
+        },
+        {
+          "heading": "Four conditions you can actually check",
+          "body": "Rather than argue about the word, it is more useful to state what would have to be true, in a form somebody can verify without trusting the person making the claim.\n\nFirst, your input stays yours. Not promised in a policy, but true structurally, because nothing was transmitted.\n\nSecond, the terms cannot change underneath you. A model running on your machine cannot be repriced, rate-limited, or have its behaviour altered without your doing something.\n\nThird, it survives the vendor. If the company is acquired, pivots, or closes, the thing you were relying on still runs. This is the condition that hosted services can never meet, however sincere they are.\n\nFourth, it is inspectable. Open weights and open code mean the privacy claim is a fact you or somebody you trust can confirm, rather than an assurance you have to accept.\n\nThese are deliberately unflattering to us as well as to anyone else. They are conditions, not sentiments, and any product including ours either meets them or does not."
+        },
+        {
+          "heading": "Why this is an argument about hardware",
+          "body": "Follow the four conditions and they collapse into one question: where does inference happen. Every condition that a hosted service fails, it fails for the same reason, which is that the computation occurs on a machine somebody else controls.\n\nThat reframes the problem usefully. It stops being about corporate goodwill and becomes an engineering constraint: can a model good enough to be worth using run on hardware ordinary people already own. For most of the last decade the answer was no, which is why the centralised arrangement was not really a choice.\n\nThe research that changed this is not about ethics at all. It is quantisation, distillation and sparsity work aimed at making large models cheap to serve, and the same techniques that cut a provider's serving costs are what let the model run on a laptop. Extreme low-bit coding, quality-aware weight quantisation for mixture-of-experts models, and on-policy distillation each move the same boundary. Democratisation here is a side effect of efficiency research, not a political programme."
+        },
+        {
+          "heading": "What this does not solve",
+          "body": "Being straight about the limits is part of the claim being worth anything.\n\nRunning weights locally does not democratise their creation. Pre-training a frontier model still needs capital and compute concentrated in very few places, and the decisions baked in during training, including what the model refuses and whose text it learned from, were made before anybody downloaded anything. Local execution redistributes control over use. It does not redistribute control over production.\n\nOpen weights are also not the same as open data or open process. Most models described as open publish the weights and little else, so the training corpus stays unexaminable.\n\nAnd a local model is usually a smaller model. On many tasks a hosted frontier model is simply better, and pretending otherwise would be the same kind of overclaim this page is arguing against. The honest position is that you are trading some capability for the four conditions, and that this trade is worth making for a great deal of ordinary work but not for all of it."
+        }
+      ],
+      "citedPapers": [
+        "bisco-llm-lookup-free-binary-spherical-coding-for-extreme-low-bit-larg",
+        "pagedweight-efficient-moe-llm-serving-with-dynamic-quality-aware-weigh",
+        "on-policy-delta-distillation",
+        "evaluating-open-weight-llms-for-generating-structured-threat-informati",
+        "nifa-nonlinear-imc-enhanced-fpga-for-efficient-ml-inference",
+        "dpnext-a-lightweight-multi-scale-feature-fusion-framework-for-efficien"
+      ]
+    },
+    {
+      "slug": "can-you-verify-an-email-address-without-sending-to-it",
+      "question": "Can you verify an email address without sending to it?",
+      "shortAnswer": "Partly, and which part matters more than most write-ups admit. An MX lookup proves a domain can receive mail and is free and reliable. An SMTP RCPT TO probe is supposed to prove a specific mailbox exists, and against Gmail it does. Against Microsoft, Yahoo and AOL it does not: they answer 250 OK for mailboxes they have already permanently rejected. So a verification pass over a typical consumer list genuinely checks about a third of it and quietly certifies the rest.",
+      "topic": "hive",
+      "updatedAt": "2026-07-22",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "image": "/images/answers/email-verification.svg",
+      "imageAlt": "Three checks compared across four providers. MX lookup works everywhere. RCPT TO returns a truthful rejection only on Gmail; Hotmail, Yahoo and AOL return 250 OK for mailboxes they have already hard-bounced.",
+      "sections": [
+        {
+          "heading": "The two checks, and what each actually proves",
+          "body": "An MX lookup asks DNS whether a domain publishes mail servers at all. A domain with no MX cannot receive mail under any circumstances, so every send to it is a guaranteed bounce. This check is free, fast, cacheable, and it never lies. On a list of 79,093 addresses it removed 1,457 across 4,234 distinct domains, which is a few thousand DNS lookups rather than eighty thousand.\n\nIt also proves very little. A live domain says nothing about whether a particular mailbox at that domain exists. On a list of historical addresses almost every dead entry is a dead mailbox at a perfectly healthy domain: an abandoned Hotmail account from 2013 passes the MX check exactly as well as an active one.\n\nThe second check is meant to close that gap. You open an SMTP conversation with the domain's mail server, issue MAIL FROM and then RCPT TO for the address, and read the response code. You never send DATA, so no message is delivered. A 250 means the server accepted the recipient. A 550 means it refused."
+        },
+        {
+          "heading": "What the probe actually returns, by provider",
+          "body": "The way to test whether a probe is honest is to point it at a mailbox the provider has ALREADY told you does not exist. Take addresses that hard-bounced with 5.1.1, then ask the same server about them again and see whether the answers agree.\n\nMeasured against exactly that set:\n\n  gmail.com     550 5.1.1 The email account that you tried to reach does not exist\n  hotmail.com   250 2.1.5 Recipient OK\n  yahoo.com     250 recipient <...> ok\n  aol.com       250 recipient <...> ok\n\nGmail is consistent: it refuses at RCPT what it would refuse later. The other three accept every recipient at SMTP time and issue the rejection asynchronously afterwards, as a bounce message. This is a deliberate design choice on their part, and a reasonable one, because answering truthfully at RCPT turns any mail server into a free directory-harvesting oracle.\n\nThe consequence for verification is not that it fails. It is that it lies. A dead Hotmail address returns 250 and gets recorded as good. Run that over a consumer list and you do not get a partial answer, you get a confident wrong one covering roughly half your addresses."
+        },
+        {
+          "heading": "Where you probe from changes the answer",
+          "body": "This part costs people a lot of time, because the failure looks like a different result rather than like an error.\n\nThe same probes run from an ordinary machine, a laptop or a cloud box without a PTR record and without sending history, do not return 250. They return nothing: Microsoft, Yahoo and AOL close the connection before RCPT is reached. Only Gmail answers at all.\n\nIt is easy to read that as 'these providers cannot be probed' and move on, which happens to reach the right conclusion by the wrong route. Run the identical code from a host with a proper PTR record and established sending reputation and the connections succeed, and the honest answer appears: they accept everything.\n\nSo a verification result is only meaningful if you know which machine produced it. Two runs of the same tool from different hosts return different things, and neither announces which situation you are in."
+        },
+        {
+          "heading": "What to do about the half you cannot check",
+          "body": "There is no pre-send check for Microsoft, Yahoo and AOL mailboxes. That is worth stating plainly, because the market for verification services is built on implying otherwise, and their own pages cannot say it.\n\nWhat remains is a feedback loop rather than a filter. Send in small batches, read the bounces back out of your own mailbox, suppress the permanent failures, and let the observed bounce rate decide whether the next batch goes out. Bounces arrive as RFC 3464 delivery status notifications, which are machine readable, so this is automatable.\n\nOne trap in implementing it. The part of a bounce carrying the failed recipient and status code is a message/delivery-status part, and that is not text. In Python, get_payload(decode=True) returns None for it and str() of its payload gives a list repr rather than headers, so a parser that walks parts as text finds nothing. A first pass over a real mailbox reported 262 of 275 bounces as unreadable for exactly this reason, which reads as 'we barely have a bounce problem'. Reconstructing the sub-part headers explicitly took it to 264 parsed and 0 unreadable.\n\nSuppress permanent failures only. A 4xx is a deferral, a full mailbox or a greylist, and dropping those addresses forever loses real people to a server having a busy afternoon."
+        },
+        {
+          "heading": "The number that decides whether any of this matters",
+          "body": "Bounce rate is what receiving systems judge a sender on. A few percent is normal. Sustained double digits gets a domain filtered and then blocklisted, and the damage is not limited to the campaign: ordinary mail from the same domain starts landing in spam.\n\nFor calibration, a real measurement rather than a rule of thumb. A list of historical consumer addresses, already MX-validated, produced a 34% hard bounce rate on first contact. A second list pulled from a production user table did worse at 60%, because it still contained test signups that nobody had filtered out. Both would have been fatal to the sending domain within days.\n\nWhich is the real argument for verification, stated honestly: not that it makes a bad list safe, but that it tells you the list is bad before the receiving world does."
+        }
+      ],
+      "citedPapers": [
+        "evaluating-open-weight-llms-for-generating-structured-threat-informati",
+        "searchos-v1-towards-robust-open-domain-information-seeking-agent-colla"
+      ]
+    },
+    {
+      "slug": "what-can-my-gpu-actually-run-locally",
+      "question": "What models can my hardware actually run: LLM, vision and speech?",
+      "shortAnswer": "It is computed, not guessed. Four GPU tiers decide the language model: 24GB+ runs 70B-class, 10GB+ turns on speculative decoding (a draft model replies in ~300ms while the main one verifies), 4GB+ runs a heavy model without it, below that is CPU. Speech engines tier separately and far lower, usable English speech and transcription fit inside 1GB. And because a single model can serve several purposes at once (Qwen3.5-0.8B does drafting, captioning and GUI grounding), the question is not how many models fit, but which jobs are still unclaimed after the ones that fit have taken everything they can do.",
+      "topic": "hive",
+      "updatedAt": "2026-07-23",
+      "author": {
+        "type": "Organization",
+        "name": "Hevolve AI",
+        "url": "https://hevolve.ai"
+      },
+      "sections": [
+        {
+          "heading": "Start here: what fits in your free VRAM",
+          "body": "Free VRAM, not total. Your desktop compositor and browser are already holding some.\n\nUNDER 1 GB. Usable, not a consolation prize\n  whisper-base (STT)        0.5 GB floor, 0.2 GB model\n  Kokoro (TTS, English)     0.5 GB floor, 0.2 GB model\n  NeuTTS Air (TTS)          0.7 GB floor, Q4 GGUF ~600 MB\n  MMS-TTS (~50 languages)   1.0 GB floor\n\n1-3 GB, the range most laptops actually sit in\n  MeloTTS (en/es/fr/zh/ja/ko)   1.5 GB\n  Indic Parler (21 Indic + en)  2.0 GB\n  whisper-medium (STT)          2.0 GB\n  F5 (voice cloning, en+zh)     2.5 GB\n  XTTS-v2 (17 langs, cloning)   2.5 GB\n\n3-6 GB\n  OmniVoice (646 languages)     3.5 GB\n  CosyVoice3 (zh/ja/ko/de/es/fr/it/ru)  4.0 GB\n  whisper-large-v3-turbo        4.0 GB\n  Chatterbox Turbo (expressive English)  5.6 GB\n\n6 GB AND UP\n  MiniCPM (vision)              6.0 GB\n  LTX2 / ACEStep / DiffRhythm   6.0 GB\n  WAN2GP                        8.0 GB\n  Chatterbox multilingual (23 langs)  14.0 GB, wants a 16 GB card\n\nThese are the actual budgets the runtime allocates against, from VRAM_BUDGETS in vram_manager.py. Each entry is a pair: the floor below which the engine is skipped, and the size it is expected to occupy once loaded."
+        },
+        {
+          "heading": "The LLM tier: four thresholds, and what each one actually unlocks",
+          "body": "Speech engines tier per-engine. The language model tiers differently, on four VRAM thresholds, and what changes at each is not simply 'a bigger model'.\n\n  ULTRA     24 GB+   70B-class viable, speculative decoding, full voice headroom\n  FULL      10 GB+   draft + main speculative decoding active\n  STANDARD   4 GB+   heavy model only, no speculative decoding\n  CPU       under 4  no CUDA GPU, or under 4 GB, chat runs on CPU\n\nThe interesting boundary is 10 GB, and it is not where a bigger model fits. It is where **speculative decoding** turns on: a small draft model answers in roughly 300ms while the main model verifies behind it, which makes a local machine feel like a hosted API. Measured at about 40% faster replies than Standard.\n\nAnd the reason the threshold is 10 and not 6 is a trade nobody would guess from the outside: running draft and main together fits well below 10 GB, but then there is no room left for a voice engine. The threshold is set where speculative decoding can run *and* the machine can still speak. A number chosen for the whole system rather than for the model."
+        },
+        {
+          "heading": "One model, several jobs, why 'what can I run' is the wrong question",
+          "body": "The usual mental model is one model per task: an LLM, plus a vision model, plus a captioner. That is what makes the hardware question feel unanswerable, because you are summing four models against one budget.\n\nNunba assigns *purposes*, not model types. A single model can serve any combination of them, and capability decides, not a label:\n\n  draft · main · vision · caption · grounding · tts · stt · diarization\n  vad · embedding · rerank · ocr · music · image-gen · video-gen · translate\n\nSo Qwen3.5-0.8B covers *draft*, *caption* and *grounding* at once, speculative-decode drafting, image captioning, and locating a click target on screen for GUI automation. Qwen3-4B-Omni covers *main*, *tts* and *stt*: chat, speech out and speech in from one load.\n\nThat changes the arithmetic. Two models can cover six jobs, so 'can I run agentic workloads on 8 GB' is not answered by adding up six model sizes. It is answered by which purposes are still unassigned once the models that fit have claimed everything they can do.\n\nThe comment in the source states the principle plainly: purposes are not gated by model_type, model capabilities drive it, not an artificial type label."
+        },
+        {
+          "heading": "Deterministic, and what that costs to keep true",
+          "body": "The point of all of this is that the answer is computed, not guessed. The machine is probed on launch, engines whose floor exceeds free VRAM are skipped, and purposes are assigned from what actually loaded. The same hardware produces the same configuration every time.\n\nThat property is fragile in one specific way, and it is worth saying because it already went wrong here. The 24 / 10 / 4 thresholds were once duplicated in two places, the backend tier logic and the frontend badge. The failure mode is not a crash: one side ships, the other does not, and the interface now reports a tier the runtime does not agree with. A user is told Full and gets Standard behaviour, with nothing in any log to say so.\n\nThey are now one table, exported over an API the frontend reads, precisely so the label cannot drift from the behaviour. Determinism is not a property of having thresholds. It is a property of having exactly one copy of them."
+        },
+        {
+          "heading": "Check the driver before you check the card",
+          "body": "This is the one that wastes an afternoon.\n\nA CUDA-12 build will not load on an older driver. The floors are 527.41 on Windows and 525.60 on Linux. Below those, the GPU is real, `nvidia-smi` reports it happily, and the runtime is still correct to treat the machine as CPU-only, because the build it would have to load cannot run there.\n\nSo 'my 3060 is not being used' is usually a driver problem, not a VRAM problem, and no amount of changing model settings will fix it. Check `nvidia-smi` for driver_version first.\n\nOne design note worth stealing: when the driver version cannot be parsed at all, the check returns True rather than False. Fail-safe, deliberately, never demote a GPU you failed to measure. An unreadable version string is ignorance, not evidence of an old driver, and treating the two the same silently downgrades working hardware."
+        },
+        {
+          "heading": "Common mistakes",
+          "body": "Budgeting against total VRAM instead of free. The compositor, the browser and any other CUDA process are already resident. A 6 GB card with a browser open is not a 6 GB budget.\n\nAssuming bigger is better for speech. Kokoro at 82M parameters is 0.2 GB and sounds good in English. Chatterbox multilingual is 12 GB. If you only need English, the 60x smaller model is the right answer, and it runs on CPU.\n\nTreating STT and TTS as one budget. They load separately and at different moments. whisper-base plus Kokoro is a complete listen-and-speak loop inside 1 GB.\n\nSilent GPU-detection failures. If the detection path swallows its error, tiering falls back and never tells you. We shipped exactly that: `detect_gpu: swallowed FileNotFoundError` in a log nobody reads, on a machine where nvidia-smi was not on PATH. The fallback was correct. The silence was not."
+        },
+        {
+          "heading": "Why these numbers are trustworthy, and where they are not",
+          "body": "They come from the table a running system allocates against, not from a benchmark or a spec sheet. Nunba probes the machine on launch and skips engines whose floor exceeds free VRAM, so these thresholds decide what real installs load every day.\n\nTwo honest limits. Several entries are marked as stub budgets that auto-tighten on first successful load, OmniVoice and NeuTTS Air among them, so their published floor is conservative until the runtime has measured the engine once. And a floor is not a quality claim: it says the engine will load and run, not that it will sound better than a larger one.\n\nThe numbers are also specific to CUDA builds on NVIDIA. Apple Silicon and CPU-only paths have different characteristics and are not what this table describes."
+        },
+        {
+          "heading": "How the numbers correct themselves",
+          "body": "A published budget is an estimate until something measures it. This one measures.\n\nEach engine loads in a worker subprocess, and after a successful load the worker self-reports its actual GPU usage back to the parent, which stores the value and uses it in preference to the declared estimate on every subsequent load. The measurement is persisted, so it survives a restart.\n\nThat is what lets a new engine ship with a deliberately conservative stub budget and tighten itself after one real load, with no code change. OmniVoice and NeuTTS Air are both in that state right now, their published floors are placeholders that reality will lower.\n\nThe rails around it are the part worth copying:\n\n  * Non-positive readings are ignored. A worker emits 0.0 when it cannot measure, CPU-only, Metal, broken nvidia-smi, and a 0 that means 'I don't know' must never be recorded as 'this model is free'.\n  * Values are clamped to 0.1-64 GB, which catches negative deltas from concurrent workers and runaway leaks.\n  * If measured exceeds declared by more than 50%, it logs a prominent warning rather than quietly accepting it: the declared budget is wrong and will not fit on the GPU class it claims to target.\n\nAllocation is also lock-guarded, for a failure that is easy to miss: two tools checking free VRAM at the same moment both see 5 GB, both conclude 4 GB fits, both allocate, and the device is asked for 8 GB it does not have. A check-then-act race with CUDA OOM as the outcome.\n\nSo the honest description of the table above is not 'these are the requirements'. It is: these are the current best estimates, several of them already replaced by measurements from real loads, and each one is checked against reality the next time it runs."
+        }
+      ],
+      "citedPapers": [
+        "pagedweight-efficient-moe-llm-serving-with-dynamic-quality-aware-weigh",
+        "bisco-llm-lookup-free-binary-spherical-coding-for-extreme-low-bit-larg",
+        "nifa-nonlinear-imc-enhanced-fpga-for-efficient-ml-inference"
+      ]
+    },
+    {
+      "slug": "how-should-an-ai-decide-which-model-answers-your-question",
+      "question": "How should an AI system decide which model answers your question?",
+      "shortAnswer": "Let the smallest model answer first, and let it say when it is out of its depth. In HART OS a 0.8B draft model replies to every turn immediately and emits a delegate signal alongside its answer. A refusal pattern or a low confidence score promotes the turn to the 4B local model, and then to an expert running on a peer's hardware. The user never picks a model. What this does not solve is the harder half. Every rung is still one model answering in one shot, so a question that genuinely needs decomposition and twenty minutes gets a better paragraph instead of more work.",
+      "topic": "hive",
+      "updatedAt": "2026-07-26",
+      "sections": [
+        {
+          "heading": "Asking the user to choose is the wrong design",
+          "body": "Most local-AI setups expose a model picker. That pushes an engineering decision onto someone who cannot make it. The right model depends on how hard the question is, and you only know that after answering it. A picker also fails in the expensive direction silently . A user who leaves it on the small model gets worse answers forever and has no way to notice.\n\nThe alternative is to make it the system's decision and let the model that is cheapest to run be the one that raises its hand. A 0.8B model costs little enough to run on every turn that using it as a triage step is close to free, and it is capable enough to recognise when a question is beyond it even when it cannot answer it."
+        },
+        {
+          "heading": "What the ladder actually looks like",
+          "body": "Four rungs, climbed automatically. Each one is entered only when the rung below signals it cannot finish the job:\n\n| rung | model | entered when |\n|---|---|---|\n| draft | 0.8B, local | every turn, always |\n| local | 4B, local | draft refuses, hedges, or scores low confidence |\n| hive | expert on a peer machine | draft self-delegates, or the local tier is insufficient |\n| fusion | MoE consult across peers | explicitly preferred by the user |\n\nWhich tier a machine can host comes off available VRAM, using thresholds of 24, 10, 4 and 0 GB, with speculative decoding enabled around 10 GB to leave headroom for speech. Those four numbers were chosen by judgement, not measurement, and we say so on the open-problems list rather than presenting them as tuned."
+        },
+        {
+          "heading": "The failure this design does not cover",
+          "body": "Escalating to a bigger model only helps for problems a bigger model fixes. Some problems are hard because they need decomposition, several attempts, verification and more minutes than a request should hold open. That machinery exists goals that run over time, a task protocol carrying a quality score, offload to a peer's hardware and none of it can be reached from difficulty. Sustained work begins only when the caller sets a flag, which is a person deciding rather than the system concluding.\n\nSo the autopilot stops exactly where autonomy would start being worth something. Ask something trivial and the system decides on its own to answer it cheaply. ask something needing an hour across three machines and it returns its best single paragraph, because nothing is watching for “this one deserves more than a turn”."
+        },
+        {
+          "heading": "What the running system reports",
+          "body": "Measured on the live central node over a six-hour window on 26 July 2026, read from the running container's own logs rather than a benchmark:\n\n| observation | count |\n|---|---|\n| goals completed | 27 |\n| budget-gate blocks | 717 |\n| distinct goals blocked | 5 |\n\nThe second row is a defect, not a throughput figure. Five goals that could not afford their next step were re-evaluated roughly 143 times each instead of waiting for budget to accrue about one check every 2.5 minutes, indefinitely. It is filed as an open issue with that measurement attached. We publish it because a page that only carries the flattering number is not worth trusting on the others."
+        },
+        {
+          "heading": "Arguing with this",
+          "body": "The framing above may be wrong, and that is worth more to us than agreement. The questions we cannot answer are written up with the files that implement today's inadequate versions, including what a system may commit on your behalf, how a 40-minute answer can be the same interaction as a 400-millisecond one, and how it would know it was finished.\n\nThe list is at github.com/hertz-ai/HARTOS → OPEN_PROBLEMS.md, and the discussion on this specific problem is open. HART OS is Apache 2.0 and in public alpha. disagreement needs no setup at all."
+        }
+      ],
+      "citedPapers": [
+        "pagedweight-efficient-moe-llm-serving-with-dynamic-quality-aware-weigh",
+        "on-policy-delta-distillation",
+        "beyond-single-expert-harmonizing-diverse-visual-priors-in-mllms-for-sp"
+      ]
+    }
+  ]
+}

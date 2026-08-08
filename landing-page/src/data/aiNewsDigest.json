@@ -1,0 +1,173 @@
+{
+  "as_of": "2026-07-21T11:08:56.000Z",
+  "items": [
+    {
+      "source": "The Verge AI",
+      "title": "America needs to stop getting shocked by Chinese AI",
+      "url": "https://www.theverge.com/ai-artificial-intelligence/968136/chinese-ai-models-another-sputnik-moment",
+      "publishedAt": "2026-07-21T11:08:56.000Z",
+      "summary": "Last week, two Chinese AI companies unveiled models they say can credibly compete with the best systems from OpenAI and Anthropic. The response was swift and predictable. Markets wobbled, commentators declared Silicon Valley shooketh, and p…"
+    },
+    {
+      "source": "MIT Technology Review",
+      "title": "Advancing next-gen AI with materials science innovation",
+      "url": "https://www.technologyreview.com/2026/07/21/1140602/advancing-next-gen-ai-with-materials-science-innovation",
+      "publishedAt": "2026-07-21T10:37:34.000Z",
+      "summary": "The conversation about AI often centers on algorithms, computing power, or huge investments in new semiconductor fabrication plants and hyperscale data centers. But beneath each of these advances is another layer of innovation that makes th…"
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "Gritt exits stealth with $34 million for robots to build solar plants—then, everything else",
+      "url": "https://techcrunch.com/2026/07/21/gritt-exits-stealth-with-34-million-for-robots-to-build-solar-plants-then-everything-else",
+      "publishedAt": "2026-07-21T10:00:00.000Z",
+      "summary": "Gritt is coming out of stealth with $34 million and plan to automate the hardest tasks on construction sites."
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "Anthropic’s landmark $1.5B copyright settlement is approved",
+      "url": "https://techcrunch.com/2026/07/20/anthropics-landmark-1-5b-copyright-settlement-is-approved",
+      "publishedAt": "2026-07-21T00:12:24.000Z",
+      "summary": "The final approval settles one case, but it doesn't resolve the broader issue of using copyrighted works to train AI models."
+    },
+    {
+      "source": "Hugging Face Blog",
+      "title": "Grabette: an open system to record robot-manipulation data",
+      "url": "https://huggingface.co/blog/grabette",
+      "publishedAt": "2026-07-21T00:00:00.000Z",
+      "summary": ""
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "Trump’s latest AI czar has already resigned",
+      "url": "https://techcrunch.com/2026/07/20/trumps-latest-ai-czar-has-already-resigned",
+      "publishedAt": "2026-07-20T22:21:04.000Z",
+      "summary": "The director role for the Center for AI Standards and Innovation (CAISI) has become a revolving door since David Sacks left his position as czar."
+    },
+    {
+      "source": "The Verge AI",
+      "title": "Here are the 30,000 songs Sony is suing Udio’s AI music generator over",
+      "url": "https://www.theverge.com/tech/968375/sony-udio-lawsuit-songs-ai-copyright",
+      "publishedAt": "2026-07-20T22:19:12.000Z",
+      "summary": "Sony Music Entertainment has filed another lawsuit against Udio, accusing the AI music generator of infringing the copyright of more than 30,000 of its songs, ranging from Elvis Presley's Hound Dog to Beyoncé's Say My Name, and Harry Styles…"
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "Google is working on a new AI chip designed to make Gemini more efficient",
+      "url": "https://techcrunch.com/2026/07/20/google-is-working-on-a-new-ai-chip-designed-to-make-gemini-more-efficient",
+      "publishedAt": "2026-07-20T21:21:15.000Z",
+      "summary": "Alphabet, Google's parent company, is reportedly working on a new chip designed to make its Gemini models run much more efficiently."
+    },
+    {
+      "source": "The Verge AI",
+      "title": "SpaceX in your index fund, explained",
+      "url": "https://www.theverge.com/business/968257/spacex-in-your-index-fund-explained",
+      "publishedAt": "2026-07-20T21:00:00.000Z",
+      "summary": "Index funds are touted as one of the safest ways to invest. Rather than picking and choosing individual stocks, index funds let you bet on the market as a whole. So what happens when a company like SpaceX - a giant gamble, and, in my opinio…"
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "AI’s most important protocol is getting a little bit easier to use",
+      "url": "https://techcrunch.com/2026/07/20/ais-most-important-protocol-is-getting-a-little-bit-easier-to-use",
+      "publishedAt": "2026-07-20T20:50:40.000Z",
+      "summary": "Under the new system, the protocol will take a looser, \"stateless\" approach to session IDs on the server side, similar to how most ordinary websites already work."
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "X relaunches a rebuilt Android app after year-long effort",
+      "url": "https://techcrunch.com/2026/07/20/x-relaunches-a-rebuilt-android-app-after-year-long-effort",
+      "publishedAt": "2026-07-20T19:37:39.000Z",
+      "summary": "X says the rebuilt version of its Android app is now available globally."
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "OpenAI is scared of open-weight models. Should the US be?",
+      "url": "https://techcrunch.com/2026/07/20/openai-is-scared-of-open-weight-models-should-the-us-be",
+      "publishedAt": "2026-07-20T19:33:25.000Z",
+      "summary": "Talk of banning Chinese-made open-weight LLMs reveals the challenge of turning AI into a business."
+    },
+    {
+      "source": "MIT Technology Review",
+      "title": "China’s AI models have Trump’s AI world at war with itself",
+      "url": "https://www.technologyreview.com/2026/07/20/1140675/chinas-ai-models-have-trumps-ai-world-at-war-with-itself",
+      "publishedAt": "2026-07-20T18:00:00.000Z",
+      "summary": "This story originally appeared in The Algorithm, our weekly newsletter on AI. To get stories like this in your inbox first, sign up here. Over the weekend, several current and former advisors to President Donald Trump on AI publicly lobbed…"
+    },
+    {
+      "source": "The Verge AI",
+      "title": "Adobe’s ‘natural look’ camera app embraces generative AI",
+      "url": "https://www.theverge.com/tech/967791/adobe-indigo-camera-app-ai-playground-update",
+      "publishedAt": "2026-07-20T16:00:00.000Z",
+      "summary": "Adobe's experimental camera app has taken an unexpected turn. After Project Indigo was launched last year to provide a \"more natural (SLR-like) look\" for iPhone photography, the Indigo camera app is now being updated with a suite of generat…"
+    },
+    {
+      "source": "Hugging Face Blog",
+      "title": "Introducing Cosmos 3 Edge",
+      "url": "https://huggingface.co/blog/nvidia/cosmos3edge",
+      "publishedAt": "2026-07-20T15:58:51.000Z",
+      "summary": ""
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "Adobe camera app’s new feature will critique your photos using AI",
+      "url": "https://techcrunch.com/2026/07/20/adobe-camera-apps-new-feature-will-critique-your-photos-using-ai",
+      "publishedAt": "2026-07-20T15:45:00.000Z",
+      "summary": "Adobe's Project Indigo can now remove all kinds of backgrounds from photos you snap using the app."
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "YouTube clarifies policies around AI slop and upsetting videos",
+      "url": "https://techcrunch.com/2026/07/20/youtube-clarifies-policies-around-ai-slop-and-upsetting-videos",
+      "publishedAt": "2026-07-20T15:23:06.000Z",
+      "summary": "YouTube has updated its monetization policies to more clearly define the kinds of AI-generated and low-quality videos that can’t earn ad revenue."
+    },
+    {
+      "source": "MIT Technology Review",
+      "title": "The Download: AI hiring biases, and weather data sabotage",
+      "url": "https://www.technologyreview.com/2026/07/20/1140664/the-download-ai-hiring-biases-weather-data-sabotage",
+      "publishedAt": "2026-07-20T12:10:00.000Z",
+      "summary": "This is today’s edition of The Download, our weekday newsletter that provides a daily dose of what’s going on in the world of technology. AI is more likely than humans to form biases when hiring The next time you apply for a job, AI may scr…"
+    },
+    {
+      "source": "The Verge AI",
+      "title": "China delivers a one-two punch to America’s AI dominance",
+      "url": "https://www.theverge.com/ai-artificial-intelligence/967781/chinese-ai-models-open-source-moonshot-kimi-k3-alibaba-qwen",
+      "publishedAt": "2026-07-20T10:16:33.000Z",
+      "summary": "China's leading AI companies are ramping up the pressure on Silicon Valley, as Moonshot and Alibaba unveiled models they claim can go toe-to-toe with the best from OpenAI and Anthropic at a fraction of the cost. The rapid-fire releases sugg…"
+    },
+    {
+      "source": "OpenAI News",
+      "title": "Safety and alignment in an era of long-horizon models",
+      "url": "https://openai.com/index/safety-alignment-long-horizon-models",
+      "publishedAt": "2026-07-20T10:00:00.000Z",
+      "summary": "OpenAI shares lessons from deploying long-running AI models, highlighting new safety risks, observed failures, and improved safeguards through iterative deployment."
+    },
+    {
+      "source": "MIT Technology Review",
+      "title": "AI is more likely than humans to form biases when hiring",
+      "url": "https://www.technologyreview.com/2026/07/20/1140655/ai-biases-hiring-humans",
+      "publishedAt": "2026-07-20T08:39:01.000Z",
+      "summary": "The next time you apply for a job, AI may screen your résumé before any human sees it. But there’s good reason to question whether AI will judge you fairly. Researchers already know that LLMs pick up human biases from their training data. N…"
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "What to watch for after Jensen Huang’s Japan visit",
+      "url": "https://techcrunch.com/2026/07/19/what-to-watch-for-after-jensen-huangs-japan-visit",
+      "publishedAt": "2026-07-19T21:16:07.000Z",
+      "summary": "Jensen Huang left Tokyo with deals spanning Japan's entire tech ecosystem."
+    },
+    {
+      "source": "TechCrunch AI",
+      "title": "Can an Apple lawsuit derail OpenAI’s hardware plans?",
+      "url": "https://techcrunch.com/2026/07/19/can-an-apple-lawsuit-derail-openais-hardware-plans",
+      "publishedAt": "2026-07-19T19:24:45.000Z",
+      "summary": "On the latest episode of Equity, we debate whether Apple's lawsuit will cast a shadow over OpenAi's much-discussed plans to get into hardware and go public."
+    },
+    {
+      "source": "The Verge AI",
+      "title": "I hate that I don’t hate this song made with Suno",
+      "url": "https://www.theverge.com/entertainment/967678/1010benja-semiramis-dream-suno-ai-music",
+      "publishedAt": "2026-07-19T17:35:54.000Z",
+      "summary": "I would never go so far as to say there's no place for AI in music (I'm a fan of Holly Herndon, after all). But I generally find music made with generative AI to be offensively boring, especially the outputs of Suno. So I'm having a bit of…"
+    }
+  ]
+}
