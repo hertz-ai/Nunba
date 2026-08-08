@@ -90,6 +90,43 @@ export function renderWithProviders(ui, options = {}) {
 /**
  * Create a mock API success response
  */
+/**
+ * Every path MainRoute.js declares, as absolute routes.
+ *
+ * WHY THIS EXISTS
+ *
+ * A link to a route that does not exist looks completely normal until someone
+ * clicks it, and then React Router renders the catch-all rather than erroring.
+ * That has shipped here: footer-light.js linked <Link to="/About">, which
+ * matched nothing because React Router is case-sensitive, so it served the bare
+ * CRA shell from every page on the site.
+ *
+ * Nested children are declared relative (<Route path="/social"> containing
+ * <Route path="kids">), so they are resolved against the nearest absolute path
+ * declared before them. That is a heuristic, not a JSX parse: it is correct for
+ * a file whose nested blocks each open with an absolute parent, which is how
+ * MainRoute.js is written, and it would misattribute a relative route that
+ * followed an unrelated absolute one. Assert membership with it, not absence.
+ */
+export function declaredRoutes(source) {
+  const routes = new Set();
+  let parent = '';
+
+  for (const m of source.matchAll(/path=["']([^"']+)["']/g)) {
+    const p = m[1];
+    if (p.startsWith('/')) {
+      parent = p === '/' ? '' : p.replace(/\/$/, '');
+      routes.add(p);
+    } else if (p !== '*') {
+      routes.add(`${parent}/${p}`);
+    }
+  }
+  return routes;
+}
+
+/**
+ * Create a mock API success response
+ */
 export function mockApiSuccess(data) {
   return Promise.resolve({data, success: true});
 }

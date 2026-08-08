@@ -5,7 +5,8 @@ import OtpAuthModal from '../OtpAuthModal';
 
 import {ChevronRight, Menu, Star, Plus, X} from 'lucide-react';
 import React from 'react';
-import {Link as RouterLink, useNavigate} from 'react-router-dom';
+import {Link as RouterLink} from 'react-router-dom';
+import SIDEBAR_LINKS from '../sidebarLinks';
 
 
 /**
@@ -92,8 +93,6 @@ const AgentSidebar = ({
   LogOutUser,
   toggleDropdown,
 }) => {
-  const navigate = useNavigate();
-
   if (screenWidth > 768) {
     /* ───────── Desktop sticky sidebar ───────── */
     return (
@@ -302,50 +301,28 @@ const AgentSidebar = ({
               </div>
             </div>
 
-            {/* Options List */}
+            {/* Options List — see ../sidebarLinks.
+              *
+              * This block and the mobile one below listed the same seven
+              * destinations by hand.
+              *
+              * Anchors, not click handlers. These were
+              * onClick={() => navigate(path)}, which is invisible to anything
+              * that is not a left click: middle-click and open-in-new-tab do
+              * nothing, copy-link-address has nothing to copy, and a screen
+              * reader announces a list item where a link belongs. */}
             <ul className="space-y-2">
-              <li
-                onClick={() => navigate('/social')}
-                className="cursor-pointer hover:bg-gray-800 p-2 rounded flex items-center gap-2"
-              >
-                🌐 Social
-              </li>
-              <li
-                onClick={() => navigate('/social/kids')}
-                className="cursor-pointer hover:bg-gray-800 p-2 rounded flex items-center gap-2"
-              >
-                🧒 Kids Learning
-              </li>
-              <li
-                onClick={() => navigate('/admin')}
-                className="cursor-pointer hover:bg-gray-800 p-2 rounded flex items-center gap-2"
-              >
-                ⚙️ Admin
-              </li>
-              <li
-                onClick={() => navigate('/AboutHevolve')}
-                className="cursor-pointer hover:bg-gray-800 p-2 rounded"
-              >
-                About Hevolve
-              </li>
-              <li
-                onClick={() => navigate('/agents')}
-                className="cursor-pointer hover:bg-gray-800 p-2 rounded"
-              >
-                Agents
-              </li>
-              <li
-                onClick={() => navigate('/aboutus')}
-                className="cursor-pointer hover:bg-gray-800 p-2 rounded"
-              >
-                About Us
-              </li>
-              <li
-                onClick={() => navigate('/Plan')}
-                className="cursor-pointer hover:bg-gray-800 p-2 rounded"
-              >
-                Pricing
-              </li>
+              {SIDEBAR_LINKS.map((item) => (
+                <li key={item.to}>
+                  <RouterLink
+                    to={item.to}
+                    onClick={() => setIsOpen(false)}
+                    className="cursor-pointer hover:bg-gray-800 p-2 rounded flex items-center gap-2 text-white no-underline"
+                  >
+                    {item.label}
+                  </RouterLink>
+                </li>
+              ))}
             </ul>
 
             <div className="flex justify-center items-center mt-4 space-x-2">
@@ -547,59 +524,26 @@ const AgentSidebar = ({
             </button>
           )}
 
+          {/* Same seven destinations as the desktop block, same source. Only
+              the type ramp differs, which is why the class names stay here
+              rather than moving into sidebarLinks.js.
+
+              setIsOpen(false) on every item, where three of seven had it.
+              Navigating unmounts this page so the difference was not visible,
+              which is exactly why it drifted. */}
           <div className="mt-1">
             <ul className="space-y-1 text-white">
-              <li
-                onClick={() => {
-                  setIsOpen(false);
-                  navigate('/social');
-                }}
-                className="cursor-pointer text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl hover:bg-gray-800 p-1 rounded flex items-center gap-2"
-              >
-                🌐 Social
-              </li>
-              <li
-                onClick={() => {
-                  setIsOpen(false);
-                  navigate('/social/kids');
-                }}
-                className="cursor-pointer text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl hover:bg-gray-800 p-1 rounded flex items-center gap-2"
-              >
-                🧒 Kids Learning
-              </li>
-              <li
-                onClick={() => {
-                  setIsOpen(false);
-                  navigate('/admin');
-                }}
-                className="cursor-pointer text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl hover:bg-gray-800 p-1 rounded flex items-center gap-2"
-              >
-                ⚙️ Admin
-              </li>
-              <li
-                onClick={() => navigate('/AboutHevolve')}
-                className="cursor-pointer text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl hover:bg-gray-800 p-1 rounded flex items-center"
-              >
-                About Hevolve
-              </li>
-              <li
-                onClick={() => navigate('/agents')}
-                className="cursor-pointer text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl hover:bg-gray-800 p-1 rounded flex items-center"
-              >
-                Agents
-              </li>
-              <li
-                onClick={() => navigate('/aboutus')}
-                className="cursor-pointer text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl hover:bg-gray-800 p-1 rounded flex items-center"
-              >
-                About Us
-              </li>
-              <li
-                onClick={() => navigate('/Plan')}
-                className="cursor-pointer text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl hover:bg-gray-800 p-1 rounded flex items-center"
-              >
-                Pricing
-              </li>
+              {SIDEBAR_LINKS.map((item) => (
+                <li key={item.to}>
+                  <RouterLink
+                    to={item.to}
+                    onClick={() => setIsOpen(false)}
+                    className="cursor-pointer text-sm sm:text-base md:text-xl lg:text-2xl xl:text-3xl hover:bg-gray-800 p-1 rounded flex items-center gap-2 text-white no-underline"
+                  >
+                    {item.label}
+                  </RouterLink>
+                </li>
+              ))}
             </ul>
           </div>
 
