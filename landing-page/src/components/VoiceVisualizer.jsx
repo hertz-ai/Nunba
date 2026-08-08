@@ -17,6 +17,41 @@ const PTS = 180;
 // at the oR[] assignment.
 const PEAK_FULL = 100;
 
+// Softening constant in the rectifier below. Was an inline `const soft = 8`
+// inside the per-point loop; hoisted so the mapping can be one exported
+// function rather than a formula duplicated between the loop and its test.
+const SOFT = 8;
+
+// The one place a wave value becomes a radius.
+//
+// Peaks only ever go outward: the soft rectifier w^2/(|w|+SOFT) is non-negative
+// for any w, so the orb never dips inside baseR. The result is mapped into
+// `peakHeadroom` -- the distance actually remaining between the resting orb and
+// the canvas edge -- so the envelope fits at any `fill` instead of being scaled
+// off baseR alone and clipping when the bands saturate.
+//
+// Exported for the same reason computeOrbEdge is: jsdom has no canvas, so the
+// draw loop cannot be exercised in a unit test. The loop calls THIS, so there
+// is no second copy of the formula to drift out of step with its guard.
+// The resting orb's shape, at angle `a` and time `t`. Three low harmonics, so
+// it reads as breathing rather than as speech.
+//
+// `idleGain` scales the amplitude BEFORE waveToRadius rectifies it, which is
+// what makes gain 1 an identity: the expression is then character-for-character
+// the pre-prop one. Exported alongside waveToRadius so the breathing guard can
+// drive the real functions instead of restating their formulas.
+export function idleWaveAt(a, t, idleGain) {
+  return idleGain * (
+    6 * Math.sin(2 * a + t * 0.6) +
+    4 * Math.sin(3 * a - t * 0.45) +
+    3 * Math.sin(5 * a + t * 0.7));
+}
+
+export function waveToRadius(baseR, peakHeadroom, wave) {
+  const rectified = (wave * wave) / (Math.abs(wave) + SOFT);
+  return baseR + Math.min(rectified / PEAK_FULL, 1) * peakHeadroom;
+}
+
 // Historical default edge, used only when the container cannot be measured and
 // the caller gave no explicit size.  `size` is NO LONGER defaulted to this:
 // it is an optional CAP now, and defaulting it would silently pin every
@@ -77,7 +112,7 @@ export function computeOrbEdge(containerW, containerH, size, canvasMax) {
   return Math.max(1, Math.floor(Math.min.apply(null, bounds)));
 }
 
-const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, fill }) {
+const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, fill, idleGain }) {
   // `size` is an optional CAP, not the orb's size.  Deliberately NOT defaulted
   // (it used to be `size || 200`): the orb is driven by the box it lives in,
   // and a default would cap every container-driven consumer at 200px.
@@ -103,6 +138,31 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
   // component the user confirmed renders correctly.  ONE implementation, the
   // caller picks the proportion; no second orb.
   fill = (typeof fill === 'number' && fill > 0 && fill < 0.5) ? fill : 0.25;
+  // How hard the RESTING orb breathes.  Multiplies the idle wave's amplitude
+  // before the shared rectifier, so 1 is bit-for-bit the previous behaviour and
+  // any caller that omits the prop cannot be affected by this at all.
+  //
+  // WHY A PROP, LIKE `fill`.  The idle wave is a fixed ~13px excursion mapped
+  // through `peakHeadroom` (= 0.49W - baseR), so raising `fill` to make the orb
+  // bigger spends the same budget the breathing comes out of:
+  //
+  //     depth = 0.0805 * (0.49 - fill) / fill,  as a fraction of the resting radius
+  //
+  //     fill 0.25 -> 7.4%      fill 0.30 -> 4.9%      fill 0.38 -> 2.2%
+  //
+  // #617a raised landscape to 0.38 to stop the orb reading as a dot in a tall
+  // column, and that silently flattened its idle animation to a third of
+  // portrait's -- reported 2026-08-08 as "idle breathing is very less and looks
+  // almost a circle", landscape only.  Solving the formula for portrait's 7.4%
+  // returns fill 0.25, i.e. within this one budget "breathes properly" and
+  // "is portrait-sized" are the SAME statement and the two cannot both be had.
+  //
+  // The gain is the second budget.  The caller already knows its pane (that is
+  // why `fill` is a prop); it now also says how much breathing that pane wants.
+  // Landscape passes ~1.36 at fill 0.30 to recover 7.4%.  Capped at 4: at gain 4
+  // the idle alone claims ~45% of the headroom, still clear of the speaking
+  // ceiling, and beyond that the resting orb starts to look like it is talking.
+  idleGain = (typeof idleGain === 'number' && idleGain > 0 && idleGain <= 4) ? idleGain : 1;
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const analyserRef = useRef(null);
@@ -238,11 +298,8 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
       let maxPeakR = baseR;
       for (var i = 0; i <= PTS; i++) {
         var a = (i / PTS) * Math.PI * 2;
-        // Idle breathing — visible but calm
-        const idle =
-          6 * Math.sin(2 * a + t * 0.6) +
-          4 * Math.sin(3 * a - t * 0.45) +
-          3 * Math.sin(5 * a + t * 0.7);
+        // Idle breathing — visible but calm.
+        const idle = idleWaveAt(a, t, idleGain);
         const wave = idle +
           s.bassCur * 55 * Math.sin(2 * a + t * 1.5 * d) +
           s.bassCur * 32 * Math.sin(3 * a - t * 0.8 * d) +
@@ -250,8 +307,6 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
           s.midCur * 24 * Math.sin(6 * a - t * 1.3 * d) +
           s.trebleCur * 28 * Math.sin(8 * a + t * 3.0 * d) +
           s.trebleCur * 16 * Math.sin(11 * a - t * 1.8 * d);
-        const soft = 8;
-        const rectified = (wave * wave) / (Math.abs(wave) + soft);
         // Map the excursion into the headroom that actually exists.
         // PEAK_FULL=100 is calibrated so the DEFAULT fill=0.25 reproduces the
         // previous amplitude to within ~2%: old peak at rectified 88 was
@@ -259,7 +314,7 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
         // Existing consumers therefore look unchanged, while a larger `fill`
         // automatically gets a proportionally gentler excursion instead of
         // saturating against the edge.
-        oR[i] = baseR + Math.min(rectified / PEAK_FULL, 1) * peakHeadroom;
+        oR[i] = waveToRadius(baseR, peakHeadroom, wave);
         if (oR[i] > maxPeakR) maxPeakR = oR[i];
       }
 
@@ -329,7 +384,10 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
     // so a change must re-run this effect or the orb keeps drawing at the old
     // proportion (the stale-closure shape that made the echo gate inert in
     // 328ae594).
-  }, [isActive, connectAnalyser, fill]);
+    // `idleGain` joins `fill` here for the same reason: both are read by the
+    // render closure, so a change that does not re-run this effect keeps
+    // drawing at the old value (the stale-closure shape noted above).
+  }, [isActive, connectAnalyser, fill, idleGain]);
 
   useEffect(function() {
     return function() {

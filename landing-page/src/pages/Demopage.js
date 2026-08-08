@@ -5306,10 +5306,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                                  (the guard regex scans this whole tag, so
                                  this comment must not spell the prop form).
                                  #617a — how much of the canvas the RESTING
-                                 orb fills.  0.38 puts the resting circle at
-                                 ~76% of the column (the user's annotated
-                                 target); the peak envelope rescales to the
-                                 remaining headroom, so nothing clips.
+                                 orb fills.  0.38 put the resting circle at
+                                 ~76% of the column and was reported too big
+                                 (2026-08-08, landscape only); 0.30 is ~60%,
+                                 between that and portrait's 50%.  The peak
+                                 envelope rescales to the remaining headroom,
+                                 so nothing clips at any of these.
+                                 This value NO LONGER affects the idle
+                                 breathing depth — that was the second half of
+                                 the same report and is fixed in
+                                 VoiceVisualizer (see IDLE_FRACTION), so this
+                                 is now purely a size choice.
                                  PORTRAIT keeps 0.25: that pane is short and
                                  wide, and the orb already fills it.
                                  screenWidth STATE, not window.innerWidth —
@@ -5317,7 +5324,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                                  (Demopage:1545), so orientation changes
                                  re-evaluate this branch; an inline window
                                  read froze it until remount (the #627 bug). */
-                              fill={screenWidth <= 768 ? 0.25 : 0.38}
+                              fill={screenWidth <= 768 ? 0.25 : 0.30}
+                              /* Breathing depth, decoupled from size.  The idle
+                                 wave is mapped through the headroom left after
+                                 `fill`, so depth = 0.0805*(0.49-fill)/fill and
+                                 a bigger orb is always a flatter one: 0.25 ->
+                                 7.4%, 0.30 -> 4.9%, 0.38 -> 2.2%.  Landscape
+                                 could therefore breathe like portrait ONLY by
+                                 becoming portrait-sized, which is the #617
+                                 "dot in an empty column" complaint again.
+                                 1.36 restores portrait's 7.4% at fill 0.30.
+                                 PORTRAIT passes 1 — an identity multiply, so
+                                 that path is bit-for-bit unchanged. */
+                              idleGain={screenWidth <= 768 ? 1 : 1.36}
                             />
                           )}
                         </div>
@@ -5370,10 +5389,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                                  (the guard regex scans this whole tag, so
                                  this comment must not spell the prop form).
                                  #617a — how much of the canvas the RESTING
-                                 orb fills.  0.38 puts the resting circle at
-                                 ~76% of the column (the user's annotated
-                                 target); the peak envelope rescales to the
-                                 remaining headroom, so nothing clips.
+                                 orb fills.  0.38 put the resting circle at
+                                 ~76% of the column and was reported too big
+                                 (2026-08-08, landscape only); 0.30 is ~60%,
+                                 between that and portrait's 50%.  The peak
+                                 envelope rescales to the remaining headroom,
+                                 so nothing clips at any of these.
+                                 This value NO LONGER affects the idle
+                                 breathing depth — that was the second half of
+                                 the same report and is fixed in
+                                 VoiceVisualizer (see IDLE_FRACTION), so this
+                                 is now purely a size choice.
                                  PORTRAIT keeps 0.25: that pane is short and
                                  wide, and the orb already fills it.
                                  screenWidth STATE, not window.innerWidth —
@@ -5381,7 +5407,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                                  (Demopage:1545), so orientation changes
                                  re-evaluate this branch; an inline window
                                  read froze it until remount (the #627 bug). */
-                              fill={screenWidth <= 768 ? 0.25 : 0.38}
+                              fill={screenWidth <= 768 ? 0.25 : 0.30}
+                              /* Breathing depth, decoupled from size.  The idle
+                                 wave is mapped through the headroom left after
+                                 `fill`, so depth = 0.0805*(0.49-fill)/fill and
+                                 a bigger orb is always a flatter one: 0.25 ->
+                                 7.4%, 0.30 -> 4.9%, 0.38 -> 2.2%.  Landscape
+                                 could therefore breathe like portrait ONLY by
+                                 becoming portrait-sized, which is the #617
+                                 "dot in an empty column" complaint again.
+                                 1.36 restores portrait's 7.4% at fill 0.30.
+                                 PORTRAIT passes 1 — an identity multiply, so
+                                 that path is bit-for-bit unchanged. */
+                              idleGain={screenWidth <= 768 ? 1 : 1.36}
                             />
                           </div>
                         </>
