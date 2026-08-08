@@ -108,6 +108,55 @@ describe('NunbaTitleBar render guards', () => {
     expect(css).toMatch(/\.MuiAppBar-positionFixed\s*\{[^}]*top:\s*var\(--nunba-titlebar-h/);
   });
 
+  // Drift-guard (2026-08-08): the root element's overflow PROPAGATES TO THE
+  // VIEWPORT (CSS Overflow §3.3), so `overflow:hidden` on
+  // html.nunba-frameless-active did not just clip <html> — it disabled
+  // document scrolling for the entire app.  /admin/task-ledger and
+  // /admin/models have no inner scroller of their own, so they became
+  // unreachable past the fold INSIDE Nunba while still scrolling fine in a
+  // browser (where this class is never applied).  That asymmetry is exactly
+  // what makes it easy to reintroduce, hence a mechanical guard.
+  test('frameless html rule never disables the viewport scroller', () => {
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    const css = document.getElementById('nunba-titlebar-offsets')?.textContent || '';
+
+    const rawRule = css.match(
+      /html\.nunba-frameless-active\s*\{([^}]*)\}/)?.[1] || '';
+    expect(rawRule).not.toBe('');
+
+    // Strip CSS comments FIRST.  The rule carries a long explanation that
+    // necessarily quotes the very declaration being banned, and a guard that
+    // reads prose instead of declarations fails on its own documentation
+    // (measured: this test went red against the CORRECT css).  Assert on what
+    // the browser actually applies.
+    const decls = rawRule.replace(/\/\*[\s\S]*?\*\//g, '');
+
+    // The exact regression: a blanket `overflow: hidden` on the root, which
+    // propagates to the viewport and kills document scrolling everywhere.
+    // (`overflow-x: hidden` does NOT match — "overflow" is followed by "-".)
+    expect(decls).not.toMatch(/overflow\s*:\s*hidden/);
+    expect(decls).not.toMatch(/overflow-y\s*:\s*hidden/);
+    // ...and the document must still be able to scroll vertically.
+    expect(decls).toMatch(/overflow-y\s*:\s*(auto|scroll)/);
+  });
+
+  test('frameless mode still reserves the strip and clamps h-screen shells', () => {
+    // ZERO-REGRESSION PIN for what the overflow:hidden was there to solve:
+    // the 32px must still be reserved at document level, and full-height
+    // shells still clamped, or the chat input drops below the visible edge.
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    const raw = document.getElementById('nunba-titlebar-offsets')?.textContent || '';
+    // Same reason as above: comments sit BETWEEN the selector and the
+    // declaration here, so any proximity match must run on stripped CSS.
+    const css = raw.replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(css).toMatch(
+      /html\.nunba-frameless-active\s*\{[^}]*padding-top:\s*var\(--nunba-titlebar-h/);
+    expect(css).toMatch(
+      /\.h-screen[\s\S]{0,120}calc\(100vh\s*-\s*var\(--nunba-titlebar-h/);
+  });
+
   test('renders all 3 window control buttons', () => {
     mockPywebview();
     render(<NunbaTitleBar />);

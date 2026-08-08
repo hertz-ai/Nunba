@@ -231,7 +231,24 @@ export default function NunbaTitleBar({ children }) {
         padding-top: var(--nunba-titlebar-h, 32px);
         height: 100vh;
         box-sizing: border-box;
-        overflow: hidden;
+        /* overflow-y MUST NOT be 'hidden' here.  The root element's overflow
+           PROPAGATES TO THE VIEWPORT (CSS Overflow 3.3), so 'overflow:hidden'
+           on <html> does not merely clip <html> — it disables document
+           scrolling for the whole app.  Shells that carry their own inner
+           scroller (chat, social, sidebar — all .h-screen, clamped below) were
+           unaffected, which is why this shipped unnoticed; but every page that
+           scrolls the DOCUMENT instead — /admin/task-ledger and /admin/models
+           have no inner scroller at all — became unreachable past the fold in
+           the frameless window while still working in a browser, where this
+           class is never applied.
+           'auto' keeps the original intent (no scrollbar unless content really
+           overflows the reserved 100vh − 32px box) without killing the
+           viewport scroller.  X stays hidden so a stray wide child cannot
+           introduce a horizontal bar.
+           NOTE: no backticks in this block — it lives inside a JS template
+           literal, and one would terminate the string. */
+        overflow-x: hidden;
+        overflow-y: auto;
       }
       html.nunba-frameless-active body {
         height: 100%;
