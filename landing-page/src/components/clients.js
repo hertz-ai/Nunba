@@ -64,8 +64,15 @@ export default function Clients() {
         <div className="grid lg:grid-cols-3 md:grid-cols-2 grid-cols-1 mt-6 gap-6">
           {clientData.map((item, index) => {
             return (
-              <div className="grid grid-cols-1 gap-6 h-fit" key={index}>
-                <div className="rounded-lg shadow dark:shadow-gray-800 p-6 border-b-4 border-amber-400 bg-white dark:bg-slate-900 h-fit">
+              /* h-full, not h-fit.
+               *
+               * A grid item stretches to its row by default; h-fit explicitly
+               * opted out, so each card was only as tall as its own quote. The
+               * testimonials differ by several lines, so the row ended at three
+               * different heights with the amber underline bar landing in three
+               * different places. Ported from the Hevolve web fix. */
+              <div className="grid grid-cols-1 gap-6 h-full" key={index}>
+                <div className="rounded-lg shadow dark:shadow-gray-800 p-6 border-b-4 border-amber-400 bg-white dark:bg-slate-900 h-full flex flex-col">
                   <div className="flex items-center pb-6 border-b border-gray-100 dark:border-gray-800">
                     <img
                       src={item.image}
@@ -84,8 +91,11 @@ export default function Clients() {
                     </div>
                   </div>
 
-                  <div className="mt-6">
-                    <p className="text-slate-400">{item.desc}</p>
+                  {/* flex-1 pushes the stars to the card's bottom edge. With
+                      the cards now equal height, a short quote would otherwise
+                      leave its rating floating mid-card. */}
+                  <div className="mt-6 flex flex-col flex-1">
+                    <p className="text-slate-400 flex-1">{item.desc}</p>
                     <ul className="list-none mb-0 text-amber-400 mt-2">
                       <li className="inline">
                         <i className="mdi mdi-star"></i>

@@ -1,3 +1,265 @@
+/* Ported from the Hevolve web repo (src/pages/Layouts/header.scss).
+ *
+ * Nunba carried a 3-line version of this file -- just a link hover colour --
+ * while rendering the same markup web does. Everything below is what makes
+ * that markup behave: the desktop row, the mobile collapse, and the dropdown
+ * colours. The brand block is deliberately NOT the web one; see the note on it.
+ */
 .navbar-nav a:hover {
-  color: #13ce67;
+    color: #13ce67;
+  }
+
+/* Mobile menu collapse for the header used by /download and friends.
+ *
+ * This header renders id="navbar". Every navbar rule in tailwind.css is
+ * scoped to #topnav, which is what src/components/navbar.js renders, so none
+ * of it applied here and this file styled nothing but a hover colour. The
+ * markup already had a checkbox and a label wired together; there was simply
+ * no CSS making them do anything, so the nav rendered as a permanently
+ * expanded list of twenty links and pushed the Download button several
+ * screens down on a phone. That is the page every campaign email links to.
+ *
+ * Scoped to #navbar throughout so it cannot reach the #topnav pages.
+ */
+
+#navbar {
+  /* The checkbox is a mechanism, never a visible control. Hidden this way
+   * rather than with display:none so it stays focusable for keyboard users:
+   * the label is the visible control and toggles it either way. */
+  #navbar-nav-toggle {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+  }
+
+  /* The logo ships large. Without a cap it renders full-bleed on a phone and
+   * is the entire first screen.
+   *
+   * A CAP here, not an explicit height as in the Hevolve web copy of this
+   * file. That one sizes an SVG which has no intrinsic dimensions, where
+   * max-height alone leaves the element at the 300x150 replaced-element
+   * default. This mark is a raster carrying a height="14" attribute, so
+   * capping is both sufficient and non-destructive.
+   *
+   * There is no .brand-wordmark rule for the same reason: this header renders
+   * the mark alone, so web's wordmark styling would be dead CSS here. */
+  .navbar-brand img,
+  .logo-dark {
+    max-height: 32px;
+    width: auto;
+  }
+
+  /* No hamburger on desktop — but only because the rules below give the nav
+   * a real horizontal layout. Hiding the toggle without them is what broke
+   * desktop: this header has NO desktop styling of its own (every navbar
+   * rule in tailwind.css is scoped to #topnav, and this renders #navbar), so
+   * the list defaulted to display:block and stacked 12 items vertically.
+   * Measured on a 1366x641 viewport: a 488px-tall header, 76% of the screen,
+   * with the Download button pushed to y=844 — below the fold, and no
+   * hamburger left to collapse it. */
+  .navbar-toggle {
+    display: none;
+  }
+
+  /* Mechanism copied from the working header on hevolvechat.hertzai.com,
+   * which renders this same markup correctly: the row comes from
+   * inline-block list items, NOT from flex on the <ul>. Worth matching
+   * rather than reinventing — that build also carries a global
+   * `ul { display: block !important }`, which silently defeats a flex <ul>
+   * wherever it is present, and the inline-block approach is immune to it. */
+  .navbar-nav {
+    display: block;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .navbar-nav > li {
+    display: inline-block;
+    position: relative;   /* anchors the dropdown */
+    margin-right: 32px;
+    white-space: nowrap;
+    outline: none;
+  }
+
+  .navbar-nav > li:last-child {
+    margin-right: 0;
+  }
+
+  .navbar-nav > li > a {
+    display: inline-block;
+    padding: 6px 0;
+  }
+
+  /* Dropdowns float above the page. Left in flow they would widen the row
+   * and reintroduce the tall header this block exists to prevent. */
+  .dropdown-menu {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    min-width: 220px;
+    padding: 6px 0;
+    margin: 0;
+    list-style: none;
+    background: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+    z-index: 1000;
+  }
+
+  .dropdown:hover > .dropdown-menu,
+  .dropdown:focus-within > .dropdown-menu {
+    display: block;
+  }
+
+  /* The card above is #ffffff, and these links set no colour, so they
+   * inherited the dark header's #FFFAE8: white text on a white card, about
+   * 1.05:1. Every dropdown in the site nav was unreadable while open.
+   *
+   * Colour belongs here rather than on .dropdown-menu because the MOBILE
+   * block below deliberately makes the same element `background: transparent`
+   * so it sits as an accordion on the dark bar. Colouring the container would
+   * have fixed the desktop card and broken the mobile submenu the other way,
+   * which is the mistake PupitDocs.css documents making twice. */
+  .dropdown-menu > li > a {
+    display: block;
+    padding: 8px 14px;
+    white-space: nowrap;
+    color: #0f172a;
+  }
+
+  .dropdown-menu > li > a:hover,
+  .dropdown-menu > li > a:focus-visible {
+    background: #f1f5f9;
+  }
+}
+
+/* One row, not two.
+ *
+ * .navbar-header and .navbar-nav-wrapper are both block-level, so the brand sat
+ * on its own line ABOVE the links: a ~72px bar whose top half held a 32px mark
+ * and nothing else, with the mark stranded on the left of an empty row. Laying
+ * .navbar out as a flex row puts the brand left and the links right and takes
+ * the bar to ~40px, which is 32px of vertical space back on every page that
+ * uses this header.
+ *
+ * Desktop only, and deliberately so. Below 900px .navbar-header is a
+ * full-width flex row carrying the hamburger and .navbar-nav-wrapper is
+ * width:100% so the accordion can drop beneath it; a nowrap row would fight
+ * both of those.
+ */
+@media (min-width: 901px) {
+  #navbar .navbar {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    flex-wrap: nowrap;
+  }
+
+  #navbar .navbar-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+  }
+
+  /* min-width:0 so the links may shrink rather than forcing the row wider than
+   * the container and putting a horizontal scrollbar on the page. */
+  #navbar .navbar-nav-wrapper {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 900px) {
+  #navbar {
+    /* The desktop rules are unscoped, so undo the parts that matter here.
+     * The reference does the same thing at this breakpoint:
+     *   @media (max-width: 900px) { .navbar-nav li { display: block; margin: 0 } }
+     */
+    .navbar-nav > li {
+      display: block;
+      margin-right: 0;
+    }
+
+    .navbar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+    }
+
+    .navbar-toggle {
+      display: inline-block;
+      cursor: pointer;
+      font-size: 22px;
+      line-height: 1;
+      padding: 6px 10px;
+      user-select: none;
+    }
+
+    .navbar-nav-wrapper {
+      width: 100%;
+    }
+
+    /* Collapsed by default. The checkbox is a sibling of the list inside
+     * .navbar-nav-wrapper, which is what makes this work without JavaScript. */
+    .navbar-nav {
+      display: none;
+      flex-direction: column;
+      width: 100%;
+      padding-left: 0;
+      margin: 8px 0 0;
+      list-style: none;
+    }
+
+    #navbar-nav-toggle:checked ~ .navbar-nav {
+      display: flex;
+    }
+
+    .navbar-nav > li {
+      width: 100%;
+      border-top: 1px solid rgba(0, 0, 0, 0.07);
+    }
+
+    .navbar-nav > li > a {
+      display: block;
+      padding: 11px 4px;
+    }
+
+    /* Submenus stay closed until their parent is opened, otherwise collapsing
+     * the top level just trades twenty visible links for forty. */
+    .dropdown-menu {
+      display: none;
+      /* static, not the desktop absolute — an accordion submenu must push
+       * the links below it down, not float over them. */
+      position: static;
+      min-width: 0;
+      box-shadow: none;
+      background: transparent;
+      padding-left: 12px;
+      list-style: none;
+    }
+
+    .dropdown:hover > .dropdown-menu,
+    .dropdown:focus-within > .dropdown-menu {
+      display: block;
+    }
+
+    /* Undo the desktop card's dark link colour. Here the submenu is
+     * transparent on the dark bar, so it wants the header's own light text,
+     * not #0f172a. */
+    .dropdown-menu > li > a {
+      color: inherit;
+    }
+
+    .dropdown-menu > li > a:hover,
+    .dropdown-menu > li > a:focus-visible {
+      background: transparent;
+    }
+  }
 }

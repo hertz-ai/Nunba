@@ -57,7 +57,17 @@ class FooterLight extends Component {
                       </p>
                       <ul className="list-unstyled footer-list-menu">
                         <li>
-                          <Link to="/About">About Us</Link>
+                          {/* /aboutus, not /About. React Router matches paths
+                              case-sensitively and no /About route exists here,
+                              so this link served the bare CRA shell from every
+                              page on the site.
+
+                              The Hevolve web fix pointed the same link at
+                              /about; that route does not exist in this app
+                              (only /AboutHevolve and /aboutus do), so copying
+                              it verbatim would have traded one dead link for
+                              another. */}
+                          <Link to="/aboutus">About Us</Link>
                         </li>
                         <li>
                           <Link to="/privacy">Media & Press</Link>

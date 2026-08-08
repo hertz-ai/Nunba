@@ -99,17 +99,19 @@ const Header = ({fixed}) => {
         document.body.scrollTop > 80 ||
         document.documentElement.scrollTop > 80
       ) {
+        // Padding only. This used to also paint the bar white inline
+        // (#ffffffdd here, rgba(255,255,255,0.7) in the else), a leftover from
+        // a light-themed page. On a dark header that puts near-white links on
+        // a near-white bar at about 1.77:1, and because the else branch fires
+        // at scrollTop 0 as well, a single scroll left it light permanently.
+        // Ported from the Hevolve web fix; PupitHeader.js had the same lines.
         if (document.getElementById('navbar') != null) {
           document.getElementById('navbar').style.padding = '0px 0px';
-          document.getElementById('navbar').style.backgroundColor = '#ffffffdd';
         }
-        //document.getElementById("navbar").style.backgroundColor="rgba(255,255,255,0.9)";
         //document.getElementById("logo").style.fontSize = "25px";
       } else {
         if (document.getElementById('navbar') != null) {
           document.getElementById('navbar').style.padding = '10px 5px';
-          document.getElementById('navbar').style.backgroundColor =
-            'rgba(255,255,255,0.7)';
         }
         //document.getElementById("navbar-header-id").style.setProperty("background-color", "#ffffff00", "important");
         //document.getElementById("navbar").style.setProperty("background-color", "#ffffff00", "important");
@@ -203,7 +205,10 @@ const Header = ({fixed}) => {
 
       {fixed && <Spacer h={67} />}
       <div />
-      <div id="navbar" className={`navbar-wrapper ${fixed && 'navbar-fixed'}`}>
+      {/* Ternary, not `&&`: when `fixed` is falsy the && form interpolates the
+          literal string "false" and the element ships class="navbar-wrapper
+          false". Ported from the Hevolve web fix. */}
+      <div id="navbar" className={`navbar-wrapper ${fixed ? 'navbar-fixed' : ''}`}>
         <Container>
           <div className="navbar">
             <div className="navbar-header" id="navbar-header-id">

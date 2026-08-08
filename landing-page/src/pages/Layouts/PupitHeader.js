@@ -100,17 +100,17 @@ const Header = ({fixed}) => {
         document.body.scrollTop > 80 ||
         document.documentElement.scrollTop > 80
       ) {
+        // Padding only. This used to also paint the bar white inline; on a
+        // dark header that is near-white links on a near-white bar, and the
+        // else branch fires at scrollTop 0 too, so one scroll made it
+        // permanent. Identical bug to header.js; see the note there.
         if (document.getElementById('navbar') != null) {
           document.getElementById('navbar').style.padding = '0px 0px';
-          document.getElementById('navbar').style.backgroundColor = '#ffffffdd';
         }
-        // document.getElementById("navbar").style.backgroundColor="rgba(255,255,255,0.9)";
         // document.getElementById("logo").style.fontSize = "25px";
       } else {
         if (document.getElementById('navbar') != null) {
           document.getElementById('navbar').style.padding = '10px 5px';
-          document.getElementById('navbar').style.backgroundColor =
-            'rgba(255,255,255,0.7)';
         }
         // document.getElementById("navbar-header-id").style.setProperty("background-color", "#ffffff00", "important");
         // document.getElementById("navbar").style.setProperty("background-color", "#ffffff00", "important");
@@ -204,7 +204,9 @@ const Header = ({fixed}) => {
 
       {fixed && <Spacer h={67} />}
       <div />
-      <div id="navbar" className={`navbar-wrapper ${fixed && 'navbar-fixed'}`}>
+      {/* Ternary, not `&&`: the && form ships class="navbar-wrapper false"
+          whenever `fixed` is falsy. Same fix as header.js. */}
+      <div id="navbar" className={`navbar-wrapper ${fixed ? 'navbar-fixed' : ''}`}>
         <Container>
           <div className="navbar">
             <div className="navbar-header" id="navbar-header-id">
