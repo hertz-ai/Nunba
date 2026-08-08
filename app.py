@@ -336,11 +336,38 @@ if getattr(sys, 'frozen', False):
     # Write EVERY import entry to a file — tail shows the last-reached module
     # when the process hangs or crashes.  Line-buffered so even a kill -9 leaves
     # the trace on disk.
-    _imp_log_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs', 'import_trace.log')
-    try:
-        os.makedirs(os.path.dirname(_imp_log_path), exist_ok=True)
-        _imp_log = open(_imp_log_path, 'w', encoding='utf-8', buffering=1)
-    except OSError:
+    #
+    # OPT-IN since 2026-08-08 (NUNBA_TRACE_IMPORTS=1).  It shipped always-on and
+    # every user paid for it on every boot:
+    #
+    #   172,075 import events across 1,734 distinct modules (~99x re-entry) in
+    #   one measured session -> a 6.5 MB log and ~172k LINE-BUFFERED writes,
+    #   i.e. a flush per import statement, during startup.  Top re-entrants were
+    #   cached-module lookups that cost nothing on their own:
+    #   security.node_watchdog 11,494 / psutil 10,291 / winreg 10,104 /
+    #   flask 8,435.  The instrumentation cost more than what it measured, and
+    #   it is a duplicate: TrueFlow already ships a runtime injector for this,
+    #   deployed by its plugin (.pycharm_plugin/, see .gitignore) rather than
+    #   from source, so tracing is available on demand without a resident cost.
+    #
+    # DELIBERATELY NARROW: only the FILE LOGGING is gated.  The _trace_import
+    # wrapper and its circuit breaker below stay unconditional — the breaker is
+    # a hang GUARD, not a tracer (transformers 5.x re-imports
+    # convert_slow_tokenizer 60M+ times under cx_Freeze), it costs only a
+    # counter comparison, and disabling it with the flag would trade a boot-time
+    # cost for a boot-time hang.  Every write site is already guarded by
+    # `if _imp_log is not None`, so leaving it None disables tracing cleanly.
+    #
+    # Documented in HARTOS: docs/developer/diagnostics.md
+    # -> https://docs.hevolve.ai/developer/diagnostics/ (linked from the SDK page).
+    if os.environ.get('NUNBA_TRACE_IMPORTS', '').strip().lower() in ('1', 'true', 'yes', 'on'):
+        _imp_log_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'logs', 'import_trace.log')
+        try:
+            os.makedirs(os.path.dirname(_imp_log_path), exist_ok=True)
+            _imp_log = open(_imp_log_path, 'w', encoding='utf-8', buffering=1)
+        except OSError:
+            _imp_log = None
+    else:
         _imp_log = None
 
     # Circuit breaker: detect runaway re-imports of the same module
