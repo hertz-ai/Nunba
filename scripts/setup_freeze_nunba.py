@@ -323,6 +323,26 @@ build_exe_options = {
         "flask_cors",
         "pyautogui",
         "PIL",
+        # PyYAML — MUST be declared as a FULL package tree, not left to the tracer.
+        #
+        # THIS WAS SILENTLY BREAKING PRODUCTION. langchain_classic imports yaml,
+        # and the tracer pulled in yaml/__init__.py but NOT its submodules, so the
+        # frozen build raised `No module named 'yaml.error'` the moment
+        # langchain_classic was imported. hart_intelligence_entry catches that and
+        # logs "langchain_classic unavailable (No module named 'yaml.error') —
+        # backend boots WITHOUT the langchain chat path", then carries on. The
+        # result: every shipped build has been running its non-langchain fallback
+        # with only an ERROR line to show for it.
+        #
+        # Confirmed live in ~/Documents/Nunba/logs/frozen_debug.log on 2026-08-08
+        # (44 occurrences). Note the DEV venv fails the same import for a totally
+        # different reason (langchain_classic simply not installed) — same symptom
+        # line, different cause, so do not use one to diagnose the other.
+        #
+        # `yaml` was not declared ANYWHERE in this file before this entry. That is
+        # Gate 6 of the change protocol: cx_Freeze's tracer misses runtime-dynamic
+        # imports, so a package a bundled module needs must be listed explicitly.
+        "yaml",
         # langchain_classic uses __getattr__ + create_importer for lazy imports.
         # cx_Freeze can't trace importlib.import_module() calls at runtime,
         # so include the full package trees to ensure all submodules are available.
