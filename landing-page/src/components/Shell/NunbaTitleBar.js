@@ -25,7 +25,24 @@
  * as a safety net for backends that don't honor the CSS hint.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { TitleBarSlotProvider } from './TitleBarSlotContext';
+
+// Routes whose layout OWNS the viewport: fixed-height surfaces that manage
+// their own internal scrolling, where a document-level scrollbar is wrong.
+//   /local   — Demopage (chat/orb shell)
+//   /agents  — Agents page
+// EVERYTHING ELSE scrolls the document: /admin/* (task-ledger and models have
+// no inner scroller at all), /social, /settings, /.
+// Kept as an exported constant so the decision is one list, not an inline
+// condition that drifts from whatever the CSS happens to do.
+export const FIXED_VIEWPORT_ROUTES = ['/local', '/agents'];
+
+export function isFixedViewportRoute(pathname) {
+  const p = String(pathname || '');
+  return FIXED_VIEWPORT_ROUTES.some(
+    (r) => p === r || p.startsWith(`${r}/`));
+}
 
 // ── Detection helpers ────────────────────────────────────────────────
 
@@ -132,6 +149,9 @@ function WindowButton({ label, onClick, hoverBg, testId, children }) {
 
 export default function NunbaTitleBar({ children }) {
   const [visible, setVisible] = useState(() => shouldRenderTitleBar());
+  // Safe: index.js:115 wraps <App/> in <BrowserRouter>, so this component is
+  // always inside a Router at runtime.
+  const { pathname } = useLocation();
   const slotRef = useRef(null);
   const [slot, setSlot] = useState(null);
   // Whether to render the GTK resize grips.  Initial guess from the UA;
@@ -183,21 +203,30 @@ export default function NunbaTitleBar({ children }) {
     if (typeof document === 'undefined') return;
     const body = document.body;
     const root = document.documentElement;
+    // Per-route modifier: /local (Demopage) and /agents own the viewport and
+    // must NOT gain a document scrollbar; every other route needs one (the
+    // admin pages have no inner scroller at all).  Toggled here rather than
+    // in a second effect so there is exactly one writer of the <html> class
+    // list and the two classes can never disagree.
+    const fixedViewport = isFixedViewportRoute(pathname);
     if (visible) {
       root.style.setProperty('--nunba-titlebar-h', '32px');
       root.classList.add('nunba-frameless-active');
       body.classList.add('nunba-frameless-active');
+      root.classList.toggle('nunba-fixed-viewport', fixedViewport);
     } else {
       root.style.removeProperty('--nunba-titlebar-h');
       root.classList.remove('nunba-frameless-active');
       body.classList.remove('nunba-frameless-active');
+      root.classList.remove('nunba-fixed-viewport');
     }
     return () => {
       root.style.removeProperty('--nunba-titlebar-h');
       root.classList.remove('nunba-frameless-active');
       body.classList.remove('nunba-frameless-active');
+      root.classList.remove('nunba-fixed-viewport');
     };
-  }, [visible]);
+  }, [visible, pathname]);
 
   // Inject the offset stylesheet once.  Scoped under
   // `html.nunba-frameless-active` so it's a no-op in browser / macOS mode.
@@ -249,6 +278,15 @@ export default function NunbaTitleBar({ children }) {
            literal, and one would terminate the string. */
         overflow-x: hidden;
         overflow-y: auto;
+      }
+      /* ...EXCEPT on routes that own the viewport.  /local (Demopage) and
+         /agents are full-height surfaces with their own internal scrollers,
+         so a document scrollbar there is wrong — it would let the whole app
+         shell drift under the titlebar.  Same specificity story as the
+         .h-screen clamp: this selector is strictly more specific than the
+         base rule above, so it wins without !important. */
+      html.nunba-frameless-active.nunba-fixed-viewport {
+        overflow: hidden;
       }
       html.nunba-frameless-active body {
         height: 100%;

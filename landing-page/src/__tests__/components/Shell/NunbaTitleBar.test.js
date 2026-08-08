@@ -3,9 +3,30 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
-import NunbaTitleBar, { shouldRenderTitleBar, isPywebview } from '../../../components/Shell/NunbaTitleBar';
+// NunbaTitleBar reads useLocation() to decide whether the current route owns
+// the viewport.  Mock it rather than wrapping 30+ bare render() calls in a
+// MemoryRouter — one seam, and each test can steer the route by assigning
+// mockPathname.  (Jest allows out-of-scope refs in a mock factory when the
+// name begins with "mock".)
+let mockPathname = '/admin/task-ledger';
+jest.mock('react-router-dom', () => ({
+  ...jest.requireActual('react-router-dom'),
+  useLocation: () => ({ pathname: mockPathname }),
+}));
+
+import NunbaTitleBar, {
+  shouldRenderTitleBar,
+  isPywebview,
+  isFixedViewportRoute,
+  FIXED_VIEWPORT_ROUTES,
+} from '../../../components/Shell/NunbaTitleBar';
 
 // ── Test helpers ─────────────────────────────────────────────────────
+
+beforeEach(() => {
+  mockPathname = '/admin/task-ledger';
+  document.documentElement.className = '';
+});
 
 function mockPywebview(api = {}) {
   window.pywebview = {
@@ -157,12 +178,82 @@ describe('NunbaTitleBar render guards', () => {
       /\.h-screen[\s\S]{0,120}calc\(100vh\s*-\s*var\(--nunba-titlebar-h/);
   });
 
+  // Document scrolling is enabled for every route EXCEPT the ones that own
+  // the viewport.  /local (Demopage) and /agents are full-height surfaces
+  // with their own internal scrollers; a document scrollbar there would let
+  // the whole shell drift under the titlebar.
+  test.each(FIXED_VIEWPORT_ROUTES)(
+    '%s keeps the viewport fixed (no document scroller)', (route) => {
+      mockPathname = route;
+      mockPywebview();
+      render(<NunbaTitleBar />);
+      expect(document.documentElement.classList
+        .contains('nunba-fixed-viewport')).toBe(true);
+    });
+
+  test.each([
+    '/admin/task-ledger', '/admin/models', '/admin/channels',
+    '/social', '/settings', '/',
+  ])(
+    '%s scrolls the document (no fixed-viewport modifier)', (route) => {
+      mockPathname = route;
+      mockPywebview();
+      render(<NunbaTitleBar />);
+      expect(document.documentElement.classList
+        .contains('nunba-fixed-viewport')).toBe(false);
+    });
+
+  test('the fixed-viewport override actually re-hides overflow', () => {
+    // The modifier is only meaningful if the CSS consumes it, and only wins
+    // if it is MORE specific than the base rule.  Both are asserted here so
+    // the class cannot become decorative.
+    mockPywebview();
+    render(<NunbaTitleBar />);
+    const css = (document.getElementById('nunba-titlebar-offsets')?.textContent || '')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const override = css.match(
+      /html\.nunba-frameless-active\.nunba-fixed-viewport\s*\{([^}]*)\}/)?.[1];
+    expect(override).toBeDefined();
+    expect(override).toMatch(/overflow\s*:\s*hidden/);
+    // base rule must still come FIRST, so the more specific override wins
+    expect(css.indexOf('html.nunba-frameless-active {'))
+      .toBeLessThan(css.indexOf('html.nunba-frameless-active.nunba-fixed-viewport'));
+  });
+
+  test('browser mode adds neither class', () => {
+    mockPathname = '/local';
+    clearPywebview();
+    render(<NunbaTitleBar />);
+    expect(document.documentElement.classList
+      .contains('nunba-frameless-active')).toBe(false);
+    expect(document.documentElement.classList
+      .contains('nunba-fixed-viewport')).toBe(false);
+  });
+
   test('renders all 3 window control buttons', () => {
     mockPywebview();
     render(<NunbaTitleBar />);
     expect(screen.getByTestId('nunba-window-min')).toBeInTheDocument();
     expect(screen.getByTestId('nunba-window-max')).toBeInTheDocument();
     expect(screen.getByTestId('nunba-window-close')).toBeInTheDocument();
+  });
+});
+
+describe('isFixedViewportRoute', () => {
+  test.each([
+    ['/local', true],                // Demopage — fixed height
+    ['/agents', true],               // Agents page — fixed height
+    ['/local/anything', true],       // nested demopage state
+    ['/agents/some-agent', true],
+    ['/admin/task-ledger', false],
+    ['/admin/models', false],
+    ['/localhost-ish', false],       // prefix must not match by substring
+    ['/agentsomething', false],
+    ['/', false],
+    ['', false],
+    [undefined, false],
+  ])('%s -> %s', (path, expected) => {
+    expect(isFixedViewportRoute(path)).toBe(expected);
   });
 });
 
