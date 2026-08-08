@@ -30,6 +30,12 @@ import CableIcon from '@mui/icons-material/Cable';
 import HiveIcon from '@mui/icons-material/Hive';
 import FavoriteIcon from '@mui/icons-material/Favorite';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import NewspaperIcon from '@mui/icons-material/Newspaper';
+import ArticleIcon from '@mui/icons-material/Article';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
+import DownloadIcon from '@mui/icons-material/Download';
+import CampaignIcon from '@mui/icons-material/Campaign';
+import MenuBookIcon from '@mui/icons-material/MenuBook';
 import ChildCareIcon from '@mui/icons-material/ChildCare';
 import CodeIcon from '@mui/icons-material/Code';
 import DashboardIcon from '@mui/icons-material/Dashboard';
@@ -73,7 +79,7 @@ import {
 } from '@mui/material';
 import {alpha} from '@mui/material/styles';
 import React from 'react';
-import {useNavigate, useLocation} from 'react-router-dom';
+import {Link as RouterLink, useNavigate, useLocation} from 'react-router-dom';
 
 const DRAWER_WIDTH = 260;
 
@@ -281,6 +287,51 @@ const navGroups = [
     ],
   },
   {
+    label: 'Learn',
+    items: [
+      {
+        label: 'Research',
+        path: '/research',
+        icon: <ScienceIcon />,
+        minRole: null,
+      },
+      {label: 'News', path: '/news', icon: <NewspaperIcon />, minRole: null},
+      {
+        label: 'Answers',
+        path: '/answers',
+        icon: <HelpOutlineIcon />,
+        minRole: null,
+      },
+      {
+        label: 'Incidents',
+        path: '/incidents',
+        icon: <FlagIcon />,
+        minRole: null,
+      },
+      {label: 'Blog', path: '/blog', icon: <ArticleIcon />, minRole: null},
+      {label: 'Docs', path: '/docs', icon: <MenuBookIcon />, minRole: null},
+      {
+        label: 'Listings',
+        path: '/listings',
+        icon: <StorefrontIcon />,
+        minRole: null,
+      },
+      {
+        label: 'Hive Census',
+        path: '/hive',
+        icon: <HiveIcon />,
+        minRole: null,
+      },
+      {
+        label: 'Download',
+        path: '/download',
+        icon: <DownloadIcon />,
+        minRole: null,
+      },
+      {label: 'Press', path: '/press', icon: <CampaignIcon />, minRole: null},
+    ],
+  },
+  {
     label: 'Manage',
     items: [
       {
@@ -472,10 +523,22 @@ export default function SocialLayout({children}) {
                 const basePath = item.path.split('?')[0];
                 const isSelected = location.pathname === basePath;
                 return (
+                  /* An anchor, not a click handler.
+                   *
+                   * This was onClick={() => navigate(item.path)}, which is
+                   * invisible to everything that is not a left-click: no
+                   * crawler follows it, middle-click and open-in-new-tab do
+                   * nothing, copy-link-address has nothing to copy, and a
+                   * screen reader announces a button where a link belongs.
+                   *
+                   * component={RouterLink} renders a real <a href> and still
+                   * routes client-side, so navigation behaviour is unchanged
+                   * and the destination becomes addressable. */
                   <ListItemButton
                     key={item.label}
+                    component={RouterLink}
+                    to={item.path}
                     selected={isSelected}
-                    onClick={() => navigate(item.path)}
                     onMouseEnter={() => prefetchRoute(basePath)}
                     sx={{
                       borderRadius: RADIUS.sm,
