@@ -179,6 +179,34 @@ build_exe_options = {
         "langchain_core",
         "numpy",
         "jose",
+        # ── First-party modules main.py imports that were NOT bundled here, so
+        #    the frozen app failed `Nunba --validate`. Same root cause that broke
+        #    the Linux build on 2026-08-04 (the validator now derives main.py's
+        #    real first-party imports). Mirrors the Windows freeze
+        #    (setup_freeze_nunba.py). All local source files, verified present.
+        #    NOTE: sql (hevolve-database) is an installed sibling package, not
+        #    local source, so it is handled by the CI sibling-install step, not
+        #    listed here. ──
+        "routes.auth",
+        "routes.kids_media_routes",
+        "routes.spa_fallback",
+        "routes.kids_game_recommendation",
+        "desktop.splash_effects",
+        "desktop.media_classification",
+        "desktop.guest_identity",
+        "desktop.chat_settings",
+        "desktop.chat_sync",
+        "desktop.file_sync",
+        "desktop.memory_sync",
+        "tts.backend_venv",
+        "tts.tts_handshake",
+        "tts.verified_synth",
+        "tts.verified_llm",
+        "tts.verified_stt",
+        "tts.verified_vlm",
+        "tts.verified_audio_gen",
+        "tts.verified_video_gen",
+        "wamp_router",
     ],
     "zip_includes": [],
     "zip_exclude_packages": ["*"],  # extract all packages to filesystem (avoids zip import issues on macOS)

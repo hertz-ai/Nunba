@@ -265,6 +265,30 @@ build_exe_options = {
         "sql.schemas",
         "sql.otp",
         "sql.bookparsing",
+        # ── First-party modules main.py imports that were NOT bundled here, so
+        #    the frozen app failed `Nunba --validate`. This is what broke the
+        #    Linux build on 2026-08-04, when the validator started deriving
+        #    main.py's REAL first-party imports instead of a curated list, and
+        #    caught that the bundle could not load. Mirrors the Windows freeze
+        #    (setup_freeze_nunba.py), the one script that carried the complete
+        #    set. All are local source files, verified present. ──
+        "routes.auth",
+        "routes.spa_fallback",
+        "routes.kids_game_recommendation",
+        "desktop.guest_identity",
+        "desktop.chat_settings",
+        "desktop.chat_sync",
+        "desktop.file_sync",
+        "desktop.memory_sync",
+        "tts.backend_venv",
+        "tts.tts_handshake",
+        "tts.verified_synth",
+        "tts.verified_llm",
+        "tts.verified_stt",
+        "tts.verified_vlm",
+        "tts.verified_audio_gen",
+        "tts.verified_video_gen",
+        "wamp_router",
         # HARTOS runtime deps
         "aiohttp",
         "dotenv",
