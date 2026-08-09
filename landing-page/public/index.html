@@ -404,6 +404,25 @@
         padding-top: var(--nunba-titlebar-h, 32px);
         height: 100vh;
         box-sizing: border-box;
+        /* overflow-y MUST NOT be 'hidden' here.  The root element's overflow
+           PROPAGATES TO THE VIEWPORT (CSS Overflow 3.3), so 'overflow: hidden'
+           on <html> does not merely clip <html> — it disables document
+           scrolling entirely.  With it set, /admin/*, /social/* and every other
+           long page became unscrollable INSIDE Nunba while scrolling fine in a
+           browser (where this class is never applied).  The mouse wheel did
+           nothing; a missing scrollbar was the harmless symptom, the dead wheel
+           was the bug.  Keep overflow-x hidden (we never want a horizontal
+           bar) and overflow-y auto so the document can scroll.
+           NOTE: no backticks in this block — the mirrored copy in
+           NunbaTitleBar.js lives inside a JS template literal. */
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+      /* Routes that own their own viewport (the chat orb and the agents
+         canvas) must NOT document-scroll — they lay out to exactly the
+         window and scroll internally.  React's NunbaTitleBar toggles
+         .nunba-fixed-viewport per-route; only those routes get the clamp. */
+      html.nunba-frameless-active.nunba-fixed-viewport {
         overflow: hidden;
       }
       html.nunba-frameless-active body { height: 100%; margin: 0; }
