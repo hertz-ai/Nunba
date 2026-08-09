@@ -2,6 +2,8 @@ import { Box, IconButton, Typography, LinearProgress, Fade, Button, Stack, Toolt
 import { X as CloseIcon } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 
+import RelativeTime, { useRelativeTick } from '../../components/Common/RelativeTime';
+
 /**
  * SetupProgressCard — dreamy progress card for long-running setup jobs
  * (TTS engine install, model downloads, etc.)
@@ -60,6 +62,19 @@ const ACCENT = '#6C63FF';
 const SURFACE_BG = 'rgba(15, 14, 23, 0.85)';
 const BORDER_GRADIENT = 'linear-gradient(135deg, rgba(108,99,255,0.4), rgba(255,107,107,0.2))';
 
+/**
+ * How long a card may sit in a TERMINAL state before it stops reading as live
+ * status.  Exported so tests bound the behaviour against the same number the
+ * component uses, rather than a copy that can drift.
+ *
+ * Chosen against the failure it prevents, not as a round number: the ambiguity
+ * only starts costing anything once a reader could mistake an old verdict for
+ * the current one, and a terminal card has by definition stopped changing.  It
+ * deliberately does NOT need to accommodate long installs — see the isStale
+ * gate below, which excludes them entirely.
+ */
+export const STALE_AFTER_MS = 5 * 60_000;
+
 export default function SetupProgressCard({
   steps = [],
   jobType = '',
@@ -68,6 +83,8 @@ export default function SetupProgressCard({
   onRetry,
   onSwitchEngine,
   onDismiss,
+  firstSeen = null,
+  lastActivity = null,
 }) {
   const [showComplete, setShowComplete] = useState(false);
   const scrollRef = useRef(null);
@@ -87,6 +104,29 @@ export default function SetupProgressCard({
   const expectsHandshake = jobType.startsWith('tts_setup_');
   const isReady = handshakeReady || (!expectsHandshake && isComplete && !installFailed);
   const isFailed = installFailed || handshakeFailed;
+
+  // STALENESS.  A finished card that has sat around for a while must stop
+  // reading as live status — a "chatterbox-turbo Failed" panel looked exactly
+  // like current state while an unrelated pip install ran underneath it, which
+  // cost real debugging time.
+  //
+  // The gate is TERMINAL-ONLY, and that is the load-bearing part: model
+  // downloads and TTS installs legitimately run for many minutes, so an
+  // age-only rule would grey out every long install mid-flight and make a
+  // working job look broken.  A card is stale only once it has stopped
+  // changing AND that last change is old.
+  //
+  // lastActivity falls back to firstSeen because cards restored from history
+  // carry `timestamp` but no `updatedAt`; without the fallback an old restored
+  // card would never demote.  Ticking on the shared cadence means the verdict
+  // advances on its own instead of waiting for an unrelated re-render.
+  const staleAnchor = lastActivity || firstSeen;
+  useRelativeTick(staleAnchor);
+  const isTerminal = isReady || isFailed;
+  const isStale = Boolean(
+    isTerminal && staleAnchor
+      && (Date.now() - new Date(staleAnchor).getTime()) > STALE_AFTER_MS
+  );
   // Estimate progress: most installs have 6-10 steps
   const estimatedTotal = 8;
   const progressPercent = isReady
@@ -130,12 +170,21 @@ export default function SetupProgressCard({
   }, [steps.length]);
 
   return (
-    <Box sx={{
+    <Box
+      data-testid="setup-progress-card"
+      data-stale={isStale ? 'true' : 'false'}
+      aria-disabled={isStale ? 'true' : undefined}
+      sx={{
       position: 'relative',
       maxWidth: 480,
       borderRadius: '16px',
       overflow: 'hidden',
       my: 1.5,
+      // Demote, don't hide: the record stays readable (and Retry stays
+      // reachable) but it visibly stops competing with live status.
+      opacity: isStale ? 0.55 : 1,
+      filter: isStale ? 'saturate(0.4)' : 'none',
+      transition: 'opacity 0.4s ease, filter 0.4s ease',
       // Glass border effect
       '&::before': {
         content: '""',
@@ -186,6 +235,23 @@ export default function SetupProgressCard({
                   ? `Verifying ${label} voice...`
                   : `Setting up ${label}...`}
           </Typography>
+          {/* WHEN this card first appeared — same field and same renderer as a
+              chat bubble (message.timestamp -> RelativeTime), so the card reads
+              on the same clock as the conversation around it.  Deliberately
+              FIRST appearance, not latest activity: the question a reader has
+              is "is this telling me about now, or about earlier?". */}
+          {firstSeen && (
+            <RelativeTime
+              ts={firstSeen}
+              data-testid="setup-first-seen"
+              style={{
+                fontSize: '0.7rem',
+                color: 'rgba(255,255,255,0.45)',
+                whiteSpace: 'nowrap',
+                marginLeft: 4,
+              }}
+            />
+          )}
           {/* Soft-dismiss × — only once the card has a terminal
               verdict. Calling onDismiss is the caller's signal to mark
               the message as dismissed in chat state (soft-delete: the
@@ -265,6 +331,24 @@ export default function SetupProgressCard({
             </Fade>
           ))}
         </Box>
+
+        {/* Stale marker.  Says the quiet part out loud so the card cannot be
+            read as current status.  Not gated on showComplete: a card can be
+            restored from history already stale, having never animated. */}
+        {isStale && (
+          <Typography
+            data-testid="setup-stale-note"
+            sx={{
+              color: 'rgba(255,255,255,0.4)',
+              fontSize: '0.7rem',
+              fontStyle: 'italic',
+              mt: 1,
+              textAlign: 'center',
+            }}
+          >
+            No longer current — this finished earlier
+          </Typography>
+        )}
 
         {/* Completion message */}
         {showComplete && (

@@ -354,6 +354,15 @@ const ChatMessageList = ({
               onRetry={handleRetry}
               onSwitchEngine={handleSwitchEngine}
               onDismiss={handleDismiss}
+              // Same field the chat bubbles use — Demopage stamps it when the
+              // card is created and backfills any message missing one, and
+              // both SSE update paths spread the existing message, so it
+              // survives as FIRST appearance rather than latest touch.
+              firstSeen={message.timestamp}
+              // updatedAt is only present on cards that have received an
+              // update this session; history-restored cards fall back to
+              // firstSeen inside the card so they can still go stale.
+              lastActivity={message.updatedAt || message.timestamp}
             />
           );
         }

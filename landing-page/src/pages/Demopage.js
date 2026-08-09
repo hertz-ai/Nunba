@@ -2663,6 +2663,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             ...updated[existingIdx],
             steps: [...updated[existingIdx].steps, data],
             isComplete: Boolean(data.complete),
+            // When the card last CHANGED, as distinct from `timestamp` (when
+            // it first appeared, preserved by the spread above).  The card
+            // needs both: it shows first-appearance, but decides staleness
+            // from last activity — otherwise a long install that started an
+            // hour ago would demote while still actively running.
+            updatedAt: new Date(),
           };
           return updated;
         }
@@ -2706,6 +2712,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // A verified 'ready' is terminal — mark complete so the
             // progress bar fills.  A 'failed' is also terminal.
             isComplete: data.status === 'ready' || data.status === 'failed',
+            // Terminal verdicts are still activity: this is the moment the
+            // staleness clock should start from, not whenever the install
+            // last logged a step.
+            updatedAt: new Date(),
           };
           return updated;
         }

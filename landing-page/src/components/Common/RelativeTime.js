@@ -51,14 +51,36 @@ export function formatRelative(ts, nowMs = Date.now()) {
 }
 
 
-export default function RelativeTime({ts, className, style, ...rest}) {
+/**
+ * useRelativeTick — re-render the caller on the shared relative-time cadence.
+ *
+ * Extracted from RelativeTime so anything whose OUTPUT is a function of
+ * elapsed time can advance on the same clock without standing up a second
+ * timer implementation.  First other consumer: SetupProgressCard, which must
+ * notice that a finished setup card has gone stale — a verdict that changes
+ * with wall-clock time alone, so without a tick it would only update when some
+ * unrelated parent re-render happened to fire.  That is exactly the flakiness
+ * this module exists to remove (see the header); it must not be re-introduced
+ * next door.
+ *
+ * `dep` is passed straight through as the effect dependency and doubles as the
+ * on/off switch: falsy means "nothing time-dependent to show", so no interval
+ * is created.  This mirrors the original `[ts]` dependency exactly, which
+ * keeps RelativeTime's behaviour bit-for-bit unchanged by the extraction.
+ */
+export function useRelativeTick(dep) {
   const [, setTick] = useState(0);
   useEffect(() => {
-    if (!ts) return undefined;
+    if (!dep) return undefined;
     const id = setInterval(() => setTick((n) => (n + 1) % 1_000_000),
       TICK_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [ts]);
+  }, [dep]);
+}
+
+
+export default function RelativeTime({ts, className, style, ...rest}) {
+  useRelativeTick(ts);
   if (!ts) return null;
   return (
     <span className={className} style={style} {...rest}>
