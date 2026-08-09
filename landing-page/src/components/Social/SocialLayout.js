@@ -36,6 +36,7 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import DownloadIcon from '@mui/icons-material/Download';
 import CampaignIcon from '@mui/icons-material/Campaign';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
+import MenuIcon from '@mui/icons-material/Menu';
 import ChildCareIcon from '@mui/icons-material/ChildCare';
 import CodeIcon from '@mui/icons-material/Code';
 import DashboardIcon from '@mui/icons-material/Dashboard';
@@ -409,6 +410,11 @@ export default function SocialLayout({children}) {
     if (path.startsWith('/social/resonance')) return 4;
     return 0;
   };
+
+  // Mobile: the full nav lives in the desktop sidebar, hidden on phones. The
+  // bottom bar shows only 5 destinations, so the rest was unreachable in
+  // portrait. A right-anchored hamburger drawer exposes the same nav.
+  const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
 
   const sidebar = (
     <Box sx={{height: '100%', display: 'flex', flexDirection: 'column'}}>
@@ -987,8 +993,41 @@ export default function SocialLayout({children}) {
               </Avatar>
             </IconButton>
           )}
+          {/* Right-side hamburger: opens the full nav on phones, where the
+              sidebar is hidden and the bottom bar shows only 5 destinations. */}
+          <IconButton
+            aria-label="Open menu"
+            sx={{color: theme.palette.text.secondary, ml: 0.5}}
+            onClick={() => setMobileNavOpen(true)}
+          >
+            <MenuIcon />
+          </IconButton>
         </Toolbar>
       </AppBar>
+
+      {/* Mobile nav drawer — the same `sidebar` the desktop uses, anchored
+          right. A tap inside navigates (RouterLink items) and closes it. */}
+      <Drawer
+        anchor="right"
+        open={mobileNavOpen}
+        onClose={() => setMobileNavOpen(false)}
+        ModalProps={{keepMounted: true}}
+        sx={{
+          display: {xs: 'block', md: 'none'},
+          '& .MuiDrawer-paper': {
+            width: DRAWER_WIDTH,
+            boxSizing: 'border-box',
+            background: `${theme.palette.background.default}F2`,
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+            borderLeft: `1px solid ${theme.palette.divider}`,
+          },
+        }}
+      >
+        <Box onClick={() => setMobileNavOpen(false)} sx={{height: '100%'}}>
+          {sidebar}
+        </Box>
+      </Drawer>
 
       {/* Main content */}
       <Fade in timeout={350} key={location.pathname}>
