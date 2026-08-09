@@ -1849,3 +1849,133 @@ class TestRunPipEnv:
             f"-> antlr4-python3-runtime==4.9.3, no wheel on PyPI).  See "
             f"server.log timestamp 2026-04-28 17:28 for the original failure."
         )
+
+
+class TestRuntimeInstallConstraints:
+    """A runtime install must not be allowed to break HARTOS.
+
+    Regression (2026-08-08, live on the steward's machine): installing
+    ctranslate2 resolved numpy to 2.5.1 inside `--target
+    ~/.nunba/site-packages`.  pip NOTICED and said so, as a warning:
+
+        "hart-backend 0.0.0 requires numpy<2.0.0,>=1.25.0,
+         but you have numpy 2.5.1 which is incompatible."
+
+    then installed it anyway, because `--target` resolves without regard for
+    packages installed elsewhere.  At 13:35 HARTOS Tier-1 died on
+    `cannot import name '_linalg' from partially initialized module
+    numpy.linalg`, the real /chat route never registered, and the UI served
+    "Loading tools... try again in a moment" indefinitely.
+
+    Feeding hart-backend's own pins back as constraints turns that warning
+    into a refusal.  These tests pin that behaviour.
+    """
+
+    def _fake_dist(self, requires):
+        from unittest.mock import MagicMock
+        d = MagicMock()
+        d.requires = requires
+        return d
+
+    def test_upper_bounds_reach_the_constraints_file(self, tmp_path):
+        from unittest.mock import patch
+        from importlib import metadata as md
+        dist = self._fake_dist([
+            'numpy<2.0.0,>=1.25.0',
+            'cryptography<47.0.0,>=41.0.0',
+        ])
+        with patch.object(md, 'distribution', return_value=dist):
+            path = pi._write_hart_constraints(str(tmp_path))
+
+        assert path, "no constraints file produced from readable pins"
+        body = open(path, encoding='utf-8').read()
+        assert 'numpy<2.0.0,>=1.25.0' in body, (
+            "the numpy upper bound is the exact pin that was violated; "
+            "without it pip warns and installs anyway. File was:\n%s" % body
+        )
+        assert 'cryptography<47.0.0,>=41.0.0' in body
+
+    def test_extras_markers_and_unpinned_are_excluded(self, tmp_path):
+        from unittest.mock import patch
+        from importlib import metadata as md
+        dist = self._fake_dist([
+            'numpy<2.0.0',                      # keep
+            'requests',                         # unpinned -> nothing to constrain
+            'uvicorn[standard]<1.0',            # extras -> pip rejects in a constraints file
+            'pytest>=8; extra == "dev"',        # marker -> conditional, not a floor
+        ])
+        with patch.object(md, 'distribution', return_value=dist):
+            path = pi._write_hart_constraints(str(tmp_path))
+
+        body = open(path, encoding='utf-8').read()
+        assert 'numpy<2.0.0' in body
+        for excluded in ('requests', 'uvicorn', 'pytest'):
+            assert excluded not in body, (
+                "%r must not appear — extras/markers make pip reject the "
+                "constraints file outright, and an unpinned name constrains "
+                "nothing. File was:\n%s" % (excluded, body)
+            )
+
+    def test_unreadable_metadata_does_not_block_the_install(self, tmp_path):
+        """Fail-open: a constraints GENERATOR must never stop an install.
+
+        Only a real conflict should. If hart-backend has no metadata (dev
+        checkout, editable install), we return None and behave exactly as
+        before rather than refusing to install anything at all.
+        """
+        from unittest.mock import patch
+        from importlib import metadata as md
+        with patch.object(md, 'distribution',
+                          side_effect=md.PackageNotFoundError('hart-backend')):
+            assert pi._write_hart_constraints(str(tmp_path)) is None
+
+    def test_run_pip_install_carries_the_constraint_flag(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured['cmd'] = list(cmd)
+            proc = MagicMock()
+            proc.stdout = iter([])
+            proc.poll.return_value = 0
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc
+
+        cfile = str(tmp_path / 'c.txt')
+        open(cfile, 'w').write('numpy<2.0.0\n')
+
+        with patch.object(pi.subprocess, 'Popen', side_effect=fake_popen), \
+             patch.object(pi, 'get_embed_python', return_value='python.exe'), \
+             patch.object(pi, 'get_user_site_packages', return_value=str(tmp_path)), \
+             patch.object(pi, '_write_hart_constraints', return_value=cfile):
+            pi._run_pip(['install', 'ctranslate2'])
+
+        cmd = captured.get('cmd', [])
+        assert '--constraint' in cmd, (
+            "install ran WITHOUT --constraint, so pip resolves free of "
+            "hart-backend's pins and can install an incompatible numpy "
+            "again. cmd was: %s" % cmd
+        )
+        assert cmd[cmd.index('--constraint') + 1] == cfile
+
+    def test_non_install_commands_are_untouched(self, tmp_path):
+        """`pip list`/`show` take no --constraint; adding it would error."""
+        from unittest.mock import MagicMock, patch
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured['cmd'] = list(cmd)
+            proc = MagicMock()
+            proc.stdout = iter([])
+            proc.poll.return_value = 0
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc
+
+        with patch.object(pi.subprocess, 'Popen', side_effect=fake_popen), \
+             patch.object(pi, 'get_embed_python', return_value='python.exe'), \
+             patch.object(pi, 'get_user_site_packages', return_value=str(tmp_path)):
+            pi._run_pip(['list'])
+
+        assert '--constraint' not in captured.get('cmd', [])

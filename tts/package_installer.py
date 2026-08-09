@@ -622,11 +622,92 @@ def _child_io_counters(pid):
         return None
 
 
+_CONSTRAINTS_FILENAME = 'hart-runtime-constraints.txt'
+
+
+def _write_hart_constraints(dest_dir: str) -> str | None:
+    """Write a pip constraints file from hart-backend's OWN declared pins.
+
+    WHY
+    ───
+    Runtime installs use ``--target``, and pip does NOT consider packages
+    installed anywhere else when it resolves into a target directory.  So a
+    TTS/STT dependency resolves its own requirements freely, and HARTOS's pins
+    are simply not in the resolver's scope.  pip notices afterwards and says
+    so — as a WARNING — then installs anyway:
+
+        ctranslate2 4.8.1 -> "Successfully installed ... numpy-2.5.1"
+        "hart-backend 0.0.0 requires numpy<2.0.0,>=1.25.0,
+         but you have numpy 2.5.1 which is incompatible."
+
+    Fourteen minutes later (2026-08-08 13:35) HARTOS Tier-1 died with
+    ``cannot import name '_linalg' from partially initialized module
+    numpy.linalg``, the real ``/chat`` route never registered, and the app
+    served the boot-window stub "Loading tools... try again in a moment"
+    indefinitely.  A user cannot recover from that, and hand-repairing
+    ~/.nunba/site-packages is not a fix that ships.
+
+    Feeding hart-backend's own ``Requires-Dist`` back to pip as CONSTRAINTS
+    turns that warning into a refusal.  An install that now fails is one that
+    would have bricked the backend, so failing is the correct outcome.
+
+    The source of truth is the INSTALLED metadata — the same data pip already
+    read to print the warning — so there is no second dependency list to drift
+    from requirements.txt.
+
+    FAIL-OPEN BY DESIGN: if the pins cannot be read this returns None and the
+    install proceeds exactly as before.  A constraints *generator* must never
+    be the reason an install cannot start; only a real conflict should stop it.
+    """
+    try:
+        from importlib import metadata as _md
+        reqs = _md.distribution('hart-backend').requires or []
+    except Exception as exc:                       # not installed / no metadata
+        logger.debug("constraints: hart-backend pins unreadable (%s)", exc)
+        return None
+
+    lines = []
+    for raw in reqs:
+        req = (raw or '').strip()
+        if not req:
+            continue
+        # pip rejects extras in a constraints file, and an environment marker
+        # ("; extra == 'dev'") makes the entry conditional — neither belongs in
+        # a floor we want applied unconditionally.
+        if '[' in req or ';' in req:
+            continue
+        # No version bound means nothing to constrain; listing it would only
+        # tell pip "this package may be installed", which it already knows.
+        if not any(op in req for op in ('<', '>', '==', '~=', '!=')):
+            continue
+        lines.append(req)
+
+    if not lines:
+        return None
+
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        path = os.path.join(dest_dir, _CONSTRAINTS_FILENAME)
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write("# Generated from the installed hart-backend metadata.\n")
+            fh.write("# Do not edit: rewritten on every runtime pip install.\n")
+            fh.write("\n".join(lines) + "\n")
+        logger.info("constraints: %d hart-backend pins -> %s", len(lines), path)
+        return path
+    except OSError as exc:
+        logger.warning("constraints: could not write file (%s) — "
+                       "install will proceed UNCONSTRAINED", exc)
+        return None
+
+
 def _run_pip(args: list[str], progress_cb: Callable | None = None,
              timeout: int = 900,
              stall_timeout: int = 120,
              heartbeat_s: int = 20) -> tuple[bool, str]:
     """Run pip with --target ~/.nunba/site-packages/ for user-writable installs.
+
+    See _write_hart_constraints below for why every install carries
+    `--constraint`.
 
     Streams pip stdout line-by-line, firing `progress_cb` with a status
     message every `heartbeat_s` seconds so the UI sees forward motion
@@ -657,6 +738,14 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
             '--no-build-isolation',  # Use system setuptools (pip's isolated build fails in frozen builds)
             '--progress-bar', 'off',  # Line-based output for streaming parse
         ] + args[1:]
+        # Refuse, rather than warn, when a runtime install would break HARTOS.
+        # `--target` makes pip resolve WITHOUT considering packages installed
+        # elsewhere, so hart-backend's pins are invisible to the resolver.
+        # Feeding them back as constraints is what turns the warning into a
+        # refusal.  See _write_hart_constraints for the incident this fixes.
+        _cfile = _write_hart_constraints(user_sp)
+        if _cfile:
+            args = args[:1] + ['--constraint', _cfile] + args[1:]
 
     cmd = [python_exe, '-m', 'pip'] + args
     env = os.environ.copy()
