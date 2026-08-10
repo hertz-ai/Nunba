@@ -206,6 +206,16 @@ class TestExecutableDiscovery:
                  patch.object(tts, '_find_piper_executable', return_value=None):
                 assert tts.is_available() is False
 
+    @staticmethod
+    def _fresh_breaker_state():
+        """The breaker is cached on the CLASS so all instances share one
+        cooldown. That is deliberate in production and a leak between tests —
+        drop it so each test starts cold."""
+        from tts.piper_tts import PiperTTS
+        for attr in ('_piper_cb', '_piper_cb_unavailable'):
+            if hasattr(PiperTTS, attr):
+                delattr(PiperTTS, attr)
+
     def test_failed_import_is_retried_not_latched(self):
         """REGRESSION GUARD for a real 63-minute outage (2026-08-10).
 
@@ -219,6 +229,7 @@ class TestExecutableDiscovery:
         RULE: memoize a capability SUCCESS, never a capability FAILURE that an
         installer may be concurrently repairing.
         """
+        self._fresh_breaker_state()
         with tempfile.TemporaryDirectory() as tmpdir:
             from tts.piper_tts import PiperTTS
             with patch.object(PiperTTS, '_init_piper'):
@@ -241,8 +252,12 @@ class TestExecutableDiscovery:
 
             with patch.object(builtins, '__import__', _fake_import):
                 assert tts._get_piper_module() is None, "first attempt fails"
-                # Defeat the anti-thrash cooldown to simulate elapsed time.
-                tts._piper_probe_at = time.monotonic() - (tts._PIPER_REPROBE_S + 1)
+                # Defeat the anti-thrash cooldown via the CANONICAL breaker
+                # (KeyedCircuitBreaker.reset) rather than poking a timer
+                # attribute — there is no local timer any more, by design.
+                _b = PiperTTS._import_breaker()
+                if _b is not None:
+                    _b.reset('piper')
                 assert tts._get_piper_module() is fake_module, (
                     "second attempt must RE-IMPORT — if this is None the "
                     "failure is being latched again and the TTS floor will "
@@ -252,6 +267,7 @@ class TestExecutableDiscovery:
     def test_reprobe_is_rate_limited(self):
         """The retry must not thrash the import machinery on a per-sentence
         synthesize loop — one attempt per cooldown window, not per call."""
+        self._fresh_breaker_state()
         with tempfile.TemporaryDirectory() as tmpdir:
             from tts.piper_tts import PiperTTS
             with patch.object(PiperTTS, '_init_piper'):

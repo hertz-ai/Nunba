@@ -362,9 +362,11 @@ class PiperTTS:
         self.default_voice = default_voice
         self.current_voice = default_voice
         self._piper_module = None
-        # Last time we ATTEMPTED the piper import. Used to re-probe after a
-        # failure instead of latching it forever — see _get_piper_module().
-        self._piper_probe_at = 0.0
+        # Whether the piper import has been ATTEMPTED at all. The COOLDOWN
+        # itself lives in the canonical KeyedCircuitBreaker (see
+        # _import_breaker) — this flag only distinguishes "first try" from
+        # "retry", so the retry can invalidate the import caches.
+        self._piper_attempted = False
         self._synthesis_queue = queue.Queue()
         self._worker_thread = None
         self._running = False
@@ -377,6 +379,45 @@ class PiperTTS:
     # short enough that an auto-install finishing mid-session is picked up
     # without waiting for a restart.
     _PIPER_REPROBE_S = 20.0
+
+    @classmethod
+    def _import_breaker(cls):
+        """The CANONICAL failure-cooldown primitive, not a local timer.
+
+        core.circuit_breaker.KeyedCircuitBreaker already is "track failures per
+        key, open after threshold, cool down, half-open recover" — its docstring
+        names itself the single home for exactly this, after an ad-hoc
+        frame_capture._CaptureCircuitBreaker was collapsed into it. whisper_tool
+        already uses the same shape for faster_whisper loads. This engine had no
+        business hand-rolling a second one.
+
+        threshold=1: a single failed import should start the cooldown; there is
+        no value in "try five times fast" against a package that is absent.
+
+        Cached on the CLASS so every PiperTTS instance (and the module singleton)
+        shares one cooldown — a per-instance timer would let a second instance
+        thrash the importer the first was deliberately backing off from.
+
+        Degraded mode: if core.circuit_breaker is genuinely unimportable, return
+        None and let the caller attempt the import each time. That is worse but
+        it is NOT a second cooldown implementation — the whole point is to avoid
+        maintaining two.
+        """
+        cb = getattr(cls, '_piper_cb', None)
+        if cb is not None:
+            return cb
+        if getattr(cls, '_piper_cb_unavailable', False):
+            return None
+        try:
+            from core.circuit_breaker import KeyedCircuitBreaker
+        except Exception as exc:
+            logger.debug("circuit_breaker unavailable (%s); piper import "
+                         "cooldown degraded to per-call retry", exc)
+            cls._piper_cb_unavailable = True
+            return None
+        cls._piper_cb = KeyedCircuitBreaker(
+            threshold=1, cooldown=cls._PIPER_REPROBE_S, name='piper_import')
+        return cls._piper_cb
 
     def _init_piper(self):
         """Attempt the piper-tts import at construction.
@@ -421,11 +462,11 @@ class PiperTTS:
         if self._piper_module is not None:
             return self._piper_module
 
-        now = time.monotonic()
-        if self._piper_probe_at and (now - self._piper_probe_at) < self._PIPER_REPROBE_S:
+        breaker = self._import_breaker()
+        if breaker is not None and breaker.is_open('piper'):
             return None          # cooling down; do not thrash the importer
-        first_attempt = self._piper_probe_at == 0.0
-        self._piper_probe_at = now
+        first_attempt = not self._piper_attempted
+        self._piper_attempted = True
 
         if not first_attempt:
             # Drop cached "not found" directory listings so a package installed
@@ -436,12 +477,16 @@ class PiperTTS:
         try:
             import piper
         except ImportError as exc:
+            if breaker is not None:
+                breaker.record_failure('piper')
             logger.warning(
                 "piper-tts import failed (%s); will retry in %.0fs. If the TTS "
                 "auto-installer is running, this is expected and self-corrects.",
                 exc, self._PIPER_REPROBE_S)
             return None
 
+        if breaker is not None:
+            breaker.record_success('piper')
         self._piper_module = piper
         logger.info("Piper TTS module loaded successfully%s",
                     "" if first_attempt else " (on retry — auto-install landed)")
