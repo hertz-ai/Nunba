@@ -5728,7 +5728,21 @@ def start_background_services():
                         except Exception:
                             pass
                     else:
-                        logging.warning(f"CUDA torch install failed: {msg} — using CPU TTS")
+                        # "Still installing" is NOT "no GPU". This branch used to
+                        # log every non-success as "using CPU TTS", so a held
+                        # install lock — a sibling worker doing the exact same
+                        # 2.5GB download — pinned the session to CPU one second
+                        # after that worker started, on every boot. See the
+                        # INSTALL_IN_PROGRESS rationale in
+                        # tts/package_installer.install_gpu_torch.
+                        from tts.package_installer import INSTALL_IN_PROGRESS
+                        if str(msg).startswith(INSTALL_IN_PROGRESS):
+                            logging.info(
+                                "CUDA torch still installing: %s — NOT "
+                                "downgrading to CPU TTS", msg)
+                        else:
+                            logging.warning(
+                                f"CUDA torch install failed: {msg} — using CPU TTS")
             except Exception:
                 pass
 

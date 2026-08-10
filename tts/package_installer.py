@@ -349,6 +349,15 @@ _installing = {}  # backend → True while installing
 _INSTALL_LOCK_DIR = os.path.join(os.path.expanduser('~'), '.nunba')
 _INSTALL_LOCK_STALE_S = 3600  # 60 min — the CUDA torch wheel is 2.5 GB; a slow
                               # network legitimately holds the lock far past 15 min,
+
+# How long to WAIT for an in-flight cuda_torch install before reporting
+# in-progress. The wheel is ~2.5GB and observed installs run ~8 min, so this
+# must exceed a realistic download or we are back to downgrading early.
+_CUDA_TORCH_LOCK_WAIT_S = 15 * 60
+
+# Marker prefix meaning "not done yet, and NOT a capability failure". Callers
+# must not downgrade to a CPU path on a message carrying this.
+INSTALL_IN_PROGRESS = 'in-progress: '
                               # and expiring it early lets a second boot stack a
                               # concurrent 2.5 GB download on the first (observed).
 
@@ -1011,8 +1020,32 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
     Uses a file-based lock so multiple Nunba boots don't stack
     concurrent 2.5GB downloads.
     """
-    if not _acquire_file_lock('cuda_torch'):
-        return False, "Another process is already installing CUDA torch"
+    # Another process is installing the EXACT thing we want, so WAIT for it —
+    # "someone else is already doing this" is not "this cannot be done".
+    #
+    # The docstring above says this lock exists so concurrent 2.5GB downloads do
+    # not STACK. It was never a capability verdict. But main.py turned a held
+    # lock into "using CPU TTS", which pinned the entire session to CPU one
+    # second after a sibling install had started:
+    #   13:13:34 CUDA ctranslate2 ready  ->  13:13:35 "using CPU TTS"
+    #   17:09:06 CUDA ctranslate2 ready  ->  17:09:07 "using CPU TTS"
+    # Every boot. The torch install then SUCCEEDED (~8 min, 496s of pip output)
+    # and logged "will activate on next start" — but the session had already
+    # downgraded. That is why TTS stopped being realtime while STT stayed on GPU.
+    #
+    # Waiting costs nothing user-visible: install_gpu_torch already runs off the
+    # boot path. When the lock frees, the normal path resumes and short-circuits
+    # immediately if torch is already the CUDA variant ("Only runs if current
+    # torch is +cpu variant" above).
+    _deadline = time.time() + _CUDA_TORCH_LOCK_WAIT_S
+    while not _acquire_file_lock('cuda_torch'):
+        if time.time() >= _deadline:
+            # Still held after the wait. Report IN PROGRESS, not failure — the
+            # caller must not read this as "no GPU available".
+            return False, (INSTALL_IN_PROGRESS
+                           + 'CUDA torch is being installed by another worker; '
+                             'GPU TTS activates once it completes')
+        time.sleep(5)
     # Central GPU detection — one source of truth
     try:
         from integrations.service_tools.vram_manager import vram_manager
