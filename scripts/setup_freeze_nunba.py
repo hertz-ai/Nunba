@@ -2280,16 +2280,32 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
                 os.path.join(_build_dir, 'validate.log'),
             ]
             _val_log = next((p for p in _val_log_candidates if os.path.isfile(p)), None)
-            if _val_log:
-                _log_text = open(_val_log, encoding='utf-8').read().strip()
-                if _log_text and _log_text not in (_ret.stdout or ''):
-                    print("\n--- validate.log (from inside frozen exe) ---")
-                    # Replace Unicode box-drawing chars with ASCII for cp1252 consoles
-                    try:
-                        print(_log_text)
-                    except UnicodeEncodeError:
-                        print(_log_text.encode('ascii', errors='replace').decode('ascii'))
+            _log_raw = open(_val_log, encoding='utf-8').read() if _val_log else ''
+            _log_text = _log_raw.strip()
+
+            def _print_unicode_safe(_t):
+                # Windows consoles default to cp1252; validate.log carries
+                # box-drawing/emoji/CJK.  Fall back to ASCII so diagnostics
+                # print instead of dying on UnicodeEncodeError.
+                try:
+                    print(_t)
+                except UnicodeEncodeError:
+                    print(_t.encode('ascii', errors='replace').decode('ascii'))
+
             if _ret.returncode != 0:
+                # Print validate.log unconditionally on failure.  The previous
+                # dedup gate (`if _log_text not in stdout`) printed nothing at
+                # all when the log was missing, leaving "Fix import errors
+                # above" with nothing above it.  Mirrors setup_freeze_mac.py.
+                if _log_text:
+                    print(f"\n--- validate.log ({_val_log}) ---")
+                    _print_unicode_safe(_log_text)
+                    print("--- end validate.log ---\n")
+                else:
+                    print("\n[WARN] validate.log not found at either:")
+                    for _c in _val_log_candidates:
+                        print(f"  - {_c}")
+                    print("  Frozen exe may have crashed before opening the log file.")
                 # Win32GUI exes often crash during Python teardown (0xC0000005 = access
                 # violation) AFTER validation completes. Check validate.log for actual results.
                 # Canonical verdict reader — NOT a substring search.  A log
@@ -2297,8 +2313,7 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
                 # clean groups, which is how build7 shipped green.
                 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
                 from _validate_verdict import validate_log_is_clean
-                _log_says_good = bool(_val_log) and validate_log_is_clean(
-                    open(_val_log, encoding='utf-8').read())
+                _log_says_good = bool(_log_text) and validate_log_is_clean(_log_raw)
                 if _log_says_good:
                     print(f"\n[INFO] Exe exited with code {_ret.returncode} (teardown crash), "
                           f"but validate.log shows 0 failures — build is good.\n")
@@ -2306,6 +2321,9 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
                     print(f"\n*** VALIDATION FAILED (exit {_ret.returncode}) ***")
                     print("Fix import errors above before distributing.\n")
                     sys.exit(1)
+            elif _log_text and _log_text not in (_ret.stdout or ''):
+                print("\n--- validate.log (from inside frozen exe) ---")
+                _print_unicode_safe(_log_text)
             else:
                 print("Validation passed.\n")
     else:
