@@ -1,3 +1,4 @@
+import PublicSeoPage from '../components/shared/PublicSeoPage';
 import {getReferralCode} from '../hooks/useReferral';
 import {marketingApi} from '../services/socialApi';
 
@@ -109,26 +110,32 @@ export default function DownloadPage() {
           content="Download Nunba — the open desktop app for crowdsourced, locally-run AI. Free, private, yours. Windows, macOS, Linux."
         />
       </Helmet>
-      <main
-        style={{
-          minHeight: '100vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: 'radial-gradient(1200px 600px at 50% -10%,#16203a 0%,#0b0f1a 60%)',
-          padding: '40px 20px',
-        }}
+      {/* Parity phase A: this page was a bare <main> registered OUTSIDE
+          SocialLayout (MainRoute.js), so clicking "Download" in the sidebar
+          unmounted the whole shell and landed the user on a page with ZERO
+          navigation — the headless dead-end that prompted "no way to go back".
+          Nine sibling public pages already use this scaffold; DownloadPage was
+          the outlier.
+
+          homeTo="/local" is load-bearing, not cosmetic: PublicSeoPage's header
+          otherwise points home at "/", which in the desktop app exits the app
+          instead of returning to it.  Per the stated design intent, "/" degrades
+          to /local anyway, so /local is the safe destination here.
+
+          The ?ref= attribution above is untouched — marketingApi.track() is the
+          reason this page exists, and losing it would silently zero the install
+          funnel. */}
+      <PublicSeoPage
+        heading="download nunba"
+        subheading={
+          'run the hive on your own machine — free, local, yours. no single '
+          + 'company owns the intelligence; 90% of value goes back to the '
+          + 'people running the compute.'
+        }
+        maxWidth="sm"
+        homeTo="/local"
       >
         <div style={{maxWidth: 540, width: '100%', textAlign: 'center', color: '#e8edf7'}}>
-          <h1 style={{fontSize: 34, fontWeight: 800, margin: '0 0 10px'}}>
-            download nunba
-          </h1>
-          <p style={{fontSize: 16, lineHeight: 1.5, opacity: 0.82, margin: '0 0 28px'}}>
-            run the hive on your own machine — free, local, yours. no single
-            company owns the intelligence; 90% of value goes back to the people
-            running the compute.
-          </p>
-
           {card(os, true)}
           {others.map((k) => card(k, false))}
 
@@ -139,7 +146,7 @@ export default function DownloadPage() {
             · already running locally for free
           </p>
         </div>
-      </main>
+      </PublicSeoPage>
     </>
   );
 }
