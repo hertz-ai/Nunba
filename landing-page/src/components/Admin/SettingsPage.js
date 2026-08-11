@@ -1169,14 +1169,39 @@ export default function SettingsPage() {
                         variant="outlined"
                         color="error"
                         size="small"
-                        onClick={() => {
-                          if (window.confirm('Reset your HART name? You will go through the naming ceremony again.')) {
-                            localStorage.removeItem('hart_sealed');
-                            localStorage.removeItem('hart_name');
-                            localStorage.removeItem('hart_emoji');
-                            localStorage.removeItem('hart_language');
-                            window.location.href = '/local';
+                        onClick={async () => {
+                          if (!window.confirm('Reset your HART name? You will go through the naming ceremony again.')) {
+                            return;
                           }
+                          // Clear the SERVER copy first.  Clearing localStorage
+                          // alone could never work: user_data.json still held
+                          // hart_*, and useStorageSync's top-up fires precisely
+                          // WHEN hart_sealed is missing, so it re-hydrated the
+                          // identity straight back and Agent.js never rendered
+                          // LightYourHART.  '' is the delete sentinel — the
+                          // other keys are omitted, and /api/storage/set merges,
+                          // so access_token / email / user_id are untouched.
+                          try {
+                            await chatApi.post('/api/storage/set', {
+                              hart_sealed: '',
+                              hart_name: '',
+                              hart_emoji: '',
+                              hart_language: '',
+                            });
+                          } catch (err) {
+                            // Navigating now would re-hydrate from the un-cleared
+                            // file and look like the reset silently did nothing.
+                            window.alert(
+                              'Could not reset your HART identity — the local '
+                              + 'store did not accept the change. Nothing was '
+                              + 'changed; please try again.');
+                            return;
+                          }
+                          localStorage.removeItem('hart_sealed');
+                          localStorage.removeItem('hart_name');
+                          localStorage.removeItem('hart_emoji');
+                          localStorage.removeItem('hart_language');
+                          window.location.href = '/local';
                         }}
                         sx={{
                           borderColor: 'rgba(244,67,54,0.3)',

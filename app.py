@@ -5754,21 +5754,62 @@ def start_flask():
                         'error': 'No valid keys provided. Expceted one of: agentname, email, token or user_id'
                     })
 
+                # '' is the explicit DELETE sentinel; a non-empty value is a
+                # set.  Absent / None means "leave whatever is on file alone".
+                clear_keys = [key for key in found_keys if data[key] == '']
+                set_keys = [key for key in found_keys if data[key] != '']
+
                 # Store in a file
                 storage_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'HevolveAi Agent Companion', 'storage')
                 os.makedirs(storage_dir, exist_ok=True)
                 user_data_file = os.path.join(storage_dir, 'user_data.json')
 
+                # What THIS request asserted.  The URL-update and DB-upsert
+                # blocks below gate on `all(k in user_data for k in
+                # required_keys)`, so this stays a posted-keys-only view —
+                # merging into it would make those blocks fire on requests
+                # that never carried a full cloud identity.
                 user_data = {}
-                # Update specific keys from the data
-                for key in found_keys:
+                for key in set_keys:
                     user_data[key] = data[key]
 
-                # Save the new data (completely overwriting any existing file)
-                with open(user_data_file, 'w') as f:
-                    json.dump(user_data, f)
+                # What we PERSIST — merged into the existing document.
+                #
+                # Until 2026-08-11 this handler wrote `user_data` straight out
+                # with mode 'w', rebuilding the file from ONLY the posted keys.
+                # Any caller sending a subset therefore deleted everything it
+                # did not mention.  That made a HART-identity reset
+                # inexpressible: SettingsPage could not clear hart_* without
+                # also destroying access_token / email / user_id and signing
+                # the user out, so the reset cleared localStorage only —
+                # whereupon useStorageSync re-hydrated hart_* straight back
+                # out of this file and the naming ceremony never ran.
+                stored = {}
+                if os.path.exists(user_data_file):
+                    try:
+                        with open(user_data_file) as f:
+                            _existing = json.load(f)
+                        if isinstance(_existing, dict):
+                            stored = _existing
+                    except (OSError, ValueError) as _read_err:
+                        # Corrupt or unreadable: fall back to the pre-merge
+                        # behaviour (start clean) rather than refusing the write.
+                        logger.warning(
+                            f"user_data.json unreadable ({_read_err}) — rebuilding")
+                        stored = {}
 
-                logger.info(f"Completely overwrote user_data.json with new data containing keys: {list(user_data.keys())}")
+                _cleared = []
+                for key in clear_keys:
+                    if stored.pop(key, None) is not None:
+                        _cleared.append(key)
+                stored.update(user_data)
+
+                with open(user_data_file, 'w') as f:
+                    json.dump(stored, f)
+
+                logger.info(
+                    f"user_data.json merged — set={set_keys} "
+                    f"cleared={_cleared} now={list(stored.keys())}")
 
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']
