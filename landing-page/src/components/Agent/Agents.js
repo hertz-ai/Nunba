@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {ToastContainer, toast} from 'react-toastify';
 
@@ -7,7 +7,7 @@ import Footer from '../footer';
 import Navbar from '../navbar';
 
 import './agents.css';
-import {X, Search, ArrowRight, Sparkles} from 'lucide-react';
+import {X, Search, ArrowRight, Sparkles, CloudOff} from 'lucide-react';
 
 import AgentPoster from '../../assets/images/AgentPoster.png';
 import {chatApi} from '../../services/socialApi';
@@ -34,39 +34,50 @@ const Agents = ({
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredAgents, setFilteredAgents] = useState([]);
+  // A failed load is NOT an empty list.  Before this flag existed the catch
+  // below only console.error'd, so the page rendered the same "No agents found"
+  // copy for "your backend is down" and "you genuinely have zero agents" — the
+  // user cannot tell those apart, and one of them is fixable by retrying.
+  const [loadError, setLoadError] = useState(false);
 
-  useEffect(() => {
-    const fetchAgents = async () => {
-      try {
-        if (predefinedAgents && predefinedAgents.length > 0) {
-          const validAgents = predefinedAgents.filter(
-            (agent) => agent.name && agent.name.trim() !== ''
-          );
-          setAgentsData(validAgents);
-          setFilteredAgents(validAgents);
-          setLoading(false);
-          return;
-        }
-
-        // Otherwise fetch from API
-        const res = await chatApi.getPrompts();
-        const data = res?.prompts || res?.data?.prompts || res || [];
-
-        // Filter out agents without a name
-        const validAgents = (data || []).filter(
+  // Lifted out of the effect so the retry CTA can re-run the exact same load
+  // path.  A second inline fetch for retry would be a parallel path that drifts.
+  const fetchAgents = useCallback(async () => {
+    setLoadError(false);
+    setLoading(true);
+    try {
+      if (predefinedAgents && predefinedAgents.length > 0) {
+        const validAgents = predefinedAgents.filter(
           (agent) => agent.name && agent.name.trim() !== ''
         );
         setAgentsData(validAgents);
         setFilteredAgents(validAgents);
-      } catch (error) {
-        console.error('Error fetching agents:', error);
-      } finally {
-        setLoading(false);
+        return;
       }
-    };
 
-    fetchAgents();
+      // Otherwise fetch from API
+      const res = await chatApi.getPrompts();
+      const data = res?.prompts || res?.data?.prompts || res || [];
+
+      // Filter out agents without a name
+      const validAgents = (data || []).filter(
+        (agent) => agent.name && agent.name.trim() !== ''
+      );
+      setAgentsData(validAgents);
+      setFilteredAgents(validAgents);
+    } catch (error) {
+      console.error('Error fetching agents:', error);
+      setLoadError(true);
+      // Leave any previously-loaded list in place rather than blanking it — a
+      // failed refresh should not destroy what the user can already see.
+    } finally {
+      setLoading(false);
+    }
   }, [predefinedAgents]);
+
+  useEffect(() => {
+    fetchAgents();
+  }, [fetchAgents]);
 
   const handleSearchChange = (e) => {
     const query = e.target.value;
@@ -147,7 +158,9 @@ const Agents = ({
           {/* Agents Grid */}
           <div className="flex-1 overflow-y-auto px-3 pb-4">
             <div className="agents-grid">
-              {filteredAgents.length === 0 ? (
+              {filteredAgents.length === 0 && loadError ? (
+                <LoadErrorState onRetry={fetchAgents} />
+              ) : filteredAgents.length === 0 ? (
                 <EmptyState query={searchQuery} />
               ) : (
                 filteredAgents.map((agent, index) => (
@@ -203,7 +216,9 @@ const Agents = ({
 
           <div className="max-w-6xl mx-auto px-2">
             <div className="agents-grid">
-              {filteredAgents.length === 0 ? (
+              {filteredAgents.length === 0 && loadError ? (
+                <LoadErrorState onRetry={fetchAgents} />
+              ) : filteredAgents.length === 0 ? (
                 <EmptyState query={searchQuery} />
               ) : (
                 filteredAgents.map((agent, index) => (
@@ -247,6 +262,27 @@ const EmptyState = ({query = ''}) => (
         ? 'Nothing matches that search. Try a different term.'
         : 'No agents are available right now. Check back soon.'}
     </p>
+  </div>
+);
+
+// Distinguishable sibling of EmptyState: "we could not load" is a different fact
+// from "there is nothing to show", and only this one is worth retrying.  Reuses
+// the agents-empty* classes so it needs no new CSS and matches the surrounding
+// visual language.  role="alert" so screen readers announce the failure instead
+// of leaving a silently-empty grid.
+const LoadErrorState = ({onRetry}) => (
+  <div className="agents-empty" role="alert">
+    <div className="agents-empty__icon">
+      <CloudOff />
+    </div>
+    <p className="agents-empty__title">Couldn&apos;t load your agents</p>
+    <p className="agents-empty__hint">
+      The local backend didn&apos;t respond. Your agents are still there — this is
+      a connection problem, not an empty list.
+    </p>
+    <button type="button" className="agents-empty__retry" onClick={onRetry}>
+      Retry
+    </button>
   </div>
 );
 

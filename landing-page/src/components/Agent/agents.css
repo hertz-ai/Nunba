@@ -429,6 +429,33 @@
   color: rgba(148, 163, 184, 0.8);
 }
 
+/* Retry CTA for LoadErrorState — the one affordance that distinguishes a failed
+   load from an empty list.  Reuses the .agents-empty layout above so the error
+   state needs no separate container styling. */
+.agents-empty__retry {
+  margin-top: 14px;
+  padding: 8px 22px;
+  min-height: 40px;
+  border: 1px solid rgba(0, 230, 195, 0.45);
+  border-radius: 999px;
+  background: rgba(0, 230, 195, 0.1);
+  color: #00e6c3;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s;
+}
+
+.agents-empty__retry:hover {
+  background: rgba(0, 230, 195, 0.2);
+  border-color: rgba(0, 230, 195, 0.75);
+}
+
+.agents-empty__retry:focus-visible {
+  outline: 2px solid #00e6c3;
+  outline-offset: 2px;
+}
+
 /* ── Overlay loader dots (compact, spectrum) ────────────────────────────── */
 .agents-dotrow {
   display: inline-flex;

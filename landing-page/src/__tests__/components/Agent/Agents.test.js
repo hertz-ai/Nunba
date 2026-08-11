@@ -39,9 +39,31 @@ jest.mock('../../../components/navbar', () => {
   return {__esModule: true, default: () => <div data-testid="navbar" />};
 });
 
-jest.mock('lucide-react', () => ({
-  X: (props) => <svg data-testid="x-icon" {...props} />,
-}));
+// Proxy, not a hand-listed set, and that is the point.  This mock previously
+// defined ONLY `X`, while Agents.js imports {X, Search, ArrowRight, Sparkles} —
+// so three icons resolved to `undefined`, React threw "Element type is invalid",
+// and ALL 8 tests in this file died.  The file's own header claimed only test #6
+// was red, so seven real contract guards sat dead and nobody noticed: a guard
+// that cannot pass is not a guard.
+//
+// A Proxy answers any icon name, so adding an import to the component can never
+// silently kill this suite again.  Named `data-testid` stays available via
+// `icon-<Name>` for tests that need to assert on a specific glyph.
+jest.mock('lucide-react', () => {
+  const React = require('react');
+  return new Proxy(
+    {},
+    {
+      get: (_target, name) => {
+        if (name === '__esModule') return true;
+        const Icon = (props) =>
+          React.createElement('svg', {'data-testid': `icon-${String(name)}`, ...props});
+        Icon.displayName = `MockIcon(${String(name)})`;
+        return Icon;
+      },
+    },
+  );
+});
 
 jest.mock('react-toastify', () => ({
   __esModule: true,
@@ -163,18 +185,25 @@ describe('Agents page — API contract', () => {
 
 // 5: navigate-on-click -----------------------------------------
 
+// Locate the clickable card ROOT by the accessible role the component already
+// exposes (Agents.js AgentCard: role="button" + tabIndex={0} + onKeyDown), not
+// by a CSS class.  The previous version walked up looking for `cursor-pointer`,
+// which stopped existing when the card moved to agents.css class names — so the
+// walk ran off the top of the tree, `clickable` became null, and both tests
+// failed on a styling detail that has nothing to do with the contract.
+// Role-based lookup cannot drift with the stylesheet.
+const cardFor = (nameRe) => {
+  const label = screen.getByText(nameRe);
+  const root = label.closest('[role="button"]');
+  expect(root).toBeTruthy();
+  return root;
+};
+
 describe('Agents page — navigation', () => {
   it('clicking a card in standalone mode navigates to /agents/<name>', () => {
     renderPage({predefinedAgents: [SAMPLE_LOCAL]});
-    const card = screen.getByText(/Local Tutor/i).closest('div');
-    // Walk up to the clickable card root (has cursor-pointer class).
-    let clickable = card;
-    while (clickable && !clickable.className.includes('cursor-pointer')) {
-      clickable = clickable.parentElement;
-    }
-    expect(clickable).toBeTruthy();
-    fireEvent.click(clickable);
-    // Spaces in the agent name become hyphens (Agents.js:202).
+    fireEvent.click(cardFor(/Local Tutor/i));
+    // Spaces in the agent name become hyphens.
     expect(mockNavigate).toHaveBeenCalledWith(
       '/agents/Local-Tutor',
       expect.objectContaining({state: {agentData: SAMPLE_LOCAL}}),
@@ -188,42 +217,78 @@ describe('Agents page — navigation', () => {
       predefinedAgents: [SAMPLE_LOCAL],
       onAgentSelect,
     });
-    const card = screen.getByText(/Local Tutor/i).closest('div');
-    let clickable = card;
-    while (clickable && !clickable.className.includes('cursor-pointer')) {
-      clickable = clickable.parentElement;
-    }
-    fireEvent.click(clickable);
+    fireEvent.click(cardFor(/Local Tutor/i));
     expect(onAgentSelect).toHaveBeenCalledWith(SAMPLE_LOCAL);
     expect(mockNavigate).not.toHaveBeenCalled();
   });
+
+  // The card advertises role="button" + tabIndex={0} + onKeyDown, so Enter must
+  // do what a click does.  Pinning it keeps a future refactor from quietly
+  // dropping the keyboard path and leaving the role as a false advertisement.
+  it('Enter on a focused card activates it (keyboard parity with click)', () => {
+    renderPage({predefinedAgents: [SAMPLE_LOCAL]});
+    fireEvent.keyDown(cardFor(/Local Tutor/i), {key: 'Enter', code: 'Enter'});
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/agents/Local-Tutor',
+      expect.objectContaining({state: {agentData: SAMPLE_LOCAL}}),
+    );
+  });
 });
 
-// 6: backend-down regression — REVEALS GAP G2/G3 ---------------
+// 6: backend-down regression — GAP G2/G3, NOW CLOSED ------------
 //
-// Current behaviour: when chatApi.getPrompts() rejects, the catch
-// only console.errors and the page renders the same "no agents match"
-// copy users see for an empty *successful* response.  That makes
-// "local backend offline" indistinguishable from "you genuinely have
-// zero agents" — a real UX bug.
+// The defect: when chatApi.getPrompts() rejected, the catch only
+// console.error'd, so the page rendered the same "No agents found" copy
+// users see for an empty *successful* response.  "Local backend offline"
+// was indistinguishable from "you genuinely have zero agents" — and only
+// one of those is fixable by retrying.
 //
-// This test is intentionally red on the current code.  Once Agents.js
-// either (a) falls through to chatApi.getPublicPromptsCloud() when the
-// local call fails, or (b) renders a distinguishable error state with a
-// retry CTA, the test will pass.  Keeping it as a failing fixture
-// documents the gap rather than burying it in a memo.
+// Closed via option (b) from the original note: Agents.js now tracks
+// `loadError` and renders LoadErrorState (role="alert" + Retry CTA)
+// instead of EmptyState.  Option (a) — falling through to
+// getPublicPromptsCloud() — was deliberately NOT taken: that method has
+// zero production callers and points at /prompts/public, a route absent
+// from Nunba's routes/, so it would have swapped a visible bug for a
+// silent network path to a probably-nonexistent endpoint.
+//
+// The original assertion was ALSO mis-timed: it awaited only that
+// getPrompts had been CALLED, then queried synchronously — so it read the
+// DOM one microtask before the catch's setState rendered, and would have
+// reported "still broken" even against a correct fix.  The assertion
+// itself must be what waitFor retries.
 
 describe('Agents page — backend-down regression (G2/G3)', () => {
   it('shows a distinguishable error state when chatApi.getPrompts rejects', async () => {
     mockGetPrompts.mockRejectedValue(new Error('Network error'));
     renderPage();
-    await waitFor(() => {
-      expect(mockGetPrompts).toHaveBeenCalled();
-    });
-    // Either an error banner OR a retry CTA — anything that distinguishes
-    // failure from "you have no agents".  The current code shows neither.
-    const errorish =
-      screen.queryByText(/couldn't load|failed to load|retry|connection|offline/i);
-    expect(errorish).toBeInTheDocument();
+    // findBy* retries — the error state appears a microtask after the reject.
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText(/couldn't load/i)).toBeInTheDocument();
+    // And it must NOT be the empty-list copy, which is the whole point.
+    expect(screen.queryByText(/No agents found/i)).not.toBeInTheDocument();
+  });
+
+  it('offers a Retry that actually re-runs the load and recovers', async () => {
+    mockGetPrompts.mockRejectedValueOnce(new Error('Network error'));
+    renderPage();
+    const retry = await screen.findByRole('button', {name: /retry/i});
+    expect(mockGetPrompts).toHaveBeenCalledTimes(1);
+
+    // Second attempt succeeds — proves Retry re-enters the same load path
+    // rather than being a decorative button.
+    mockGetPrompts.mockResolvedValueOnce({prompts: [SAMPLE_CLOUD]});
+    fireEvent.click(retry);
+
+    expect(await screen.findByText(/Cloud Coach/i)).toBeInTheDocument();
+    expect(mockGetPrompts).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('a successful load shows the empty state, never the error state', async () => {
+    mockGetPrompts.mockResolvedValue({prompts: []});
+    renderPage();
+    // Genuinely-zero-agents must still read as "nothing here", not "failure".
+    expect(await screen.findByText(/No agents found/i)).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
