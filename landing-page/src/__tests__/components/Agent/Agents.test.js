@@ -267,6 +267,65 @@ describe('Agents page — navigation', () => {
 // reported "still broken" even against a correct fix.  The assertion
 // itself must be what waitFor retries.
 
+// 7: provenance badge (parity phases D+E, collapsed) -----------
+//
+// D ("origin labels") and E ("local-vs-cloud badge") are the SAME affordance
+// once there is an authoritative field: origin IS the local/cloud distinction.
+// Two badges from two inference paths would have been the parallel path.
+//
+// The plan's phase D said to port web's `is_public` filter. Refuted: web's own
+// isBrowsableAgent docstring records that a real local dump returns `is_public`
+// absent on all 1157 rows, so the filter cannot fire on Nunba data, and its
+// name-regex fallback is called "a floor, not a solution" by its own author.
+// Verified separately that Nunba's /prompts carried NO origin/is_public/source
+// at all — so the fix went to the producer (tests/test_prompts_origin_stamp.py).
+
+describe('Agents page — provenance badge', () => {
+  it('labels a local agent "On your machine"', () => {
+    renderPage({predefinedAgents: [{...SAMPLE_LOCAL, origin: 'local'}]});
+    expect(screen.getByText('On your machine')).toBeInTheDocument();
+  });
+
+  it('labels a hive agent "Hive"', () => {
+    renderPage({predefinedAgents: [{...SAMPLE_CLOUD, origin: 'hive'}]});
+    expect(screen.getByText('Hive')).toBeInTheDocument();
+  });
+
+  it('labels a peer agent "Peer node"', () => {
+    renderPage({predefinedAgents: [{...SAMPLE_CLOUD, origin: 'peer'}]});
+    expect(screen.getByText('Peer node')).toBeInTheDocument();
+  });
+
+  it('renders NO badge when origin is absent — never a guessed one', () => {
+    // The load-bearing case. An older backend sends no origin; defaulting to
+    // "local" would assert something false about a hive agent, and the user
+    // could not tell the badge was guessing. Absent must mean silent.
+    renderPage({predefinedAgents: [SAMPLE_LOCAL]});
+    expect(screen.queryByText('On your machine')).not.toBeInTheDocument();
+    expect(screen.queryByText('Hive')).not.toBeInTheDocument();
+    expect(screen.queryByText('Peer node')).not.toBeInTheDocument();
+    // …and the card itself still renders.
+    expect(screen.getByText(/Local Tutor/i)).toBeInTheDocument();
+  });
+
+  it('renders no badge for an unrecognised origin value', () => {
+    renderPage({predefinedAgents: [{...SAMPLE_LOCAL, origin: 'regional'}]});
+    expect(screen.queryByText(/regional/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Local Tutor/i)).toBeInTheDocument();
+  });
+
+  it('badges each card independently in a mixed list', () => {
+    renderPage({
+      predefinedAgents: [
+        {...SAMPLE_LOCAL, origin: 'local'},
+        {...SAMPLE_CLOUD, origin: 'hive'},
+      ],
+    });
+    expect(screen.getByText('On your machine')).toBeInTheDocument();
+    expect(screen.getByText('Hive')).toBeInTheDocument();
+  });
+});
+
 describe('Agents page — backend-down regression (G2/G3)', () => {
   it('shows a distinguishable error state when chatApi.getPrompts rejects', async () => {
     mockGetPrompts.mockRejectedValue(new Error('Network error'));

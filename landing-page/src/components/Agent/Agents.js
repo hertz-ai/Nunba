@@ -287,6 +287,40 @@ const LoadErrorState = ({onRetry}) => (
   </div>
 );
 
+// Where does this agent actually run? The card's one honest provenance claim.
+//
+// The label vocabulary matches Hevolve web's card (local/peer/hive) so the two
+// surfaces describe the same agent the same way. The AUTHORITY is the backend's
+// `origin` field, stamped per source in chatbot_routes.get_prompts_route —
+// nothing here infers provenance from field shapes.
+//
+// That matters because inference was the trap. Web's own isBrowsableAgent
+// docstring records, from a real local dump, that all 1157 rows come back with
+// `is_public` absent — so the parity plan's "port the is_public filter" would
+// have been a predicate that can never fire. The fix belonged at the producer,
+// which used to build the list from three labelled sections and throw the label
+// away.
+//
+// UNKNOWN OR ABSENT origin renders NOTHING, deliberately. A default of "local"
+// would assert something false about a hive agent whenever the backend is older
+// than this component — and a confidently wrong provenance badge is worse than
+// no badge, because the user has no way to tell it is guessing.
+const ORIGIN_LABELS = {
+  local: 'On your machine',
+  peer: 'Peer node',
+  hive: 'Hive',
+};
+
+const OriginBadge = ({origin}) => {
+  const label = ORIGIN_LABELS[origin];
+  if (!label) return null;
+  return (
+    <span className={`agent-card__origin agent-card__origin--${origin}`}>
+      {label}
+    </span>
+  );
+};
+
 const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) => {
   const navigate = useNavigate();
   const accent = SPECTRUM[index % SPECTRUM.length];
@@ -342,6 +376,7 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
       {/* Content */}
       <div className="agent-card__body">
         <h3 className="agent-card__name">{agent.name}</h3>
+        <OriginBadge origin={agent.origin} />
         <p className="agent-card__desc">{description}</p>
 
         <button

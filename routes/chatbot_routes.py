@@ -2144,6 +2144,29 @@ def voice_diarize():
 # ============== Local vs Cloud Agent Definitions ==============
 
 # Local agents - work offline with local LLM (Llama.cpp)
+# Provenance vocabulary for the `origin` field stamped on every /prompts row.
+#
+# WHY THIS EXISTS: /prompts builds its list from three labelled sections and
+# used to throw the label away, so the payload carried NO origin/is_public/
+# source at all.  The frontend then had nothing authoritative to render and
+# had to infer provenance from field shapes — which is exactly what the web
+# repo warns against: its own isBrowsableAgent docstring records that a local
+# Nunba dump returns `is_public` absent on all 1157 rows, so any filter keyed
+# on it is a predicate that can never fire.
+#
+# `origin` is DELIBERATELY NOT `type`.  `type` is already overloaded: HARTOS
+# agents get `type='local'` forced regardless of provenance, and local_count/
+# cloud_count are derived from it.  Two meanings on one key is the drift this
+# codebase keeps paying for.
+#
+# Vocabulary matches the web card labels (Agents.js: local/peer/hive) so the
+# two surfaces describe the same agent the same way.  ORIGIN_PEER is reserved,
+# not dead: /prompts has no peer fan-out yet (see task #457), and when it gains
+# one the label is already defined rather than invented at that call site.
+ORIGIN_LOCAL = 'local'   # runs on this machine (built-in or HARTOS-created)
+ORIGIN_PEER = 'peer'     # reserved: another node in the hive, not yet a source
+ORIGIN_HIVE = 'hive'     # cloud / hosted, not on this machine
+
 LOCAL_AGENTS = [
     {
         'id': 'local_assistant',
@@ -2463,6 +2486,7 @@ def get_prompts_route():
         for agent in LOCAL_AGENTS:
             agent_copy = agent.copy()
             agent_copy['available'] = True
+            agent_copy['origin'] = ORIGIN_LOCAL
             agents.append(agent_copy)
 
     # ── 2. HARTOS backend agents (user-created agents, custom prompts) ──
@@ -2480,6 +2504,11 @@ def get_prompts_route():
                         agent['available'] = True
                         if not agent.get('type'):
                             agent['type'] = 'local'
+                        # Created through HARTOS on THIS machine, so still
+                        # local by origin.  `type` cannot carry this: it is
+                        # forced to 'local' two lines up and also feeds
+                        # local_count/cloud_count below.
+                        agent['origin'] = ORIGIN_LOCAL
                         agents.append(agent)
                     logger.debug(f'Fetched {len(hartos_agents)} agents from HARTOS')
         except Exception as e:
@@ -2492,6 +2521,7 @@ def get_prompts_route():
             if not any(a.get('id') == agent.get('id') or a.get('name') == agent.get('name') for a in agents):
                 agent_copy = agent.copy()
                 agent_copy['available'] = has_auth  # guests can see but not use
+                agent_copy['origin'] = ORIGIN_HIVE
                 agents.append(agent_copy)
 
     return jsonify({
