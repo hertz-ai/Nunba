@@ -1991,12 +1991,16 @@ class LlamaConfig:
         try:
             logger.info(f"Starting server on port {desired_port}: {' '.join(cmd)}")
 
-            # Start the server process
-            startupinfo = None
-            if sys.platform == 'win32':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0  # SW_HIDE
+            # Start the server process.
+            # startupinfo ONLY, deliberately — this spawn previously built its
+            # own STARTUPINFO inline and passed no creationflags, and llama-server
+            # is a long-lived child on the chat hot path, so this de-duplication
+            # must not change its spawn semantics.  Taking only the startupinfo
+            # keeps behaviour byte-identical while removing the copy.  (Two of the
+            # eleven copies found 2026-08-11 diverged exactly here: some passed
+            # CREATE_NO_WINDOW, these did not — which is what duplication does.)
+            from desktop.platform_utils import get_subprocess_flags
+            startupinfo = get_subprocess_flags().get('startupinfo')
 
             # Set cwd to binary dir so DLLs (ggml-cuda.dll, mtmd.dll) are found
             bin_dir = str(Path(llama_server).parent)
@@ -2242,12 +2246,15 @@ class LlamaConfig:
             if mmproj_path and not can_use_gpu:
                 cmd.append("--no-mmproj-offload")
 
-        # Start
-        startupinfo = None
-        if sys.platform == 'win32':
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
+        # Start.
+        # startupinfo ONLY — same reasoning as the main-server spawn above: the
+        # caption/draft server is long-lived, so de-duplicating must not alter
+        # its spawn semantics.  Note this copy used `subprocess.SW_HIDE` while
+        # the other used the literal 0 for the same field; identical values,
+        # different spellings, which is how a reader loses confidence that the
+        # copies agree.
+        from desktop.platform_utils import get_subprocess_flags
+        startupinfo = get_subprocess_flags().get('startupinfo')
 
         log_path = self.config_dir / "caption_server.log"
         try:

@@ -208,13 +208,25 @@ class LlamaInstaller:
     @staticmethod
     def _no_window() -> tuple:
         """(startupinfo, creationflags) that suppress a console window on Windows.
-        DRY: every subprocess in this module needs the same pair on win32."""
-        if sys.platform == 'win32':
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0  # SW_HIDE
-            return si, subprocess.CREATE_NO_WINDOW
-        return None, 0
+        DRY: every subprocess in this module needs the same pair on win32.
+
+        Delegates to the ONE canonical implementation,
+        ``desktop.platform_utils.get_subprocess_flags()``.  This method used to
+        build the STARTUPINFO itself — one of ELEVEN first-party copies found
+        2026-08-11 — and, more pointedly, two spawns in THIS SAME FILE (the
+        where/which probe and the --version probe) inlined the block again
+        instead of calling this helper, despite the docstring above asking them
+        to.  Both now call it.  See
+        tests/test_hidden_subprocess_single_source.py.
+        """
+        try:
+            from desktop.platform_utils import get_subprocess_flags
+            flags = get_subprocess_flags()
+            return flags.get('startupinfo'), flags.get('creationflags', 0)
+        except Exception:
+            # Cosmetic, never correctness — a bundling surprise must not stop
+            # us from locating/probing llama-server.
+            return None, 0
 
     @staticmethod
     def detect_backend(os_name: str | None = None) -> str:
@@ -418,13 +430,7 @@ class LlamaInstaller:
         # Try to find in PATH (system-wide installations)
         try:
             cmd = "where" if "windows" in self.os_name else "which"
-            si = None
-            cf = 0
-            if sys.platform == 'win32':
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                si.wShowWindow = 0
-                cf = subprocess.CREATE_NO_WINDOW
+            si, cf = self._no_window()
             result = subprocess.run(
                 [cmd, "llama-server"],
                 capture_output=True, text=True,
@@ -515,13 +521,7 @@ class LlamaInstaller:
                 return _hit[1]
 
         try:
-            startupinfo = None
-            creationflags = 0
-            if sys.platform == 'win32':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0  # SW_HIDE
-                creationflags = subprocess.CREATE_NO_WINDOW
+            startupinfo, creationflags = LlamaInstaller._no_window()
 
             # Set cwd to binary dir so DLLs (mtmd.dll, ggml-cuda.dll) are found
             bin_dir = str(Path(server_path).parent)
@@ -1000,14 +1000,22 @@ class LlamaInstaller:
                 "-DLLAMA_BUILD_SERVER=ON"
             ]
 
-            subprocess.run(cmake_args, cwd=build_dir, check=True)
+            # Hidden + bounded: a build-from-source is the longest-running spawn
+            # in the app, and on Windows it would otherwise pop a console over
+            # the frameless UI for the whole duration.  30 min covers a cold
+            # CUDA build on a laptop; past that something is wedged and the
+            # caller should hear about it rather than hang forever.
+            _si, _cf = self._no_window()
+            subprocess.run(cmake_args, cwd=build_dir, check=True,
+                           startupinfo=_si, creationflags=_cf, timeout=1800)
 
             # Build
             logger.info("Building llama.cpp (this takes a few minutes)...")
             subprocess.run(
                 ["cmake", "--build", ".", "--config", "Release", "-j"],
                 cwd=build_dir,
-                check=True
+                check=True,
+                startupinfo=_si, creationflags=_cf, timeout=1800
             )
 
             logger.info(f"llama.cpp installed successfully to: {self.install_dir}")

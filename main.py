@@ -1683,13 +1683,16 @@ def execute_command():
                 # Import the necessary modules ofr windows
                 import subprocess
 
-                # CREATE_NO_WINDOW flag (0x08000000) to prevent window from showing
-                creation_flags = 0x08000000
-
-                # Also set up STARTUPINFO to hide the window
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0 # SW_HIDE
+                # ONE source for the hide flags — desktop.platform_utils.
+                # This block used to hardcode 0x08000000 (the raw
+                # CREATE_NO_WINDOW value) plus its own STARTUPINFO; it was one
+                # of eleven first-party copies found 2026-08-11.  A magic number
+                # is worse than a duplicate: nothing links it to the constant it
+                # mirrors.  See tests/test_hidden_subprocess_single_source.py.
+                from desktop.platform_utils import get_subprocess_flags
+                _flags = get_subprocess_flags()
+                creation_flags = _flags.get('creationflags', 0)
+                startupinfo = _flags.get('startupinfo')
 
             # Add environment variables
             env = os.environ.copy()
@@ -2105,10 +2108,15 @@ def harthash():
         'hevolve_database': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Hevolve_Database'),
         'hevolveai': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hevolveai'),
     }
+    # Four repos x one git spawn each = up to four console flashes on Windows
+    # without the hide flags.  Resolve them once outside the loop.
+    from desktop.platform_utils import get_subprocess_flags
+    _win_flags = get_subprocess_flags()
     for name, path in repos.items():
         try:
             r = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
-                               capture_output=True, text=True, cwd=path, timeout=5)
+                               capture_output=True, text=True, cwd=path, timeout=5,
+                               **_win_flags)
             hashes[name] = r.stdout.strip() if r.returncode == 0 else 'unknown'
         except Exception:
             hashes[name] = 'unknown'

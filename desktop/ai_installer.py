@@ -213,13 +213,12 @@ def detect_gpu() -> dict:
         # Pull the exact NVIDIA name + VRAM — drives model sizing + TTS tiering.
         try:
             import subprocess
-            si = None
-            cf = 0
-            if IS_WINDOWS:
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                si.wShowWindow = 0
-                cf = subprocess.CREATE_NO_WINDOW
+            # ONE source for the hide flags (was an inline copy — see
+            # tests/test_hidden_subprocess_single_source.py).
+            from desktop.platform_utils import get_subprocess_flags
+            _flags = get_subprocess_flags()
+            si = _flags.get('startupinfo')
+            cf = _flags.get('creationflags', 0)
             check = subprocess.run(
                 ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
                 capture_output=True, text=True, timeout=5,

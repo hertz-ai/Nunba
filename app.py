@@ -2858,9 +2858,15 @@ if getattr(args, 'acceptance_test', False):
                 "sys.stdout.write(v); "
                 "sys.exit(0 if isinstance(v, str) and len(v) >= 2 else 1)"
             )
+            try:
+                from desktop.platform_utils import get_subprocess_flags
+                _probe_flags = get_subprocess_flags()
+            except Exception:
+                _probe_flags = {}
             _proc = subprocess.run(
                 [_exe, '-c', _probe],
                 capture_output=True, text=True, timeout=15,
+                **_probe_flags,
             )
             _check(
                 'symptom_11_runtime_core_user_lang_loadable',
@@ -4525,13 +4531,22 @@ def _refresh_sibling_deps(app_dir):
             ('Hevolve_Database', 'hevolve-database'),
             ('HARTOS/agent-ledger-opensource', 'agent-ledger'),
         ]
+        # Four siblings x one pip spawn each — without the hide flags that is
+        # four console windows flashing over the UI.  Dev-mode only (this whole
+        # function returns early unless ../HARTOS exists as a source dir), so it
+        # never fires in the installed app, but a Windows dev sees all four.
+        try:
+            from desktop.platform_utils import get_subprocess_flags
+            _win_flags = get_subprocess_flags()
+        except Exception:
+            _win_flags = {}
         for sib_dir, pkg_name in siblings:
             sib_path = os.path.join(project_root, sib_dir)
             if os.path.isdir(sib_path):
                 subprocess.run(
                     [sys.executable, '-m', 'pip', 'install', '-e', sib_path,
                      '--no-deps', '--quiet'],
-                    timeout=30, capture_output=True)
+                    timeout=30, capture_output=True, **_win_flags)
         _setup_logger.info("[STARTUP] Sibling deps refreshed")
     except Exception as e:
         _setup_logger.warning(f"[STARTUP] Sibling dep refresh failed: {e}")
