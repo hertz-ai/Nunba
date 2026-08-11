@@ -22,16 +22,11 @@ export default function PublicSeoPage({
   subheading,
   topSlot = null,
   maxWidth = 'lg',
-  // Where the header's wordmark and "Home" link point.  Default '/' keeps the
-  // nine existing consumers (News, Research, Listings, Incident, Answer, …)
-  // byte-identical; Nunba's app-reachable pages pass '/local' so the only exit
-  // from the page returns to the APP rather than leaving it.
-  homeTo = '/',
   children,
 }) {
   return (
     <>
-      <SeoHeader homeTo={homeTo} />
+      <SeoHeader />
       <Box sx={{ minHeight: '70vh', bgcolor: '#0F0E17', color: '#fff', pt: { xs: 6, md: 8 }, pb: 8 }}>
         <Container maxWidth={maxWidth}>
           {topSlot}

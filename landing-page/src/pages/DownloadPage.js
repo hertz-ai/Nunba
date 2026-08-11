@@ -117,10 +117,17 @@ export default function DownloadPage() {
           Nine sibling public pages already use this scaffold; DownloadPage was
           the outlier.
 
-          homeTo="/local" is load-bearing, not cosmetic: PublicSeoPage's header
-          otherwise points home at "/", which in the desktop app exits the app
-          instead of returning to it.  Per the stated design intent, "/" degrades
-          to /local anyway, so /local is the safe destination here.
+          The scaffold's header is the whole fix, and every destination in it
+          stays inside Nunba: MainRoute.js maps "/" to <Agent key="root"> — the
+          same component "/local" renders ("same as root", MainRoute.js:234) —
+          and /news, /research, /listings, /blog are all pages in THIS repo.
+
+          So no homeTo override here, deliberately.  "/local" is not a safer
+          home, it is a MODE: it sets forceGuestMode on the auth modal and
+          auto-opens login when unauthenticated (Demopage.js:424, :5734).
+          Pointing a mode-neutral page at it would silently move an online user
+          into local mode — the plan's own warning against hardcoding a home
+          destination "wrong in both directions".
 
           The ?ref= attribution above is untouched — marketingApi.track() is the
           reason this page exists, and losing it would silently zero the install
@@ -133,7 +140,6 @@ export default function DownloadPage() {
           + 'people running the compute.'
         }
         maxWidth="sm"
-        homeTo="/local"
       >
         <div style={{maxWidth: 540, width: '100%', textAlign: 'center', color: '#e8edf7'}}>
           {card(os, true)}

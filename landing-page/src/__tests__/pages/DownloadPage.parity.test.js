@@ -4,26 +4,35 @@
  * DownloadPage was registered in MainRoute.js OUTSIDE SocialLayout and rendered a
  * bare <main>.  Reaching it from the sidebar unmounted the entire app shell, so
  * the page had no header, no footer, and no link back — the user's reported
- * "there is no way to go back".
+ * "there is no way to go back".  Nine sibling public pages already used the
+ * shared PublicSeoPage scaffold; this one was the outlier.
  *
- * These tests pin BOTH halves of the fix, because either alone is insufficient:
+ * WHY THERE IS NO `homeTo` PROP HERE, and why that is the tested contract:
  *
- *   1. the page renders the shared PublicSeoPage scaffold (so it has nav at all);
- *   2. its home destination is '/local', NOT '/'.  In the desktop app '/' leaves
- *      the app; a header whose only exit exits the product is the same dead end
- *      with better styling.
+ * The parity plan asserted the wrap alone was insufficient because SeoHeader
+ * points home at "/", which "in a desktop app exits the app".  That premise is
+ * FALSE and was checked rather than assumed: MainRoute.js:214 maps "/" to
+ * <Agent key="root"> — the very same component "/local" renders at :236, whose
+ * own comment reads "Local route for Nunba offline mode - same as root" — and
+ * /news, /research, /listings are pages in this repo.  Every header destination
+ * is served by Nunba's own Flask.  Nothing exits.
  *
- * And it pins the thing a careless refactor would silently destroy: the ?ref=
- * funnel attribution.  marketingApi.track() is why this page exists at all — if
- * a rewrite drops it, every install attribution silently reads zero and nothing
- * in the UI looks wrong.
+ * "/local" is therefore not a safer home, it is a MODE: isLocalRoute drives
+ * forceGuestMode on the auth modal and auto-opens login when unauthenticated
+ * (Demopage.js:424, :5734).  Sending a mode-neutral page there would silently
+ * move a signed-in online user into local mode — which is exactly what the plan
+ * warns about when it says a hardcoded home destination is "wrong in both
+ * directions".  Hence: default "/", asserted below, not merely left implicit.
+ *
+ * Also pinned: the ?ref= funnel attribution.  marketingApi.track() is why this
+ * page exists — if a rewrite drops it, install attribution silently reads zero
+ * and nothing in the UI looks wrong.
  *
  * Uses the repo's canonical renderWithProviders (HelmetProvider + Router + MUI
  * theme) rather than a local wrapper — DownloadPage renders <Helmet>, which
  * throws without its provider.
  */
 import DownloadPage from '../../pages/DownloadPage';
-
 import { renderWithProviders } from '../testHelpers';
 
 import { screen } from '@testing-library/react';
@@ -65,13 +74,32 @@ describe('DownloadPage — parity phase A', () => {
     expect(screen.getByTestId('seo-footer')).toBeInTheDocument();
   });
 
-  test('home points at /local so the only exit returns to the app', () => {
+  test('offers a way back: home link present and pointing at the in-app root', () => {
     renderAt();
     const hrefs = linkHrefs();
-    // Wordmark + "Home" nav item both.
-    expect(hrefs.filter((h) => h === '/local').length).toBeGreaterThanOrEqual(2);
-    // The bare marketing root must NOT be linked from an app-reachable page.
-    expect(hrefs).not.toEqual(expect.arrayContaining(['/']));
+    // Wordmark + "Home" nav item both target "/" — <Agent key="root">, served by
+    // Nunba's own Flask.  This is the assertion that would have caught the
+    // original defect: pre-fix there was no header, so no such link existed.
+    expect(hrefs.filter((h) => h === '/').length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('does NOT force local mode — "/local" is a mode switch, not a home', () => {
+    renderAt();
+    expect(linkHrefs()).not.toEqual(expect.arrayContaining(['/local']));
+  });
+
+  test('every HEADER destination stays inside the app (no off-app nav)', () => {
+    renderAt();
+    // Scoped to the header on purpose: the installer links in the body are
+    // absolute GitHub-releases URLs and SHOULD be external.  What must not be
+    // external is the navigation — an http(s) href in the header would mean the
+    // "way back" leaves the product, the subtler form of the original defect.
+    const header = document.querySelector('header');
+    const navHrefs = Array.from(header.querySelectorAll('a[href]')).map((a) =>
+      a.getAttribute('href'),
+    );
+    expect(navHrefs.length).toBeGreaterThan(0);
+    expect(navHrefs.filter((h) => /^https?:\/\//.test(h))).toEqual([]);
   });
 
   test('still renders the heading and all three installer cards', () => {

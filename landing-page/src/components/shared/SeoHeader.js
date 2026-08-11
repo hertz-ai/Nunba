@@ -12,16 +12,8 @@ import { GRADIENT_TEXT_SX } from './PublicSeoPage';
 // stylesheet never committed to the repo, so it clashes on these dark pages.
 // This header needs only MUI + react-router, matches the page, and keeps the
 // key internal links plus the Download call to action.
-// `homeTo` is a PARAMETER, not a constant, because Nunba and web disagree about
-// what "home" means and both are right.  On web, `/` is the marketing root.  In
-// the Nunba desktop app, an app-reachable page whose only exit is `/` throws the
-// user OUT of the app — the same headless-dead-end defect in a subtler costume.
-// Per the user's stated design intent (2026-08-11): `/` resolves online when
-// available and degrades to `/local`, so `/local` is the safe home for
-// Nunba-reachable pages.  Default stays '/' so all nine existing PublicSeoPage
-// consumers render byte-identically.
-const buildNav = (homeTo) => [
-  { label: 'Home', to: homeTo },
+const NAV = [
+  { label: 'Home', to: '/' },
   { label: 'News', to: '/news' },
   { label: 'Research', to: '/research' },
   { label: 'Listings', to: '/listings' },
@@ -38,8 +30,7 @@ const navLinkSx = {
   '&:hover': { color: '#fff' },
 };
 
-export default function SeoHeader({ homeTo = '/' }) {
-  const NAV = buildNav(homeTo);
+export default function SeoHeader() {
   return (
     <Box
       component="header"
@@ -64,7 +55,7 @@ export default function SeoHeader({ homeTo = '/' }) {
           }}
         >
           {/* Wordmark */}
-          <Box component={Link} to={homeTo} sx={{ ...GRADIENT_TEXT_SX, fontSize: '1.35rem', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+          <Box component={Link} to="/" sx={{ ...GRADIENT_TEXT_SX, fontSize: '1.35rem', textDecoration: 'none', whiteSpace: 'nowrap' }}>
             Hevolve AI
           </Box>
 
