@@ -443,9 +443,18 @@ class STTLoader(ModelLoader):
     def download(self, entry: ModelEntry) -> bool:
         """Install faster-whisper + CUDA torch if needed."""
         try:
+            from integrations.service_tools.model_catalog import backend_requires_torch
             from tts.package_installer import has_nvidia_gpu, install_gpu_torch, is_cuda_torch
-            # Ensure CUDA torch is available for GPU whisper
-            if has_nvidia_gpu() and not is_cuda_torch():
+            # Ensure CUDA torch is available — but ONLY for engines whose runtime
+            # actually IS torch.  A sherpa-onnx entry (backend='onnx') runs on
+            # ONNX Runtime and never imports torch; it used to block here on a
+            # 221s multi-GB install, and worse, `return False` below reported the
+            # model UNDOWNLOADABLE when that unrelated install failed.
+            if not backend_requires_torch(entry.backend):
+                logger.info(
+                    "STT download: %s uses backend=%r — skipping CUDA torch "
+                    "(its runtime does not use torch)", entry.id, entry.backend)
+            elif has_nvidia_gpu() and not is_cuda_torch():
                 logger.info("STT download: installing CUDA torch for faster-whisper")
                 ok, msg = install_gpu_torch()
                 if not ok:

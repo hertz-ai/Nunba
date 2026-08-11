@@ -39,6 +39,11 @@ class BootstrapStep:
     detail: str = ''
     vram_gb: float = 0.0
     run_mode: str = ''            # gpu | cpu | cpu_offload
+    # The selected engine's RUNTIME (ModelEntry.backend: 'torch' | 'onnx' |
+    # 'piper' | 'llama.cpp' | ...).  Carried so the CUDA-torch pre-install can
+    # ask "does THIS engine need torch?" instead of "is this a TTS/STT model?".
+    # Empty => unknown => treated as needing torch (fail safe).
+    backend: str = ''
 
 
 @dataclass
@@ -146,6 +151,7 @@ def _create_plan(language: str, gpu_info: dict) -> dict:
         if entry:
             step.model_id = entry.id
             step.model_name = entry.name
+            step.backend = entry.backend or ''
             step.vram_gb = entry.vram_gb
             if entry.loaded:
                 step.status = 'ready'
@@ -181,6 +187,7 @@ def _refresh_steps_from_orchestrator() -> None:
             if entry:
                 step.model_id = entry.id
                 step.model_name = entry.name
+                step.backend = entry.backend or ''
                 step.status = 'ready'
                 step.run_mode = entry.device or 'cpu'
                 step.detail = f'{entry.name} ({entry.device})'
@@ -272,9 +279,30 @@ def _bootstrap_worker(language: str) -> None:
             if not step or step.status in ('skipped', 'failed', 'ready'):
                 continue
 
-            # Ensure CUDA torch for GPU TTS/STT in frozen builds
-            if model_type in (ModelType.TTS, ModelType.STT) and gpu_info.get('cuda_available', False):
+            # Ensure CUDA torch for GPU TTS/STT in frozen builds — but keyed on
+            # the selected ENGINE'S RUNTIME, not on the model type.
+            #
+            # R1, measured live 2026-08-11: this used to read
+            # `model_type in (TTS, STT) and cuda_available`, so Moonshine Base
+            # (sherpa-onnx, ONNX Runtime, never imports torch) blocked here for
+            # 221s of pip resolution plus a multi-GB CUDA download before it
+            # could start.  "Do I have a GPU?" was being answered by *can I
+            # import torch* — the wrong artifact for an ONNX engine.
+            #
+            # backend_requires_torch() is the ONE predicate (shared with
+            # STTLoader.download) and fails safe: an unknown/empty backend still
+            # installs, so no engine can lose a dependency it needs.
+            from integrations.service_tools.model_catalog import backend_requires_torch
+            if (gpu_info.get('cuda_available', False)
+                    and model_type in (ModelType.TTS, ModelType.STT)
+                    and backend_requires_torch(step.backend)):
                 _ensure_cuda_torch(model_type)
+            elif model_type in (ModelType.TTS, ModelType.STT):
+                logger.info(
+                    "Skipping CUDA torch for %s (backend=%r, cuda=%s) — its "
+                    "runtime does not require torch",
+                    step.model_name or model_type, step.backend,
+                    gpu_info.get('cuda_available', False))
 
             # Let orchestrator handle everything: download + load + VRAM + lifecycle
             _update_step(model_type, status='loading', detail=f'Starting {step.model_name}...')
