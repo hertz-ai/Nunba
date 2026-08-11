@@ -103,6 +103,61 @@ def get_status() -> dict:
         return _state.to_dict()
 
 
+# Substrings that mark a step detail as MINUTES-scale rather than seconds-scale.
+# `_ensure_cuda_torch` writes pip progress straight into a step's `detail`, so
+# these are the strings the user is already being shown elsewhere.
+_LONG_RUNNING_MARKERS = ('pip:', 'installing', 'downloading', 'one-time')
+
+
+def _detail_is_long_running(detail: str) -> bool:
+    """True iff this step detail describes a MINUTES-scale operation.
+
+    An install or a model download takes minutes; loading an already-present
+    model takes seconds.  Telling those apart is the whole of R3: the chat
+    busy-guard promised "a few seconds" while a 221s pip resolve plus a multi-GB
+    download was in flight, i.e. wrong by three orders of magnitude.
+    """
+    d = (detail or '').lower()
+    return any(m in d for m in _LONG_RUNNING_MARKERS)
+
+
+def get_blocking_activity() -> dict | None:
+    """What is currently occupying the model, and roughly for how long.
+
+    SINGLE accessor for "why is chat busy?" — the module that owns the bootstrap
+    state answers the question, so the chat route does not have to guess a
+    duration.  Returns None when nothing is mid-flight (normal busy path
+    applies), else::
+
+        {'detail': str,          # human-readable, already user-facing copy
+         'model_type': str,
+         'long_running': bool,   # minutes, not seconds
+         'retry_after_s': int}   # derived, never asserted
+
+    Never raises: a bad/missing state must not break a chat turn.
+    """
+    try:
+        with _lock:
+            steps = dict(_state.steps or {})
+        for model_type, step in steps.items():
+            if getattr(step, 'status', '') not in ('loading', 'downloading'):
+                continue
+            detail = getattr(step, 'detail', '') or ''
+            long_running = _detail_is_long_running(detail)
+            return {
+                'detail': detail,
+                'model_type': model_type,
+                'long_running': long_running,
+                # 90s for an install/download, 10s for a load.  Still an
+                # estimate, but one derived from what is actually happening
+                # rather than a constant that was wrong by 240x.
+                'retry_after_s': 90 if long_running else 10,
+            }
+    except Exception:
+        pass
+    return None
+
+
 def _create_plan(language: str, gpu_info: dict) -> dict:
     """Build the per-model-type bootstrap plan for ``language``.
 

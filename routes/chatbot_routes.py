@@ -3373,20 +3373,50 @@ def chat_route():
             # Build the textual response.  Include task names so non-
             # Liquid surfaces (RN, CLI, future channels) still see what
             # the AI is doing — single message, two formats.
-            if _active_tasks:
+            # R3: ask what is ACTUALLY blocking before promising a duration.
+            # The busy-guard used to say "a few seconds" unconditionally, and
+            # was observed saying it for an HOUR while a multi-GB CUDA torch
+            # install held the model.  A retry hint that never comes true
+            # teaches users to stop trying.  language_bootstrap owns the state
+            # (its step `detail` already carries the pip progress the user sees
+            # elsewhere), so it answers — we do not guess.
+            _blocking = None
+            try:
+                from models.language_bootstrap import get_blocking_activity
+                _blocking = get_blocking_activity()
+            except Exception as _e:
+                logger.debug(f'blocking-activity probe failed (non-fatal): {_e}')
+
+            _retry_s = (_blocking or {}).get('retry_after_s', 15)
+
+            if _blocking and _blocking.get('long_running'):
+                # Honest and explanatory — the shape that already worked
+                # ("Setting up cuda torch…" / "I'm upgrading my voice…").
+                _busy_text = (
+                    f"I'm setting up part of my brain first: "
+                    f"{_blocking['detail']}. This one-time step takes a few "
+                    "minutes — I'll be much better afterwards. Your message "
+                    "will go through once it finishes."
+                )
+            elif _active_tasks:
                 _names = ', '.join(
                     t['description'][:40] for t in _active_tasks[:3]
                 )
                 _busy_text = (
                     f"Your local AI is still working on: {_names}. "
-                    "Try again in a few seconds, or open the Task "
+                    "Try again shortly, or open the Task "
                     f"Ledger to see all {len(_active_tasks)} active "
                     "task(s)."
                 )
+            elif _blocking:
+                _busy_text = (
+                    f"Your local AI is finishing up: {_blocking['detail']}. "
+                    "Try again in a moment."
+                )
             else:
                 _busy_text = (
-                    "Your local AI is still working on another task. "
-                    "Try again in a few seconds."
+                    "Your local AI is busy with another task right now. "
+                    "Send your message again in a moment."
                 )
 
             return jsonify({
@@ -3395,7 +3425,9 @@ def chat_route():
                 'agent_type': 'local',
                 'error': 'local_llm_starting',
                 'llm_starting': True,
-                'retry_hint_seconds': 15,
+                # DERIVED, not asserted — a 221s install must not advertise
+                # itself as a 15-second wait.
+                'retry_hint_seconds': _retry_s,
                 'success': False,
                 # Non-Liquid clients (RN, CLI) can render this too.
                 # Web SPA reads the Liquid UI emit above so this is
