@@ -36,6 +36,7 @@ import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
+import { matchAgentBySlug } from '../utils/agentSlug';
 
 // NewHome is only loaded when user is not logged in (landing page)
 const NewHome = React.lazy(() =>
@@ -954,10 +955,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   useEffect(() => {
     if (agentName) {
-      let matchedAgent = allAgents.find((agent) => agent.name === agentName);
+      let matchedAgent = matchAgentBySlug(allAgents, agentName);
 
       if (!matchedAgent) {
-        matchedAgent = items.find((item) => item.name === agentName);
+        matchedAgent = matchAgentBySlug(items, agentName);
       }
 
       if (matchedAgent) {

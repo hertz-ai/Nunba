@@ -2,6 +2,7 @@ import AgentPoster from "../../assets/images/AgentPoster.png";
 import useAuthSession from "../../hooks/useAuthSession";
 import Demopage from "../../pages/Demopage";
 import { chatApi } from "../../services/socialApi";
+import { matchAgentBySlug } from "../../utils/agentSlug";
 import { decrypt } from "../../utils/encryption";
 import { logger } from '../../utils/logger';
 import LightYourHART from "../HART/LightYourHART";
@@ -268,7 +269,7 @@ const AgentPage = () => {
                     allAgents = Array.isArray(arr) ? arr.map((a) => ({ ...a, _isLocal: a.type === 'local' })) : [];
                     logger.log('Agent.js: Fetched local agents:', allAgents.length);
                 } catch (e) { console.warn('Agent.js: Local backend not available:', e.message); }
-                setAgentData(allAgents.find((a) => a.name.toLowerCase() === agentName?.toLowerCase()) || defaultAgentData);
+                setAgentData(matchAgentBySlug(allAgents, agentName) || defaultAgentData);
             } catch (err) { console.error("Error fetching agents:", err); }
         })();
     }, [agentName, effectiveUserId, isGuestMode, initialAgentData]);

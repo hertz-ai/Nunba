@@ -204,8 +204,13 @@ describe('Agents page — navigation', () => {
     renderPage({predefinedAgents: [SAMPLE_LOCAL]});
     fireEvent.click(cardFor(/Local Tutor/i));
     // Spaces in the agent name become hyphens.
+    // Lowercase slug, not the old `name.replace(/\s+/g,'-')` form.  This is a
+    // deliberate contract change: the readers (Agent.js, Demopage.js) now
+    // slugify the URL param too, and agentSlug is idempotent, so URLs already in
+    // users' history ("/agents/Local-Tutor") still resolve to the same agent —
+    // pinned in __tests__/utils/agentSlug.test.js.
     expect(mockNavigate).toHaveBeenCalledWith(
-      '/agents/Local-Tutor',
+      '/agents/local-tutor',
       expect.objectContaining({state: {agentData: SAMPLE_LOCAL}}),
     );
   });
@@ -228,8 +233,13 @@ describe('Agents page — navigation', () => {
   it('Enter on a focused card activates it (keyboard parity with click)', () => {
     renderPage({predefinedAgents: [SAMPLE_LOCAL]});
     fireEvent.keyDown(cardFor(/Local Tutor/i), {key: 'Enter', code: 'Enter'});
+    // Lowercase slug, not the old `name.replace(/\s+/g,'-')` form.  This is a
+    // deliberate contract change: the readers (Agent.js, Demopage.js) now
+    // slugify the URL param too, and agentSlug is idempotent, so URLs already in
+    // users' history ("/agents/Local-Tutor") still resolve to the same agent —
+    // pinned in __tests__/utils/agentSlug.test.js.
     expect(mockNavigate).toHaveBeenCalledWith(
-      '/agents/Local-Tutor',
+      '/agents/local-tutor',
       expect.objectContaining({state: {agentData: SAMPLE_LOCAL}}),
     );
   });
