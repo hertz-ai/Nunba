@@ -787,6 +787,20 @@ class LlamaConfig:
         # binary leaves auto_setup blind: no action is appended and the
         # wizard never surfaces an upgrade card.
         if diag['binary_found'] and not diag['binary_mismatch']:
+            # Re-resolve version-aware now that the preset (and therefore its
+            # build floor) is known.  The detection at the top of this method
+            # runs preset-blind and takes the first-existing candidate, so a
+            # stale system/trueflow copy would be measured instead of the
+            # Nunba-managed one that actually satisfies the floor.  Passing
+            # that stale path made this check report "too old", set
+            # need_gpu_build, and re-download llama.cpp on EVERY boot while a
+            # satisfying build sat unused on disk.  Same resolver the spawn
+            # path uses, so diag and the server agree on one binary.
+            if best_preset.min_build is not None:
+                _aware = self.installer.find_llama_server(
+                    check_system_first=True, min_build=best_preset.min_build)
+                if _aware:
+                    diag['binary_path'] = _aware
             is_compat, cur_ver, req_ver = self.installer.check_version_for_model(
                 best_preset, llama_server_path=diag['binary_path'])
             if not is_compat and req_ver is not None:
@@ -1731,6 +1745,13 @@ class LlamaConfig:
                 )
                 self._suppress_build_gated_features = True
 
+        # Resolution is final here (version-aware switching, if any, is done).
+        # Record it as the one authority for "which binary is serving" so
+        # diagnostics, the upgrade queue and update_llama_cpp all read the
+        # same binary instead of each re-resolving first-existing and landing
+        # on a different copy.  Reporting only — never gates an upgrade.
+        self.installer.note_serving_binary(llama_server)
+
         # Build command — context size is VRAM-aware for Qwen3.5
         is_qwen35 = "Qwen3.5" in model_preset.display_name
         if is_qwen35:
@@ -2193,7 +2214,13 @@ class LlamaConfig:
         # AttributeError, which meant the draft 0.8B never came up and HARTOS's
         # draft-first dispatcher silently fell through to the 4B main model for
         # every request. Use the same resolver the main start_server calls.
-        binary_path = self.installer.find_llama_server(check_system_first=True)
+        # Version-aware, same as the main start_server path (which the comment
+        # above promises).  Resolving preset-blind here spawned the draft on a
+        # first-existing binary while the main model ran on a version-aware
+        # pick — two different llama.cpp builds serving in one app.
+        binary_path = self.installer.find_llama_server(
+            check_system_first=True,
+            min_build=getattr(preset, 'min_build', None))
         if not binary_path:
             logger.error(
                 "llama-server binary not found by installer.find_llama_server() — "

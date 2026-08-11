@@ -453,6 +453,33 @@ class LlamaInstaller:
         llama_path_obj = Path(llama_path)
         return not str(llama_path_obj).startswith(str(self.install_dir))
 
+    # ── Serving-binary record — ONE writer: note_serving_binary() ─────
+    # The spawn path resolves version-aware (min_build of the chosen preset)
+    # and may switch away from the first-existing candidate.  Every other
+    # caller re-resolved first-existing and could therefore report a
+    # DIFFERENT binary than the one actually serving — e.g. a stale trueflow
+    # b8200 measured while the Nunba-managed b10330 serves.  That single
+    # split caused two live defects: check_version_for_model warned "too old"
+    # and set need_gpu_build (re-downloading llama.cpp every boot), and
+    # update_llama_cpp could not observe its own download.  Recording the
+    # resolved path once, at the spawn site, gives every reader one authority.
+    #
+    # Three distinct questions, three distinct answers — do not merge them:
+    #   what is serving?          -> _serving_binary (this record)
+    #   best available for X?     -> find_llama_server(min_build=X)
+    #   the copy I manage/update? -> find_llama_server(check_system_first=False)
+    _serving_binary: str | None = None
+
+    @classmethod
+    def note_serving_binary(cls, path: str | None) -> None:
+        """Record the binary Nunba resolved and launched.
+
+        Called from the spawn site only, once version-aware switching has
+        settled.  Class-level so the record survives the many short-lived
+        LlamaInstaller() instances constructed across Nunba + HARTOS.
+        """
+        cls._serving_binary = str(path) if path else None
+
     def get_version(self, llama_server_path: str | None = None) -> int | None:
         """
         Get the llama.cpp build number (e.g., 8192).
@@ -467,7 +494,13 @@ class LlamaInstaller:
         """
         import re
 
-        server_path = llama_server_path or self.find_llama_server()
+        # Default to the binary that is actually serving (recorded at spawn).
+        # Falling straight through to find_llama_server() reports whichever
+        # copy happens to be first-existing, which is not necessarily the one
+        # running — see note_serving_binary() above.
+        server_path = (llama_server_path
+                       or LlamaInstaller._serving_binary
+                       or self.find_llama_server())
         if not server_path:
             return None
 
@@ -577,7 +610,14 @@ class LlamaInstaller:
             if progress_callback:
                 progress_callback(msg)
 
-        old_version = self.get_version()
+        # Measure the copy THIS method replaces (install_dir), not whatever
+        # first-existing resolution finds.  try_download_prebuilt() writes into
+        # install_dir, so reporting a system/trueflow binary here made the
+        # upgrade blind to its own download: old and new both read b8200 and
+        # "Updated: bX -> bY" could never show progress, which is what kept
+        # re-queueing the upgrade forever.
+        _managed = self.find_llama_server(check_system_first=False)
+        old_version = self.get_version(_managed) if _managed else None
         report(f"Current build: b{old_version}" if old_version else "Current build: unknown")
 
         try:
@@ -623,7 +663,11 @@ class LlamaInstaller:
                 shutil.rmtree(backup_dir, ignore_errors=True)
 
             if success:
-                new_version = self.get_version()
+                # Re-resolve: the managed copy may not have existed before the
+                # download, so the pre-download path can be stale/None.
+                _new_managed = self.find_llama_server(check_system_first=False)
+                new_version = (self.get_version(_new_managed)
+                               if _new_managed else None)
                 if old_version and new_version:
                     report(f"Updated: b{old_version} \u2192 b{new_version}")
                 else:
