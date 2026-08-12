@@ -251,7 +251,7 @@ def _tee_subprocess_to_log(cmd, log_path, description=None, timeout_s=None):
     return True
 
 
-def run_command(cmd, description=None, check=True, timeout_s=None):
+def run_command(cmd, description=None, check=True, timeout_s=None, env=None):
     """Run a command and optionally check for errors.
 
     timeout_s: if set, kill the subprocess after this many seconds and
@@ -259,6 +259,11 @@ def run_command(cmd, description=None, check=True, timeout_s=None):
     that historically have wedged (e.g. the langchain-fix infinite-loop
     on some dev machines, 2026-04-19) — the bundle itself is usable but
     the verify step loops for 80+ min of CPU with no log output.
+
+    env: optional environment override, forwarded to subprocess.run.
+    Added for the python-embed pip top-up, which MUST run with
+    PYTHONNOUSERSITE=1 — see the call site for why.  Optional and
+    defaulting to None so every existing caller is unaffected.
     """
     if description:
         print_info(description)
@@ -266,9 +271,11 @@ def run_command(cmd, description=None, check=True, timeout_s=None):
 
     try:
         if isinstance(cmd, str):
-            result = subprocess.run(cmd, shell=True, check=check, timeout=timeout_s)
+            result = subprocess.run(cmd, shell=True, check=check,
+                                    timeout=timeout_s, env=env)
         else:
-            result = subprocess.run(cmd, check=check, timeout=timeout_s)
+            result = subprocess.run(cmd, check=check, timeout=timeout_s,
+                                    env=env)
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         _cmd_str = cmd if isinstance(cmd, str) else ' '.join(cmd)
@@ -1094,10 +1101,44 @@ def build_windows(python_exe, app_only=False, installer_only=False):
             if _missing_specs:
                 _embed_py = os.path.join(embed_src, 'python.exe' if sys.platform == 'win32' else 'bin/python')
                 if os.path.isfile(_embed_py):
+                    # PYTHONNOUSERSITE=1 is LOAD-BEARING, not hygiene.
+                    #
+                    # python-embed's python312._pth has `import site`
+                    # UNCOMMENTED, so site processing runs and the USER
+                    # site-dir (%APPDATA%\Roaming\Python\Python312\
+                    # site-packages) lands on sys.path.  pip then resolves
+                    # against it and reports "Requirement already satisfied"
+                    # for a package that is NOT in the bundle — so this
+                    # top-up step could detect torch missing, "install" it,
+                    # and leave python-embed without torch.  A step that
+                    # cannot succeed (cf. #620's warning that cannot fail).
+                    #
+                    # PROVEN 2026-08-12 on this machine:
+                    #   without: "Requirement already satisfied: torch==2.10.0
+                    #             in ...\Roaming\Python\Python312\site-packages"
+                    #   with:    "Collecting torch==2.10.0 / Would install
+                    #             torch-2.10.0"
+                    # and torch was in fact ABSENT from
+                    # python-embed/Lib/site-packages while the build reported
+                    # topping it up.  CPU torch is deliberately BUNDLED (the
+                    # GPU build is size-heavy and hardware-specific, so it is
+                    # runtime-installed into ~/.nunba instead) — so a bundle
+                    # without CPU torch breaks the "runtime deps are bundled"
+                    # guarantee outright.
+                    #
+                    # scripts/rebuild_python_embed.py:308-312 ALREADY does
+                    # this, with a comment describing this exact failure
+                    # ("pip sees packages in AppData\Roaming... and skips
+                    # them, leaving python-embed empty").  That lesson simply
+                    # never reached this second python-embed installer — one
+                    # copy learned it, the other did not.  Both now isolate.
+                    _embed_env = os.environ.copy()
+                    _embed_env['PYTHONNOUSERSITE'] = '1'
                     run_command(
                         [_embed_py, '-m', 'pip', 'install', *_missing_specs,
                          '--no-warn-script-location', '--no-deps'],
                         "Installing missing embed packages",
+                        env=_embed_env,
                     )
 
     print_header("Building Nunba executable with cx_Freeze")
