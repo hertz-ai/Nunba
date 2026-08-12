@@ -4340,16 +4340,31 @@ def hart_seal():
 
         if success:
             remove_session(user_id)
-            # Persist language preference for auto-bootstrap on next startup
+            # Persist language preference for auto-bootstrap on next startup.
+            #
+            # ONE writer for hart_language.json: core.user_lang.
+            # set_preferred_lang.  It validates against
+            # SUPPORTED_LANG_DICT, writes atomically (tmp + fsync +
+            # os.replace), and fires the on_lang_change bus.  This was an
+            # inline open(..., 'w') that did none of the three — and the
+            # bus mattered most here, because the HART ceremony is the
+            # FIRST time a user ever picks a language, yet it was the one
+            # transition that notified nobody.  Its only subscriber,
+            # model_lifecycle._evict_draft_on_non_latin_switch, frees the
+            # 0.8B draft's ~1.2GB when the choice is a non-Latin script so
+            # Indic Parler fits beside the main 4B on 8GB GPUs.
+            #
+            # Stays in its own try/except: the enclosing handler maps
+            # ImportError to a 501, which would report an
+            # already-sealed-forever name as a failure to the client.
             try:
-                import json as _json
-                import os
-                hart_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'data')
-                os.makedirs(hart_dir, exist_ok=True)
-                with open(os.path.join(hart_dir, 'hart_language.json'), 'w') as f:
-                    _json.dump({'language': data.get('language', 'en')}, f)
+                from core.user_lang import set_preferred_lang
+                set_preferred_lang(data.get('language', 'en'))
             except Exception:
-                pass
+                logger.warning(
+                    "HART seal: language persist failed for %s — the name "
+                    "IS sealed, only the next-boot language hint is lost",
+                    name, exc_info=True)
             return jsonify({'sealed': True, 'name': name, 'display': f'@{name}'})
         else:
             return jsonify({'sealed': False, 'error': 'Name unavailable or already sealed'}), 409
