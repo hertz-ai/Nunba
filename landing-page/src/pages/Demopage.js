@@ -60,6 +60,7 @@ import realtimeService from '../services/realtimeService';
 
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
+import {getTtsAudioElement} from '../services/ttsAudioElement';
 
 // ── Local engine readiness — gates messageQueue while local LLM is booting.
 //    Returns true in steady-state and on health-endpoint failure (optimistic),
@@ -736,6 +737,32 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     speed: ttsSpeed,
     onError: (error) => console.error('TTS Error:', error),
   });
+
+  // ── Client-side TTS -> the voice orb ──────────────────────────────────
+  //
+  // bb10f78cc ("VoiceVisualizer not animating during TTS playback", 2026-04-09)
+  // fixed the orb with exactly one line: point audioRef at the element that is
+  // speaking, so VoiceVisualizer can tap an analyser off it. At the time there
+  // was one speak path — SSE-pushed audio — and that line lives in its handler.
+  //
+  // b6ee8fc0 (2026-05-20) added a SECOND speak path for local-backend replies
+  // and did not carry the line across: tts.speak() plays through useTTS, which
+  // raises tts.isSpeaking (the orb's `isActive` is `isPlayingResponse ||
+  // tts.isSpeaking`, so the orb switches ON) while audioRef still points
+  // wherever it last did. No analyser -> the draw loop takes its synthetic
+  // branch, three fixed sines. That is the reported symptom: animation that
+  // runs while audio plays but is not derived from it.
+  //
+  // Same one line, on the other path. Guarded on !paused so it only claims the
+  // element when that element is what is actually making sound.
+  //
+  // A ref write, so no re-render: VoiceVisualizer re-reads audioRef every
+  // animation frame and reconnects when the element changes.
+  useEffect(() => {
+    if (!tts.isSpeaking) return;
+    const el = getTtsAudioElement();
+    if (el && !el.paused) audioRef.current = el;
+  }, [tts.isSpeaking]);
 
   // Persist media mode to localStorage
   useEffect(() => {
@@ -2608,13 +2635,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // Persistent audio element — survives across TTS events.
     // WebView2 autoplay policy blocks new Audio().play() from async callbacks.
     // A persistent element primed by user interaction (handleSend click) is allowed.
-    const ttsAudio = document.getElementById('nunba-tts-audio') || (() => {
-      const el = document.createElement('audio');
-      el.id = 'nunba-tts-audio';
-      el.preload = 'auto';
-      document.body.appendChild(el);
-      return el;
-    })();
+    // The one shared element (services/ttsAudioElement.js). This block used to
+    // create it inline, which meant useTTS could not name it and kept a private
+    // `new Audio()` — the split that blinded the voice orb (see that module).
+    // Null only where there is no DOM at all; guarded at the point of use
+    // below rather than by an early return, so a missing element can never
+    // take the realtime subscriptions in this effect down with it.
+    const ttsAudio = getTtsAudioElement();
 
     const unsubTts = realtimeService.on('tts', (data) => {
       console.log('[TTS] Event received:', data.generated_audio_url, 'req:', data.request_id);
@@ -2622,7 +2649,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         console.log('[TTS] Skipped stale:', data.request_id, '!= current:', requestIdRef.current);
         return;
       }
-      if (data.generated_audio_url) {
+      if (data.generated_audio_url && ttsAudio) {
         console.log('[TTS] Playing audio:', data.generated_audio_url);
         ttsAudio.src = data.generated_audio_url;
         // Wire to audioRef so VoiceVisualizer can animate
@@ -3916,7 +3943,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // only needs to happen inside the user gesture stack — the promise
     // resolving later is irrelevant.
     try {
-      const ttsEl = document.getElementById('nunba-tts-audio');
+      // Same element as everything else now (services/ttsAudioElement.js), so
+      // this gesture-priming also covers client-side TTS. It did not before:
+      // useTTS played through a private `new Audio()` that no user gesture had
+      // ever touched, which is the second thing the split cost us.
+      const ttsEl = getTtsAudioElement();
       if (ttsEl && ttsEl.paused && !ttsEl._primed) {
         ttsEl.volume = 0;
         ttsEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
@@ -3924,7 +3955,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           ttsEl.volume = 1;
           ttsEl._primed = true;
           console.log('[TTS] Audio element primed on user gesture');
-        }).catch(() => {});
+        }).catch(() => {
+          // Restore the volume on the FAILURE path too. Priming mutes the
+          // element to hide the silent probe clip and only unmuted it in
+          // .then(), so a rejected play() left volume at 0 permanently — and
+          // _primed false, so the next send muted it again. Harmless while
+          // this element only carried SSE audio; now that useTTS plays server
+          // TTS through it as well, a blocked prime would silence BOTH voices
+          // instead of one. Routing the second path here is what made this
+          // worth closing.
+          ttsEl.volume = 1;
+        });
       }
     } catch {}
 

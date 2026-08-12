@@ -49,6 +49,18 @@ beforeEach(() => {
   mockPocketTTSInstance.onComplete = null;
   mockPocketTTSInstance.onError = null;
 
+  // Server TTS now plays through the shared #nunba-tts-audio element rather
+  // than a private `new Audio()` — it has to, or the voice orb cannot see it
+  // (see useTTS.orbWiring.test.js). jsdom implements neither play() nor
+  // pause() on a real media element, so stub both; unstubbed they only emit
+  // "Not implemented" on the virtual console, which is noise, not a failure.
+  jest
+    .spyOn(window.HTMLMediaElement.prototype, 'play')
+    .mockResolvedValue(undefined);
+  jest
+    .spyOn(window.HTMLMediaElement.prototype, 'pause')
+    .mockImplementation(() => {});
+
   // Mock Audio constructor
   global.Audio = jest.fn(() => ({
     play: jest.fn(() => Promise.resolve()),
@@ -67,6 +79,11 @@ beforeEach(() => {
   global.fetch = jest.fn(() =>
     Promise.resolve(mockFetchResponse({available: false}))
   );
+});
+
+afterEach(() => {
+  // clearAllMocks() above resets call history but leaves spies installed.
+  jest.restoreAllMocks();
 });
 
 // ── Hook initialization ──────────────────────────────────────────────────
