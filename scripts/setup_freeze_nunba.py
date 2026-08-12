@@ -1244,8 +1244,26 @@ def _reinstall_sibling_from_local(repo_name: str) -> bool:
             if _r.returncode == 0:
                 print(f"  python-embed: {repo_name} re-installed OK")
                 return True
-            print(f"  python-embed: {repo_name} re-install FAILED: "
-                  f"{(_r.stderr or _r.stdout or '')[:300]}")
+            # Print the WHOLE error, not [:300].
+            #
+            # The old 300-char cut landed mid-path on every observed failure
+            # ("...File \"C:\\Users\\sathi\\PycharmProjects\\Nunba-HART-Comp")
+            # so the actual pip exception was never visible.  Three separate
+            # build failures on 2026-08-12 could not be attributed for exactly
+            # that reason, while the SAME pip command run by hand succeeded —
+            # meaning the cause is specific to the in-build context and lives
+            # entirely inside the text we were throwing away.
+            #
+            # A diagnostic that truncates before the diagnosis is worse than
+            # no diagnostic: it looks like information and misdirects.  Same
+            # failure shape as the TTS stage that logged nothing on success.
+            # Build logs are captured to a file, so length is not a concern
+            # here; being unable to read the error is.
+            _err = (_r.stderr or '') + (('\n' + _r.stdout) if _r.stdout else '')
+            print(f"  python-embed: {repo_name} re-install FAILED "
+                  f"(exit {_r.returncode}), full output follows:")
+            for _line in (_err.strip() or '(no output captured)').splitlines():
+                print(f"    | {_line}")
             return False
     print(f"  python-embed: {repo_name} local clone not found "
           f"(looked in {[os.path.normpath(p) for p in _sibling_repo_candidates(repo_name)]})")
