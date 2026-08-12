@@ -29,6 +29,54 @@ from llama.llama_installer import MODEL_PRESETS, LlamaInstaller, ModelPreset
 logger = logging.getLogger('NunbaLlamaConfig')
 
 
+# Task #652 — thinking MUST be off for every local llama-server.
+#
+# ``--reasoning-budget 0`` below already DECLARES that intent, but on
+# llama.cpp build 10330 (687e77892) it no longer ACHIEVES it: that flag is
+# implemented by injecting an end-of-thinking tag (hence its sibling
+# ``--reasoning-budget-message``), not by setting ``enable_thinking=false``
+# in the chat template.  Meanwhile ``--reasoning-format deepseek`` keeps
+# working and moves the thoughts into ``message.reasoning_content``.  The
+# combination is the worst case: the model thinks anyway AND the thinking is
+# routed OUT of ``message.content``, so ``content`` comes back EMPTY.
+#
+# Measured 2026-08-12 on :8080/GPU by replaying real recorded bodies: 8/8
+# draft-classifier calls returned content_len=0 with reasoning_len 1817-2223,
+# and the live app logged reply_len=0 / confidence=0.0 / every classifier flag
+# null on 45/45 turns.  With this env var set: content_len 538-2338,
+# reasoning_len 0, and the app's own draft-telemetry went to reply_len=52,
+# confidence=0.95, delegate='none', is_casual=true.
+#
+# WHY AN ENV VAR AND NOT A CLI FLAG (load-bearing, do not "simplify"):
+# llama-server flags are coupled to the binary version and are NOT backward
+# compatible — an UNKNOWN CLI FLAG MAKES llama-server EXIT, which would turn
+# a thinking bug into a total LLM outage on any box with a different
+# llama.cpp build.  An unknown ENV VAR is simply ignored.  ``--help`` on this
+# build documents the pairing itself:
+#   --chat-template-kwargs STRING  ... (env: LLAMA_ARG_CHAT_TEMPLATE_KWARGS)
+# so this is the same parameter, reached by the version-safe spelling.
+# Precedent in this file: HEVOLVE_LLAMA_MTP_N exists because the guessed flag
+# ``--mtp-n`` did not exist in the local binary.
+#
+# ONE authority for both spawn sites (main server + caption/draft server) so
+# the two can never drift on whether thinking is suppressed.
+_LLAMA_THINK_OFF_ENV = 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS'
+_LLAMA_THINK_OFF_VALUE = '{"enable_thinking":false}'
+
+
+def llama_child_env(base: dict | None = None) -> dict:
+    """Environment for a spawned llama-server: inherited env + thinking off.
+
+    Pure dict construction — no I/O, no mutation of ``os.environ`` (which
+    would leak the setting to every unrelated child of this process).
+    An operator who has deliberately set the variable wins; we never
+    override an explicit choice.
+    """
+    env = dict(base) if base is not None else os.environ.copy()
+    env.setdefault(_LLAMA_THINK_OFF_ENV, _LLAMA_THINK_OFF_VALUE)
+    return env
+
+
 # PERF-2 (audit #564): Nunba's raw log writers append unbounded — the
 # llama-server stdout/stderr log reached ~68MB.  ONE canonical rotation point
 # for Nunba raw log writers (no parallel rotation impl): rename → .old past the
@@ -2004,7 +2052,8 @@ class LlamaConfig:
 
             # Set cwd to binary dir so DLLs (ggml-cuda.dll, mtmd.dll) are found
             bin_dir = str(Path(llama_server).parent)
-            env = os.environ.copy()
+            # llama_child_env: os.environ.copy() + thinking-off (task #652).
+            env = llama_child_env()
             env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
             # Zinc (AMD Vulkan) needs RADV cooperative matrix for RDNA4
             if _use_zinc:
@@ -2277,8 +2326,16 @@ class LlamaConfig:
             # Without it, a cmd window briefly flashes during splash.
             # startupinfo SW_HIDE alone is NOT enough for console apps.
             _creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+            # env: this spawn previously passed no ``env=`` and inherited the
+            # parent's, so it silently MISSED the thinking-off setting the main
+            # server gets — the >10GB tier's separate 0.8B draft server would
+            # have kept the task #652 defect.  ``llama_child_env()`` IS
+            # os.environ.copy() plus that one key, so the inherited
+            # environment is otherwise byte-identical and the spawn semantics
+            # the comment above protects are unchanged.
             self._caption_process = subprocess.Popen(
                 cmd, stdout=log_fh, stderr=subprocess.STDOUT,
+                env=llama_child_env(),
                 startupinfo=startupinfo,
                 creationflags=_creationflags,
             )
