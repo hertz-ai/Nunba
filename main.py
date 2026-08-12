@@ -4040,23 +4040,33 @@ def connectivity_check():
 import queue as _queue
 import threading as _threading
 
-_sse_clients = {}   # {user_id: [(Queue, connect_time), ...]}
+_sse_clients = {}   # {user_id: [(Queue, connected_at), ...]}
 _sse_lock = _threading.Lock()
-_SSE_CLIENT_TTL = 3600  # 1 hour max connection lifetime
 
-
-def _cleanup_dead_sse_clients():
-    """Remove SSE client queues that have exceeded the max connection TTL."""
-    now = time.time()
-    with _sse_lock:
-        for uid in list(_sse_clients.keys()):
-            clients = _sse_clients.get(uid, [])
-            _sse_clients[uid] = [
-                (q, ts) for q, ts in clients
-                if now - ts < _SSE_CLIENT_TTL
-            ]
-            if not _sse_clients[uid]:
-                del _sse_clients[uid]
+# MEMBERSHIP HAS EXACTLY ONE AUTHORITY: the stream's own lifecycle.
+#
+# An entry is added when a stream starts and removed when it ends, both
+# inside sse_event_stream.generate()'s try/finally (see below).  Nothing
+# else may add or remove — not a clock, not the delivery path.
+#
+# There used to be a second, time-driven authority: _SSE_CLIENT_TTL=3600
+# compared against the connect time, which is never refreshed.  It
+# therefore dropped perfectly healthy streams exactly 3600s after they
+# connected, WITHOUT closing them — so the browser saw no error,
+# EventSource never reconnected, and every later per-user publish went
+# to an empty list.  Live proof (2026-08-12): connect logged 01:16:27,
+# registry 1 -> 0 at 02:16:27 (+3600s to the second), then 0 clients for
+# 7h / 7,524 broadcasts, spanning a chat turn whose TTS wav synthesized
+# correctly and was never heard.  Two authorities over one fact always
+# drift; the fix is to delete one, not to retune it.
+#
+# `connected_at` is retained for diagnostics ONLY.  It must never gate
+# delivery — tests/test_sse_client_registry.py fails if it does.
+#
+# Dead peers still self-clean without a sweeper: the generator's 30s
+# heartbeat write raises on a closed socket, which unwinds the generator
+# and runs its finally.  That converts a half-open connection into a
+# real close event, which is the one authority.
 
 
 def broadcast_sse_event(event_type, data, user_id=None):
@@ -4087,44 +4097,42 @@ def broadcast_sse_event(event_type, data, user_id=None):
 
     import json
     msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-    now = time.time()
-    logging.info(f"broadcast_sse_event: type={event_type}, user_id={user_id}, "
-                 f"clients={list(_sse_clients.keys())}, "
-                 f"client_count={sum(len(v) for v in _sse_clients.values())}")
+
+    # Delivery ONLY.  This function must never add or remove a
+    # subscription — membership belongs to generate()'s try/finally.
+    # Snapshot under the lock, then deliver outside it: put_nowait
+    # cannot block, and holding the lock for only a dict read keeps a
+    # slow subscriber from stalling the publisher or a stream teardown.
     with _sse_lock:
         if user_id is not None:
-            clients = _sse_clients.get(user_id, [])
-            alive = []
-            for q, ts in clients:
-                if now - ts >= _SSE_CLIENT_TTL:
-                    continue
-                try:
-                    q.put_nowait(msg)
-                    alive.append((q, ts))
-                except _queue.Full:
-                    pass
-            if alive:
-                _sse_clients[user_id] = alive
-            else:
-                _sse_clients.pop(user_id, None)
+            targets = list(_sse_clients.get(user_id, []))
         else:
-            empty_users = []
-            for uid, clients in _sse_clients.items():
-                alive = []
-                for q, ts in clients:
-                    if now - ts >= _SSE_CLIENT_TTL:
-                        continue
-                    try:
-                        q.put_nowait(msg)
-                        alive.append((q, ts))
-                    except _queue.Full:
-                        pass
-                if alive:
-                    _sse_clients[uid] = alive
-                else:
-                    empty_users.append(uid)
-            for uid in empty_users:
-                _sse_clients.pop(uid, None)
+            targets = [e for entries in _sse_clients.values() for e in entries]
+        total = sum(len(v) for v in _sse_clients.values())
+
+    # Report the TARGETED queue count, not merely the global total.  The
+    # previous line logged only the global sum, so it printed a
+    # reassuring non-zero number while the addressed user had no queue
+    # at all — an instrument structurally unable to observe the failure
+    # it appeared to rule out.
+    logging.info(f"broadcast_sse_event: type={event_type}, user_id={user_id}, "
+                 f"targeted={len(targets)}, total_clients={total}")
+
+    dropped = 0
+    for q, _connected_at in targets:
+        try:
+            q.put_nowait(msg)
+        except _queue.Full:
+            dropped += 1
+    if dropped:
+        # A full queue is a SLOW consumer, not a dead one.  The previous
+        # code silently un-subscribed it by omitting it from `alive`, so
+        # one burst of backpressure deafened a client permanently.  Drop
+        # the message, keep the subscription, and say so out loud.
+        logging.warning(
+            f"broadcast_sse_event: type={event_type} dropped for "
+            f"{dropped}/{len(targets)} subscriber(s) with a full queue "
+            f"(subscription retained)")
 
 
 # Expose on __main__ so HARTOS can find it via `import __main__`.
@@ -4264,31 +4272,47 @@ def sse_event_stream():
     if not uid:
         return _jsonify({"error": "Invalid or expired token"}), 401
 
-    _cleanup_dead_sse_clients()
-
     client_queue = _queue.Queue(maxsize=50)
-    connect_time = time.time()
-    with _sse_lock:
-        _sse_clients.setdefault(uid, []).append((client_queue, connect_time))
+    entry = (client_queue, time.time())
 
     def generate():
-        yield "data: {\"type\": \"connected\"}\n\n"
+        # Register INSIDE the generator, inside the try, so the add and
+        # the remove share one scope and one lifetime — the subscription
+        # exists exactly as long as the stream does.
+        #
+        # Registering in the view function (as this used to) leaks two
+        # ways, both proven by tests/test_sse_client_registry.py:
+        #   * a generator body does not run until Flask iterates it, and
+        #     closing a NEVER-STARTED generator does not execute its
+        #     try/finally — a client aborting before the first byte left
+        #     an entry behind forever;
+        #   * the "connected" yield used to sit OUTSIDE the try, so a
+        #     client that closed while parked on it leaked as well.
+        # Those leaks are why an age sweeper felt necessary: it was
+        # compensating for the split scope instead of closing it.
         try:
+            with _sse_lock:
+                _sse_clients.setdefault(uid, []).append(entry)
+            yield "data: {\"type\": \"connected\"}\n\n"
             while True:
                 try:
                     msg = client_queue.get(timeout=30)
                     yield msg
                 except _queue.Empty:
+                    # Doubles as the liveness probe: writing a heartbeat
+                    # to a dead peer raises, which unwinds the generator
+                    # into the finally below.  That is how a half-open
+                    # socket becomes a real close event — no sweeper.
                     yield ": heartbeat\n\n"
-        except GeneratorExit:
-            pass
         finally:
             with _sse_lock:
-                user_queues = _sse_clients.get(uid, [])
-                _sse_clients[uid] = [
-                    (q, ts) for q, ts in user_queues if q is not client_queue
+                remaining = [
+                    e for e in _sse_clients.get(uid, [])
+                    if e[0] is not client_queue
                 ]
-                if not _sse_clients.get(uid):
+                if remaining:
+                    _sse_clients[uid] = remaining
+                else:
                     _sse_clients.pop(uid, None)
 
     return Response(
