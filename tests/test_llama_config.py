@@ -810,3 +810,102 @@ class TestKnownEndpoints:
         for ep in KNOWN_LLM_ENDPOINTS:
             assert 'localhost' in ep['base_url'] or '127.0.0.1' in ep['base_url'], (
                 f"Endpoint '{ep['name']}' scans non-local: {ep['base_url']}")
+
+
+class TestFirstRunSurvivesBinaryDiscovery:
+    """`first_run` is the user's intent flag — a stray binary must not clear it.
+
+    REPORTED 2026-08-13: "I set first_run: true and the AI setup wizard still
+    doesn't show."  The edit really was made; the file just did not stay edited.
+
+    MECHANISM: app.py:9605 gates the AI-init thread on `is_first_run()`, so a
+    `true` immediately runs `initialize_llama_on_first_run()`, which called
+    `mark_first_run_complete()` the moment `find_llama_server()` returned ANY
+    path — reverting the flag to False before the wizard gate at app.py:3026
+    ever read it.  On this machine the path found was
+    `~/.trueflow/llama.cpp/build/bin/Release/llama-server.exe`: a binary
+    belonging to a DIFFERENT product, which Nunba does not own or manage.
+
+    THE ASYMMETRY THAT NAMES THE DEFECT: the CONSUMER of first_run=False
+    (app.py:3026) requires three conditions —
+    `_found_binary and (_has_model or _has_custom_api) and _already_configured`.
+    The PRODUCER required one: a binary exists.  A producer must never be more
+    permissive than its consumer; declaring setup "complete" on evidence the
+    consumer itself rejects is how an explicit user setting gets silently
+    overwritten.
+
+    The two legitimate producers are untouched and still clear the flag:
+    `llama_config.py:1127` (a model was actually selected and applied) and
+    `app.py:3888` (an external endpoint was actually configured).
+    """
+
+    def test_existing_binary_does_not_clear_first_run(
+            self, tmp_config_dir, monkeypatch, mock_installer):
+        """RED before the fix: found binary -> first_run flipped True -> False."""
+        import llama.llama_config as lc
+
+        _Orig = lc.LlamaConfig
+        assert _Orig(config_dir=tmp_config_dir).is_first_run() is True, (
+            'fixture should start on a first run')
+
+        # initialize_llama_on_first_run() builds its own LlamaConfig() with no
+        # args, which would hit the real ~/.nunba — pin it to the tmp dir.
+        monkeypatch.setattr(lc, 'LlamaConfig',
+                            lambda *a, **k: _Orig(config_dir=tmp_config_dir))
+
+        # Steer the AUTOUSE `mock_installer` fixture (top of this file) rather
+        # than patching LlamaInstaller ourselves: that fixture already replaces
+        # `llama.llama_config.LlamaInstaller` with a MagicMock factory whose
+        # find_llama_server() returns None, so any patch we applied to the real
+        # class was shadowed and silently did nothing — the test then failed for
+        # a harness reason that had nothing to do with the code under test.
+        mock_installer.find_llama_server.return_value = (
+            r'C:\Users\x\.trueflow\llama.cpp\build\bin\Release\llama-server.exe')
+
+        assert lc.initialize_llama_on_first_run() is True, (
+            'discovering an existing binary still means "nothing to download"')
+
+        assert _Orig(config_dir=tmp_config_dir).is_first_run() is True, (
+            'initialize_llama_on_first_run() cleared first_run just because a '
+            'llama-server binary exists somewhere on this machine. Finding a '
+            'binary means "no download needed", NOT "the user completed setup" '
+            '— and it silently discards an explicitly-set first_run=true, so '
+            'the AI setup wizard can never be re-triggered by hand.')
+
+    def test_discovered_endpoint_configures_but_does_not_clear_first_run(
+            self, tmp_config_dir, monkeypatch, mock_installer):
+        """Scanning up a foreign LLM must configure it WITHOUT ending onboarding.
+
+        This is the second producer, and the one that actually fired in the test
+        environment (where find_llama_server() is stubbed to None by the autouse
+        fixture).  It is the branch that sets use_external_llm=True — i.e. it
+        exists for servers Nunba did NOT start — so "it's probably our own
+        process" cannot justify it skipping the wizard.
+
+        The endpoint MUST still be persisted: detection configures capability,
+        it just no longer decides onboarding.
+        """
+        import llama.llama_config as lc
+
+        _Orig = lc.LlamaConfig
+        monkeypatch.setattr(lc, 'LlamaConfig',
+                            lambda *a, **k: _Orig(config_dir=tmp_config_dir))
+        mock_installer.find_llama_server.return_value = None
+
+        endpoint = {'name': 'Ollama', 'base_url': 'http://127.0.0.1:11434',
+                    'type': 'ollama'}
+        monkeypatch.setattr(lc, 'scan_existing_llm_endpoints', lambda *a, **k: endpoint)
+
+        assert lc.initialize_llama_on_first_run() is True
+
+        after = _Orig(config_dir=tmp_config_dir)
+        assert after.config.get('use_external_llm') is True, (
+            'the discovered endpoint must still be configured — this fix must '
+            'not cost us auto-discovery/autostart')
+        assert after.config.get('external_llm_endpoint') == endpoint
+        assert after.is_first_run() is True, (
+            'auto-configuring a discovered external LLM cleared first_run. '
+            'Detection answers "can we serve?"; first_run answers "has this '
+            'installation been onboarded?". Only a real user action — '
+            'auto_setup() via main.py:1929, or the wizard at app.py:3888 — '
+            'may clear it.')

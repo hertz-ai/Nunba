@@ -2602,9 +2602,30 @@ def initialize_llama_on_first_run(progress_callback=None, force_install=False) -
 
     # Check if local llama is already installed
     installer = LlamaInstaller()
-    if installer.find_llama_server():
-        logger.info("Local llama.cpp already installed")
-        config.mark_first_run_complete()
+    _existing_binary = installer.find_llama_server()
+    if _existing_binary:
+        # Nothing to download — but deliberately DO NOT mark_first_run_complete()
+        # here.  Finding a binary means "no install needed"; it does not mean the
+        # user has been onboarded, and this function runs on EVERY boot while
+        # first_run is true (app.py:9605 gates the AI-init thread on it).
+        #
+        # It used to clear the flag, which made first_run unsettable by hand:
+        # set it true, launch, and this line reverted it before the wizard gate
+        # at app.py:3026 ever read it.  find_llama_server() also searches paths
+        # Nunba does not own — on the machine that reported this it returned
+        # ~/.trueflow/llama.cpp/.../llama-server.exe, another product's build —
+        # so "setup is complete" was being concluded from a foreign install.
+        #
+        # Note the asymmetry that makes this a defect rather than a preference:
+        # the CONSUMER of first_run=False (app.py:3026) demands binary AND
+        # (model OR custom_api) AND already-configured.  Clearing it on the
+        # binary alone made this producer strictly more permissive than its own
+        # consumer.  The flag is still cleared by the two producers that
+        # represent real completion — llama_config.py:1127 (a model was selected
+        # and applied) and app.py:3888 (an external endpoint was configured).
+        logger.info(f"Local llama.cpp already installed at {_existing_binary} — "
+                    "no download needed (first_run left as-is; setup completion "
+                    "is recorded when a model or endpoint is actually chosen)")
         return True
 
     logger.info("First run - scanning for AI services...")
@@ -2622,10 +2643,22 @@ def initialize_llama_on_first_run(progress_callback=None, force_install=False) -
         if progress_callback:
             progress_callback(f"Found: {existing_endpoint['name']}")
 
-        # Auto-configure the found endpoint
+        # Auto-configure the found endpoint so the LLM is usable / autostarts.
+        # Deliberately NOT mark_first_run_complete(): detection answers "can we
+        # serve?", first_run answers "has this installation been onboarded?".
+        # Fusing them let a boot-time probe silently overwrite an explicit
+        # first_run=true, so the wizard could never be re-triggered by hand.
+        #
+        # "the endpoint is probably our own llama-server anyway" does not hold
+        # for THIS branch: it sets use_external_llm=True, i.e. it exists
+        # precisely for servers Nunba did NOT start (Ollama, LM Studio, a stray
+        # :8080). _save_config() below still persists the endpoint, so the
+        # capability is configured either way — only the onboarding flag is
+        # left to its rightful owners: auto_setup() (llama_config.py:1127, via
+        # the POST route main.py:1929) and the wizard (app.py:3888), both of
+        # which represent a real user action.
         config.config["external_llm_endpoint"] = existing_endpoint
         config.config["use_external_llm"] = True
-        config.mark_first_run_complete()
         config._save_config()
 
         logger.info(f"Auto-configured external LLM: {existing_endpoint['base_url']}")
