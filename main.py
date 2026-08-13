@@ -912,7 +912,7 @@ def _get_machine_fingerprint():
             result = subprocess.run(
                 ['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'],
                 capture_output=True, text=True, timeout=5
-            )
+            , **get_subprocess_flags())
             for line in result.stdout.splitlines():
                 if 'IOPlatformSerialNumber' in line:
                     serial = line.split('"')[-2]

@@ -7198,7 +7198,7 @@ def notify_minimized_to_tray(icon, message="Application minimized to system tray
             import subprocess
             _safe_msg = message.replace('\\', '\\\\').replace('"', '\\"')
             script = f'display notification "{_safe_msg}" with title "Nunba"'
-            subprocess.run(['osascript', '-e', script], check=False, timeout=5)
+            subprocess.run(['osascript', '-e', script], check=False, timeout=5, **get_subprocess_flags())
         elif icon and hasattr(icon, 'notify'):
             # pystray notification
             icon.notify(message, "Nunba")

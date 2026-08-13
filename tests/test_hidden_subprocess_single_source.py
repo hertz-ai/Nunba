@@ -177,15 +177,6 @@ def test_windows_reachable_spawn_modules_use_the_canonical_flags(site):
         'each unguarded spawn flashes a console window in the frozen GUI app.')
 
 
-# Binaries that do not exist on Windows.  A spawn of one of these cannot paint
-# a Windows console, so the flags would be a literal no-op (get_subprocess_flags
-# returns {} off-win32).  This is the module docstring's stated exemption
-# expressed as DATA rather than as prose, so it is checked rather than trusted.
-_NON_WINDOWS_BINARIES = frozenset({
-    'ioreg', 'sysctl', 'system_profiler', 'osascript', 'open',   # macOS-only
-    'xdpyinfo', 'xdg-mime', 'xdg-open', 'lspci', 'glslc',        # Linux-only
-})
-
 _SPAWN_ATTRS = frozenset({'run', 'Popen', 'call', 'check_output',
                           'check_call', 'getoutput', 'getstatusoutput'})
 

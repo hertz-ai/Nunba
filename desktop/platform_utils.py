@@ -103,7 +103,7 @@ def _get_screen_dimensions_macos():
         result = subprocess.run(
             ['system_profiler', 'SPDisplaysDataType'],
             capture_output=True, text=True, timeout=5
-        )
+        , **get_subprocess_flags())
         for line in result.stdout.split('\n'):
             if 'Resolution' in line:
                 parts = line.split(':')[1].strip().split(' x ')
@@ -124,7 +124,7 @@ def _get_screen_dimensions_linux():
         result = subprocess.run(
             ['xdpyinfo'],
             capture_output=True, text=True, timeout=5
-        )
+        , **get_subprocess_flags())
         for line in result.stdout.split('\n'):
             if 'dimensions:' in line:
                 dims = line.split(':')[1].strip().split()[0]
@@ -260,7 +260,7 @@ MimeType=x-scheme-handler/{protocol};
         subprocess.run([
             'xdg-mime', 'default', f'nunba-{protocol}.desktop',
             f'x-scheme-handler/{protocol}'
-        ], check=False)
+        ], check=False, **get_subprocess_flags())
 
         logger.info(f"Registered {protocol}:// protocol handler")
     except Exception as e:
@@ -330,7 +330,7 @@ def _register_autostart_macos(enabled, background):
                 make login item at end with properties {{path:"{_safe_path}", hidden:{str(background).lower()}}}
             end tell
             '''
-            subprocess.run(['osascript', '-e', script], check=False, timeout=10)
+            subprocess.run(['osascript', '-e', script], check=False, timeout=10, **get_subprocess_flags())
             logger.info("Registered autostart")
         else:
             # Remove from Login Items
@@ -339,7 +339,7 @@ def _register_autostart_macos(enabled, background):
                 delete login item "Nunba"
             end tell
             '''
-            subprocess.run(['osascript', '-e', script], check=False)
+            subprocess.run(['osascript', '-e', script], check=False, **get_subprocess_flags())
             logger.info("Removed autostart")
     except Exception as e:
         logger.error(f"Failed to configure autostart: {e}")
@@ -413,9 +413,9 @@ def open_file_browser(path):
         if IS_WINDOWS:
             os.startfile(path)
         elif IS_MACOS:
-            subprocess.run(['open', path], check=False)
+            subprocess.run(['open', path], check=False, **get_subprocess_flags())
         else:
-            subprocess.run(['xdg-open', path], check=False)
+            subprocess.run(['xdg-open', path], check=False, **get_subprocess_flags())
     except Exception as e:
         logger.error(f"Failed to open file browser: {e}")
 

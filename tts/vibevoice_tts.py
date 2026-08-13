@@ -8,6 +8,7 @@ VibeVoice: https://github.com/microsoft/VibeVoice
 Model: https://huggingface.co/microsoft/VibeVoice-1.5B
 """
 import logging
+from desktop.platform_utils import get_subprocess_flags
 import shutil
 import subprocess
 import sys
@@ -224,13 +225,13 @@ def _detect_apple_metal() -> dict | None:
         proc = subprocess.run(
             ['sysctl', '-n', 'machdep.cpu.brand_string'],
             capture_output=True, text=True, timeout=5,
-        )
+         **get_subprocess_flags())
         chip = proc.stdout.strip() if proc.returncode == 0 else 'Apple Silicon'
         # Get unified memory (Apple Silicon shares RAM as VRAM)
         proc_mem = subprocess.run(
             ['sysctl', '-n', 'hw.memsize'],
             capture_output=True, text=True, timeout=5,
-        )
+         **get_subprocess_flags())
         total_ram_gb = 0.0
         if proc_mem.returncode == 0:
             total_ram_gb = float(proc_mem.stdout.strip()) / (1024 ** 3)

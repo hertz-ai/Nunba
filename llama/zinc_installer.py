@@ -67,7 +67,7 @@ class ZincInstaller:
         if sys.platform.startswith('linux'):
             try:
                 result = subprocess.run(
-                    ['lspci'], capture_output=True, text=True, timeout=5)
+                    ['lspci'], capture_output=True, text=True, timeout=5, **get_subprocess_flags())
                 if result.returncode == 0:
                     for line in result.stdout.splitlines():
                         if 'AMD' in line and ('VGA' in line or 'Display' in line):
@@ -127,7 +127,7 @@ class ZincInstaller:
         # glslc (Vulkan shader compiler — Linux only, macOS skips shaders)
         if sys.platform.startswith('linux'):
             try:
-                subprocess.run(['glslc', '--version'], capture_output=True, timeout=3)
+                subprocess.run(['glslc', '--version'], capture_output=True, timeout=3, **get_subprocess_flags())
             except FileNotFoundError:
                 missing.append('glslc (apt install glslc or vulkan-tools)')
 
