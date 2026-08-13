@@ -65,6 +65,18 @@ sign_app() {
     find "$APP" -type d -name ".*" -exec rm -rf {} + 2>/dev/null || true
     find "$APP" -name ".DS_Store" -delete 2>/dev/null || true
 
+    # Runtime logs the app wrote into its own build tree.
+    # build/ is where Nunba gets RUN during development, so its chatter lands
+    # inside the very directory we package. Measured on the Windows tree
+    # 2026-08-13: 59 MB shipped to every user, all under
+    # hevolveai/server/logs — 79 wamp_publisher_* files back to 2025-11 plus
+    # four 10 MB rotations of one runaway day. Nothing reads them.
+    # By FILE pattern only: opentelemetry/proto/logs and
+    # opentelemetry/proto/collector/logs are real Python packages, so deleting
+    # directories named "logs" would break the import.
+    find "$APP" -name "*.log" -delete 2>/dev/null || true
+    find "$APP" -name "*.log.[0-9]*" -delete 2>/dev/null || true
+
     # Text/doc files (not signable)
     find "$APP" -name "*.txt" -delete
     find "$APP" -name "*.md" -delete
