@@ -146,16 +146,32 @@ const AgentPage = () => {
         }).catch(() => {}); // fire-and-forget, non-blocking
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+    // Called by LightYourHART's onComplete when the ceremony finishes.
+    //
+    // This was DEAD until 2026-08-13.  LightYourHART wrote localStorage on
+    // entry to the reveal, which flipped the gate below and unmounted the
+    // component ~11s before onComplete was reached — so `setShowWelcome`
+    // never ran.  That mattered far beyond the animation: the welcome
+    // bridge is what POSTs /api/ai/bootstrap, and the mount-time bootstrap
+    // at :139 deliberately defers to it (`will bootstrap via welcome
+    // bridge on first run`) while having [] deps, so it never retries.
+    // Each path assumed the other covered first-run, and neither did:
+    // a brand-new user's models were never bootstrapped for their chosen
+    // language.
+    //
+    // The two localStorage writes this used to do (guest_name, guest_mode)
+    // are deliberately GONE — applyHartSeal already owns both
+    // (useAuthSession.js:582 and :587), and it was created precisely to
+    // remove that parallel write.  The originals were orphaned, not
+    // deleted, so reviving this callback would have resurrected them.
     const handleHartComplete = useCallback((result) => {
         logger.log('HART sealed:', result?.name);
+        // Local mirror only — applyHartSeal's nunba:storage_hydrated event
+        // already drives session.hart.sealed; this keeps the documented
+        // no-1s-lag immediacy (see the mirror rationale above).
         setHartSealed(true);
-        if (result?.name) localStorage.setItem('guest_name', result.name);
         if (result?.language) setHartLanguage(result.language);
-        // Ensure guest mode is set so auto-refresh works after restart
-        if (!localStorage.getItem('guest_mode')) {
-            localStorage.setItem('guest_mode', 'true');
-        }
-        setShowWelcome(true); // trigger post-HART welcome bridge
+        setShowWelcome(true); // trigger post-HART welcome bridge → AI bootstrap
     }, []);
 
     // Post-HART welcome → bootstrap AI models, then go to agent chat
