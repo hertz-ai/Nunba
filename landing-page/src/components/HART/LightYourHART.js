@@ -1217,10 +1217,40 @@ export default function LightYourHART({ userId, onComplete }) {
         {/* Particle canvas */}
         <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
 
-        {/* Voice visualizer — only visible when PA is speaking */}
+        {/* Voice visualizer — only visible when PA is speaking.
+
+            The width/height on the Box below are REQUIRED, not decoration.
+            VoiceVisualizer's root div is width:100%/height:100% and it sizes the
+            orb from its MEASURED container (computeOrbEdge). This Box is
+            position:absolute with no dimensions of its own, so it shrink-wraps
+            its child — and the child asks for 100% of a parent that is sizing
+            itself to that child. The circular dependency resolves at ~0: the orb
+            collapsed, and the background-glow gradient then threw IndexSizeError
+            every frame (r0 = baseR - 10 < 0), which aborts the render and leaves
+            the canvas blank.
+
+            It read as "not rendering" rather than "crashing" because opacity is
+            0.6 and the element still occupied its (empty) place in the layout.
+
+            SIZE: the RESTING orb is drawn at `edge * 0.5` CSS px across — baseR
+            is W * fill (fill 0.25) against a backing store that is 2x the CSS
+            size. The missing half is not a bug, it is headroom: maxR is W * 0.49,
+            so voice peaks grow into it and can nearly fill the canvas. Raising
+            `fill` would buy diameter by flattening the peaks, which is the
+            opposite of what a voice visualiser is for — so the box is doubled
+            instead, and the orb keeps its full dynamic range.
+
+            The old call passed size={100} and drew a 50px orb; the container-
+            measured edge plus canvasMax's default '80%' cap then took it to 40.
+            Here the Box IS the bound, so canvasMax='100%' and no `size` prop at
+            all — `size` is only a CAP now, and setting it would just re-impose
+            a fixed ceiling on a box that already knows how big it is.
+
+            vmin keeps it from overflowing a short viewport: ~640px on a 1080p
+            screen, giving a 320px resting orb that breathes up to ~630. */}
         {hartSpeaking && (
-          <Box sx={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 0, opacity: 0.6 }}>
-            <VoiceVisualizer audioRef={hartAudioRef} isActive={hartSpeaking} size={100} />
+          <Box sx={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 0, opacity: 0.6, width: 'min(640px, 62vmin)', height: 'min(640px, 62vmin)' }}>
+            <VoiceVisualizer audioRef={hartAudioRef} isActive={hartSpeaking} canvasMax="100%" />
           </Box>
         )}
 
