@@ -25,6 +25,19 @@ logger = logging.getLogger('ZincInstaller')
 
 ZINC_REPO = 'https://github.com/zolotukhin/zinc.git'
 
+try:
+    # The ONE source of the console-hiding flags; returns {} off-win32, so
+    # every `**get_subprocess_flags()` below is a no-op on Linux/macOS.  This
+    # file previously open-coded `creationflags = CREATE_NO_WINDOW` at four
+    # sites and forgot it entirely at the `git --version` probe — the exact
+    # drift tests/test_hidden_subprocess_single_source.py exists to stop.
+    from desktop.platform_utils import get_subprocess_flags
+except Exception:  # pragma: no cover - cx_Freeze fence
+    # Hiding a console is cosmetic, never correctness: a bundling surprise must
+    # degrade to "console visible", not stop us probing for zig/git/rocm-smi.
+    def get_subprocess_flags() -> dict:
+        return {}
+
 
 class ZincInstaller:
     """Install and manage the zinc inference server for AMD GPUs."""
@@ -41,10 +54,10 @@ class ZincInstaller:
         """Check if an AMD GPU is present (via rocm-smi or lspci)."""
         # rocm-smi (most reliable)
         try:
-            _kw = dict(capture_output=True, text=True, timeout=3)
-            if hasattr(subprocess, 'CREATE_NO_WINDOW'):
-                _kw['creationflags'] = subprocess.CREATE_NO_WINDOW
-            result = subprocess.run(['rocm-smi', '--showproductname'], **_kw)
+            result = subprocess.run(
+                ['rocm-smi', '--showproductname'],
+                capture_output=True, text=True, timeout=3,
+                **get_subprocess_flags())
             if result.returncode == 0 and result.stdout.strip():
                 return True
         except Exception:
@@ -68,10 +81,10 @@ class ZincInstaller:
     def get_amd_gpu_name() -> str | None:
         """Get AMD GPU name string."""
         try:
-            _kw = dict(capture_output=True, text=True, timeout=3)
-            if hasattr(subprocess, 'CREATE_NO_WINDOW'):
-                _kw['creationflags'] = subprocess.CREATE_NO_WINDOW
-            result = subprocess.run(['rocm-smi', '--showproductname'], **_kw)
+            result = subprocess.run(
+                ['rocm-smi', '--showproductname'],
+                capture_output=True, text=True, timeout=3,
+                **get_subprocess_flags())
             if result.returncode == 0:
                 # Parse "GPU[0]: AMD Radeon RX 9070 XT" → "AMD Radeon RX 9070 XT"
                 for line in result.stdout.splitlines():
@@ -93,18 +106,21 @@ class ZincInstaller:
 
         # Zig compiler
         try:
-            _kw = dict(capture_output=True, text=True, timeout=5)
-            if hasattr(subprocess, 'CREATE_NO_WINDOW'):
-                _kw['creationflags'] = subprocess.CREATE_NO_WINDOW
-            result = subprocess.run(['zig', 'version'], **_kw)
+            result = subprocess.run(
+                ['zig', 'version'],
+                capture_output=True, text=True, timeout=5,
+                **get_subprocess_flags())
             if result.returncode != 0:
                 missing.append('zig (https://ziglang.org/download/)')
         except FileNotFoundError:
             missing.append('zig (https://ziglang.org/download/)')
 
-        # Git
+        # Git.  `git` DOES exist on Windows, so unlike the glslc probe below
+        # this one needs the flags — it was the single Windows-reachable spawn
+        # in this file with none, and would have flashed a console.
         try:
-            subprocess.run(['git', '--version'], capture_output=True, timeout=3)
+            subprocess.run(['git', '--version'], capture_output=True, timeout=3,
+                           **get_subprocess_flags())
         except FileNotFoundError:
             missing.append('git')
 
@@ -149,9 +165,7 @@ class ZincInstaller:
                 progress_callback(0, 0, msg)
             return False
 
-        _kw = {}
-        if hasattr(subprocess, 'CREATE_NO_WINDOW'):
-            _kw['creationflags'] = subprocess.CREATE_NO_WINDOW
+        _kw = get_subprocess_flags()
 
         # Clone if needed
         if not (self.install_dir / '.git').exists():

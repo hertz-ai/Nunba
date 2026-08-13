@@ -7,10 +7,17 @@ textbook parallel path.
 WHAT THE INVESTIGATION ACTUALLY FOUND (all measured, not inferred):
 
   * The pip/install path was ALREADY guarded — tts/package_installer.py and
-    tts/backend_venv.py call `hidden_startupinfo()` at every spawn, and the
-    SHIPPED build carries it (grep of the installed
+    tts/backend_venv.py call `hidden_startupinfo()` at their pip spawns, and
+    the SHIPPED build carries it (grep of the installed
     lib/tts/package_installer.pyc at BUILD_SHA=0f9151da found the symbol).  So
     "the pip path lacks the flags" was false.
+
+    CORRECTED 2026-08-13: that bullet used to read "at EVERY spawn", and it was
+    wrong — it was established by grepping the FILE for the symbol, which only
+    proves *some* spawn uses it.  `_acquire_file_lock` spawned
+    `tasklist /FI "PID eq <pid>"` with no flags at all, and consoles kept
+    flashing.  See `test_no_windows_spawn_omits_the_console_flags` below: a
+    per-CALL-SITE check, because a per-FILE check cannot fail for this defect.
   * Instead there were **11 first-party copies** of the same six-line
     `subprocess.STARTUPINFO(); dwFlags |= STARTF_USESHOWWINDOW; wShowWindow = 0;
     CREATE_NO_WINDOW` block across desktop/, llama/, main.py, scripts/ and tts/.
@@ -168,6 +175,106 @@ def test_windows_reachable_spawn_modules_use_the_canonical_flags(site):
     assert symbol in src, (
         f'{rel} spawns subprocesses on Windows but never references {symbol}; '
         'each unguarded spawn flashes a console window in the frozen GUI app.')
+
+
+# Binaries that do not exist on Windows.  A spawn of one of these cannot paint
+# a Windows console, so the flags would be a literal no-op (get_subprocess_flags
+# returns {} off-win32).  This is the module docstring's stated exemption
+# expressed as DATA rather than as prose, so it is checked rather than trusted.
+_NON_WINDOWS_BINARIES = frozenset({
+    'ioreg', 'sysctl', 'system_profiler', 'osascript', 'open',   # macOS-only
+    'xdpyinfo', 'xdg-mime', 'xdg-open', 'lspci', 'glslc',        # Linux-only
+})
+
+_SPAWN_ATTRS = frozenset({'run', 'Popen', 'call', 'check_output',
+                          'check_call', 'getoutput', 'getstatusoutput'})
+
+
+def _subprocess_aliases(tree):
+    """Names bound to the subprocess module here — `subprocess`, `_sp`, `sp`…
+
+    Resolved from the file's own Import nodes instead of guessing at prefixes:
+    tts/package_installer.py spawns via `import subprocess as _sp`, and a
+    hardcoded 'subprocess.' prefix would silently skip exactly the call site
+    that was flashing consoles.
+    """
+    aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == 'subprocess':
+                    aliases.add(a.asname or 'subprocess')
+    return aliases
+
+
+def _spawned_binary(node):
+    """argv[0] of a spawn call, lowercased and de-suffixed; None if not literal."""
+    if not node.args:
+        return None
+    first = node.args[0]
+    if isinstance(first, (ast.List, ast.Tuple)) and first.elts:
+        first = first.elts[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value.rsplit('/', 1)[-1].rsplit('\\', 1)[-1].lower().removesuffix('.exe')
+    return None
+
+
+def test_no_windows_spawn_omits_the_console_flags():
+    """Every Windows-reachable spawn must pass creationflags. RED before the fix.
+
+    WHY THIS EXISTS, given three sibling tests already "covered" this:
+    `test_windows_reachable_spawn_modules_use_the_canonical_flags` asks whether a
+    FILE mentions `get_subprocess_flags` anywhere.  That question cannot fail for
+    the defect it is meant to catch — tts/package_installer.py calls
+    `hidden_startupinfo()` at two pip spawns (:553, :787) and so passes the
+    file-level check while `_acquire_file_lock` spawned `tasklist` naked at :379.
+    A file-level guard over a call-site-level invariant is vacuous; this walks
+    the call sites.
+
+    MECHANISM (measured 2026-08-13, not assumed): from a GUI-subsystem parent
+    with no console — which Nunba.exe is — spawning a console binary without
+    CREATE_NO_WINDOW raises the count of visible top-level ConsoleWindowClass
+    windows from 1 to 2 for the child's lifetime; with CREATE_NO_WINDOW it stays
+    at 1.  conhost.exe appearing in a process tree proves nothing either way: a
+    CREATE_NO_WINDOW child still gets a conhost, just a headless one.
+
+    `scripts/` is exempt (developer tools, a console there is wanted) and so are
+    binaries that cannot run on Windows — see _NON_WINDOWS_BINARIES.
+    """
+    offenders = []
+    for rel, p in _first_party_py():
+        if rel.startswith('scripts/'):
+            continue
+        try:
+            tree = ast.parse(p.read_text(encoding='utf-8', errors='replace'))
+        except (OSError, SyntaxError):
+            continue
+        aliases = _subprocess_aliases(tree)
+        if not aliases:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr in _SPAWN_ATTRS
+                    and isinstance(fn.value, ast.Name) and fn.value.id in aliases):
+                continue
+            kw = {k.arg for k in node.keywords}
+            if 'creationflags' in kw or None in kw:   # None == **kwargs passthrough
+                continue
+            binary = _spawned_binary(node)
+            if binary in _NON_WINDOWS_BINARIES:
+                continue
+            offenders.append(f'{rel}:{node.lineno} spawns {binary or "<non-literal argv>"}')
+
+    assert offenders == [], (
+        'these spawns pass no creationflags, so each one flashes a console '
+        'window in the frozen GUI app:\n  ' + '\n  '.join(offenders)
+        + '\n\nPass the canonical flags — desktop.platform_utils.'
+          'get_subprocess_flags() (dict form) or tts._subprocess.'
+          'hidden_startupinfo() (tuple form). Both are no-ops off win32, so '
+          'this is safe on every platform. If the binary genuinely cannot exist '
+          'on Windows, add it to _NON_WINDOWS_BINARIES with a reason.')
 
 
 def test_no_timeoutless_spawn_in_the_canonical_home():

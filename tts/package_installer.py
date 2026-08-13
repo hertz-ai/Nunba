@@ -376,8 +376,21 @@ def _acquire_file_lock(name: str) -> bool:
                     pid = int(open(lock_file).read().strip())
                     # Check if the PID is still alive (Windows-specific)
                     import subprocess as _sp
+
+                    from tts._subprocess import hidden_startupinfo
+
+                    # Without these flags this probe pops a REAL console window.
+                    # The frozen app is GUI-subsystem and owns no console, so
+                    # Windows allocates a fresh VISIBLE one for every console
+                    # child (measured: visible ConsoleWindowClass count 1 -> 2;
+                    # with the flags it stays at 1).  `_acquire_file_lock` is
+                    # polled — install_gpu_torch retries it every 5s for up to
+                    # _CUDA_TORCH_LOCK_WAIT_S — so one naked spawn became a
+                    # repeating flash.  Same helper the pip spawns below use.
+                    _si, _cf = hidden_startupinfo()
                     _r = _sp.run(['tasklist', '/FI', f'PID eq {pid}'],
-                                 capture_output=True, text=True, timeout=5)
+                                 capture_output=True, text=True, timeout=5,
+                                 startupinfo=_si, creationflags=_cf)
                     if str(pid) in _r.stdout:
                         logger.info(f"Install lock '{name}' held by PID {pid} (age {age:.0f}s)")
                         return False
