@@ -20,6 +20,7 @@
 
 import { API_BASE_URL } from '../../config/apiBase';
 import { applyHartSeal } from '../../hooks/useAuthSession';
+import { logger } from '../../utils/logger';
 import VoiceVisualizer from '../VoiceVisualizer';
 
 import { Box, Typography, Fade, Grow, ButtonBase } from '@mui/material';
@@ -232,6 +233,11 @@ const _computeProfile = (() => {
   if (cores <= 4 || mem <= 4) return 'medium';
   return 'high';
 })();
+
+// Bound the /api/hart/seal call so a hung network cannot stall the
+// ceremony.  On timeout the seal is retried on the next launch (the
+// absent hart_sealed flag is the retry trigger).
+const SEAL_TIMEOUT_MS = 8000;
 
 const PARTICLE_COUNTS = { low: 25, medium: 50, high: 80 };
 const GLOW_ENABLED = _computeProfile !== 'low';
@@ -1036,29 +1042,108 @@ export default function LightYourHART({ userId, onComplete }) {
     setShowName(true);
   }, [language, locale, passionKey, advance, speak]);
 
-  // ── Post-reveal: wait for the name to settle, then speak the closing ──
-  // NOTE: localStorage is saved IMMEDIATELY on entry (before any setPhase calls)
-  // because setPhase triggers cleanup → cancelled=true → seal code would never run.
+  // ── Post-reveal: seal on the server FIRST, then speak the closing ──
+  //
+  // ORDERING IS THE FIX (2026-08-13).  This effect used to call
+  // applyHartSeal() on entry.  That writes localStorage.hart_sealed →
+  // dispatches nunba:storage_hydrated → useAuthSession.js:268 re-reads →
+  // Agent.js:286 stops rendering <LightYourHART/> → THIS COMPONENT
+  // UNMOUNTS → the cleanup below sets cancelled=true.  The async chain
+  // then died at its very first `if (cancelled) return` (5s in), so:
+  //
+  //   • /api/hart/seal was NEVER reached — the name stayed device-local,
+  //     user.handle was never set, global uniqueness was never claimed,
+  //     and has_hart_name() reported false forever;
+  //   • post_reveal / sealed never rendered;
+  //   • onComplete() never fired — and it is the ONLY trigger for
+  //     Agent.js's welcome bridge, which is what POSTs /api/ai/bootstrap
+  //     on first run (the mount-time bootstrap at Agent.js:139 bails on
+  //     !hartSealed and has [] deps, so it never retries).  First-run
+  //     model bootstrap therefore never happened at all.
+  //
+  // The old comment here claimed localStorage had to be written early to
+  // survive cleanup.  It was exactly backwards: writing early is what
+  // CAUSED the unmount.  This component renders purely from its own
+  // state and reads no localStorage, so there was never a render reason
+  // to write it early.
+  //
+  // Now: seal server-side first (authoritative, resolves collisions),
+  // run the ceremony, and write localStorage LAST — so the gate flips
+  // when the ceremony is genuinely over.  An unmount mid-ceremony now
+  // costs animation only, never identity.
   useEffect(() => {
     if (phase !== 'reveal_name' || !hartName) return;
     let cancelled = false;
 
-    // Persist immediately — internal setPhase calls cause effect cleanup
-    // which would cancel the async chain before reaching the seal code.
-    // Phase 4c — canonical seal writer.  Replaces 5 setItem calls.
-    // Also auto-back-fills guest_name (if empty) and guest_mode (if
-    // absent), and fires nunba:storage_hydrated so Agent.js's HART
-    // gate flips immediately on this tab.
-    applyHartSeal({
-      name: hartName,
-      tag: hartTag,
-      emoji: emojiCombo,
-      language,
-    });
-
     (async () => {
       // Pre-synth the name via backend TTS while the user admires it visually
       preSynth('the_name', hartName);
+
+      // ── Seal on the server BEFORE any local write ──
+      // House idiom for identity: call the API, THEN write localStorage
+      // (cf. useAuthSession.js:377 setAuthFromGuest).  Retries the
+      // generation candidates when a name was claimed elsewhere first.
+      //
+      // The body now carries the FULL payload.  It used to send only
+      // `{name}`, so hart_seal fell back to its defaults for every other
+      // field — meaning even a seal that DID land recorded emoji_combo='',
+      // locale='en_US' and empty passion/escape regardless of what the
+      // user actually chose.  (`dimensions` is deliberately absent: this
+      // component never holds it; the backend derives it from
+      // passion/escape via _merge_dimensions.)
+      let sealedName = hartName;
+      let sealedRemotely = false;
+      for (const candidate of [hartName, ...hartCandidates]) {
+        if (cancelled) return;
+        let timer = null;
+        try {
+          const ctl = new AbortController();
+          timer = setTimeout(() => ctl.abort(), SEAL_TIMEOUT_MS);
+          const sealResp = await fetch(`${API_BASE_URL}/api/hart/seal`, {
+            method: 'POST',
+            signal: ctl.signal,
+            headers: {
+              'Content-Type': 'application/json',
+              ...(localStorage.getItem('access_token')
+                ? { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
+                : {}),
+            },
+            body: JSON.stringify({
+              name: candidate,
+              emoji_combo: emojiCombo,
+              language,
+              locale,
+              passion_key: passionKey || '',
+              escape_key: escapeKey || '',
+            }),
+          });
+          if (sealResp.ok) {
+            sealedName = candidate;
+            sealedRemotely = true;
+            break;
+          }
+          // 409 = name taken — try the next candidate.
+        } catch {
+          // Offline / timeout / abort.  Stop retrying and fall through to
+          // the local seal below so the user is never blocked.
+          //
+          // Deliberately NOT laundered as success (the old code did
+          // `sealed = true` here): sealedRemotely stays false, so the
+          // next boot finds hart_sealed absent, re-runs the ceremony and
+          // retries the seal.  The gate IS the retry mechanism — a
+          // dedicated "pending seal" flag would be a sixth home for a
+          // fact that already has too many.
+          break;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      if (cancelled) return;
+      if (!sealedRemotely) {
+        logger.warn(
+          '[HART] seal did not reach the server — identity is local only '
+          + 'for now; the ceremony will retry on next launch');
+      }
 
       // Let the name sit for a moment (backend synthesizes during this pause)
       await _sleep(5000);
@@ -1079,37 +1164,12 @@ export default function LightYourHART({ userId, onComplete }) {
       setPhase('post_reveal');
       await _sleep(2000);
 
-      // Seal via API — retry with candidates if name was taken (race condition)
-      let sealedName = hartName;
-      let sealed = false;
-      const namesToTry = [hartName, ...hartCandidates];
-
-      for (const candidate of namesToTry) {
-        try {
-          const sealResp = await fetch(`${API_BASE_URL}/api/hart/seal`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(localStorage.getItem('access_token')
-                ? { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
-                : {}),
-            },
-            body: JSON.stringify({ name: candidate }),
-          });
-          if (sealResp.ok) {
-            sealedName = candidate;
-            sealed = true;
-            break;
-          }
-          // 409 = name taken — try next candidate silently
-        } catch {
-          // Network error — localStorage already has the name
-          sealed = true; // treat as sealed locally
-          break;
-        }
-      }
-
-      // If the sealed name changed (race condition retry), update the reveal
+      // If the sealed name changed (race condition retry), update the reveal.
+      // This branch was unreachable until the ordering fix above; it is the
+      // user's only signal that their name changed.  A plain-language "that
+      // name was just taken" line would be better, but it needs a new
+      // _getLine key across every supported language — deliberately left
+      // for a follow-up rather than half-added in English only.
       if (sealedName !== hartName) {
         setHartName(sealedName);
         setShowName(false);
@@ -1122,11 +1182,18 @@ export default function LightYourHART({ userId, onComplete }) {
         await _sleep(1500);
       }
 
-      // Update localStorage with final sealed name.
-      // Phase 4c — re-seal with corrected name.  emoji/language/tag
-      // omitted intentionally so applyHartSeal's `if (foo)` guards
-      // skip them — prior seal values stay intact.
-      applyHartSeal({name: sealedName});
+      // ── LOCAL SEAL — last step, exactly once ──
+      // This is what flips Agent.js's gate and unmounts this component,
+      // so it must be the final act of the ceremony.  Called ONCE with
+      // the full payload (it used to run twice: an early call with
+      // name/tag/emoji/language and a later partial re-seal, which is
+      // what the deleted `applyHartSeal({name: sealedName})` was for).
+      applyHartSeal({
+        name: sealedName,
+        tag: hartTag,
+        emoji: emojiCombo,
+        language,
+      });
 
       setPhase('sealed');
 
@@ -1136,7 +1203,8 @@ export default function LightYourHART({ userId, onComplete }) {
     })();
 
     return () => { cancelled = true; stop(); };
-  }, [phase, hartName, emojiCombo, language, locale, speak, stop, preSynth, onComplete]);
+  }, [phase, hartName, hartCandidates, hartTag, emojiCombo, language, locale,
+      passionKey, escapeKey, speak, stop, preSynth, onComplete]);
 
   // ════════════════════════════════════════════════════════════════
   // RENDER
