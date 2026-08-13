@@ -1246,11 +1246,18 @@ export default function LightYourHART({ userId, onComplete }) {
             all — `size` is only a CAP now, and setting it would just re-impose
             a fixed ceiling on a box that already knows how big it is.
 
-            vmin keeps it from overflowing a short viewport: ~640px on a 1080p
-            screen, giving a 320px resting orb that breathes up to ~630. */}
+            The "Speaking" label anchors to the CANVAS edge (edge/2 + 6), not to
+            the orb, so the visible gap under the orb is edge*(0.5 - fill) — the
+            headroom, made visible. At fill 0.25 a 640px box put the label 166px
+            below the orb. fill 0.38 keeps the same ~320px resting orb in a 420px
+            box, which closes that gap to ~56px and still leaves ~46px of peak
+            travel that clears the label by 10px (maxR is W * 0.49 -> 206px).
+
+            So: gap and dynamic range are the SAME quantity. Tightening one
+            spends the other. This is the balance point, not a free win. */}
         {hartSpeaking && (
-          <Box sx={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 0, opacity: 0.6, width: 'min(640px, 62vmin)', height: 'min(640px, 62vmin)' }}>
-            <VoiceVisualizer audioRef={hartAudioRef} isActive={hartSpeaking} canvasMax="100%" />
+          <Box sx={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 0, opacity: 0.6, width: 'min(420px, 46vmin)', height: 'min(420px, 46vmin)' }}>
+            <VoiceVisualizer audioRef={hartAudioRef} isActive={hartSpeaking} canvasMax="100%" fill={0.38} />
           </Box>
         )}
 

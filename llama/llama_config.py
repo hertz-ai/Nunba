@@ -389,6 +389,7 @@ class LlamaConfig:
         """Check if this is the first run"""
         return self.config.get("first_run", True)
 
+
     def mark_first_run_complete(self):
         """Mark first run as complete"""
         self.config["first_run"] = False
