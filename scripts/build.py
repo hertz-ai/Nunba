@@ -149,15 +149,15 @@ def normalize_embed_acl(path):
             ['icacls', path, '/reset', '/T', '/C', '/Q'],
             capture_output=True, text=True, timeout=1800)
         if r.returncode == 0:
-            print_success("python-embed ACLs normalized (inheritance restored)")
+            print_info("python-embed ACLs normalized (inheritance restored)")
             return True
-        print_warning(
+        print_warn(
             f"icacls /reset returned {r.returncode}; python-embed may still "
             f"carry Administrators-only ACLs. A later NON-elevated run can "
             f"then misreport those files as corrupt. "
             f"{(r.stderr or r.stdout or '').strip()[:400]}")
     except Exception as e:
-        print_warning(f"ACL normalization skipped ({type(e).__name__}: {e})")
+        print_warn(f"ACL normalization skipped ({type(e).__name__}: {e})")
     return False
 
 
