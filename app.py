@@ -1784,6 +1784,56 @@ def _load_deferred_config():
                 _llm_configured = True
             else:
                 _llm_configured = not _llm_cfg.get('first_run', True)
+
+            # A hand-set `first_run: true` means "treat me as a new user", and
+            # that OVERRIDES the preserve-identity-across-installs design at
+            # app.py:5752 — which exists so a REINSTALL does not drag the user
+            # back through the HART naming ceremony.  Preservation guards
+            # against ACCIDENTAL loss; editing the flag by hand is deliberate,
+            # so it wins.
+            #
+            # Only a `true` read from an EXISTING config counts.  An ABSENT
+            # llama_config.json also yields first_run=True (LlamaConfig's
+            # default dict) but is a genuine fresh install — exactly the case
+            # preservation is for.  We are inside `open(_llm_cfg_path)` here,
+            # so the file provably exists: the distinction is free at this
+            # point and unavailable to is_first_run(), which defaults to True.
+            #
+            # CONSUMED ONCE.  first_run only goes False when onboarding
+            # COMPLETES, so an unconditional reset would re-wipe the name the
+            # user just sealed on every subsequent boot — they could never keep
+            # a name until they also finished the AI wizard.  The marker below
+            # is dropped when first_run goes back to False, so the NEXT manual
+            # true is honoured again.
+            #
+            # The enclosing try/except makes this best-effort: keys are only
+            # popped from an in-memory dict before the write, so any failure
+            # leaves the stored identity untouched.
+            _hart_store = os.path.join(
+                os.path.expanduser('~'), 'Documents',
+                'HevolveAi Agent Companion', 'storage', 'user_data.json')
+            if os.path.isfile(_hart_store):
+                with open(_hart_store, encoding='utf-8') as _f:
+                    _hart_data = _json_llm.load(_f)
+                _manual_new_user = _llm_cfg.get('first_run') is True
+                _mark, _dirty = 'hart_reset_on_first_run', False
+                if _manual_new_user and not _hart_data.get(_mark):
+                    # Same four keys the /api/storage/set validator enumerates
+                    # (see expected_keys below) — kept literal here so this
+                    # runs before any of that module state exists.
+                    _wiped = [_k for _k in ('hart_sealed', 'hart_name',
+                                            'hart_emoji', 'hart_language')
+                              if _hart_data.pop(_k, None) is not None]
+                    _hart_data[_mark] = True
+                    _dirty = True
+                    print(f"[first_run] manual override honoured — HART identity "
+                          f"reset (cleared={_wiped}); ceremony + wizard will run")
+                elif not _manual_new_user and _mark in _hart_data:
+                    _hart_data.pop(_mark)   # re-arm for the next manual true
+                    _dirty = True
+                if _dirty:
+                    with open(_hart_store, 'w', encoding='utf-8') as _f:
+                        _json_llm.dump(_hart_data, _f)
     except Exception:
         pass
 
