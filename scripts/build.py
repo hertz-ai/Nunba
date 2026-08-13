@@ -101,6 +101,66 @@ def fetch_hartos_backend_source():
     )
 
 
+
+def _is_elevated():
+    """True only when this process actually holds an elevated token."""
+    if sys.platform != 'win32':
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def normalize_embed_acl(path):
+    """Undo the ACL damage an ELEVATED build does to python-embed.
+
+    THE MECHANISM (proven on this machine, 2026-08-13):
+    Windows COPY inherits ACLs from the destination; MOVE PRESERVES the
+    source's.  `pip install --target` stages into a temp dir and then
+    MOVES into place -- so a build launched from an elevated shell carries
+    `BUILTIN\Administrators` ownership + SE_DACL_PROTECTED into
+    python-embed.  A later NON-elevated run gets ERROR_ACCESS_DENIED on
+    those files, and `os.path.isfile()` SWALLOWS OSError, so "access
+    denied" silently becomes "file missing".  The integrity gate then
+    reports the package CORRUPT and prescribes rm -rf -- which also hits
+    access-denied.  That whole chain produced "23 file(s) STILL corrupt
+    after autorepair" and exit 1, from a tree poisoned by an elevated
+    build nine minutes earlier.  Nothing in the error text mentions
+    permissions, which is why it read as corruption for hours.
+
+    Being agnostic of HOW the build was launched means handing the tree
+    back to normal inheritance while we still hold the privilege to do
+    it.  `icacls /reset /T` re-applies inheritable ACLs from the parent
+    (the repo directory, owned by the invoking user).
+
+    Runs ONLY when actually elevated -- an ordinary build has nothing to
+    undo, so this costs nothing in the common case.  Never fatal: a
+    failure here must not fail an otherwise-good build; it leaves the
+    pre-existing condition alone and says so loudly.
+    """
+    if not _is_elevated() or not os.path.isdir(path):
+        return False
+    print_info("Elevated build detected - normalizing python-embed ACLs "
+               "so a later non-elevated run can still read the bundle")
+    try:
+        r = subprocess.run(
+            ['icacls', path, '/reset', '/T', '/C', '/Q'],
+            capture_output=True, text=True, timeout=1800)
+        if r.returncode == 0:
+            print_success("python-embed ACLs normalized (inheritance restored)")
+            return True
+        print_warning(
+            f"icacls /reset returned {r.returncode}; python-embed may still "
+            f"carry Administrators-only ACLs. A later NON-elevated run can "
+            f"then misreport those files as corrupt. "
+            f"{(r.stderr or r.stdout or '').strip()[:400]}")
+    except Exception as e:
+        print_warning(f"ACL normalization skipped ({type(e).__name__}: {e})")
+    return False
+
+
 def print_header(text):
     """Print a header line"""
     print("=" * 60, flush=True)
@@ -1140,6 +1200,10 @@ def build_windows(python_exe, app_only=False, installer_only=False):
                         "Installing missing embed packages",
                         env=_embed_env,
                     )
+
+    # Elevation vaccine -- MUST run after every python-embed write
+    # (atomic rebuild AND incremental top-up both land above).
+    normalize_embed_acl(embed_src)
 
     print_header("Building Nunba executable with cx_Freeze")
 
