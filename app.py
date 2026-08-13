@@ -415,7 +415,7 @@ if getattr(sys, 'frozen', False):
                             f" at depth {_cb_depth}\n\n"
                             f"=== Python call stack (innermost first) ===\n"
                             + "\n".join(_frames) +
-                            f"\n\n=== Import stack (last 30) ===\n")
+                            "\n\n=== Import stack (last 30) ===\n")
                     for _i, _m in enumerate(_cb_stack):
                         _msg += f"{_i}: {_m}\n"
                     os.write(_fd, _msg.encode('utf-8', 'replace'))
@@ -4629,8 +4629,8 @@ def _import_main_app():
     # Clear stale SQLAlchemy metadata to prevent "Table already defined" errors
     # in frozen builds where import order differs from dev.
     try:
-        from sqlalchemy.orm import declarative_base
         from sql.models import Base as _sql_base
+        from sqlalchemy.orm import declarative_base
         if hasattr(_sql_base, 'metadata'):
             _sql_base.metadata.clear()
     except Exception:
