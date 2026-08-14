@@ -114,7 +114,7 @@ def _is_elevated():
 
 
 def normalize_embed_acl(path):
-    """Undo the ACL damage an ELEVATED build does to python-embed.
+    r"""Undo the ACL damage an ELEVATED build does to python-embed.
 
     THE MECHANISM (proven on this machine, 2026-08-13):
     Windows COPY inherits ACLs from the destination; MOVE PRESERVES the
@@ -1201,8 +1201,11 @@ def build_windows(python_exe, app_only=False, installer_only=False):
                         env=_embed_env,
                     )
 
-    # Elevation vaccine -- MUST run after every python-embed write
-    # (atomic rebuild AND incremental top-up both land above).
+    # Elevation vaccine -- MUST run after every python-embed write.
+    # This call covers the writes ABOVE (atomic rebuild + incremental
+    # top-up).  It is NOT the last one: cx_Freeze's post-build hook
+    # writes python-embed again, so the vaccine runs a second time after
+    # that call too.  See the note there before deleting either.
     normalize_embed_acl(embed_src)
 
     print_header("Building Nunba executable with cx_Freeze")
@@ -1289,8 +1292,26 @@ def build_windows(python_exe, app_only=False, installer_only=False):
     print_info(f"Syntax gate: {_checked} .py files parse clean")
 
     # Run cx_Freeze
-    if not run_command([python_exe, os.path.join('scripts', 'setup_freeze_nunba.py'), 'build'],
-                       "Running cx_Freeze..."):
+    _freeze_ok = run_command(
+        [python_exe, os.path.join('scripts', 'setup_freeze_nunba.py'), 'build'],
+        "Running cx_Freeze...")
+
+    # Elevation vaccine, second dose -- THIS is the one that matters.
+    # setup_freeze_nunba.py's post-build hook re-installs the sibling
+    # packages INTO THE SOURCE python-embed (hart-backend, hevolveai,
+    # hevolve-database, agent-ledger, then the HevolveArmor loader), so
+    # the LAST writer runs inside the call above, long after the first
+    # dose.  pip stages in %TEMP% and MOVES into place, and a MOVE
+    # preserves the SOURCE ACL -- so an elevated build left 37 entries
+    # owned by BUILTIN\\Administrators with no ACE for the invoking user,
+    # and the next NON-elevated build could not read them.  It died with
+    # "23 file(s) STILL corrupt after autorepair" (2026-08-14), a message
+    # that never mentions permissions.  Runs on the FAILURE path too: a
+    # build that dies mid-freeze must not leave the tree unreadable for
+    # the retry.  Guarded by tests/test_build_script.py.
+    normalize_embed_acl(embed_src)
+
+    if not _freeze_ok:
         print_error("cx_Freeze build failed!")
         return False
 

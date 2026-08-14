@@ -1067,8 +1067,21 @@ def _validate_python_embed_source() -> list[tuple[str, str]]:
         if not (os.path.isdir(full) and entry.endswith('.dist-info')):
             continue
         meta = os.path.join(full, 'METADATA')
-        if not os.path.isfile(meta):
+        # os.path.isfile() SWALLOWS OSError and returns False, so an
+        # ERROR_ACCESS_DENIED read as "METADATA file missing" -- and the
+        # repair recipe printed below then prescribed rm -rf, which hits
+        # the very same denial.  That chain is what turned an elevated
+        # build's ACL damage into "23 file(s) STILL corrupt" for hours
+        # (2026-08-14).  Probe with os.stat() so absence and denial stay
+        # distinguishable.  Guarded by tests/test_build_script.py.
+        try:
+            os.stat(meta)
+        except FileNotFoundError:
             bad.append((full, 'METADATA file missing'))
+            continue
+        except OSError as exc:
+            bad.append((meta, f'unreadable ({exc.strerror}) — a PERMISSION '
+                              f'failure, not corruption'))
             continue
         try:
             with open(meta, encoding='utf-8', errors='replace') as fh:
@@ -1404,6 +1417,24 @@ if os.path.exists("python-embed"):
             for fp, reason in _src_corruption[:30]:
                 print(f"  {fp}  ->  {reason}")
             print()
+            # A permission failure is NOT corruption, and the rm -rf recipe
+            # below hits the same ERROR_ACCESS_DENIED.  Say so, and give the
+            # remedy that actually applies: hand the tree back to normal
+            # inheritance -- exactly what build.py:normalize_embed_acl does
+            # automatically for an elevated build.
+            _perm = [fp for fp, reason in _src_corruption
+                     if 'PERMISSION' in reason or 'Permission denied' in reason]
+            if _perm:
+                print(f"  {len(_perm)} of these are UNREADABLE, not corrupt — "
+                      f"an ELEVATED build left python-embed owned by the")
+                print("  admin account with no ACE for you.  Fix permissions "
+                      "FIRST; rm -rf would hit the same denial:")
+                if sys.platform == 'win32':
+                    print("    # from an ADMINISTRATOR shell:")
+                    print("    icacls python-embed /reset /T /C /Q")
+                else:
+                    print('    sudo chown -R "$(id -u):$(id -g)" python-embed')
+                print()
             print("  Manual repair recipe (run from the Nunba repo root):")
             print("    rm -rf python-embed/Lib/site-packages/<bad-pkg>")
             print("    pip install --target python-embed/Lib/site-packages \\")
