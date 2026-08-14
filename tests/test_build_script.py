@@ -317,3 +317,49 @@ class TestMetadataPermissionMisdiagnosis:
             'the METADATA probe must branch on FileNotFoundError so a '
             'genuine absence stays "missing" while a permission failure '
             'is reported as a permission failure')
+
+
+class TestCleanBuildSpareTrackedFiles:
+    """`clean_build()` must delete only GENERATED artifacts.
+
+    `app.icns` sat in files_to_remove from when setup_freeze_mac.py
+    generated it from a logo.  Since 02d73507 it is a checked-in source
+    asset that setup_freeze_mac.py READS, so every build deleted a
+    tracked repo file and left a phantom " D app.icns" in git status.
+    Generic on purpose: any tracked path added to that list fails here.
+    """
+
+    @staticmethod
+    def _files_to_remove():
+        import ast
+        path = os.path.join(PROJECT_ROOT, 'scripts', 'build.py')
+        with open(path, encoding='utf-8') as fh:
+            tree = ast.parse(fh.read())
+        fn = next((n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == 'clean_build'),
+                  None)
+        assert fn is not None, 'clean_build() not found in scripts/build.py'
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Assign)
+                    and any(getattr(t, 'id', None) == 'files_to_remove'
+                            for t in node.targets)
+                    and isinstance(node.value, ast.List)):
+                return [e.value for e in node.value.elts
+                        if isinstance(e, ast.Constant)]
+        raise AssertionError('files_to_remove list literal not found')
+
+    def test_clean_build_deletes_no_git_tracked_file(self):
+        import subprocess
+        entries = self._files_to_remove()
+        assert entries, 'files_to_remove is empty — did the literal move?'
+        try:
+            tracked = set(subprocess.run(
+                ['git', 'ls-files'], cwd=PROJECT_ROOT, capture_output=True,
+                text=True, timeout=60, check=True).stdout.split())
+        except (OSError, subprocess.SubprocessError):
+            import pytest
+            pytest.skip('git unavailable — cannot enumerate tracked files')
+        offenders = [e for e in entries if '*' not in e and e in tracked]
+        assert not offenders, (
+            f'clean_build() deletes git-tracked source file(s): {offenders}. '
+            'Only generated artifacts belong in files_to_remove.')

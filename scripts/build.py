@@ -449,7 +449,13 @@ def clean_build():
     print_header("Cleaning build artifacts")
 
     dirs_to_remove = ['build', 'dist', 'Output', 'dmg_temp']
-    files_to_remove = ['app.icns', '*.dmg']
+    # Only GENERATED artifacts belong here.  app.icns used to be one --
+    # setup_freeze_mac.py converts a logo to it when absent -- but since
+    # 02d73507 it is a CHECKED-IN source asset that setup_freeze_mac.py
+    # reads as its icon, so cleaning deleted a tracked repo file and left
+    # `git status` showing a phantom " D app.icns" after every build.
+    # app.iconset below is still genuinely generated and still removed.
+    files_to_remove = ['*.dmg']
 
     for d in dirs_to_remove:
         if os.path.exists(d):
