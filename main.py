@@ -2149,6 +2149,19 @@ def admin_models_register():
         if not data or not data.get('id') or not data.get('model_type'):
             return jsonify({"error": "id and model_type are required"}), 400
         entry = ModelEntry.from_dict(data)
+        # Refuse an entry that can never be downloaded rather than storing
+        # it and reporting success.  2026-08-15: an entry with files={} and
+        # repo_id='unsloth/Qwen3.8-27B-UD-Q4_K_XL.gguf' was accepted here
+        # with 200 {"success": true}; it persisted to model_catalog.json and
+        # every download then failed with "no preset for
+        # Qwen3.8-27B-UD-Q4_K_XL.gguf", because models/orchestrator.py
+        # ::_entry_to_preset returns None when files['model'] is empty.
+        # The producer was more permissive than its consumer, so the UI
+        # showed success for a model that could never work.
+        problems = entry.validate()
+        if problems:
+            return jsonify({"error": "invalid model entry",
+                            "problems": problems}), 400
         catalog = get_catalog()
         catalog.register(entry)
         return jsonify({"success": True, "model": entry.to_dict()})
