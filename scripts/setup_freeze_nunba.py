@@ -1830,7 +1830,19 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # build copy is safe and keeps it lean:
             '*.gguf', '*.bin', '*.safetensors', '*.onnx', '*.pt', '*.pth',
             '*.ckpt', '*.db', '*.sqlite', '*.sqlite3', '*.zip', '*.tar',
-            '*.tar.gz', '*.tgz', '*.7z', '*.mp4', '*.mov', '*.iso')
+            '*.tar.gz', '*.tgz', '*.7z', '*.mp4', '*.mov', '*.iso',
+            # SQLite WAL sidecars.  fnmatch's '*.db' does NOT match
+            # 'foo.db-shm', so excluding the database while copying its two
+            # companions left the build copying memory-mapped files that are
+            # locked whenever ANY process has the DB open.  2026-08-17 the
+            # build died here:
+            #   HARTOS/agent_data/hevolve_database.db-shm
+            #   [WinError 33] another process has locked a portion of the file
+            # That made the build non-deterministic -- it passed or failed on
+            # whether a test run or the installed app happened to hold the DB.
+            '*.db-shm', '*.db-wal', '*.db-journal',
+            '*.sqlite-shm', '*.sqlite-wal', '*.sqlite-journal',
+            '*.sqlite3-shm', '*.sqlite3-wal', '*.sqlite3-journal')
 
         def _pip_install_sibling(_sib_path):
             """Copy the sibling minus the heavy dirs, then pip-install the copy

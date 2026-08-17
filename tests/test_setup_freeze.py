@@ -399,3 +399,85 @@ class TestTtsBundleDeps:
                 f"ModuleNotFoundError on that OS (a build-script bundle change "
                 f"must be applied to all OSs)."
             )
+
+
+class TestSiblingStagingIgnoresLiveSqlite:
+    """The sibling-staging copytree must skip SQLite WAL sidecars.
+
+    _pip_install_sibling copies the HARTOS tree to %TEMP% before pip-installing
+    it into python-embed.  _IGNORE_HEAVY excluded '*.db' but fnmatch's '*.db'
+    does NOT match 'foo.db-shm', so the two memory-mapped companions were still
+    copied.  They are locked whenever any process has the DB open, so the build
+    passed or failed depending on whether a test run or the installed app
+    happened to hold it.  2026-08-17 it failed as:
+
+        HARTOS/agent_data/hevolve_database.db-shm
+        [WinError 33] another process has locked a portion of the file
+
+    A wheel never wants runtime DB state -- the package-data is text/web only
+    -- so excluding all three journal forms is both the fix and correct on its
+    own terms.
+    """
+
+    def _freeze_source(self):
+        from pathlib import Path
+        p = (Path(__file__).resolve().parents[1]
+             / 'scripts' / 'setup_freeze_nunba.py')
+        return p.read_text(encoding='utf-8')
+
+    def test_wal_sidecars_excluded(self):
+        src = self._freeze_source()
+        for pat in ("'*.db-shm'", "'*.db-wal'", "'*.db-journal'"):
+            assert pat in src, (
+                f"{pat} missing from _IGNORE_HEAVY — the staging copytree will "
+                f"try to copy live SQLite sidecars and die with WinError 33 "
+                f"whenever a process holds the DB open.")
+
+    def test_sqlite_named_sidecars_excluded(self):
+        """The tree also carries *.sqlite / *.sqlite3 databases, whose sidecars
+        need the same treatment as *.db."""
+        src = self._freeze_source()
+        for pat in ("'*.sqlite-shm'", "'*.sqlite-wal'",
+                    "'*.sqlite3-shm'", "'*.sqlite3-wal'"):
+            assert pat in src, f"{pat} missing from _IGNORE_HEAVY"
+
+    def test_fnmatch_really_does_not_match_sidecars(self):
+        """Pin the reason the bug existed, so the exclusions are not 'tidied'
+        away by someone assuming '*.db' already covers them."""
+        import fnmatch
+        assert not fnmatch.fnmatch('hevolve_database.db-shm', '*.db')
+        assert not fnmatch.fnmatch('hevolve_database.db-wal', '*.db')
+        assert fnmatch.fnmatch('hevolve_database.db-shm', '*.db-shm')
+
+    def test_ignore_pattern_keeps_source_files(self):
+        """Guard the other direction: the exclusions must not swallow the
+        package's actual contents."""
+        import shutil
+        ign = shutil.ignore_patterns(
+            '*.db', '*.db-shm', '*.db-wal', '*.db-journal',
+            '*.sqlite', '*.sqlite-shm', '*.sqlite-wal', '*.sqlite-journal',
+            '*.sqlite3', '*.sqlite3-shm', '*.sqlite3-wal', '*.sqlite3-journal')
+        names = ['core.py', 'config.json', 'README.md', 'style.css',
+                 'app.db', 'app.db-shm']
+        skipped = ign('/fake', names)
+        assert 'core.py' not in skipped
+        assert 'config.json' not in skipped
+        assert 'README.md' not in skipped
+        assert 'app.db' in skipped
+        assert 'app.db-shm' in skipped
+
+    def test_not_needed_on_mac_or_linux(self):
+        """Documents why this is deliberately Windows-only.
+
+        The cross-OS rule in TestTtsBundleDeps does not apply here: the mac and
+        linux freeze scripts have no _IGNORE_HEAVY and no sibling-staging copy.
+        Their only copytree calls target python-embed, which holds no live
+        databases.  Recorded so this asymmetry reads as intentional.
+        """
+        from pathlib import Path
+        scripts = Path(__file__).resolve().parents[1] / 'scripts'
+        for fname in ('setup_freeze_mac.py', 'setup_freeze_linux.py'):
+            src = (scripts / fname).read_text(encoding='utf-8')
+            assert '_IGNORE_HEAVY' not in src, (
+                f"{fname} grew an _IGNORE_HEAVY — if it now stages a source "
+                f"tree, it needs the SQLite sidecar exclusions too.")
