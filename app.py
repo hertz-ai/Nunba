@@ -3069,7 +3069,27 @@ if getattr(args, 'setup_ai', False):
         _sc = _SetupLlamaConfig()
         _si = _SetupInstaller()
         _found_binary = _si.find_llama_server()
-        _has_model = bool(_sc.config.get('model_path') and os.path.isfile(_sc.config.get('model_path', '')))
+        # Was config['model_path'] + os.path.isfile ALONE -- a second, weaker
+        # answer to "is a model present" than the canonical
+        # installer.is_model_downloaded(), which searches ~/.nunba/models,
+        # ~/.trueflow/models, ~/.ollama/models and the HF hub cache and
+        # enforces a 100 MB floor to reject truncated files.  The ad-hoc check
+        # knows about exactly ONE model -- whatever model_path happens to point
+        # at -- so a user with a perfectly good preset downloaded but a stale or
+        # empty model_path read as "no model" and was sent back through the
+        # wizard.  On this box the live 4B is in ~/.trueflow/models, which the
+        # config-path check alone does not see.  Keep the config path as the
+        # cheap fast path, then fall back to the canonical per-preset detector.
+        _has_model = bool(_sc.config.get('model_path')
+                          and os.path.isfile(_sc.config.get('model_path', '')))
+        if not _has_model:
+            try:
+                from llama.llama_config import MODEL_PRESETS as _MP
+                _has_model = any(_si.is_model_downloaded(_p) for _p in _MP)
+            except Exception:
+                _setup_logger.exception(
+                    "--setup-ai: canonical model-presence check failed; "
+                    "falling back to the config-path result")
         _already_configured = not _sc.is_first_run()
         _has_custom_api = bool(_sc.config.get('custom_api_base'))
         if _found_binary and (_has_model or _has_custom_api) and _already_configured:
