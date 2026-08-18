@@ -5470,8 +5470,13 @@ def start_background_services():
     # SSE fallback for its realtime needs — saves ~80–120 MB resident memory
     # (Twisted reactor + Autobahn router + connection registry).
     #
-    # When a channel is added later via admin UI or a peer joins via
-    # peer_link, `ensure_wamp_running()` wakes the router on-demand.
+    # NOT woken on demand today. ensure_wamp_running() exists and is
+    # correct, but has zero callers: its documented trigger is HARTOS's
+    # ChannelRegistry.register (integrations/channels/registry.py:56), and
+    # HARTOS is our pip dependency -- it cannot import Nunba's wamp_router.
+    # Closing this needs an event emitted by the registry plus a subscriber
+    # here. Until then, adding a channel or discovering a peer AFTER boot
+    # leaves realtime on the SSE fallback until Nunba restarts.
     def _wamp_is_needed() -> tuple[bool, str]:
         try:
             _adapters = getattr(channels.registry, '_adapters', None) or {}
