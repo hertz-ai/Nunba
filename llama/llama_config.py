@@ -1608,12 +1608,38 @@ class LlamaConfig:
                         except ImportError:
                             pass
 
-                        # Notify orchestrator so catalog marks it as loaded
+                        # Notify orchestrator so catalog marks it as loaded.
+                        # device was the literal 'gpu'.  This is the "server
+                        # already running" early return, which never learned how
+                        # that server was launched -- and the same file has a
+                        # real CPU-only path (:2690-2693) that sets
+                        # config["use_gpu"]=False when the installed binary has
+                        # no GPU support.  device feeds BOTH mark_loaded() (what
+                        # the admin UI shows) and _register_vram(), so a
+                        # CPU-resident model was also booked against VRAM.
+                        #
+                        # is_installed() must run FIRST: binary_supports_gpu is
+                        # initialised False at llama_installer.py:206 and is only
+                        # assigned by the probe (_binary_has_gpu_support, :427).
+                        # Measured on this box, same process: reading the
+                        # attribute cold gives False even on a GPU build;
+                        # after is_installed() it gives True.  Reading it cold
+                        # would mislabel GPU as CPU -- the inverse bug.
+                        # Conditions mirror can_use_gpu at :2013.
                         try:
                             from models.orchestrator import get_orchestrator
+                            self.installer.is_installed()   # populates the flag
+                            _on_gpu = (
+                                self.config.get("use_gpu", False) and
+                                self.installer.gpu_available != "none" and
+                                self.installer.binary_supports_gpu
+                            )
+                            _device = 'gpu' if _on_gpu else 'cpu'
                             get_orchestrator().notify_loaded(
-                                'llm', display_name, device='gpu')
-                            logger.info(f"Catalog synced: LLM '{display_name}' marked as loaded")
+                                'llm', display_name, device=_device)
+                            logger.info(
+                                f"Catalog synced: LLM '{display_name}' marked "
+                                f"as loaded on {_device}")
                         except ImportError:
                             pass
                 except Exception as _sync_err:
