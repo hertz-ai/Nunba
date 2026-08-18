@@ -1210,8 +1210,25 @@ class LlamaInstaller:
         try:
             model_path = self.models_dir / preset.file_name
 
-            # Download main model file
-            if not model_path.exists():
+            # Download main model file.
+            # Was `if not model_path.exists()`: one directory, no size check.
+            # Two consequences, both real on this box:
+            #  - a download interrupted mid-flight leaves a stub file, and
+            #    .exists() calls it present, so the partial is NEVER repaired
+            #    and llama-server fails to load it forever.  That is exactly
+            #    the "models downloaded but stopped before inference healthy"
+            #    state.
+            #  - a model already present in a sibling dir (~/.trueflow/models,
+            #    ~/.ollama/models, HF hub cache) was re-downloaded into
+            #    ~/.nunba/models.  The live 4B on this machine loads from
+            #    .trueflow, so that is GBs of avoidable transfer.
+            # _find_file_in_dirs searches all four locations and documents
+            # min_size as "detects corruption"; is_model_downloaded (10 lines
+            # above) already passes 100 MB.  The mmproj branch below ALREADY
+            # consults sibling dirs via _find_mmproj_in_dirs -- this makes the
+            # main-model branch match it.  model_path stays the destination.
+            if not self._find_file_in_dirs(preset.file_name,
+                                           min_size=100_000_000):
                 model_url = f"https://huggingface.co/{preset.repo_id}/resolve/main/{preset.file_name}"
                 logger.info(f"Downloading model: {preset.display_name}")
 
