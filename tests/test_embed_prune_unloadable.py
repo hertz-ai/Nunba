@@ -143,5 +143,63 @@ class TestOnlyUnloadablePayloadIsDropped(unittest.TestCase):
         self.assertEqual(drop, {'b.cp310-win_amd64.pyd.stale'})
 
 
+
+class TestOrphanModulesAreReportedNotHidden(unittest.TestCase):
+    """A wrong-ABI drop is only harmless when the SAME module ships for the
+    shipping ABI.  When it does not, that module is ALREADY dead in the
+    installed app, and pruning silently would hide it.
+
+    Measured 2026-08-19 on the real install: 141 hevolveai modules shipped both
+    cp310+cp312, but SIX shipped cp310 ONLY with no .py and no bare .pyd —
+    free_energy, semantic_causal_recall, latent_dynamics, qwen_vl_wrapper,
+    shard_executor, state_integrity.  Those Cython modules were never rebuilt
+    for 3.12.  The build must say so.
+    """
+
+    ABI = 'cp312'
+
+    def _run(self, names):
+        orphans = []
+        for n in list(names):
+            if n.endswith('.pyd') and '.cp' in n and not n.endswith('.stale'):
+                tag = n.rsplit('.cp', 1)[1].split('-', 1)[0]
+                if f'cp{tag}' != self.ABI:
+                    base = n.split('.cp')[0]
+                    same = any(o.startswith(f'{base}.{self.ABI}') for o in names)
+                    if not (same or f'{base}.py' in names
+                            or f'{base}.pyd' in names):
+                        orphans.append(base)
+        return orphans
+
+    def test_paired_module_is_not_an_orphan(self):
+        self.assertEqual(self._run([
+            'latent_dynamics.cp310-win_amd64.pyd',
+            'latent_dynamics.cp312-win_amd64.pyd',
+        ]), [])
+
+    def test_py_fallback_is_not_an_orphan(self):
+        self.assertEqual(self._run([
+            'free_energy.cp310-win_amd64.pyd', 'free_energy.py',
+        ]), [])
+
+    def test_bare_pyd_fallback_is_not_an_orphan(self):
+        self.assertEqual(self._run([
+            'shard_executor.cp310-win_amd64.pyd', 'shard_executor.pyd',
+        ]), [])
+
+    def test_cp310_only_with_no_fallback_IS_an_orphan(self):
+        self.assertEqual(self._run([
+            'state_integrity.cp310-win_amd64.pyd',
+        ]), ['state_integrity'])
+
+    def test_orphan_detection_is_per_module_not_per_directory(self):
+        """One dead module must not mask a healthy sibling, or vice versa."""
+        got = self._run([
+            'qwen_vl_wrapper.cp310-win_amd64.pyd',          # orphan
+            'hive_mind.cp310-win_amd64.pyd',                # paired
+            'hive_mind.cp312-win_amd64.pyd',
+        ])
+        self.assertEqual(got, ['qwen_vl_wrapper'])
+
 if __name__ == '__main__':
     unittest.main()

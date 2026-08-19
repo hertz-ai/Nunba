@@ -2165,7 +2165,17 @@ if ('build' in sys.argv or 'build_exe' in sys.argv) and not _skip_python_embed_c
         _embed_abi = _abi_tag_of_embedded_python(_src_embed)
         print(f"  python-embed ABI: {_embed_abi or 'UNKNOWN (no pruning)'}")
 
-        def _ignore_unloadable(_dirpath, names):
+        # Dropping a wrong-ABI module is only harmless when the SAME module also
+        # ships for the shipping ABI.  When it does not, that module is already
+        # dead in the installed app (nothing can import it) and pruning would
+        # hide the fact.  Measured 2026-08-19: 141 hevolveai modules shipped
+        # both cp310+cp312, but SIX shipped cp310 ONLY, with no .py and no bare
+        # .pyd fallback — free_energy, semantic_causal_recall, latent_dynamics,
+        # qwen_vl_wrapper, shard_executor, state_integrity.  Those Cython
+        # modules were never rebuilt for 3.12.  Warn, loudly, per build.
+        _orphans = []
+
+        def _ignore_unloadable(dirpath, names):
             drop = set()
             for n in names:
                 if n.endswith('.stale'):
@@ -2175,10 +2185,29 @@ if ('build' in sys.argv or 'build_exe' in sys.argv) and not _skip_python_embed_c
                     tag = n.rsplit('.cp', 1)[1].split('-', 1)[0]
                     if f'cp{tag}' != _embed_abi:
                         drop.add(n)
+                        base = n.split('.cp')[0]
+                        same_abi = any(
+                            o.startswith(f'{base}.{_embed_abi}') for o in names)
+                        if not (same_abi or f'{base}.py' in names
+                                or f'{base}.pyd' in names):
+                            _orphans.append(os.path.join(dirpath, base))
             return drop
 
         shutil.copytree(_src_embed, _dst_embed, dirs_exist_ok=True,
                         copy_function=_robust_copy, ignore=_ignore_unloadable)
+
+        if _orphans:
+            # NOT fatal: these modules are already unimportable in the shipped
+            # app (that is what "no same-ABI build" means), so failing the build
+            # would block a release over a defect the release does not
+            # introduce.  But it must never be silent — this is the signal that
+            # a Cython module was not rebuilt for the shipping interpreter.
+            print(f"  WARNING: {len(_orphans)} module(s) have NO {_embed_abi} "
+                  f"build and no .py/.pyd fallback — already dead in the app:")
+            for _o in sorted(_orphans):
+                print(f"    - {os.path.relpath(_o, _src_embed)}")
+            print("  Rebuild these for "
+                  f"{_embed_abi} or drop them from the package.")
 
         # Clean orphans: files AND empty dirs in dest that don't exist in source
         _orphan_count = 0
