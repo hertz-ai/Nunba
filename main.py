@@ -599,6 +599,7 @@ def _deferred_platform_init():
     except Exception as e:
         logging.debug(f"Caption server event subscription skipped: {e}")
 
+
     # Eager-start BOTH llama-server instances at boot so the first /chat
     # request doesn't cold-start either model.
     #
@@ -5470,13 +5471,13 @@ def start_background_services():
     # SSE fallback for its realtime needs — saves ~80–120 MB resident memory
     # (Twisted reactor + Autobahn router + connection registry).
     #
-    # NOT woken on demand today. ensure_wamp_running() exists and is
-    # correct, but has zero callers: its documented trigger is HARTOS's
-    # ChannelRegistry.register (integrations/channels/registry.py:56), and
-    # HARTOS is our pip dependency -- it cannot import Nunba's wamp_router.
-    # Closing this needs an event emitted by the registry plus a subscriber
-    # here. Until then, adding a channel or discovering a peer AFTER boot
-    # leaves realtime on the SSE fallback until Nunba restarts.
+    # Woken on demand as of 2026-08-19.  HARTOS's ChannelRegistry.register
+    # emits 'channel.registered' on the shared core.platform EventBus and
+    # _wamp_ensure_if_needed() below re-runs THIS SAME predicate -- the
+    # trigger never re-implements the rule, so there is one decision site
+    # for "is WAMP needed?", evaluated at boot and again whenever an input
+    # moves.  A peer discovered after boot is still not covered: peer_link
+    # has no equivalent emit yet, so that leg stays boot-only.
     def _wamp_is_needed() -> tuple[bool, str]:
         try:
             _adapters = getattr(channels.registry, '_adapters', None) or {}
@@ -5494,25 +5495,55 @@ def start_background_services():
             pass
         return False, ""
 
-    _needed, _reason = _wamp_is_needed()
-    if _needed:
+    def _wamp_ensure_if_needed(trigger: str = 'boot') -> None:
+        """The ONE place that decides whether the router should be running.
+
+        _wamp_is_needed() above is the only predicate; this is the only
+        actuator.  Called at boot and re-called whenever an input to that
+        predicate changes, so "is WAMP needed?" is never answered in two
+        places.  A trigger must not re-implement the rule -- it only says
+        "the inputs moved, look again".  ensure_wamp_running is
+        is_running()-guarded and start_wamp_router holds _state_lock across
+        check-and-spawn, so repeat calls are no-ops.
+        """
+        _needed, _reason = _wamp_is_needed()
+        if not _needed:
+            if trigger == 'boot':
+                logging.info(
+                    "WAMP router deferred — no non-web channels or mobile "
+                    "peers at boot (SSE handles local realtime, saves "
+                    "~100MB; re-checked whenever a channel/peer arrives)",
+                )
+            return
         try:
-            from wamp_router import start_wamp_router
-            start_wamp_router()
+            from wamp_router import ensure_wamp_running
+            ensure_wamp_running(reason=f"{_reason} [{trigger}]")
             logging.info(
-                "Embedded WAMP router starting on port %s (reason: %s)",
-                os.environ.get('NUNBA_WAMP_PORT', '8088'), _reason,
+                "Embedded WAMP router ensured on port %s (reason: %s, trigger: %s)",
+                os.environ.get('NUNBA_WAMP_PORT', '8088'), _reason, trigger,
             )
         except Exception as e:
             logging.warning(
                 "WAMP router failed to start (realtime will use SSE fallback): %s", e,
             )
-    else:
-        logging.info(
-            "WAMP router deferred — no non-web channels or mobile peers "
-            "at boot (SSE handles local realtime, saves ~100MB; router "
-            "will start on-demand when a channel/peer arrives)",
-        )
+
+    _wamp_ensure_if_needed('boot')
+
+    # Re-evaluate when an input to _wamp_is_needed() changes.  HARTOS
+    # cannot import wamp_router, so ChannelRegistry.register emits
+    # 'channel.registered' on the shared EventBus and we re-run the SAME
+    # predicate here.  No second rule, no second actuator.
+    try:
+        from core.platform.registry import get_registry
+        _evt_bus = get_registry().get('events')
+        if _evt_bus:
+            _evt_bus.on(
+                'channel.registered',
+                lambda topic, data: _wamp_ensure_if_needed('channel.registered'),
+            )
+            logging.info("WAMP re-evaluation subscriber registered")
+    except Exception as e:
+        logging.debug("WAMP re-evaluation subscriber skipped: %s", e)
 
     # Start LangChain service in background thread (non-blocking)
     langchain_thread = threading.Thread(target=start_langchain_service, daemon=True)

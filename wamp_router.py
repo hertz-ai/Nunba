@@ -801,17 +801,16 @@ def _run_router(port: int, host: str):
 def ensure_wamp_running(reason: str = '') -> bool:
     """Start the WAMP router if it isn't running yet.
 
-    ZERO CALLERS as of 2026-08-19. Intended for on-demand paths: a channel
-    adapter registered after boot, a mobile peer discovered, an admin
-    enabling realtime features. At cold boot with no channels/peers,
-    main.py skips the router to save ~100MB, and this was meant to wake it
-    without restarting Nunba.
+    Called by main.py's _wamp_ensure_if_needed(), which is the ONE place
+    that decides whether the router should run.  That helper runs at boot
+    and again on 'channel.registered' from HARTOS's ChannelRegistry via
+    the shared core.platform EventBus -- HARTOS cannot import this module,
+    so the bus is the seam.  Callers must NOT re-implement the
+    "is WAMP needed?" rule; go through _wamp_ensure_if_needed so the
+    predicate stays single-sourced.
 
-    It is not wired because the natural trigger, ChannelRegistry.register
-    (HARTOS integrations/channels/registry.py:56), lives in our pip
-    dependency and cannot import this module. Wiring it needs the registry
-    to emit an event and main.py to subscribe. Do not treat "the router
-    wakes on demand" as true until that exists.
+    Still boot-only for mobile peers: peer_link emits no equivalent event
+    yet, so a peer discovered after boot does not wake the router.
 
     Idempotent — if already running, returns True immediately.
     """
