@@ -347,9 +347,20 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
   };
 
   const description =
+    // `description` and `capabilities` are what a LOCAL Nunba's /prompts
+    // endpoint returns; `video_text` is the cloud list's name for the same
+    // thing. Checking only video_text meant every card on a local install fell
+    // through to the filler line while the real description sat in the payload
+    // under a different key. Verified against the running app 2026-08-19:
+    // /prompts returned 7 agents with 7 distinct descriptions and the gallery
+    // showed the same sentence seven times.
     agent.video_text && agent.video_text !== 'This is Static Description'
       ? agent.video_text
-      : 'An AI agent ready to help. Tap to start a conversation.';
+      : (agent.description
+        || (Array.isArray(agent.capabilities) ? agent.capabilities.join(', ') : agent.capabilities)
+        || agent.capability
+        || agent.tagline
+        || 'An AI agent ready to help. Tap to start a conversation.');
 
   return (
     <article
@@ -364,7 +375,12 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
       {/* Media */}
       <div className="agent-card__media">
         <img
-          src={agent.teacher_image_url || agent.image_url || AgentPoster}
+          /* `avatar` is the local /prompts spelling and `image` is the
+             build-time registry's. Without them all seven local agents fell
+             through to AgentPoster, so the gallery rendered one stock portrait
+             seven times over while each agent had its own picture in the
+             payload. */
+          src={agent.teacher_image_url || agent.image_url || agent.avatar || agent.image || AgentPoster}
           className="agent-card__img"
           alt={agent.name}
           loading="lazy"
