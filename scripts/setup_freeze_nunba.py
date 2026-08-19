@@ -1891,16 +1891,35 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             print(f"  WARN: could not remove {label} temp dir, left behind: {path}")
             return False
 
+        # A staging dir younger than this is assumed to belong to a build that
+        # is still running, and is NEVER swept.  Deliberately far longer than
+        # any real build (the 2026-08-19 release build compiled in 765s and
+        # took well under an hour end to end), so the guard costs one extra
+        # build's worth of orphan at most while making the sweep safe on its
+        # own terms.
+        #
+        # Why not rely on build.py's BUILD-LOCK: it does exit(2) on a
+        # concurrent build, but it also prints "could not write lock ...;
+        # proceeding without lock" and continues when the lock file cannot be
+        # written, and setup_freeze_nunba.py can be invoked directly without
+        # going through build.py at all.  A sweep that deletes another build's
+        # in-use staging dir would be a far worse bug than the leak it fixes,
+        # so it must not depend on someone else's lock.
+        _PKG_TMP_MIN_AGE_S = 6 * 60 * 60
+
         def _sweep_stale_pkg_tmp():
             """Delete hart-freeze-pkg-* left by EARLIER builds.
 
             Self-healing across runs: even if this build's own cleanup loses a
             race, the next build reclaims the space instead of accumulating it.
-            Only touches our own prefix, and never the dir this run is using
-            (created after this sweep).
+            Only touches our own prefix, only dirs older than
+            _PKG_TMP_MIN_AGE_S, and never the dir this run is using (created
+            after this sweep).
             """
             _root = _tempfile.gettempdir()
             _freed = _n = 0
+            import time as _t
+            _now = _t.time()
             try:
                 _entries = os.listdir(_root)
             except OSError:
@@ -1911,6 +1930,11 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                 _p = os.path.join(_root, _name)
                 if not os.path.isdir(_p):
                     continue
+                try:
+                    if (_now - os.path.getmtime(_p)) < _PKG_TMP_MIN_AGE_S:
+                        continue          # a build may still be using it
+                except OSError:
+                    continue              # cannot age it -> do not touch it
                 try:
                     _sz = sum(os.path.getsize(os.path.join(_r, _f))
                               for _r, _d, _fs in os.walk(_p) for _f in _fs)
