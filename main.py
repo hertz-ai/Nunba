@@ -5487,9 +5487,17 @@ def start_background_services():
         except Exception:
             pass
         try:
-            from hevolve.peer_link import get_peer_link_manager
-            pm = get_peer_link_manager()
-            if pm and getattr(pm, 'get_active_peers', lambda: [])():
+            # core.peer_link is the canonical manager.  The previous path was
+            # dead three ways: there is no 'hevolve' package, no
+            # get_peer_link_manager(), and no get_active_peers() method -- so
+            # the getattr default returned [] even if the import had worked.
+            # This leg could never report a peer.  active_links counts links
+            # in the connected state.  get_link_manager() allocates the
+            # singleton if absent; __init__ opens no socket and starts no
+            # thread (that is start()), so this stays read-only.
+            from core.peer_link import get_link_manager
+            pm = get_link_manager()
+            if pm and (pm.get_status() or {}).get('active_links'):
                 return True, "mobile peer discovered"
         except Exception:
             pass
@@ -6046,7 +6054,16 @@ if __name__ == '__main__':
             config.errorlog = '-'
             config.server_names = ['Nunba']
 
-            asgi_app = AsyncioWSGIMiddleware(app)
+            # AsyncioWSGIMiddleware is WSGI and cannot see a websocket
+            # scope, so ws://<this node>/peer_link never reached PeerLink
+            # on the desktop: the scope fell through to the WSGI wrapper
+            # and Hypercorn answered 403.  HARTOS's own entry point wraps
+            # it (hart_intelligence_entry.py) but the desktop serve path
+            # did not, so PeerLink.accept() was never called here.
+            # peer_link_asgi serves that one path and passes every other
+            # scope through unchanged.  See core/peer_link/server.py.
+            from core.peer_link.server import peer_link_asgi
+            asgi_app = peer_link_asgi(AsyncioWSGIMiddleware(app))
 
             async def _runner():
                 loop = asyncio.get_running_loop()

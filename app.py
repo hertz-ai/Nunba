@@ -6754,7 +6754,16 @@ def start_flask():
             _hc_config.accesslog = None
             _hc_config.errorlog = '-'
 
-            _asgi_app = AsyncioWSGIMiddleware(_wsgi_target)
+            # AsyncioWSGIMiddleware is WSGI and cannot see a websocket
+            # scope, so ws://<this node>/peer_link never reached PeerLink
+            # in the installed build: the scope fell through to the WSGI
+            # wrapper and Hypercorn answered 403.  This is the frozen
+            # entry's serve path, so it needs the mount as much as
+            # main.py's does -- HARTOS wrapped its own entry point and
+            # both Nunba paths were missed.  peer_link_asgi serves that
+            # one path and passes every other scope through unchanged.
+            from core.peer_link.server import peer_link_asgi
+            _asgi_app = peer_link_asgi(AsyncioWSGIMiddleware(_wsgi_target))
 
             async def _hc_runner():
                 _loop = asyncio.get_running_loop()
