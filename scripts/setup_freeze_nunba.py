@@ -2103,6 +2103,24 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             else:
                 print(f"python-embed: {_pkg_label} install FAILED (non-fatal): {_r.stderr[:150]}")
 
+def _abi_tag_of_embedded_python(embed_dir):
+    """'cp312' for the interpreter that SHIPS, read from its own pythonXY.dll.
+
+    Returns None when it cannot be determined, and every caller must then prune
+    nothing: deleting extension modules on a guess is how you ship a bundle that
+    imports on the build box and dies on the user's.
+    """
+    try:
+        for name in os.listdir(embed_dir):
+            low = name.lower()
+            if (low.startswith('python') and low.endswith('.dll')
+                    and low[6:-4].isdigit() and len(low[6:-4]) >= 2):
+                return 'cp' + low[6:-4]        # python312.dll -> cp312
+    except OSError:
+        pass
+    return None
+
+
 # ── Post-build: copy python-embed via shutil.copytree ──
 # cx_Freeze's include_files doesn't reliably copy dot-prefixed directories
 # (e.g. sklearn/.libs/) so we do the entire python-embed copy ourselves.
@@ -2128,8 +2146,39 @@ if ('build' in sys.argv or 'build_exe' in sys.argv) and not _skip_python_embed_c
                         print(f"  WARN: cannot overwrite {os.path.basename(dst)} (locked)")
                         return dst
 
+        # Drop payload the bundled interpreter can NEVER load.  Measured on the
+        # 2026-08-19 install, inside python-embed/Lib/site-packages/hevolveai:
+        #   *.stale          5.6 MB / 14 files   (leftover build artifacts)
+        #   cp310 .pyd      24.7 MB / 147 files  (bundle runs python312.dll)
+        #   cp312 .pyd      21.9 MB / 142 files  (the live set)
+        # i.e. 30.3 MB of a 54 MB package was unloadable — 56% of it.
+        #
+        # Safe by CPython's own import rules, not by assumption: for module
+        # `foo`, 3.12 only ever considers `foo.cp312-win_amd64.pyd` and
+        # `foo.pyd`.  A cp310-tagged file matches neither name, and nothing
+        # imports a `.pyd.stale` at all.
+        #
+        # The ABI is READ FROM THE EMBEDDED INTERPRETER (its own pythonXY.dll),
+        # not from the building process and not hardcoded — the build host's
+        # Python is not necessarily the one that ships, and a hardcoded 'cp312'
+        # silently starts deleting the LIVE set the day python-embed is upgraded.
+        _embed_abi = _abi_tag_of_embedded_python(_src_embed)
+        print(f"  python-embed ABI: {_embed_abi or 'UNKNOWN (no pruning)'}")
+
+        def _ignore_unloadable(_dirpath, names):
+            drop = set()
+            for n in names:
+                if n.endswith('.stale'):
+                    drop.add(n)
+                elif _embed_abi and n.endswith('.pyd') and '.cp' in n:
+                    # 'mod.cp310-win_amd64.pyd' -> 'cp310'
+                    tag = n.rsplit('.cp', 1)[1].split('-', 1)[0]
+                    if f'cp{tag}' != _embed_abi:
+                        drop.add(n)
+            return drop
+
         shutil.copytree(_src_embed, _dst_embed, dirs_exist_ok=True,
-                        copy_function=_robust_copy)
+                        copy_function=_robust_copy, ignore=_ignore_unloadable)
 
         # Clean orphans: files AND empty dirs in dest that don't exist in source
         _orphan_count = 0
