@@ -21,7 +21,13 @@ from pathlib import Path
 
 import pytest
 
-from routes.spa_fallback import ASSET_PREFIXES, first_path_segment, is_asset_path
+from routes.spa_fallback import (
+    ASSET_PREFIXES,
+    SPA_PAGE_NAMESPACES,
+    first_path_segment,
+    is_asset_path,
+    is_spa_page,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -115,3 +121,64 @@ def test_asset_check_runs_before_the_spa_fallback():
         "is_asset_path must be consulted BEFORE _render_spa_index; placed "
         "after, the SPA shell has already been returned and the check is dead"
     )
+
+
+# ── /agents deep links (#642) ─────────────────────────────────────────────
+# `agents` is BOTH an API namespace (/agents/sync, /agents/migrate,
+# /agents/contact) and a page namespace: MainRoute.js declares path="/agents"
+# (:523) and path="/agents/:agentName" (:542).  Signup and OTP login both
+# navigate('/agents/Hevolve'), and a refresh there answered raw
+# {"error":"API endpoint not found"} — measured on the installed build
+# 2026-08-19.  Accept decides the parameterised depth so that programmatic
+# callers keep the JSON 404 they already got.
+
+_NAV = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+_FETCH = '*/*'          # what fetch() and cy.request send by default
+_JSON = 'application/json'
+
+
+def test_hub_page_is_unconditional():
+    """Depth 0 keeps #628's behaviour — a page whatever the Accept."""
+    for accept in (_NAV, _FETCH, _JSON, None, ''):
+        assert is_spa_page('/agents', accept) is True
+        assert is_spa_page('/agents/', accept) is True
+
+
+def test_deep_link_serves_the_shell_for_a_browser_navigation():
+    assert is_spa_page('/agents/Hevolve', _NAV) is True
+    assert is_spa_page('/agents/researcher', _NAV) is True
+
+
+def test_deep_link_keeps_json_404_for_programmatic_callers():
+    """The zero-regression guarantee: fetch/XHR/cy.request are untouched."""
+    for accept in (_FETCH, _JSON, None, ''):
+        assert is_spa_page('/agents/Hevolve', accept) is False
+
+
+def test_depth_below_the_declared_maximum_stays_an_api_miss():
+    """/agents/a/b is not a declared route — must not get the shell."""
+    assert is_spa_page('/agents/a/b', _NAV) is False
+    assert is_spa_page('/agents/a/b/c', _NAV) is False
+
+
+def test_namespaces_outside_the_table_are_untouched():
+    for path in ('/social/feed', '/admin/models', '/tts/engines', '/api/x', '/'):
+        assert is_spa_page(path, _NAV) is False
+
+
+def test_declared_depth_matches_the_router():
+    """MainRoute.js declares exactly one parameterised segment under /agents."""
+    assert SPA_PAGE_NAMESPACES['agents'] == 1
+
+
+def test_werkzeug_accept_html_would_be_the_wrong_discriminator():
+    """Why this module parses Accept itself instead of using the framework.
+
+    `*/*` MATCHES text/html, so werkzeug answers accept_html=True for a plain
+    fetch() — using it would hand the SPA shell to exactly the callers whose
+    JSON 404 must not change.  Pinned so nobody "simplifies" it back.
+    """
+    from werkzeug.datastructures import MIMEAccept
+    fetch = MIMEAccept([('*/*', 1)])
+    assert fetch.accept_html is True          # the trap
+    assert is_spa_page('/agents/Hevolve', _FETCH) is False   # we do not fall in it
