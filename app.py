@@ -6743,27 +6743,21 @@ def start_flask():
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
+            from core.serve import build_asgi_app, make_hypercorn_config
             from hypercorn.asyncio import serve as _hcserve
-            from hypercorn.config import Config
-            from hypercorn.middleware import AsyncioWSGIMiddleware
 
-            _hc_config = Config()
-            _hc_config.bind = [f'0.0.0.0:{args.port}']
-            _hc_config.keep_alive_timeout = 120
-            _hc_config.h11_max_incomplete_size = 16 * 1024 * 1024
-            _hc_config.accesslog = None
-            _hc_config.errorlog = '-'
-
-            # AsyncioWSGIMiddleware is WSGI and cannot see a websocket
-            # scope, so ws://<this node>/peer_link never reached PeerLink
-            # in the installed build: the scope fell through to the WSGI
-            # wrapper and Hypercorn answered 403.  This is the frozen
-            # entry's serve path, so it needs the mount as much as
-            # main.py's does -- HARTOS wrapped its own entry point and
-            # both Nunba paths were missed.  peer_link_asgi serves that
-            # one path and passes every other scope through unchanged.
-            from core.peer_link.server import peer_link_asgi
-            _asgi_app = peer_link_asgi(AsyncioWSGIMiddleware(_wsgi_target))
+            # core.serve owns what all three entry points share: the four
+            # Config settings and the peer_link-capable ASGI wrapping.  A
+            # bare AsyncioWSGIMiddleware is WSGI and cannot see a websocket
+            # scope, so ws://<this node>/peer_link fell through to it and
+            # Hypercorn answered 403 -- HARTOS had the mount, both Nunba
+            # paths did not.  What this path alone varies stays here: the
+            # signal.signal patch above (start_flask runs in the NunbaGUI
+            # thread), the four-exception fallback, and the Waitress/Flask
+            # ladder below.  hypercorn is imported inside core.serve, so a
+            # missing wheel still raises ImportError in this try block.
+            _hc_config = make_hypercorn_config([f'0.0.0.0:{args.port}'])
+            _asgi_app = build_asgi_app(_wsgi_target)
 
             async def _hc_runner():
                 _loop = asyncio.get_running_loop()

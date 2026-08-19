@@ -6041,29 +6041,24 @@ if __name__ == '__main__':
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
+            from core.serve import build_asgi_app, make_hypercorn_config
             from hypercorn.asyncio import serve as _hcserve
-            from hypercorn.config import Config
-            from hypercorn.middleware import AsyncioWSGIMiddleware
 
-            config = Config()
-            config.bind = ([f'unix:{_hart_socket}'] if _hart_socket
-                           else [f'{bind_host}:{args.port}'])
-            config.keep_alive_timeout = 120
-            config.h11_max_incomplete_size = 16 * 1024 * 1024
-            config.accesslog = None
-            config.errorlog = '-'
-            config.server_names = ['Nunba']
-
-            # AsyncioWSGIMiddleware is WSGI and cannot see a websocket
-            # scope, so ws://<this node>/peer_link never reached PeerLink
-            # on the desktop: the scope fell through to the WSGI wrapper
-            # and Hypercorn answered 403.  HARTOS's own entry point wraps
-            # it (hart_intelligence_entry.py) but the desktop serve path
-            # did not, so PeerLink.accept() was never called here.
-            # peer_link_asgi serves that one path and passes every other
-            # scope through unchanged.  See core/peer_link/server.py.
-            from core.peer_link.server import peer_link_asgi
-            asgi_app = peer_link_asgi(AsyncioWSGIMiddleware(app))
+            # core.serve owns what all three entry points share: the four
+            # Config settings and the peer_link-capable ASGI wrapping.  A
+            # bare AsyncioWSGIMiddleware is WSGI and cannot see a websocket
+            # scope, so ws://<this node>/peer_link fell through to it and
+            # Hypercorn answered 403 -- HARTOS had the mount, both Nunba
+            # paths did not.  What this path alone varies stays here: the
+            # unix-socket bind, server_names, NUNBA_FORCE_WAITRESS above
+            # (docker-compose.staging.yml sets it) and the Waitress tuning
+            # below.  hypercorn is imported inside core.serve, so a missing
+            # wheel still raises ImportError in this try block.
+            config = make_hypercorn_config(
+                [f'unix:{_hart_socket}'] if _hart_socket
+                else [f'{bind_host}:{args.port}'],
+                server_names=['Nunba'])
+            asgi_app = build_asgi_app(app)
 
             async def _runner():
                 loop = asyncio.get_running_loop()
