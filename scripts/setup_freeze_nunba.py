@@ -1844,10 +1844,91 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             '*.sqlite-shm', '*.sqlite-wal', '*.sqlite-journal',
             '*.sqlite3-shm', '*.sqlite3-wal', '*.sqlite3-journal')
 
+        _PKG_TMP_PREFIX = 'hart-freeze-pkg-'
+
+        def _rmtree_loudly(path, label):
+            """Remove `path`, retrying briefly, and SAY SO if it survives.
+
+            The old cleanup was `rmtree(..., ignore_errors=True)`, which cannot
+            report its own failure.  On Windows it routinely loses to the very
+            lock this file documents above ("[WinError 33] another process has
+            locked a portion of the file"), so the dir stayed and nobody knew.
+            Measured 2026-08-19: 36 orphaned hart-freeze-pkg-* dirs totalling
+            2,237.8 MB in %TEMP%, oldest 2026-08-04 — one per build, 15 days.
+            A cleanup that swallows its own errors is not a cleanup.
+
+            WHY A PLAIN rmtree COULD NEVER HAVE WORKED HERE, retries included:
+            git marks its object store read-only, copytree preserves that, and
+            Windows refuses to delete a read-only file.  Diagnosed on one of the
+            orphans: PermissionError [WinError 5] on
+            .git/objects/00/03e7a5..., with 3721 of 3721 files read-only.  And
+            .git is KEPT on purpose (see _IGNORE_HEAVY above — setuptools_scm
+            needs it to stamp the version), so this is not avoidable by copying
+            less.  Clear the read-only bit first, THEN remove.
+
+            Done as an explicit pre-pass rather than rmtree's error hook because
+            that hook changed name in 3.12 (onerror -> onexc); a pre-pass works
+            the same on every version the build might run under.
+            """
+            import stat as _stat
+            for _attempt in range(3):
+                try:
+                    for _r, _ds, _fs in os.walk(path):
+                        for _n in _ds + _fs:
+                            _p = os.path.join(_r, _n)
+                            try:
+                                os.chmod(_p, _stat.S_IWRITE)
+                            except OSError:
+                                pass          # best effort; rmtree reports below
+                    _shutil.rmtree(path)
+                    return True
+                except FileNotFoundError:
+                    return True
+                except OSError:
+                    if _attempt < 2:
+                        import time as _t
+                        _t.sleep(0.5)          # transient lock: let it clear
+            print(f"  WARN: could not remove {label} temp dir, left behind: {path}")
+            return False
+
+        def _sweep_stale_pkg_tmp():
+            """Delete hart-freeze-pkg-* left by EARLIER builds.
+
+            Self-healing across runs: even if this build's own cleanup loses a
+            race, the next build reclaims the space instead of accumulating it.
+            Only touches our own prefix, and never the dir this run is using
+            (created after this sweep).
+            """
+            _root = _tempfile.gettempdir()
+            _freed = _n = 0
+            try:
+                _entries = os.listdir(_root)
+            except OSError:
+                return
+            for _name in _entries:
+                if not _name.startswith(_PKG_TMP_PREFIX):
+                    continue
+                _p = os.path.join(_root, _name)
+                if not os.path.isdir(_p):
+                    continue
+                try:
+                    _sz = sum(os.path.getsize(os.path.join(_r, _f))
+                              for _r, _d, _fs in os.walk(_p) for _f in _fs)
+                except OSError:
+                    _sz = 0
+                if _rmtree_loudly(_p, 'stale package'):
+                    _freed += _sz
+                    _n += 1
+            if _n:
+                print(f"  swept {_n} stale {_PKG_TMP_PREFIX}* dir(s), "
+                      f"freed {_freed / 1048576:.1f} MB")
+
+        _sweep_stale_pkg_tmp()
+
         def _pip_install_sibling(_sib_path):
             """Copy the sibling minus the heavy dirs, then pip-install the copy
             into python-embed.  Returns the pip CompletedProcess."""
-            _tmp = _tempfile.mkdtemp(prefix='hart-freeze-pkg-')
+            _tmp = _tempfile.mkdtemp(prefix=_PKG_TMP_PREFIX)
             _dst = os.path.join(_tmp,
                                 os.path.basename(os.path.normpath(_sib_path)))
             try:
@@ -1859,7 +1940,7 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                      "--target", _embed_sp, "--upgrade", _dst],
                     capture_output=True, text=True, timeout=900)
             finally:
-                _shutil.rmtree(_tmp, ignore_errors=True)
+                _rmtree_loudly(_tmp, 'package staging')
 
         for _sib_dir, _pkg_name in _sibling_deps:
             _sib_path = os.path.join(_project_root, _sib_dir)
