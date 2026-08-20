@@ -242,3 +242,60 @@ The repair is to actively REMOVE user-site entries from `sys.path` at startup
 rather than only setting a flag. That edits app.py's frozen boot path and can
 only be proven by a rebuild + reboot (~44 min). Recording it fully rather than
 shipping an unverified change to the boot path.
+
+---
+
+# CORRECTION: the shadow is real, but it is NOT the cause of the 404
+
+I claimed the Feb-2026 user-site shadow caused `9c0efed9`'s media 404. **That was
+wrong, and the test disproved it.**
+
+## What I did
+Quarantined (renamed, not deleted) the three stale packages, then restarted the app:
+```
+AppData\Roaming\Python\Python312\site-packages\
+  integrations -> _QUARANTINE_integrations_feb2026
+  core         -> _QUARANTINE_core_feb2026
+  security     -> _QUARANTINE_security_feb2026
+```
+UNDO: `cd "<that dir>" && for p in integrations core security; do mv "_QUARANTINE_${p}_feb2026" "$p"; done`
+
+## Result — hypothesis REFUTED
+With the shadow gone and the app restarted (13:33), fully up (`app=full`,
+Hypercorn banner 13:33:34, `/backend/health` -> `"status":"operational"`):
+
+| path | before quarantine | after |
+|---|---|---|
+| `/api/social/media/1/x.png` | 404 | **404 (unchanged)** |
+| `/api/social/feed` | 401 | 401 |
+| `/api/social/consent` | 401 | 401 |
+| `/agents` | 200 | 200 |
+
+The 404 survives. And all three copies of `api.py` — bundle (182,808 B),
+HARTOS checkout (182,808 B, 09:30 today), and the isolated-import test — DO carry
+`@social_bp.route('/media/<file_id>/<filename>')`, and a clean
+`register_blueprint` produces 167 rules including it.
+
+**So: route present in every candidate source, blueprint registered (feed/consent
+both 401), yet not served. Cause UNKNOWN. Do not repeat my shadow claim.**
+
+## Two self-corrections inside this test
+- I first read `/api/social/feed` as 401->404 and nearly filed a quarantine
+  regression. It was a premature probe: my readiness loop broke on
+  `/backend/health` 200 at 13:33:23, but Hypercorn only bound at 13:33:34. After
+  the app was actually up, feed returned 401 again. (`feedback_liveness_vs_
+  readiness_vs_busy` — liveness is not readiness.)
+- `ModuleNotFoundError: No module named 'torch.types'` appears **2x before and 2x
+  after** the quarantine — pre-existing, NOT caused by it.
+
+## What the quarantine IS still worth
+226 stale Feb-2026 modules shadowing shipped code is a real hazard regardless
+(same family as #602/#609/#610), and removing them broke nothing measurable:
+feed/consent/agents unchanged, no `No module named 'integrations|core|security'`,
+torch.types unchanged. Left quarantined; undo above.
+
+## Next probe for the real cause (not yet done)
+Ask the RUNNING process for `sys.modules['integrations.social.api'].__file__` and
+its `url_map`, rather than inferring from disk. Every disk-based inference so far
+has been consistent with the route working — which means the answer is in the
+process, not the filesystem.
