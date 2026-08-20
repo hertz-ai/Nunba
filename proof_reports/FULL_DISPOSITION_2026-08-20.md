@@ -180,3 +180,65 @@ NOT FIXED HERE, deliberately: the repair is a priority change (`mkDefault` /
 run `nix flake check` to confirm a fix. Shipping an unverified nix edit would
 violate the standing rule against claiming a fix without verification. Needs a
 nix-capable environment or a CI round-trip.
+
+---
+
+# ROOT CAUSE, PROVEN: a Feb-2026 HARTOS shadow in user site-packages
+
+The `9c0efed9` 404 is not a blueprint-ordering bug. `C:\Users\sathi\AppData\
+Roaming\Python\Python312\site-packages` holds a **2026-02-14 copy of HARTOS**
+that sits AHEAD of the bundle on `sys.path`.
+
+## The decisive measurement
+Same interpreter, same import, one env var:
+
+| user-site | `integrations.social.api` loads from | media rule | total Flask rules |
+|---|---|---|---|
+| enabled (default) | `AppData\Roaming\...\site-packages` (Feb 14, 72,476 B) | **absent** | **109** |
+| `PYTHONNOUSERSITE=1` | `build\Nunba\python-embed\...` (Aug 20, 182,808 B) | **present** | **167** |
+
+The live app serves neither -> the live app is running the Feb-14 shadow.
+That is **58 missing endpoints**, not one route.
+
+## Blast radius
+| package | shadow (Feb 2026) | bundle (Aug 20) | shipped files being shadowed |
+|---|---|---|---|
+| `integrations` | 201 | 565 | 201 |
+| `core` | 7 | 98 | 7 |
+| `security` | 18 | 33 | 18 |
+
+**226 modules** resolve to six-month-old code. Modules NOT in the shadow fall
+through to the bundle — which is why the picture looked mixed:
+
+| module | in shadow | who wins |
+|---|---|---|
+| `integrations/agent_engine/hevolveai_supervisor.py` | no | bundle (so 5871c37b's verification STANDS) |
+| `integrations/service_tools/model_lifecycle.py` | no | bundle (so 9c996aaa's artifact claim STANDS) |
+| `integrations/social/api.py` | **yes** | shadow -> the 404 |
+| `integrations/channels/media/files.py` | **yes** | shadow -> other half of 9c0efed9 |
+
+`9c0efed9` touched exactly the two files that are shadowed. Nothing about that
+commit is wrong; it cannot reach the running app.
+
+## Why app.py's guard does not stop it
+app.py already tries: `:180 os.environ.setdefault('PYTHONNOUSERSITE','1')`,
+`:582` the same, and `:634 site.ENABLE_USER_SITE = False` whose own comment says
+it exists to stop `site.addsitedir()` re-adding user site-packages.
+
+`ENABLE_USER_SITE = False` set AFTER interpreter startup cannot remove paths
+`site.py` already appended during startup, and `PYTHONNOUSERSITE` in `os.environ`
+only reaches CHILD processes — the parent's `sys.path` was built before app.py
+ran. So the guard protects subprocesses (whisper, hevolveai — both confirmed
+clean) while the main process keeps the shadow. A guard that cannot fail for the
+defect it names: `memory/feedback_vacuous_guards.md`.
+
+## Same family as prior art
+#602 (partial ctranslate2), #609 (torn numpy), #610 (dead torch) — all
+`~/.nunba` shadowing the bundle. This is the same failure at a different
+prefix, and it is the largest one yet: 226 modules.
+
+## NOT FIXED HERE
+The repair is to actively REMOVE user-site entries from `sys.path` at startup
+rather than only setting a flag. That edits app.py's frozen boot path and can
+only be proven by a rebuild + reboot (~44 min). Recording it fully rather than
+shipping an unverified change to the boot path.
