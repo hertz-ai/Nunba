@@ -121,3 +121,62 @@ blueprint registration ordering). Do not treat the mechanism as confirmed.
 The chat turn returned in **4.08s**. Task #385 recorded a 70.9s median for
 autogen.create calls. One trivial prompt on a warm process is not a benchmark —
 noted, not claimed.
+
+---
+
+# Test + CI pass — 33 of 64 now carry appropriate evidence
+
+## Tests: 220 passed, 0 failed
+All 16 test files these commits touched were run:
+- 7 Nunba files -> **76 passed** in 6.2s
+- 9 HARTOS files -> **144 passed** in 65s
+
+19 of 64 commits touch one of those files, so their test-class claim is verified
+in the terms appropriate to it.
+
+## Union across every verification method
+| method | commits |
+|---|---|
+| live (running app: log / HTTP / WS) | 5871c37b, 77480071, 69b7f8ca, d96db50c, 51cd0ae4 |
+| executed shipped code | 7dbf86c3 |
+| shipped-artifact present | 9c996aaa, ddc575e3 |
+| serve-stack behavior (family) | efe3818f, 171210b4, b0fef5c0, 604f13d0, 38022d5c, bd50c0f8 |
+| green test just run | 19 commits (overlaps above) |
+| **STRONG union** | **26** |
+| + exercised-silent (subsystem ran, failure branch did not fire) | +7 |
+| **= some appropriate evidence** | **33 of 64** |
+
+Remaining 31 are docs/CI/nix.
+
+## CI IS NOT GREEN — a real failure, with root cause
+Correction to task #633: a real GitHub CLI DOES exist at
+`C:\Program Files\GitHub CLI\gh.exe`; it is simply not first on PATH (the conda
+`gh` shadows it). So CI *is* queryable from this box.
+
+HEAD `2029a7bd`: Deploy ✅, Security Scan ✅, Docker ✅, **Nix Lint & Evaluate ❌**.
+Inside it: Structural Tests ✅, Lint (statix+deadnix) ✅, **Nix Flake Check ❌**.
+
+```
+eval FAILED (rc=1): packages.x86_64-linux.sd-desktop-arm.drvPath
+error: The option `hardware.graphics.enable32Bit' has conflicting definitions
+eval FAILED (rc=1): packages.x86_64-linux.sd-phone.drvPath
+```
+
+ROOT CAUSE (source-visible, four definitions):
+| file:line | value | priority |
+|---|---|---|
+| `nixos/modules/hart-kernel.nix:346` | `lib.mkDefault ...isx86_64` | mkDefault — yields |
+| `nixos/modules/hart-subsystems.nix:492` | `...isx86_64` | normal |
+| `nixos/modules/hart-nvidia.nix:98` | `true` | normal |
+| `nixos/configurations/desktop.nix:207` | `true` | normal |
+
+On the ARM targets `isx86_64` is **false**, so `hart-subsystems` asserts `false`
+while `hart-nvidia`/`desktop` assert `true` — two NORMAL-priority definitions,
+which is precisely the "conflicting definitions" eval error. `hart-kernel` is
+already `mkDefault` and so is not part of the conflict.
+
+NOT FIXED HERE, deliberately: the repair is a priority change (`mkDefault` /
+`mkForce`) in a Nix module, and there is no nix on this Windows box, so I cannot
+run `nix flake check` to confirm a fix. Shipping an unverified nix edit would
+violate the standing rule against claiming a fix without verification. Needs a
+nix-capable environment or a CI round-trip.
