@@ -340,3 +340,57 @@ The Feb-2026 shadow was NOT the cause, so the quarantine was not required for
 this. It is still independently justified (226 stale modules ahead of shipped
 code, same family as #602/#609/#610) and demonstrably broke nothing. Left in
 place; undo is recorded above and can be run at any time.
+
+---
+
+# Nix series verified BY CI — 3 pass, 1 incomplete (37 of 64)
+
+The Nix Flake Check has been red continuously since before this window, so "still
+red" proves nothing on its own. What proves something is **which collision it
+names**. Pulling the failure text per run shows the errors being eliminated one
+at a time:
+
+| run | conflicts named |
+|---|---|
+| `b6286d0d` | `networking.firewall.enable`, `networking.hostName` |
+| `89193563` | `networking.firewall.enable` — **hostName ELIMINATED** |
+| `04f5a54b` | `hardware.graphics.enable32Bit` — **firewall ELIMINATED** |
+| `2029a7bd` (today) | `hardware.graphics.enable32Bit` — unchanged |
+
+## VERIFIED by collision-elimination (3)
+- **b6286d0d** + **89193563** — `networking.hostName` collision: present at
+  b6286d0d, absent from the very next run. Fix worked.
+- **a5193acb** — `networking.firewall.enable` collision: present through
+  89193563, absent at 04f5a54b. Fix worked.
+
+## INCOMPLETE — 0290042f (do NOT mark done)
+`fix(nix): enable32Bit is x86_64-only, and unconditional it eval-fails every ARM
+target`. It changed TWO of FOUR definition sites:
+
+| file:line | value | priority | in 0290042f? |
+|---|---|---|---|
+| `hart-kernel.nix:346` | `lib.mkDefault ...isx86_64` | mkDefault (yields) | YES |
+| `hart-subsystems.nix:492` | `...isx86_64` | **normal** | YES |
+| `hart-nvidia.nix:98` | `true` | **normal** | **NO** |
+| `desktop.nix:207` | `true` | **normal** | **NO** |
+
+On ARM (`sd-desktop-arm`, `sd-phone`) `isx86_64` is false, so `hart-subsystems`
+asserts **false** at normal priority while `hart-nvidia` and `desktop` assert
+**true** at normal priority. Two normal-priority definitions disagreeing IS the
+"conflicting definitions" error. `hart-kernel` is `mkDefault` and yields, so it
+is not part of the conflict.
+
+REMAINING WORK (precise): give `hart-nvidia.nix:98` and `desktop.nix:207` a
+priority that resolves against the platform-conditional value — either
+`lib.mkDefault`/`lib.mkForce`, or make them platform-conditional too. NOT DONE
+HERE: no nix on this Windows box, so `nix flake check` cannot confirm it. CI is
+the correct verification environment for this change.
+
+## Correction to my own theory
+I first suspected 0290042f *introduced* the conflict (before it, all three
+normal-priority sites agreed on `true`). The CI history refutes that ordering —
+the workflow was already failing at `b6286d0d`, before 0290042f existed. The
+series was walking down a stack of pre-existing collisions; enable32Bit is simply
+the current frontier, not a regression.
+
+**Verified count: 37 of 64.**
