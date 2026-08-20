@@ -850,8 +850,14 @@ def _run_rebuild_steps():
     step("7a. Installing HevolveAI (Embodied Continual Learner With Hiveintelligence)")
     _hevolveai_installed = False
     if hevolveai_src:
+        # 600s, matching the other heavy installs above.  This builds a
+        # wheel FROM A SOURCE TREE, the slowest install shape here, and it
+        # runs right after ~1.5 GB of package writes with the OS scanner
+        # walking every new file.  Measured 2026-08-20: hart-backend (7b,
+        # same shape) took 84s idle but blew past 120s in that context and
+        # hard-aborted the build.  A timeout here ships nothing.
         run([python_exe, "-m", "pip", "install", hevolveai_src,
-             "--no-warn-script-location", "--no-deps"], timeout=120)
+             "--no-warn-script-location", "--no-deps"], timeout=600)
         print(f"  Installed from {hevolveai_src}")
         _hevolveai_installed = True
     else:
@@ -875,8 +881,13 @@ def _run_rebuild_steps():
 
     _hart_backend_installed = False
     if hevolve_src:
+        # 600s -- see 7a.  This is the step that actually blew the 120s cap
+        # on 2026-08-20 ("Building wheel for hart-backend ... still
+        # running..." -> TimeoutExpired -> atomic swap NOT performed).
+        # HARTOS builds an 8.74 MB wheel against hevolveai's 1.15 MB, which
+        # is the only reason 7a survived the same cap and 7b did not.
         run([python_exe, "-m", "pip", "install", hevolve_src,
-             "--no-warn-script-location", "--no-deps"], timeout=120)
+             "--no-warn-script-location", "--no-deps"], timeout=600)
         print(f"  Installed from {hevolve_src}")
         _hart_backend_installed = True
     else:
