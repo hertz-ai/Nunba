@@ -469,3 +469,46 @@ that shares the name. A grep for "message_queue" hits it and means nothing here.
 | f218d2a7 | VERIFIED (flags unset in supervisor; doc carries its own independent evidence) |
 | 416f8b95 | VERIFIED (zero production constructors) |
 | 2c1fe8dd | NOT VERIFIABLE after the fact (live mutating ledger; 10,023 -> 86 pending) |
+
+---
+
+# CI commits verified from run logs (42 verified + 1 config-only, of 64)
+
+## VERIFIED — cc0eb60f (split flake evaluation per attribute)
+The failing run emits **12 per-attribute eval lines**, each naming a distinct
+attribute:
+```
+eval FAILED (rc=1): packages.x86_64-linux.sd-desktop-arm.drvPath
+eval FAILED (rc=1): packages.x86_64-linux.sd-phone.drvPath
+eval FAILED (rc=1): packages.x86_64-linux.sd-server-arm.drvPath
+eval FAILED (rc=1): nixosConfigurations.hart-desktop-arm.config.system.build.toplevel.drvPath
+```
+Before the split a single eval fails once with no attribution. 12 named
+attributes IS the split working.
+
+## VERIFIED — 648a5025 (the flake-eval death is memory, now measured)
+Workflow carries `# ── MEMORY: NO LONGER A HYPOTHESIS. MEASURED 2026-08-18 ──`,
+samples every 10 s, and emits real numbers from `free -m`:
+`Mem:  15989  1598  10806  44  3975`.
+
+## VERIFIED — fc9163ef (stream the samples, because always() does not fire)
+`> >(tee /tmp/memsample.log)` sends each sample to the job output as well as the
+file. DECISIVE DETAIL: these lines were read out of a **`--log-failed`** dump —
+i.e. the samples survived a FAILING run, which is precisely the behaviour the
+commit exists to produce.
+
+## CONFIG-VERIFIED ONLY — a04545b3 (docs must not sign four installers)
+The rule is present and names the right paths:
+`paths-ignore: ['**/*.md', 'docs/**', 'marketing/**', 'LICENSE', '.gitignore']`,
+and the `workflow_dispatch` escape hatch exists as the commit claims.
+
+The commit's OWN stated caveat is confirmed real: `tags: - 'v*'` does sit in the
+same `push` block as `branches: - main`, so a docs-only TAG push may or may not
+be filtered — the commit explicitly declined to assert either way, correctly.
+
+NOT behaviourally verified: **12 commits are unpushed on Nunba main**, so no
+docs-only push has reached CI since the rule landed. Cannot observe a docs push
+failing to trigger a signed build. Config-only, stated as such.
+
+## STILL OPEN — 8b3b1282 (publish the hart-comp binary)
+Not yet checked for a published artifact.
