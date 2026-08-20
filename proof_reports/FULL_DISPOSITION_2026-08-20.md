@@ -571,3 +571,44 @@ Method: read what the comment asserts, then check the code it describes.
 
 Two of these independently corroborate open tasks (#666, #667) rather than
 restating them — the evidence was gathered from the code, not from the ledger.
+
+---
+
+# Compositor group: 4 dispositioned (53 verified + 1 config-only, of 64)
+
+## VERIFIED — 316493fa (correct the record)
+A retraction that keeps the code and removes only the causal story. Its claims
+check out, and the correction is IN THE CODE where the next reader stands —
+`compositor/src/udev.rs:785-791`:
+
+> CORRECTION, so the next reader is not misled the way I was: the original commit
+> message for this change (79391a6) claimed it was THE fix for the orb-hover /
+> click-drag desktop freeze. **IT IS NOT.** With this change in place and verified
+> live on the box, the freeze still reproduces on the first orb click. It was later
+> reproduced with the GStreamer audio path removed entirely, and on wholly stock
+> code, so the freeze has a different cause that is still open.
+
+My grep for the retracted phrase hit ONE line in udev.rs — and reading it showed
+it was the correction itself naming the claim in order to disclaim it, not
+residual stale text. Counting would have called this a leftover.
+
+## DISPOSITIONED — 79391a65 (frame callbacks sent time=0)
+CODE CORRECT AND RETAINED: `send_frame_callbacks(surface, time: u32)` takes a
+real time; sending a constant 0 is a protocol violation on its own terms
+(`wl_callback.done` carries ms, GTK4 derives refresh interval from successive
+values) and `winit.rs` always sent a real one — only the hardware path sent 0.
+CAUSAL CLAIM RETRACTED by 316493fa. **The freeze remains OPEN**, which matches
+what my marker table said before any of this: "REPORT AS OPEN, NOT FIXED".
+
+## SHIPPED-ARTIFACT VERIFIED — 541e53f8, c59396b7 (the two beacons)
+Present in `compositor/src/udev.rs`, 16 beacon references:
+- `:195` `SILENT-FREEZE BEACON (real-HW 2026-08-19)` — 541e53f8
+- `:121` one-shot latch for the first-scanout beacon
+- `:193` `VBLANK_STALL_TIMEOUT = 100ms`, `:176` `awaiting_vblank` force-clear
+- `:186` `last_stall_log_at` rate-limiter so a frozen CRTC logs once per interval
+
+NOT LIVE-VERIFIED, and cannot be from here: the compositor runs on the Linux
+HARTOS box, not this Windows machine. Code present; firing unobserved.
+
+`c59396b7`'s own subject — "because the timestamp fix did NOT work" — already
+carried the retraction that `316493fa` later made explicit. Internally consistent.
