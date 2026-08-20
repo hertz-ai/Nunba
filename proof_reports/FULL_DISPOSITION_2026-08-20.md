@@ -66,3 +66,58 @@ peer_link works on it. It does not individually prove each refactor commit.**
 2. **`271f0b14`**: 85 "reserve" hits were `pre-SERVE-d last 2 messages` — a substring
    collision, not VRAM reservation. Counting without reading the lines would have
    manufactured a verification.
+
+---
+
+# Driven-action pass (13:12-13:16) — silence converted to evidence
+
+Drove a real chat turn against the running app and re-measured. 1,247 new log
+lines. `POST /chat {"text":...}` -> **HTTP 200 in 4.08s**,
+`{"text":"OK","agent_status":"Draft-First Mode","source":"langchain_local"}`.
+(First attempt was my own error: the API field is `text`, not `message`.)
+
+## Newly VERIFIED — 51cd0ae4 (total now 13 of 65)
+`fix(ui): stop publishing model-facing text to the user's thinking bubble`.
+The publisher was demonstrably ALIVE in the same window — 82 `broadcast_sse`,
+4 `chat.response`, 3 `chat.pupit`, 8 `publish`. `chat.thinking` = **0**, and the
+model-facing text
+`Execute Action 3: send_message_to_user: ... ,Latest User message: WHO WE ARE:...`
+appears ONLY in internal `STATE_TRANSITION` / `Processing message` lines —
+**0 of them reached any publish**. Text present internally, withheld from the
+user: exactly the fix.
+
+## EXERCISED-SILENT — 7 commits upgraded from "unknown silence"
+After a full boot AND a successful chat turn, every failure/skip string these
+commits added is still **0**:
+
+| string (0 occurrences) | commit |
+|---|---|
+| `Loading model` | 9a2997e0 |
+| `Could not import recipe modules` | 267006fe |
+| `select_best: swallowed ImportError on llm reserve` | 271f0b14 |
+| `channel.registered emit skipped` | e3015199 |
+| `Media tools registration skipped` / `News tools registration skipped` | afc2ed52 |
+| `Publish tools registration skipped` | fc5033d2 |
+| `a dead worker must be replaced` | 28681cc9 |
+
+This is stronger than the earlier passive silence: the surrounding subsystems
+provably ran. It is still weaker than a positive marker — it proves the failure
+branch did not fire, not that every line of the fix executed.
+
+## NEW LIVE GAP FOUND — 9c0efed9 media route is not reachable
+`@social_bp.route('/media/<file_id>/<filename>')` IS in the shipped
+`python-embed/.../integrations/social/api.py:1760` (Aug 20 11:58), and
+`social_bp` IS registered (`/api/social/feed` -> 401, `/api/social/consent` ->
+401). But **every** variant 404s with `API endpoint not found`:
+`/api/social/media/1/x.png`, `/abc/def.png`, `/abc/def`, `/1/2`.
+
+So the route ships but is not attached to the app. NOT YET PROVEN why. Leading
+hypothesis, untested: the route is declared at line 1760, after `social_bp` has
+already been handed to `register_blueprint` — Flask silently ignores routes added
+to an already-registered blueprint. That is the same family as task #321 (G1
+blueprint registration ordering). Do not treat the mechanism as confirmed.
+
+## Side observation, single sample
+The chat turn returned in **4.08s**. Task #385 recorded a 70.9s median for
+autogen.create calls. One trivial prompt on a warm process is not a benchmark —
+noted, not claimed.
