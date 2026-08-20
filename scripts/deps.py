@@ -127,6 +127,23 @@ EMBED_DEPS = {
     # CUDA variant swapped in at runtime by tts/package_installer.py if GPU detected
     "torch": "2.10.0",
     "torchaudio": "2.10.0",
+    # Mic capture.  Declared in CORE_DEPS above for app.py's WKWebView
+    # fallback -- but ALSO required here, and the version is referenced (not
+    # re-typed) so the two can never drift to different pins.
+    #
+    # hevolveai's embodied-AI audio path imports it from INSIDE python-embed,
+    # where CORE_DEPS is unreachable: the frozen app sets PYTHONNOUSERSITE=1
+    # (app.py:61), so a python-embed subprocess cannot see the cx_Freeze lib/.
+    # Measured on the 2026-08-20 scratch build -- 161 of 163 hevolveai modules
+    # imported clean and the only two failures were both this:
+    #   hevolveai.embodied_ai.inference.audio_stream
+    #   hevolveai.embodied_ai.inference.embodied_learner
+    #     ModuleNotFoundError: No module named 'sounddevice'
+    # Same class of bug as CORE_DEPS' own note ("imported without ever being
+    # declared, so a fresh install silently lacked it"), one layer deeper.
+    # Being in EMBED_DEPS also enrolls it in build.py's Gate B presence check,
+    # so a slimmed or partial snapshot gets topped up instead of shipping short.
+    "sounddevice": CORE_DEPS["sounddevice"],
     # Transformers / embeddings
     "transformers": "5.1.0",
     "sentence-transformers": "5.2.2",

@@ -1842,7 +1842,21 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # whether a test run or the installed app happened to hold the DB.
             '*.db-shm', '*.db-wal', '*.db-journal',
             '*.sqlite-shm', '*.sqlite-wal', '*.sqlite-journal',
-            '*.sqlite3-shm', '*.sqlite3-wal', '*.sqlite3-journal')
+            '*.sqlite3-shm', '*.sqlite3-wal', '*.sqlite3-journal',
+            # Runtime logs a sibling happened to leave in its working tree.
+            # Measured 2026-08-20 in the shipped bundle:
+            #   hevolveai/server/logs/  79 files  59 MB
+            # dated 2026-01-16/17 -- seven-month-old rotated WAMP publisher
+            # logs, four of them at the 10 MB rotation cap.  They rode the
+            # sibling copy into python-embed and out into the installer, which
+            # is the whole of the +9.5 MB the 2026-08-19 23:07 build gained
+            # even though it also DROPPED 147 dead cp310 .pyd.
+            #
+            # 'logs' catches the directory wherever it sits; the globs catch
+            # loose files and rotated siblings, because fnmatch's '*.log' does
+            # NOT match 'foo.log.1' -- the same trap that made '*.db' miss
+            # '*.db-shm' above.
+            'logs', '*.log', '*.log.[0-9]', '*.log.[0-9][0-9]')
 
         _PKG_TMP_PREFIX = 'hart-freeze-pkg-'
 
