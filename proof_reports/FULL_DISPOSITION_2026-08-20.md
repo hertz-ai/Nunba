@@ -512,3 +512,45 @@ failing to trigger a signed build. Config-only, stated as such.
 
 ## STILL OPEN — 8b3b1282 (publish the hart-comp binary)
 Not yet checked for a published artifact.
+
+---
+
+# 45 verified + 1 config-only, of 64
+
+## VERIFIED — 8b3b1282 (publish the hart-comp binary)
+Run `32342416312` carries the artifact **`hart-os-hart-comp`**, alongside
+hart-os-iso-*/docker/qcow2. The commit adds a "Stage hart-comp binary for
+download" step gated `if: matrix.target == 'hart-comp'`, copying
+`$out/bin/hart-comp` plus a STORE_PATH file. Artifact exists = published.
+
+## VERIFIED — 04f5a54b (PermitRootLogin, the third hart-base opinion)
+Same collision-elimination shape as hostName and firewall:
+
+| run | `PermitRootLogin` mentions |
+|---|---|
+| b6286d0d | 0 (not yet surfaced) |
+| 89193563 | 0 |
+| 0290042f | **2 — surfaces as a conflict** |
+| 2029a7bd (today) | **0 — eliminated** |
+
+All five nix commits are now dispositioned: **4 verified**, `0290042f`
+incomplete with precise remaining work already recorded.
+
+## VERIFIED — 47eeeebb (stop claiming the router wakes on demand)
+The commit replaced a FALSE comment ("`ensure_wamp_running()` wakes the router
+on-demand") with a specific true one: zero callers, because its documented
+trigger is HARTOS's `ChannelRegistry.register` and HARTOS is a pip dependency
+that cannot import Nunba's `wamp_router`.
+
+CHECKED FOR DRIFT, because `d96db50c` landed 9 h later the same day
+(02:18 -> 11:44) and DID add a caller at `main.py:5529`. So is 47eeeebb's text
+now stale? **No** — grep for "zero callers" / "NOT woken on demand" in the
+current `main.py` + `wamp_router.py` returns EMPTY. `d96db50c` replaced it with
+the accurate version:
+
+> `_wamp_is_needed()` above is the only predicate; this is the only actuator.
+> Called at boot and re-called whenever an input to that predicate changes, so
+> "is WAMP needed?" is never answered in two places.
+
+Doc-correction accurate when written, and superseded cleanly rather than left to
+rot. This is the `feedback_docstring_declared_contracts` discipline working.
