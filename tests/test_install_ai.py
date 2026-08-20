@@ -120,6 +120,50 @@ def test_inno_setup_script_has_setupai_task():
     assert '--setup-ai' in content, "--setup-ai flag not found in Nunba_Installer.iss"
 
 
+def test_setup_ai_wizard_is_not_elevated():
+    """The --setup-ai [Run] entry must NOT inherit Setup's admin token.
+
+    PrivilegesRequired=admin puts Setup on the admin token.  Inno's
+    runascurrentuser means "inherit Setup/Uninstall's user credentials
+    (typically, full administrative privileges)"; runasoriginaluser means the
+    normally non-elevated user who started Setup.  The wizard downloads the
+    bundled AI and pip-installs into ~/.nunba, and pip stages in %TEMP% then
+    MOVEs into place, which PRESERVES the source ACL.  Run elevated, every
+    file lands Administrators-only; the app then starts unelevated from the
+    shortcut, puts ~/.nunba/site-packages at sys.path[0], and dies on the
+    first import with a bare PermissionError and no window.
+
+    Observed in the field: install 2026-07-12, wizard poisoned 4002 files,
+    and the crash surfaced only after the 2026-08-13 build began resolving
+    typing_extensions out of the user site.  28 identical crashes, none of
+    which named permissions anywhere.
+    """
+    iss_path = os.path.join(PROJ_ROOT, 'scripts', 'Nunba_Installer.iss')
+    if not os.path.exists(iss_path):
+        return  # Skip if file doesn't exist
+    with open(iss_path, encoding='utf-8') as f:
+        lines = f.read().splitlines()
+
+    entries = [ln for ln in lines
+               if ln.startswith('Filename:') and '--setup-ai' in ln]
+    assert entries, '--setup-ai [Run] entry not found in Nunba_Installer.iss'
+
+    for ln in entries:
+        assert 'runascurrentuser' not in ln, (
+            'the --setup-ai wizard runs with runascurrentuser, i.e. the Setup '
+            'ADMIN token, inherited from PrivilegesRequired=admin. '
+            'It pip-installs into ~/.nunba, and a MOVE out of an '
+            'elevated %TEMP% preserves the Administrators-only ACL, so every '
+            'later unelevated launch dies on import. Use runasoriginaluser.'
+        )
+        assert 'runasoriginaluser' in ln, (
+            'the --setup-ai wizard must state runasoriginaluser explicitly. '
+            'It is the postinstall default, but stating it prevents the flag '
+            'being "restored" by someone reading runascurrentuser as the '
+            'user-facing one.'
+        )
+
+
 def test_production_build_js_loads():
     """Production JS bundle should evaluate without ReferenceError (catches TDZ bugs)."""
     build_js_dir = os.path.join(PROJ_ROOT, 'landing-page', 'build', 'static', 'js')

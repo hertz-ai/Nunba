@@ -91,7 +91,20 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 ; Interactive AI setup - scans for existing services and lets user choose
 ; waituntilterminated: installer waits for wizard to finish before proceeding
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--setup-ai"; Description: "Configure AI - detect local services or set up cloud AI"; StatusMsg: "Configuring AI features..."; Tasks: setupai; Flags: postinstall waituntilterminated runascurrentuser hidewizard
+; runasoriginaluser: the wizard DOWNLOADS the bundled AI (llama.cpp, models,
+;   piper/TTS) and pip-installs into the user profile: ~/.nunba/{site-packages,
+;   models,llama.cpp,piper,tts_cache}.  Under PrivilegesRequired=admin,
+;   runascurrentuser would hand it Setup's ADMIN token, and pip stages in %TEMP%
+;   then MOVEs into place -- a MOVE preserves the source ACL, so every file lands
+;   owned by BUILTIN\Administrators with NO ACE for the invoking user.  The app
+;   then runs unelevated from the shortcut, app.py inserts ~/.nunba/site-packages
+;   at sys.path[0], and the first import out of it dies with PermissionError and
+;   no window.  Works once (elevated), never again.  Same mechanism as the
+;   build-time bug fixed in 3436f8d8, one layer down.  app.py:662 already states
+;   the contract: "Program Files is read-only for non-admin. Packages installed
+;   at runtime go to ~/.nunba/site-packages instead" -- so the wizard has no need
+;   of the admin token in the first place.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--setup-ai"; Description: "Configure AI - detect local services or set up cloud AI"; StatusMsg: "Configuring AI features..."; Tasks: setupai; Flags: postinstall waituntilterminated runasoriginaluser hidewizard
 ; Launch app — checked by default so it auto-starts after install (and after AI setup if selected)
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} - Your LocalMind"; Flags: nowait postinstall skipifsilent shellexec
 
