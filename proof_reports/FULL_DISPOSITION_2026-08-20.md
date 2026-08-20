@@ -442,3 +442,30 @@ Same basename, parallel directories, different contents. I sampled the 18.9 MB o
 first and got a number that meant nothing. Which is canonical is UNKNOWN and worth
 deciding — this is the Gate-4 parallel-path shape (#574 recorded "a single 63.4 MB
 JSON", which matches only the first).
+
+## VERIFIED — 416f8b95 (cold-LLM drop; the queue is unwired)  [39 of 64]
+Claim: cold-LLM messages are dropped, and the queue that would fix it is unwired.
+
+`MessageQueue` lives at `integrations/channels/queue/message_queue.py:110`. The
+only two classes that own one are `MessagePipeline` (`pipeline.py:153`) and
+`SyncMessagePipeline` (`:652`). Enumerating every construction site:
+
+| site | kind |
+|---|---|
+| `pipeline.py:168  pipeline = MessagePipeline(config)` | inside its OWN docstring example |
+| `tests/integration/test_channels_e2e_regression.py:143` | test import |
+| `SyncMessagePipeline(` | **never instantiated anywhere** |
+
+**Zero production callers.** The machinery exists and nothing constructs it —
+exactly what the doc says. Independently corroborates task #661.
+
+NAME-COLLISION NOTE: `internal_agent_communication.py` has
+`self.message_queues: Dict[str, deque]` — plain deques, a different mechanism
+that shares the name. A grep for "message_queue" hits it and means nothing here.
+
+## Docs commits — all three now dispositioned
+| commit | verdict |
+|---|---|
+| f218d2a7 | VERIFIED (flags unset in supervisor; doc carries its own independent evidence) |
+| 416f8b95 | VERIFIED (zero production constructors) |
+| 2c1fe8dd | NOT VERIFIABLE after the fact (live mutating ledger; 10,023 -> 86 pending) |
