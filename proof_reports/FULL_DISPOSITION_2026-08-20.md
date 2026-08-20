@@ -394,3 +394,51 @@ series was walking down a stack of pre-existing collisions; enable32Bit is simpl
 the current frontier, not a regression.
 
 **Verified count: 37 of 64.**
+
+---
+
+# Docs commits verified in their own terms (38 of 64)
+
+## VERIFIED — f218d2a7 (hevolveai learning flags)
+Claim: every hevolveai learning flag is off in production; the decision lives in
+`_build_env`.
+
+Checked against code: none of the 7 flags the doc names
+(`HEVOLVE_LEARN_OFF_LOOP`, `HEVOLVE_TEACHER_OFF_LOOP`, `HEVOLVE_DIVERGENCE_BREAKER`,
+`HEVOLVE_VALIDATE_PREDICTION`, `HEVOLVE_REPLAY_UNION`, `HEVOLVE_SPECULATIVE_ENABLED`,
+`HEVOLVE_TTS_ENABLED`) is set anywhere in `hevolveai_supervisor.py`. `_build_env`
+sets only API_URL, PORT, LAUNCHED_BY, DEVICE, LOCAL_LLM_URL. Consistent with "off".
+
+The doc carries its own independent evidence: `learn_from_reality` ran on
+MainThread **603x/day** vs 49 on a worker, and with the flag ON that call goes
+through `asyncio.to_thread` — so 603 MainThread executions are only possible with
+it unset. It also contains a "PREFIX TRAP" section warning that production has 48
+`HEVOLVE_*` variables that are NOT these flags, and pre-empts the wrong fix
+("tempting to conclude LEARN_OFF_LOOP fixes slow HTTP. It will not" — 9022 s over
+567 calls of `_generate_text_only_response`, mean 15.9 s). Accurate and guarded.
+
+## NOT VERIFIABLE NOW — 2c1fe8dd (10,023 pending ledger tasks)
+The doc (2026-08-18) states 10,023 pending, and samples 200 -> 176 source-code-
+like (88%). Measured today on the same file:
+
+| | doc, 08-18 | measured, 08-20 |
+|---|---|---|
+| pending | 10,023 | **86** |
+| total entries | — | 9,287 |
+| source-code-like in sample | 176/200 (88%) | 26/86 (30%) |
+
+The ledger is a LIVE mutating file. 10,023 -> 86 pending in two days is either a
+real drain (significant if so) or a different counting basis. **I have no 08-18
+snapshot, so I cannot distinguish them**, and my 30% measures today's 86 — a
+different population from the doc's 10,023, so it neither confirms nor refutes.
+Recorded as unverifiable-after-the-fact, NOT as "doc wrong".
+
+## NEW FINDING — two ledgers with the SAME filename
+```
+63.7 MB  data\distributed_tasks\ledger_local_distributed.json          (9,287 entries, 86 pending)
+18.9 MB  data\agent_data\distributed_tasks\ledger_local_distributed.json (3,075 entries, 114 pending)
+```
+Same basename, parallel directories, different contents. I sampled the 18.9 MB one
+first and got a number that meant nothing. Which is canonical is UNKNOWN and worth
+deciding — this is the Gate-4 parallel-path shape (#574 recorded "a single 63.4 MB
+JSON", which matches only the first).
