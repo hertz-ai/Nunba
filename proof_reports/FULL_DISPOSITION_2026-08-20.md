@@ -554,3 +554,20 @@ the accurate version:
 
 Doc-correction accurate when written, and superseded cleanly rather than left to
 rot. This is the `feedback_docstring_declared_contracts` discipline working.
+
+---
+
+# Comment-accuracy commits: 4 verified (49 verified + 1 config-only, of 64)
+
+Method: read what the comment asserts, then check the code it describes.
+(`memory/feedback_docstring_declared_contracts.md`.)
+
+| commit | claim | check | verdict |
+|---|---|---|---|
+| **0f82d727** | the code reads `WAMP_URL`, not `CROSSBAR_URL` | `core/wamp_url.py:1` — "Canonical reader for the `WAMP_URL` environment variable"; zero `CROSSBAR_URL` anywhere | VERIFIED |
+| **6a09525b** | `WAMP_URL` is an override, not a requirement | `:18` "with no `WAMP_URL` the fallback is already a correct publish URL"; `:63` "leaving WAMP_URL as the override knob"; `_default_router_url()` + `_container_publish_url()` ("only consulted when WAMP_URL is unset AND we are in a container") | VERIFIED |
+| **1d7fc053** | `assert_publishable` calls itself the last gate; nothing calls it | defined `grounded_facts.py:265`; called ONLY from `tests/unit/test_grounded_facts.py` (5 sites). Zero production callers. The test docstring even reads "assert_publishable is the last thing between a claim and an audience" — the exact self-description being corrected | VERIFIED (corroborates #667) |
+| **67aa0ce2** | the consent comment described two branches the code lacks | code calls `ConsentService.auto_grant_with_notice(` at `hart_intelligence_entry.py:6805` (defined `consent_service.py:224`); `ConsentService.request_consent` has zero production callers — the only other hits are a NAME COLLISION (`device_routing_service.py:165`, different class) and `_request_consent` (underscore, camera/screen path) | VERIFIED (corroborates #666) |
+
+Two of these independently corroborate open tasks (#666, #667) rather than
+restating them — the evidence was gathered from the code, not from the ledger.
