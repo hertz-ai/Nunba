@@ -299,3 +299,44 @@ Ask the RUNNING process for `sys.modules['integrations.social.api'].__file__` an
 its `url_map`, rather than inferring from disk. Every disk-based inference so far
 has been consistent with the route working — which means the answer is in the
 process, not the filesystem.
+
+---
+
+# RESOLVED: 9c0efed9 was never broken — and is now LIVE-VERIFIED
+
+`/debug/routes` (main.py:3862, iterates the live `url_map`) answers what three
+rounds of filesystem inference could not:
+
+```
+TOTAL RULES IN THE RUNNING APP: 965
+social rules: 494
+MEDIA rules: ['/api/social/media/<file_id>/<filename>']
+```
+
+The route IS registered in the running process. The handler is
+`def get_media(file_id, filename)` using `send_from_directory, abort` — so a
+request for a file id that does not exist returns 404. **That is correct.**
+
+I probed `/api/social/media/1/x.png`, `/abc/def.png`, `/1/2` — all invented ids.
+The 404 was the handler doing its job, and Flask's `handle_404` renders
+`{"error":"API endpoint not found"}` for `abort(404)` too, which is what made it
+look like a routing miss.
+
+**9c0efed9 -> LIVE-VERIFIED**: its route is present in the running app's url_map.
+Verified count: **34 of 64**.
+
+## Three wrong claims I made about this one item
+1. "blueprint registration ordering (#321 family)" — unproven, wrong.
+2. "the Feb-2026 user-site shadow causes it" — tested by quarantine, REFUTED.
+3. Only the third attempt asked the process instead of the disk, and that
+   answered it immediately.
+
+This is exactly #603's pattern: **probing a name/id I invented and reading the
+404 as a defect.** The rule that would have saved all three rounds: when a route
+404s, dump the live `url_map` FIRST — never infer routing from the filesystem.
+
+## Standing note on the quarantine
+The Feb-2026 shadow was NOT the cause, so the quarantine was not required for
+this. It is still independently justified (226 stale modules ahead of shipped
+code, same family as #602/#609/#610) and demonstrably broke nothing. Left in
+place; undo is recorded above and can be run at any time.
