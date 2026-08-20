@@ -1,0 +1,25 @@
+  File "C:\Users\sathi\PycharmProjects\Nunba-HART-Companion\tests\e2e\conftest.py", line 266, in post
+    return self._wrap(self._s.post(
+  File "C:\Users\sathi\miniconda3\Lib\site-packages\requests\sessions.py", line 637, in post
+    return self.request("POST", url, data=data, json=json, **kwargs)
+  File "C:\Users\sathi\miniconda3\Lib\site-packages\requests\sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "C:\Users\sathi\miniconda3\Lib\site-packages\requests\sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "C:\Users\sathi\miniconda3\Lib\site-packages\requests\adapters.py", line 644, in send
+    resp = conn.urlopen(
+  File "C:\Users\sathi\miniconda3\Lib\site-packages\urllib3\connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+  File "C:\Users\sathi\miniconda3\Lib\site-packages\urllib3\connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+  File "C:\Users\sathi\miniconda3\Lib\site-packages\urllib3\connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+  File "C:\Users\sathi\miniconda3\Lib\http\client.py", line 1378, in getresponse
+    response.begin()
+  File "C:\Users\sathi\miniconda3\Lib\http\client.py", line 318, in begin
+    version, status, reason = self._read_status()
+  File "C:\Users\sathi\miniconda3\Lib\http\client.py", line 279, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+  File "C:\Users\sathi\miniconda3\Lib\socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
++++++++++++++++++++++++++++++++++++ Timeout +++++++++++++++++++++++++++++++++++
