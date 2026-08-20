@@ -33,6 +33,12 @@ Markers were fixed in MARKER_TABLE_2026-08-20.md BEFORE any log was read.
   entry / account creation, which the standing security constraint prohibits.
   **BLOCKED BY POLICY**, not failed.
 
+## SHIPPED-ARTIFACT VERIFIED (fix is in the bundle; runtime path not observed)
+
+| commit | evidence |
+|---|---|
+| **9c996aaa / ddc575e3** draft eviction on non-Latin switch | The SHIPPED `python-embed/.../integrations/service_tools/model_lifecycle.py` (11:58 today) carries the corrected call at :2451 — `_mgr.request_swap(needed_model=f'language_switch_to_{_new_key}', ...)` — with the :2439 comment "Was target=/reason= -- neither is a parameter of request_swap". So the fix ships. It has NOT fired: `language_switch_to` = 0 in the boot window AND 0 across gui_app.log.1-.5. The only entry point is `hart_seal()` (chatbot_routes.py:4317), which seals a name AND switches the live app's language. **NOT DRIVEN — that mutates the user's running app (LLM + TTS would switch to a non-Latin language). Available on request.** |
+
 ## CAVEAT that limits every result above
 
 The main cx_Freeze process reached the **HARTOS checkout and the repo `.venv`**:
@@ -48,7 +54,7 @@ reason the user pinned the standard to the Program Files install. A true-install
 still required and is blocked on UAC.
 
 ## Running count
-**4 verified / 72.** Pre-committed honest ceiling from a passive boot was ~20; driven
+**4 verified live + 1 shipped-artifact verified / 72.** Pre-committed honest ceiling from a passive boot was ~20; driven
 HTTP/WS probes and executing shipped code raise what is reachable, but each item still
 needs its own discriminating marker. 7 BUILD-class items are evidenced in build logs and
 must NOT be reported as live.
