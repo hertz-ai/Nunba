@@ -319,6 +319,13 @@ build_exe_options = {
         "pathlib",
         "shutil",
         "winreg",
+        # torch 2.10 imports stdlib unittest during its OWN init
+        # (torch/utils/_config_module.py:10, reached via torch.nested ->
+        # torch.fx).  torch resolves from python-embed at runtime, so the
+        # tracer never sees that import — unittest must be FORCED in, or a
+        # fresh lib/ ships without it and the frozen exe lands on Tier-3
+        # (measured 2026-08-21; see the excludes note further down).
+        "unittest",
         "tkinter",  # Full package tree — ensures messagebox, filedialog etc. are included
         "flask_cors",
         "pyautogui",
@@ -595,7 +602,22 @@ build_exe_options = {
         # not lib/.  Same SRP principle.
         "agent_ledger", "agent_ledger.*",
         "hevolve_database", "hevolve_database.*",
-        "unittest", "test", "tests",
+        # "unittest" was excluded here for years and every build still
+        # shipped it: build/Nunba/lib was reused across builds and carried
+        # lib/unittest from before the exclude existed.  The first genuinely
+        # fresh lib/ (2026-08-21, after the staging-dir sweep) honoured the
+        # exclude — and torch 2.10 CANNOT import without unittest:
+        #   torch/__init__ -> torch.nested -> torch.fx ->
+        #   torch/utils/_config_module.py:10  `import unittest`
+        #   -> ModuleNotFoundError -> 392 poisoned torch.* stay in
+        #   sys.modules -> every later import dies with "partially
+        #   initialized module 'torch' has no attribute 'autograd'"
+        #   -> Tier-3.  Restoring unittest alone flipped the same tree to
+        #   Tier-1 (validate 62/0/0, 2026-08-21T19:17).
+        # unittest is therefore in packages[] below (forced include — the
+        # tracer can't see torch's import, torch lives in python-embed).
+        # "test"/"tests" stay excluded; they are the CPython test suite.
+        "test", "tests",
         "shapely.plotting", "shapely.tests",
         # Exclude large unnecessary packages
         "cv2", "opencv",  # pyautogui uses PIL.ImageGrab on Windows, not cv2
