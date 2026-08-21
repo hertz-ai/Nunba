@@ -217,13 +217,17 @@ def _input_with_timeout(prompt, timeout=8, default="3"):
         print()  # newline after user input
         return val or default
 
-    # Unblock the reader thread by closing stdin so Python doesn't crash at shutdown
-    try:
-        sys.stdin.close()
-    except Exception:
-        pass
-    t.join(2)
-
+    # DO NOT close stdin here.  The reader thread is still blocked inside
+    # sys.stdin.readline() and holds the stream's internal lock; close()
+    # from this thread serializes on that same lock and DEADLOCKS this
+    # function — the auto-select line below is never reached.  Live
+    # 2026-08-22: a detached build (hidden console = tty, no input, no EOF)
+    # sat at "Choose option (1-3):" for 55 minutes
+    # (proof_reports/build_20260822_ceremony_stuck.log).  The reader is a
+    # daemon thread parked in a read that will never return; abandoning it
+    # is safe — it never wakes, so it cannot trip interpreter shutdown, and
+    # process exit ends it.  Guard: tests/test_setup_wizard.py
+    # TestInputTimeoutBlockedTty.
     print(f"\n  (No input after {timeout}s — auto-selecting option {default})")
     return default
 
