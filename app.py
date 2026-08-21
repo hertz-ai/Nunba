@@ -657,12 +657,26 @@ def _isolate_frozen_imports():
 _preload_pycparser_from_lib_src()
 _isolate_frozen_imports()
 
+# === HERMETIC GATE MODES ===
+# --validate / --acceptance-test are BUILD gates.  Their verdict must be a
+# function of the BUNDLE ALONE — never of what the machine's mutable
+# ~/.nunba/site-packages happens to contain.  Proven 2026-08-21: the same
+# build tree validated Tier-1 at 19:47 and Failed:5 at 20:57 because the
+# running app installed CUDA torch into ~/.nunba at 20:00, which then
+# resolved ahead of the bundle and hit a broken numpy that had sat dormant
+# there since Aug 11.  A release gate whose answer changes with machine
+# state is not a gate.  ONE definition; every ~/.nunba consumer below
+# (this insert, the frozen-fixes insert, the torch pre-guard subprocess)
+# checks it.
+_HERMETIC_GATE = ('--validate' in sys.argv or '--acceptance-test' in sys.argv)
+
 # === User-writable site-packages (runtime pip installs go here) ===
 # Program Files is read-only for non-admin. Packages installed at runtime
 # (e.g. CUDA torch, TTS engines) go to ~/.nunba/site-packages/ instead.
+# Skipped in hermetic gate modes — the bundle is what is being judged.
 _user_sp = os.path.join(os.path.expanduser('~'), '.nunba', 'site-packages')
 os.makedirs(_user_sp, exist_ok=True)
-if _user_sp not in sys.path:
+if not _HERMETIC_GATE and _user_sp not in sys.path:
     sys.path.insert(0, _user_sp)
 
 
@@ -1132,18 +1146,20 @@ if getattr(sys, 'frozen', False):
     # User site-packages (~/.nunba/site-packages/) — runtime pip installs go here.
     # INSERT at 0 so CUDA torch (if installed) shadows the 0.0.0 stub in python-embed.
     # Verified: python-embed/python.exe loads CUDA torch correctly with this path order.
+    # Skipped entirely in hermetic gate modes — the bundle is what is being judged.
     _user_sp = os.path.join(os.path.expanduser('~'), '.nunba', 'site-packages')
-    if os.path.isdir(_user_sp) and _user_sp not in sys.path:
-        sys.path.insert(0, _user_sp)
-    # Windows: torch needs its lib/ dir in DLL search path for CUDA DLLs
-    _torch_lib = os.path.join(_user_sp, 'torch', 'lib')
-    if os.path.isdir(_torch_lib):
-        if hasattr(os, 'add_dll_directory'):
-            try:
-                os.add_dll_directory(_torch_lib)
-            except OSError:
-                pass
-        os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
+    if not _HERMETIC_GATE:
+        if os.path.isdir(_user_sp) and _user_sp not in sys.path:
+            sys.path.insert(0, _user_sp)
+        # Windows: torch needs its lib/ dir in DLL search path for CUDA DLLs
+        _torch_lib = os.path.join(_user_sp, 'torch', 'lib')
+        if os.path.isdir(_torch_lib):
+            if hasattr(os, 'add_dll_directory'):
+                try:
+                    os.add_dll_directory(_torch_lib)
+                except OSError:
+                    pass
+            os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
     # Win32GUI base sets sys.stdout/stderr to None, which crashes modules that
     # do sys.stdout.buffer (e.g. hart_intelligence line 6). Fix by redirecting
     # to devnull before any imports that might touch stdout.
@@ -1444,16 +1460,28 @@ if getattr(sys, 'frozen', False):
         if os.path.isfile(_torch_test_exe):
             import subprocess as _sub_torch
             _torch_env = os.environ.copy()
-            # Ensure user site-packages (CUDA torch) is discoverable
-            _torch_env['PYTHONPATH'] = os.pathsep.join([
-                _user_sp,
-                os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
-                             'python-embed', 'Lib', 'site-packages'),
-                _torch_env.get('PYTHONPATH', ''),
-            ])
+            # Ensure user site-packages (CUDA torch) is discoverable — except in
+            # hermetic gate modes, where the probe must judge the BUNDLE's torch
+            # only (see _HERMETIC_GATE above; ~/.nunba state failed a build at
+            # 2026-08-21 20:57 that had passed at 19:47 on the identical tree).
+            _embed_sp = os.path.join(
+                os.path.dirname(os.path.abspath(sys.executable)),
+                'python-embed', 'Lib', 'site-packages')
+            _torch_env['PYTHONPATH'] = os.pathsep.join(
+                ([] if _HERMETIC_GATE else [_user_sp])
+                + [_embed_sp, _torch_env.get('PYTHONPATH', '')])
+            # python-embed's sitecustomize.py inserts ~/.nunba/site-packages at
+            # sys.path[0] in EVERY child, independent of PYTHONPATH — so the
+            # hermetic probe must strip it inside the child, after site runs.
+            _probe_prelude = (
+                ("import sys, os; _u = os.path.join(os.path.expanduser('~'),"
+                 " '.nunba', 'site-packages');"
+                 " sys.path = [p for p in sys.path if p != _u]; ")
+                if _HERMETIC_GATE else '')
             try:
                 _tp = _sub_torch.run(
                     [_torch_test_exe, '-c',
+                     _probe_prelude +
                      'import torch; print(torch.__version__); '
                      'print("cuda" if torch.cuda.is_available() else "cpu")'],
                     capture_output=True, text=True, timeout=30,
