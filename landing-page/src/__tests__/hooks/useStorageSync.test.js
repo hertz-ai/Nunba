@@ -12,7 +12,7 @@ import {renderHook, waitFor} from '@testing-library/react';
 
 jest.mock('axios', () => ({
   __esModule: true,
-  default: {get: jest.fn()},
+  default: {get: jest.fn(), post: jest.fn()},
 }));
 
 const axios = require('axios').default;
@@ -192,5 +192,133 @@ describe('useStorageSync', () => {
     expect(localStorage.getItem('guest_user_id')).toBe('10202');
     expect(localStorage.getItem('social_user_id')).toBe('10202');
     expect(localStorage.getItem('hevolve_access_id')).toBe('10202');
+  });
+});
+
+// app.py:1862 wipes the HART identity out of user_data.json when
+// llama_config.json carries a hand-set `first_run: true`, leaving
+// `hart_reset_on_first_run: true` as the consumed-once marker.  The wipe
+// cannot reach localStorage (webview_data/ survives reinstalls), and the
+// Demopage/Agent localStorage→file re-POST puts the stale identity BACK
+// into user_data.json within seconds of boot — both observed live
+// 2026-08-21 (file wiped 23:26, re-seeded 23:47:35, ceremony never ran).
+// The hook must consume the marker: evict the localStorage copy AND clear
+// the file copy via the '' DELETE sentinel, exactly once per marker-set.
+describe('hart_reset_on_first_run consumption', () => {
+  const HART_KEYS = ['hart_sealed', 'hart_name', 'hart_emoji', 'hart_language'];
+
+  // A mutable backing store with app.py's merge semantics: GET serves
+  // current values; POST with '' deletes a key, non-empty sets it.
+  function mockLiveStore(initial) {
+    const store = {...initial};
+    axios.get.mockImplementation((url) => {
+      const key = url.split('/').pop();
+      return Promise.resolve({data: {data: store[key] ?? null, success: true}});
+    });
+    axios.post.mockImplementation((url, payload) => {
+      Object.entries(payload || {}).forEach(([k, v]) => {
+        if (v === '') delete store[k];
+        else if (v !== null && v !== undefined) store[k] = v;
+      });
+      return Promise.resolve({data: {success: true}});
+    });
+    return store;
+  }
+
+  function seedStaleSealedIdentity() {
+    localStorage.setItem('access_token', 'cloud-jwt-value');
+    localStorage.setItem('hart_sealed', 'true');
+    localStorage.setItem('hart_name', 'Old Name');
+    localStorage.setItem('hart_emoji', '🔥');
+    localStorage.setItem('hart_language', 'en');
+  }
+
+  it('evicts stale localStorage identity AND clears the re-seeded file copy', async () => {
+    seedStaleSealedIdentity();
+    const store = mockLiveStore({
+      hart_reset_on_first_run: true,
+      // The re-seeded state observed live: the stale localStorage identity
+      // was POSTed back into user_data.json before the marker was consumed.
+      hart_sealed: 'true',
+      hart_name: 'Old Name',
+    });
+
+    renderHook(() => useStorageSync());
+
+    await waitFor(() => {
+      expect(localStorage.getItem('hart_reset_consumed')).toBe('true');
+    });
+    // Let the hart top-up that follows the consume finish — it must find
+    // nothing to re-hydrate, or the fix is vacuous.
+    await new Promise((r) => setTimeout(r, 50));
+    for (const key of HART_KEYS) {
+      expect(localStorage.getItem(key)).toBeNull();
+    }
+    expect(store.hart_sealed).toBeUndefined();
+    expect(store.hart_name).toBeUndefined();
+  });
+
+  it('dispatches nunba:auth_changed so useAuthSession re-reads the gate', async () => {
+    seedStaleSealedIdentity();
+    mockLiveStore({hart_reset_on_first_run: true});
+    const sources = [];
+    const onChanged = (e) => sources.push(e.detail && e.detail.source);
+    window.addEventListener('nunba:auth_changed', onChanged);
+
+    renderHook(() => useStorageSync());
+
+    await waitFor(() => {
+      expect(sources).toContain('hart_reset_on_first_run');
+    });
+    window.removeEventListener('nunba:auth_changed', onChanged);
+  });
+
+  it('consumes only once — a re-sealed identity survives later boots while the marker persists', async () => {
+    // first_run stays true until the AI wizard completes, so the marker is
+    // still on file when the user has already re-run the naming ceremony.
+    // A second eviction here would re-wipe the name they just sealed.
+    localStorage.setItem('access_token', 'cloud-jwt-value');
+    localStorage.setItem('hart_reset_consumed', 'true');
+    localStorage.setItem('hart_sealed', 'true');
+    localStorage.setItem('hart_name', 'New Name');
+    mockLiveStore({hart_reset_on_first_run: true, hart_sealed: 'true', hart_name: 'New Name'});
+
+    renderHook(() => useStorageSync());
+
+    await waitFor(() => {
+      expect(axios.get).toHaveBeenCalled();
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(localStorage.getItem('hart_sealed')).toBe('true');
+    expect(localStorage.getItem('hart_name')).toBe('New Name');
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it('re-arms once the marker is popped from user_data.json', async () => {
+    localStorage.setItem('access_token', 'cloud-jwt-value');
+    localStorage.setItem('hart_sealed', 'true');
+    localStorage.setItem('hart_reset_consumed', 'true');
+    mockLiveStore({hart_sealed: 'true'});
+
+    renderHook(() => useStorageSync());
+
+    await waitFor(() => {
+      expect(localStorage.getItem('hart_reset_consumed')).toBeNull();
+    });
+    expect(localStorage.getItem('hart_sealed')).toBe('true');
+  });
+
+  it('does not latch when the file-side clear fails, so the next boot retries', async () => {
+    seedStaleSealedIdentity();
+    mockLiveStore({hart_reset_on_first_run: true, hart_sealed: 'true'});
+    axios.post.mockRejectedValue(new Error('companion restarting'));
+
+    renderHook(() => useStorageSync());
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalled();
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(localStorage.getItem('hart_reset_consumed')).toBeNull();
   });
 });
