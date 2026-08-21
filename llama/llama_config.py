@@ -1719,7 +1719,27 @@ class LlamaConfig:
                             })
                         except Exception:
                             pass
-                    if _zinc.install(progress_callback=_zinc_progress):
+                    _zinc_ok = _zinc.install(progress_callback=_zinc_progress)
+                    # Terminal event — the card completes on
+                    # Boolean(data.complete), so without this the AMD/Vulkan
+                    # setup card stayed at "loading" for the rest of the
+                    # session.  Both outcomes emit; a failed build has to
+                    # close its card too.
+                    try:
+                        from integrations.social.realtime import publish_event
+                        publish_event('setup_progress', {
+                            'type': 'setup_progress',
+                            'job_type': 'zinc_amd',
+                            'status': 'done' if _zinc_ok else 'error',
+                            'complete': True,
+                            'model_name': 'Zinc (AMD Vulkan)',
+                            'message': ("AMD GPU acceleration ready"
+                                        if _zinc_ok else
+                                        "AMD GPU acceleration unavailable — using CPU"),
+                        })
+                    except Exception:
+                        pass
+                    if _zinc_ok:
                         llama_server = _zinc.find_zinc_server()
                 if llama_server:
                     logger.info(f"Using zinc (AMD Vulkan): {llama_server}")

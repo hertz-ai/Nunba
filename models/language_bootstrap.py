@@ -420,6 +420,12 @@ def _detect_hardware() -> dict:
                 'cuda_available': False}
 
 
+# Statuses that end a step.  Counterpart to the in-flight set at :143
+# ('loading', 'downloading'); 'selecting' is also in-flight.  Used to derive
+# the `complete` flag the SetupProgressCard reads — see _update_step below.
+_TERMINAL_STATUSES = frozenset({'ready', 'skipped', 'failed'})
+
+
 def _update_step(model_type: str, **kwargs) -> None:
     with _lock:
         step = _state.steps.get(model_type)
@@ -434,6 +440,11 @@ def _update_step(model_type: str, **kwargs) -> None:
             'job_type': str(model_type),
             'model_name': kwargs.get('detail', ''),
             'status': kwargs.get('status', ''),
+            # The card completes on Boolean(data.complete), NOT on `status`,
+            # so a terminal status has to say so in the key the frontend
+            # actually reads — otherwise every model card stays at "loading"
+            # for the rest of the session even after the step finished.
+            'complete': kwargs.get('status', '') in _TERMINAL_STATUSES,
             'message': kwargs.get('detail', ''),
         })
     except Exception:

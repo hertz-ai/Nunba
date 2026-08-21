@@ -5752,6 +5752,27 @@ def start_background_services():
                     logging.info(
                         "CUDA ctranslate2 installed — GPU STT active on next restart"
                         if _ct2_ok else f"CUDA ctranslate2 not installed: {_ct2_msg}")
+                    # Terminal event.  Demopage decides card completion from
+                    # Boolean(data.complete) — NOT from `status` — so a job that
+                    # never emits `complete` leaves its card pinned at "loading"
+                    # forever.  This install emitted no terminal event at all,
+                    # which is why the STT setup card never came down.
+                    # Emit on BOTH outcomes: a failed install has to close its
+                    # card too, or the user watches a spinner for work that has
+                    # already stopped.
+                    try:
+                        from integrations.social.realtime import publish_event
+                        publish_event('setup_progress', {
+                            'type': 'setup_progress',
+                            'job_type': 'cuda_ctranslate2',
+                            'status': 'done' if _ct2_ok else 'error',
+                            'complete': True,
+                            'message': (
+                                "GPU speech-to-text ready on next restart"
+                                if _ct2_ok else f"GPU STT unavailable: {_ct2_msg}"),
+                        })
+                    except Exception:
+                        pass
             except Exception as _ct2_err:
                 logging.debug(f"CUDA ctranslate2 auto-install skipped: {_ct2_err}")
 
@@ -5813,6 +5834,11 @@ def start_background_services():
                                 'type': 'setup_progress',
                                 'job_type': 'cuda_torch',
                                 'status': 'done',
+                                # `status` alone never closed the card: Demopage
+                                # reads Boolean(data.complete).  Both keys are
+                                # sent — `status` for any log/consumer already
+                                # reading it, `complete` for the card contract.
+                                'complete': True,
                                 'message': _vmsg,
                             })
                         except Exception:
@@ -5833,6 +5859,21 @@ def start_background_services():
                         else:
                             logging.warning(
                                 f"CUDA torch install failed: {msg} — using CPU TTS")
+                            # Close the card on real failure only.  The
+                            # INSTALL_IN_PROGRESS leg above deliberately does
+                            # NOT emit: a sibling worker is still downloading,
+                            # so its card must stay up and keep ticking.
+                            try:
+                                from integrations.social.realtime import publish_event
+                                publish_event('setup_progress', {
+                                    'type': 'setup_progress',
+                                    'job_type': 'cuda_torch',
+                                    'status': 'error',
+                                    'complete': True,
+                                    'message': f"Voice upgrade unavailable: {msg}",
+                                })
+                            except Exception:
+                                pass
             except Exception:
                 pass
 
