@@ -24,6 +24,21 @@ _FAILED_RE = re.compile(r'Failed:\s*(\d+)')
 _SESSION_RE = re.compile(r'^=+ validate\.log session .*$', re.M)
 
 
+def last_session(log_text):
+    """The most recent validate run's slice of an append-only validate.log.
+
+    Canonical splitter — used both by the verdict below and by the build
+    scripts when they ECHO the log.  Printing the whole file dumps every
+    build ever run on the machine into the build output (32 sessions and
+    ~4000 lines on this box), which reads like a retry loop and buries the
+    run you actually care about under days of history.
+    """
+    if not log_text:
+        return log_text
+    _parts = _SESSION_RE.split(log_text)
+    return _parts[-1] if len(_parts) > 1 else log_text
+
+
 def validate_log_is_clean(log_text) -> bool:
     """True only when every summary in THIS RUN's session has zero failures.
 
@@ -50,11 +65,9 @@ def validate_log_is_clean(log_text) -> bool:
     """
     if not log_text:
         return False
-    _sessions = _SESSION_RE.split(log_text)
     # No header at all => single-session text (unit tests, older logs);
-    # judge it whole, exactly as before.
-    _segment = _sessions[-1] if len(_sessions) > 1 else log_text
-    counts = _FAILED_RE.findall(_segment)
+    # last_session() returns it whole, exactly as before.
+    counts = _FAILED_RE.findall(last_session(log_text))
     if not counts:
         return False
     return all(int(c) == 0 for c in counts)

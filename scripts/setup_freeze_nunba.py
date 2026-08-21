@@ -2539,9 +2539,18 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
             ]
             _val_log = next((p for p in _val_log_candidates if os.path.isfile(p)), None)
             if _val_log:
-                _log_text = open(_val_log, encoding='utf-8').read().strip()
+                # validate.log is append-only, so echoing the file dumps every
+                # build ever run on this machine into the build output — 32
+                # sessions / ~4000 lines here, which reads like a retry loop
+                # and buries THIS run under days of history.  Same canonical
+                # splitter the verdict uses, so the printed text and the
+                # pass/fail decision are always about the same session.
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                from _validate_verdict import last_session
+                _log_text = last_session(
+                    open(_val_log, encoding='utf-8').read()).strip()
                 if _log_text and _log_text not in (_ret.stdout or ''):
-                    print("\n--- validate.log (from inside frozen exe) ---")
+                    print("\n--- validate.log (this run) ---")
                     # Replace Unicode box-drawing chars with ASCII for cp1252 consoles
                     try:
                         print(_log_text)
