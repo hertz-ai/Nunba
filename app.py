@@ -2461,17 +2461,24 @@ if getattr(args, 'validate', False):
         ],
     }
 
-    # Dependencies whose torch warnings explain Tier-1 failures in the adapter
-    _torch_deps = {'hart_intelligence', 'helper', 'create_recipe', 'reuse_recipe',
-                   'gather_agentdetails'}
+    # Deep checks ALWAYS run.  They used to be skipped whenever the module or
+    # one of {hart_intelligence, helper, create_recipe, reuse_recipe,
+    # gather_agentdetails} had emitted a warning whose text contained "torch"
+    # — and a skip is not a failure, so the build went green with Tier-1 never
+    # verified.  The two outcomes were decided by nothing but the wording of
+    # an error string:
+    #
+    #   2026-08-19 18:43  hart_intelligence WARN "TypeError: 'NoneType' ..."
+    #                     no "torch" in the text -> check RAN -> [FAIL] Tier-3
+    #   2026-08-21 09:19  hart_intelligence WARN "torch ... no attribute
+    #                     'autograd'"  -> check SKIPPED -> "Build is good"
+    #
+    # Same broken condition, opposite verdict.  Tier-1 falling back to raw
+    # llama.cpp is the build7 defect this whole validator exists to catch, so
+    # it must never be waved through — least of all by a substring match.
+    # Warnings stay non-fatal (only Failed: gates the release); the deep check
+    # now reports what it actually finds.
     for _mod_name, _checks in _deep_checks.items():
-        # Skip deep checks if module OR its key dependencies had torch warnings
-        _was_warned = any(_wm == _mod_name for _wm, _ in _warn)
-        _dep_warned = any(_wm in _torch_deps and _TORCH_HINT in _ws.lower()
-                          for _wm, _ws in _warn)
-        if _was_warned or _dep_warned:
-            _vprint(f"  [SKIP] {_mod_name} — dependency had torch warning, deep check skipped")
-            continue
         try:
             _mod_obj = sys.modules.get(_mod_name)
             if not _mod_obj:
