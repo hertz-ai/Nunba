@@ -1501,9 +1501,36 @@ if getattr(sys, 'frozen', False):
                 except Exception as _spec_exc:
                     _trace(f"torch.__spec__ patch failed: {_spec_exc}")
             del _torch_real
-        except (ImportError, ModuleNotFoundError):
-            pass
-        except (AttributeError, OSError, RuntimeError):
+        except (ImportError, ModuleNotFoundError) as _torch_ie:
+            # A failed in-process import is NOT "torch absent".  CPython
+            # removes sys.modules['torch'] on the way out but KEEPS every
+            # submodule the attempt already initialized.  The next
+            # `import torch` re-executes torch/__init__ against that stale
+            # cache: `from torch.autograd import ...` is served from
+            # sys.modules so the parent attribute never gets bound, and
+            # nested_tensor.py dies with "partially initialized module
+            # 'torch' has no attribute 'autograd'" — the Tier-3 signature
+            # chased 2026-08-19..21.  This arm used to be a bare `pass`,
+            # which both hid the root-cause exception and shipped the
+            # poisoned cache to every later importer.
+            import traceback as _torch_tb
+            _trace(f"torch in-process import FAILED: {type(_torch_ie).__name__}: {_torch_ie}")
+            _trace("  traceback: " + "".join(_torch_tb.format_exception(
+                type(_torch_ie), _torch_ie, _torch_ie.__traceback__))[-3000:])
+            _torch_residue = [k for k in sys.modules
+                              if k == 'torch' or k.startswith('torch.')]
+            _trace(f"  evicting torch residue ({len(_torch_residue)} entries): "
+                   f"{sorted(_torch_residue)[:12]}")
+            # Same eviction the stub path below performs — a later import
+            # must start clean, not against a half-initialized cache.
+            for _torch_k in _torch_residue:
+                sys.modules.pop(_torch_k, None)
+        except (AttributeError, OSError, RuntimeError) as _torch_ae:
+            import traceback as _torch_tb
+            _trace(f"torch in-process import FAILED -> stub path: "
+                   f"{type(_torch_ae).__name__}: {_torch_ae}")
+            _trace("  traceback: " + "".join(_torch_tb.format_exception(
+                type(_torch_ae), _torch_ae, _torch_ae.__traceback__))[-3000:])
             _torch_safe = False  # fall through to stub
 
     if not _torch_safe:
