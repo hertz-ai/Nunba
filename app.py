@@ -2428,6 +2428,24 @@ if getattr(args, 'validate', False):
                 _ok.append(_mod)
                 _warn.append((_mod, f"{type(_e).__name__}: {_e}"))
                 _vprint(f"  [WARN] {_mod}  (torch from python-embed: {type(_e).__name__}: {_e})")
+                # Traceback, same as the generic branch below.  This branch used
+                # to print the message alone, which made the ONE recurring
+                # failure the only one with no stack — "partially initialized
+                # module 'torch' has no attribute 'autograd'" says a re-entrant
+                # import happened but not WHO re-entered, and that is the whole
+                # question.  2026-08-19 18:43 produced a usable stack for
+                # hart_intelligence only because its error read "TypeError" and
+                # fell through to the generic branch instead.
+                #
+                # Measured 2026-08-21: build/Nunba's bundled torch is complete
+                # and imports fine (12,196 files, autograd True) in that same
+                # interpreter with user-site blocked — so this is specific to
+                # the frozen process, and the stack is the only thing that can
+                # name it.  The [SKIP] that used to hide the downstream Tier-1
+                # failure is gone (a32b4507); this removes the other half of
+                # the blindness.
+                import traceback as _tb
+                _vprint(f"         Traceback: {''.join(_tb.format_exception(type(_e), _e, _e.__traceback__))}")
             else:
                 _fail.append((_mod, f"{type(_e).__name__}: {_e}"))
                 _vprint(f"  [FAIL] {_mod}: {type(_e).__name__}: {_e}")
