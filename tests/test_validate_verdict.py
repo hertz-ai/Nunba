@@ -114,3 +114,60 @@ def test_first_failure_among_later_clean_runs_still_blocks():
     """Order must not matter — a retry that passes does not erase a failure."""
     assert validate_log_is_clean(
         "Passed: 37, Failed: 8, Warnings: 0\nPassed: 43, Failed: 0, Warnings: 0") is False
+
+
+# ── validate.log is APPEND-ONLY across builds ────────────────────────────
+# app.py:2264 writes one "===== validate.log session <iso> =====" header per
+# run, so the file accumulates every build ever done on the machine.  Scanning
+# the whole file turned the gate into a LATCH: one failed session poisoned
+# every later build forever, because the failure never leaves the log.
+#
+# Measured on this box 2026-08-21: 32 sessions, three historical failures
+# (08-16T19:55 Failed:5, 08-19T18:43 Failed:2, 08-19T19:27 Failed:2).  The
+# 08-21T09:19 session was itself "Passed: 62, Failed: 0 ... Build is good",
+# and the gate still returned False and killed the build.
+#
+# Only the LAST session is the verdict for THIS build.  Within that session
+# the all-zero rule above is unchanged, so build7 stays blocked.
+
+_SESSION_HDR = "===== validate.log session {}.000000 ====="
+
+
+def _multi_session_log(*per_session_failed):
+    """Build a realistic append-only log: one session per Failed: count."""
+    out = []
+    for i, failed in enumerate(per_session_failed):
+        out.append(_SESSION_HDR.format(f"2026-08-{16 + i:02d}T10:00:00"))
+        out.append("  [OK]   flask")
+        out.append(f"  Passed: 62, Failed: {failed}, Warnings: 0")
+    return "\n".join(out)
+
+
+def test_stale_failed_session_does_not_block_a_clean_build():
+    """THE regression: 08-16 failed, today is clean, today must ship."""
+    log = _multi_session_log(5, 2, 2, 0)
+    assert validate_log_is_clean(log) is True, (
+        "a five-day-old failure still sitting in the append-only log failed a "
+        "build whose own session reported Failed: 0")
+
+
+def test_failure_in_the_current_session_still_blocks():
+    """The inverse must hold — clean history cannot excuse today's failure."""
+    log = _multi_session_log(0, 0, 0, 2)
+    assert validate_log_is_clean(log) is False
+
+
+def test_build7_shape_inside_one_session_still_blocks():
+    """Scoping to the last session must NOT weaken the build7 guard: several
+    summaries within ONE session, last one failing, still blocks."""
+    log = (_SESSION_HDR.format("2026-08-21T09:19:42") + "\n" + REAL_BUILD7_LOG)
+    assert validate_log_is_clean(log) is False
+
+
+def test_current_session_without_a_verdict_fails_closed():
+    """A session that crashed before printing its summary must block, even
+    though earlier sessions in the same file are clean."""
+    log = (_multi_session_log(0, 0)
+           + "\n" + _SESSION_HDR.format("2026-08-21T09:19:42")
+           + "\n  [OK]   flask\n")   # no "Failed:" line — died mid-run
+    assert validate_log_is_clean(log) is False
