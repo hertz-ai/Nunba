@@ -937,16 +937,28 @@ def _start_heartbeat_thread():
             from security.node_watchdog import get_watchdog
         except ImportError:
             return
-        while _started:
-            wd = get_watchdog()
-            if wd:
-                # Use sleep_with_heartbeat to avoid GIL-stall false FROZEN
-                # (SRE finding: bare time.sleep re-introduces the 2026-04-11 cascade)
-                wd.sleep_with_heartbeat('wamp_router', 30,
-                                         stop_check=lambda: not _started)
-            else:
-                import time
-                time.sleep(30)
+        # Any exit of this loop stops 'wamp_router' heartbeats and, 600s
+        # later, the watchdog declares a FROZEN router and restarts it —
+        # even while the router is serving (live 2026-08-23: beats stopped
+        # ~16:19, router still answered at 16:20:53, false-FROZEN at
+        # 16:29).  The loop used to die without a trace; log every exit so
+        # the next occurrence is attributable.
+        try:
+            while _started:
+                wd = get_watchdog()
+                if wd:
+                    # Use sleep_with_heartbeat to avoid GIL-stall false FROZEN
+                    # (SRE finding: bare time.sleep re-introduces the 2026-04-11 cascade)
+                    wd.sleep_with_heartbeat('wamp_router', 30,
+                                             stop_check=lambda: not _started)
+                else:
+                    import time
+                    time.sleep(30)
+        except BaseException:
+            logger.exception('WAMP heartbeat pulse thread DIED — watchdog '
+                             'will false-FROZEN the router in <=600s')
+            raise
+        logger.info('WAMP heartbeat pulse thread exiting (_started=%s)', _started)
 
     _heartbeat_thread = threading.Thread(target=_pulse, daemon=True,
                                          name='WampRouterHeartbeat')
