@@ -854,8 +854,22 @@ def start_wamp_router(port: int = 8088, host: str = '127.0.0.1') -> bool:
     # neither _run_router nor is_running re-enter start_wamp_router, so
     # no deadlock is possible.
     with _state_lock:
-        if _started or (_router_thread and _router_thread.is_alive()):
+        if _started:
             return True
+        if _router_thread and _router_thread.is_alive():
+            # Alive + not-started is AMBIGUOUS: a STARTING thread that has
+            # not reached _started=True yet, or a DYING one — the watchdog's
+            # stop_fn just dropped _started and run_forever is draining its
+            # finally.  Treating both as running made the watchdog's
+            # restart_fn a no-op: live 2026-08-23 16:29 and 18:05, watchdog
+            # logged 'RESTARTED successfully' ~200ms after the old thread's
+            # mislabeled 'did not start' exit line, and :8088 had no
+            # listener afterwards.  A bounded join disambiguates: a dying
+            # thread exits within stop_wamp_router's 3s drain, a starting
+            # one keeps running and we return True (it is coming up).
+            _router_thread.join(timeout=4.0)
+            if _router_thread.is_alive():
+                return True
 
         # Allow port override via environment variable
         port = int(os.environ.get('NUNBA_WAMP_PORT', port))

@@ -698,3 +698,86 @@ class TestShutdownOrdering:
             wr._started = original_started
             if t.is_alive():
                 t.join(timeout=1.0)
+
+
+class TestWatchdogRestartRace:
+    """#683 — the watchdog's restart_fn must actually respawn the router.
+
+    Live 2026-08-23 16:29 and again 18:05: watchdog stop_fn dropped
+    _started and the old thread began draining its finally (which logs
+    the mislabeled 'did not start'); restart_fn ran ~200ms later while
+    that thread was STILL alive, so the TOCTOU guard in
+    start_wamp_router returned True without spawning anything.  Watchdog
+    logged 'RESTARTED successfully'; :8088 had no listener afterwards
+    (0 at 02:30 check).  Not EADDRINUSE — a vacuous restart.
+    """
+
+    def _reset(self, wr):
+        wr._started = False
+        wr._router_thread = None
+
+    def test_restart_respawns_while_old_thread_drains(self, monkeypatch):
+        import wamp_router as wr
+        calls = []
+        drain = threading.Event()
+
+        def fake_run(port, host):
+            wr._started = True
+            calls.append('run')
+            drain.wait(5)          # stands in for run_forever
+            time.sleep(0.5)        # the finally-drain after _started drops
+
+        monkeypatch.setattr(wr, '_run_router', fake_run)
+        monkeypatch.setattr(wr, '_register_with_watchdog', lambda *a, **k: None)
+        self._reset(wr)
+        try:
+            assert wr.start_wamp_router(port=18988)
+            for _ in range(100):
+                if wr._started:
+                    break
+                time.sleep(0.05)
+            assert wr._started, 'first start never came up'
+
+            # watchdog stop_fn: flag drops, run_forever returns, drain begins
+            wr._started = False
+            drain.set()
+            # watchdog restart_fn fires immediately, old thread still alive
+            assert wr.start_wamp_router(port=18988)
+            for _ in range(100):
+                if len(calls) == 2:
+                    break
+                time.sleep(0.05)
+            assert len(calls) == 2, (
+                'restart was vacuous — the guard read the DRAINING thread '
+                'as alive-and-running and skipped the spawn')
+        finally:
+            wr._started = False
+            drain.set()
+            self._reset(wr)
+
+    def test_start_during_startup_stays_single_spawn(self, monkeypatch):
+        """The original TOCTOU property must survive the fix: a second
+        caller during STARTUP (thread alive, _started not yet set) must
+        not double-spawn — it may block briefly on the disambiguation
+        join, then return True."""
+        import wamp_router as wr
+        calls = []
+        release = threading.Event()
+
+        def fake_run(port, host):
+            calls.append('run')
+            release.wait(10)       # long startup: _started not yet True
+            wr._started = True
+
+        monkeypatch.setattr(wr, '_run_router', fake_run)
+        monkeypatch.setattr(wr, '_register_with_watchdog', lambda *a, **k: None)
+        self._reset(wr)
+        try:
+            assert wr.start_wamp_router(port=18989)
+            assert wr.start_wamp_router(port=18989)  # concurrent-ish second call
+            time.sleep(0.3)
+            assert len(calls) == 1, 'double-spawn — TOCTOU guard regressed'
+        finally:
+            release.set()
+            wr._started = False
+            self._reset(wr)
