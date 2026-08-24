@@ -1,0 +1,3 @@
+{"turn": "math", "lat": 4.0, "reply": "The result is 187,213 minus 1955, which equals 185,258.", "err": "", "markers": {}}
+{"turn": "agents_nudge", "lat": 11.1, "reply": "I do not have access to a `List_Agents` tool or any internal system that manages specific agent inventories. I am your local AI assistant, and I cannot execute external commands or reveal a list of other agents you might have configured in a separate environment.\n\nHowever, I can ", "err": "", "markers": {"query------>": 1, "List_Agents": 2}}
+{"turn": "weather2", "lat": 3.4, "reply": "The current weather in Chennai is hot and humid, with temperatures typically reaching around 33°C (91°F) and clear skies.", "err": "", "markers": {}}
