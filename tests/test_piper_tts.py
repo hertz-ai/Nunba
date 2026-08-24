@@ -10,9 +10,9 @@ NFT: Thread safety of synthesis queue, graceful degradation without piper module
      directory auto-creation, download resilience.
 """
 import os
-import time
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 

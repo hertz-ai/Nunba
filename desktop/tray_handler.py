@@ -7,10 +7,11 @@ Provides a unified interface for system tray functionality on:
 - Linux: Uses pystray
 """
 import logging
-from desktop.platform_utils import get_subprocess_flags
 import os
 import sys
 import threading
+
+from desktop.platform_utils import get_subprocess_flags
 
 logger = logging.getLogger('NunbaTray')
 

@@ -444,6 +444,7 @@ class STTLoader(ModelLoader):
         """Install faster-whisper + CUDA torch if needed."""
         try:
             from integrations.service_tools.model_catalog import backend_requires_torch
+
             from tts.package_installer import has_nvidia_gpu, install_gpu_torch, is_cuda_torch
             # Ensure CUDA torch is available — but ONLY for engines whose runtime
             # actually IS torch.  A sherpa-onnx entry (backend='onnx') runs on

@@ -82,6 +82,7 @@ class TestLlamaUpgradeActuator:
 
     def test_queue_sets_flag_and_apply_runs_installer_once(self):
         from unittest.mock import MagicMock
+
         from llama.llama_config import LlamaConfig
         cfg = LlamaConfig()
         cfg._save_config = MagicMock()          # don't touch disk
@@ -101,6 +102,7 @@ class TestLlamaUpgradeActuator:
 
     def test_apply_is_noop_when_nothing_queued(self):
         from unittest.mock import MagicMock
+
         from llama.llama_config import LlamaConfig
         cfg = LlamaConfig()
         cfg._save_config = MagicMock()
@@ -112,6 +114,7 @@ class TestLlamaUpgradeActuator:
     def test_apply_clears_flag_even_when_download_fails(self):
         """A bad release must NOT wedge boot in a retry loop — clear on failure too."""
         from unittest.mock import MagicMock
+
         from llama.llama_config import LlamaConfig
         cfg = LlamaConfig()
         cfg._save_config = MagicMock()
@@ -188,7 +191,8 @@ class TestVersionAwareBinaryResolution:
             "no candidate satisfies -> keep first existing (warn-and-proceed)"
 
     def test_get_version_mtime_cache_skips_respawn(self):
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from llama.llama_installer import LlamaInstaller
         LlamaInstaller._version_cache.clear()
         inst = LlamaInstaller()
