@@ -1878,7 +1878,13 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # loose files and rotated siblings, because fnmatch's '*.log' does
             # NOT match 'foo.log.1' -- the same trap that made '*.db' miss
             # '*.db-shm' above.
-            'logs', '*.log', '*.log.[0-9]', '*.log.[0-9][0-9]')
+            'logs', '*.log', '*.log.[0-9]', '*.log.[0-9][0-9]',
+            # Tensorboard run dirs are runtime telemetry, never package data
+            # (packages.find = core*/integrations*/security*/hart_sdk*/
+            # agent_ledger* — no 'runs').  2026-08-24 the sibling copy died
+            # mid-way through hevolveai/runs/_pytest (462 MB of tfevents,
+            # WinError 112 disk full).
+            'runs')
 
         _PKG_TMP_PREFIX = 'hart-freeze-pkg-'
 
