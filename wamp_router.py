@@ -175,6 +175,10 @@ _state_lock = threading.Lock()
 _event_loop: asyncio.AbstractEventLoop | None = None
 _router_thread: threading.Thread | None = None
 _started = False
+# Shutdown drain budget.  start_wamp_router's dying-vs-starting join is
+# derived from this (+1s margin) — the two used to be independent
+# literals (4.0 vs 3.0) that could drift apart.
+_DRAIN_TIMEOUT_S = 3.0
 # Set to True once stop_wamp_router is registered as an atexit hook, so
 # we don't stack N copies of the callback when start_wamp_router is
 # called repeatedly (idempotent start + idempotent atexit registration).
@@ -848,11 +852,13 @@ def start_wamp_router(port: int = 8088, host: str = '127.0.0.1') -> bool:
     # thread. Result: two WampRouter threads racing for port 8088, one wins
     # the bind() and the other silently fails in _run_router. Wrap the
     # check-and-spawn in the module-level _state_lock so only one caller
-    # ever reaches thread.start(). _state_lock is NOT held during
-    # thread.start() itself (safe — the new thread only touches _started
-    # after its own event loop is up, not while we hold the lock), and
-    # neither _run_router nor is_running re-enter start_wamp_router, so
-    # no deadlock is possible.
+    # ever reaches thread.start().  The lock IS held across thread.start()
+    # (safe — the new thread only touches _started after its own event
+    # loop is up, never while we hold the lock), and neither _run_router
+    # nor is_running re-enter start_wamp_router, so no deadlock is
+    # possible.  (An older comment here claimed the lock was released
+    # before start(); main.py's _wamp_ensure_if_needed docstring had the
+    # accurate description — this one now matches the code.)
     with _state_lock:
         if _started:
             return True
@@ -865,9 +871,9 @@ def start_wamp_router(port: int = 8088, host: str = '127.0.0.1') -> bool:
             # logged 'RESTARTED successfully' ~200ms after the old thread's
             # mislabeled 'did not start' exit line, and :8088 had no
             # listener afterwards.  A bounded join disambiguates: a dying
-            # thread exits within stop_wamp_router's 3s drain, a starting
+            # thread exits within stop_wamp_router's drain, a starting
             # one keeps running and we return True (it is coming up).
-            _router_thread.join(timeout=4.0)
+            _router_thread.join(timeout=_DRAIN_TIMEOUT_S + 1.0)
             if _router_thread.is_alive():
                 return True
 
@@ -990,7 +996,7 @@ def _start_heartbeat_thread():
     _heartbeat_thread.start()
 
 
-def stop_wamp_router(drain_timeout_s: float = 3.0):
+def stop_wamp_router(drain_timeout_s: float = _DRAIN_TIMEOUT_S):
     """Stop the embedded WAMP router cleanly.
 
     Drains pending asyncio tasks with a bounded timeout BEFORE stopping
