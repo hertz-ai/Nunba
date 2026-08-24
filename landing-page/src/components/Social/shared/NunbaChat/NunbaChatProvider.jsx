@@ -1124,6 +1124,11 @@ export default function NunbaChatProvider({children}) {
     const agentKey = currentAgent?.prompt_id || 'default';
     setMessages([]);
     conversationIdRef.current = uuidv4();
+    // A cleared chat is a NEW conversation — drop any server prompt_id
+    // remembered from a create/reuse flow, or the first message of the
+    // fresh thread would ship as that flow's continuation (review
+    // finding #13).
+    adoptedPromptIdRef.current = null;
     try {
       localStorage.removeItem(STORAGE_KEY(userId, agentKey));
     } catch (err) {

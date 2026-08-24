@@ -874,10 +874,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                     agent_id: currentAgent?.id || 'local_assistant',
                     agent_type: 'local',
                     conversation_id: conversationId,
-                    // The closure's currentAgent predates the completion
-                    // adoption above — use the server-returned id directly
-                    // so the exec turn runs agent-bound, not casual.
-                    prompt_id: contData.prompt_id || currentAgent?.prompt_id,
+                    // currentAgentRef is always fresh (kept in sync by the
+                    // effect at the top) — explicit agent context first,
+                    // then the completion response's id (review finding
+                    // #20: server-first here let a stale/'0' server value
+                    // beat an explicitly selected agent).
+                    prompt_id: currentAgentRef.current?.prompt_id ||
+                      contData.prompt_id,
                     create_agent: false,
                     autonomous_creation: false,
                   });
@@ -4298,10 +4301,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 navigate(`/agents/${encodedName}`);
               }
             }
-            // Track prompt_id from auto-generated creation flow
-            if (resultData.prompt_id && !currentAgent?.prompt_id) {
-              setCurrentAgent((prev) => ({ ...prev, prompt_id: resultData.prompt_id }));
-            }
+            // Track prompt_id from auto-generated creation flow — through
+            // the ONE server-owned rule (review finding: this raw check
+            // read the stale closure and accepted '0'/'null' strings the
+            // rule exists to reject, double-writing next to the canonical
+            // adoption above).
+            setCurrentAgent((prev) => {
+              const sid = rememberServerPromptId(
+                prev?.prompt_id, resultData.prompt_id);
+              return sid ? { ...prev, prompt_id: sid } : prev;
+            });
             // Trigger autonomous auto-continuation loop if applicable
             if (resultData.autonomous_creation && resultData.agent_status && resultData.agent_status !== 'completed') {
               setAutoContinueFlag((prev) => prev + 1);
@@ -4772,9 +4781,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (resultData.agent_status) {
         setCurrentAgent((prev) => ({ ...prev, agent_status: resultData.agent_status }));
       }
-      if (resultData.prompt_id) {
-        setCurrentAgent((prev) => ({ ...prev, prompt_id: resultData.prompt_id }));
-      }
+      // Server-owned rule: adopt only when the session has no explicit
+      // agent (review finding: the unconditional write hijacked an
+      // explicitly selected agent when a plan card carried another id).
+      setCurrentAgent((prev) => {
+        const sid = rememberServerPromptId(
+          prev?.prompt_id, resultData.prompt_id);
+        return sid ? { ...prev, prompt_id: sid } : prev;
+      });
       // Trigger autonomous creation loop if HARTOS started auto-creating an agent
       if (resultData.autonomous_creation && resultData.agent_status) {
         setCurrentAgent((prev) => ({
