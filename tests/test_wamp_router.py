@@ -781,3 +781,91 @@ class TestWatchdogRestartRace:
             release.set()
             wr._started = False
             self._reset(wr)
+
+
+class TestHeartbeatPulseRace:
+    """The watchdog-restart pulse races (live 2026-08-24, 39 false FROZEN).
+
+    Sequence proven from gui_app.log millisecond ordering:
+      12:54:32,421 FROZEN (age exactly grace+threshold)
+      12:54:32,614 re-register + _start_heartbeat_thread()
+      12:54:32,615 OLD pulse exits (_started=False)
+    The old pulse was alive at spawn time, so the is_alive early-return
+    skipped the new spawn — the router then ran with zero pulse threads
+    and false-FROZEN again exactly 660s later, all day.
+    """
+
+    def _reset(self, wr):
+        wr._started = False
+        wr._heartbeat_thread = None
+        if getattr(wr, '_pulse_stop', None) is not None:
+            wr._pulse_stop.set()
+            wr._pulse_stop = None
+
+    class _StubWatchdog:
+        def __init__(self):
+            self.beats = 0
+
+        def sleep_with_heartbeat(self, name, total_seconds,
+                                 chunk_seconds=10.0, stop_check=None):
+            self.beats += 1
+            waited = 0.0
+            while waited < 0.2:          # compress the 30s sleep for tests
+                if stop_check and stop_check():
+                    return
+                time.sleep(0.05)
+                waited += 0.05
+
+    def _patch_watchdog(self, monkeypatch, stub):
+        import security.node_watchdog as nw
+        monkeypatch.setattr(nw, 'get_watchdog', lambda: stub)
+
+    def test_new_pulse_spawns_while_old_thread_is_dying(self, monkeypatch):
+        """A dying-but-alive old pulse must not suppress the new spawn."""
+        import wamp_router as wr
+        stub = self._StubWatchdog()
+        self._patch_watchdog(monkeypatch, stub)
+        self._reset(wr)
+        try:
+            # Old pulse: alive at spawn time, exits shortly after —
+            # exactly the state at 12:54:32,614.
+            old = threading.Thread(target=lambda: time.sleep(0.3),
+                                   daemon=True)
+            old.start()
+            wr._heartbeat_thread = old
+            wr._started = True
+
+            wr._start_heartbeat_thread()
+            old.join(1)
+            deadline = time.monotonic() + 3.0
+            while stub.beats == 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert stub.beats > 0, (
+                'no pulse generation survived the restart — the '
+                'is_alive early-return suppressed the new spawn')
+        finally:
+            wr._started = False
+            self._reset(wr)
+
+    def test_pulse_waits_for_async_started_flip(self, monkeypatch):
+        """_run_router flips _started asynchronously; a pulse spawned
+        first must wait for it instead of exiting instantly (boot
+        2026-08-24 12:44: zero beats ever landed)."""
+        import wamp_router as wr
+        stub = self._StubWatchdog()
+        self._patch_watchdog(monkeypatch, stub)
+        self._reset(wr)
+        try:
+            wr._started = False
+            wr._start_heartbeat_thread()
+            time.sleep(0.3)              # pulse runs, reads _started=False
+            wr._started = True           # router loop comes up late
+            deadline = time.monotonic() + 3.0
+            while stub.beats == 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert stub.beats > 0, (
+                'pulse exited before _run_router set _started=True — '
+                'router runs with no heartbeat')
+        finally:
+            wr._started = False
+            self._reset(wr)

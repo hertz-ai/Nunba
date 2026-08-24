@@ -924,19 +924,43 @@ def _register_with_watchdog(port: int, host: str):
 
 
 _heartbeat_thread: threading.Thread | None = None
+_pulse_stop: threading.Event | None = None
 
 
 def _start_heartbeat_thread():
-    """Pulse a watchdog heartbeat every 30s while the router is alive."""
-    global _heartbeat_thread
-    if _heartbeat_thread and _heartbeat_thread.is_alive():
-        return
+    """Pulse a watchdog heartbeat every 30s while the router is alive.
+
+    Every call retires the previous pulse generation and spawns a fresh
+    one.  The old guard (`if _heartbeat_thread.is_alive(): return`)
+    raced the watchdog restart: at 2026-08-24 12:54:32,614 the restart's
+    re-registration saw the OLD pulse still alive — it exited 1ms later
+    on the stop window's _started=False — and skipped the spawn, so the
+    router ran with ZERO pulse threads and false-FROZEN again exactly
+    grace+threshold (660s) later, 39 restarts that day.  Same
+    alive-vs-dying ambiguity as the router-thread TOCTOU above; a
+    generation token disambiguates without a blocking join (a ≤10s
+    double-beat overlap is harmless — heartbeat() only refreshes a
+    timestamp).
+    """
+    global _heartbeat_thread, _pulse_stop
+    if _pulse_stop is not None:
+        _pulse_stop.set()
+    stop_evt = threading.Event()
+    _pulse_stop = stop_evt
 
     def _pulse():
         try:
             from security.node_watchdog import get_watchdog
         except ImportError:
             return
+        # _run_router flips _started asynchronously after its event loop
+        # is up; this thread can run first, read False, and die instantly
+        # (boot 2026-08-24 12:44: zero beats ever landed).  Wait bounded
+        # for the flip before deciding the router is down.
+        deadline = time.monotonic() + 30.0
+        while (not _started and not stop_evt.is_set()
+               and time.monotonic() < deadline):
+            time.sleep(0.25)
         # Any exit of this loop stops 'wamp_router' heartbeats and, 600s
         # later, the watchdog declares a FROZEN router and restarts it —
         # even while the router is serving (live 2026-08-23: beats stopped
@@ -944,21 +968,22 @@ def _start_heartbeat_thread():
         # 16:29).  The loop used to die without a trace; log every exit so
         # the next occurrence is attributable.
         try:
-            while _started:
+            while _started and not stop_evt.is_set():
                 wd = get_watchdog()
                 if wd:
                     # Use sleep_with_heartbeat to avoid GIL-stall false FROZEN
                     # (SRE finding: bare time.sleep re-introduces the 2026-04-11 cascade)
-                    wd.sleep_with_heartbeat('wamp_router', 30,
-                                             stop_check=lambda: not _started)
+                    wd.sleep_with_heartbeat(
+                        'wamp_router', 30,
+                        stop_check=lambda: not _started or stop_evt.is_set())
                 else:
-                    import time
                     time.sleep(30)
         except BaseException:
             logger.exception('WAMP heartbeat pulse thread DIED — watchdog '
                              'will false-FROZEN the router in <=600s')
             raise
-        logger.info('WAMP heartbeat pulse thread exiting (_started=%s)', _started)
+        logger.info('WAMP heartbeat pulse thread exiting '
+                    '(_started=%s, retired=%s)', _started, stop_evt.is_set())
 
     _heartbeat_thread = threading.Thread(target=_pulse, daemon=True,
                                          name='WampRouterHeartbeat')
