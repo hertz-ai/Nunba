@@ -65,6 +65,11 @@ function isGuestJwt(token) {
 //
 // Raw user_id lives in `guest_user_id` / `social_user_id` /
 // `hevolve_access_id` — those are the keys components actually read.
+// The four localStorage keys mirroring the HART identity carried in
+// user_data.json — Agent.js's mount gate reads hart_sealed, LightYourHART
+// writes all four on ceremony completion.
+const HART_IDENTITY_KEYS = ['hart_sealed', 'hart_name', 'hart_emoji', 'hart_language'];
+
 const STORAGE_KEYS = [
   'access_token',
   'user_id',
@@ -74,10 +79,7 @@ const STORAGE_KEYS = [
   // bypass <LightYourHART/>).  Without these the user re-onboards on
   // every reinstall even though user_data.json carries their cloud
   // identity perfectly fine.
-  'hart_sealed',
-  'hart_name',
-  'hart_emoji',
-  'hart_language',
+  ...HART_IDENTITY_KEYS,
 ];
 
 async function fetchStorageKey(key) {
@@ -91,6 +93,63 @@ async function fetchStorageKey(key) {
 
 function setIfTruthy(key, value) {
   if (value) localStorage.setItem(key, String(value));
+}
+
+// app.py:1862 honours a hand-set `first_run: true` in llama_config.json by
+// wiping the HART identity out of user_data.json ONCE, leaving
+// `hart_reset_on_first_run: true` behind as the consumed marker.  That wipe
+// cannot reach the OTHER copy of the identity: webview_data/ lives under
+// ~/Documents/Nunba and survives every reinstall, so localStorage kept
+// hart_sealed='true' and the naming ceremony stayed gated off — and within
+// seconds of boot the Demopage/Agent localStorage→/api/storage/set mirror
+// pushed the stale identity BACK into user_data.json, undoing the wipe
+// entirely (both observed live 2026-08-21: file wiped 23:26, re-seeded
+// 23:47:35, chat rendered instead of the ceremony).
+//
+// Consume the marker here, in the one place backend storage state already
+// flows into localStorage: evict the four localStorage keys AND clear any
+// re-seeded file copies via the '' DELETE sentinel the /api/storage/set
+// merge handler defines (same payload shape SettingsPage's reset uses).
+//
+// Consumed-once, mirrored from app.py's marker semantics: the marker stays
+// on file until onboarding completes (first_run → false pops it), so a
+// plain marker check would re-wipe a name the user re-seals before
+// finishing the AI wizard.  The localStorage latch makes the evict fire
+// once per marker-set; the latch is only written after the file-side clear
+// succeeds so a failed clear retries next boot, and it is removed when the
+// marker disappears so the next manual reset is honoured again.
+const HART_RESET_LATCH = 'hart_reset_consumed';
+
+async function consumeHartResetMarker() {
+  const marker = await fetchStorageKey('hart_reset_on_first_run');
+  if (!marker) {
+    localStorage.removeItem(HART_RESET_LATCH);
+    return;
+  }
+  if (localStorage.getItem(HART_RESET_LATCH)) return;
+
+  let evicted = false;
+  for (const key of HART_IDENTITY_KEYS) {
+    if (localStorage.getItem(key) !== null) {
+      localStorage.removeItem(key);
+      evicted = true;
+    }
+  }
+  try {
+    const clearPayload = {};
+    for (const key of HART_IDENTITY_KEYS) clearPayload[key] = '';
+    await axios.post('/api/storage/set', clearPayload, {timeout: 3000});
+  } catch {
+    return; // no latch — next boot retries the file-side clear
+  }
+  localStorage.setItem(HART_RESET_LATCH, 'true');
+  if (evicted) {
+    try {
+      window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
+        detail: {source: 'hart_reset_on_first_run'},
+      }));
+    } catch (_e) { /* same-origin, never throws */ }
+  }
 }
 
 function applyHartIdentity(values) {
@@ -127,6 +186,10 @@ export default function useStorageSync() {
       //       from user_data.json so the email shows up.
       let cancelled = false;
       (async () => {
+        if (cancelled) return;
+        // Must run before the hart top-up below: a stale sealed flag would
+        // both keep the ceremony gated off and get re-POSTed into the file.
+        await consumeHartResetMarker();
         if (cancelled) return;
         const tok = localStorage.getItem('access_token');
         const guestTok = isGuestJwt(tok);
@@ -195,6 +258,10 @@ export default function useStorageSync() {
 
     let cancelled = false;
     (async () => {
+      // Same ordering constraint as the authenticated branch: consume the
+      // reset before the hart_* fetch loop can re-hydrate a stale identity.
+      await consumeHartResetMarker();
+      if (cancelled) return;
       const values = {};
       for (const key of STORAGE_KEYS) {
         if (cancelled) return;

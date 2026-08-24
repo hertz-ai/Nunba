@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {ToastContainer, toast} from 'react-toastify';
 
@@ -7,10 +7,11 @@ import Footer from '../footer';
 import Navbar from '../navbar';
 
 import './agents.css';
-import {X, Search, ArrowRight, Sparkles} from 'lucide-react';
+import {X, Search, ArrowRight, Sparkles, CloudOff} from 'lucide-react';
 
 import AgentPoster from '../../assets/images/AgentPoster.png';
 import {chatApi} from '../../services/socialApi';
+import {agentSlug} from '../../utils/agentSlug';
 
 // Hevolve brand spectrum: the steward's six hues. Each card is tinted with one
 // of these (by grid position) so the gallery reads as a spectrum rather than a
@@ -34,39 +35,50 @@ const Agents = ({
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredAgents, setFilteredAgents] = useState([]);
+  // A failed load is NOT an empty list.  Before this flag existed the catch
+  // below only console.error'd, so the page rendered the same "No agents found"
+  // copy for "your backend is down" and "you genuinely have zero agents" — the
+  // user cannot tell those apart, and one of them is fixable by retrying.
+  const [loadError, setLoadError] = useState(false);
 
-  useEffect(() => {
-    const fetchAgents = async () => {
-      try {
-        if (predefinedAgents && predefinedAgents.length > 0) {
-          const validAgents = predefinedAgents.filter(
-            (agent) => agent.name && agent.name.trim() !== ''
-          );
-          setAgentsData(validAgents);
-          setFilteredAgents(validAgents);
-          setLoading(false);
-          return;
-        }
-
-        // Otherwise fetch from API
-        const res = await chatApi.getPrompts();
-        const data = res?.prompts || res?.data?.prompts || res || [];
-
-        // Filter out agents without a name
-        const validAgents = (data || []).filter(
+  // Lifted out of the effect so the retry CTA can re-run the exact same load
+  // path.  A second inline fetch for retry would be a parallel path that drifts.
+  const fetchAgents = useCallback(async () => {
+    setLoadError(false);
+    setLoading(true);
+    try {
+      if (predefinedAgents && predefinedAgents.length > 0) {
+        const validAgents = predefinedAgents.filter(
           (agent) => agent.name && agent.name.trim() !== ''
         );
         setAgentsData(validAgents);
         setFilteredAgents(validAgents);
-      } catch (error) {
-        console.error('Error fetching agents:', error);
-      } finally {
-        setLoading(false);
+        return;
       }
-    };
 
-    fetchAgents();
+      // Otherwise fetch from API
+      const res = await chatApi.getPrompts();
+      const data = res?.prompts || res?.data?.prompts || res || [];
+
+      // Filter out agents without a name
+      const validAgents = (data || []).filter(
+        (agent) => agent.name && agent.name.trim() !== ''
+      );
+      setAgentsData(validAgents);
+      setFilteredAgents(validAgents);
+    } catch (error) {
+      console.error('Error fetching agents:', error);
+      setLoadError(true);
+      // Leave any previously-loaded list in place rather than blanking it — a
+      // failed refresh should not destroy what the user can already see.
+    } finally {
+      setLoading(false);
+    }
   }, [predefinedAgents]);
+
+  useEffect(() => {
+    fetchAgents();
+  }, [fetchAgents]);
 
   const handleSearchChange = (e) => {
     const query = e.target.value;
@@ -147,7 +159,9 @@ const Agents = ({
           {/* Agents Grid */}
           <div className="flex-1 overflow-y-auto px-3 pb-4">
             <div className="agents-grid">
-              {filteredAgents.length === 0 ? (
+              {filteredAgents.length === 0 && loadError ? (
+                <LoadErrorState onRetry={fetchAgents} />
+              ) : filteredAgents.length === 0 ? (
                 <EmptyState query={searchQuery} />
               ) : (
                 filteredAgents.map((agent, index) => (
@@ -203,7 +217,9 @@ const Agents = ({
 
           <div className="max-w-6xl mx-auto px-2">
             <div className="agents-grid">
-              {filteredAgents.length === 0 ? (
+              {filteredAgents.length === 0 && loadError ? (
+                <LoadErrorState onRetry={fetchAgents} />
+              ) : filteredAgents.length === 0 ? (
                 <EmptyState query={searchQuery} />
               ) : (
                 filteredAgents.map((agent, index) => (
@@ -250,6 +266,61 @@ const EmptyState = ({query = ''}) => (
   </div>
 );
 
+// Distinguishable sibling of EmptyState: "we could not load" is a different fact
+// from "there is nothing to show", and only this one is worth retrying.  Reuses
+// the agents-empty* classes so it needs no new CSS and matches the surrounding
+// visual language.  role="alert" so screen readers announce the failure instead
+// of leaving a silently-empty grid.
+const LoadErrorState = ({onRetry}) => (
+  <div className="agents-empty" role="alert">
+    <div className="agents-empty__icon">
+      <CloudOff />
+    </div>
+    <p className="agents-empty__title">Couldn&apos;t load your agents</p>
+    <p className="agents-empty__hint">
+      The local backend didn&apos;t respond. Your agents are still there — this is
+      a connection problem, not an empty list.
+    </p>
+    <button type="button" className="agents-empty__retry" onClick={onRetry}>
+      Retry
+    </button>
+  </div>
+);
+
+// Where does this agent actually run? The card's one honest provenance claim.
+//
+// The label vocabulary matches Hevolve web's card (local/peer/hive) so the two
+// surfaces describe the same agent the same way. The AUTHORITY is the backend's
+// `origin` field, stamped per source in chatbot_routes.get_prompts_route —
+// nothing here infers provenance from field shapes.
+//
+// That matters because inference was the trap. Web's own isBrowsableAgent
+// docstring records, from a real local dump, that all 1157 rows come back with
+// `is_public` absent — so the parity plan's "port the is_public filter" would
+// have been a predicate that can never fire. The fix belonged at the producer,
+// which used to build the list from three labelled sections and throw the label
+// away.
+//
+// UNKNOWN OR ABSENT origin renders NOTHING, deliberately. A default of "local"
+// would assert something false about a hive agent whenever the backend is older
+// than this component — and a confidently wrong provenance badge is worse than
+// no badge, because the user has no way to tell it is guessing.
+const ORIGIN_LABELS = {
+  local: 'On your machine',
+  peer: 'Peer node',
+  hive: 'Hive',
+};
+
+const OriginBadge = ({origin}) => {
+  const label = ORIGIN_LABELS[origin];
+  if (!label) return null;
+  return (
+    <span className={`agent-card__origin agent-card__origin--${origin}`}>
+      {label}
+    </span>
+  );
+};
+
 const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) => {
   const navigate = useNavigate();
   const accent = SPECTRUM[index % SPECTRUM.length];
@@ -260,8 +331,8 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
       return;
     }
 
-    const agentName = agent.name.replace(/\s+/g, '-');
-    navigate(`/agents/${agentName}`, {
+    // Canonical slug — the readers slugify too, so the round trip closes.
+    navigate(`/agents/${agentSlug(agent.name)}`, {
       state: {
         agentData: agent,
       },
@@ -276,9 +347,20 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
   };
 
   const description =
+    // `description` and `capabilities` are what a LOCAL Nunba's /prompts
+    // endpoint returns; `video_text` is the cloud list's name for the same
+    // thing. Checking only video_text meant every card on a local install fell
+    // through to the filler line while the real description sat in the payload
+    // under a different key. Verified against the running app 2026-08-19:
+    // /prompts returned 7 agents with 7 distinct descriptions and the gallery
+    // showed the same sentence seven times.
     agent.video_text && agent.video_text !== 'This is Static Description'
       ? agent.video_text
-      : 'An AI agent ready to help. Tap to start a conversation.';
+      : (agent.description
+        || (Array.isArray(agent.capabilities) ? agent.capabilities.join(', ') : agent.capabilities)
+        || agent.capability
+        || agent.tagline
+        || 'An AI agent ready to help. Tap to start a conversation.');
 
   return (
     <article
@@ -293,7 +375,12 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
       {/* Media */}
       <div className="agent-card__media">
         <img
-          src={agent.teacher_image_url || agent.image_url || AgentPoster}
+          /* `avatar` is the local /prompts spelling and `image` is the
+             build-time registry's. Without them all seven local agents fell
+             through to AgentPoster, so the gallery rendered one stock portrait
+             seven times over while each agent had its own picture in the
+             payload. */
+          src={agent.teacher_image_url || agent.image_url || agent.avatar || agent.image || AgentPoster}
           className="agent-card__img"
           alt={agent.name}
           loading="lazy"
@@ -305,6 +392,7 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
       {/* Content */}
       <div className="agent-card__body">
         <h3 className="agent-card__name">{agent.name}</h3>
+        <OriginBadge origin={agent.origin} />
         <p className="agent-card__desc">{description}</p>
 
         <button

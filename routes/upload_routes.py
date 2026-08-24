@@ -145,6 +145,14 @@ def _describe_image_via_llm(image_path, prompt=None):
         # rather than pay for it.  Verified on this server: reasoning went
         # 760 -> 0 chars and the call got FASTER.  (`reasoning_effort: none`
         # was also tried and is NOT honoured here — don't substitute it.)
+        # KEEP THIS even though llama_config now also disables thinking at
+        # SPAWN time (task #652 — the same defect hit the draft classifier on
+        # 2026-08-12 after a llama.cpp rebuild made `--reasoning-budget 0`
+        # stop working).  The two layers cover different holes: the spawn-time
+        # env var reaches every path but only for a server WE started, while
+        # this per-request kwarg travels with the payload and so survives an
+        # externally-started / remote / cloud endpoint.  Both are pinned by
+        # tests/test_llama_think_off.py::test_both_thinking_off_layers_are_present.
         "chat_template_kwargs": {"enable_thinking": False},
         # Headroom, not the fix: 300 suffices once thinking is off, but a
         # future model or a longer prompt should degrade to slow, not empty.

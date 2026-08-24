@@ -524,6 +524,37 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"Local Llama fallback failed: {e}")
 
+    # ── NOTE: THIS MESSAGE MISATTRIBUTES ITS OWN CAUSE ────────────────
+    # Reached only AFTER the local-LLM call above fails.  No tool
+    # registry is consulted anywhere in this function, so "Loading
+    # tools" names a subsystem that is not in this path.
+    #
+    # It cost a live debugging session on 2026-08-12.  A user's one-word
+    # "hi" returned this text after ~63s.  The real event, from
+    # gui_app.log:
+    #   11:25:20  Local Llama fallback failed: HTTPConnectionPool(
+    #             host='localhost', port=8080): Read timed out.
+    #             (read timeout=60)
+    # i.e. the 60s read timeout on line ~517 expiring — llama accepted
+    # the connection and produced nothing.  llama-server had NOT been
+    # restarted (last start banner 2026-08-12T01:16:41) and was
+    # model-loaded ~10h earlier, so it was neither down nor starting.
+    # Chasing the word "tools" sent the diagnosis to boot/tool-warmup
+    # twice before the log was read.
+    #
+    # Two further reasons this string is a bad instrument:
+    #  * app.py:4451's genuine boot stub emits the IDENTICAL text, so
+    #    the UI cannot distinguish "still booting" from "LLM did not
+    #    answer" — the two have different fixes;
+    #  * per memory/feedback_liveness_vs_readiness_vs_busy.md the states
+    #    are alive (/health 200) / busy (completion timeout) / down
+    #    (refused).  A completion timeout is the BUSY case; reporting it
+    #    as initialization is the documented mislabel.
+    #
+    # Deliberately NOT re-worded here: the reported defect is the 60s
+    # dead turn itself, and changing the text would only make the
+    # symptom read nicer.  Fix the cause, then make this say what
+    # actually happened.
     return {
         "text": "Loading tools... try again in a moment.",
         "source": "loading", "loading": True

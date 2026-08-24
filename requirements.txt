@@ -60,6 +60,7 @@ httplib2==0.22.0
 # Python-embed deps (transformers/torch worker deps)
 torch==2.10.0
 torchaudio==2.10.0
+sounddevice==0.5.5
 transformers==5.1.0
 sentence-transformers==5.2.2
 tokenizers==0.22.2

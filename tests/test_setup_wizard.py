@@ -331,3 +331,58 @@ class TestEdgeCases:
             result = color("test", c)
             assert isinstance(result, str)
             assert len(result) > 0
+
+
+class TestInputTimeoutBlockedTty:
+    """The timeout path must survive a tty that BLOCKS instead of EOF-ing.
+
+    A hidden console (Start-Process -WindowStyle Hidden) IS a tty, so the
+    non-interactive early-return does not fire; the reader thread then blocks
+    forever in sys.stdin.readline().  Closing stdin after the join timeout
+    serializes on the stream lock the blocked readline already holds and
+    DEADLOCKS — live 2026-08-22, a detached build sat at "Choose option
+    (1-3):" for 55 minutes because the auto-skip line was never reached
+    (proof_reports/build_20260822_ceremony_stuck.log).
+
+    Subprocess-isolated: pre-fix the deadlock would hang pytest itself.
+    """
+
+    def test_timeout_returns_default_when_tty_stdin_never_delivers(self):
+        import subprocess
+        import textwrap
+
+        child = textwrap.dedent("""
+            import os, sys
+            sys.path.insert(0, {root!r})
+            # A pipe that never delivers data and never EOFs, masquerading
+            # as a tty so the interactive branch runs and readline blocks.
+            r, w = os.pipe()
+            raw = os.fdopen(r, 'r')
+            class TtyPipe:
+                def readline(self):
+                    return raw.readline()
+                def close(self):
+                    return raw.close()
+                @property
+                def closed(self):
+                    return raw.closed
+                def isatty(self):
+                    return True
+            sys.stdin = TtyPipe()
+            from desktop import setup_wizard
+            val = setup_wizard._input_with_timeout('choose: ', timeout=2, default='3')
+            sys.stdout.write('RESULT=' + val)
+            sys.stdout.flush()
+            os._exit(0)   # skip finalization; the daemon reader never wakes
+        """).format(root=PROJECT_ROOT)
+
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", child],
+                capture_output=True, text=True, timeout=25)
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "_input_with_timeout deadlocked on a blocked tty stdin — "
+                "the post-timeout stdin.close() is serializing on the lock "
+                "held by the blocked readline")
+        assert "RESULT=3" in proc.stdout

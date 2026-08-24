@@ -850,8 +850,14 @@ def _run_rebuild_steps():
     step("7a. Installing HevolveAI (Embodied Continual Learner With Hiveintelligence)")
     _hevolveai_installed = False
     if hevolveai_src:
+        # 600s, matching the other heavy installs above.  This builds a
+        # wheel FROM A SOURCE TREE, the slowest install shape here, and it
+        # runs right after ~1.5 GB of package writes with the OS scanner
+        # walking every new file.  Measured 2026-08-20: hart-backend (7b,
+        # same shape) took 84s idle but blew past 120s in that context and
+        # hard-aborted the build.  A timeout here ships nothing.
         run([python_exe, "-m", "pip", "install", hevolveai_src,
-             "--no-warn-script-location", "--no-deps"], timeout=120)
+             "--no-warn-script-location", "--no-deps"], timeout=600)
         print(f"  Installed from {hevolveai_src}")
         _hevolveai_installed = True
     else:
@@ -873,10 +879,17 @@ def _run_rebuild_steps():
     elif os.path.isfile(os.path.join(LLM_LANGCHAIN_SRC, 'pyproject.toml')):
         hevolve_src = LLM_LANGCHAIN_SRC
 
+    _hart_backend_installed = False
     if hevolve_src:
+        # 600s -- see 7a.  This is the step that actually blew the 120s cap
+        # on 2026-08-20 ("Building wheel for hart-backend ... still
+        # running..." -> TimeoutExpired -> atomic swap NOT performed).
+        # HARTOS builds an 8.74 MB wheel against hevolveai's 1.15 MB, which
+        # is the only reason 7a survived the same cap and 7b did not.
         run([python_exe, "-m", "pip", "install", hevolve_src,
-             "--no-warn-script-location", "--no-deps"], timeout=120)
+             "--no-warn-script-location", "--no-deps"], timeout=600)
         print(f"  Installed from {hevolve_src}")
+        _hart_backend_installed = True
     else:
         print("  WARNING: hart-backend source not found, skipping")
 
@@ -994,8 +1007,10 @@ _inject_path(_lib_dir, front=False)
     # available (fork PR / dev env without HEVOLVE_REPO_TOKEN).  In
     # that case we degrade canary failures to WARN, matching the
     # fork-friendly gate at .github/workflows/build.yml:86-117 that
-    # explicitly allows missing siblings.  Same pattern hart-backend
-    # already uses below (critical=False).  This is the single source
+    # explicitly allows missing siblings.  hart-backend below now uses
+    # this same flag-driven pattern (it previously hardcoded
+    # critical=False, which is why its dead canary went unnoticed).
+    # This is the single source
     # of truth for "was hevolveai actually installed" — both step 7a
     # and the canary read the same `_hevolveai_installed` flag, so
     # the install-skip / canary-skip can never drift apart.
@@ -1010,13 +1025,32 @@ _inject_path(_lib_dir, front=False)
                 [python_exe, "-c", f"import {mod}; print('{mod} OK')"],
                 critical=_hevolveai_installed)
 
-    # hart-backend is non-critical at this stage — its install can
-    # legitimately fail in dev setups where the source tree isn't
-    # checked out, and the cx_Freeze step can still bundle.  Surface
-    # the failure but don't block the swap.
+    # hart-backend canary.  Critical ONLY when 7b actually installed it —
+    # same flag-driven pattern as the hevolveai canaries above, so an
+    # install-skip and a canary-skip can never drift apart.  A dev tree
+    # without the sibling checked out still swaps; a tree WITH it now has
+    # to prove the biggest dependency imports.
+    #
+    # The module is `core`, not `hartos_backend`.  `hartos_backend` is not
+    # and never was a module — it is the SOURCE DIRECTORY name
+    # (HARTOS_BACKEND_SRC = .../hartos_backend_src, :76).  The distribution
+    # is `hart-backend` and its top_level.txt ships core, agent_identity,
+    # agent_ledger, create_recipe, hart_intelligence, ... — no
+    # `hartos_backend` anywhere.  So this check raised ModuleNotFoundError
+    # on EVERY build, was demoted to a WARN, and therefore verified nothing:
+    # the hard gate covered torch, torch._C, transformers and four hevolveai
+    # modules while the largest and most import-fragile dependency went
+    # unchecked.  Observed 2026-08-19 on a full scratch rebuild.
+    #
+    # `core` and not `hart_intelligence`: importing hart_intelligence pulls
+    # `from hart_intelligence_entry import *`, which starts VisionService and
+    # binds a WebSocket port — side effects a build-time canary must not
+    # have.  `core` is the canonical HARTOS package (CLAUDE.md), imports
+    # clean and fast, and doubles as a check that Nunba has not grown its
+    # own colliding `core/`.
     _verify("hart-backend import",
-            [python_exe, "-c", "import hartos_backend; print('hart-backend OK')"],
-            critical=False)
+            [python_exe, "-c", "import core; print('hart-backend OK')"],
+            critical=_hart_backend_installed)
 
     # Informational — package count + python version
     pkg_list = run([python_exe, "-m", "pip", "list", "--format=columns"],

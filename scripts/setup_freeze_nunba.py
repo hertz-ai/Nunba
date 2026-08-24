@@ -319,6 +319,13 @@ build_exe_options = {
         "pathlib",
         "shutil",
         "winreg",
+        # torch 2.10 imports stdlib unittest during its OWN init
+        # (torch/utils/_config_module.py:10, reached via torch.nested ->
+        # torch.fx).  torch resolves from python-embed at runtime, so the
+        # tracer never sees that import — unittest must be FORCED in, or a
+        # fresh lib/ ships without it and the frozen exe lands on Tier-3
+        # (measured 2026-08-21; see the excludes note further down).
+        "unittest",
         "tkinter",  # Full package tree — ensures messagebox, filedialog etc. are included
         "flask_cors",
         "pyautogui",
@@ -595,7 +602,22 @@ build_exe_options = {
         # not lib/.  Same SRP principle.
         "agent_ledger", "agent_ledger.*",
         "hevolve_database", "hevolve_database.*",
-        "unittest", "test", "tests",
+        # "unittest" was excluded here for years and every build still
+        # shipped it: build/Nunba/lib was reused across builds and carried
+        # lib/unittest from before the exclude existed.  The first genuinely
+        # fresh lib/ (2026-08-21, after the staging-dir sweep) honoured the
+        # exclude — and torch 2.10 CANNOT import without unittest:
+        #   torch/__init__ -> torch.nested -> torch.fx ->
+        #   torch/utils/_config_module.py:10  `import unittest`
+        #   -> ModuleNotFoundError -> 392 poisoned torch.* stay in
+        #   sys.modules -> every later import dies with "partially
+        #   initialized module 'torch' has no attribute 'autograd'"
+        #   -> Tier-3.  Restoring unittest alone flipped the same tree to
+        #   Tier-1 (validate 62/0/0, 2026-08-21T19:17).
+        # unittest is therefore in packages[] below (forced include — the
+        # tracer can't see torch's import, torch lives in python-embed).
+        # "test"/"tests" stay excluded; they are the CPython test suite.
+        "test", "tests",
         "shapely.plotting", "shapely.tests",
         # Exclude large unnecessary packages
         "cv2", "opencv",  # pyautogui uses PIL.ImageGrab on Windows, not cv2
@@ -1067,8 +1089,21 @@ def _validate_python_embed_source() -> list[tuple[str, str]]:
         if not (os.path.isdir(full) and entry.endswith('.dist-info')):
             continue
         meta = os.path.join(full, 'METADATA')
-        if not os.path.isfile(meta):
+        # os.path.isfile() SWALLOWS OSError and returns False, so an
+        # ERROR_ACCESS_DENIED read as "METADATA file missing" -- and the
+        # repair recipe printed below then prescribed rm -rf, which hits
+        # the very same denial.  That chain is what turned an elevated
+        # build's ACL damage into "23 file(s) STILL corrupt" for hours
+        # (2026-08-14).  Probe with os.stat() so absence and denial stay
+        # distinguishable.  Guarded by tests/test_build_script.py.
+        try:
+            os.stat(meta)
+        except FileNotFoundError:
             bad.append((full, 'METADATA file missing'))
+            continue
+        except OSError as exc:
+            bad.append((meta, f'unreadable ({exc.strerror}) — a PERMISSION '
+                              f'failure, not corruption'))
             continue
         try:
             with open(meta, encoding='utf-8', errors='replace') as fh:
@@ -1244,8 +1279,26 @@ def _reinstall_sibling_from_local(repo_name: str) -> bool:
             if _r.returncode == 0:
                 print(f"  python-embed: {repo_name} re-installed OK")
                 return True
-            print(f"  python-embed: {repo_name} re-install FAILED: "
-                  f"{(_r.stderr or _r.stdout or '')[:300]}")
+            # Print the WHOLE error, not [:300].
+            #
+            # The old 300-char cut landed mid-path on every observed failure
+            # ("...File \"C:\\Users\\sathi\\PycharmProjects\\Nunba-HART-Comp")
+            # so the actual pip exception was never visible.  Three separate
+            # build failures on 2026-08-12 could not be attributed for exactly
+            # that reason, while the SAME pip command run by hand succeeded —
+            # meaning the cause is specific to the in-build context and lives
+            # entirely inside the text we were throwing away.
+            #
+            # A diagnostic that truncates before the diagnosis is worse than
+            # no diagnostic: it looks like information and misdirects.  Same
+            # failure shape as the TTS stage that logged nothing on success.
+            # Build logs are captured to a file, so length is not a concern
+            # here; being unable to read the error is.
+            _err = (_r.stderr or '') + (('\n' + _r.stdout) if _r.stdout else '')
+            print(f"  python-embed: {repo_name} re-install FAILED "
+                  f"(exit {_r.returncode}), full output follows:")
+            for _line in (_err.strip() or '(no output captured)').splitlines():
+                print(f"    | {_line}")
             return False
     print(f"  python-embed: {repo_name} local clone not found "
           f"(looked in {[os.path.normpath(p) for p in _sibling_repo_candidates(repo_name)]})")
@@ -1386,6 +1439,24 @@ if os.path.exists("python-embed"):
             for fp, reason in _src_corruption[:30]:
                 print(f"  {fp}  ->  {reason}")
             print()
+            # A permission failure is NOT corruption, and the rm -rf recipe
+            # below hits the same ERROR_ACCESS_DENIED.  Say so, and give the
+            # remedy that actually applies: hand the tree back to normal
+            # inheritance -- exactly what build.py:normalize_embed_acl does
+            # automatically for an elevated build.
+            _perm = [fp for fp, reason in _src_corruption
+                     if 'PERMISSION' in reason or 'Permission denied' in reason]
+            if _perm:
+                print(f"  {len(_perm)} of these are UNREADABLE, not corrupt — "
+                      f"an ELEVATED build left python-embed owned by the")
+                print("  admin account with no ACE for you.  Fix permissions "
+                      "FIRST; rm -rf would hit the same denial:")
+                if sys.platform == 'win32':
+                    print("    # from an ADMINISTRATOR shell:")
+                    print("    icacls python-embed /reset /T /C /Q")
+                else:
+                    print('    sudo chown -R "$(id -u):$(id -g)" python-embed')
+                print()
             print("  Manual repair recipe (run from the Nunba repo root):")
             print("    rm -rf python-embed/Lib/site-packages/<bad-pkg>")
             print("    pip install --target python-embed/Lib/site-packages \\")
@@ -1781,12 +1852,143 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # build copy is safe and keeps it lean:
             '*.gguf', '*.bin', '*.safetensors', '*.onnx', '*.pt', '*.pth',
             '*.ckpt', '*.db', '*.sqlite', '*.sqlite3', '*.zip', '*.tar',
-            '*.tar.gz', '*.tgz', '*.7z', '*.mp4', '*.mov', '*.iso')
+            '*.tar.gz', '*.tgz', '*.7z', '*.mp4', '*.mov', '*.iso',
+            # SQLite WAL sidecars.  fnmatch's '*.db' does NOT match
+            # 'foo.db-shm', so excluding the database while copying its two
+            # companions left the build copying memory-mapped files that are
+            # locked whenever ANY process has the DB open.  2026-08-17 the
+            # build died here:
+            #   HARTOS/agent_data/hevolve_database.db-shm
+            #   [WinError 33] another process has locked a portion of the file
+            # That made the build non-deterministic -- it passed or failed on
+            # whether a test run or the installed app happened to hold the DB.
+            '*.db-shm', '*.db-wal', '*.db-journal',
+            '*.sqlite-shm', '*.sqlite-wal', '*.sqlite-journal',
+            '*.sqlite3-shm', '*.sqlite3-wal', '*.sqlite3-journal',
+            # Runtime logs a sibling happened to leave in its working tree.
+            # Measured 2026-08-20 in the shipped bundle:
+            #   hevolveai/server/logs/  79 files  59 MB
+            # dated 2026-01-16/17 -- seven-month-old rotated WAMP publisher
+            # logs, four of them at the 10 MB rotation cap.  They rode the
+            # sibling copy into python-embed and out into the installer, which
+            # is the whole of the +9.5 MB the 2026-08-19 23:07 build gained
+            # even though it also DROPPED 147 dead cp310 .pyd.
+            #
+            # 'logs' catches the directory wherever it sits; the globs catch
+            # loose files and rotated siblings, because fnmatch's '*.log' does
+            # NOT match 'foo.log.1' -- the same trap that made '*.db' miss
+            # '*.db-shm' above.
+            'logs', '*.log', '*.log.[0-9]', '*.log.[0-9][0-9]')
+
+        _PKG_TMP_PREFIX = 'hart-freeze-pkg-'
+
+        def _rmtree_loudly(path, label):
+            """Remove `path`, retrying briefly, and SAY SO if it survives.
+
+            The old cleanup was `rmtree(..., ignore_errors=True)`, which cannot
+            report its own failure.  On Windows it routinely loses to the very
+            lock this file documents above ("[WinError 33] another process has
+            locked a portion of the file"), so the dir stayed and nobody knew.
+            Measured 2026-08-19: 36 orphaned hart-freeze-pkg-* dirs totalling
+            2,237.8 MB in %TEMP%, oldest 2026-08-04 — one per build, 15 days.
+            A cleanup that swallows its own errors is not a cleanup.
+
+            WHY A PLAIN rmtree COULD NEVER HAVE WORKED HERE, retries included:
+            git marks its object store read-only, copytree preserves that, and
+            Windows refuses to delete a read-only file.  Diagnosed on one of the
+            orphans: PermissionError [WinError 5] on
+            .git/objects/00/03e7a5..., with 3721 of 3721 files read-only.  And
+            .git is KEPT on purpose (see _IGNORE_HEAVY above — setuptools_scm
+            needs it to stamp the version), so this is not avoidable by copying
+            less.  Clear the read-only bit first, THEN remove.
+
+            Done as an explicit pre-pass rather than rmtree's error hook because
+            that hook changed name in 3.12 (onerror -> onexc); a pre-pass works
+            the same on every version the build might run under.
+            """
+            import stat as _stat
+            for _attempt in range(3):
+                try:
+                    for _r, _ds, _fs in os.walk(path):
+                        for _n in _ds + _fs:
+                            _p = os.path.join(_r, _n)
+                            try:
+                                os.chmod(_p, _stat.S_IWRITE)
+                            except OSError:
+                                pass          # best effort; rmtree reports below
+                    _shutil.rmtree(path)
+                    return True
+                except FileNotFoundError:
+                    return True
+                except OSError:
+                    if _attempt < 2:
+                        import time as _t
+                        _t.sleep(0.5)          # transient lock: let it clear
+            print(f"  WARN: could not remove {label} temp dir, left behind: {path}")
+            return False
+
+        # A staging dir younger than this is assumed to belong to a build that
+        # is still running, and is NEVER swept.  Deliberately far longer than
+        # any real build (the 2026-08-19 release build compiled in 765s and
+        # took well under an hour end to end), so the guard costs one extra
+        # build's worth of orphan at most while making the sweep safe on its
+        # own terms.
+        #
+        # Why not rely on build.py's BUILD-LOCK: it does exit(2) on a
+        # concurrent build, but it also prints "could not write lock ...;
+        # proceeding without lock" and continues when the lock file cannot be
+        # written, and setup_freeze_nunba.py can be invoked directly without
+        # going through build.py at all.  A sweep that deletes another build's
+        # in-use staging dir would be a far worse bug than the leak it fixes,
+        # so it must not depend on someone else's lock.
+        _PKG_TMP_MIN_AGE_S = 6 * 60 * 60
+
+        def _sweep_stale_pkg_tmp():
+            """Delete hart-freeze-pkg-* left by EARLIER builds.
+
+            Self-healing across runs: even if this build's own cleanup loses a
+            race, the next build reclaims the space instead of accumulating it.
+            Only touches our own prefix, only dirs older than
+            _PKG_TMP_MIN_AGE_S, and never the dir this run is using (created
+            after this sweep).
+            """
+            _root = _tempfile.gettempdir()
+            _freed = _n = 0
+            import time as _t
+            _now = _t.time()
+            try:
+                _entries = os.listdir(_root)
+            except OSError:
+                return
+            for _name in _entries:
+                if not _name.startswith(_PKG_TMP_PREFIX):
+                    continue
+                _p = os.path.join(_root, _name)
+                if not os.path.isdir(_p):
+                    continue
+                try:
+                    if (_now - os.path.getmtime(_p)) < _PKG_TMP_MIN_AGE_S:
+                        continue          # a build may still be using it
+                except OSError:
+                    continue              # cannot age it -> do not touch it
+                try:
+                    _sz = sum(os.path.getsize(os.path.join(_r, _f))
+                              for _r, _d, _fs in os.walk(_p) for _f in _fs)
+                except OSError:
+                    _sz = 0
+                if _rmtree_loudly(_p, 'stale package'):
+                    _freed += _sz
+                    _n += 1
+            if _n:
+                print(f"  swept {_n} stale {_PKG_TMP_PREFIX}* dir(s), "
+                      f"freed {_freed / 1048576:.1f} MB")
+
+        _sweep_stale_pkg_tmp()
 
         def _pip_install_sibling(_sib_path):
             """Copy the sibling minus the heavy dirs, then pip-install the copy
             into python-embed.  Returns the pip CompletedProcess."""
-            _tmp = _tempfile.mkdtemp(prefix='hart-freeze-pkg-')
+            _tmp = _tempfile.mkdtemp(prefix=_PKG_TMP_PREFIX)
             _dst = os.path.join(_tmp,
                                 os.path.basename(os.path.normpath(_sib_path)))
             try:
@@ -1798,7 +2000,7 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                      "--target", _embed_sp, "--upgrade", _dst],
                     capture_output=True, text=True, timeout=900)
             finally:
-                _shutil.rmtree(_tmp, ignore_errors=True)
+                _rmtree_loudly(_tmp, 'package staging')
 
         for _sib_dir, _pkg_name in _sibling_deps:
             _sib_path = os.path.join(_project_root, _sib_dir)
@@ -2042,6 +2244,24 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             else:
                 print(f"python-embed: {_pkg_label} install FAILED (non-fatal): {_r.stderr[:150]}")
 
+def _abi_tag_of_embedded_python(embed_dir):
+    """'cp312' for the interpreter that SHIPS, read from its own pythonXY.dll.
+
+    Returns None when it cannot be determined, and every caller must then prune
+    nothing: deleting extension modules on a guess is how you ship a bundle that
+    imports on the build box and dies on the user's.
+    """
+    try:
+        for name in os.listdir(embed_dir):
+            low = name.lower()
+            if (low.startswith('python') and low.endswith('.dll')
+                    and low[6:-4].isdigit() and len(low[6:-4]) >= 2):
+                return 'cp' + low[6:-4]        # python312.dll -> cp312
+    except OSError:
+        pass
+    return None
+
+
 # ── Post-build: copy python-embed via shutil.copytree ──
 # cx_Freeze's include_files doesn't reliably copy dot-prefixed directories
 # (e.g. sklearn/.libs/) so we do the entire python-embed copy ourselves.
@@ -2067,8 +2287,68 @@ if ('build' in sys.argv or 'build_exe' in sys.argv) and not _skip_python_embed_c
                         print(f"  WARN: cannot overwrite {os.path.basename(dst)} (locked)")
                         return dst
 
+        # Drop payload the bundled interpreter can NEVER load.  Measured on the
+        # 2026-08-19 install, inside python-embed/Lib/site-packages/hevolveai:
+        #   *.stale          5.6 MB / 14 files   (leftover build artifacts)
+        #   cp310 .pyd      24.7 MB / 147 files  (bundle runs python312.dll)
+        #   cp312 .pyd      21.9 MB / 142 files  (the live set)
+        # i.e. 30.3 MB of a 54 MB package was unloadable — 56% of it.
+        #
+        # Safe by CPython's own import rules, not by assumption: for module
+        # `foo`, 3.12 only ever considers `foo.cp312-win_amd64.pyd` and
+        # `foo.pyd`.  A cp310-tagged file matches neither name, and nothing
+        # imports a `.pyd.stale` at all.
+        #
+        # The ABI is READ FROM THE EMBEDDED INTERPRETER (its own pythonXY.dll),
+        # not from the building process and not hardcoded — the build host's
+        # Python is not necessarily the one that ships, and a hardcoded 'cp312'
+        # silently starts deleting the LIVE set the day python-embed is upgraded.
+        _embed_abi = _abi_tag_of_embedded_python(_src_embed)
+        print(f"  python-embed ABI: {_embed_abi or 'UNKNOWN (no pruning)'}")
+
+        # Dropping a wrong-ABI module is only harmless when the SAME module also
+        # ships for the shipping ABI.  When it does not, that module is already
+        # dead in the installed app (nothing can import it) and pruning would
+        # hide the fact.  Measured 2026-08-19: 141 hevolveai modules shipped
+        # both cp310+cp312, but SIX shipped cp310 ONLY, with no .py and no bare
+        # .pyd fallback — free_energy, semantic_causal_recall, latent_dynamics,
+        # qwen_vl_wrapper, shard_executor, state_integrity.  Those Cython
+        # modules were never rebuilt for 3.12.  Warn, loudly, per build.
+        _orphans = []
+
+        def _ignore_unloadable(dirpath, names):
+            drop = set()
+            for n in names:
+                if n.endswith('.stale'):
+                    drop.add(n)
+                elif _embed_abi and n.endswith('.pyd') and '.cp' in n:
+                    # 'mod.cp310-win_amd64.pyd' -> 'cp310'
+                    tag = n.rsplit('.cp', 1)[1].split('-', 1)[0]
+                    if f'cp{tag}' != _embed_abi:
+                        drop.add(n)
+                        base = n.split('.cp')[0]
+                        same_abi = any(
+                            o.startswith(f'{base}.{_embed_abi}') for o in names)
+                        if not (same_abi or f'{base}.py' in names
+                                or f'{base}.pyd' in names):
+                            _orphans.append(os.path.join(dirpath, base))
+            return drop
+
         shutil.copytree(_src_embed, _dst_embed, dirs_exist_ok=True,
-                        copy_function=_robust_copy)
+                        copy_function=_robust_copy, ignore=_ignore_unloadable)
+
+        if _orphans:
+            # NOT fatal: these modules are already unimportable in the shipped
+            # app (that is what "no same-ABI build" means), so failing the build
+            # would block a release over a defect the release does not
+            # introduce.  But it must never be silent — this is the signal that
+            # a Cython module was not rebuilt for the shipping interpreter.
+            print(f"  WARNING: {len(_orphans)} module(s) have NO {_embed_abi} "
+                  f"build and no .py/.pyd fallback — already dead in the app:")
+            for _o in sorted(_orphans):
+                print(f"    - {os.path.relpath(_o, _src_embed)}")
+            print("  Rebuild these for "
+                  f"{_embed_abi} or drop them from the package.")
 
         # Clean orphans: files AND empty dirs in dest that don't exist in source
         _orphan_count = 0
@@ -2280,8 +2560,8 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
                 os.path.join(_build_dir, 'validate.log'),
             ]
             _val_log = next((p for p in _val_log_candidates if os.path.isfile(p)), None)
-            _log_raw = open(_val_log, encoding='utf-8').read() if _val_log else ''
-            _log_text = _log_raw.strip()
+            _log_raw = ''
+            _log_text = ''
 
             def _print_unicode_safe(_t):
                 # Windows consoles default to cp1252; validate.log carries
@@ -2292,6 +2572,20 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
                 except UnicodeEncodeError:
                     print(_t.encode('ascii', errors='replace').decode('ascii'))
 
+            if _val_log:
+                # validate.log is append-only, so echoing the file dumps every
+                # build ever run on this machine into the build output — 32
+                # sessions / ~4000 lines here, which reads like a retry loop
+                # and buries THIS run under days of history.  Same canonical
+                # splitter the verdict uses, so the printed text and the
+                # pass/fail decision are always about the same session.
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                from _validate_verdict import last_session
+                _log_raw = open(_val_log, encoding='utf-8').read()
+                _log_text = last_session(_log_raw).strip()
+                if _log_text and _log_text not in (_ret.stdout or ''):
+                    print("\n--- validate.log (this run) ---")
+                    _print_unicode_safe(_log_text)
             if _ret.returncode != 0:
                 # Print validate.log unconditionally on failure.  The previous
                 # dedup gate (`if _log_text not in stdout`) printed nothing at

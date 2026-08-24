@@ -10,6 +10,7 @@ NFT: Thread safety of synthesis queue, graceful degradation without piper module
      directory auto-creation, download resilience.
 """
 import os
+import time
 import sys
 import tempfile
 from pathlib import Path
@@ -195,6 +196,95 @@ class TestExecutableDiscovery:
             with patch.object(PiperTTS, '_init_piper'):
                 tts = PiperTTS(voices_dir=os.path.join(tmpdir, 'v'),
                                cache_dir=os.path.join(tmpdir, 'c'))
-            tts._piper_module = None
-            with patch.object(tts, '_find_piper_executable', return_value=None):
+            # Patch the ACCESSOR, not the _piper_module attribute. Nulling the
+            # attribute no longer means "unavailable": _get_piper_module() now
+            # RE-IMPORTS after a failure (so a mid-session auto-install is
+            # picked up instead of being latched off for the process lifetime),
+            # and in a dev venv that import succeeds. The accessor is the
+            # availability authority, so that is what a test must control.
+            with patch.object(tts, '_get_piper_module', return_value=None), \
+                 patch.object(tts, '_find_piper_executable', return_value=None):
                 assert tts.is_available() is False
+
+    @staticmethod
+    def _fresh_breaker_state():
+        """The breaker is cached on the CLASS so all instances share one
+        cooldown. That is deliberate in production and a leak between tests —
+        drop it so each test starts cold."""
+        from tts.piper_tts import PiperTTS
+        for attr in ('_piper_cb', '_piper_cb_unavailable'):
+            if hasattr(PiperTTS, attr):
+                delattr(PiperTTS, attr)
+
+    def test_failed_import_is_retried_not_latched(self):
+        """REGRESSION GUARD for a real 63-minute outage (2026-08-10).
+
+        The import used to run once in __init__ and cache None on failure.
+        Combined with the module-level singleton, one failed import — e.g.
+        because the TTS auto-installer was mid-write — disabled Piper for the
+        whole PROCESS. Logs show "No synthesis method available" at 14:32 and
+        again at 15:35 while the install had long since succeeded. The ladder
+        lost its floor and TTS went silent.
+
+        RULE: memoize a capability SUCCESS, never a capability FAILURE that an
+        installer may be concurrently repairing.
+        """
+        self._fresh_breaker_state()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from tts.piper_tts import PiperTTS
+            with patch.object(PiperTTS, '_init_piper'):
+                tts = PiperTTS(voices_dir=os.path.join(tmpdir, 'v'),
+                               cache_dir=os.path.join(tmpdir, 'c'))
+
+            calls = []
+            fake_module = MagicMock()
+
+            def _fake_import(name, *a, **kw):
+                if name == 'piper':
+                    calls.append(name)
+                    if len(calls) == 1:
+                        raise ImportError('not installed yet')
+                    return fake_module
+                return real_import(name, *a, **kw)
+
+            import builtins
+            real_import = builtins.__import__
+
+            with patch.object(builtins, '__import__', _fake_import):
+                assert tts._get_piper_module() is None, "first attempt fails"
+                # Defeat the anti-thrash cooldown via the CANONICAL breaker
+                # (KeyedCircuitBreaker.reset) rather than poking a timer
+                # attribute — there is no local timer any more, by design.
+                _b = PiperTTS._import_breaker()
+                if _b is not None:
+                    _b.reset('piper')
+                assert tts._get_piper_module() is fake_module, (
+                    "second attempt must RE-IMPORT — if this is None the "
+                    "failure is being latched again and the TTS floor will "
+                    "silently disappear whenever an install races startup")
+            assert len(calls) == 2, "expected exactly one retry, not thrashing"
+
+    def test_reprobe_is_rate_limited(self):
+        """The retry must not thrash the import machinery on a per-sentence
+        synthesize loop — one attempt per cooldown window, not per call."""
+        self._fresh_breaker_state()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from tts.piper_tts import PiperTTS
+            with patch.object(PiperTTS, '_init_piper'):
+                tts = PiperTTS(voices_dir=os.path.join(tmpdir, 'v'),
+                               cache_dir=os.path.join(tmpdir, 'c'))
+            calls = []
+            import builtins
+            real_import = builtins.__import__
+
+            def _always_fail(name, *a, **kw):
+                if name == 'piper':
+                    calls.append(name)
+                    raise ImportError('still missing')
+                return real_import(name, *a, **kw)
+
+            with patch.object(builtins, '__import__', _always_fail):
+                for _ in range(25):
+                    tts._get_piper_module()
+            assert len(calls) == 1, (
+                f"expected 1 import attempt inside the cooldown, got {len(calls)}")

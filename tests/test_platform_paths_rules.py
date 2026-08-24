@@ -282,3 +282,84 @@ class TestReturnTypes:
             path = fn()
             if len(path) > 3:  # skip "C:\" etc.
                 assert not path.endswith(os.sep), f"{fn.__name__} ends with separator: {path}"
+
+
+# ============================================================
+# Log separation — installed build vs dev run
+# ============================================================
+
+class TestLogDirProvenanceSeparation:
+    r"""A dev `python main.py` and the INSTALLED app must never write to
+    the same log directory.
+
+    2026-08-16: both resolved to ~/Documents/Nunba/logs, so a dev run and
+    the installed Nunba.exe interleaved into one server.log.  A single
+    traceback in that file mixed frames from the dev repo
+    (PycharmProjects\HARTOS\...) with frames from the installed bundle
+    (Program Files\...\python-embed\...\core\...), which made every
+    log-based diagnosis ambiguous and produced two false root-cause
+    reports before the collision itself was spotted.
+
+    Nothing is dropped by this split — every writer still writes
+    everything; only the ROOT differs by provenance.
+    """
+
+    def test_frozen_and_dev_resolve_to_different_log_dirs(self):
+        with patch.object(sys, 'frozen', True, create=True):
+            reset_cache()
+            frozen_dir = get_log_dir()
+        reset_cache()
+        # dev = no sys.frozen attribute at all
+        had = hasattr(sys, 'frozen')
+        old = getattr(sys, 'frozen', None)
+        if had:
+            del sys.frozen
+        try:
+            dev_dir = get_log_dir()
+        finally:
+            if had:
+                sys.frozen = old
+        reset_cache()
+        assert frozen_dir != dev_dir, (
+            'installed (frozen) and dev runs share a log dir — their '
+            f'output interleaves into one file: {frozen_dir}')
+
+    def test_frozen_keeps_the_canonical_logs_dir(self):
+        """The INSTALLED app must keep the documented path; only the dev
+        run is diverted, so shipped installs and support docs are
+        unaffected."""
+        with patch.object(sys, 'frozen', True, create=True):
+            reset_cache()
+            assert os.path.basename(get_log_dir()) == 'logs'
+
+    def test_env_override_wins_for_both(self):
+        """NUNBA_LOG_DIR pins the directory explicitly — needed by CI,
+        tests and any operator who wants both streams somewhere else."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {'NUNBA_LOG_DIR': tmp}):
+                with patch.object(sys, 'frozen', True, create=True):
+                    reset_cache()
+                    assert get_log_dir() == tmp
+                reset_cache()
+                assert get_log_dir() == tmp
+        reset_cache()
+
+
+class TestEmbeddedHartosDetection:
+    r"""Pin the embedded HARTOS OS probe to an ABSOLUTE POSIX path.
+
+    A Windows-style '\etc\hartos-release' literal would be RELATIVE on
+    Linux and could never match, silently killing the /var/lib/hartos
+    branch and dropping HARTOS OS to ~/.config/nunba — the 'cannot
+    succeed' shape of a vacuous guard.  The code is correct today; this
+    pins it so a future path edit cannot regress it.
+    """
+
+    def test_hartos_release_probe_is_an_absolute_posix_path(self):
+        import inspect
+
+        import core.platform_paths as pp
+        src = inspect.getsource(pp.get_data_dir)
+        assert '/etc/hartos-release' in src, (
+            "get_data_dir must probe the POSIX path '/etc/hartos-release'; "
+            "a backslash literal is relative and can never match on Linux")

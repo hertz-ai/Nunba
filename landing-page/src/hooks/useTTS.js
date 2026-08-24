@@ -17,6 +17,7 @@
 import {useState, useCallback, useRef, useEffect} from 'react';
 import {PocketTTSService} from '../services/pocketTTS';
 import {probeTTSCapability} from '../services/ttsCapabilityProbe';
+import {getTtsAudioElement} from '../services/ttsAudioElement';
 import {TTS_API_URL} from '../config/apiBase';
 
 const TTS_API_BASE = TTS_API_URL;
@@ -191,23 +192,37 @@ export function useTTS(options = {}) {
   }, [enabled]);
 
   // --- Audio element for server TTS playback ---
+  //
+  // THE shared element (services/ttsAudioElement.js), not a private
+  // `new Audio()`. The private one was invisible to VoiceVisualizer: the orb's
+  // `isActive` is `isPlayingResponse || tts.isSpeaking`, but only the first of
+  // those ever pointed audioRef at the element making the sound, so every
+  // tts.speak() turned the orb on and left it animating off its synthetic sine
+  // fallback instead of the voice. See ttsAudioElement.js for the full note.
+  //
+  // Handlers are addEventListener, NOT .onended =. Demopage's realtime handler
+  // assigns the .onended/.onerror PROPERTIES on this same element; property
+  // assignment and listeners coexist, whereas assigning here would silently
+  // clobber whichever of the two ran second.
   useEffect(() => {
-    if (!audioRef.current) {
-      audioRef.current = new Audio();
-      audioRef.current.onended = () => {
-        setIsSpeaking(false);
-        processQueue();
-      };
-      audioRef.current.onerror = () => {
-        setIsSpeaking(false);
-        processQueue();
-      };
-    }
+    const el = getTtsAudioElement();
+    if (!el) return undefined;
+    audioRef.current = el;
+    const onDone = () => {
+      setIsSpeaking(false);
+      processQueue();
+    };
+    el.addEventListener('ended', onDone);
+    el.addEventListener('error', onDone);
     return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
+      el.removeEventListener('ended', onDone);
+      el.removeEventListener('error', onDone);
+      // Pause, but never null out or discard the element itself: it is shared,
+      // outlives this hook, and carries a MediaElementSourceNode claim that can
+      // never be re-made. Dropping it would silence TTS for the rest of the
+      // session (the failure _voiceGraphCache exists to prevent).
+      el.pause();
+      audioRef.current = null;
     };
   }, []);
 

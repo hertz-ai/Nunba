@@ -101,6 +101,66 @@ def fetch_hartos_backend_source():
     )
 
 
+
+def _is_elevated():
+    """True only when this process actually holds an elevated token."""
+    if sys.platform != 'win32':
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def normalize_embed_acl(path):
+    r"""Undo the ACL damage an ELEVATED build does to python-embed.
+
+    THE MECHANISM (proven on this machine, 2026-08-13):
+    Windows COPY inherits ACLs from the destination; MOVE PRESERVES the
+    source's.  `pip install --target` stages into a temp dir and then
+    MOVES into place -- so a build launched from an elevated shell carries
+    `BUILTIN\Administrators` ownership + SE_DACL_PROTECTED into
+    python-embed.  A later NON-elevated run gets ERROR_ACCESS_DENIED on
+    those files, and `os.path.isfile()` SWALLOWS OSError, so "access
+    denied" silently becomes "file missing".  The integrity gate then
+    reports the package CORRUPT and prescribes rm -rf -- which also hits
+    access-denied.  That whole chain produced "23 file(s) STILL corrupt
+    after autorepair" and exit 1, from a tree poisoned by an elevated
+    build nine minutes earlier.  Nothing in the error text mentions
+    permissions, which is why it read as corruption for hours.
+
+    Being agnostic of HOW the build was launched means handing the tree
+    back to normal inheritance while we still hold the privilege to do
+    it.  `icacls /reset /T` re-applies inheritable ACLs from the parent
+    (the repo directory, owned by the invoking user).
+
+    Runs ONLY when actually elevated -- an ordinary build has nothing to
+    undo, so this costs nothing in the common case.  Never fatal: a
+    failure here must not fail an otherwise-good build; it leaves the
+    pre-existing condition alone and says so loudly.
+    """
+    if not _is_elevated() or not os.path.isdir(path):
+        return False
+    print_info("Elevated build detected - normalizing python-embed ACLs "
+               "so a later non-elevated run can still read the bundle")
+    try:
+        r = subprocess.run(
+            ['icacls', path, '/reset', '/T', '/C', '/Q'],
+            capture_output=True, text=True, timeout=1800)
+        if r.returncode == 0:
+            print_info("python-embed ACLs normalized (inheritance restored)")
+            return True
+        print_warn(
+            f"icacls /reset returned {r.returncode}; python-embed may still "
+            f"carry Administrators-only ACLs. A later NON-elevated run can "
+            f"then misreport those files as corrupt. "
+            f"{(r.stderr or r.stdout or '').strip()[:400]}")
+    except Exception as e:
+        print_warn(f"ACL normalization skipped ({type(e).__name__}: {e})")
+    return False
+
+
 def print_header(text):
     """Print a header line"""
     print("=" * 60, flush=True)
@@ -251,7 +311,7 @@ def _tee_subprocess_to_log(cmd, log_path, description=None, timeout_s=None):
     return True
 
 
-def run_command(cmd, description=None, check=True, timeout_s=None):
+def run_command(cmd, description=None, check=True, timeout_s=None, env=None):
     """Run a command and optionally check for errors.
 
     timeout_s: if set, kill the subprocess after this many seconds and
@@ -259,6 +319,11 @@ def run_command(cmd, description=None, check=True, timeout_s=None):
     that historically have wedged (e.g. the langchain-fix infinite-loop
     on some dev machines, 2026-04-19) — the bundle itself is usable but
     the verify step loops for 80+ min of CPU with no log output.
+
+    env: optional environment override, forwarded to subprocess.run.
+    Added for the python-embed pip top-up, which MUST run with
+    PYTHONNOUSERSITE=1 — see the call site for why.  Optional and
+    defaulting to None so every existing caller is unaffected.
     """
     if description:
         print_info(description)
@@ -266,9 +331,11 @@ def run_command(cmd, description=None, check=True, timeout_s=None):
 
     try:
         if isinstance(cmd, str):
-            result = subprocess.run(cmd, shell=True, check=check, timeout=timeout_s)
+            result = subprocess.run(cmd, shell=True, check=check,
+                                    timeout=timeout_s, env=env)
         else:
-            result = subprocess.run(cmd, check=check, timeout=timeout_s)
+            result = subprocess.run(cmd, check=check, timeout=timeout_s,
+                                    env=env)
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         _cmd_str = cmd if isinstance(cmd, str) else ' '.join(cmd)
@@ -382,7 +449,13 @@ def clean_build():
     print_header("Cleaning build artifacts")
 
     dirs_to_remove = ['build', 'dist', 'Output', 'dmg_temp']
-    files_to_remove = ['app.icns', '*.dmg']
+    # Only GENERATED artifacts belong here.  app.icns used to be one --
+    # setup_freeze_mac.py converts a logo to it when absent -- but since
+    # 02d73507 it is a CHECKED-IN source asset that setup_freeze_mac.py
+    # reads as its icon, so cleaning deleted a tracked repo file and left
+    # `git status` showing a phantom " D app.icns" after every build.
+    # app.iconset below is still genuinely generated and still removed.
+    files_to_remove = ['*.dmg']
 
     for d in dirs_to_remove:
         if os.path.exists(d):
@@ -1094,11 +1167,52 @@ def build_windows(python_exe, app_only=False, installer_only=False):
             if _missing_specs:
                 _embed_py = os.path.join(embed_src, 'python.exe' if sys.platform == 'win32' else 'bin/python')
                 if os.path.isfile(_embed_py):
+                    # PYTHONNOUSERSITE=1 is LOAD-BEARING, not hygiene.
+                    #
+                    # python-embed's python312._pth has `import site`
+                    # UNCOMMENTED, so site processing runs and the USER
+                    # site-dir (%APPDATA%\Roaming\Python\Python312\
+                    # site-packages) lands on sys.path.  pip then resolves
+                    # against it and reports "Requirement already satisfied"
+                    # for a package that is NOT in the bundle — so this
+                    # top-up step could detect torch missing, "install" it,
+                    # and leave python-embed without torch.  A step that
+                    # cannot succeed (cf. #620's warning that cannot fail).
+                    #
+                    # PROVEN 2026-08-12 on this machine:
+                    #   without: "Requirement already satisfied: torch==2.10.0
+                    #             in ...\Roaming\Python\Python312\site-packages"
+                    #   with:    "Collecting torch==2.10.0 / Would install
+                    #             torch-2.10.0"
+                    # and torch was in fact ABSENT from
+                    # python-embed/Lib/site-packages while the build reported
+                    # topping it up.  CPU torch is deliberately BUNDLED (the
+                    # GPU build is size-heavy and hardware-specific, so it is
+                    # runtime-installed into ~/.nunba instead) — so a bundle
+                    # without CPU torch breaks the "runtime deps are bundled"
+                    # guarantee outright.
+                    #
+                    # scripts/rebuild_python_embed.py:308-312 ALREADY does
+                    # this, with a comment describing this exact failure
+                    # ("pip sees packages in AppData\Roaming... and skips
+                    # them, leaving python-embed empty").  That lesson simply
+                    # never reached this second python-embed installer — one
+                    # copy learned it, the other did not.  Both now isolate.
+                    _embed_env = os.environ.copy()
+                    _embed_env['PYTHONNOUSERSITE'] = '1'
                     run_command(
                         [_embed_py, '-m', 'pip', 'install', *_missing_specs,
                          '--no-warn-script-location', '--no-deps'],
                         "Installing missing embed packages",
+                        env=_embed_env,
                     )
+
+    # Elevation vaccine -- MUST run after every python-embed write.
+    # This call covers the writes ABOVE (atomic rebuild + incremental
+    # top-up).  It is NOT the last one: cx_Freeze's post-build hook
+    # writes python-embed again, so the vaccine runs a second time after
+    # that call too.  See the note there before deleting either.
+    normalize_embed_acl(embed_src)
 
     print_header("Building Nunba executable with cx_Freeze")
 
@@ -1184,8 +1298,26 @@ def build_windows(python_exe, app_only=False, installer_only=False):
     print_info(f"Syntax gate: {_checked} .py files parse clean")
 
     # Run cx_Freeze
-    if not run_command([python_exe, os.path.join('scripts', 'setup_freeze_nunba.py'), 'build'],
-                       "Running cx_Freeze..."):
+    _freeze_ok = run_command(
+        [python_exe, os.path.join('scripts', 'setup_freeze_nunba.py'), 'build'],
+        "Running cx_Freeze...")
+
+    # Elevation vaccine, second dose -- THIS is the one that matters.
+    # setup_freeze_nunba.py's post-build hook re-installs the sibling
+    # packages INTO THE SOURCE python-embed (hart-backend, hevolveai,
+    # hevolve-database, agent-ledger, then the HevolveArmor loader), so
+    # the LAST writer runs inside the call above, long after the first
+    # dose.  pip stages in %TEMP% and MOVES into place, and a MOVE
+    # preserves the SOURCE ACL -- so an elevated build left 37 entries
+    # owned by BUILTIN\\Administrators with no ACE for the invoking user,
+    # and the next NON-elevated build could not read them.  It died with
+    # "23 file(s) STILL corrupt after autorepair" (2026-08-14), a message
+    # that never mentions permissions.  Runs on the FAILURE path too: a
+    # build that dies mid-freeze must not leave the tree unreadable for
+    # the retry.  Guarded by tests/test_build_script.py.
+    normalize_embed_acl(embed_src)
+
+    if not _freeze_ok:
         print_error("cx_Freeze build failed!")
         return False
 

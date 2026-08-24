@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: HevolveAI.Nunba
+PackageVersion: 2.0.0
+PackageLocale: en-US
+Publisher: HevolveAI
+PublisherUrl: https://hevolve.hertzai.com
+PublisherSupportUrl: https://hevolve.hertzai.com
+PackageName: Nunba
+PackageUrl: https://hevolve.hertzai.com
+License: Apache-2.0
+LicenseUrl: https://github.com/hertz-ai/Nunba/blob/main/LICENSE
+ShortDescription: A Friend, A Well Wisher, Your LocalMind
+Description: >-
+  Nunba runs a multimodal AI companion entirely on your own machine.
+  Chat, voice and vision are served by local models, so your
+  conversations stay on the device rather than being sent to a
+  third-party service.
+Moniker: nunba
+Tags:
+  - ai
+  - assistant
+  - chatbot
+  - llm
+  - local
+  - offline
+  - privacy
+  - speech
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

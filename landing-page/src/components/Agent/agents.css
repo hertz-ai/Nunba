@@ -429,6 +429,65 @@
   color: rgba(148, 163, 184, 0.8);
 }
 
+/* Provenance badge — where the agent actually runs.  Absent origin renders no
+   element at all (see OriginBadge), so there is no "unknown" style. */
+.agent-card__origin {
+  display: inline-block;
+  align-self: flex-start;
+  margin: 0 0 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+}
+
+/* Runs here = the local-first promise kept, so it gets the primary teal. */
+.agent-card__origin--local {
+  color: #00e6c3;
+  background: rgba(0, 230, 195, 0.1);
+}
+
+.agent-card__origin--peer {
+  color: #9b5cff;
+  background: rgba(155, 92, 255, 0.1);
+}
+
+/* Hive = leaves this machine.  Amber reads as "note this", not as an error. */
+.agent-card__origin--hive {
+  color: #ffc83d;
+  background: rgba(255, 200, 61, 0.1);
+}
+
+/* Retry CTA for LoadErrorState — the one affordance that distinguishes a failed
+   load from an empty list.  Reuses the .agents-empty layout above so the error
+   state needs no separate container styling. */
+.agents-empty__retry {
+  margin-top: 14px;
+  padding: 8px 22px;
+  min-height: 40px;
+  border: 1px solid rgba(0, 230, 195, 0.45);
+  border-radius: 999px;
+  background: rgba(0, 230, 195, 0.1);
+  color: #00e6c3;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s;
+}
+
+.agents-empty__retry:hover {
+  background: rgba(0, 230, 195, 0.2);
+  border-color: rgba(0, 230, 195, 0.75);
+}
+
+.agents-empty__retry:focus-visible {
+  outline: 2px solid #00e6c3;
+  outline-offset: 2px;
+}
+
 /* ── Overlay loader dots (compact, spectrum) ────────────────────────────── */
 .agents-dotrow {
   display: inline-flex;

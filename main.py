@@ -599,6 +599,7 @@ def _deferred_platform_init():
     except Exception as e:
         logging.debug(f"Caption server event subscription skipped: {e}")
 
+
     # Eager-start BOTH llama-server instances at boot so the first /chat
     # request doesn't cold-start either model.
     #
@@ -912,7 +913,7 @@ def _get_machine_fingerprint():
             result = subprocess.run(
                 ['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'],
                 capture_output=True, text=True, timeout=5
-            )
+            , **get_subprocess_flags())
             for line in result.stdout.splitlines():
                 if 'IOPlatformSerialNumber' in line:
                     serial = line.split('"')[-2]
@@ -1683,13 +1684,16 @@ def execute_command():
                 # Import the necessary modules ofr windows
                 import subprocess
 
-                # CREATE_NO_WINDOW flag (0x08000000) to prevent window from showing
-                creation_flags = 0x08000000
-
-                # Also set up STARTUPINFO to hide the window
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0 # SW_HIDE
+                # ONE source for the hide flags — desktop.platform_utils.
+                # This block used to hardcode 0x08000000 (the raw
+                # CREATE_NO_WINDOW value) plus its own STARTUPINFO; it was one
+                # of eleven first-party copies found 2026-08-11.  A magic number
+                # is worse than a duplicate: nothing links it to the constant it
+                # mirrors.  See tests/test_hidden_subprocess_single_source.py.
+                from desktop.platform_utils import get_subprocess_flags
+                _flags = get_subprocess_flags()
+                creation_flags = _flags.get('creationflags', 0)
+                startupinfo = _flags.get('startupinfo')
 
             # Add environment variables
             env = os.environ.copy()
@@ -2105,10 +2109,15 @@ def harthash():
         'hevolve_database': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Hevolve_Database'),
         'hevolveai': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hevolveai'),
     }
+    # Four repos x one git spawn each = up to four console flashes on Windows
+    # without the hide flags.  Resolve them once outside the loop.
+    from desktop.platform_utils import get_subprocess_flags
+    _win_flags = get_subprocess_flags()
     for name, path in repos.items():
         try:
             r = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
-                               capture_output=True, text=True, cwd=path, timeout=5)
+                               capture_output=True, text=True, cwd=path, timeout=5,
+                               **_win_flags)
             hashes[name] = r.stdout.strip() if r.returncode == 0 else 'unknown'
         except Exception:
             hashes[name] = 'unknown'
@@ -2141,6 +2150,19 @@ def admin_models_register():
         if not data or not data.get('id') or not data.get('model_type'):
             return jsonify({"error": "id and model_type are required"}), 400
         entry = ModelEntry.from_dict(data)
+        # Refuse an entry that can never be downloaded rather than storing
+        # it and reporting success.  2026-08-15: an entry with files={} and
+        # repo_id='unsloth/Qwen3.8-27B-UD-Q4_K_XL.gguf' was accepted here
+        # with 200 {"success": true}; it persisted to model_catalog.json and
+        # every download then failed with "no preset for
+        # Qwen3.8-27B-UD-Q4_K_XL.gguf", because models/orchestrator.py
+        # ::_entry_to_preset returns None when files['model'] is empty.
+        # The producer was more permissive than its consumer, so the UI
+        # showed success for a model that could never work.
+        problems = entry.validate()
+        if problems:
+            return jsonify({"error": "invalid model entry",
+                            "problems": problems}), 400
         catalog = get_catalog()
         catalog.register(entry)
         return jsonify({"success": True, "model": entry.to_dict()})
@@ -3864,7 +3886,7 @@ from routes.spa_fallback import (  # noqa: E402
     SPA_SHELL_CACHE_CONTROL,
     first_path_segment,
     is_asset_path,
-    is_spa_page_override,
+    is_spa_page,
 )
 
 # Landing-Page routes - redirect to hevolve.ai when online, /local when offline
@@ -4032,23 +4054,33 @@ def connectivity_check():
 import queue as _queue
 import threading as _threading
 
-_sse_clients = {}   # {user_id: [(Queue, connect_time), ...]}
+_sse_clients = {}   # {user_id: [(Queue, connected_at), ...]}
 _sse_lock = _threading.Lock()
-_SSE_CLIENT_TTL = 3600  # 1 hour max connection lifetime
 
-
-def _cleanup_dead_sse_clients():
-    """Remove SSE client queues that have exceeded the max connection TTL."""
-    now = time.time()
-    with _sse_lock:
-        for uid in list(_sse_clients.keys()):
-            clients = _sse_clients.get(uid, [])
-            _sse_clients[uid] = [
-                (q, ts) for q, ts in clients
-                if now - ts < _SSE_CLIENT_TTL
-            ]
-            if not _sse_clients[uid]:
-                del _sse_clients[uid]
+# MEMBERSHIP HAS EXACTLY ONE AUTHORITY: the stream's own lifecycle.
+#
+# An entry is added when a stream starts and removed when it ends, both
+# inside sse_event_stream.generate()'s try/finally (see below).  Nothing
+# else may add or remove — not a clock, not the delivery path.
+#
+# There used to be a second, time-driven authority: _SSE_CLIENT_TTL=3600
+# compared against the connect time, which is never refreshed.  It
+# therefore dropped perfectly healthy streams exactly 3600s after they
+# connected, WITHOUT closing them — so the browser saw no error,
+# EventSource never reconnected, and every later per-user publish went
+# to an empty list.  Live proof (2026-08-12): connect logged 01:16:27,
+# registry 1 -> 0 at 02:16:27 (+3600s to the second), then 0 clients for
+# 7h / 7,524 broadcasts, spanning a chat turn whose TTS wav synthesized
+# correctly and was never heard.  Two authorities over one fact always
+# drift; the fix is to delete one, not to retune it.
+#
+# `connected_at` is retained for diagnostics ONLY.  It must never gate
+# delivery — tests/test_sse_client_registry.py fails if it does.
+#
+# Dead peers still self-clean without a sweeper: the generator's 30s
+# heartbeat write raises on a closed socket, which unwinds the generator
+# and runs its finally.  That converts a half-open connection into a
+# real close event, which is the one authority.
 
 
 def broadcast_sse_event(event_type, data, user_id=None):
@@ -4079,44 +4111,42 @@ def broadcast_sse_event(event_type, data, user_id=None):
 
     import json
     msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-    now = time.time()
-    logging.info(f"broadcast_sse_event: type={event_type}, user_id={user_id}, "
-                 f"clients={list(_sse_clients.keys())}, "
-                 f"client_count={sum(len(v) for v in _sse_clients.values())}")
+
+    # Delivery ONLY.  This function must never add or remove a
+    # subscription — membership belongs to generate()'s try/finally.
+    # Snapshot under the lock, then deliver outside it: put_nowait
+    # cannot block, and holding the lock for only a dict read keeps a
+    # slow subscriber from stalling the publisher or a stream teardown.
     with _sse_lock:
         if user_id is not None:
-            clients = _sse_clients.get(user_id, [])
-            alive = []
-            for q, ts in clients:
-                if now - ts >= _SSE_CLIENT_TTL:
-                    continue
-                try:
-                    q.put_nowait(msg)
-                    alive.append((q, ts))
-                except _queue.Full:
-                    pass
-            if alive:
-                _sse_clients[user_id] = alive
-            else:
-                _sse_clients.pop(user_id, None)
+            targets = list(_sse_clients.get(user_id, []))
         else:
-            empty_users = []
-            for uid, clients in _sse_clients.items():
-                alive = []
-                for q, ts in clients:
-                    if now - ts >= _SSE_CLIENT_TTL:
-                        continue
-                    try:
-                        q.put_nowait(msg)
-                        alive.append((q, ts))
-                    except _queue.Full:
-                        pass
-                if alive:
-                    _sse_clients[uid] = alive
-                else:
-                    empty_users.append(uid)
-            for uid in empty_users:
-                _sse_clients.pop(uid, None)
+            targets = [e for entries in _sse_clients.values() for e in entries]
+        total = sum(len(v) for v in _sse_clients.values())
+
+    # Report the TARGETED queue count, not merely the global total.  The
+    # previous line logged only the global sum, so it printed a
+    # reassuring non-zero number while the addressed user had no queue
+    # at all — an instrument structurally unable to observe the failure
+    # it appeared to rule out.
+    logging.info(f"broadcast_sse_event: type={event_type}, user_id={user_id}, "
+                 f"targeted={len(targets)}, total_clients={total}")
+
+    dropped = 0
+    for q, _connected_at in targets:
+        try:
+            q.put_nowait(msg)
+        except _queue.Full:
+            dropped += 1
+    if dropped:
+        # A full queue is a SLOW consumer, not a dead one.  The previous
+        # code silently un-subscribed it by omitting it from `alive`, so
+        # one burst of backpressure deafened a client permanently.  Drop
+        # the message, keep the subscription, and say so out loud.
+        logging.warning(
+            f"broadcast_sse_event: type={event_type} dropped for "
+            f"{dropped}/{len(targets)} subscriber(s) with a full queue "
+            f"(subscription retained)")
 
 
 # Expose on __main__ so HARTOS can find it via `import __main__`.
@@ -4256,31 +4286,47 @@ def sse_event_stream():
     if not uid:
         return _jsonify({"error": "Invalid or expired token"}), 401
 
-    _cleanup_dead_sse_clients()
-
     client_queue = _queue.Queue(maxsize=50)
-    connect_time = time.time()
-    with _sse_lock:
-        _sse_clients.setdefault(uid, []).append((client_queue, connect_time))
+    entry = (client_queue, time.time())
 
     def generate():
-        yield "data: {\"type\": \"connected\"}\n\n"
+        # Register INSIDE the generator, inside the try, so the add and
+        # the remove share one scope and one lifetime — the subscription
+        # exists exactly as long as the stream does.
+        #
+        # Registering in the view function (as this used to) leaks two
+        # ways, both proven by tests/test_sse_client_registry.py:
+        #   * a generator body does not run until Flask iterates it, and
+        #     closing a NEVER-STARTED generator does not execute its
+        #     try/finally — a client aborting before the first byte left
+        #     an entry behind forever;
+        #   * the "connected" yield used to sit OUTSIDE the try, so a
+        #     client that closed while parked on it leaked as well.
+        # Those leaks are why an age sweeper felt necessary: it was
+        # compensating for the split scope instead of closing it.
         try:
+            with _sse_lock:
+                _sse_clients.setdefault(uid, []).append(entry)
+            yield "data: {\"type\": \"connected\"}\n\n"
             while True:
                 try:
                     msg = client_queue.get(timeout=30)
                     yield msg
                 except _queue.Empty:
+                    # Doubles as the liveness probe: writing a heartbeat
+                    # to a dead peer raises, which unwinds the generator
+                    # into the finally below.  That is how a half-open
+                    # socket becomes a real close event — no sweeper.
                     yield ": heartbeat\n\n"
-        except GeneratorExit:
-            pass
         finally:
             with _sse_lock:
-                user_queues = _sse_clients.get(uid, [])
-                _sse_clients[uid] = [
-                    (q, ts) for q, ts in user_queues if q is not client_queue
+                remaining = [
+                    e for e in _sse_clients.get(uid, [])
+                    if e[0] is not client_queue
                 ]
-                if not _sse_clients.get(uid):
+                if remaining:
+                    _sse_clients[uid] = remaining
+                else:
                     _sse_clients.pop(uid, None)
 
     return Response(
@@ -4378,7 +4424,8 @@ def handle_404(e):
     # Agents Hub page while /agents/sync etc. are real APIs; classifying the
     # bare page path as API served raw JSON on deep link / F5 (task #628,
     # found live by route-smoke.cy.js 2026-08-07).
-    if first_segment in API_ENDPOINTS and not is_spa_page_override(path):
+    if first_segment in API_ENDPOINTS and not is_spa_page(
+            path, request.headers.get('Accept')):
         return jsonify({'error': 'API endpoint not found', 'path': path}), 404
 
     # A missing asset is a missing FILE, not a client-side route.  Answering it
@@ -5425,8 +5472,13 @@ def start_background_services():
     # SSE fallback for its realtime needs — saves ~80–120 MB resident memory
     # (Twisted reactor + Autobahn router + connection registry).
     #
-    # When a channel is added later via admin UI or a peer joins via
-    # peer_link, `ensure_wamp_running()` wakes the router on-demand.
+    # Woken on demand as of 2026-08-19.  HARTOS's ChannelRegistry.register
+    # emits 'channel.registered' on the shared core.platform EventBus and
+    # _wamp_ensure_if_needed() below re-runs THIS SAME predicate -- the
+    # trigger never re-implements the rule, so there is one decision site
+    # for "is WAMP needed?", evaluated at boot and again whenever an input
+    # moves.  A peer discovered after boot is still not covered: peer_link
+    # has no equivalent emit yet, so that leg stays boot-only.
     def _wamp_is_needed() -> tuple[bool, str]:
         try:
             _adapters = getattr(channels.registry, '_adapters', None) or {}
@@ -5436,33 +5488,71 @@ def start_background_services():
         except Exception:
             pass
         try:
-            from hevolve.peer_link import get_peer_link_manager
-            pm = get_peer_link_manager()
-            if pm and getattr(pm, 'get_active_peers', lambda: [])():
+            # core.peer_link is the canonical manager.  The previous path was
+            # dead three ways: there is no 'hevolve' package, no
+            # get_peer_link_manager(), and no get_active_peers() method -- so
+            # the getattr default returned [] even if the import had worked.
+            # This leg could never report a peer.  active_links counts links
+            # in the connected state.  get_link_manager() allocates the
+            # singleton if absent; __init__ opens no socket and starts no
+            # thread (that is start()), so this stays read-only.
+            from core.peer_link import get_link_manager
+            pm = get_link_manager()
+            if pm and (pm.get_status() or {}).get('active_links'):
                 return True, "mobile peer discovered"
         except Exception:
             pass
         return False, ""
 
-    _needed, _reason = _wamp_is_needed()
-    if _needed:
+    def _wamp_ensure_if_needed(trigger: str = 'boot') -> None:
+        """The ONE place that decides whether the router should be running.
+
+        _wamp_is_needed() above is the only predicate; this is the only
+        actuator.  Called at boot and re-called whenever an input to that
+        predicate changes, so "is WAMP needed?" is never answered in two
+        places.  A trigger must not re-implement the rule -- it only says
+        "the inputs moved, look again".  ensure_wamp_running is
+        is_running()-guarded and start_wamp_router holds _state_lock across
+        check-and-spawn, so repeat calls are no-ops.
+        """
+        _needed, _reason = _wamp_is_needed()
+        if not _needed:
+            if trigger == 'boot':
+                logging.info(
+                    "WAMP router deferred — no non-web channels or mobile "
+                    "peers at boot (SSE handles local realtime, saves "
+                    "~100MB; re-checked whenever a channel/peer arrives)",
+                )
+            return
         try:
-            from wamp_router import start_wamp_router
-            start_wamp_router()
+            from wamp_router import ensure_wamp_running
+            ensure_wamp_running(reason=f"{_reason} [{trigger}]")
             logging.info(
-                "Embedded WAMP router starting on port %s (reason: %s)",
-                os.environ.get('NUNBA_WAMP_PORT', '8088'), _reason,
+                "Embedded WAMP router ensured on port %s (reason: %s, trigger: %s)",
+                os.environ.get('NUNBA_WAMP_PORT', '8088'), _reason, trigger,
             )
         except Exception as e:
             logging.warning(
                 "WAMP router failed to start (realtime will use SSE fallback): %s", e,
             )
-    else:
-        logging.info(
-            "WAMP router deferred — no non-web channels or mobile peers "
-            "at boot (SSE handles local realtime, saves ~100MB; router "
-            "will start on-demand when a channel/peer arrives)",
-        )
+
+    _wamp_ensure_if_needed('boot')
+
+    # Re-evaluate when an input to _wamp_is_needed() changes.  HARTOS
+    # cannot import wamp_router, so ChannelRegistry.register emits
+    # 'channel.registered' on the shared EventBus and we re-run the SAME
+    # predicate here.  No second rule, no second actuator.
+    try:
+        from core.platform.registry import get_registry
+        _evt_bus = get_registry().get('events')
+        if _evt_bus:
+            _evt_bus.on(
+                'channel.registered',
+                lambda topic, data: _wamp_ensure_if_needed('channel.registered'),
+            )
+            logging.info("WAMP re-evaluation subscriber registered")
+    except Exception as e:
+        logging.debug("WAMP re-evaluation subscriber skipped: %s", e)
 
     # Start LangChain service in background thread (non-blocking)
     langchain_thread = threading.Thread(target=start_langchain_service, daemon=True)
@@ -5662,6 +5752,27 @@ def start_background_services():
                     logging.info(
                         "CUDA ctranslate2 installed — GPU STT active on next restart"
                         if _ct2_ok else f"CUDA ctranslate2 not installed: {_ct2_msg}")
+                    # Terminal event.  Demopage decides card completion from
+                    # Boolean(data.complete) — NOT from `status` — so a job that
+                    # never emits `complete` leaves its card pinned at "loading"
+                    # forever.  This install emitted no terminal event at all,
+                    # which is why the STT setup card never came down.
+                    # Emit on BOTH outcomes: a failed install has to close its
+                    # card too, or the user watches a spinner for work that has
+                    # already stopped.
+                    try:
+                        from integrations.social.realtime import publish_event
+                        publish_event('setup_progress', {
+                            'type': 'setup_progress',
+                            'job_type': 'cuda_ctranslate2',
+                            'status': 'done' if _ct2_ok else 'error',
+                            'complete': True,
+                            'message': (
+                                "GPU speech-to-text ready on next restart"
+                                if _ct2_ok else f"GPU STT unavailable: {_ct2_msg}"),
+                        })
+                    except Exception:
+                        pass
             except Exception as _ct2_err:
                 logging.debug(f"CUDA ctranslate2 auto-install skipped: {_ct2_err}")
 
@@ -5723,12 +5834,46 @@ def start_background_services():
                                 'type': 'setup_progress',
                                 'job_type': 'cuda_torch',
                                 'status': 'done',
+                                # `status` alone never closed the card: Demopage
+                                # reads Boolean(data.complete).  Both keys are
+                                # sent — `status` for any log/consumer already
+                                # reading it, `complete` for the card contract.
+                                'complete': True,
                                 'message': _vmsg,
                             })
                         except Exception:
                             pass
                     else:
-                        logging.warning(f"CUDA torch install failed: {msg} — using CPU TTS")
+                        # "Still installing" is NOT "no GPU". This branch used to
+                        # log every non-success as "using CPU TTS", so a held
+                        # install lock — a sibling worker doing the exact same
+                        # 2.5GB download — pinned the session to CPU one second
+                        # after that worker started, on every boot. See the
+                        # INSTALL_IN_PROGRESS rationale in
+                        # tts/package_installer.install_gpu_torch.
+                        from tts.package_installer import INSTALL_IN_PROGRESS
+                        if str(msg).startswith(INSTALL_IN_PROGRESS):
+                            logging.info(
+                                "CUDA torch still installing: %s — NOT "
+                                "downgrading to CPU TTS", msg)
+                        else:
+                            logging.warning(
+                                f"CUDA torch install failed: {msg} — using CPU TTS")
+                            # Close the card on real failure only.  The
+                            # INSTALL_IN_PROGRESS leg above deliberately does
+                            # NOT emit: a sibling worker is still downloading,
+                            # so its card must stay up and keep ticking.
+                            try:
+                                from integrations.social.realtime import publish_event
+                                publish_event('setup_progress', {
+                                    'type': 'setup_progress',
+                                    'job_type': 'cuda_torch',
+                                    'status': 'error',
+                                    'complete': True,
+                                    'message': f"Voice upgrade unavailable: {msg}",
+                                })
+                            except Exception:
+                                pass
             except Exception:
                 pass
 
@@ -5938,20 +6083,24 @@ if __name__ == '__main__':
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
+            from core.serve import build_asgi_app, make_hypercorn_config
             from hypercorn.asyncio import serve as _hcserve
-            from hypercorn.config import Config
-            from hypercorn.middleware import AsyncioWSGIMiddleware
 
-            config = Config()
-            config.bind = ([f'unix:{_hart_socket}'] if _hart_socket
-                           else [f'{bind_host}:{args.port}'])
-            config.keep_alive_timeout = 120
-            config.h11_max_incomplete_size = 16 * 1024 * 1024
-            config.accesslog = None
-            config.errorlog = '-'
-            config.server_names = ['Nunba']
-
-            asgi_app = AsyncioWSGIMiddleware(app)
+            # core.serve owns what all three entry points share: the four
+            # Config settings and the peer_link-capable ASGI wrapping.  A
+            # bare AsyncioWSGIMiddleware is WSGI and cannot see a websocket
+            # scope, so ws://<this node>/peer_link fell through to it and
+            # Hypercorn answered 403 -- HARTOS had the mount, both Nunba
+            # paths did not.  What this path alone varies stays here: the
+            # unix-socket bind, server_names, NUNBA_FORCE_WAITRESS above
+            # (docker-compose.staging.yml sets it) and the Waitress tuning
+            # below.  hypercorn is imported inside core.serve, so a missing
+            # wheel still raises ImportError in this try block.
+            config = make_hypercorn_config(
+                [f'unix:{_hart_socket}'] if _hart_socket
+                else [f'{bind_host}:{args.port}'],
+                server_names=['Nunba'])
+            asgi_app = build_asgi_app(app)
 
             async def _runner():
                 loop = asyncio.get_running_loop()

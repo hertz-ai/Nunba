@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.request
 import wave
 from collections.abc import Callable
@@ -361,6 +362,11 @@ class PiperTTS:
         self.default_voice = default_voice
         self.current_voice = default_voice
         self._piper_module = None
+        # Whether the piper import has been ATTEMPTED at all. The COOLDOWN
+        # itself lives in the canonical KeyedCircuitBreaker (see
+        # _import_breaker) — this flag only distinguishes "first try" from
+        # "retry", so the retry can invalidate the import caches.
+        self._piper_attempted = False
         self._synthesis_queue = queue.Queue()
         self._worker_thread = None
         self._running = False
@@ -368,19 +374,132 @@ class PiperTTS:
         # Try to import piper-tts
         self._init_piper()
 
+    # How long to wait before RE-ATTEMPTING a failed piper import. Long enough
+    # that a synthesize-per-sentence loop cannot thrash the import machinery,
+    # short enough that an auto-install finishing mid-session is picked up
+    # without waiting for a restart.
+    _PIPER_REPROBE_S = 20.0
+
+    @classmethod
+    def _import_breaker(cls):
+        """The CANONICAL failure-cooldown primitive, not a local timer.
+
+        core.circuit_breaker.KeyedCircuitBreaker already is "track failures per
+        key, open after threshold, cool down, half-open recover" — its docstring
+        names itself the single home for exactly this, after an ad-hoc
+        frame_capture._CaptureCircuitBreaker was collapsed into it. whisper_tool
+        already uses the same shape for faster_whisper loads. This engine had no
+        business hand-rolling a second one.
+
+        threshold=1: a single failed import should start the cooldown; there is
+        no value in "try five times fast" against a package that is absent.
+
+        Cached on the CLASS so every PiperTTS instance (and the module singleton)
+        shares one cooldown — a per-instance timer would let a second instance
+        thrash the importer the first was deliberately backing off from.
+
+        Degraded mode: if core.circuit_breaker is genuinely unimportable, return
+        None and let the caller attempt the import each time. That is worse but
+        it is NOT a second cooldown implementation — the whole point is to avoid
+        maintaining two.
+        """
+        cb = getattr(cls, '_piper_cb', None)
+        if cb is not None:
+            return cb
+        if getattr(cls, '_piper_cb_unavailable', False):
+            return None
+        try:
+            from core.circuit_breaker import KeyedCircuitBreaker
+        except Exception as exc:
+            logger.debug("circuit_breaker unavailable (%s); piper import "
+                         "cooldown degraded to per-call retry", exc)
+            cls._piper_cb_unavailable = True
+            return None
+        cls._piper_cb = KeyedCircuitBreaker(
+            threshold=1, cooldown=cls._PIPER_REPROBE_S, name='piper_import')
+        return cls._piper_cb
+
     def _init_piper(self):
-        """Initialize piper-tts module"""
+        """Attempt the piper-tts import at construction.
+
+        Delegates to _get_piper_module() so construction and later calls share
+        ONE import path — a failure here is not final.
+        """
+        self._get_piper_module()
+
+    def _get_piper_module(self):
+        """The piper module, re-importing if an earlier attempt failed.
+
+        WHY THIS RETRIES — this is the auto-heal dead end, diagnosed 2026-08-10
+        from a real 63-minute outage.
+
+        This used to be a one-shot import in _init_piper() that cached None on
+        ImportError. Combined with the module-level singleton at the bottom of
+        this file, a single failed import disabled Piper for the whole PROCESS.
+        The observed sequence:
+
+            14:30:47  the TTS auto-installer is writing packages
+                      -> `import piper` fails inside that window
+                      -> None is latched
+            14:32:09  "No synthesis method available"
+            15:35:40  "No synthesis method available"   (63 min later, still)
+
+        The installer had SUCCEEDED. Nothing could tell the already-built engine
+        to look again, so the ladder had no floor and TTS went silent. That is
+        why repairing the environment never fixed anything: self-heal repairs the
+        filesystem, but the consumer had frozen its verdict at construction.
+
+        RULE: memoize a capability SUCCESS, never a capability FAILURE that an
+        installer may be concurrently repairing. (Contrast the draft-boot probe,
+        where memoizing the success was the fix.)
+
+        invalidate_caches() is load-bearing, not defensive: Python caches
+        directory listings in its path finders, so a package installed AFTER
+        this process started stays unimportable until the cache is dropped.
+        Without it a retry would keep failing on disk that is already correct —
+        the fix would look right and do nothing.
+        """
+        if self._piper_module is not None:
+            return self._piper_module
+
+        breaker = self._import_breaker()
+        if breaker is not None and breaker.is_open('piper'):
+            return None          # cooling down; do not thrash the importer
+        first_attempt = not self._piper_attempted
+        self._piper_attempted = True
+
+        if not first_attempt:
+            # Drop cached "not found" directory listings so a package installed
+            # since this process booted becomes visible.
+            import importlib
+            importlib.invalidate_caches()
+
         try:
             import piper
-            self._piper_module = piper
-            logger.info("Piper TTS module loaded successfully")
-        except ImportError:
-            logger.warning("piper-tts not installed. Run: pip install piper-tts")
-            self._piper_module = None
+        except ImportError as exc:
+            if breaker is not None:
+                breaker.record_failure('piper')
+            logger.warning(
+                "piper-tts import failed (%s); will retry in %.0fs. If the TTS "
+                "auto-installer is running, this is expected and self-corrects.",
+                exc, self._PIPER_REPROBE_S)
+            return None
+
+        if breaker is not None:
+            breaker.record_success('piper')
+        self._piper_module = piper
+        logger.info("Piper TTS module loaded successfully%s",
+                    "" if first_attempt else " (on retry — auto-install landed)")
+        return piper
 
     def is_available(self) -> bool:
-        """Check if Piper TTS is available"""
-        return self._piper_module is not None or self._find_piper_executable() is not None
+        """Check if Piper TTS is available.
+
+        Goes through _get_piper_module() so availability reflects the CURRENT
+        state of the environment, not whatever was true at construction.
+        """
+        return (self._get_piper_module() is not None
+                or self._find_piper_executable() is not None)
 
     def _find_piper_executable(self) -> str | None:
         """Find piper executable in system"""
@@ -563,6 +682,28 @@ class PiperTTS:
             logger.warning("Empty text provided")
             return None
 
+        # LEAF DEFENCE, not the policy site.  The canonical guard lives at
+        # tts_router.synthesize() — after text normalization and BEFORE engine
+        # selection — so every engine benefits from one decision and the ladder
+        # never reserves VRAM for a fragment with nothing to say.
+        #
+        # This copy exists because PiperTTS is ALSO constructed and driven
+        # directly, bypassing the router: the module singleton at the bottom of
+        # this file, tts_engine.py, and desktop/ai_installer.py.  For those
+        # callers this turns an exception plus a misleading "No synthesis method
+        # available" ERROR into a quiet no-op.  Boundary defence at a public
+        # entry point, in the spirit of the per-site ImportError guards — if the
+        # PREDICATE ever grows beyond one expression, hoist it to one home
+        # rather than letting the two drift.
+        #
+        # Content-based, deliberately NOT length-based: a 1-char "5" IS
+        # speakable and must still go through. isalnum() is unicode-aware, so
+        # CJK / Indic / Cyrillic text passes unharmed.
+        if not any(ch.isalnum() for ch in text):
+            logger.debug("No speakable content in %r - skipping synthesis",
+                         text[:40])
+            return None
+
         voice_id = voice_id or self.current_voice
 
         # Ensure voice is installed
@@ -585,8 +726,17 @@ class PiperTTS:
 
         model_path, config_path = self.get_voice_path(voice_id)
 
-        # Try piper-tts module first
-        if self._piper_module:
+        # Record what was actually TRIED so the closing message cannot lie. The
+        # old code logged "No synthesis method available" on every fall-through,
+        # including when a method WAS available, ran, and raised — mislabelling
+        # a bad-input failure as a missing engine. That line is what sent
+        # repeated sessions off to reinstall piper, which was never the problem.
+        attempted = []
+
+        # Try piper-tts module first (accessor re-probes, so a mid-session
+        # auto-install is picked up instead of being latched off).
+        if self._get_piper_module():
+            attempted.append('module')
             try:
                 return self._synthesize_with_module(text, output_path, model_path, speed)
             except Exception as e:
@@ -595,12 +745,23 @@ class PiperTTS:
         # Fallback to executable
         piper_exe = self._find_piper_executable()
         if piper_exe:
+            attempted.append('executable')
             try:
                 return self._synthesize_with_executable(text, output_path, model_path, piper_exe, speed)
             except Exception as e:
                 logger.error(f"Executable synthesis failed: {e}")
 
-        logger.error("No synthesis method available")
+        if attempted:
+            logger.error(
+                "Piper synthesis FAILED after trying: %s. The engine IS present "
+                "— the real cause is in the error(s) logged just above. Do not "
+                "reinstall piper on the strength of this line.",
+                ', '.join(attempted))
+        else:
+            logger.error(
+                "No synthesis method available: the piper module is not "
+                "importable AND no piper executable was found. This one really "
+                "is a missing engine.")
         return None
 
     def _synthesize_with_module(self,

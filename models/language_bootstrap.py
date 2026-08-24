@@ -39,6 +39,11 @@ class BootstrapStep:
     detail: str = ''
     vram_gb: float = 0.0
     run_mode: str = ''            # gpu | cpu | cpu_offload
+    # The selected engine's RUNTIME (ModelEntry.backend: 'torch' | 'onnx' |
+    # 'piper' | 'llama.cpp' | ...).  Carried so the CUDA-torch pre-install can
+    # ask "does THIS engine need torch?" instead of "is this a TTS/STT model?".
+    # Empty => unknown => treated as needing torch (fail safe).
+    backend: str = ''
 
 
 @dataclass
@@ -98,6 +103,61 @@ def get_status() -> dict:
         return _state.to_dict()
 
 
+# Substrings that mark a step detail as MINUTES-scale rather than seconds-scale.
+# `_ensure_cuda_torch` writes pip progress straight into a step's `detail`, so
+# these are the strings the user is already being shown elsewhere.
+_LONG_RUNNING_MARKERS = ('pip:', 'installing', 'downloading', 'one-time')
+
+
+def _detail_is_long_running(detail: str) -> bool:
+    """True iff this step detail describes a MINUTES-scale operation.
+
+    An install or a model download takes minutes; loading an already-present
+    model takes seconds.  Telling those apart is the whole of R3: the chat
+    busy-guard promised "a few seconds" while a 221s pip resolve plus a multi-GB
+    download was in flight, i.e. wrong by three orders of magnitude.
+    """
+    d = (detail or '').lower()
+    return any(m in d for m in _LONG_RUNNING_MARKERS)
+
+
+def get_blocking_activity() -> dict | None:
+    """What is currently occupying the model, and roughly for how long.
+
+    SINGLE accessor for "why is chat busy?" — the module that owns the bootstrap
+    state answers the question, so the chat route does not have to guess a
+    duration.  Returns None when nothing is mid-flight (normal busy path
+    applies), else::
+
+        {'detail': str,          # human-readable, already user-facing copy
+         'model_type': str,
+         'long_running': bool,   # minutes, not seconds
+         'retry_after_s': int}   # derived, never asserted
+
+    Never raises: a bad/missing state must not break a chat turn.
+    """
+    try:
+        with _lock:
+            steps = dict(_state.steps or {})
+        for model_type, step in steps.items():
+            if getattr(step, 'status', '') not in ('loading', 'downloading'):
+                continue
+            detail = getattr(step, 'detail', '') or ''
+            long_running = _detail_is_long_running(detail)
+            return {
+                'detail': detail,
+                'model_type': model_type,
+                'long_running': long_running,
+                # 90s for an install/download, 10s for a load.  Still an
+                # estimate, but one derived from what is actually happening
+                # rather than a constant that was wrong by 240x.
+                'retry_after_s': 90 if long_running else 10,
+            }
+    except Exception:
+        pass
+    return None
+
+
 def _create_plan(language: str, gpu_info: dict) -> dict:
     """Build the per-model-type bootstrap plan for ``language``.
 
@@ -146,6 +206,7 @@ def _create_plan(language: str, gpu_info: dict) -> dict:
         if entry:
             step.model_id = entry.id
             step.model_name = entry.name
+            step.backend = entry.backend or ''
             step.vram_gb = entry.vram_gb
             if entry.loaded:
                 step.status = 'ready'
@@ -181,6 +242,7 @@ def _refresh_steps_from_orchestrator() -> None:
             if entry:
                 step.model_id = entry.id
                 step.model_name = entry.name
+                step.backend = entry.backend or ''
                 step.status = 'ready'
                 step.run_mode = entry.device or 'cpu'
                 step.detail = f'{entry.name} ({entry.device})'
@@ -272,9 +334,30 @@ def _bootstrap_worker(language: str) -> None:
             if not step or step.status in ('skipped', 'failed', 'ready'):
                 continue
 
-            # Ensure CUDA torch for GPU TTS/STT in frozen builds
-            if model_type in (ModelType.TTS, ModelType.STT) and gpu_info.get('cuda_available', False):
+            # Ensure CUDA torch for GPU TTS/STT in frozen builds — but keyed on
+            # the selected ENGINE'S RUNTIME, not on the model type.
+            #
+            # R1, measured live 2026-08-11: this used to read
+            # `model_type in (TTS, STT) and cuda_available`, so Moonshine Base
+            # (sherpa-onnx, ONNX Runtime, never imports torch) blocked here for
+            # 221s of pip resolution plus a multi-GB CUDA download before it
+            # could start.  "Do I have a GPU?" was being answered by *can I
+            # import torch* — the wrong artifact for an ONNX engine.
+            #
+            # backend_requires_torch() is the ONE predicate (shared with
+            # STTLoader.download) and fails safe: an unknown/empty backend still
+            # installs, so no engine can lose a dependency it needs.
+            from integrations.service_tools.model_catalog import backend_requires_torch
+            if (gpu_info.get('cuda_available', False)
+                    and model_type in (ModelType.TTS, ModelType.STT)
+                    and backend_requires_torch(step.backend)):
                 _ensure_cuda_torch(model_type)
+            elif model_type in (ModelType.TTS, ModelType.STT):
+                logger.info(
+                    "Skipping CUDA torch for %s (backend=%r, cuda=%s) — its "
+                    "runtime does not require torch",
+                    step.model_name or model_type, step.backend,
+                    gpu_info.get('cuda_available', False))
 
             # Let orchestrator handle everything: download + load + VRAM + lifecycle
             _update_step(model_type, status='loading', detail=f'Starting {step.model_name}...')
@@ -337,6 +420,12 @@ def _detect_hardware() -> dict:
                 'cuda_available': False}
 
 
+# Statuses that end a step.  Counterpart to the in-flight set at :143
+# ('loading', 'downloading'); 'selecting' is also in-flight.  Used to derive
+# the `complete` flag the SetupProgressCard reads — see _update_step below.
+_TERMINAL_STATUSES = frozenset({'ready', 'skipped', 'failed'})
+
+
 def _update_step(model_type: str, **kwargs) -> None:
     with _lock:
         step = _state.steps.get(model_type)
@@ -351,6 +440,11 @@ def _update_step(model_type: str, **kwargs) -> None:
             'job_type': str(model_type),
             'model_name': kwargs.get('detail', ''),
             'status': kwargs.get('status', ''),
+            # The card completes on Boolean(data.complete), NOT on `status`,
+            # so a terminal status has to say so in the key the frontend
+            # actually reads — otherwise every model card stays at "loading"
+            # for the rest of the session even after the step finished.
+            'complete': kwargs.get('status', '') in _TERMINAL_STATUSES,
             'message': kwargs.get('detail', ''),
         })
     except Exception:

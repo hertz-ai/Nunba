@@ -52,7 +52,31 @@ Name: "setupai"; Description: "Configure AI features (detects existing services 
 
 [Files]
 ; Main executable and all dependencies from cx_Freeze build
-Source: "build\Nunba\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+;
+; Excludes: runtime droppings, not build output.  build\Nunba is where the app
+; gets RUN during development, so anything it writes lands inside the very tree
+; iscc packages.  The freeze's own orphan-cleaner (setup_freeze_nunba.py, the
+; post-build copytree block) removes files absent from the source, but it runs
+; at BUILD time — every dev run afterwards refills the tree, and the installer
+; is built from whatever is there by then.  This is the packaging boundary, so
+; the exclusion belongs here.
+;
+; Measured 2026-08-13: 59 MB of logs shipped to every user, all of it in
+; python-embed\Lib\site-packages\hevolveai\server\logs — 79 wamp_publisher_*
+; files back to 2025-11, plus four 10 MB rotations of a single runaway day
+; (2026-01-17).  Nothing reads them; they are one dev machine's chatter.
+;
+; Matched on the FILE pattern, never on a directory named "logs": both
+; opentelemetry\proto\logs and opentelemetry\proto\collector\logs are real
+; Python packages, and excluding them by name would break the import.
+; For the same reason there is no *.sqlite* rule — chromadb ships genuine
+; migration scripts (migrations\**\*.sqlite.sql) that must be installed.
+;
+; And emphatically NO *.pyc rule.  lib\ is cx_Freeze output where modules ship
+; compiled-only: lib\abc.pyc, lib\accelerate\*.pyc and thousands more have no
+; .py beside them.  Excluding *.pyc would not slim the installer, it would
+; delete the application.
+Source: "build\Nunba\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.log,*.log.*,.aider.tags.cache.v4"
 ; Include icon file
 Source: "app.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; WebView2 bootstrapper (will auto-install if needed)
@@ -67,7 +91,20 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 ; Interactive AI setup - scans for existing services and lets user choose
 ; waituntilterminated: installer waits for wizard to finish before proceeding
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--setup-ai"; Description: "Configure AI - detect local services or set up cloud AI"; StatusMsg: "Configuring AI features..."; Tasks: setupai; Flags: postinstall waituntilterminated runascurrentuser hidewizard
+; runasoriginaluser: the wizard DOWNLOADS the bundled AI (llama.cpp, models,
+;   piper/TTS) and pip-installs into the user profile: ~/.nunba/{site-packages,
+;   models,llama.cpp,piper,tts_cache}.  Under PrivilegesRequired=admin,
+;   runascurrentuser would hand it Setup's ADMIN token, and pip stages in %TEMP%
+;   then MOVEs into place -- a MOVE preserves the source ACL, so every file lands
+;   owned by BUILTIN\Administrators with NO ACE for the invoking user.  The app
+;   then runs unelevated from the shortcut, app.py inserts ~/.nunba/site-packages
+;   at sys.path[0], and the first import out of it dies with PermissionError and
+;   no window.  Works once (elevated), never again.  Same mechanism as the
+;   build-time bug fixed in 3436f8d8, one layer down.  app.py:662 already states
+;   the contract: "Program Files is read-only for non-admin. Packages installed
+;   at runtime go to ~/.nunba/site-packages instead" -- so the wizard has no need
+;   of the admin token in the first place.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--setup-ai"; Description: "Configure AI - detect local services or set up cloud AI"; StatusMsg: "Configuring AI features..."; Tasks: setupai; Flags: postinstall waituntilterminated runasoriginaluser hidewizard
 ; Launch app — checked by default so it auto-starts after install (and after AI setup if selected)
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} - Your LocalMind"; Flags: nowait postinstall skipifsilent shellexec
 

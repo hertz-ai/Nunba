@@ -1979,3 +1979,109 @@ class TestRuntimeInstallConstraints:
             pi._run_pip(['list'])
 
         assert '--constraint' not in captured.get('cmd', [])
+
+
+# ==================== _verify_user_site_imports (self-restore) ====================
+#
+# "Every install should restore what's broken." 2026-08-22 02:06: pip exited
+# rc=2 on the hart-runtime-constraints install but printed a success line, and
+# the rescue branch trusted it — the ctranslate2 it left in ~/.nunba failed
+# import ("partially initialized module"), shadowed the WORKING bundled copy,
+# and killed every streaming STT request for 6.5 hours until a human
+# quarantined it by hand.  There is no human on an end user's machine: after
+# any claimed success, the installer itself must import-verify what landed in
+# user-site, and when a package is broken AND a bundled counterpart exists,
+# quarantine the user-site copy so the bundle wins again.
+
+class TestVerifyUserSiteImports:
+
+    def _make_pkg(self, root, name, body="x = 1\n"):
+        d = root / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "__init__.py").write_text(body, encoding="utf-8")
+        return d
+
+    def _call(self, success_line, args, user_sp, bundle):
+        with patch.object(pi, 'get_embed_python', return_value=sys.executable), \
+             patch.object(pi, 'get_embed_site_packages', return_value=str(bundle)):
+            return pi._verify_user_site_imports(success_line, args, str(user_sp))
+
+    def test_healthy_package_passes(self, tmp_path):
+        user_sp = tmp_path / "usersite"; bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        self._make_pkg(user_sp, "goodpkg")
+        ok, bad = self._call("Successfully installed goodpkg-1.0", ["install", "goodpkg"], user_sp, bundle)
+        assert ok is True
+        assert bad == []
+        assert (user_sp / "goodpkg").is_dir()
+
+    def test_broken_package_with_bundled_counterpart_is_quarantined(self, tmp_path):
+        user_sp = tmp_path / "usersite"; bundle = tmp_path / "bundle"
+        self._make_pkg(user_sp, "tornpkg", body="raise ImportError('torn install')\n")
+        (user_sp / "tornpkg-4.8.1.dist-info").mkdir(parents=True)
+        self._make_pkg(bundle, "tornpkg")   # working bundled copy exists
+        ok, bad = self._call("Successfully installed tornpkg-4.8.1", ["install", "tornpkg"], user_sp, bundle)
+        assert ok is False
+        assert bad == ["tornpkg"]
+        # user-site copy evicted so the bundled one resolves again
+        assert not (user_sp / "tornpkg").exists()
+        assert not (user_sp / "tornpkg-4.8.1.dist-info").exists()
+        quarantines = [p for p in user_sp.iterdir() if p.name.startswith("_quarantine_tornpkg_")]
+        assert len(quarantines) == 1
+        assert (quarantines[0] / "tornpkg" / "__init__.py").exists()
+
+    def test_broken_package_without_bundled_counterpart_is_kept(self, tmp_path):
+        # No fallback exists — quarantining would REMOVE capability, so the
+        # broken dir stays for the heal loop's reinstall to overwrite.
+        user_sp = tmp_path / "usersite"; bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        self._make_pkg(user_sp, "onlyhere", body="raise ImportError('torn')\n")
+        ok, bad = self._call("Successfully installed onlyhere-1.0", ["install", "onlyhere"], user_sp, bundle)
+        assert ok is False
+        assert bad == ["onlyhere"]
+        assert (user_sp / "onlyhere").is_dir()
+
+    def test_claimed_but_absent_from_user_site_is_skipped(self, tmp_path):
+        # pip claimed numpy-1.26.4 on 2026-08-22 but never wrote the package
+        # dir; nothing shadows, the bundle wins by absence — that is a pass.
+        user_sp = tmp_path / "usersite"; user_sp.mkdir()
+        bundle = tmp_path / "bundle"; bundle.mkdir()
+        ok, bad = self._call("Successfully installed ghostpkg-1.0", ["install", "ghostpkg"], user_sp, bundle)
+        assert ok is True
+        assert bad == []
+
+    def test_dashed_pip_name_maps_to_underscore_import(self, tmp_path):
+        user_sp = tmp_path / "usersite"; bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        self._make_pkg(user_sp, "some_pkg")
+        ok, bad = self._call("Successfully installed some-pkg-2.0", ["install", "some-pkg"], user_sp, bundle)
+        assert ok is True
+        assert bad == []
+
+    def test_no_success_line_falls_back_to_requested_specs(self, tmp_path):
+        user_sp = tmp_path / "usersite"; bundle = tmp_path / "bundle"
+        self._make_pkg(user_sp, "reqpkg", body="raise ImportError('torn')\n")
+        self._make_pkg(bundle, "reqpkg")
+        ok, bad = self._call(None, ["install", "reqpkg>=1.0"], user_sp, bundle)
+        assert ok is False
+        assert bad == ["reqpkg"]
+
+    def test_requirements_file_install_without_success_line_skips(self, tmp_path):
+        # -r file installs have no parseable spec list; without pip's success
+        # line there is nothing to verify — must not treat the file path as a
+        # package name.
+        user_sp = tmp_path / "usersite"; user_sp.mkdir()
+        bundle = tmp_path / "bundle"; bundle.mkdir()
+        ok, bad = self._call(None, ["install", "-r", str(tmp_path / "reqs.txt")], user_sp, bundle)
+        assert ok is True
+        assert bad == []
+
+    def test_both_success_returns_in_run_pip_are_gated(self):
+        # Drift-guard: _run_pip must never again return True without the
+        # verification (source-level check; the rescue branch trusting pip's
+        # success line unverified is exactly what shipped the broken
+        # ctranslate2).
+        import inspect
+        src = inspect.getsource(pi._run_pip)
+        assert src.count("_verify_user_site_imports(") >= 2, (
+            "_run_pip has a success return not gated by _verify_user_site_imports")

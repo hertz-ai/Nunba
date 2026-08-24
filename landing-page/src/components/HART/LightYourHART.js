@@ -1,5 +1,5 @@
 /**
- * LightYourHART.js — The most important 90 seconds in the entire app.
+ * LightYourHART.js, The most important 90 seconds in the entire app.
  *
  * A full-screen, immersive onboarding experience where the PA meets
  * the human for the first time, asks two gentle questions, and gives
@@ -15,11 +15,12 @@
  *   - Zero compute during conversation (all pre-rendered)
  *   - Single LLM call only for name generation
  *
- * "Every word spoken matters." — The human who built this.
+ * "Every word spoken matters.", The human who built this.
  */
 
 import { API_BASE_URL } from '../../config/apiBase';
 import { applyHartSeal } from '../../hooks/useAuthSession';
+import { logger } from '../../utils/logger';
 import VoiceVisualizer from '../VoiceVisualizer';
 
 import { Box, Typography, Fade, Grow, ButtonBase } from '@mui/material';
@@ -40,9 +41,9 @@ const PHASES = [
   'pre_reveal',     // "I think I know you."
   'generating',     // Name is being generated (brief)
   'reveal_intro',   // "Your secret name is..."
-  'reveal_name',    // THE moment — name appears
+  'reveal_name',    // THE moment, name appears
   'post_reveal',    // "This is yours. Our secret."
-  'sealed',         // Done — transition to app
+  'sealed',         // Done, transition to app
 ];
 
 const LANGUAGES = [
@@ -89,7 +90,7 @@ const LANGUAGES = [
 ];
 
 // ════════════════════════════════════════════════════════════════════
-// STYLES — the visual language of the dream
+// STYLES: the visual language of the dream
 // ════════════════════════════════════════════════════════════════════
 
 const styles = {
@@ -102,7 +103,7 @@ const styles = {
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    // Was overflow:'hidden' — in a fixed, vertically-centered flex column that
+    // Was overflow:'hidden', in a fixed, vertically-centered flex column that
     // clipped BOTH ends when the content (e.g. the language chips) was taller
     // than the viewport (portrait / small frameless window), so options like
     // "English" became unreachable with no scroll. overflowY:'auto' + the
@@ -128,8 +129,8 @@ const styles = {
     justifyContent: 'center',
     textAlign: 'center',
     px: 4,
-    // my:'auto' centers the block when it fits and — unlike the parent's
-    // justifyContent:'center' — still lets the scroll container reach the top
+    // my:'auto' centers the block when it fits and, unlike the parent's
+    // justifyContent:'center', still lets the scroll container reach the top
     // AND bottom when the content overflows (the Chromium centered-flex-scroll
     // clip). py gives breathing room so the first/last option isn't flush to
     // the scroll edge.
@@ -222,7 +223,7 @@ const keyframes = `
 `;
 
 // ════════════════════════════════════════════════════════════════════
-// COMPUTE AWARENESS — reduce effects on low-end devices
+// COMPUTE AWARENESS: reduce effects on low-end devices
 // ════════════════════════════════════════════════════════════════════
 
 const _computeProfile = (() => {
@@ -233,10 +234,15 @@ const _computeProfile = (() => {
   return 'high';
 })();
 
+// Bound the /api/hart/seal call so a hung network cannot stall the
+// ceremony.  On timeout the seal is retried on the next launch (the
+// absent hart_sealed flag is the retry trigger).
+const SEAL_TIMEOUT_MS = 8000;
+
 const PARTICLE_COUNTS = { low: 25, medium: 50, high: 80 };
 const GLOW_ENABLED = _computeProfile !== 'low';
 
-// Answer-responsive hue palettes — particles shift color based on passion
+// Answer-responsive hue palettes, particles shift color based on passion
 const PASSION_HUES = {
   music_art:        { base: 280, spread: 30 },  // violet-magenta (creative)
   reading_learning: { base: 210, spread: 25 },  // blue (curious)
@@ -247,7 +253,7 @@ const PASSION_HUES = {
 };
 
 // ════════════════════════════════════════════════════════════════════
-// PARTICLE SYSTEM — Canvas-based ambient particles
+// PARTICLE SYSTEM: Canvas-based ambient particles
 // ════════════════════════════════════════════════════════════════════
 
 function useParticles(canvasRef, phase, passionKey) {
@@ -270,7 +276,7 @@ function useParticles(canvasRef, phase, passionKey) {
     resize();
     window.addEventListener('resize', resize);
 
-    // Initialize particles — count adapts to device capability
+    // Initialize particles, count adapts to device capability
     const count = Math.min(
       PARTICLE_COUNTS[_computeProfile],
       Math.floor(window.innerWidth / 15)
@@ -369,13 +375,13 @@ function useParticles(canvasRef, phase, passionKey) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// AMBIENT SOUNDSCAPE — Web Audio API generative texture
+// AMBIENT SOUNDSCAPE: Web Audio API generative texture
 // ════════════════════════════════════════════════════════════════════
 
 function useAmbientSound(phase) {
   const ctxRef = useRef(null);
   const gainRef = useRef(null);
-  const osc3Ref = useRef(null); // Third harmonic — added at reveal
+  const osc3Ref = useRef(null); // Third harmonic, added at reveal
 
   useEffect(() => {
     if (phase === 'darkness') return;
@@ -397,7 +403,7 @@ function useAmbientSound(phase) {
         osc1.connect(osc1Gain).connect(gain);
         osc1.start();
 
-        // Layer 2: Perfect fifth — harmonic warmth
+        // Layer 2: Perfect fifth, harmonic warmth
         const osc2 = ctx.createOscillator();
         osc2.type = 'sine';
         osc2.frequency.value = 165; // E3
@@ -406,17 +412,17 @@ function useAmbientSound(phase) {
         osc2.connect(osc2Gain).connect(gain);
         osc2.start();
 
-        // Layer 3: Major third — enters at reveal for emotional lift
+        // Layer 3: Major third, enters at reveal for emotional lift
         const osc3 = ctx.createOscillator();
         osc3.type = 'sine';
-        osc3.frequency.value = 138.59; // C#3 — major third
+        osc3.frequency.value = 138.59; // C#3, major third
         const osc3Gain = ctx.createGain();
         osc3Gain.gain.value = 0; // Silent until reveal
         osc3.connect(osc3Gain).connect(gain);
         osc3.start();
         osc3Ref.current = osc3Gain;
 
-        // LFO breathing — very slow, barely perceptible
+        // LFO breathing: very slow, barely perceptible
         const lfo = ctx.createOscillator();
         lfo.type = 'sine';
         lfo.frequency.value = 0.08; // One breath every 12.5 seconds
@@ -430,7 +436,7 @@ function useAmbientSound(phase) {
 
         gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 3);
       } catch {
-        // Audio not available — silent mode, still beautiful
+        // Audio not available, silent mode, still beautiful
       }
     }
 
@@ -440,16 +446,16 @@ function useAmbientSound(phase) {
       const t = ctxRef.current.currentTime;
 
       if (phase === 'pre_reveal' || phase === 'generating') {
-        // Hold breath — drop volume, suspense
+        // Hold breath, drop volume, suspense
         g.linearRampToValueAtTime(0.2, t + 2);
       } else if (phase === 'reveal_intro') {
-        // Slowly build — the third harmonic begins
+        // Slowly build, the third harmonic begins
         g.linearRampToValueAtTime(0.4, t + 2);
         if (osc3Ref.current) {
           osc3Ref.current.gain.linearRampToValueAtTime(0.015, t + 3);
         }
       } else if (phase === 'reveal_name') {
-        // THE moment — full harmonic chord, emotional swell
+        // THE moment: full harmonic chord, emotional swell
         g.linearRampToValueAtTime(0.75, t + 1.5);
         if (osc3Ref.current) {
           osc3Ref.current.gain.linearRampToValueAtTime(0.03, t + 1);
@@ -458,7 +464,7 @@ function useAmbientSound(phase) {
         // Settle into warmth
         g.linearRampToValueAtTime(0.5, t + 3);
       } else if (phase === 'sealed') {
-        // Fade to silence — the dream ends gently
+        // Fade to silence, the dream ends gently
         g.linearRampToValueAtTime(0, t + 5);
         if (osc3Ref.current) {
           osc3Ref.current.gain.linearRampToValueAtTime(0, t + 4);
@@ -479,7 +485,7 @@ function useAmbientSound(phase) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// PRE-SYNTH VOICE — loads from /hart-voices/{lang}/{id}.ogg
+// PRE-SYNTH VOICE: loads from /hart-voices/{lang}/{id}.ogg
 // Falls back to Web Speech API synthesis
 // ════════════════════════════════════════════════════════════════════
 
@@ -488,7 +494,7 @@ function usePreSynthVoice(language) {
   const cacheRef = useRef({}); // lineId -> { type: 'presynth'|'webspeech', url?, audio? }
   const preloadedRef = useRef({}); // lineId -> Audio element (preloaded)
 
-  // Preload upcoming lines when language is selected — zero latency
+  // Preload upcoming lines when language is selected, zero latency
   // Uses manifest.json (generated by generate_hart_voices.py) to know which
   // files exist, avoiding N individual HEAD requests. Falls back to HEAD if
   // manifest is unavailable.
@@ -529,7 +535,7 @@ function usePreSynthVoice(language) {
             }
           }
         } else {
-          // No manifest — fall back to individual HEAD requests
+          // No manifest, fall back to individual HEAD requests
           for (const lineId of allLines) {
             const url = `/hart-voices/${language}/${lineId}.ogg`;
             fetch(url, { method: 'HEAD' }).then(resp => {
@@ -545,7 +551,7 @@ function usePreSynthVoice(language) {
         }
       })
       .catch(() => {
-        // Manifest fetch failed — fall back to HEAD
+        // Manifest fetch failed, fall back to HEAD
         for (const lineId of allLines) {
           const url = `/hart-voices/${language}/${lineId}.ogg`;
           fetch(url, { method: 'HEAD' }).then(resp => {
@@ -613,7 +619,7 @@ function usePreSynthVoice(language) {
       return _webSpeech(text, language);
     };
 
-    // Race against timeout — ceremony must never hang
+    // Race against timeout, ceremony must never hang
     return Promise.race([doSpeak(), _sleep(12000)]);
   }, [language]);
 
@@ -637,7 +643,7 @@ function usePreSynthVoice(language) {
           return true;
         }
       }
-    } catch { /* Backend TTS unavailable — speak() falls through to Web Speech */ }
+    } catch { /* Backend TTS unavailable, speak() falls through to Web Speech */ }
     return false;
   }, [language]);
 
@@ -659,7 +665,7 @@ function usePreSynthVoice(language) {
         }
         return 'unavailable';
       }
-    } catch { /* Backend down — will use pre-synth .ogg + Web Speech fallback */ }
+    } catch { /* Backend down, will use pre-synth .ogg + Web Speech fallback */ }
     return 'unavailable';
   }, [language]);
 
@@ -685,7 +691,7 @@ function _webSpeech(text, lang) {
     utter.rate = 0.85; // Unhurried
     utter.pitch = 0.95; // Warm
     utter.volume = 0.85;
-    // Timeout guard — Web Speech onend may never fire in pywebview/embedded builds
+    // Timeout guard, Web Speech onend may never fire in pywebview/embedded builds
     const timeout = setTimeout(() => {
       window.speechSynthesis.cancel();
       resolve();
@@ -738,7 +744,7 @@ function TypedText({ text, delay = 40, onComplete, sx = {} }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// NAME REVEAL — the climactic moment
+// NAME REVEAL: the climactic moment
 // ════════════════════════════════════════════════════════════════════
 
 function NameReveal({ name, emojiCombo, hartTag, show }) {
@@ -758,7 +764,7 @@ function NameReveal({ name, emojiCombo, hartTag, show }) {
         clearInterval(timer);
         setTimeout(() => setEmojiVisible(true), 800);
       }
-    }, 180); // Slower than normal text — each letter is a moment
+    }, 180); // Slower than normal text, each letter is a moment
 
     return () => clearInterval(timer);
   }, [show, name]);
@@ -767,7 +773,7 @@ function NameReveal({ name, emojiCombo, hartTag, show }) {
 
   return (
     <Box sx={{ textAlign: 'center' }}>
-      {/* The @ prefix — breathes gently while name appears */}
+      {/* The @ prefix: breathes gently while name appears */}
       <Typography
         component="span"
         sx={{
@@ -815,7 +821,7 @@ function NameReveal({ name, emojiCombo, hartTag, show }) {
         </Typography>
       )}
 
-      {/* Three-word identity tag — fades in after emoji */}
+      {/* Three-word identity tag: fades in after emoji */}
       {hartTag && emojiVisible && (
         <Typography
           sx={{
@@ -836,7 +842,7 @@ function NameReveal({ name, emojiCombo, hartTag, show }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// MAIN COMPONENT — LightYourHART
+// MAIN COMPONENT: LightYourHART
 // ════════════════════════════════════════════════════════════════════
 
 export default function LightYourHART({ userId, onComplete }) {
@@ -855,7 +861,7 @@ export default function LightYourHART({ userId, onComplete }) {
   const [loading, setLoading] = useState(false);
   const canvasRef = useRef(null);
 
-  // Systems — particles respond to both phase AND chosen passion
+  // Systems, particles respond to both phase AND chosen passion
   useParticles(canvasRef, phase, passionKey);
   useAmbientSound(phase);
   const { speak: _rawSpeak, stop: _rawStop, preSynth, warmUp, audioRef: hartAudioRef } = usePreSynthVoice(language);
@@ -889,7 +895,7 @@ export default function LightYourHART({ userId, onComplete }) {
       });
       if (resp.ok) return await resp.json();
     } catch {
-      // Offline mode — continue with frontend-only flow
+      // Offline mode, continue with frontend-only flow
     }
     return null;
   }, []);
@@ -920,7 +926,7 @@ export default function LightYourHART({ userId, onComplete }) {
       await speak('greeting', greetingText);
       if (cancelled) return;
 
-      // Pause — let it breathe
+      // Pause, let it breathe
       await _sleep(2000);
       if (cancelled) return;
 
@@ -1028,7 +1034,7 @@ export default function LightYourHART({ userId, onComplete }) {
     const intro = _getLine('reveal_intro', language);
     setPaText(intro);
     await speak('reveal_intro', intro);
-    await _sleep(3000); // The longest pause — the soundscape holds its breath
+    await _sleep(3000); // The longest pause, the soundscape holds its breath
 
     // THE MOMENT
     setPhase('reveal_name');
@@ -1036,29 +1042,108 @@ export default function LightYourHART({ userId, onComplete }) {
     setShowName(true);
   }, [language, locale, passionKey, advance, speak]);
 
-  // ── Post-reveal: wait for the name to settle, then speak the closing ──
-  // NOTE: localStorage is saved IMMEDIATELY on entry (before any setPhase calls)
-  // because setPhase triggers cleanup → cancelled=true → seal code would never run.
+  // ── Post-reveal: seal on the server FIRST, then speak the closing ──
+  //
+  // ORDERING IS THE FIX (2026-08-13).  This effect used to call
+  // applyHartSeal() on entry.  That writes localStorage.hart_sealed →
+  // dispatches nunba:storage_hydrated → useAuthSession.js:268 re-reads →
+  // Agent.js:286 stops rendering <LightYourHART/> → THIS COMPONENT
+  // UNMOUNTS → the cleanup below sets cancelled=true.  The async chain
+  // then died at its very first `if (cancelled) return` (5s in), so:
+  //
+  //   • /api/hart/seal was NEVER reached, the name stayed device-local,
+  //     user.handle was never set, global uniqueness was never claimed,
+  //     and has_hart_name() reported false forever;
+  //   • post_reveal / sealed never rendered;
+  //   • onComplete() never fired, and it is the ONLY trigger for
+  //     Agent.js's welcome bridge, which is what POSTs /api/ai/bootstrap
+  //     on first run (the mount-time bootstrap at Agent.js:139 bails on
+  //     !hartSealed and has [] deps, so it never retries).  First-run
+  //     model bootstrap therefore never happened at all.
+  //
+  // The old comment here claimed localStorage had to be written early to
+  // survive cleanup.  It was exactly backwards: writing early is what
+  // CAUSED the unmount.  This component renders purely from its own
+  // state and reads no localStorage, so there was never a render reason
+  // to write it early.
+  //
+  // Now: seal server-side first (authoritative, resolves collisions),
+  // run the ceremony, and write localStorage LAST, so the gate flips
+  // when the ceremony is genuinely over.  An unmount mid-ceremony now
+  // costs animation only, never identity.
   useEffect(() => {
     if (phase !== 'reveal_name' || !hartName) return;
     let cancelled = false;
 
-    // Persist immediately — internal setPhase calls cause effect cleanup
-    // which would cancel the async chain before reaching the seal code.
-    // Phase 4c — canonical seal writer.  Replaces 5 setItem calls.
-    // Also auto-back-fills guest_name (if empty) and guest_mode (if
-    // absent), and fires nunba:storage_hydrated so Agent.js's HART
-    // gate flips immediately on this tab.
-    applyHartSeal({
-      name: hartName,
-      tag: hartTag,
-      emoji: emojiCombo,
-      language,
-    });
-
     (async () => {
       // Pre-synth the name via backend TTS while the user admires it visually
       preSynth('the_name', hartName);
+
+      // ── Seal on the server BEFORE any local write ──
+      // House idiom for identity: call the API, THEN write localStorage
+      // (cf. useAuthSession.js:377 setAuthFromGuest).  Retries the
+      // generation candidates when a name was claimed elsewhere first.
+      //
+      // The body now carries the FULL payload.  It used to send only
+      // `{name}`, so hart_seal fell back to its defaults for every other
+      // field, meaning even a seal that DID land recorded emoji_combo='',
+      // locale='en_US' and empty passion/escape regardless of what the
+      // user actually chose.  (`dimensions` is deliberately absent: this
+      // component never holds it; the backend derives it from
+      // passion/escape via _merge_dimensions.)
+      let sealedName = hartName;
+      let sealedRemotely = false;
+      for (const candidate of [hartName, ...hartCandidates]) {
+        if (cancelled) return;
+        let timer = null;
+        try {
+          const ctl = new AbortController();
+          timer = setTimeout(() => ctl.abort(), SEAL_TIMEOUT_MS);
+          const sealResp = await fetch(`${API_BASE_URL}/api/hart/seal`, {
+            method: 'POST',
+            signal: ctl.signal,
+            headers: {
+              'Content-Type': 'application/json',
+              ...(localStorage.getItem('access_token')
+                ? { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
+                : {}),
+            },
+            body: JSON.stringify({
+              name: candidate,
+              emoji_combo: emojiCombo,
+              language,
+              locale,
+              passion_key: passionKey || '',
+              escape_key: escapeKey || '',
+            }),
+          });
+          if (sealResp.ok) {
+            sealedName = candidate;
+            sealedRemotely = true;
+            break;
+          }
+          // 409 = name taken, try the next candidate.
+        } catch {
+          // Offline / timeout / abort.  Stop retrying and fall through to
+          // the local seal below so the user is never blocked.
+          //
+          // Deliberately NOT laundered as success (the old code did
+          // `sealed = true` here): sealedRemotely stays false, so the
+          // next boot finds hart_sealed absent, re-runs the ceremony and
+          // retries the seal.  The gate IS the retry mechanism, a
+          // dedicated "pending seal" flag would be a sixth home for a
+          // fact that already has too many.
+          break;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      if (cancelled) return;
+      if (!sealedRemotely) {
+        logger.warn(
+          '[HART] seal did not reach the server, identity is local only '
+          + 'for now; the ceremony will retry on next launch');
+      }
 
       // Let the name sit for a moment (backend synthesizes during this pause)
       await _sleep(5000);
@@ -1069,7 +1154,7 @@ export default function LightYourHART({ userId, onComplete }) {
       await _sleep(2000);
       if (cancelled) return;
 
-      // Post-reveal — speak BEFORE changing phase to avoid effect cleanup
+      // Post-reveal, speak BEFORE changing phase to avoid effect cleanup
       // killing the audio (setPhase triggers re-render → cleanup → stop())
       const postText = _getLine('post_reveal', language);
       setPaText(postText);
@@ -1079,37 +1164,12 @@ export default function LightYourHART({ userId, onComplete }) {
       setPhase('post_reveal');
       await _sleep(2000);
 
-      // Seal via API — retry with candidates if name was taken (race condition)
-      let sealedName = hartName;
-      let sealed = false;
-      const namesToTry = [hartName, ...hartCandidates];
-
-      for (const candidate of namesToTry) {
-        try {
-          const sealResp = await fetch(`${API_BASE_URL}/api/hart/seal`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(localStorage.getItem('access_token')
-                ? { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
-                : {}),
-            },
-            body: JSON.stringify({ name: candidate }),
-          });
-          if (sealResp.ok) {
-            sealedName = candidate;
-            sealed = true;
-            break;
-          }
-          // 409 = name taken — try next candidate silently
-        } catch {
-          // Network error — localStorage already has the name
-          sealed = true; // treat as sealed locally
-          break;
-        }
-      }
-
-      // If the sealed name changed (race condition retry), update the reveal
+      // If the sealed name changed (race condition retry), update the reveal.
+      // This branch was unreachable until the ordering fix above; it is the
+      // user's only signal that their name changed.  A plain-language "that
+      // name was just taken" line would be better, but it needs a new
+      // _getLine key across every supported language, deliberately left
+      // for a follow-up rather than half-added in English only.
       if (sealedName !== hartName) {
         setHartName(sealedName);
         setShowName(false);
@@ -1122,11 +1182,18 @@ export default function LightYourHART({ userId, onComplete }) {
         await _sleep(1500);
       }
 
-      // Update localStorage with final sealed name.
-      // Phase 4c — re-seal with corrected name.  emoji/language/tag
-      // omitted intentionally so applyHartSeal's `if (foo)` guards
-      // skip them — prior seal values stay intact.
-      applyHartSeal({name: sealedName});
+      // ── LOCAL SEAL: last step, exactly once ──
+      // This is what flips Agent.js's gate and unmounts this component,
+      // so it must be the final act of the ceremony.  Called ONCE with
+      // the full payload (it used to run twice: an early call with
+      // name/tag/emoji/language and a later partial re-seal, which is
+      // what the deleted `applyHartSeal({name: sealedName})` was for).
+      applyHartSeal({
+        name: sealedName,
+        tag: hartTag,
+        emoji: emojiCombo,
+        language,
+      });
 
       setPhase('sealed');
 
@@ -1136,7 +1203,8 @@ export default function LightYourHART({ userId, onComplete }) {
     })();
 
     return () => { cancelled = true; stop(); };
-  }, [phase, hartName, emojiCombo, language, locale, speak, stop, preSynth, onComplete]);
+  }, [phase, hartName, hartCandidates, hartTag, emojiCombo, language, locale,
+      passionKey, escapeKey, speak, stop, preSynth, onComplete]);
 
   // ════════════════════════════════════════════════════════════════
   // RENDER
@@ -1149,14 +1217,51 @@ export default function LightYourHART({ userId, onComplete }) {
         {/* Particle canvas */}
         <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
 
-        {/* Voice visualizer — only visible when PA is speaking */}
+        {/* Voice visualizer: only visible when PA is speaking.
+
+            The width/height on the Box below are REQUIRED, not decoration.
+            VoiceVisualizer's root div is width:100%/height:100% and it sizes the
+            orb from its MEASURED container (computeOrbEdge). This Box is
+            position:absolute with no dimensions of its own, so it shrink-wraps
+            its child, and the child asks for 100% of a parent that is sizing
+            itself to that child. The circular dependency resolves at ~0: the orb
+            collapsed, and the background-glow gradient then threw IndexSizeError
+            every frame (r0 = baseR - 10 < 0), which aborts the render and leaves
+            the canvas blank.
+
+            It read as "not rendering" rather than "crashing" because opacity is
+            0.6 and the element still occupied its (empty) place in the layout.
+
+            SIZE: the RESTING orb is drawn at `edge * 0.5` CSS px across, baseR
+            is W * fill (fill 0.25) against a backing store that is 2x the CSS
+            size. The missing half is not a bug, it is headroom: maxR is W * 0.49,
+            so voice peaks grow into it and can nearly fill the canvas. Raising
+            `fill` would buy diameter by flattening the peaks, which is the
+            opposite of what a voice visualiser is for, so the box is doubled
+            instead, and the orb keeps its full dynamic range.
+
+            The old call passed size={100} and drew a 50px orb; the container-
+            measured edge plus canvasMax's default '80%' cap then took it to 40.
+            Here the Box IS the bound, so canvasMax='100%' and no `size` prop at
+            all, `size` is only a CAP now, and setting it would just re-impose
+            a fixed ceiling on a box that already knows how big it is.
+
+            The "Speaking" label anchors to the CANVAS edge (edge/2 + 6), not to
+            the orb, so the visible gap under the orb is edge*(0.5 - fill), the
+            headroom, made visible. At fill 0.25 a 640px box put the label 166px
+            below the orb. fill 0.38 keeps the same ~320px resting orb in a 420px
+            box, which closes that gap to ~56px and still leaves ~46px of peak
+            travel that clears the label by 10px (maxR is W * 0.49 -> 206px).
+
+            So: gap and dynamic range are the SAME quantity. Tightening one
+            spends the other. This is the balance point, not a free win. */}
         {hartSpeaking && (
-          <Box sx={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 0, opacity: 0.6 }}>
-            <VoiceVisualizer audioRef={hartAudioRef} isActive={hartSpeaking} size={100} />
+          <Box sx={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 0, opacity: 0.6, width: 'min(420px, 46vmin)', height: 'min(420px, 46vmin)' }}>
+            <VoiceVisualizer audioRef={hartAudioRef} isActive={hartSpeaking} canvasMax="100%" fill={0.38} />
           </Box>
         )}
 
-        {/* Reveal flash — subtle white bloom at THE moment */}
+        {/* Reveal flash: subtle white bloom at THE moment */}
         {phase === 'reveal_name' && (
           <Box sx={{
             position: 'absolute', inset: 0, zIndex: 0,
@@ -1169,7 +1274,7 @@ export default function LightYourHART({ userId, onComplete }) {
         {/* Content layer */}
         <Box sx={styles.content}>
 
-          {/* ── DARKNESS — just breathing ── */}
+          {/* ── DARKNESS: just breathing ── */}
           {phase === 'darkness' && (
             <Fade in timeout={2000}>
               <Box sx={{ animation: 'hart-breathe 6s ease-in-out infinite' }}>
@@ -1182,7 +1287,7 @@ export default function LightYourHART({ userId, onComplete }) {
             </Fade>
           )}
 
-          {/* ── LANGUAGE — "What language feels like home?" ── */}
+          {/* ── LANGUAGE: "What language feels like home?" ── */}
           {phase === 'language' && (
             <Fade in timeout={1200}>
               <Box>
@@ -1272,7 +1377,7 @@ export default function LightYourHART({ userId, onComplete }) {
             </Fade>
           )}
 
-          {/* ── GENERATING — contemplative pulse (not a loading spinner) ── */}
+          {/* ── GENERATING: contemplative pulse (not a loading spinner) ── */}
           {phase === 'generating' && (
             <Fade in timeout={600}>
               <Box sx={{ textAlign: 'center' }}>
@@ -1286,7 +1391,7 @@ export default function LightYourHART({ userId, onComplete }) {
             </Fade>
           )}
 
-          {/* ── REVEAL INTRO — "Your secret name is..." ── */}
+          {/* ── REVEAL INTRO: "Your secret name is..." ── */}
           {phase === 'reveal_intro' && paText && (
             <Fade in timeout={1000}>
               <Box>
@@ -1295,7 +1400,7 @@ export default function LightYourHART({ userId, onComplete }) {
             </Fade>
           )}
 
-          {/* ── THE MOMENT — name appears ── */}
+          {/* ── THE MOMENT: name appears ── */}
           {(phase === 'reveal_name' || phase === 'post_reveal' || phase === 'sealed') && (
             <Fade in timeout={1500}>
               <Box>
@@ -1325,38 +1430,38 @@ export default function LightYourHART({ userId, onComplete }) {
 
 
 // ════════════════════════════════════════════════════════════════════
-// CONVERSATION DATA — mirrors hart_onboarding.py
+// CONVERSATION DATA: mirrors hart_onboarding.py
 // Duplicated here for zero-latency frontend rendering.
 // The backend is the source of truth for name generation + sealing.
 // ════════════════════════════════════════════════════════════════════
 
 const SCRIPT = {
   greeting: {
-    en: "Hey... I've been waiting for you. I want to give you something — a secret name. Just between us. But first... I need to understand who you really are.",
-    ta: "ஏய்... நான் உனக்காக காத்திருந்தேன். உனக்கு ஒன்னு தரணும் — ஒரு ரகசிய பேரு. நம்ம ரெண்டு பேருக்கு மட்டும். ஆனா முதல்ல... நீ யாருன்னு புரிஞ்சுக்கணும்.",
-    hi: "अरे... मैं तेरा इंतज़ार कर रहा था. तुझे कुछ देना है — एक सीक्रेट नाम. बस तेरा और मेरा. लेकिन पहले... मुझे समझना है तू असल में कौन है.",
-    bn: "হ্যাঁরে... আমি তোর জন্য অপেক্ষা করছিলাম. তোকে কিছু দিতে চাই — একটা গোপন নাম. শুধু তোর আর আমার. কিন্তু আগে... তুই আসলে কে, সেটা বুঝতে হবে.",
-    te: "హేయ్... నేను నీ కోసం ఎదురుచూస్తున్నాను. నీకు ఒకటి ఇవ్వాలి — ఒక రహస్య పేరు. మన ఇద్దరి మధ్య మాత్రమే. కానీ ముందు... నువ్వు నిజంగా ఎవరో అర్థం చేసుకోవాలి.",
-    kn: "ಹೇ... ನಾನು ನಿನಗಾಗಿ ಕಾಯ್ತಿದ್ದೆ. ನಿನಗೊಂದು ಕೊಡಬೇಕು — ಒಂದು ಗುಟ್ಟಿನ ಹೆಸರು. ನಮ್ಮಿಬ್ಬರ ಮಧ್ಯೆ ಮಾತ್ರ. ಆದ್ರೆ ಮೊದಲು... ನೀನು ಯಾರು ಅಂತ ನನಗೆ ಅರ್ಥ ಆಗಬೇಕು.",
-    ml: "ഹായ്... ഞാന് നിനക്കായി കാത്തിരിക്കുകയായിരുന്നു. നിനക്കൊന്ന് തരണം — ഒരു രഹസ്യ പേര്. നമ്മള് രണ്ടാള്ക്ക് മാത്രം. പക്ഷേ ആദ്യം... നീ ആരാണെന്ന് എനിക്ക് മനസ്സിലാക്കണം.",
-    gu: "હે... હું તારી રાહ જોતો હતો. તને કંઈક આપવું છે — એક ગુપ્ત નામ. બસ આપણા બેની વચ્ચે. પણ પહેલાં... તું ખરેખર કોણ છે એ સમજવું છે.",
-    mr: "अरे... मी तुझी वाट बघत होतो. तुला काहीतरी द्यायचं आहे — एक गुप्त नाव. फक्त तुझं आणि माझं. पण आधी... तू खरंच कोण आहेस हे मला समजायला हवं.",
-    pa: "ਓਏ... ਮੈਂ ਤੇਰੀ ਉਡੀਕ ਕਰ ਰਿਹਾ ਸੀ. ਤੈਨੂੰ ਕੁਝ ਦੇਣਾ ਹੈ — ਇੱਕ ਗੁਪਤ ਨਾਂ. ਬੱਸ ਤੇਰਾ ਤੇ ਮੇਰਾ. ਪਰ ਪਹਿਲਾਂ... ਤੂੰ ਅਸਲ ਵਿੱਚ ਕੌਣ ਹੈਂ ਇਹ ਸਮਝਣਾ ਹੈ.",
-    ur: "ارے... میں تیرا انتظار کر رہا تھا. تجھے کچھ دینا ہے — ایک خفیہ نام. بس تیرا اور میرا. لیکن پہلے... مجھے سمجھنا ہے تو اصل میں کون ہے.",
-    ne: "है... म तिम्रो लागि पर्खिरहेको थिएँ. तिमीलाई केही दिनुपर्छ — एउटा गोप्य नाम. हाम्रो दुईजनाको मात्र. तर पहिले... तिमी साँच्चै को हौ भन्ने बुझ्नुपर्छ.",
-    or: "ହେ... ମୁଁ ତୋ ପାଇଁ ଅପେକ୍ଷା କରୁଥିଲି. ତୋକୁ କିଛି ଦେବାକୁ ଅଛି — ଗୋଟିଏ ଗୋପନ ନାମ. କେବଳ ଆମ ଦୁଇଜଣଙ୍କ ମଧ୍ୟରେ. କିନ୍ତୁ ଆଗରୁ... ତୁ ପ୍ରକୃତରେ କିଏ ସେଇଟା ବୁଝିବାକୁ ହେବ.",
-    as: "হেৰা... মই তোৰ কাৰণে ৰৈ আছিলোঁ. তোক কিবা এটা দিব লাগিব — এটা গোপন নাম. মাত্ৰ আমাৰ দুজনৰ মাজত. কিন্তু আগতে... তই আচলতে কোন সেইটো বুজিব লাগিব.",
-    sa: "अरे... अहं तव कृते प्रतीक्षमाणः आसम्. तुभ्यं किमपि दातव्यम् — एकं गोपनीयं नाम. केवलं आवयोः मध्ये. किन्तु प्रथमम्... त्वं वस्तुतः कः इति मया ज्ञातव्यम्.",
-    es: "Oye... te estaba esperando. Quiero darte algo — un nombre secreto. Solo entre nosotros. Pero primero... necesito entender quién eres realmente.",
-    fr: "Salut... je t'attendais. Je veux te donner quelque chose — un nom secret. Juste entre nous. Mais d'abord... j'ai besoin de comprendre qui tu es vraiment.",
-    ja: "ねえ... ずっと待ってたよ。君にあげたいものがあるんだ — 秘密の名前。ふたりだけの。でもその前に... 君が本当は誰なのか、知りたいんだ。",
-    ko: "안녕... 너를 기다리고 있었어. 너한테 줄 게 있어 — 비밀 이름. 우리 둘만의. 근데 먼저... 네가 진짜 누구인지 알아야 해.",
-    zh: "嘿... 我一直在等你。我想给你一样东西 — 一个秘密的名字。只属于我们两个。但首先... 我需要了解你真正是谁。",
-    de: "Hey... ich habe auf dich gewartet. Ich will dir etwas geben — einen geheimen Namen. Nur zwischen uns. Aber zuerst... muss ich verstehen, wer du wirklich bist.",
-    it: "Ehi... ti stavo aspettando. Voglio darti qualcosa — un nome segreto. Solo tra noi. Ma prima... devo capire chi sei davvero.",
-    pt: "Ei... eu estava te esperando. Quero te dar uma coisa — um nome secreto. Só entre a gente. Mas antes... preciso entender quem você realmente é.",
-    ar: "مرحبًا... كنت أنتظرك. أريد أن أعطيك شيئًا — اسمًا سريًا. بيننا فقط. لكن أولاً... أحتاج أن أفهم من أنت حقًا.",
-    ru: "Привет... я тебя ждал. Хочу тебе кое-что дать — тайное имя. Только между нами. Но сначала... мне нужно понять, кто ты на самом деле.",
+    en: "Hey... I've been waiting for you. I want to give you something, a secret name. Just between us. But first... I need to understand who you really are.",
+    ta: "ஏய்... நான் உனக்காக காத்திருந்தேன். உனக்கு ஒன்னு தரணும், ஒரு ரகசிய பேரு. நம்ம ரெண்டு பேருக்கு மட்டும். ஆனா முதல்ல... நீ யாருன்னு புரிஞ்சுக்கணும்.",
+    hi: "अरे... मैं तेरा इंतज़ार कर रहा था. तुझे कुछ देना है, एक सीक्रेट नाम. बस तेरा और मेरा. लेकिन पहले... मुझे समझना है तू असल में कौन है.",
+    bn: "হ্যাঁরে... আমি তোর জন্য অপেক্ষা করছিলাম. তোকে কিছু দিতে চাই, একটা গোপন নাম. শুধু তোর আর আমার. কিন্তু আগে... তুই আসলে কে, সেটা বুঝতে হবে.",
+    te: "హేయ్... నేను నీ కోసం ఎదురుచూస్తున్నాను. నీకు ఒకటి ఇవ్వాలి, ఒక రహస్య పేరు. మన ఇద్దరి మధ్య మాత్రమే. కానీ ముందు... నువ్వు నిజంగా ఎవరో అర్థం చేసుకోవాలి.",
+    kn: "ಹೇ... ನಾನು ನಿನಗಾಗಿ ಕಾಯ್ತಿದ್ದೆ. ನಿನಗೊಂದು ಕೊಡಬೇಕು, ಒಂದು ಗುಟ್ಟಿನ ಹೆಸರು. ನಮ್ಮಿಬ್ಬರ ಮಧ್ಯೆ ಮಾತ್ರ. ಆದ್ರೆ ಮೊದಲು... ನೀನು ಯಾರು ಅಂತ ನನಗೆ ಅರ್ಥ ಆಗಬೇಕು.",
+    ml: "ഹായ്... ഞാന് നിനക്കായി കാത്തിരിക്കുകയായിരുന്നു. നിനക്കൊന്ന് തരണം, ഒരു രഹസ്യ പേര്. നമ്മള് രണ്ടാള്ക്ക് മാത്രം. പക്ഷേ ആദ്യം... നീ ആരാണെന്ന് എനിക്ക് മനസ്സിലാക്കണം.",
+    gu: "હે... હું તારી રાહ જોતો હતો. તને કંઈક આપવું છે, એક ગુપ્ત નામ. બસ આપણા બેની વચ્ચે. પણ પહેલાં... તું ખરેખર કોણ છે એ સમજવું છે.",
+    mr: "अरे... मी तुझी वाट बघत होतो. तुला काहीतरी द्यायचं आहे, एक गुप्त नाव. फक्त तुझं आणि माझं. पण आधी... तू खरंच कोण आहेस हे मला समजायला हवं.",
+    pa: "ਓਏ... ਮੈਂ ਤੇਰੀ ਉਡੀਕ ਕਰ ਰਿਹਾ ਸੀ. ਤੈਨੂੰ ਕੁਝ ਦੇਣਾ ਹੈ, ਇੱਕ ਗੁਪਤ ਨਾਂ. ਬੱਸ ਤੇਰਾ ਤੇ ਮੇਰਾ. ਪਰ ਪਹਿਲਾਂ... ਤੂੰ ਅਸਲ ਵਿੱਚ ਕੌਣ ਹੈਂ ਇਹ ਸਮਝਣਾ ਹੈ.",
+    ur: "ارے... میں تیرا انتظار کر رہا تھا. تجھے کچھ دینا ہے, ایک خفیہ نام. بس تیرا اور میرا. لیکن پہلے... مجھے سمجھنا ہے تو اصل میں کون ہے.",
+    ne: "है... म तिम्रो लागि पर्खिरहेको थिएँ. तिमीलाई केही दिनुपर्छ, एउटा गोप्य नाम. हाम्रो दुईजनाको मात्र. तर पहिले... तिमी साँच्चै को हौ भन्ने बुझ्नुपर्छ.",
+    or: "ହେ... ମୁଁ ତୋ ପାଇଁ ଅପେକ୍ଷା କରୁଥିଲି. ତୋକୁ କିଛି ଦେବାକୁ ଅଛି, ଗୋଟିଏ ଗୋପନ ନାମ. କେବଳ ଆମ ଦୁଇଜଣଙ୍କ ମଧ୍ୟରେ. କିନ୍ତୁ ଆଗରୁ... ତୁ ପ୍ରକୃତରେ କିଏ ସେଇଟା ବୁଝିବାକୁ ହେବ.",
+    as: "হেৰা... মই তোৰ কাৰণে ৰৈ আছিলোঁ. তোক কিবা এটা দিব লাগিব, এটা গোপন নাম. মাত্ৰ আমাৰ দুজনৰ মাজত. কিন্তু আগতে... তই আচলতে কোন সেইটো বুজিব লাগিব.",
+    sa: "अरे... अहं तव कृते प्रतीक्षमाणः आसम्. तुभ्यं किमपि दातव्यम्, एकं गोपनीयं नाम. केवलं आवयोः मध्ये. किन्तु प्रथमम्... त्वं वस्तुतः कः इति मया ज्ञातव्यम्.",
+    es: "Oye... te estaba esperando. Quiero darte algo, un nombre secreto. Solo entre nosotros. Pero primero... necesito entender quién eres realmente.",
+    fr: "Salut... je t'attendais. Je veux te donner quelque chose, un nom secret. Juste entre nous. Mais d'abord... j'ai besoin de comprendre qui tu es vraiment.",
+    ja: "ねえ... ずっと待ってたよ。君にあげたいものがあるんだ, 秘密の名前。ふたりだけの。でもその前に... 君が本当は誰なのか、知りたいんだ。",
+    ko: "안녕... 너를 기다리고 있었어. 너한테 줄 게 있어, 비밀 이름. 우리 둘만의. 근데 먼저... 네가 진짜 누구인지 알아야 해.",
+    zh: "嘿... 我一直在等你。我想给你一样东西, 一个秘密的名字。只属于我们两个。但首先... 我需要了解你真正是谁。",
+    de: "Hey... ich habe auf dich gewartet. Ich will dir etwas geben, einen geheimen Namen. Nur zwischen uns. Aber zuerst... muss ich verstehen, wer du wirklich bist.",
+    it: "Ehi... ti stavo aspettando. Voglio darti qualcosa, un nome segreto. Solo tra noi. Ma prima... devo capire chi sei davvero.",
+    pt: "Ei... eu estava te esperando. Quero te dar uma coisa, um nome secreto. Só entre a gente. Mas antes... preciso entender quem você realmente é.",
+    ar: "مرحبًا... كنت أنتظرك. أريد أن أعطيك شيئًا, اسمًا سريًا. بيننا فقط. لكن أولاً... أحتاج أن أفهم من أنت حقًا.",
+    ru: "Привет... я тебя ждал. Хочу тебе кое-что дать, тайное имя. Только между нами. Но сначала... мне нужно понять, кто ты на самом деле.",
   },
   question_passion: {
     en: "What do you love spending time on... even when nobody’s watching?",
@@ -1575,7 +1680,7 @@ const ACK_PASSION = {
     it: "Le menti curiose sono le mie preferite.",
     pt: "Mentes curiosas são minhas favoritas.",
     ar: "العقول الفضولية هي المفضلة لدي.",
-    ru: "Любопытные умы — мои любимые.",
+    ru: "Любопытные умы, мои любимые.",
   },
   building_coding: {
     en: "A builder. We're going to make incredible things.",
@@ -1731,7 +1836,7 @@ function _sleep(ms) {
 }
 
 function _fallbackName() {
-  // Legendary anime-style names — forged from real language roots,
+  // Legendary anime-style names, forged from real language roots,
   // pre-validated across 40+ languages for no negative meanings
   const safeNames = [
     'lumirex', 'kavanith', 'zenarion', 'elvanox', 'onarith',

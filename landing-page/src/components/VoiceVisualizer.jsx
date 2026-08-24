@@ -287,8 +287,22 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
 
       ctx.clearRect(0, 0, W, H);
 
-      // Background glow
-      const bg = ctx.createRadialGradient(cx, cy, baseR - 10, cx, cy, baseR + 70);
+      // Background glow.
+      //
+      // The inner radius is clamped at 0 because createRadialGradient THROWS on
+      // a negative r0 ("IndexSizeError: The r0 provided is less than 0"), and
+      // this runs once per animation frame — so a single bad frame became a
+      // repeating uncaught runtime error, not a cosmetic glitch.
+      //
+      // baseR is W * fill (fill defaults to 0.25), so baseR < 10 the moment the
+      // canvas is under 40px wide. That never happened while `size` defaulted to
+      // 200; it happens now that the edge is measured from the container, which
+      // reads ~0 before layout settles and stays small in a short flex row.
+      // LightYourHART (size={100}) reproduces it.
+      //
+      // Clamping only changes frames that used to crash: for baseR >= 10 the
+      // expression is identical.
+      const bg = ctx.createRadialGradient(cx, cy, Math.max(0, baseR - 10), cx, cy, baseR + 70);
       bg.addColorStop(0, 'rgba(108,99,255,' + (0.02 + energy * 0.06).toFixed(3) + ')');
       bg.addColorStop(1, 'rgba(10,9,20,0)');
       ctx.fillStyle = bg;

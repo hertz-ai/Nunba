@@ -7,6 +7,7 @@ Provides a unified interface for system tray functionality on:
 - Linux: Uses pystray
 """
 import logging
+from desktop.platform_utils import get_subprocess_flags
 import os
 import sys
 import threading
@@ -139,7 +140,7 @@ class TrayHandler:
                     _m = message.replace('\\', '\\\\').replace('"', '\\"')
                     _t = title.replace('\\', '\\\\').replace('"', '\\"')
                     script = f'display notification "{_m}" with title "{_t}"'
-                    subprocess.run(['osascript', '-e', script], check=False, timeout=5)
+                    subprocess.run(['osascript', '-e', script], check=False, timeout=5, **get_subprocess_flags())
                 except Exception as e:
                     logger.error(f"Notification failed: {e}")
 
@@ -243,7 +244,7 @@ class TrayHandler:
             # Try using osascript for native notifications
             import subprocess
             script = f'display notification "{message}" with title "{title}"'
-            subprocess.run(['osascript', '-e', script], check=False)
+            subprocess.run(['osascript', '-e', script], check=False, **get_subprocess_flags())
             logger.info(f"Notification shown: {title} - {message}")
         except Exception as e:
             logger.error(f"Error showing macOS notification: {e}")
@@ -297,7 +298,7 @@ def notify_minimized_to_tray(icon, message="Application minimized to system tray
         try:
             import subprocess
             script = f'display notification "{message}" with title "Nunba"'
-            subprocess.run(['osascript', '-e', script], check=False)
+            subprocess.run(['osascript', '-e', script], check=False, **get_subprocess_flags())
         except Exception as e:
             logger.error(f"Error showing notification: {e}")
     elif _tray_icon and hasattr(_tray_icon, 'notify'):

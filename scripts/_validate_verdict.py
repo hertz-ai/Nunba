@@ -19,21 +19,55 @@ import re
 
 _FAILED_RE = re.compile(r'Failed:\s*(\d+)')
 
+# app.py:2264 writes exactly one of these per validate run, and validate.log
+# is APPEND-ONLY — so the file holds every build ever done on the machine.
+_SESSION_RE = re.compile(r'^=+ validate\.log session .*$', re.M)
+
+
+def last_session(log_text):
+    """The most recent validate run's slice of an append-only validate.log.
+
+    Canonical splitter — used both by the verdict below and by the build
+    scripts when they ECHO the log.  Printing the whole file dumps every
+    build ever run on the machine into the build output (32 sessions and
+    ~4000 lines on this box), which reads like a retry loop and buries the
+    run you actually care about under days of history.
+    """
+    if not log_text:
+        return log_text
+    _parts = _SESSION_RE.split(log_text)
+    return _parts[-1] if len(_parts) > 1 else log_text
+
 
 def validate_log_is_clean(log_text) -> bool:
-    """True only when EVERY reported summary has zero failures.
+    """True only when every summary in THIS RUN's session has zero failures.
 
     Fail-closed by design: empty, unreadable or verdict-less input returns
     False.  A release gate that cannot find a verdict must block, never wave
     the build through — the whole point is that absence of evidence is not
     evidence of success.
 
-    Order-independent: a later passing retry does not erase an earlier
-    failure, because we cannot tell a retry from a second group of checks.
+    Order-independent WITHIN a session: a later passing retry does not erase
+    an earlier failure, because we cannot tell a retry from a second group of
+    checks.  That is the build7 guard and it is unchanged.
+
+    Scoped to the LAST session, because validate.log accumulates across
+    builds.  Reading the whole file made this gate a LATCH: one failed run
+    poisoned every later build forever, since the failure never leaves the
+    log.  Measured 2026-08-21 — 32 sessions on one dev box, three historical
+    failures (08-16 Failed:5, 08-19 Failed:2 twice); that day's own session
+    reported "Passed: 62, Failed: 0 ... All modules bundled correctly. Build
+    is good." and the gate still returned False and killed the build.
+
+    Scoping also closes a fail-OPEN hole in the same function: a session that
+    died before printing its summary used to inherit the zeros of earlier
+    sessions and pass.  Now the last session must produce its own verdict.
     """
     if not log_text:
         return False
-    counts = _FAILED_RE.findall(log_text)
+    # No header at all => single-session text (unit tests, older logs);
+    # last_session() returns it whole, exactly as before.
+    counts = _FAILED_RE.findall(last_session(log_text))
     if not counts:
         return False
     return all(int(c) == 0 for c in counts)

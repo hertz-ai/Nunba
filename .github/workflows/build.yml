@@ -11,6 +11,32 @@ on:
       - main
     tags:
       - 'v*'
+    # Documentation does not ship in an installer, so it must not build one.
+    #
+    # Nothing here filtered by path, and this job signs four installers of
+    # 400-600 MB and publishes a nightly release marked --latest=true. A
+    # six-file markdown commit therefore cost a full signed build AND moved the
+    # Latest badge onto a fresh `nightly-<sha>-<runid>`, which is exactly the
+    # release name that reads as CI debris to anyone arriving from a launch
+    # link. Two costs, no benefit.
+    #
+    # paths-ignore, not paths: an allowlist silently stops building whenever
+    # someone adds a directory nobody remembered to list, and a build that
+    # quietly does not run is far worse here than one that runs unnecessarily.
+    #
+    # CAVEAT, stated rather than assumed: this `paths-ignore` sits in the same
+    # `push` block as the 'v*' tag trigger, and I have not verified against a
+    # real tag push whether GitHub evaluates path filters for tags. If it does,
+    # tagging a commit that touches only documentation would skip its release
+    # build. That combination is unusual, and workflow_dispatch above is the
+    # escape hatch if it ever happens, but do not read this comment as proof
+    # that tags are exempt.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'marketing/**'
+      - 'LICENSE'
+      - '.gitignore'
   # Manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
@@ -864,9 +890,43 @@ jobs:
             gh release upload "$TAG" "$f" --repo "$REPO" --clobber
           done
 
-          echo "=== Publishing as latest (immutable after publish) ==="
-          gh release edit "$TAG" --repo "$REPO" \
-            --draft=false --latest=true --prerelease=false
+          # A nightly missing a platform installer must NEVER become
+          # /releases/latest.  hevolve.ai builds every download URL as
+          # releases/latest/download/<asset> (scripts/download-targets.js), so
+          # the moment `latest` points at a release without Nunba_Setup.exe,
+          # every Windows download on the site 404s — and a failed GitHub
+          # download touches none of our logs, so nothing reports it.
+          #
+          # This already happened: run 31488957694 had build-windows CANCELLED
+          # while publish-nightly reported SUCCESS and promoted the release
+          # anyway.  Windows is ~69% of downloads.
+          #
+          # `if: always()` above is deliberate and stays — losing a whole
+          # nightly to a macOS signing flake is the problem it solves.  So an
+          # incomplete build still publishes and its artifacts stay
+          # downloadable by tag; it just does not get promoted.  GitHub's
+          # /releases/latest skips prereleases, so marking it prerelease keeps
+          # `latest` pointing at the last COMPLETE build.  Both intents hold.
+          MISSING=""
+          for want in Nunba_Setup.exe Nunba_Setup.dmg Nunba-x86_64.AppImage; do
+            find /tmp/all-artifacts -maxdepth 2 -type f -name "$want" | grep -q . \
+              || MISSING="$MISSING $want"
+          done
+          # The .deb carries its version in the filename, so match the shape.
+          find /tmp/all-artifacts -maxdepth 2 -type f -name 'nunba_*_amd64.deb' | grep -q . \
+            || MISSING="$MISSING nunba_*_amd64.deb"
+
+          if [[ -n "$MISSING" ]]; then
+            echo "=== INCOMPLETE nightly — missing:$MISSING ==="
+            echo "Publishing as PRERELEASE so /releases/latest keeps pointing"
+            echo "at the last complete build. Artifacts remain available at $TAG."
+            gh release edit "$TAG" --repo "$REPO" \
+              --draft=false --latest=false --prerelease=true
+          else
+            echo "=== All platform installers present — publishing as latest ==="
+            gh release edit "$TAG" --repo "$REPO" \
+              --draft=false --latest=true --prerelease=false
+          fi
 
           echo "=== Pruning old nightly-* releases (keep newest 3) ==="
           gh api "repos/${REPO}/releases" --paginate \

@@ -2144,6 +2144,29 @@ def voice_diarize():
 # ============== Local vs Cloud Agent Definitions ==============
 
 # Local agents - work offline with local LLM (Llama.cpp)
+# Provenance vocabulary for the `origin` field stamped on every /prompts row.
+#
+# WHY THIS EXISTS: /prompts builds its list from three labelled sections and
+# used to throw the label away, so the payload carried NO origin/is_public/
+# source at all.  The frontend then had nothing authoritative to render and
+# had to infer provenance from field shapes — which is exactly what the web
+# repo warns against: its own isBrowsableAgent docstring records that a local
+# Nunba dump returns `is_public` absent on all 1157 rows, so any filter keyed
+# on it is a predicate that can never fire.
+#
+# `origin` is DELIBERATELY NOT `type`.  `type` is already overloaded: HARTOS
+# agents get `type='local'` forced regardless of provenance, and local_count/
+# cloud_count are derived from it.  Two meanings on one key is the drift this
+# codebase keeps paying for.
+#
+# Vocabulary matches the web card labels (Agents.js: local/peer/hive) so the
+# two surfaces describe the same agent the same way.  ORIGIN_PEER is reserved,
+# not dead: /prompts has no peer fan-out yet (see task #457), and when it gains
+# one the label is already defined rather than invented at that call site.
+ORIGIN_LOCAL = 'local'   # runs on this machine (built-in or HARTOS-created)
+ORIGIN_PEER = 'peer'     # reserved: another node in the hive, not yet a source
+ORIGIN_HIVE = 'hive'     # cloud / hosted, not on this machine
+
 LOCAL_AGENTS = [
     {
         'id': 'local_assistant',
@@ -2463,6 +2486,7 @@ def get_prompts_route():
         for agent in LOCAL_AGENTS:
             agent_copy = agent.copy()
             agent_copy['available'] = True
+            agent_copy['origin'] = ORIGIN_LOCAL
             agents.append(agent_copy)
 
     # ── 2. HARTOS backend agents (user-created agents, custom prompts) ──
@@ -2480,6 +2504,11 @@ def get_prompts_route():
                         agent['available'] = True
                         if not agent.get('type'):
                             agent['type'] = 'local'
+                        # Created through HARTOS on THIS machine, so still
+                        # local by origin.  `type` cannot carry this: it is
+                        # forced to 'local' two lines up and also feeds
+                        # local_count/cloud_count below.
+                        agent['origin'] = ORIGIN_LOCAL
                         agents.append(agent)
                     logger.debug(f'Fetched {len(hartos_agents)} agents from HARTOS')
         except Exception as e:
@@ -2492,6 +2521,7 @@ def get_prompts_route():
             if not any(a.get('id') == agent.get('id') or a.get('name') == agent.get('name') for a in agents):
                 agent_copy = agent.copy()
                 agent_copy['available'] = has_auth  # guests can see but not use
+                agent_copy['origin'] = ORIGIN_HIVE
                 agents.append(agent_copy)
 
     return jsonify({
@@ -3373,20 +3403,50 @@ def chat_route():
             # Build the textual response.  Include task names so non-
             # Liquid surfaces (RN, CLI, future channels) still see what
             # the AI is doing — single message, two formats.
-            if _active_tasks:
+            # R3: ask what is ACTUALLY blocking before promising a duration.
+            # The busy-guard used to say "a few seconds" unconditionally, and
+            # was observed saying it for an HOUR while a multi-GB CUDA torch
+            # install held the model.  A retry hint that never comes true
+            # teaches users to stop trying.  language_bootstrap owns the state
+            # (its step `detail` already carries the pip progress the user sees
+            # elsewhere), so it answers — we do not guess.
+            _blocking = None
+            try:
+                from models.language_bootstrap import get_blocking_activity
+                _blocking = get_blocking_activity()
+            except Exception as _e:
+                logger.debug(f'blocking-activity probe failed (non-fatal): {_e}')
+
+            _retry_s = (_blocking or {}).get('retry_after_s', 15)
+
+            if _blocking and _blocking.get('long_running'):
+                # Honest and explanatory — the shape that already worked
+                # ("Setting up cuda torch…" / "I'm upgrading my voice…").
+                _busy_text = (
+                    f"I'm setting up part of my brain first: "
+                    f"{_blocking['detail']}. This one-time step takes a few "
+                    "minutes — I'll be much better afterwards. Your message "
+                    "will go through once it finishes."
+                )
+            elif _active_tasks:
                 _names = ', '.join(
                     t['description'][:40] for t in _active_tasks[:3]
                 )
                 _busy_text = (
                     f"Your local AI is still working on: {_names}. "
-                    "Try again in a few seconds, or open the Task "
+                    "Try again shortly, or open the Task "
                     f"Ledger to see all {len(_active_tasks)} active "
                     "task(s)."
                 )
+            elif _blocking:
+                _busy_text = (
+                    f"Your local AI is finishing up: {_blocking['detail']}. "
+                    "Try again in a moment."
+                )
             else:
                 _busy_text = (
-                    "Your local AI is still working on another task. "
-                    "Try again in a few seconds."
+                    "Your local AI is busy with another task right now. "
+                    "Send your message again in a moment."
                 )
 
             return jsonify({
@@ -3395,7 +3455,9 @@ def chat_route():
                 'agent_type': 'local',
                 'error': 'local_llm_starting',
                 'llm_starting': True,
-                'retry_hint_seconds': 15,
+                # DERIVED, not asserted — a 221s install must not advertise
+                # itself as a 15-second wait.
+                'retry_hint_seconds': _retry_s,
                 'success': False,
                 # Non-Liquid clients (RN, CLI) can render this too.
                 # Web SPA reads the Liquid UI emit above so this is
@@ -4278,16 +4340,31 @@ def hart_seal():
 
         if success:
             remove_session(user_id)
-            # Persist language preference for auto-bootstrap on next startup
+            # Persist language preference for auto-bootstrap on next startup.
+            #
+            # ONE writer for hart_language.json: core.user_lang.
+            # set_preferred_lang.  It validates against
+            # SUPPORTED_LANG_DICT, writes atomically (tmp + fsync +
+            # os.replace), and fires the on_lang_change bus.  This was an
+            # inline open(..., 'w') that did none of the three — and the
+            # bus mattered most here, because the HART ceremony is the
+            # FIRST time a user ever picks a language, yet it was the one
+            # transition that notified nobody.  Its only subscriber,
+            # model_lifecycle._evict_draft_on_non_latin_switch, frees the
+            # 0.8B draft's ~1.2GB when the choice is a non-Latin script so
+            # Indic Parler fits beside the main 4B on 8GB GPUs.
+            #
+            # Stays in its own try/except: the enclosing handler maps
+            # ImportError to a 501, which would report an
+            # already-sealed-forever name as a failure to the client.
             try:
-                import json as _json
-                import os
-                hart_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba', 'data')
-                os.makedirs(hart_dir, exist_ok=True)
-                with open(os.path.join(hart_dir, 'hart_language.json'), 'w') as f:
-                    _json.dump({'language': data.get('language', 'en')}, f)
+                from core.user_lang import set_preferred_lang
+                set_preferred_lang(data.get('language', 'en'))
             except Exception:
-                pass
+                logger.warning(
+                    "HART seal: language persist failed for %s — the name "
+                    "IS sealed, only the next-boot language hint is lost",
+                    name, exc_info=True)
             return jsonify({'sealed': True, 'name': name, 'display': f'@{name}'})
         else:
             return jsonify({'sealed': False, 'error': 'Name unavailable or already sealed'}), 409

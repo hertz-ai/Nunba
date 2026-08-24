@@ -29,6 +29,54 @@ from llama.llama_installer import MODEL_PRESETS, LlamaInstaller, ModelPreset
 logger = logging.getLogger('NunbaLlamaConfig')
 
 
+# Task #652 — thinking MUST be off for every local llama-server.
+#
+# ``--reasoning-budget 0`` below already DECLARES that intent, but on
+# llama.cpp build 10330 (687e77892) it no longer ACHIEVES it: that flag is
+# implemented by injecting an end-of-thinking tag (hence its sibling
+# ``--reasoning-budget-message``), not by setting ``enable_thinking=false``
+# in the chat template.  Meanwhile ``--reasoning-format deepseek`` keeps
+# working and moves the thoughts into ``message.reasoning_content``.  The
+# combination is the worst case: the model thinks anyway AND the thinking is
+# routed OUT of ``message.content``, so ``content`` comes back EMPTY.
+#
+# Measured 2026-08-12 on :8080/GPU by replaying real recorded bodies: 8/8
+# draft-classifier calls returned content_len=0 with reasoning_len 1817-2223,
+# and the live app logged reply_len=0 / confidence=0.0 / every classifier flag
+# null on 45/45 turns.  With this env var set: content_len 538-2338,
+# reasoning_len 0, and the app's own draft-telemetry went to reply_len=52,
+# confidence=0.95, delegate='none', is_casual=true.
+#
+# WHY AN ENV VAR AND NOT A CLI FLAG (load-bearing, do not "simplify"):
+# llama-server flags are coupled to the binary version and are NOT backward
+# compatible — an UNKNOWN CLI FLAG MAKES llama-server EXIT, which would turn
+# a thinking bug into a total LLM outage on any box with a different
+# llama.cpp build.  An unknown ENV VAR is simply ignored.  ``--help`` on this
+# build documents the pairing itself:
+#   --chat-template-kwargs STRING  ... (env: LLAMA_ARG_CHAT_TEMPLATE_KWARGS)
+# so this is the same parameter, reached by the version-safe spelling.
+# Precedent in this file: HEVOLVE_LLAMA_MTP_N exists because the guessed flag
+# ``--mtp-n`` did not exist in the local binary.
+#
+# ONE authority for both spawn sites (main server + caption/draft server) so
+# the two can never drift on whether thinking is suppressed.
+_LLAMA_THINK_OFF_ENV = 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS'
+_LLAMA_THINK_OFF_VALUE = '{"enable_thinking":false}'
+
+
+def llama_child_env(base: dict | None = None) -> dict:
+    """Environment for a spawned llama-server: inherited env + thinking off.
+
+    Pure dict construction — no I/O, no mutation of ``os.environ`` (which
+    would leak the setting to every unrelated child of this process).
+    An operator who has deliberately set the variable wins; we never
+    override an explicit choice.
+    """
+    env = dict(base) if base is not None else os.environ.copy()
+    env.setdefault(_LLAMA_THINK_OFF_ENV, _LLAMA_THINK_OFF_VALUE)
+    return env
+
+
 # PERF-2 (audit #564): Nunba's raw log writers append unbounded — the
 # llama-server stdout/stderr log reached ~68MB.  ONE canonical rotation point
 # for Nunba raw log writers (no parallel rotation impl): rename → .old past the
@@ -340,6 +388,7 @@ class LlamaConfig:
     def is_first_run(self) -> bool:
         """Check if this is the first run"""
         return self.config.get("first_run", True)
+
 
     def mark_first_run_complete(self):
         """Mark first run as complete"""
@@ -787,6 +836,20 @@ class LlamaConfig:
         # binary leaves auto_setup blind: no action is appended and the
         # wizard never surfaces an upgrade card.
         if diag['binary_found'] and not diag['binary_mismatch']:
+            # Re-resolve version-aware now that the preset (and therefore its
+            # build floor) is known.  The detection at the top of this method
+            # runs preset-blind and takes the first-existing candidate, so a
+            # stale system/trueflow copy would be measured instead of the
+            # Nunba-managed one that actually satisfies the floor.  Passing
+            # that stale path made this check report "too old", set
+            # need_gpu_build, and re-download llama.cpp on EVERY boot while a
+            # satisfying build sat unused on disk.  Same resolver the spawn
+            # path uses, so diag and the server agree on one binary.
+            if best_preset.min_build is not None:
+                _aware = self.installer.find_llama_server(
+                    check_system_first=True, min_build=best_preset.min_build)
+                if _aware:
+                    diag['binary_path'] = _aware
             is_compat, cur_ver, req_ver = self.installer.check_version_for_model(
                 best_preset, llama_server_path=diag['binary_path'])
             if not is_compat and req_ver is not None:
@@ -1545,12 +1608,38 @@ class LlamaConfig:
                         except ImportError:
                             pass
 
-                        # Notify orchestrator so catalog marks it as loaded
+                        # Notify orchestrator so catalog marks it as loaded.
+                        # device was the literal 'gpu'.  This is the "server
+                        # already running" early return, which never learned how
+                        # that server was launched -- and the same file has a
+                        # real CPU-only path (:2690-2693) that sets
+                        # config["use_gpu"]=False when the installed binary has
+                        # no GPU support.  device feeds BOTH mark_loaded() (what
+                        # the admin UI shows) and _register_vram(), so a
+                        # CPU-resident model was also booked against VRAM.
+                        #
+                        # is_installed() must run FIRST: binary_supports_gpu is
+                        # initialised False at llama_installer.py:206 and is only
+                        # assigned by the probe (_binary_has_gpu_support, :427).
+                        # Measured on this box, same process: reading the
+                        # attribute cold gives False even on a GPU build;
+                        # after is_installed() it gives True.  Reading it cold
+                        # would mislabel GPU as CPU -- the inverse bug.
+                        # Conditions mirror can_use_gpu at :2013.
                         try:
                             from models.orchestrator import get_orchestrator
+                            self.installer.is_installed()   # populates the flag
+                            _on_gpu = (
+                                self.config.get("use_gpu", False) and
+                                self.installer.gpu_available != "none" and
+                                self.installer.binary_supports_gpu
+                            )
+                            _device = 'gpu' if _on_gpu else 'cpu'
                             get_orchestrator().notify_loaded(
-                                'llm', display_name, device='gpu')
-                            logger.info(f"Catalog synced: LLM '{display_name}' marked as loaded")
+                                'llm', display_name, device=_device)
+                            logger.info(
+                                f"Catalog synced: LLM '{display_name}' marked "
+                                f"as loaded on {_device}")
                         except ImportError:
                             pass
                 except Exception as _sync_err:
@@ -1630,7 +1719,27 @@ class LlamaConfig:
                             })
                         except Exception:
                             pass
-                    if _zinc.install(progress_callback=_zinc_progress):
+                    _zinc_ok = _zinc.install(progress_callback=_zinc_progress)
+                    # Terminal event — the card completes on
+                    # Boolean(data.complete), so without this the AMD/Vulkan
+                    # setup card stayed at "loading" for the rest of the
+                    # session.  Both outcomes emit; a failed build has to
+                    # close its card too.
+                    try:
+                        from integrations.social.realtime import publish_event
+                        publish_event('setup_progress', {
+                            'type': 'setup_progress',
+                            'job_type': 'zinc_amd',
+                            'status': 'done' if _zinc_ok else 'error',
+                            'complete': True,
+                            'model_name': 'Zinc (AMD Vulkan)',
+                            'message': ("AMD GPU acceleration ready"
+                                        if _zinc_ok else
+                                        "AMD GPU acceleration unavailable — using CPU"),
+                        })
+                    except Exception:
+                        pass
+                    if _zinc_ok:
                         llama_server = _zinc.find_zinc_server()
                 if llama_server:
                     logger.info(f"Using zinc (AMD Vulkan): {llama_server}")
@@ -1730,6 +1839,13 @@ class LlamaConfig:
                     f"retry upgrade on next launch when network is reachable."
                 )
                 self._suppress_build_gated_features = True
+
+        # Resolution is final here (version-aware switching, if any, is done).
+        # Record it as the one authority for "which binary is serving" so
+        # diagnostics, the upgrade queue and update_llama_cpp all read the
+        # same binary instead of each re-resolving first-existing and landing
+        # on a different copy.  Reporting only — never gates an upgrade.
+        self.installer.note_serving_binary(llama_server)
 
         # Build command — context size is VRAM-aware for Qwen3.5
         is_qwen35 = "Qwen3.5" in model_preset.display_name
@@ -1970,16 +2086,21 @@ class LlamaConfig:
         try:
             logger.info(f"Starting server on port {desired_port}: {' '.join(cmd)}")
 
-            # Start the server process
-            startupinfo = None
-            if sys.platform == 'win32':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0  # SW_HIDE
+            # Start the server process.
+            # startupinfo ONLY, deliberately — this spawn previously built its
+            # own STARTUPINFO inline and passed no creationflags, and llama-server
+            # is a long-lived child on the chat hot path, so this de-duplication
+            # must not change its spawn semantics.  Taking only the startupinfo
+            # keeps behaviour byte-identical while removing the copy.  (Two of the
+            # eleven copies found 2026-08-11 diverged exactly here: some passed
+            # CREATE_NO_WINDOW, these did not — which is what duplication does.)
+            from desktop.platform_utils import get_subprocess_flags
+            startupinfo = get_subprocess_flags().get('startupinfo')
 
             # Set cwd to binary dir so DLLs (ggml-cuda.dll, mtmd.dll) are found
             bin_dir = str(Path(llama_server).parent)
-            env = os.environ.copy()
+            # llama_child_env: os.environ.copy() + thinking-off (task #652).
+            env = llama_child_env()
             env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
             # Zinc (AMD Vulkan) needs RADV cooperative matrix for RDNA4
             if _use_zinc:
@@ -2193,7 +2314,13 @@ class LlamaConfig:
         # AttributeError, which meant the draft 0.8B never came up and HARTOS's
         # draft-first dispatcher silently fell through to the 4B main model for
         # every request. Use the same resolver the main start_server calls.
-        binary_path = self.installer.find_llama_server(check_system_first=True)
+        # Version-aware, same as the main start_server path (which the comment
+        # above promises).  Resolving preset-blind here spawned the draft on a
+        # first-existing binary while the main model ran on a version-aware
+        # pick — two different llama.cpp builds serving in one app.
+        binary_path = self.installer.find_llama_server(
+            check_system_first=True,
+            min_build=getattr(preset, 'min_build', None))
         if not binary_path:
             logger.error(
                 "llama-server binary not found by installer.find_llama_server() — "
@@ -2215,12 +2342,15 @@ class LlamaConfig:
             if mmproj_path and not can_use_gpu:
                 cmd.append("--no-mmproj-offload")
 
-        # Start
-        startupinfo = None
-        if sys.platform == 'win32':
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
+        # Start.
+        # startupinfo ONLY — same reasoning as the main-server spawn above: the
+        # caption/draft server is long-lived, so de-duplicating must not alter
+        # its spawn semantics.  Note this copy used `subprocess.SW_HIDE` while
+        # the other used the literal 0 for the same field; identical values,
+        # different spellings, which is how a reader loses confidence that the
+        # copies agree.
+        from desktop.platform_utils import get_subprocess_flags
+        startupinfo = get_subprocess_flags().get('startupinfo')
 
         log_path = self.config_dir / "caption_server.log"
         try:
@@ -2243,8 +2373,16 @@ class LlamaConfig:
             # Without it, a cmd window briefly flashes during splash.
             # startupinfo SW_HIDE alone is NOT enough for console apps.
             _creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+            # env: this spawn previously passed no ``env=`` and inherited the
+            # parent's, so it silently MISSED the thinking-off setting the main
+            # server gets — the >10GB tier's separate 0.8B draft server would
+            # have kept the task #652 defect.  ``llama_child_env()`` IS
+            # os.environ.copy() plus that one key, so the inherited
+            # environment is otherwise byte-identical and the spawn semantics
+            # the comment above protects are unchanged.
             self._caption_process = subprocess.Popen(
                 cmd, stdout=log_fh, stderr=subprocess.STDOUT,
+                env=llama_child_env(),
                 startupinfo=startupinfo,
                 creationflags=_creationflags,
             )
@@ -2511,9 +2649,30 @@ def initialize_llama_on_first_run(progress_callback=None, force_install=False) -
 
     # Check if local llama is already installed
     installer = LlamaInstaller()
-    if installer.find_llama_server():
-        logger.info("Local llama.cpp already installed")
-        config.mark_first_run_complete()
+    _existing_binary = installer.find_llama_server()
+    if _existing_binary:
+        # Nothing to download — but deliberately DO NOT mark_first_run_complete()
+        # here.  Finding a binary means "no install needed"; it does not mean the
+        # user has been onboarded, and this function runs on EVERY boot while
+        # first_run is true (app.py:9605 gates the AI-init thread on it).
+        #
+        # It used to clear the flag, which made first_run unsettable by hand:
+        # set it true, launch, and this line reverted it before the wizard gate
+        # at app.py:3026 ever read it.  find_llama_server() also searches paths
+        # Nunba does not own — on the machine that reported this it returned
+        # ~/.trueflow/llama.cpp/.../llama-server.exe, another product's build —
+        # so "setup is complete" was being concluded from a foreign install.
+        #
+        # Note the asymmetry that makes this a defect rather than a preference:
+        # the CONSUMER of first_run=False (app.py:3026) demands binary AND
+        # (model OR custom_api) AND already-configured.  Clearing it on the
+        # binary alone made this producer strictly more permissive than its own
+        # consumer.  The flag is still cleared by the two producers that
+        # represent real completion — llama_config.py:1127 (a model was selected
+        # and applied) and app.py:3888 (an external endpoint was configured).
+        logger.info(f"Local llama.cpp already installed at {_existing_binary} — "
+                    "no download needed (first_run left as-is; setup completion "
+                    "is recorded when a model or endpoint is actually chosen)")
         return True
 
     logger.info("First run - scanning for AI services...")
@@ -2531,10 +2690,22 @@ def initialize_llama_on_first_run(progress_callback=None, force_install=False) -
         if progress_callback:
             progress_callback(f"Found: {existing_endpoint['name']}")
 
-        # Auto-configure the found endpoint
+        # Auto-configure the found endpoint so the LLM is usable / autostarts.
+        # Deliberately NOT mark_first_run_complete(): detection answers "can we
+        # serve?", first_run answers "has this installation been onboarded?".
+        # Fusing them let a boot-time probe silently overwrite an explicit
+        # first_run=true, so the wizard could never be re-triggered by hand.
+        #
+        # "the endpoint is probably our own llama-server anyway" does not hold
+        # for THIS branch: it sets use_external_llm=True, i.e. it exists
+        # precisely for servers Nunba did NOT start (Ollama, LM Studio, a stray
+        # :8080). _save_config() below still persists the endpoint, so the
+        # capability is configured either way — only the onboarding flag is
+        # left to its rightful owners: auto_setup() (llama_config.py:1127, via
+        # the POST route main.py:1929) and the wizard (app.py:3888), both of
+        # which represent a real user action.
         config.config["external_llm_endpoint"] = existing_endpoint
         config.config["use_external_llm"] = True
-        config.mark_first_run_complete()
         config._save_config()
 
         logger.info(f"Auto-configured external LLM: {existing_endpoint['base_url']}")

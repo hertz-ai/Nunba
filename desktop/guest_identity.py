@@ -69,6 +69,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from desktop.platform_utils import get_subprocess_flags
 import os
 import platform
 import sys
@@ -118,7 +119,7 @@ def _read_macos_platform_uuid() -> str | None:
             capture_output=True,
             text=True,
             timeout=3,
-        )
+         **get_subprocess_flags())
         for line in result.stdout.splitlines():
             if "IOPlatformUUID" in line:
                 # Line shape: '    "IOPlatformUUID" = "<UUID>"'

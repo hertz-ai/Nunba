@@ -238,6 +238,23 @@ create_appdir() {
     info "Copying cx_Freeze output to AppDir..."
     cp -a "${BUILD_DIR}/." "${APPDIR}/usr/bin/"
 
+    # Drop runtime logs the app wrote into its own build tree.
+    # BUILD_DIR is where Nunba gets RUN during development, so its chatter
+    # lands inside the directory we package. Measured on the Windows tree
+    # 2026-08-13: 59 MB shipped to every user, all under
+    # hevolveai/server/logs — 79 wamp_publisher_* files going back to
+    # 2025-11 plus four 10 MB rotations of one runaway day. Nothing reads them.
+    #
+    # By FILE pattern only. opentelemetry/proto/logs and
+    # opentelemetry/proto/collector/logs are real Python packages, so removing
+    # directories named "logs" would break the import. And never *.pyc — this
+    # is cx_Freeze output where the stdlib ships compiled-only (lib/abc.pyc has
+    # no lib/abc.py), so that would delete the application, not slim it.
+    _logs_freed=$(find "${APPDIR}/usr/bin" \( -name "*.log" -o -name "*.log.[0-9]*" \) \
+        -type f -printf '%s\n' 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s/1048576}')
+    find "${APPDIR}/usr/bin" \( -name "*.log" -o -name "*.log.[0-9]*" \) -type f -delete 2>/dev/null || true
+    info "Dropped ${_logs_freed:-0} MB of runtime logs from the AppDir"
+
     # Copy .desktop file
     if [[ -f "${DEPLOY_DIR}/Nunba.desktop" ]]; then
         cp "${DEPLOY_DIR}/Nunba.desktop" "${APPDIR}/usr/share/applications/Nunba.desktop"

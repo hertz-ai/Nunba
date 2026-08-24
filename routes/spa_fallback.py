@@ -37,12 +37,48 @@ ASSET_PREFIXES = frozenset({'static', 'fonts'})
 # {"error":"API endpoint not found"} — found live by route-smoke.cy.js on
 # 2026-08-07 (task #628).  The override wins only on the exact page path;
 # everything deeper keeps the API rule.
-SPA_PAGE_OVERRIDES = frozenset({'/agents'})
+# ONE table, ONE predicate: namespace -> how many segments BELOW it are still
+# page routes.  `agents` is in main.API_ENDPOINTS because real top-level APIs
+# live under it (/agents/sync, /agents/migrate, /agents/contact —
+# chatbot_routes.py:4478+), so a missing /agents/* call must 404 as JSON, not
+# cache HTML under an API URL (the #618 trap).  But the namespace also holds
+# pages: MainRoute.js declares path="/agents" (hub, :523) AND
+# path="/agents/:agentName" (:542), and signup + OTP login both
+# navigate('/agents/Hevolve').
+#
+#   depth 0  -> the hub page itself; a page unconditionally (task #628)
+#   depth 1  -> /agents/<agentName>; a page only for a browser NAVIGATION,
+#               so a mistyped /agents/<verb> fetch still gets JSON (#642)
+#
+# Deeper than the declared depth stays an API miss.  Adding another
+# dual-vocabulary namespace = one row here, not a second predicate.
+SPA_PAGE_NAMESPACES = {
+    'agents': 1,
+}
 
 
-def is_spa_page_override(path):
-    """True when `path` is exactly a page that shares its prefix with APIs."""
-    return (path or '').rstrip('/') in SPA_PAGE_OVERRIDES
+def is_spa_page(path, accept_header=None):
+    """True when `path` must get the SPA shell despite sitting under an API namespace.
+
+    `accept_header` decides only the parameterised depth.  A browser NAVIGATION
+    sends `Accept: text/html,application/xhtml+xml,...`; fetch()/XHR default to
+    `*/*` and Cypress cy.request likewise.  Note werkzeug's
+    `accept_mimetypes.accept_html` is NOT usable here: `*/*` matches text/html,
+    so it answers True for fetch too — measured 2026-08-19 — which would hand
+    the shell to exactly the callers that must keep their JSON 404.
+    """
+    parts = [p for p in (path or '').split('/') if p]
+    if not parts:
+        return False
+    max_depth = SPA_PAGE_NAMESPACES.get(parts[0])
+    if max_depth is None:
+        return False
+    depth = len(parts) - 1
+    if depth == 0:
+        return True
+    if depth > max_depth:
+        return False
+    return 'text/html' in (accept_header or '').lower()
 
 
 # Cache policy for every response that carries the SPA SHELL (index.html).

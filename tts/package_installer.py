@@ -349,6 +349,15 @@ _installing = {}  # backend → True while installing
 _INSTALL_LOCK_DIR = os.path.join(os.path.expanduser('~'), '.nunba')
 _INSTALL_LOCK_STALE_S = 3600  # 60 min — the CUDA torch wheel is 2.5 GB; a slow
                               # network legitimately holds the lock far past 15 min,
+
+# How long to WAIT for an in-flight cuda_torch install before reporting
+# in-progress. The wheel is ~2.5GB and observed installs run ~8 min, so this
+# must exceed a realistic download or we are back to downgrading early.
+_CUDA_TORCH_LOCK_WAIT_S = 15 * 60
+
+# Marker prefix meaning "not done yet, and NOT a capability failure". Callers
+# must not downgrade to a CPU path on a message carrying this.
+INSTALL_IN_PROGRESS = 'in-progress: '
                               # and expiring it early lets a second boot stack a
                               # concurrent 2.5 GB download on the first (observed).
 
@@ -367,8 +376,21 @@ def _acquire_file_lock(name: str) -> bool:
                     pid = int(open(lock_file).read().strip())
                     # Check if the PID is still alive (Windows-specific)
                     import subprocess as _sp
+
+                    from tts._subprocess import hidden_startupinfo
+
+                    # Without these flags this probe pops a REAL console window.
+                    # The frozen app is GUI-subsystem and owns no console, so
+                    # Windows allocates a fresh VISIBLE one for every console
+                    # child (measured: visible ConsoleWindowClass count 1 -> 2;
+                    # with the flags it stays at 1).  `_acquire_file_lock` is
+                    # polled — install_gpu_torch retries it every 5s for up to
+                    # _CUDA_TORCH_LOCK_WAIT_S — so one naked spawn became a
+                    # repeating flash.  Same helper the pip spawns below use.
+                    _si, _cf = hidden_startupinfo()
                     _r = _sp.run(['tasklist', '/FI', f'PID eq {pid}'],
-                                 capture_output=True, text=True, timeout=5)
+                                 capture_output=True, text=True, timeout=5,
+                                 startupinfo=_si, creationflags=_cf)
                     if str(pid) in _r.stdout:
                         logger.info(f"Install lock '{name}' held by PID {pid} (age {age:.0f}s)")
                         return False
@@ -700,6 +722,121 @@ def _write_hart_constraints(dest_dir: str) -> str | None:
         return None
 
 
+def _verify_user_site_imports(success_line: str | None, args: list,
+                              user_sp: str) -> tuple[bool, list[str]]:
+    """Import-verify what this pip run claims to have put in user-site.
+
+    Every install must restore what's broken — on an end user's machine
+    nobody quarantines by hand.  2026-08-22 02:06: pip exited rc=2 on the
+    hart-runtime-constraints install but printed a success line; the rescue
+    branch below trusted it, and the ctranslate2 it left behind failed
+    import ("partially initialized module"), shadowed the WORKING bundled
+    copy (~/.nunba is deliberately first on sys.path), and killed every
+    streaming STT request for 6.5 hours until a human moved the directory
+    aside.  This function is that human, in code.
+
+    For each package the run claims to have installed:
+      * not present in user-site → nothing shadows, the bundle wins by
+        absence — pass (pip also claimed numpy that run and never wrote
+        the package dir).
+      * present and imports in a clean subprocess → pass.
+      * present but BROKEN:
+          - a bundled counterpart exists → quarantine the user-site copy
+            (dir + matching dist-info) to _quarantine_<name>_<stamp>/ so
+            the bundled copy resolves again.  The system degrades to the
+            working bundle; the failed install reports False so the heal
+            loop may retry a clean reinstall.
+          - no bundled counterpart → report False but LEAVE the directory:
+            quarantining would remove the only copy, and pip overwrites
+            it on the retry anyway.
+
+    Returns (all_ok, [names that failed verification]).
+    """
+    if args and args[0] != 'install':
+        return True, []
+
+    # Package names, canonical source first: pip's own success line
+    # ("Successfully installed name-1.2.3 other-name-0.4 ...").  Version
+    # split is rsplit('-', 1): names may contain dashes, versions start at
+    # the last dash (nvidia-cublas-cu12-12.9.2.10 → nvidia-cublas-cu12).
+    names: list[str] = []
+    if success_line and success_line.startswith('Successfully installed '):
+        for tok in success_line[len('Successfully installed '):].split():
+            names.append(tok.rsplit('-', 1)[0])
+    elif not any(a in ('-r', '--requirement', '-c', '--constraint')
+                 for a in args):
+        # No success line (e.g. "already satisfied") — fall back to the
+        # requested specs.  -r/-c installs carry file paths, not specs;
+        # with no success line there is nothing verifiable there.
+        for a in args[1:]:
+            if a.startswith('-') or os.path.sep in a or a == user_sp:
+                continue
+            names.append(_canonical_import_name(a))
+
+    embed_sp = get_embed_site_packages() or ''
+    python_exe = get_embed_python()
+    failed: list[str] = []
+
+    for name in dict.fromkeys(names):          # keep order, drop dupes
+        candidate = name.replace('-', '_')
+        target_dir = os.path.join(user_sp, candidate)
+        target_mod = os.path.join(user_sp, candidate + '.py')
+        if not os.path.isdir(target_dir) and not os.path.isfile(target_mod):
+            continue                            # nothing shadowing
+
+        try:
+            proc = subprocess.run(
+                [python_exe, '-c',
+                 f"import sys; sys.path.insert(0, {user_sp!r}); "
+                 f"import {candidate}"],
+                capture_output=True, text=True, timeout=120,
+                env={**os.environ, 'PYTHONNOUSERSITE': '1'},
+            )
+            import_ok = proc.returncode == 0
+            import_err = (proc.stdout + proc.stderr).strip()[-300:]
+        except Exception as exc:                # timeout counts as broken
+            import_ok = False
+            import_err = f'{type(exc).__name__}: {exc}'
+        if import_ok:
+            continue
+
+        failed.append(name)
+        bundled = (embed_sp and (
+            os.path.isdir(os.path.join(embed_sp, candidate))
+            or os.path.isfile(os.path.join(embed_sp, candidate + '.py'))))
+        if not bundled:
+            logger.error(
+                "install verify: %s landed in user-site but fails import "
+                "(%s) and has NO bundled fallback — left in place for the "
+                "heal loop to reinstall over", name, import_err)
+            continue
+
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        qdir = os.path.join(user_sp, f'_quarantine_{candidate}_{stamp}')
+        try:
+            os.makedirs(qdir, exist_ok=True)
+            moved = []
+            for entry in os.listdir(user_sp):
+                low = entry.lower()
+                if entry == candidate or entry == candidate + '.py' or (
+                        low.endswith('.dist-info')
+                        and (low.startswith(candidate.lower() + '-')
+                             or low.startswith(name.lower() + '-'))):
+                    os.rename(os.path.join(user_sp, entry),
+                              os.path.join(qdir, entry))
+                    moved.append(entry)
+            logger.error(
+                "install verify: %s failed import (%s) — quarantined %s to "
+                "%s so the bundled copy resolves again",
+                name, import_err, moved, qdir)
+        except OSError as exc:
+            logger.error(
+                "install verify: %s failed import AND quarantine failed "
+                "(%s) — user-site copy still shadows the bundle", name, exc)
+
+    return not failed, failed
+
+
 def _run_pip(args: list[str], progress_cb: Callable | None = None,
              timeout: int = 900,
              stall_timeout: int = 120,
@@ -965,20 +1102,44 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
                 break
 
         if rc == 0:
+            # Even rc=0 can leave a torn package behind (interrupted write,
+            # broken wheel) — and a torn package in user-site SHADOWS the
+            # working bundled copy.  Verify before declaring victory.
+            ok_verify, bad = _verify_user_site_imports(
+                success_line, args, user_sp)
             # Ensure the target dir is on sys.path NOW (not just next restart)
             ensure_user_site_on_path()
-            return True, out
+            if ok_verify:
+                return True, out
+            logger.error(
+                "pip rc=0 but %s failed import verification "
+                "(quarantined where a bundled fallback exists; full log: %s)",
+                bad, _pip_log or '(disabled)',
+            )
+            return False, out
 
         # rc != 0 below — but check if pip nonetheless reported
-        # successful install of the target packages.
+        # successful install of the target packages.  The success line is
+        # a claim, not proof: verify it before trusting it (the 2026-08-22
+        # rc=2 ctranslate2 install printed this line and was broken).
         if success_line and not is_enospc:
+            ok_verify, bad = _verify_user_site_imports(
+                success_line, args, user_sp)
             ensure_user_site_on_path()
-            logger.warning(
-                "pip exited rc=%d but reported success line: %s "
-                "(treating as installed; full log: %s)",
-                rc, success_line, _pip_log or '(disabled)',
+            if ok_verify:
+                logger.warning(
+                    "pip exited rc=%d but reported success line: %s "
+                    "(import-verified; treating as installed; full log: %s)",
+                    rc, success_line, _pip_log or '(disabled)',
+                )
+                return True, out
+            logger.error(
+                "pip exited rc=%d with a success line, but %s failed import "
+                "verification (quarantined where a bundled fallback exists; "
+                "full log: %s)",
+                rc, bad, _pip_log or '(disabled)',
             )
-            return True, out
+            return False, out
 
         # Honest failure — log the FULL output (not just last 800 chars)
         # via the per-package file path, plus the tail in the in-memory
@@ -1011,8 +1172,32 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
     Uses a file-based lock so multiple Nunba boots don't stack
     concurrent 2.5GB downloads.
     """
-    if not _acquire_file_lock('cuda_torch'):
-        return False, "Another process is already installing CUDA torch"
+    # Another process is installing the EXACT thing we want, so WAIT for it —
+    # "someone else is already doing this" is not "this cannot be done".
+    #
+    # The docstring above says this lock exists so concurrent 2.5GB downloads do
+    # not STACK. It was never a capability verdict. But main.py turned a held
+    # lock into "using CPU TTS", which pinned the entire session to CPU one
+    # second after a sibling install had started:
+    #   13:13:34 CUDA ctranslate2 ready  ->  13:13:35 "using CPU TTS"
+    #   17:09:06 CUDA ctranslate2 ready  ->  17:09:07 "using CPU TTS"
+    # Every boot. The torch install then SUCCEEDED (~8 min, 496s of pip output)
+    # and logged "will activate on next start" — but the session had already
+    # downgraded. That is why TTS stopped being realtime while STT stayed on GPU.
+    #
+    # Waiting costs nothing user-visible: install_gpu_torch already runs off the
+    # boot path. When the lock frees, the normal path resumes and short-circuits
+    # immediately if torch is already the CUDA variant ("Only runs if current
+    # torch is +cpu variant" above).
+    _deadline = time.time() + _CUDA_TORCH_LOCK_WAIT_S
+    while not _acquire_file_lock('cuda_torch'):
+        if time.time() >= _deadline:
+            # Still held after the wait. Report IN PROGRESS, not failure — the
+            # caller must not read this as "no GPU available".
+            return False, (INSTALL_IN_PROGRESS
+                           + 'CUDA torch is being installed by another worker; '
+                             'GPU TTS activates once it completes')
+        time.sleep(5)
     # Central GPU detection — one source of truth
     try:
         from integrations.service_tools.vram_manager import vram_manager

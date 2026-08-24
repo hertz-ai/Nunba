@@ -208,13 +208,25 @@ class LlamaInstaller:
     @staticmethod
     def _no_window() -> tuple:
         """(startupinfo, creationflags) that suppress a console window on Windows.
-        DRY: every subprocess in this module needs the same pair on win32."""
-        if sys.platform == 'win32':
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0  # SW_HIDE
-            return si, subprocess.CREATE_NO_WINDOW
-        return None, 0
+        DRY: every subprocess in this module needs the same pair on win32.
+
+        Delegates to the ONE canonical implementation,
+        ``desktop.platform_utils.get_subprocess_flags()``.  This method used to
+        build the STARTUPINFO itself — one of ELEVEN first-party copies found
+        2026-08-11 — and, more pointedly, two spawns in THIS SAME FILE (the
+        where/which probe and the --version probe) inlined the block again
+        instead of calling this helper, despite the docstring above asking them
+        to.  Both now call it.  See
+        tests/test_hidden_subprocess_single_source.py.
+        """
+        try:
+            from desktop.platform_utils import get_subprocess_flags
+            flags = get_subprocess_flags()
+            return flags.get('startupinfo'), flags.get('creationflags', 0)
+        except Exception:
+            # Cosmetic, never correctness — a bundling surprise must not stop
+            # us from locating/probing llama-server.
+            return None, 0
 
     @staticmethod
     def detect_backend(os_name: str | None = None) -> str:
@@ -418,13 +430,7 @@ class LlamaInstaller:
         # Try to find in PATH (system-wide installations)
         try:
             cmd = "where" if "windows" in self.os_name else "which"
-            si = None
-            cf = 0
-            if sys.platform == 'win32':
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                si.wShowWindow = 0
-                cf = subprocess.CREATE_NO_WINDOW
+            si, cf = self._no_window()
             result = subprocess.run(
                 [cmd, "llama-server"],
                 capture_output=True, text=True,
@@ -453,6 +459,33 @@ class LlamaInstaller:
         llama_path_obj = Path(llama_path)
         return not str(llama_path_obj).startswith(str(self.install_dir))
 
+    # ── Serving-binary record — ONE writer: note_serving_binary() ─────
+    # The spawn path resolves version-aware (min_build of the chosen preset)
+    # and may switch away from the first-existing candidate.  Every other
+    # caller re-resolved first-existing and could therefore report a
+    # DIFFERENT binary than the one actually serving — e.g. a stale trueflow
+    # b8200 measured while the Nunba-managed b10330 serves.  That single
+    # split caused two live defects: check_version_for_model warned "too old"
+    # and set need_gpu_build (re-downloading llama.cpp every boot), and
+    # update_llama_cpp could not observe its own download.  Recording the
+    # resolved path once, at the spawn site, gives every reader one authority.
+    #
+    # Three distinct questions, three distinct answers — do not merge them:
+    #   what is serving?          -> _serving_binary (this record)
+    #   best available for X?     -> find_llama_server(min_build=X)
+    #   the copy I manage/update? -> find_llama_server(check_system_first=False)
+    _serving_binary: str | None = None
+
+    @classmethod
+    def note_serving_binary(cls, path: str | None) -> None:
+        """Record the binary Nunba resolved and launched.
+
+        Called from the spawn site only, once version-aware switching has
+        settled.  Class-level so the record survives the many short-lived
+        LlamaInstaller() instances constructed across Nunba + HARTOS.
+        """
+        cls._serving_binary = str(path) if path else None
+
     def get_version(self, llama_server_path: str | None = None) -> int | None:
         """
         Get the llama.cpp build number (e.g., 8192).
@@ -467,7 +500,13 @@ class LlamaInstaller:
         """
         import re
 
-        server_path = llama_server_path or self.find_llama_server()
+        # Default to the binary that is actually serving (recorded at spawn).
+        # Falling straight through to find_llama_server() reports whichever
+        # copy happens to be first-existing, which is not necessarily the one
+        # running — see note_serving_binary() above.
+        server_path = (llama_server_path
+                       or LlamaInstaller._serving_binary
+                       or self.find_llama_server())
         if not server_path:
             return None
 
@@ -482,13 +521,7 @@ class LlamaInstaller:
                 return _hit[1]
 
         try:
-            startupinfo = None
-            creationflags = 0
-            if sys.platform == 'win32':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0  # SW_HIDE
-                creationflags = subprocess.CREATE_NO_WINDOW
+            startupinfo, creationflags = LlamaInstaller._no_window()
 
             # Set cwd to binary dir so DLLs (mtmd.dll, ggml-cuda.dll) are found
             bin_dir = str(Path(server_path).parent)
@@ -577,7 +610,14 @@ class LlamaInstaller:
             if progress_callback:
                 progress_callback(msg)
 
-        old_version = self.get_version()
+        # Measure the copy THIS method replaces (install_dir), not whatever
+        # first-existing resolution finds.  try_download_prebuilt() writes into
+        # install_dir, so reporting a system/trueflow binary here made the
+        # upgrade blind to its own download: old and new both read b8200 and
+        # "Updated: bX -> bY" could never show progress, which is what kept
+        # re-queueing the upgrade forever.
+        _managed = self.find_llama_server(check_system_first=False)
+        old_version = self.get_version(_managed) if _managed else None
         report(f"Current build: b{old_version}" if old_version else "Current build: unknown")
 
         try:
@@ -623,7 +663,11 @@ class LlamaInstaller:
                 shutil.rmtree(backup_dir, ignore_errors=True)
 
             if success:
-                new_version = self.get_version()
+                # Re-resolve: the managed copy may not have existed before the
+                # download, so the pre-download path can be stale/None.
+                _new_managed = self.find_llama_server(check_system_first=False)
+                new_version = (self.get_version(_new_managed)
+                               if _new_managed else None)
                 if old_version and new_version:
                     report(f"Updated: b{old_version} \u2192 b{new_version}")
                 else:
@@ -956,14 +1000,22 @@ class LlamaInstaller:
                 "-DLLAMA_BUILD_SERVER=ON"
             ]
 
-            subprocess.run(cmake_args, cwd=build_dir, check=True)
+            # Hidden + bounded: a build-from-source is the longest-running spawn
+            # in the app, and on Windows it would otherwise pop a console over
+            # the frameless UI for the whole duration.  30 min covers a cold
+            # CUDA build on a laptop; past that something is wedged and the
+            # caller should hear about it rather than hang forever.
+            _si, _cf = self._no_window()
+            subprocess.run(cmake_args, cwd=build_dir, check=True,
+                           startupinfo=_si, creationflags=_cf, timeout=1800)
 
             # Build
             logger.info("Building llama.cpp (this takes a few minutes)...")
             subprocess.run(
                 ["cmake", "--build", ".", "--config", "Release", "-j"],
                 cwd=build_dir,
-                check=True
+                check=True,
+                startupinfo=_si, creationflags=_cf, timeout=1800
             )
 
             logger.info(f"llama.cpp installed successfully to: {self.install_dir}")
@@ -1158,8 +1210,25 @@ class LlamaInstaller:
         try:
             model_path = self.models_dir / preset.file_name
 
-            # Download main model file
-            if not model_path.exists():
+            # Download main model file.
+            # Was `if not model_path.exists()`: one directory, no size check.
+            # Two consequences, both real on this box:
+            #  - a download interrupted mid-flight leaves a stub file, and
+            #    .exists() calls it present, so the partial is NEVER repaired
+            #    and llama-server fails to load it forever.  That is exactly
+            #    the "models downloaded but stopped before inference healthy"
+            #    state.
+            #  - a model already present in a sibling dir (~/.trueflow/models,
+            #    ~/.ollama/models, HF hub cache) was re-downloaded into
+            #    ~/.nunba/models.  The live 4B on this machine loads from
+            #    .trueflow, so that is GBs of avoidable transfer.
+            # _find_file_in_dirs searches all four locations and documents
+            # min_size as "detects corruption"; is_model_downloaded (10 lines
+            # above) already passes 100 MB.  The mmproj branch below ALREADY
+            # consults sibling dirs via _find_mmproj_in_dirs -- this makes the
+            # main-model branch match it.  model_path stays the destination.
+            if not self._find_file_in_dirs(preset.file_name,
+                                           min_size=100_000_000):
                 model_url = f"https://huggingface.co/{preset.repo_id}/resolve/main/{preset.file_name}"
                 logger.info(f"Downloading model: {preset.display_name}")
 

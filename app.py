@@ -415,7 +415,7 @@ if getattr(sys, 'frozen', False):
                             f" at depth {_cb_depth}\n\n"
                             f"=== Python call stack (innermost first) ===\n"
                             + "\n".join(_frames) +
-                            f"\n\n=== Import stack (last 30) ===\n")
+                            "\n\n=== Import stack (last 30) ===\n")
                     for _i, _m in enumerate(_cb_stack):
                         _msg += f"{_i}: {_m}\n"
                     os.write(_fd, _msg.encode('utf-8', 'replace'))
@@ -657,12 +657,26 @@ def _isolate_frozen_imports():
 _preload_pycparser_from_lib_src()
 _isolate_frozen_imports()
 
+# === HERMETIC GATE MODES ===
+# --validate / --acceptance-test are BUILD gates.  Their verdict must be a
+# function of the BUNDLE ALONE — never of what the machine's mutable
+# ~/.nunba/site-packages happens to contain.  Proven 2026-08-21: the same
+# build tree validated Tier-1 at 19:47 and Failed:5 at 20:57 because the
+# running app installed CUDA torch into ~/.nunba at 20:00, which then
+# resolved ahead of the bundle and hit a broken numpy that had sat dormant
+# there since Aug 11.  A release gate whose answer changes with machine
+# state is not a gate.  ONE definition; every ~/.nunba consumer below
+# (this insert, the frozen-fixes insert, the torch pre-guard subprocess)
+# checks it.
+_HERMETIC_GATE = ('--validate' in sys.argv or '--acceptance-test' in sys.argv)
+
 # === User-writable site-packages (runtime pip installs go here) ===
 # Program Files is read-only for non-admin. Packages installed at runtime
 # (e.g. CUDA torch, TTS engines) go to ~/.nunba/site-packages/ instead.
+# Skipped in hermetic gate modes — the bundle is what is being judged.
 _user_sp = os.path.join(os.path.expanduser('~'), '.nunba', 'site-packages')
 os.makedirs(_user_sp, exist_ok=True)
-if _user_sp not in sys.path:
+if not _HERMETIC_GATE and _user_sp not in sys.path:
     sys.path.insert(0, _user_sp)
 
 
@@ -1132,18 +1146,20 @@ if getattr(sys, 'frozen', False):
     # User site-packages (~/.nunba/site-packages/) — runtime pip installs go here.
     # INSERT at 0 so CUDA torch (if installed) shadows the 0.0.0 stub in python-embed.
     # Verified: python-embed/python.exe loads CUDA torch correctly with this path order.
+    # Skipped entirely in hermetic gate modes — the bundle is what is being judged.
     _user_sp = os.path.join(os.path.expanduser('~'), '.nunba', 'site-packages')
-    if os.path.isdir(_user_sp) and _user_sp not in sys.path:
-        sys.path.insert(0, _user_sp)
-    # Windows: torch needs its lib/ dir in DLL search path for CUDA DLLs
-    _torch_lib = os.path.join(_user_sp, 'torch', 'lib')
-    if os.path.isdir(_torch_lib):
-        if hasattr(os, 'add_dll_directory'):
-            try:
-                os.add_dll_directory(_torch_lib)
-            except OSError:
-                pass
-        os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
+    if not _HERMETIC_GATE:
+        if os.path.isdir(_user_sp) and _user_sp not in sys.path:
+            sys.path.insert(0, _user_sp)
+        # Windows: torch needs its lib/ dir in DLL search path for CUDA DLLs
+        _torch_lib = os.path.join(_user_sp, 'torch', 'lib')
+        if os.path.isdir(_torch_lib):
+            if hasattr(os, 'add_dll_directory'):
+                try:
+                    os.add_dll_directory(_torch_lib)
+                except OSError:
+                    pass
+            os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
     # Win32GUI base sets sys.stdout/stderr to None, which crashes modules that
     # do sys.stdout.buffer (e.g. hart_intelligence line 6). Fix by redirecting
     # to devnull before any imports that might touch stdout.
@@ -1444,16 +1460,28 @@ if getattr(sys, 'frozen', False):
         if os.path.isfile(_torch_test_exe):
             import subprocess as _sub_torch
             _torch_env = os.environ.copy()
-            # Ensure user site-packages (CUDA torch) is discoverable
-            _torch_env['PYTHONPATH'] = os.pathsep.join([
-                _user_sp,
-                os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
-                             'python-embed', 'Lib', 'site-packages'),
-                _torch_env.get('PYTHONPATH', ''),
-            ])
+            # Ensure user site-packages (CUDA torch) is discoverable — except in
+            # hermetic gate modes, where the probe must judge the BUNDLE's torch
+            # only (see _HERMETIC_GATE above; ~/.nunba state failed a build at
+            # 2026-08-21 20:57 that had passed at 19:47 on the identical tree).
+            _embed_sp = os.path.join(
+                os.path.dirname(os.path.abspath(sys.executable)),
+                'python-embed', 'Lib', 'site-packages')
+            _torch_env['PYTHONPATH'] = os.pathsep.join(
+                ([] if _HERMETIC_GATE else [_user_sp])
+                + [_embed_sp, _torch_env.get('PYTHONPATH', '')])
+            # python-embed's sitecustomize.py inserts ~/.nunba/site-packages at
+            # sys.path[0] in EVERY child, independent of PYTHONPATH — so the
+            # hermetic probe must strip it inside the child, after site runs.
+            _probe_prelude = (
+                ("import sys, os; _u = os.path.join(os.path.expanduser('~'),"
+                 " '.nunba', 'site-packages');"
+                 " sys.path = [p for p in sys.path if p != _u]; ")
+                if _HERMETIC_GATE else '')
             try:
                 _tp = _sub_torch.run(
                     [_torch_test_exe, '-c',
+                     _probe_prelude +
                      'import torch; print(torch.__version__); '
                      'print("cuda" if torch.cuda.is_available() else "cpu")'],
                     capture_output=True, text=True, timeout=30,
@@ -1501,9 +1529,36 @@ if getattr(sys, 'frozen', False):
                 except Exception as _spec_exc:
                     _trace(f"torch.__spec__ patch failed: {_spec_exc}")
             del _torch_real
-        except (ImportError, ModuleNotFoundError):
-            pass
-        except (AttributeError, OSError, RuntimeError):
+        except (ImportError, ModuleNotFoundError) as _torch_ie:
+            # A failed in-process import is NOT "torch absent".  CPython
+            # removes sys.modules['torch'] on the way out but KEEPS every
+            # submodule the attempt already initialized.  The next
+            # `import torch` re-executes torch/__init__ against that stale
+            # cache: `from torch.autograd import ...` is served from
+            # sys.modules so the parent attribute never gets bound, and
+            # nested_tensor.py dies with "partially initialized module
+            # 'torch' has no attribute 'autograd'" — the Tier-3 signature
+            # chased 2026-08-19..21.  This arm used to be a bare `pass`,
+            # which both hid the root-cause exception and shipped the
+            # poisoned cache to every later importer.
+            import traceback as _torch_tb
+            _trace(f"torch in-process import FAILED: {type(_torch_ie).__name__}: {_torch_ie}")
+            _trace("  traceback: " + "".join(_torch_tb.format_exception(
+                type(_torch_ie), _torch_ie, _torch_ie.__traceback__))[-3000:])
+            _torch_residue = [k for k in sys.modules
+                              if k == 'torch' or k.startswith('torch.')]
+            _trace(f"  evicting torch residue ({len(_torch_residue)} entries): "
+                   f"{sorted(_torch_residue)[:12]}")
+            # Same eviction the stub path below performs — a later import
+            # must start clean, not against a half-initialized cache.
+            for _torch_k in _torch_residue:
+                sys.modules.pop(_torch_k, None)
+        except (AttributeError, OSError, RuntimeError) as _torch_ae:
+            import traceback as _torch_tb
+            _trace(f"torch in-process import FAILED -> stub path: "
+                   f"{type(_torch_ae).__name__}: {_torch_ae}")
+            _trace("  traceback: " + "".join(_torch_tb.format_exception(
+                type(_torch_ae), _torch_ae, _torch_ae.__traceback__))[-3000:])
             _torch_safe = False  # fall through to stub
 
     if not _torch_safe:
@@ -1784,6 +1839,56 @@ def _load_deferred_config():
                 _llm_configured = True
             else:
                 _llm_configured = not _llm_cfg.get('first_run', True)
+
+            # A hand-set `first_run: true` means "treat me as a new user", and
+            # that OVERRIDES the preserve-identity-across-installs design at
+            # app.py:5752 — which exists so a REINSTALL does not drag the user
+            # back through the HART naming ceremony.  Preservation guards
+            # against ACCIDENTAL loss; editing the flag by hand is deliberate,
+            # so it wins.
+            #
+            # Only a `true` read from an EXISTING config counts.  An ABSENT
+            # llama_config.json also yields first_run=True (LlamaConfig's
+            # default dict) but is a genuine fresh install — exactly the case
+            # preservation is for.  We are inside `open(_llm_cfg_path)` here,
+            # so the file provably exists: the distinction is free at this
+            # point and unavailable to is_first_run(), which defaults to True.
+            #
+            # CONSUMED ONCE.  first_run only goes False when onboarding
+            # COMPLETES, so an unconditional reset would re-wipe the name the
+            # user just sealed on every subsequent boot — they could never keep
+            # a name until they also finished the AI wizard.  The marker below
+            # is dropped when first_run goes back to False, so the NEXT manual
+            # true is honoured again.
+            #
+            # The enclosing try/except makes this best-effort: keys are only
+            # popped from an in-memory dict before the write, so any failure
+            # leaves the stored identity untouched.
+            _hart_store = os.path.join(
+                os.path.expanduser('~'), 'Documents',
+                'HevolveAi Agent Companion', 'storage', 'user_data.json')
+            if os.path.isfile(_hart_store):
+                with open(_hart_store, encoding='utf-8') as _f:
+                    _hart_data = _json_llm.load(_f)
+                _manual_new_user = _llm_cfg.get('first_run') is True
+                _mark, _dirty = 'hart_reset_on_first_run', False
+                if _manual_new_user and not _hart_data.get(_mark):
+                    # Same four keys the /api/storage/set validator enumerates
+                    # (see expected_keys below) — kept literal here so this
+                    # runs before any of that module state exists.
+                    _wiped = [_k for _k in ('hart_sealed', 'hart_name',
+                                            'hart_emoji', 'hart_language')
+                              if _hart_data.pop(_k, None) is not None]
+                    _hart_data[_mark] = True
+                    _dirty = True
+                    print(f"[first_run] manual override honoured — HART identity "
+                          f"reset (cleared={_wiped}); ceremony + wizard will run")
+                elif not _manual_new_user and _mark in _hart_data:
+                    _hart_data.pop(_mark)   # re-arm for the next manual true
+                    _dirty = True
+                if _dirty:
+                    with open(_hart_store, 'w', encoding='utf-8') as _f:
+                        _json_llm.dump(_hart_data, _f)
     except Exception:
         pass
 
@@ -2378,6 +2483,24 @@ if getattr(args, 'validate', False):
                 _ok.append(_mod)
                 _warn.append((_mod, f"{type(_e).__name__}: {_e}"))
                 _vprint(f"  [WARN] {_mod}  (torch from python-embed: {type(_e).__name__}: {_e})")
+                # Traceback, same as the generic branch below.  This branch used
+                # to print the message alone, which made the ONE recurring
+                # failure the only one with no stack — "partially initialized
+                # module 'torch' has no attribute 'autograd'" says a re-entrant
+                # import happened but not WHO re-entered, and that is the whole
+                # question.  2026-08-19 18:43 produced a usable stack for
+                # hart_intelligence only because its error read "TypeError" and
+                # fell through to the generic branch instead.
+                #
+                # Measured 2026-08-21: build/Nunba's bundled torch is complete
+                # and imports fine (12,196 files, autograd True) in that same
+                # interpreter with user-site blocked — so this is specific to
+                # the frozen process, and the stack is the only thing that can
+                # name it.  The [SKIP] that used to hide the downstream Tier-1
+                # failure is gone (a32b4507); this removes the other half of
+                # the blindness.
+                import traceback as _tb
+                _vprint(f"         Traceback: {''.join(_tb.format_exception(type(_e), _e, _e.__traceback__))}")
             else:
                 _fail.append((_mod, f"{type(_e).__name__}: {_e}"))
                 _vprint(f"  [FAIL] {_mod}: {type(_e).__name__}: {_e}")
@@ -2411,17 +2534,24 @@ if getattr(args, 'validate', False):
         ],
     }
 
-    # Dependencies whose torch warnings explain Tier-1 failures in the adapter
-    _torch_deps = {'hart_intelligence', 'helper', 'create_recipe', 'reuse_recipe',
-                   'gather_agentdetails'}
+    # Deep checks ALWAYS run.  They used to be skipped whenever the module or
+    # one of {hart_intelligence, helper, create_recipe, reuse_recipe,
+    # gather_agentdetails} had emitted a warning whose text contained "torch"
+    # — and a skip is not a failure, so the build went green with Tier-1 never
+    # verified.  The two outcomes were decided by nothing but the wording of
+    # an error string:
+    #
+    #   2026-08-19 18:43  hart_intelligence WARN "TypeError: 'NoneType' ..."
+    #                     no "torch" in the text -> check RAN -> [FAIL] Tier-3
+    #   2026-08-21 09:19  hart_intelligence WARN "torch ... no attribute
+    #                     'autograd'"  -> check SKIPPED -> "Build is good"
+    #
+    # Same broken condition, opposite verdict.  Tier-1 falling back to raw
+    # llama.cpp is the build7 defect this whole validator exists to catch, so
+    # it must never be waved through — least of all by a substring match.
+    # Warnings stay non-fatal (only Failed: gates the release); the deep check
+    # now reports what it actually finds.
     for _mod_name, _checks in _deep_checks.items():
-        # Skip deep checks if module OR its key dependencies had torch warnings
-        _was_warned = any(_wm == _mod_name for _wm, _ in _warn)
-        _dep_warned = any(_wm in _torch_deps and _TORCH_HINT in _ws.lower()
-                          for _wm, _ws in _warn)
-        if _was_warned or _dep_warned:
-            _vprint(f"  [SKIP] {_mod_name} — dependency had torch warning, deep check skipped")
-            continue
         try:
             _mod_obj = sys.modules.get(_mod_name)
             if not _mod_obj:
@@ -2858,9 +2988,15 @@ if getattr(args, 'acceptance_test', False):
                 "sys.stdout.write(v); "
                 "sys.exit(0 if isinstance(v, str) and len(v) >= 2 else 1)"
             )
+            try:
+                from desktop.platform_utils import get_subprocess_flags
+                _probe_flags = get_subprocess_flags()
+            except Exception:
+                _probe_flags = {}
             _proc = subprocess.run(
                 [_exe, '-c', _probe],
                 capture_output=True, text=True, timeout=15,
+                **_probe_flags,
             )
             _check(
                 'symptom_11_runtime_core_user_lang_loadable',
@@ -3013,7 +3149,27 @@ if getattr(args, 'setup_ai', False):
         _sc = _SetupLlamaConfig()
         _si = _SetupInstaller()
         _found_binary = _si.find_llama_server()
-        _has_model = bool(_sc.config.get('model_path') and os.path.isfile(_sc.config.get('model_path', '')))
+        # Was config['model_path'] + os.path.isfile ALONE -- a second, weaker
+        # answer to "is a model present" than the canonical
+        # installer.is_model_downloaded(), which searches ~/.nunba/models,
+        # ~/.trueflow/models, ~/.ollama/models and the HF hub cache and
+        # enforces a 100 MB floor to reject truncated files.  The ad-hoc check
+        # knows about exactly ONE model -- whatever model_path happens to point
+        # at -- so a user with a perfectly good preset downloaded but a stale or
+        # empty model_path read as "no model" and was sent back through the
+        # wizard.  On this box the live 4B is in ~/.trueflow/models, which the
+        # config-path check alone does not see.  Keep the config path as the
+        # cheap fast path, then fall back to the canonical per-preset detector.
+        _has_model = bool(_sc.config.get('model_path')
+                          and os.path.isfile(_sc.config.get('model_path', '')))
+        if not _has_model:
+            try:
+                from llama.llama_config import MODEL_PRESETS as _MP
+                _has_model = any(_si.is_model_downloaded(_p) for _p in _MP)
+            except Exception:
+                _setup_logger.exception(
+                    "--setup-ai: canonical model-presence check failed; "
+                    "falling back to the config-path result")
         _already_configured = not _sc.is_first_run()
         _has_custom_api = bool(_sc.config.get('custom_api_base'))
         if _found_binary and (_has_model or _has_custom_api) and _already_configured:
@@ -4525,13 +4681,22 @@ def _refresh_sibling_deps(app_dir):
             ('Hevolve_Database', 'hevolve-database'),
             ('HARTOS/agent-ledger-opensource', 'agent-ledger'),
         ]
+        # Four siblings x one pip spawn each — without the hide flags that is
+        # four console windows flashing over the UI.  Dev-mode only (this whole
+        # function returns early unless ../HARTOS exists as a source dir), so it
+        # never fires in the installed app, but a Windows dev sees all four.
+        try:
+            from desktop.platform_utils import get_subprocess_flags
+            _win_flags = get_subprocess_flags()
+        except Exception:
+            _win_flags = {}
         for sib_dir, pkg_name in siblings:
             sib_path = os.path.join(project_root, sib_dir)
             if os.path.isdir(sib_path):
                 subprocess.run(
                     [sys.executable, '-m', 'pip', 'install', '-e', sib_path,
                      '--no-deps', '--quiet'],
-                    timeout=30, capture_output=True)
+                    timeout=30, capture_output=True, **_win_flags)
         _setup_logger.info("[STARTUP] Sibling deps refreshed")
     except Exception as e:
         _setup_logger.warning(f"[STARTUP] Sibling dep refresh failed: {e}")
@@ -4564,8 +4729,8 @@ def _import_main_app():
     # Clear stale SQLAlchemy metadata to prevent "Table already defined" errors
     # in frozen builds where import order differs from dev.
     try:
-        from sqlalchemy.orm import declarative_base
         from sql.models import Base as _sql_base
+        from sqlalchemy.orm import declarative_base
         if hasattr(_sql_base, 'metadata'):
             _sql_base.metadata.clear()
     except Exception:
@@ -5754,21 +5919,62 @@ def start_flask():
                         'error': 'No valid keys provided. Expceted one of: agentname, email, token or user_id'
                     })
 
+                # '' is the explicit DELETE sentinel; a non-empty value is a
+                # set.  Absent / None means "leave whatever is on file alone".
+                clear_keys = [key for key in found_keys if data[key] == '']
+                set_keys = [key for key in found_keys if data[key] != '']
+
                 # Store in a file
                 storage_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'HevolveAi Agent Companion', 'storage')
                 os.makedirs(storage_dir, exist_ok=True)
                 user_data_file = os.path.join(storage_dir, 'user_data.json')
 
+                # What THIS request asserted.  The URL-update and DB-upsert
+                # blocks below gate on `all(k in user_data for k in
+                # required_keys)`, so this stays a posted-keys-only view —
+                # merging into it would make those blocks fire on requests
+                # that never carried a full cloud identity.
                 user_data = {}
-                # Update specific keys from the data
-                for key in found_keys:
+                for key in set_keys:
                     user_data[key] = data[key]
 
-                # Save the new data (completely overwriting any existing file)
-                with open(user_data_file, 'w') as f:
-                    json.dump(user_data, f)
+                # What we PERSIST — merged into the existing document.
+                #
+                # Until 2026-08-11 this handler wrote `user_data` straight out
+                # with mode 'w', rebuilding the file from ONLY the posted keys.
+                # Any caller sending a subset therefore deleted everything it
+                # did not mention.  That made a HART-identity reset
+                # inexpressible: SettingsPage could not clear hart_* without
+                # also destroying access_token / email / user_id and signing
+                # the user out, so the reset cleared localStorage only —
+                # whereupon useStorageSync re-hydrated hart_* straight back
+                # out of this file and the naming ceremony never ran.
+                stored = {}
+                if os.path.exists(user_data_file):
+                    try:
+                        with open(user_data_file) as f:
+                            _existing = json.load(f)
+                        if isinstance(_existing, dict):
+                            stored = _existing
+                    except (OSError, ValueError) as _read_err:
+                        # Corrupt or unreadable: fall back to the pre-merge
+                        # behaviour (start clean) rather than refusing the write.
+                        logger.warning(
+                            f"user_data.json unreadable ({_read_err}) — rebuilding")
+                        stored = {}
 
-                logger.info(f"Completely overwrote user_data.json with new data containing keys: {list(user_data.keys())}")
+                _cleared = []
+                for key in clear_keys:
+                    if stored.pop(key, None) is not None:
+                        _cleared.append(key)
+                stored.update(user_data)
+
+                with open(user_data_file, 'w') as f:
+                    json.dump(stored, f)
+
+                logger.info(
+                    f"user_data.json merged — set={set_keys} "
+                    f"cleared={_cleared} now={list(stored.keys())}")
 
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']
@@ -6617,18 +6823,21 @@ def start_flask():
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
+            from core.serve import build_asgi_app, make_hypercorn_config
             from hypercorn.asyncio import serve as _hcserve
-            from hypercorn.config import Config
-            from hypercorn.middleware import AsyncioWSGIMiddleware
 
-            _hc_config = Config()
-            _hc_config.bind = [f'0.0.0.0:{args.port}']
-            _hc_config.keep_alive_timeout = 120
-            _hc_config.h11_max_incomplete_size = 16 * 1024 * 1024
-            _hc_config.accesslog = None
-            _hc_config.errorlog = '-'
-
-            _asgi_app = AsyncioWSGIMiddleware(_wsgi_target)
+            # core.serve owns what all three entry points share: the four
+            # Config settings and the peer_link-capable ASGI wrapping.  A
+            # bare AsyncioWSGIMiddleware is WSGI and cannot see a websocket
+            # scope, so ws://<this node>/peer_link fell through to it and
+            # Hypercorn answered 403 -- HARTOS had the mount, both Nunba
+            # paths did not.  What this path alone varies stays here: the
+            # signal.signal patch above (start_flask runs in the NunbaGUI
+            # thread), the four-exception fallback, and the Waitress/Flask
+            # ladder below.  hypercorn is imported inside core.serve, so a
+            # missing wheel still raises ImportError in this try block.
+            _hc_config = make_hypercorn_config([f'0.0.0.0:{args.port}'])
+            _asgi_app = build_asgi_app(_wsgi_target)
 
             async def _hc_runner():
                 _loop = asyncio.get_running_loop()
@@ -7092,7 +7301,7 @@ def notify_minimized_to_tray(icon, message="Application minimized to system tray
             import subprocess
             _safe_msg = message.replace('\\', '\\\\').replace('"', '\\"')
             script = f'display notification "{_safe_msg}" with title "Nunba"'
-            subprocess.run(['osascript', '-e', script], check=False, timeout=5)
+            subprocess.run(['osascript', '-e', script], check=False, timeout=5, **get_subprocess_flags())
         elif icon and hasattr(icon, 'notify'):
             # pystray notification
             icon.notify(message, "Nunba")
