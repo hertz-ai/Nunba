@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { BOOK_PARSING_URL, UPLOAD_FILE_URL, UPLOAD_NATIVE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
+import { rememberServerPromptId } from '../utils/promptId';
 import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
@@ -831,22 +832,32 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         }
 
         if (contData.agent_status) {
-          setCurrentAgent((prev) => ({ ...prev, agent_status: contData.agent_status }));
+          setCurrentAgent((prev) => {
+            // Echo the SERVER-minted prompt_id on auto-continue turns too
+            // (a default-agent-started creation has none locally).
+            const sid = rememberServerPromptId(
+              prev?.prompt_id, contData.prompt_id);
+            return sid
+              ? { ...prev, agent_status: contData.agent_status, prompt_id: sid }
+              : { ...prev, agent_status: contData.agent_status };
+          });
           if (contData.agent_status === 'completed') {
             // Agent done — present for reuse, then auto-execute if fully autonomous
             const wasAutonomous = currentAgent?.autonomous_creation;
             const originalTask = currentAgent?.original_task;
+            const completedPid = currentAgent?.prompt_id || contData.prompt_id;
             setCurrentAgent((prev) => ({
               ...prev,
               create_agent: false,
               agent_status: 'Reuse Mode',
               available: true,
+              prompt_id: prev?.prompt_id || contData.prompt_id,
               name: prev.name || 'Created Agent',
               // Keep autonomous_creation & original_task for auto-execute
             }));
             setAllAgents((prev) => {
-              const exists = prev.some((a) => a.prompt_id === currentAgent.prompt_id);
-              if (!exists) return [...prev, { ...currentAgent, create_agent: false, agent_status: null, available: true, name: currentAgent.name || 'Created Agent' }];
+              const exists = prev.some((a) => a.prompt_id === completedPid);
+              if (!exists) return [...prev, { ...currentAgent, prompt_id: completedPid, create_agent: false, agent_status: null, available: true, name: currentAgent.name || 'Created Agent' }];
               return prev;
             });
             setMessages((prev) => [...prev, { type: 'system', content: 'Agent created successfully! You can now chat with your new agent.' }]);
@@ -863,7 +874,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                     agent_id: currentAgent?.id || 'local_assistant',
                     agent_type: 'local',
                     conversation_id: conversationId,
-                    prompt_id: currentAgent?.prompt_id,
+                    // The closure's currentAgent predates the completion
+                    // adoption above — use the server-returned id directly
+                    // so the exec turn runs agent-bound, not casual.
+                    prompt_id: contData.prompt_id || currentAgent?.prompt_id,
                     create_agent: false,
                     autonomous_creation: false,
                   });
@@ -4240,7 +4254,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             }
             // Track Agent_status for creation/reuse mode animation
             if (resultData.agent_status) {
-              setCurrentAgent((prev) => ({ ...prev, agent_status: resultData.agent_status }));
+              setCurrentAgent((prev) => {
+                // prompt_id is SERVER-OWNED: the create/reuse flow mints it
+                // and returns it on every response. Echo it on follow-ups
+                // (only when the session had none — an explicitly selected
+                // agent is never hijacked). See utils/promptId.js.
+                const sid = rememberServerPromptId(
+                  prev?.prompt_id, resultData.prompt_id);
+                return sid
+                  ? { ...prev, agent_status: resultData.agent_status, prompt_id: sid }
+                  : { ...prev, agent_status: resultData.agent_status };
+              });
               if (resultData.agent_status === 'completed' && currentAgent?.create_agent) {
                 const agentName = resultData.agent_display_name || resultData.agent_name || currentAgent?.name || 'Created Agent';
                 setCurrentAgent((prev) => ({
