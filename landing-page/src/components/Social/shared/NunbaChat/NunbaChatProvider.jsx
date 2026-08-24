@@ -14,7 +14,7 @@ import realtimeService, {
   subscribeChatNew,
 } from '../../../../services/realtimeService';
 import {chatApi} from '../../../../services/socialApi';
-import {adoptMintedPromptId} from '../../../../utils/promptId';
+import {rememberServerPromptId} from '../../../../utils/promptId';
 import {
   classifyError,
   getBackoff,
@@ -828,7 +828,7 @@ export default function NunbaChatProvider({children}) {
           const respondingAgent =
             data.responding_agent || currentAgent?.name || null;
 
-          const adopted = adoptMintedPromptId(
+          const adopted = rememberServerPromptId(
             currentAgent?.prompt_id || adoptedPromptIdRef.current,
             data.prompt_id
           );

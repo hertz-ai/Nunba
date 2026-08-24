@@ -4,7 +4,7 @@ import '../css/font-awesome.min.css';
 import '../css/hevolveStyle.css';
 import {CHATBOT_API_URL} from '../config/apiBase';
 import {chatApi} from '../services/socialApi';
-import {adoptMintedPromptId} from '../utils/promptId';
+import {rememberServerPromptId} from '../utils/promptId';
 import {v4 as uuidv4} from 'uuid';
 
 class HevolveDemo extends Component {
@@ -107,7 +107,7 @@ class HevolveDemo extends Component {
       .then((data) => {
         const reply = data.response || data.text || 'No response';
         this.setState({agentStatus: data.Agent_status || null});
-        const adopted = adoptMintedPromptId(promptId, data.prompt_id);
+        const adopted = rememberServerPromptId(promptId, data.prompt_id);
         if (adopted) {
           this.setState({activePromptId: adopted});
         }

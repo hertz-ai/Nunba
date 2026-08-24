@@ -1,25 +1,24 @@
 /**
- * Session-shape contract (owner, 2026-08-24): once an agent CREATE or
- * REUSE flow starts, every following turn in that conversation must carry
- * the prompt_id the backend minted — the /chat route derives casual_conv
- * (casual companion vs agent-bound session) from its presence
- * (routes/chatbot_routes.py `not bool(prompt_id or create_agent)`).
- * The backend already returns prompt_id on every response
- * (chatbot_routes:3108 forwards HARTOS's minted id); before this rule
- * existed, both chat surfaces read data.Agent_status but dropped
- * data.prompt_id, so agent-flow follow-ups arrived prompt_id-less and
- * were misrouted as casual turns.
+ * prompt_id is SERVER-OWNED.  The client NEVER generates one — the only
+ * minter is HARTOS (create_recipe _next_prompt_id) when an agent CREATE
+ * or REUSE flow starts.  The server returns its id on every /chat
+ * response (chatbot_routes:3108); this helper only decides whether to
+ * REMEMBER that server-assigned id so follow-up turns echo it back.
+ * The route derives casual (companion) vs agent-bound session shape
+ * from its presence (`not bool(prompt_id or create_agent)`), so
+ * dropping it — as both surfaces did before 2026-08-24 — misroutes
+ * every agent-flow follow-up as a casual turn.
  *
- * ONE adoption rule for every surface:
- *   - adopt only a real minted id (not 0 / null / echo of the current);
- *   - never hijack an explicit agent context — if the surface already
+ * ONE rule for every surface:
+ *   - remember only a real server id (not 0 / null / empty);
+ *   - never override an explicit agent context — if the surface already
  *     has a prompt_id, the explicit choice wins.
  *
- * @param {string|number|null} currentId  prompt_id the surface used this turn
- * @param {string|number|null} responseId prompt_id in the /chat response
- * @returns {string|number|null} id to adopt for subsequent turns, or null
+ * @param {string|number|null} currentId  prompt_id the surface sent this turn
+ * @param {string|number|null} responseId prompt_id the SERVER returned
+ * @returns {string|number|null} server id to echo on subsequent turns, or null
  */
-export function adoptMintedPromptId(currentId, responseId) {
+export function rememberServerPromptId(currentId, responseId) {
   if (responseId === null || responseId === undefined) return null;
   const r = String(responseId);
   if (r === '' || r === '0' || r === 'null' || r === 'undefined') return null;
