@@ -505,8 +505,6 @@ def install_dependencies(python_exe):
 
     # Install hart-backend: prefer local sibling project, fall back to git
     _install_hartos_backend(python_exe)
-    # Attestation dependency — see _ship_hartos_license docstring.
-    _ship_hartos_license(python_exe)
 
 
 def _fix_crossbarhttp(python_exe):
@@ -774,8 +772,8 @@ def _install_hartos_backend(python_exe):
     fetch_hartos_backend_source()
 
 
-def _ship_hartos_license(python_exe):
-    """Copy the HARTOS repo-root LICENSE to site-packages root.
+def _ship_hartos_license(site_packages_dir):
+    """Copy the HARTOS repo-root LICENSE to a site-packages root.
 
     security/origin_attestation.py requires LICENSE (with the Hevolve.ai
     brand marker) at one of its candidate code roots — for the frozen
@@ -800,20 +798,7 @@ def _ship_hartos_license(python_exe):
             "the frozen build will fail origin attestation and central "
             "will reject its federation deltas.")
         return
-    # Resolve site-packages from the interpreter itself: python-embed has
-    # python.exe beside Lib\site-packages, but a venv keeps python.exe in
-    # Scripts\ — the dirname guess raised WinError 3 on the venv leg
-    # (build 15, 2026-08-25).
-    try:
-        site_packages = subprocess.run(
-            [python_exe, '-c',
-             "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
-            capture_output=True, text=True, timeout=30, check=True,
-        ).stdout.strip()
-    except (subprocess.SubprocessError, OSError) as e:
-        print_error(f"Could not resolve site-packages of {python_exe}: {e}")
-        sys.exit(1)
-    dst = os.path.join(site_packages, 'LICENSE')
+    dst = os.path.join(site_packages_dir, 'LICENSE')
     try:
         shutil.copy2(src, dst)
         print_info(f"HARTOS LICENSE -> {dst}")
@@ -1430,6 +1415,13 @@ def build_windows(python_exe, app_only=False, installer_only=False):
     if _hartos_src:
         _embed_sp = os.path.join(embed_src, 'Lib', 'site-packages')
         _build_sp = os.path.join('build', 'Nunba', 'python-embed', 'Lib', 'site-packages')
+
+        # Attestation dependency — see _ship_hartos_license docstring.
+        # Must run here, against the frozen trees: shipping at the
+        # dependency-install stage put LICENSE in the dev venv, which
+        # cx_Freeze does not carry (build 15, 2026-08-25).
+        for _sp_dir in (_embed_sp, _build_sp):
+            _ship_hartos_license(_sp_dir)
         _synced = 0
 
         # Content-hash comparator — replaces the old size-only check.
