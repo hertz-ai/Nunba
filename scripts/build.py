@@ -505,6 +505,8 @@ def install_dependencies(python_exe):
 
     # Install hart-backend: prefer local sibling project, fall back to git
     _install_hartos_backend(python_exe)
+    # Attestation dependency — see _ship_hartos_license docstring.
+    _ship_hartos_license(python_exe)
 
 
 def _fix_crossbarhttp(python_exe):
@@ -770,6 +772,43 @@ def _install_hartos_backend(python_exe):
     # 3. Fallback: clone the repo source for cx_Freeze bundling
     print_warn("hart-backend pip install failed. Trying local clone...")
     fetch_hartos_backend_source()
+
+
+def _ship_hartos_license(python_exe):
+    """Copy the HARTOS repo-root LICENSE to site-packages root.
+
+    security/origin_attestation.py requires LICENSE (with the Hevolve.ai
+    brand marker) at one of its candidate code roots — for the frozen
+    layout that is the site-packages directory holding security/ and
+    integrations/.  pip install puts the license only inside .dist-info,
+    which is NOT a candidate root, so every cx_Freeze desktop failed
+    "Origin attestation FAILED: Missing required file: LICENSE", could
+    not attest, and central's genuine-build gate rejected its federation
+    deltas ("unverified build").  Measured live 2026-08-25: copying this
+    one file flipped box9's /federation-delta verdict from rejected to
+    accepted and put the desktop in the hive census.  Abort the build if
+    the source is known and the copy fails — shipping without it
+    silently locks the install out of the hive.
+    """
+    src = None
+    local_path = _find_local_hartos_backend()
+    if local_path and os.path.isfile(os.path.join(local_path, 'LICENSE')):
+        src = os.path.join(local_path, 'LICENSE')
+    if src is None:
+        print_warn(
+            "HARTOS LICENSE not found next to a local sibling checkout — "
+            "the frozen build will fail origin attestation and central "
+            "will reject its federation deltas.")
+        return
+    site_packages = os.path.join(
+        os.path.dirname(python_exe), 'Lib', 'site-packages')
+    dst = os.path.join(site_packages, 'LICENSE')
+    try:
+        shutil.copy2(src, dst)
+        print_info(f"HARTOS LICENSE -> {dst}")
+    except OSError as e:
+        print_error(f"Failed to ship HARTOS LICENSE to site-packages: {e}")
+        sys.exit(1)
 
 
 def build_react_landing_page():
