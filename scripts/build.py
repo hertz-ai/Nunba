@@ -800,8 +800,19 @@ def _ship_hartos_license(python_exe):
             "the frozen build will fail origin attestation and central "
             "will reject its federation deltas.")
         return
-    site_packages = os.path.join(
-        os.path.dirname(python_exe), 'Lib', 'site-packages')
+    # Resolve site-packages from the interpreter itself: python-embed has
+    # python.exe beside Lib\site-packages, but a venv keeps python.exe in
+    # Scripts\ — the dirname guess raised WinError 3 on the venv leg
+    # (build 15, 2026-08-25).
+    try:
+        site_packages = subprocess.run(
+            [python_exe, '-c',
+             "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout.strip()
+    except (subprocess.SubprocessError, OSError) as e:
+        print_error(f"Could not resolve site-packages of {python_exe}: {e}")
+        sys.exit(1)
     dst = os.path.join(site_packages, 'LICENSE')
     try:
         shutil.copy2(src, dst)
