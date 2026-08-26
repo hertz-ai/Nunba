@@ -375,6 +375,28 @@ DEFAULT_DEVICE_ID_FILE = os.path.join(PROGRAM_DATA_DIR, 'device_id.json')
 DEFAULT_STORAGE_DIR = os.path.join(PROGRAM_DATA_DIR, 'storage')
 DEFAULT_USER_DATA_FILE = os.path.join(DEFAULT_STORAGE_DIR, 'user_data.json')
 
+
+def _export_owner_identity():
+    """Boot-declare the desktop owner for daemon consent asks (#698).
+
+    hive_guardrails' consent gate can only ASK a human it can name;
+    daemon goals carry no requester, so the gate falls back to
+    HEVOLVE_OWNER_USER_ID — the same boot-set trust source
+    crossbar_server.py uses for publish auth.  Absent or unreadable
+    user_data.json leaves the env unset and the gate fail-closed,
+    which is the pre-login behavior.
+    """
+    try:
+        with open(DEFAULT_USER_DATA_FILE, encoding='utf-8') as fh:
+            uid = (json.load(fh) or {}).get('user_id')
+        if uid:
+            os.environ.setdefault('HEVOLVE_OWNER_USER_ID', str(uid))
+    except Exception:
+        pass
+
+
+_export_owner_identity()
+
 def get_app_directory():
     """Get the application directory - works in both dev and frozen environments"""
     if getattr(sys, 'frozen', False):
