@@ -1076,6 +1076,14 @@ try:
     from desktop.guest_identity import get_guest_id as _get_guest_id
     GUEST_ID = _get_guest_id()
     logging.info(f"Guest ID (hardware-derived): {GUEST_ID}")
+    # Daemon consent asks work for guests too (#698, owner 2026-08-26):
+    # with nobody logged in the human at this desktop is still the
+    # guest — consent requests file against the guest id and render in
+    # the same UserConsent UI (UserConsent.user_id is a plain string,
+    # no FK).  setdefault keeps a logged-in owner (exported from
+    # user_data.json at import, _export_owner_identity) as the winner.
+    if GUEST_ID:
+        os.environ.setdefault('HEVOLVE_OWNER_USER_ID', str(GUEST_ID))
 except Exception as _gie:
     # Never crash Flask boot because of guest-id derivation — degrade
     # gracefully so the frontend's chain still works (it falls through
