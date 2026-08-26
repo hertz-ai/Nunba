@@ -2146,3 +2146,29 @@ class TestLiveRewriteGuardAndCollateralVerify:
                        if p.name.startswith('_quarantine_yaml_')]
         assert quarantined, 'torn yaml was not quarantined'
         assert not (user_sp / 'yaml').exists()
+
+    def test_collateral_verify_catches_torn_filelock(
+            self, tmp_path, monkeypatch):
+        """2026-08-27 tear shape: __init__ survives so `import filelock`
+        passes, but the 7 async/typed modules are gone — only the
+        filelock._async canary catches it."""
+        import tts.package_installer as pi
+        user_sp = tmp_path / 'user'
+        embed_sp = tmp_path / 'embed'
+        (user_sp / 'filelock').mkdir(parents=True)
+        (user_sp / 'filelock' / '__init__.py').write_text('')
+        (embed_sp / 'filelock').mkdir(parents=True)
+        monkeypatch.setattr(pi, 'get_embed_python',
+                            lambda: sys.executable)
+        monkeypatch.setattr(pi, 'get_embed_site_packages',
+                            lambda: str(embed_sp))
+        ok, failed = pi._verify_user_site_imports(
+            'Successfully installed some-other-pkg-1.0', ['install'],
+            str(user_sp))
+        assert not ok
+        assert 'filelock._async' in failed
+        assert 'filelock' not in failed, \
+            'empty __init__ imports fine; the canary must be the catcher'
+        quarantined = [p.name for p in user_sp.iterdir()
+                       if p.name.startswith('_quarantine_filelock_')]
+        assert quarantined, 'torn filelock was not quarantined'

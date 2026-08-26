@@ -37,8 +37,11 @@ logger = logging.getLogger('NunbaTTSInstaller')
 # 2026-08-25: yaml lost error.py to a constraints run that named neither
 # yaml nor numpy; yaml/torch/numpy/ctranslate2 torn over three days.
 # Dotted entries verify a submodule the tear pattern deletes first.
+# filelock: 2026-08-27 tear kept __init__/_api (top-level import passes)
+# but deleted the 7 async/typed modules — _async is the canary for that.
 _COLLATERAL_CRITICAL = ('yaml', 'yaml.error', 'numpy', 'torch',
-                        'ctranslate2', 'einops')
+                        'ctranslate2', 'einops', 'filelock',
+                        'filelock._async')
 
 # huggingface_hub 0.29+ removes is_offline_mode needed by transformers <5.x
 # Re-exported from here for any caller that depends on the constant; the
