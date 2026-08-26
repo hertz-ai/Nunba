@@ -43,7 +43,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from _validate_verdict import validate_log_is_clean  # noqa: E402
 
-
 # The exact shape of build7's validate.log: six clean group summaries, then
 # the real verdict.  THE regression — nothing else in this file matters more.
 REAL_BUILD7_LOG = """

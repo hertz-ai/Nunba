@@ -271,7 +271,7 @@ class LlamaInstaller:
                     capture_output=True, text=True, timeout=3,
                     startupinfo=si, creationflags=cf)
                 if result.returncode == 0 and result.stdout.strip():
-                    logger.debug(f"AMD GPU detected (rocm-smi) → vulkan")
+                    logger.debug("AMD GPU detected (rocm-smi) → vulkan")
                     return "vulkan"
             except Exception:
                 pass
@@ -1394,7 +1394,9 @@ def install_on_first_run(
     # Best-effort + idempotent: no-ops on CPU boxes and when already installed.
     try:
         from tts.package_installer import (
-            has_nvidia_gpu, is_cuda_ctranslate2, install_gpu_ctranslate2,
+            has_nvidia_gpu,
+            install_gpu_ctranslate2,
+            is_cuda_ctranslate2,
         )
         if has_nvidia_gpu() and not is_cuda_ctranslate2():
             if progress_callback:

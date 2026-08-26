@@ -3919,6 +3919,7 @@ from routes.spa_fallback import (  # noqa: E402
     is_spa_page,
 )
 
+
 # Landing-Page routes - redirect to hevolve.ai when online, /local when offline
 @app.route('/')
 def serve_landing_page_root():

@@ -8,12 +8,13 @@ VibeVoice: https://github.com/microsoft/VibeVoice
 Model: https://huggingface.co/microsoft/VibeVoice-1.5B
 """
 import logging
-from desktop.platform_utils import get_subprocess_flags
 import shutil
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+
+from desktop.platform_utils import get_subprocess_flags
 
 logger = logging.getLogger('NunbaVibeVoiceTTS')
 

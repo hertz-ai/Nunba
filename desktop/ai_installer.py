@@ -213,6 +213,7 @@ def detect_gpu() -> dict:
         # Pull the exact NVIDIA name + VRAM — drives model sizing + TTS tiering.
         try:
             import subprocess
+
             # ONE source for the hide flags (was an inline copy — see
             # tests/test_hidden_subprocess_single_source.py).
             from desktop.platform_utils import get_subprocess_flags

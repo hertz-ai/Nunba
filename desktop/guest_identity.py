@@ -69,12 +69,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from desktop.platform_utils import get_subprocess_flags
 import os
 import platform
 import sys
 import tempfile
 import uuid
+
+from desktop.platform_utils import get_subprocess_flags
 
 logger = logging.getLogger(__name__)
 

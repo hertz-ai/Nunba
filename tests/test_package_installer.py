@@ -1878,8 +1878,8 @@ class TestRuntimeInstallConstraints:
         return d
 
     def test_upper_bounds_reach_the_constraints_file(self, tmp_path):
-        from unittest.mock import patch
         from importlib import metadata as md
+        from unittest.mock import patch
         dist = self._fake_dist([
             'numpy<2.0.0,>=1.25.0',
             'cryptography<47.0.0,>=41.0.0',
@@ -1891,13 +1891,13 @@ class TestRuntimeInstallConstraints:
         body = open(path, encoding='utf-8').read()
         assert 'numpy<2.0.0,>=1.25.0' in body, (
             "the numpy upper bound is the exact pin that was violated; "
-            "without it pip warns and installs anyway. File was:\n%s" % body
+            f"without it pip warns and installs anyway. File was:\n{body}"
         )
         assert 'cryptography<47.0.0,>=41.0.0' in body
 
     def test_extras_markers_and_unpinned_are_excluded(self, tmp_path):
-        from unittest.mock import patch
         from importlib import metadata as md
+        from unittest.mock import patch
         dist = self._fake_dist([
             'numpy<2.0.0',                      # keep
             'requests',                         # unpinned -> nothing to constrain
@@ -1911,9 +1911,9 @@ class TestRuntimeInstallConstraints:
         assert 'numpy<2.0.0' in body
         for excluded in ('requests', 'uvicorn', 'pytest'):
             assert excluded not in body, (
-                "%r must not appear — extras/markers make pip reject the "
+                f"{excluded!r} must not appear — extras/markers make pip reject the "
                 "constraints file outright, and an unpinned name constrains "
-                "nothing. File was:\n%s" % (excluded, body)
+                f"nothing. File was:\n{body}"
             )
 
     def test_unreadable_metadata_does_not_block_the_install(self, tmp_path):
@@ -1923,8 +1923,8 @@ class TestRuntimeInstallConstraints:
         checkout, editable install), we return None and behave exactly as
         before rather than refusing to install anything at all.
         """
-        from unittest.mock import patch
         from importlib import metadata as md
+        from unittest.mock import patch
         with patch.object(md, 'distribution',
                           side_effect=md.PackageNotFoundError('hart-backend')):
             assert pi._write_hart_constraints(str(tmp_path)) is None
@@ -1955,7 +1955,7 @@ class TestRuntimeInstallConstraints:
         assert '--constraint' in cmd, (
             "install ran WITHOUT --constraint, so pip resolves free of "
             "hart-backend's pins and can install an incompatible numpy "
-            "again. cmd was: %s" % cmd
+            f"again. cmd was: {cmd}"
         )
         assert cmd[cmd.index('--constraint') + 1] == cfile
 
