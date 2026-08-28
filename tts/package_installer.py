@@ -802,12 +802,21 @@ def _verify_user_site_imports(success_line: str | None, args: list,
             continue                            # nothing shadowing
 
         try:
+            # python_exe is console-subsystem and Nunba.exe is GUI-subsystem, so
+            # a naked spawn here paints a real console window -- and this runs
+            # once PER PACKAGE NAME, so it is a burst of them, one at a time.
+            # Same helper the three spawns above already use (:401, :578, :955);
+            # the comment at :399 records that a naked spawn in this very file
+            # was already found to cause "a repeating flash".
+            from tts._subprocess import hidden_startupinfo
+            _si, _cf = hidden_startupinfo()
             proc = subprocess.run(
                 [python_exe, '-c',
                  f"import sys; sys.path.insert(0, {user_sp!r}); "
                  f"import {candidate}"],
                 capture_output=True, text=True, timeout=120,
                 env={**os.environ, 'PYTHONNOUSERSITE': '1'},
+                startupinfo=_si, creationflags=_cf,
             )
             import_ok = proc.returncode == 0
             import_err = (proc.stdout + proc.stderr).strip()[-300:]
