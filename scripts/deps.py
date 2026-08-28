@@ -180,6 +180,24 @@ EMBED_DEPS = {
     # the embed install doesn't silently drop it when --no-deps is used.
     "sympy": "1.14.0",
     "mpmath": "1.3.0",
+    # einops: hevolveai/embodied_ai/attention/linear_attention.py:30 does
+    # `from einops import rearrange` at module load.  It is declared in
+    # hevolveai's own setup.py ("einops>=0.7.0") and pinned in
+    # requirements-lock.txt (einops==0.8.2), but EMBED_DEPS is what actually
+    # fills python-embed — the lock file does not feed it — so it shipped
+    # missing and every install had DEAD CHAT:
+    #   ModuleNotFoundError: No module named 'einops'
+    #   -> ImportError: LinearAttention unavailable
+    #   -> [DEGRADED] embodied init failed — serving without embodied learning
+    #   -> /v1/chat/completions 503 {"detail":"Learning provider not loaded"}
+    # forever.  Confirmed on the 2026-08-28 build: `python-embed\python.exe -I
+    # -c "import einops"` raised ModuleNotFoundError while flask/fastapi/openai/
+    # torch/pydantic/uvicorn/peft all imported clean.  It only appeared to work
+    # on dev boxes because einops resolved out of the developer's roaming
+    # site-packages, which a real user does not have.  Installing it into the
+    # bundle restored "[LinearAttention] Initialized" and a real chat completion
+    # on a non-elevated launch.  Same class as the sounddevice note above.
+    "einops": "0.8.2",
     # NOTE: descript-audio-codec (dac) is NOT here — it pulls a massive
     # transitive tree (descript-audiotools → librosa → scipy → matplotlib).
     # It's installed at RUNTIME by install_backend_full('indic_parler')
