@@ -1542,6 +1542,56 @@ class LlamaConfig:
             except Exception:
                 pass
 
+    def _derive_ctx_size(self, model_preset):
+        """Context size for a llama-server spawn, derived from the box.
+
+        ONE authority for every spawn site.  The caption/draft server used to
+        hardcode 2048 while the main server derived its size here, so the two
+        servers disagreed about how much context the same class of prompt
+        needs — and 2048 was too small for the draft-first dispatcher and the
+        recipe pipeline that share :8081 (measured overflows at 2066, 3223
+        and 4386 tokens, all reporting n_ctx 2048).
+        """
+        # Context size is VRAM-aware for Qwen3.5.
+        is_qwen35 = "Qwen3.5" in model_preset.display_name
+        if is_qwen35:
+            # Scale context with available VRAM:
+            #   ≥3GB remaining → 16384 (full multi-turn agent conversations)
+            #   ≥2GB remaining → 8192  (standard conversations)
+            #   <2GB remaining → 4096  (compact, preserves VRAM for TTS/STT)
+            # KV cache cost: ~1GB per 8K context for 4B Q4 model
+            try:
+                from integrations.service_tools.vram_manager import vram_manager
+                free_gb = vram_manager.detect_gpu().get('free_gb', 0)
+                model_gb = model_preset.size_mb / 1024.0
+                remaining = free_gb - model_gb  # VRAM after model loads
+                if remaining >= 3:
+                    ctx_size = 16384
+                elif remaining >= 2.0:
+                    ctx_size = 8192
+                else:
+                    ctx_size = 4096
+                logger.info(f"Dynamic context size: {ctx_size} "
+                            f"(VRAM free={free_gb:.1f}GB, model={model_gb:.1f}GB, "
+                            f"remaining={remaining:.1f}GB)")
+            except Exception:
+                ctx_size = 8192  # safe default
+        else:
+            ctx_size = self.config.get("context_size", 8192)
+
+        # Cap context: 12K balances quality + VRAM for F5-TTS coexistence.
+        # KV cache cost: ~1GB per 8K for 4B, ~0.5GB per 8K for 2B.
+        # Raised from 10240→12288 (2026-05-15) after context-overflow
+        # diagnosis (langchain.log 32× "Context size has been exceeded"
+        # per session).  Companion fixes already in place: HARTOS
+        # MessageTokenLimiter max_tokens=3500 (was 4000) + chat_instructor
+        # added to context_handling.add_to_agent in 5 sites.  This +2K
+        # ctx provides extra headroom for tool schemas (~3-5K tokens)
+        # plus system prompt (~1.5K) on top of trimmed history.
+        # Net KV cost at 12K: ~1.5GB for 4B Q4 — still leaves ~2GB for
+        # F5-TTS / Indic Parler coexistence on the 8GB-VRAM laptop tier.
+        return min(ctx_size, 12288)
+
     def _do_start_server(self, model_preset=None, force_new_port=False):
         """Internal server start — called by start_server() with lock protection."""
         # #124/#134 — apply any queued llama.cpp binary upgrade BEFORE (re)start,
@@ -1847,45 +1897,9 @@ class LlamaConfig:
         # on a different copy.  Reporting only — never gates an upgrade.
         self.installer.note_serving_binary(llama_server)
 
-        # Build command — context size is VRAM-aware for Qwen3.5
-        is_qwen35 = "Qwen3.5" in model_preset.display_name
-        if is_qwen35:
-            # Scale context with available VRAM:
-            #   ≥6GB free → 16384 (full multi-turn agent conversations)
-            #   ≥4GB free → 8192  (standard conversations)
-            #   <4GB free → 4096  (compact, preserves VRAM for TTS/STT)
-            # KV cache cost: ~1GB per 8K context for 4B Q4 model
-            try:
-                from integrations.service_tools.vram_manager import vram_manager
-                free_gb = vram_manager.detect_gpu().get('free_gb', 0)
-                model_gb = model_preset.size_mb / 1024.0
-                remaining = free_gb - model_gb  # VRAM after model loads
-                if remaining >= 3:
-                    ctx_size = 16384
-                elif remaining >= 2.0:
-                    ctx_size = 8192
-                else:
-                    ctx_size = 4096
-                logger.info(f"Dynamic context size: {ctx_size} "
-                            f"(VRAM free={free_gb:.1f}GB, model={model_gb:.1f}GB, "
-                            f"remaining={remaining:.1f}GB)")
-            except Exception:
-                ctx_size = 8192  # safe default
-        else:
-            ctx_size = self.config.get("context_size", 8192)
-
-        # Cap context: 12K balances quality + VRAM for F5-TTS coexistence.
-        # KV cache cost: ~1GB per 8K for 4B, ~0.5GB per 8K for 2B.
-        # Raised from 10240→12288 (2026-05-15) after context-overflow
-        # diagnosis (langchain.log 32× "Context size has been exceeded"
-        # per session).  Companion fixes already in place: HARTOS
-        # MessageTokenLimiter max_tokens=3500 (was 4000) + chat_instructor
-        # added to context_handling.add_to_agent in 5 sites.  This +2K
-        # ctx provides extra headroom for tool schemas (~3-5K tokens)
-        # plus system prompt (~1.5K) on top of trimmed history.
-        # Net KV cost at 12K: ~1.5GB for 4B Q4 — still leaves ~2GB for
-        # F5-TTS / Indic Parler coexistence on the 8GB-VRAM laptop tier.
-        ctx_size = min(ctx_size, 12288)
+        # Build command — context size comes from the one derivation shared
+        # with the caption/draft spawn (see _derive_ctx_size).
+        ctx_size = self._derive_ctx_size(model_preset)
 
         # Cap threads to 75% of cores — leave headroom for OS + TTS
         max_threads = max(1, int((os.cpu_count() or 4) * 0.75))
@@ -2342,19 +2356,23 @@ class LlamaConfig:
         # The main server picks its size dynamically and caps at 12288 (:1888);
         # this path is the only one that hardcoded a literal.
         #
-        # 8192 is sized for the casual/draft and creation traffic measured
-        # above.  It is deliberately NOT sized to fit the agent-reuse turn,
-        # which was measured at 11,236 tokens: that prompt is ~90% tool
-        # schemas (39,959 chars / ~9,989 tokens for 70 tools) against only
-        # ~965 tokens of system+user text.  The autogen MessageTokenLimiter
-        # IS working — history is well inside its 2500 budget — but tools are
-        # appended after the transform, and get_tools(is_first=True)
-        # (HARTOS hart_intelligence_entry.py:4825) builds the FULL catalogue
-        # without consulting req_tool or the agent's own declared tools.
-        # Growing n_ctx to fit that is treating the symptom; the fix is to
-        # give each agent the tools its persona/goal actually needs.
+        # Same derivation as the main server — this spawn used to hardcode
+        # 2048, which is fine for captioning but starves the draft-first
+        # dispatcher and the recipe pipeline that share this port.
+        #
+        # NOT sized to fit the agent-reuse turn, and deliberately so: that
+        # prompt measured 11,236 tokens of which ~9,989 are tool schemas
+        # (70 tools) against ~965 tokens of actual system+user text.  The
+        # autogen MessageTokenLimiter IS working — history sits well inside
+        # its 2500 budget — but tools are appended after the transform, and
+        # get_tools(is_first=True) (HARTOS hart_intelligence_entry.py:4825)
+        # builds the FULL catalogue without consulting req_tool or the
+        # agent's own declared tools.  Growing n_ctx to swallow that would
+        # hide the real fix: give each agent the tools its persona and goal
+        # actually need.
+        ctx_size = self._derive_ctx_size(preset)
         cmd = [str(binary_path), "--model", str(model_path),
-               "--port", str(port), "--ctx-size", "8192",
+               "--port", str(port), "--ctx-size", str(ctx_size),
                "--threads", "4"]
         if mmproj_path:
             cmd.extend(["--mmproj", str(mmproj_path), "--kv-unified"])
