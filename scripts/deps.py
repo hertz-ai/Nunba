@@ -198,6 +198,30 @@ EMBED_DEPS = {
     # bundle restored "[LinearAttention] Initialized" and a real chat completion
     # on a non-elevated launch.  Same class as the sounddevice note above.
     "einops": "0.8.2",
+    # ddgs + primp + lxml: KEYLESS web search for a brand-new install.
+    # helper.py:_keyless_serp tier A (:346-360) is `from ddgs import DDGS`, and it
+    # is FIRST in the ladder ahead of the Mojeek and DDG-html scrapes.  It has
+    # never executed once, because the package was never installed anywhere:
+    # absent from HARTOS requirements.txt, from this file, and from python-embed.
+    # Measured 2026-08-29, every other keyless tier is dead from a residential
+    # desktop -- Mojeek returns 200 WITH A CAPTCHA (so it raises nothing and logs
+    # nothing, it just yields []), DDG html returns 202 + anomaly page, Startpage
+    # captcha, Brave 429, Ecosia/Yep 403.  Tier D (SearXNG) is gated on
+    # SEARXNG_URL which is set nowhere.  So a fresh install has NO search at all
+    # and google_search returns [] forever, which reads as a code bug and is not.
+    # ddgs works because primp does browser TLS impersonation, so it is not
+    # fingerprinted as a bot the way requests/pooled_get is.  Verified against the
+    # exact tier-A code path (context manager + title/href/body mapping): 5 real
+    # rows with titles, urls and snippets.
+    # A KEY IS NOT AN OPTION HERE (owner, 2026-08-29): search must work on a brand
+    # new user install with no keys, so the Google CSE path at helper.py:455 does
+    # not solve the product case, only our own nodes.
+    # click is already in the embed at 8.4.2 and satisfies ddgs's click>=8.1.8, so
+    # it is deliberately NOT pinned here -- forcing 8.5.0 would churn a dependency
+    # other bundled code already uses.
+    "ddgs": "9.16.0",
+    "primp": "2.0.0",   # ddgs's HTTP layer; the TLS-impersonation part that works
+    "lxml": "6.1.2",    # ddgs SERP parsing
     # NOTE: descript-audio-codec (dac) is NOT here — it pulls a massive
     # transitive tree (descript-audiotools → librosa → scipy → matplotlib).
     # It's installed at RUNTIME by install_backend_full('indic_parler')
