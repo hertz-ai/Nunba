@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import time
 from collections import deque
@@ -35,6 +36,44 @@ from routes.auth import require_local_or_token as _require_local_or_token
 
 # ============== Nunba-layer TTS (works on ALL tiers) ==============
 
+# Reply strings that are internal faults rather than answers.  Anchored
+# at the start, or matching the raw JSON envelope, so ordinary prose that
+# happens to discuss an error is still spoken.
+_TTS_ERROR_PREFIXES = ('An error occurred:', 'Error creating agents:')
+_TTS_ERROR_ENVELOPE_RE = re.compile(r"""\{\s*['"]error['"]\s*:\s*\{""")
+
+# #591 — a tier failure is not evidence that the model is busy.  llama.cpp
+# reports an oversized prompt as 400 exceed_context_size_error; some paths
+# surface it as a 500 "Context size has been exceeded." after retries
+# accumulate history (HARTOS create_recipe.py:1039).  Both failed BOTH
+# tiers on an idle box and were reported to the user as "busy".
+_CTX_OVERFLOW_MARKERS = (
+    'exceeds the available context size',
+    'context size has been exceeded',
+    'exceed_context_size_error',
+)
+
+
+def _is_context_overflow(err_text):
+    """True when a tier failed because the prompt didn't fit."""
+    lowered = (err_text or '').lower()
+    return any(marker in lowered for marker in _CTX_OVERFLOW_MARKERS)
+
+
+def _busy_text_for_failure(err_text):
+    """Reply for a tier failure whose cause is KNOWN, else None.
+
+    None means "cause not identified" and the caller falls through to the
+    existing blocking-activity / active-task / generic chain unchanged —
+    so this narrows the guess, it does not replace the chain.
+    """
+    if _is_context_overflow(err_text):
+        return ("That was too long for me to handle in one go. Try a "
+                "shorter message, or start a new conversation to clear "
+                "the history.")
+    return None
+
+
 def _fire_nunba_tts(text, user_id, request_id, language='en'):
     """Synthesize TTS and push audio via SSE — works regardless of HARTOS tier.
 
@@ -42,6 +81,22 @@ def _fire_nunba_tts(text, user_id, request_id, language='en'):
     Uses Nunba's own tts_engine (kokoro/piper/indic_parler) and pushes
     the audio URL to the frontend via SSE broadcast.
     """
+    # Internal error text must never be spoken.  The reply string was
+    # handed straight to TTS, so backend faults got READ ALOUD: the owner
+    # heard "An error occurred: Error code: 400 - {'error': ... 'n_ctx':
+    # 8192}" and "Error creating agents: 'guest_87986098626'" on
+    # 2026-08-29 (#716).  That reads HTTP codes, token budgets and the
+    # internal user_id+prompt_id key to anyone in earshot.  The screen may
+    # still show the detail; audio must not carry it.  Gated here — the
+    # one chokepoint both call sites (:3203, :3278) go through — so there
+    # is no second place for this to drift.
+    _probe = (text or '').lstrip()
+    if _probe.startswith(_TTS_ERROR_PREFIXES) or _TTS_ERROR_ENVELOPE_RE.search(_probe):
+        logger.info(
+            'TTS suppressed for request %s: reply is an internal error '
+            'envelope, not an answer (#716)', request_id)
+        return
+
     import threading
 
     def _bg():
@@ -3219,6 +3274,9 @@ def chat_route():
         # the ONLY model — it serves chat draft+main passes AND vision caption —
         # so a daemon mid-turn here means both tiers fail and we surface the
         # "busy" stub below.
+        # #591: keep WHY the tier failed.  It used to be logged and dropped,
+        # so every failure on a live server became "busy" regardless of cause.
+        _tier_error = None
         try:
             from llama.llama_config import check_llama_health, get_llama_endpoint
             messages = [{"role": "user", "content": text}]
@@ -3280,6 +3338,7 @@ def chat_route():
         except ImportError:
             logger.warning('Llama config not available')
         except Exception as e:
+            _tier_error = str(e)
             logger.warning(f'Local Llama error: {e}')
 
         # Both Tier-1 (LangChain) and Tier-2 (raw llama) failed.  Before
@@ -3419,7 +3478,17 @@ def chat_route():
 
             _retry_s = (_blocking or {}).get('retry_after_s', 15)
 
-            if _blocking and _blocking.get('long_running'):
+            # #591: if the tier told us WHY it failed, say that instead of
+            # guessing "busy".  Only fires when the cause is identified;
+            # otherwise the original chain below runs unchanged.
+            _known_cause = _busy_text_for_failure(_tier_error)
+
+            if _known_cause:
+                logger.info(
+                    'Chat fall-through: identified cause (not busy) — %s',
+                    (_tier_error or '')[:160])
+                _busy_text = _known_cause
+            elif _blocking and _blocking.get('long_running'):
                 # Honest and explanatory — the shape that already worked
                 # ("Setting up cuda torch…" / "I'm upgrading my voice…").
                 _busy_text = (
