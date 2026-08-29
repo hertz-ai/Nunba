@@ -45,6 +45,40 @@ function AIAssistantCarousel({userId}) {
 
       logger.log(`📊 Total merged assistants: ${allAssistants.length}`);
 
+      // Local /prompts carries no idle videos: measured 2026-08-29 against a
+      // live desktop, 8 prompts (5 local + 3 hive), 0 with `fillers`.  The
+      // filler catalogue is a cloud feature and is not packed in the app, so
+      // with only local data this pre-login carousel has no motion at all.
+      // When the box is online, source them the way hevolve.ai's pre-login
+      // page does — /getprompt_all/ returns 33 assistants, 32 carrying
+      // fillers[].video_link, every video on azurekong.hertzai.com, which
+      // main.py's `media-src https://*.hertzai.com` already allows (no CSP
+      // change needed).  Uses the client method that already existed for
+      // exactly this: chatApi.getPublicPromptsCloud (socialApi.js:756).
+      //
+      // is_online comes from the SAME /prompts response — no second probe and
+      // no parallel connectivity detector.  Offline, or if the call fails, the
+      // local list stands and each card falls back to its portrait.
+      // Safe to replace rather than merge: AIAssistantCarousel is rendered
+      // only by newHomeforDemo.js:90, i.e. only under {!isAuthenticated}.
+      const hasAnyVideo = allAssistants.some((a) =>
+        (a.fillers || []).some((f) => f && f.video_link)
+      );
+      if (!hasAnyVideo && responseData.is_online) {
+        try {
+          const cloud = await chatApi.getPublicPromptsCloud();
+          const cloudList = Array.isArray(cloud)
+            ? cloud
+            : (cloud && (cloud.prompts || cloud.data)) || [];
+          if (Array.isArray(cloudList) && cloudList.length > 0) {
+            allAssistants = cloudList;
+            logger.log(`🎬 Idle videos sourced from cloud: ${cloudList.length}`);
+          }
+        } catch (cloudErr) {
+          logger.log(`Cloud assistant source unavailable: ${cloudErr.message}`);
+        }
+      }
+
       // Filter assistants that have video content (existing logic)
       const validAssistants = allAssistants.filter((assistant) => {
         const hasName = assistant.name && assistant.name.trim() !== '';
@@ -393,7 +427,7 @@ function AIAssistantCarousel({userId}) {
                             muted
                             loop={shouldLoop}
                             playsInline
-                            poster={assistant.teacher_image_url}
+                            poster={assistant.teacher_image_url || assistant.avatar}
                             onEnded={() => handleVideoEnded(cardKey, assistant)}
                             onLoadStart={() => {
                               const video = videoRefs.current[cardKey];
@@ -412,8 +446,19 @@ function AIAssistantCarousel({userId}) {
                             <source src={videoSource} type="video/mp4" />
                           </video>
                         ) : (
+                          /* No card in this deployment carries a filler video:
+                             /prompts?user_id=guest returns 8 prompts, 0 with
+                             `fillers`, so getVideoSource() is undefined for every
+                             one and this img IS the card. It read
+                             teacher_image_url only, which is absent on all 8 —
+                             src=undefined, blank cards. All 8 carry `avatar`
+                             (/static/media/local-bot.png etc.).
+                             Same field mismatch Demopage.js:5348 already fixed on
+                             2026-06-10: built-in agents expose their portrait as
+                             `avatar`, synced HARTOS agents as image_url/
+                             teacher_image_url — accept EITHER. */
                           <img
-                            src={assistant.teacher_image_url}
+                            src={assistant.teacher_image_url || assistant.avatar}
                             alt={assistant.name}
                             className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300"
                             style={{
