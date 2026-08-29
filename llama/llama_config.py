@@ -2329,8 +2329,32 @@ class LlamaConfig:
             )
             return False
 
+        # ctx-size was 2048, which is right for captioning (short prompts) but
+        # starves the draft-first dispatcher that shares this server on :8081.
+        # Measured 2026-08-29 against the live :8081, every request rejected
+        # with exceed_context_size_error / n_ctx 2048:
+        #   2066 tokens -> chat returned prompt scaffold instead of an answer
+        #   3223 tokens -> agent creation stalled as "your local AI is busy"
+        #   4386 tokens -> Calculator sub-chain
+        # Red/green on the same 4230-token prompt: ctx 2048 -> HTTP 400,
+        # ctx 8192 -> HTTP 200 (prompt_tokens 4228).  VRAM cost of the whole
+        # 8192 instance measured at 137 MiB on an 8 GB card (4967 -> 4830 free).
+        # The main server picks its size dynamically and caps at 12288 (:1888);
+        # this path is the only one that hardcoded a literal.
+        #
+        # 8192 is sized for the casual/draft and creation traffic measured
+        # above.  It is deliberately NOT sized to fit the agent-reuse turn,
+        # which was measured at 11,236 tokens: that prompt is ~90% tool
+        # schemas (39,959 chars / ~9,989 tokens for 70 tools) against only
+        # ~965 tokens of system+user text.  The autogen MessageTokenLimiter
+        # IS working — history is well inside its 2500 budget — but tools are
+        # appended after the transform, and get_tools(is_first=True)
+        # (HARTOS hart_intelligence_entry.py:4825) builds the FULL catalogue
+        # without consulting req_tool or the agent's own declared tools.
+        # Growing n_ctx to fit that is treating the symptom; the fix is to
+        # give each agent the tools its persona/goal actually needs.
         cmd = [str(binary_path), "--model", str(model_path),
-               "--port", str(port), "--ctx-size", "2048",
+               "--port", str(port), "--ctx-size", "8192",
                "--threads", "4"]
         if mmproj_path:
             cmd.extend(["--mmproj", str(mmproj_path), "--kv-unified"])
