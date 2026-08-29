@@ -622,7 +622,29 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // (token + setToken are now hoisted above the auto-refresh useEffect
   // to avoid the TDZ error — see comment near line 222.)
   const refresh_token = localStorage.getItem('refresh_token');
-  const isAuthenticated = (decryptedUserId && token) || isGuestMode;
+  // Read the CANONICAL session predicate instead of re-deriving it here.
+  // useAuthSession:210 defines it as `status === 'cloud' || status === 'guest'`.
+  // The old inline copy was `(decryptedUserId && token) || isGuestMode`, which
+  // added a `token` (localStorage 'access_token') requirement the canonical
+  // source does not have -- so a session that restored as 'cloud' (identity
+  // present, hamburger renders **Logout**) but without a stored access_token
+  // left isAuthenticated false and DISABLED THE WHOLE COMPOSER
+  // (ChatInputBar:205/256/395 -> "Please login to talk to agent."), app-wide,
+  // while the UI simultaneously claimed the user was logged in.
+  //
+  // Observed live 2026-08-29: chat worked at 09:48, app restarted 09:51, and
+  // from 09:53 the composer was dead on every view with the backend perfectly
+  // healthy (/backend/health 200, daemon_enabled true, SSE serving 2 clients).
+  //
+  // The extra `token` term is also SPURIOUS, measured not assumed: POST /chat
+  // with NO Authorization header at all returns 200 {"text":"PONG"} on this
+  // desktop topology, so gating the composer on a token gates on something
+  // /chat never checks.  Dropping it cannot turn a typed message into a 401.
+  //
+  // This is the migration Demopage's own comment at :572-576 describes
+  // ("Phases 3-7 migrate the setters away once every consumer reads from
+  // `session` directly") -- one predicate, one owner.
+  const isAuthenticated = session.isAuthenticated;
   // Always fall back to 'guest' so we never ship empty/null user_id to chat
   // OR camera-frame POST.  Earlier behavior left this nullable, which caused
   // a silent mismatch: camera-frame POST applied its own 'guest' fallback
