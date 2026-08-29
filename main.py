@@ -881,6 +881,14 @@ def after_request(response):
         "https://hevolve.ai https://*.hevolve.ai wss://*.hevolve.ai "
         "https://mcgroce.com https://*.mcgroce.com wss://*.mcgroce.com "
         "https://www.google-analytics.com https://www.googletagmanager.com; "
+        # frame-src was ABSENT, so the YouTube hero embed in
+        # landing-page/src/pages/newHomeforDemo.js:106 fell back to
+        # `default-src 'self'` and was blocked outright — the logged-out
+        # landing page rendered that section as an empty min-h-screen box
+        # (a full viewport of black) instead of the video.  Scoped to the
+        # two YouTube embed origins only; frame-ancestors 'none' below is
+        # untouched, so nothing may embed US.
+        "frame-src https://www.youtube.com https://www.youtube-nocookie.com; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self'"
