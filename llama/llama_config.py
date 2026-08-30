@@ -1932,6 +1932,17 @@ class LlamaConfig:
             can_use_gpu = True  # zinc is GPU-only (Vulkan)
             logger.info(f"Zinc command: {' '.join(cmd)}")
         else:
+            # Publish the ACTUAL serving geometry for the wire-trim budget.
+            # HARTOS core.llm_outbound_logger._get_budget_per_slot() reads
+            # these (core/constants.py documents them as "must match the
+            # server") but nothing ever wrote them: slots defaulted to 1
+            # while this spawn passed --parallel 2, so the trimmer allowed
+            # ~12288-token requests against a 6144-token slot and every
+            # request in between passed untrimmed and died at the server
+            # ("Context size has been exceeded" — 31x measured 2026-08-30
+            # 18:11-18:12, source autogen.reuse).
+            os.environ['HEVOLVE_LLAMA_CTX_SIZE'] = str(ctx_size)
+            os.environ['HEVOLVE_LLAMA_SLOTS'] = str(n_parallel)
             cmd = [
                 llama_server,
                 "--model", model_path,
