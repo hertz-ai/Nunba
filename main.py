@@ -4592,7 +4592,7 @@ def _start_hartos_bootstrap():
         return
 
     try:
-        from hartos_bootstrap import bootstrap as _hartos_bootstrap
+        from hartos.hartos_bootstrap import bootstrap as _hartos_bootstrap
         _hartos_bootstrap(app, config={
             'device_id': DEVICE_ID,
             'nunba_db_path': NUNBA_DB_PATH,

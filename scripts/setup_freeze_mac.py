@@ -260,10 +260,10 @@ build_exe_options = {
 # ── Include hart-backend modules (same logic as Windows build) ──
 def find_hevolve_modules():
     hevolve_modules = [
-        'hart_intelligence', 'hart_intelligence_entry', 'helper', 'helper_ledger',
-        'create_recipe', 'reuse_recipe', 'lifecycle_hooks',
-        'threadlocal', 'gather_agentdetails',
-        'cultural_wisdom', 'recipe_experience', 'exception_collector',
+        # Entry/facade surface only — implementation modules live in the
+        # hartos/ package since 2026-08-30, shipped via _hartos_packages.
+        'hart_intelligence', 'hart_intelligence_entry',
+        'embedded_main', 'hart_version', 'asgi',
     ]
     found = {}
     import importlib.util
@@ -311,6 +311,7 @@ _hartos_packages = [
     ("integrations", "integrations"),
     ("core", "core"),
     ("security", "security"),
+    ("hartos", "hartos"),   # implementation package (root modules moved 2026-08-30)
 ]
 _hartos_roots = [
     os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'HARTOS'),

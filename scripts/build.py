@@ -68,6 +68,35 @@ IS_LINUX = sys.platform.startswith('linux')
 
 
 HEVOLVE_REPO_URL = 'https://github.com/hertz-ai/HARTOS.git'
+
+# HARTOS package dirs synced into python-embed's site-packages. Every
+# Python-package dir at the HARTOS repo root that ships to users MUST be
+# here, or a fix landing inside it never reaches an install (hevolvearmor,
+# 2026-06-08: a loader fix sat in HARTOS for 24h while installs stayed
+# broken because the dir wasn't listed). Guarded by
+# tests/test_build_hartos_sync.py — the drift test this comment used to
+# cite before it existed.
+HARTOS_SYNC_PACKAGES = [
+    'integrations', 'core', 'security',
+    'hartos',           # implementation package (root modules moved 2026-08-30)
+    'hevolvearmor',     # encrypted-module loader (__file__ fix lives here)
+    'agent_ledger',     # task ledger ORM + APIs (real dir via SYNC_PATH_OVERRIDES)
+    'hart_sdk',         # public SDK — pip ships it, sync keeps it FRESH
+    'desktop',          # ai_key_vault etc. — imported by core/agent_tools,
+                        # core/error_advice, the entry point; shipped 0 files
+                        # before 2026-08-30 (guard finding), features silently
+                        # no-op'd in the frozen app
+    'hevolve_database', # canonical DB models (when present locally)
+]
+
+# Package dirs whose on-disk location differs from their import name.
+# agent_ledger has NEVER synced: the loop looked for HARTOS/agent_ledger,
+# the package lives under agent-ledger-opensource/ — os.path.isdir() was
+# False so the loop silently `continue`d. Found by
+# tests/test_build_hartos_sync.py the first time it ran (2026-08-30).
+HARTOS_SYNC_PATH_OVERRIDES = {
+    'agent_ledger': os.path.join('agent-ledger-opensource', 'agent_ledger'),
+}
 HEVOLVE_BRANCH = 'gpt4.1'
 HEVOLVE_SOURCE_DIR = 'hartos_backend_src'
 
@@ -1485,13 +1514,10 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         #         site-packages/hevolvearmor/ (the inner content
         #         only) — the sync must mirror that, not copy the
         #         outer wrapper into the install.
-        for _pkg_name in [
-                'integrations', 'core', 'security',
-                'hevolvearmor',     # encrypted-module loader (__file__ fix lives here)
-                'agent_ledger',     # task ledger ORM + APIs
-                'hevolve_database', # canonical DB models (when present locally)
-        ]:
-            _pkg_outer = os.path.join(_hartos_src, _pkg_name)
+        for _pkg_name in HARTOS_SYNC_PACKAGES:
+            _pkg_outer = os.path.join(
+                _hartos_src,
+                HARTOS_SYNC_PATH_OVERRIDES.get(_pkg_name, _pkg_name))
             if not os.path.isdir(_pkg_outer):
                 continue
             # Prefer FLAT (outer is the package itself); fall back to

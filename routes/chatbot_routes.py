@@ -4344,7 +4344,7 @@ def _get_hart_user_id():
 def hart_advance():
     """Advance the HART onboarding conversation by one step."""
     try:
-        from hart_onboarding import get_or_create_session
+        from hartos.hart_onboarding import get_or_create_session
         user_id = _get_hart_user_id()
         if not user_id:
             return jsonify({'error': 'No user_id'}), 400
@@ -4363,7 +4363,7 @@ def hart_advance():
 def hart_generate():
     """Generate HART name candidates from onboarding answers."""
     try:
-        from hart_onboarding import HARTNameRegistry, generate_hart_name
+        from hartos.hart_onboarding import HARTNameRegistry, generate_hart_name
         data = request.get_json(silent=True) or {}
 
         existing = HARTNameRegistry.get_all_names()
@@ -4386,7 +4386,7 @@ def hart_generate():
 def hart_seal():
     """Seal a HART name forever. Once sealed, it cannot be changed."""
     try:
-        from hart_onboarding import HARTNameRegistry, remove_session
+        from hartos.hart_onboarding import HARTNameRegistry, remove_session
         user_id = _get_hart_user_id()
         if not user_id:
             return jsonify({'error': 'No user_id'}), 400
@@ -4447,7 +4447,7 @@ def hart_seal():
 def hart_profile():
     """Get a user's HART identity profile."""
     try:
-        from hart_onboarding import get_hart_profile
+        from hartos.hart_onboarding import get_hart_profile
         user_id = _get_hart_user_id()
         if not user_id:
             return jsonify({'error': 'No user_id'}), 400
@@ -4465,7 +4465,7 @@ def hart_profile():
 def hart_check():
     """Quick check: does this user have a sealed HART name?"""
     try:
-        from hart_onboarding import has_hart_name
+        from hartos.hart_onboarding import has_hart_name
         user_id = _get_hart_user_id()
         if not user_id:
             # No user — check localStorage on frontend instead

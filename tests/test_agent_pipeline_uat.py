@@ -38,13 +38,13 @@ if os.path.isdir(HARTOS_ROOT):
 # Pre-inject a stub gather_agentdetails module if autogen is not installed.
 # gather_agentdetails.py does `import autogen` at line 2 which fails without
 # the autogen package. We inject a stub so tests can mock gather_info.
-if 'gather_agentdetails' not in sys.modules:
+if 'hartos.gather_agentdetails' not in sys.modules:
     try:
-        import gather_agentdetails  # noqa: F401
+        from hartos import gather_agentdetails  # noqa: F401
     except (ImportError, ModuleNotFoundError):
         _stub = types.ModuleType('gather_agentdetails')
         _stub.gather_info = MagicMock(return_value='{}')
-        sys.modules['gather_agentdetails'] = _stub
+        sys.modules['hartos.gather_agentdetails'] = _stub
 
 
 def _can_import_hart_intelligence():
@@ -71,7 +71,7 @@ def _can_import_hart_intelligence():
 #   set to None when autogen is missing. We inject MagicMock in setUp.
 # =======================================================================
 
-MOCK_GATHER = 'gather_agentdetails.gather_info'
+MOCK_GATHER = 'hartos.gather_agentdetails.gather_info'
 MOCK_POOLED_GET = 'hart_intelligence.pooled_get'
 MOCK_POOLED_POST = 'hart_intelligence.pooled_post'
 MOCK_SOCIAL_AGENT = 'hart_intelligence._create_social_agent_from_prompt'
@@ -89,14 +89,14 @@ def _ensure_recipe_mocks(lgapi):
     if lgapi.chat_agent is None:
         lgapi.chat_agent = MagicMock(return_value='Reuse response')
     # Also stub create_recipe/reuse_recipe modules if not importable
-    if 'create_recipe' not in sys.modules or sys.modules['create_recipe'] is None:
+    if 'hartos.create_recipe' not in sys.modules or sys.modules['hartos.create_recipe'] is None:
         _cr = types.ModuleType('create_recipe')
         _cr.recipe = lgapi.recipe
-        sys.modules['create_recipe'] = _cr
-    if 'reuse_recipe' not in sys.modules or sys.modules['reuse_recipe'] is None:
+        sys.modules['hartos.create_recipe'] = _cr
+    if 'hartos.reuse_recipe' not in sys.modules or sys.modules['hartos.reuse_recipe'] is None:
         _rr = types.ModuleType('reuse_recipe')
         _rr.chat_agent = lgapi.chat_agent
-        sys.modules['reuse_recipe'] = _rr
+        sys.modules['hartos.reuse_recipe'] = _rr
 
 
 def _get_lgapi():

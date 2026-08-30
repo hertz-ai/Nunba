@@ -19,7 +19,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from cultural_wisdom import (
+from hartos.cultural_wisdom import (
     CULTURAL_TRAITS,
     get_cultural_prompt,
     get_cultural_prompt_compact,
@@ -218,7 +218,7 @@ class TestKnownTraits:
 
     def test_ubuntu_exists(self):
         # Search case-insensitive — reload fresh to avoid mutation from immutability test
-        from cultural_wisdom import CULTURAL_TRAITS as traits
+        from hartos.cultural_wisdom import CULTURAL_TRAITS as traits
         names = [t['name'] for t in traits]
         assert 'Ubuntu' in names, f"Ubuntu must be in traits. Names: {names[:5]}..."
 

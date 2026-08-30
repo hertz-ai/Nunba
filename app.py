@@ -2348,11 +2348,11 @@ if getattr(args, 'validate', False):
         'routes.chatbot_routes',
         'routes.hartos_backend_adapter',
         # 3. LangChain pipeline (the chain that actually broke before)
-        'hart_intelligence', 'helper',
-        'cultural_wisdom', 'security.hive_guardrails',
+        'hart_intelligence', 'hartos.helper',
+        'hartos.cultural_wisdom', 'security.hive_guardrails',
         # 4. Autogen pipeline (agent creation)
-        'autogen', 'create_recipe', 'reuse_recipe',
-        'gather_agentdetails', 'lifecycle_hooks',
+        'autogen', 'hartos.create_recipe', 'hartos.reuse_recipe',
+        'hartos.gather_agentdetails', 'hartos.lifecycle_hooks',
         # 5. Integrations
         'integrations', 'integrations.social',
         'integrations.channels', 'integrations.service_tools',
@@ -4672,7 +4672,7 @@ def _refresh_sibling_deps(app_dir):
             return
 
         # Quick check: can we import agent_identity? (canary module)
-        if importlib.util.find_spec('agent_identity'):
+        if importlib.util.find_spec('hartos.agent_identity'):
             return  # finder is fresh
 
         _setup_logger.info("[STARTUP] Stale editable install detected — refreshing sibling deps")

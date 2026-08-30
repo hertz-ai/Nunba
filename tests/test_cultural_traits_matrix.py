@@ -12,7 +12,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from cultural_wisdom import CULTURAL_TRAITS
+from hartos.cultural_wisdom import CULTURAL_TRAITS
 
 TRAITS_LIST = list(CULTURAL_TRAITS)
 TRAIT_IDS = [t['name'] for t in TRAITS_LIST]

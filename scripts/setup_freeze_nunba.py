@@ -860,12 +860,11 @@ def find_hevolve_modules():
     if not hevolve_modules:
         # Fallback: hardcoded list (keep in sync with HARTOS pyproject.toml py-modules)
         hevolve_modules = [
-            'hart_intelligence', 'hart_intelligence_entry', 'helper', 'helper_ledger',
-            'create_recipe', 'reuse_recipe', 'lifecycle_hooks',
-            'threadlocal', 'gather_agentdetails',
-            'cultural_wisdom', 'recipe_experience', 'exception_collector',
-            'agent_identity', 'hart_onboarding', 'hartos_speech',
-            'hartos_speech_stitch',
+            # Entry/facade surface only — the implementation modules live in
+            # the hartos/ package since 2026-08-30 and ship whole via
+            # _hartos_packages below, not as flat top-level modules.
+            'hart_intelligence', 'hart_intelligence_entry',
+            'embedded_main', 'hart_version', 'asgi',
         ]
     found = {}  # mod_name -> (src_path, dst_name)
 
@@ -963,6 +962,9 @@ _hartos_packages = [
     ("integrations", "integrations"),
     ("core", "core"),
     ("security", "security"),
+    ("hartos", "hartos"),   # implementation package (root modules moved 2026-08-30)
+    ("desktop", "desktop"), # ai_key_vault — imported by core.agent_tools/error_advice;
+                            # never shipped before 2026-08-30 (drift-guard finding)
 ]
 # Always include from sibling HARTOS — these are namespace packages when
 # pip-installed, so cx_Freeze can't trace them via `packages`. The
@@ -1229,13 +1231,10 @@ _SIBLING_REPO_PROVIDES = {
     'hevolveai': {'hevolveai', 'embodied_ai'},
     'Hevolve_Database': {'sql', 'crossbarhttp'},
     'HARTOS': {
-        'integrations', 'security', 'core', 'agent_ledger', 'agent_identity',
-        'create_recipe', 'reuse_recipe', 'helper', 'helper_ledger',
-        'hart_intelligence', 'hart_intelligence_entry', 'lifecycle_hooks',
-        'threadlocal', 'hartos_bootstrap', 'recipe_experience',
-        'crossbar_server', 'cultural_wisdom', 'embedded_main',
-        'exception_collector', 'gather_agentdetails', 'hart_cli',
-        'hart_onboarding', 'hart_sdk', 'hart_version',
+        'integrations', 'security', 'core', 'agent_ledger',
+        'hartos',   # implementation package (flat root modules moved in, 2026-08-30)
+        'hart_intelligence', 'hart_intelligence_entry', 'embedded_main',
+        'hart_sdk', 'hart_version', 'asgi',
     },
 }
 # dist-info base name → owning repo (for corrupt *.dist-info dirs)
