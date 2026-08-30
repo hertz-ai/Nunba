@@ -2053,8 +2053,11 @@ class LlamaConfig:
                     _mtp_n,
                 )
 
-            # Qwen3.5 models need additional flags
-            if is_qwen35:
+            # Qwen3.5 models need additional flags.  Test display_name
+            # directly: the `is_qwen35` local moved into _derive_ctx_size
+            # (0f47a478), and reading it here raised NameError, which
+            # killed every spawn before launch.
+            if "Qwen3.5" in model_preset.display_name:
                 cmd.extend([
                     "--temp", "0.7",
                     "--top-k", "20",
