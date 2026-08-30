@@ -940,6 +940,7 @@ def _get_machine_fingerprint():
             pass
     elif sys.platform == 'darwin':
         try:
+            from desktop.platform_utils import get_subprocess_flags
             result = subprocess.run(
                 ['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'],
                 capture_output=True, text=True, timeout=5
@@ -5520,7 +5521,11 @@ def start_background_services():
     # has no equivalent emit yet, so that leg stays boot-only.
     def _wamp_is_needed() -> tuple[bool, str]:
         try:
-            _adapters = getattr(channels.registry, '_adapters', None) or {}
+            # Observe the singleton without creating it: get_registry()
+            # constructs on first call, and a boot-time predicate must not
+            # instantiate the channel registry just to find it empty.
+            from integrations.channels import registry as _ch_registry
+            _adapters = getattr(_ch_registry._registry, '_adapters', None) or {}
             _non_web = [ct for ct in _adapters if ct != 'web']
             if _non_web:
                 return True, f"channels={_non_web}"

@@ -3861,8 +3861,10 @@ if getattr(args, 'setup_ai', False):
                             root.after(2500, lambda: upd_overlay.destroy())
 
                         root.after(0, _finish)
-                    except Exception:
-                        root.after(0, lambda: upd_status.set(f"Error: {ex}"))
+                    except Exception as ex:
+                        # Default-arg capture: `ex` is unbound once the except
+                        # block exits, and root.after runs the lambda later.
+                        root.after(0, lambda ex=ex: upd_status.set(f"Error: {ex}"))
                         root.after(0, lambda: upd_spin_lbl.configure(
                             text="\u2717 Failed", fg=_WARN))
                         root.after(3000, lambda: upd_overlay.destroy())

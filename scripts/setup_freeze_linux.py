@@ -16,6 +16,7 @@ import glob
 import os
 import py_compile
 import shutil
+import subprocess
 import sys
 
 # ── Fix transformers frozenset crash before cx_Freeze traces it ──

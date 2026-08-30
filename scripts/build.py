@@ -1384,8 +1384,8 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         # silently violating the consent append-only invariant in
         # the installed .exe).  The local-sibling HARTOS path is the
         # canonical dev source per build.py:34, 432, 622.
-        _hartos_dir = _local_hartos_path() if '_local_hartos_path' in dir() else \
-            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'HARTOS')
+        _hartos_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'HARTOS')
         _hartos_head = 'unknown'
         try:
             if os.path.isdir(_hartos_dir):
