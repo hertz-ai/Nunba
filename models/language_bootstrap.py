@@ -14,9 +14,7 @@ the orchestrator. This module only adds:
   4. WAMP push for real-time progress updates
 """
 
-import json
 import logging
-import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -271,15 +269,21 @@ def start_bootstrap(language: str = 'en') -> dict:
             started_at=time.time(),
         )
 
-    # Persist language for TTS warm-up on next startup
+    # Persist language for TTS warm-up on next startup.  ONE writer for
+    # hart_language.json: core.user_lang.set_preferred_lang (validates,
+    # writes atomically, fires the on_lang_change bus — the draft-eviction
+    # subscriber matters here, since bootstrap is about to load TTS for
+    # this language).  This block was an inline open(..., 'w') that did
+    # none of the three, and had NEVER once run: it used os/json without
+    # importing them, and the bare except swallowed the NameError on
+    # every bootstrap start (#727).
     try:
-        _lang_path = os.path.join(
-            os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'hart_language.json')
-        os.makedirs(os.path.dirname(_lang_path), exist_ok=True)
-        with open(_lang_path, 'w') as _f:
-            json.dump({'language': language}, _f)
+        from core.user_lang import set_preferred_lang
+        set_preferred_lang(language)
     except Exception:
-        pass
+        logger.warning(
+            "bootstrap: language persist failed — bootstrap continues, "
+            "only the next-boot language hint is lost", exc_info=True)
 
     _thread = threading.Thread(
         target=_bootstrap_worker,
