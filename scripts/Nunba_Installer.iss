@@ -155,9 +155,23 @@ begin
     if not Result then
         // Check per-user installation
         Result := RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', version);
+    // Some runtimes carry `pv` under ClientState even when Clients does not.
+    if not Result then
+        Result := RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\ClientState\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', version);
+    // Filesystem fallback: the Evergreen Runtime — whether installed standalone
+    // OR provided by the Edge browser (ships on stock Win10/11) — lands in
+    // EdgeWebView\Application. The registry-only check FALSELY reported "not
+    // installed" on machines that have WebView2 via Edge, which then ran the
+    // bootstrapper and HUNG the whole install. This makes detection match reality.
+    // It only ever WIDENS "installed" (never claims present when absent), so a
+    // genuinely WebView2-less box still installs.
+    if not Result then
+        Result := DirExists(ExpandConstant('{commonpf32}\Microsoft\EdgeWebView\Application'));
+    if not Result then
+        Result := DirExists(ExpandConstant('{commonpf64}\Microsoft\EdgeWebView\Application'));
 
     if Result then
-        Log('WebView2 found, version: ' + version)
+        Log('WebView2 found (registry pv or EdgeWebView\Application dir present)')
     else
         Log('WebView2 not found');
 end;
@@ -173,18 +187,15 @@ begin
         Log('Installing WebView2 Runtime...');
         WebView2Path := ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe');
 
-        // Run bootstrapper silently - it will download and install WebView2
-        if Exec(WebView2Path, '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-        begin
-            if ResultCode = 0 then
-                Log('WebView2 installed successfully')
-            else
-                Log('WebView2 installation returned code: ' + IntToStr(ResultCode));
-        end
+        // Run the bootstrapper NON-BLOCKING (ewNoWait). It is network-dependent
+        // and can stall indefinitely, and Inno's Exec has no timeout — a blocking
+        // wait here HUNG the whole install (violates "no op hangs the OS"). Fire it
+        // and let the install complete; WebView2 finishes in the background, and the
+        // broadened detection above means this path is rarely reached at all.
+        if Exec(WebView2Path, '/silent /install', '', SW_HIDE, ewNoWait, ResultCode) then
+            Log('WebView2 bootstrapper launched (non-blocking)')
         else
-        begin
-            Log('Failed to run WebView2 installer');
-        end;
+            Log('Failed to launch WebView2 installer');
     end
     else
     begin
