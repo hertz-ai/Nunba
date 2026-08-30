@@ -574,7 +574,7 @@ def chat(
     casual_conv: bool = False,
     video_req: bool = False,
     media_request: bool = False,
-    media_mode: str = 'text',
+    media_mode: str = None,
     autonomous: bool = False,
     agentic_execute: bool = False,
     agentic_plan: dict = None,
@@ -622,7 +622,12 @@ def chat(
         "tools": None,
         "video_req": video_req,
         "media_request": media_request,
-        "media_mode": media_mode,  # TODO: HARTOS /chat needs data.get('media_mode') to use this
+        # HARTOS _chat_reply now honors this (an explicit 'text'
+        # suppresses TTS synthesis).  Default is None — "unspecified" —
+        # so legacy callers that never pass the flag (gpt_lang) keep
+        # speaking exactly as before; the old default 'text' would have
+        # silently muted them the moment the consumer went live.
+        "media_mode": media_mode,
         "autonomous": autonomous,
         "agentic_execute": agentic_execute,
     }
