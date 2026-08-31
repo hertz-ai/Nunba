@@ -4646,30 +4646,6 @@ try:
 except Exception as e:
     logging.warning(f"HARTOS MCP HTTP blueprint not registered: {e}")
 
-# ============== Claude Code frontier endpoint (EXPERT tier) ==============
-# Same reason as the MCP block above: Nunba's frozen entry point is app.py /
-# main.py, NOT hart_intelligence_entry.py, so a blueprint registered there
-# lands on an app nobody serves. hart_intelligence_entry.py:1103 does register
-# claude_code_bp, and on this desktop it logged success three times from the
-# ToolsWarmup thread while /api/claude/v1/models still answered 404 on :5000,
-# because that registration went onto the module-level app inside the warmup
-# import rather than onto the app Nunba actually serves.
-#
-# This is load-bearing, not cosmetic. model_registry.py:464 points the EXPERT
-# ModelBackend at 'http://127.0.0.1:<backend port>/api/claude/v1', which IS
-# this app in the bundled case. Without the mount the tier registers and then
-# 404s on every call, so a node with a working, logged-in Claude Code silently
-# never uses it.
-try:
-    from integrations.providers.claude_code_endpoint import claude_code_bp
-    app.register_blueprint(claude_code_bp)
-    logging.info(
-        "Claude Code frontier endpoint mounted at /api/claude/v1 — "
-        "model_registry's EXPERT backend dials this app",
-    )
-except Exception as e:
-    logging.warning(f"Claude Code frontier blueprint not registered: {e}")
-
 # ============== Fleet Command Watcher (auto-restart on tier change) ==============
 def _fleet_restart_watcher():
     """Background thread: checks for HEVOLVE_RESTART_REQUESTED and triggers reload.
