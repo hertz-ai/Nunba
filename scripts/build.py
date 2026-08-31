@@ -1416,14 +1416,29 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         _hartos_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'HARTOS')
         _hartos_head = 'unknown'
+        # When this stays 'unknown', SAY WHY. The 2026-04-25 drift detector
+        # was inert for months because every failure path here was silent:
+        # CI wrote hartos=unknown on every build and nobody could tell a
+        # stale install from a current one without reading thread names
+        # out of a watchdog dump (reviewer finding, 2026-09-01).
+        _hartos_why = f'sibling HARTOS dir missing: {_hartos_dir}'
         try:
             if os.path.isdir(_hartos_dir):
-                _hartos_head = subprocess.run(
+                _rp = subprocess.run(
                     ['git', '-C', _hartos_dir, 'rev-parse', 'HEAD'],
                     capture_output=True, text=True, check=False,
-                ).stdout.strip() or 'unknown'
-        except Exception:
-            pass
+                )
+                _hartos_head = _rp.stdout.strip() or 'unknown'
+                if _hartos_head == 'unknown':
+                    _hartos_why = (_rp.stderr.strip()
+                                   or 'git rev-parse returned empty')[:200]
+        except Exception as _rp_err:
+            _hartos_why = f'{type(_rp_err).__name__}: {_rp_err}'
+        if _hartos_head == 'unknown':
+            print_warn(
+                f"HARTOS_SHA=unknown — bundle-drift detector INERT this build "
+                f"({_hartos_why}); the installed exe cannot be traced to a "
+                f"HARTOS commit (2026-04-25 incident class)")
         _bi_path = os.path.join('build', 'Nunba', 'BUILD_INFO.txt')
         with open(_bi_path, 'w', encoding='utf-8') as _bi:
             _bi.write(f"BUILD_SHA={_head}\n")
