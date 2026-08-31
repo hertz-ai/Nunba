@@ -82,10 +82,10 @@ HARTOS_SYNC_PACKAGES = [
     'hevolvearmor',     # encrypted-module loader (__file__ fix lives here)
     'agent_ledger',     # task ledger ORM + APIs (real dir via SYNC_PATH_OVERRIDES)
     'hart_sdk',         # public SDK — pip ships it, sync keeps it FRESH
-    'desktop',          # ai_key_vault etc. — imported by core/agent_tools,
-                        # core/error_advice, the entry point; shipped 0 files
-                        # before 2026-08-30 (guard finding), features silently
-                        # no-op'd in the frozen app
+    # NO 'desktop' here: Nunba owns the top-level desktop package (14 app
+    # modules). HARTOS's former desktop/ namesake shadowed it in the frozen
+    # app (12 ModuleNotFoundError, build 2026-08-31); HARTOS's vault now
+    # lives at hartos/ai_key_vault.py and rides the 'hartos' entry above.
     'hevolve_database', # canonical DB models (when present locally)
 ]
 

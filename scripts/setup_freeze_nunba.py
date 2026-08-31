@@ -963,8 +963,9 @@ _hartos_packages = [
     ("core", "core"),
     ("security", "security"),
     ("hartos", "hartos"),   # implementation package (root modules moved 2026-08-30)
-    ("desktop", "desktop"), # ai_key_vault — imported by core.agent_tools/error_advice;
-                            # never shipped before 2026-08-30 (drift-guard finding)
+    # NO ("desktop", ...) here: Nunba owns the top-level desktop package.
+    # HARTOS's former 2-file namesake shadowed it (12 import failures,
+    # 2026-08-31); its vault now ships inside the hartos package above.
 ]
 # Always include from sibling HARTOS — these are namespace packages when
 # pip-installed, so cx_Freeze can't trace them via `packages`. The
