@@ -1799,8 +1799,24 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         _ac_ok = _tee_subprocess_to_log(
             [_built_exe, '--acceptance-test'],
             log_path=_acc_log,
-            description="Running Nunba --acceptance-test (180s timeout)...",
-            timeout_s=180,
+            # 180s was too tight and it went red on 2026-08-30, blocking EVERY
+            # nightly for three days: no installer shipped between Aug 30 and
+            # Sep 1 while four consecutive build.yml runs failed here. The
+            # acceptance CHECKS were passing throughout ("Passed: 9, Failed: 0
+            # - Bundle is ready for installer packaging"); only the wall clock
+            # failed. Measured durations of this exact subprocess from
+            # logs/build_acceptance.log: 67s, 69s, 176s, 50s, then two timeouts.
+            # py-spy sampling of a "hung" run showed MainThread PROGRESSING the
+            # whole time (prompts_backup._prune_old_snapshots -> shutil.rmtree,
+            # then module imports) and the process exiting on its own at ~125s.
+            # So this is startup variance, not a deadlock, and CI runners are
+            # slower than the dev box that produced those numbers.
+            #
+            # 600s keeps the gate meaningful - a genuine hang still fails the
+            # build - while giving a slow runner room. NUNBA_ACCEPTANCE_TIMEOUT_S
+            # overrides it without another commit if a runner needs more.
+            description="Running Nunba --acceptance-test...",
+            timeout_s=int(os.environ.get('NUNBA_ACCEPTANCE_TIMEOUT_S', '600')),
         )
         if not _ac_ok:
             if _strict_acc:
