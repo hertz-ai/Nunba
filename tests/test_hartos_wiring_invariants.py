@@ -34,33 +34,33 @@ class TestCoreImports:
             pytest.skip(f"hart_intelligence deps missing: {e}")
 
     def test_import_helper(self):
-        mod = importlib.import_module('helper')
+        mod = importlib.import_module('hartos.helper')
         assert mod is not None
 
     def test_import_create_recipe(self):
         try:
-            mod = importlib.import_module('create_recipe')
+            mod = importlib.import_module('hartos.create_recipe')
             assert mod is not None
         except (ImportError, ModuleNotFoundError) as e:
             pytest.skip(f"create_recipe deps missing: {e}")
 
     def test_import_reuse_recipe(self):
         try:
-            mod = importlib.import_module('reuse_recipe')
+            mod = importlib.import_module('hartos.reuse_recipe')
             assert mod is not None
         except (ImportError, ModuleNotFoundError) as e:
             pytest.skip(f"reuse_recipe deps missing: {e}")
 
     def test_import_lifecycle_hooks(self):
-        mod = importlib.import_module('lifecycle_hooks')
+        mod = importlib.import_module('hartos.lifecycle_hooks')
         assert mod is not None
 
     def test_import_cultural_wisdom(self):
-        mod = importlib.import_module('cultural_wisdom')
+        mod = importlib.import_module('hartos.cultural_wisdom')
         assert mod is not None
 
     def test_import_agent_identity(self):
-        mod = importlib.import_module('agent_identity')
+        mod = importlib.import_module('hartos.agent_identity')
         assert mod is not None
 
 
@@ -181,20 +181,20 @@ class TestPlatformPathsContract:
 # ==========================================================================
 class TestCulturalWisdomContract:
     def test_traits_is_tuple(self):
-        from cultural_wisdom import CULTURAL_TRAITS
+        from hartos.cultural_wisdom import CULTURAL_TRAITS
         assert isinstance(CULTURAL_TRAITS, tuple)
 
     def test_at_least_30_traits(self):
-        from cultural_wisdom import CULTURAL_TRAITS
+        from hartos.cultural_wisdom import CULTURAL_TRAITS
         assert len(CULTURAL_TRAITS) >= 30
 
     def test_get_cultural_prompt_callable(self):
-        from cultural_wisdom import get_cultural_prompt
+        from hartos.cultural_wisdom import get_cultural_prompt
         result = get_cultural_prompt()
         assert isinstance(result, str) and len(result) > 50
 
     def test_get_cultural_prompt_compact_callable(self):
-        from cultural_wisdom import get_cultural_prompt_compact
+        from hartos.cultural_wisdom import get_cultural_prompt_compact
         result = get_cultural_prompt_compact()
         assert isinstance(result, str) and len(result) > 50
 

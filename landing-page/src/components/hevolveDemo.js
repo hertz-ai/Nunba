@@ -4,6 +4,7 @@ import '../css/font-awesome.min.css';
 import '../css/hevolveStyle.css';
 import {CHATBOT_API_URL} from '../config/apiBase';
 import {chatApi} from '../services/socialApi';
+import {rememberServerPromptId} from '../utils/promptId';
 import {v4 as uuidv4} from 'uuid';
 
 class HevolveDemo extends Component {
@@ -19,6 +20,10 @@ class HevolveDemo extends Component {
       question_no: 0,
       sending: false,
       agentStatus: null,
+      // prompt_id minted by the backend when a create/reuse flow starts
+      // mid-conversation; follow-up turns must send it so the route sees
+      // the session as agent-bound (see utils/promptId.js).
+      activePromptId: null,
     };
     this.sendTextToBot = this.sendTextToBot.bind(this);
     this.get = this.get.bind(this);
@@ -30,6 +35,11 @@ class HevolveDemo extends Component {
   componentDidUpdate(prevProps) {
     if (prevProps.agentName !== this.props.agentName) {
       this.setState({BOT_NAME: this.props.agentName || 'HBot'});
+    }
+    // Explicit navigation to a different agent supersedes any
+    // mid-conversation adopted prompt_id.
+    if (prevProps.promptId !== this.props.promptId) {
+      this.setState({activePromptId: null});
     }
   }
 
@@ -81,7 +91,7 @@ class HevolveDemo extends Component {
       localStorage.getItem('guest_user_id') ||
       hwGuestId ||
       'guest';
-    const promptId = this.props.promptId || 0;
+    const promptId = this.props.promptId || this.state.activePromptId || 0;
 
     const payload = {
       user_id: userId,
@@ -97,6 +107,10 @@ class HevolveDemo extends Component {
       .then((data) => {
         const reply = data.response || data.text || 'No response';
         this.setState({agentStatus: data.Agent_status || null});
+        const adopted = rememberServerPromptId(promptId, data.prompt_id);
+        if (adopted) {
+          this.setState({activePromptId: adopted});
+        }
         this.botResponse(reply);
       })
       .catch((err) => {

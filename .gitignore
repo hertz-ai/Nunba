@@ -181,3 +181,8 @@ tests/coverage/phase5_*
 landing-page/coverage/
 landing-page/.nyc_output/
 .backups/
+
+# Live-probe scratch output (written by cypress live probes each run)
+landing-page/cypress/live-probes/_last_run.json
+# Previous frozen tree kept aside by scripts/build.py during a rebuild
+build.prev/

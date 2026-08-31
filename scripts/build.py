@@ -68,6 +68,35 @@ IS_LINUX = sys.platform.startswith('linux')
 
 
 HEVOLVE_REPO_URL = 'https://github.com/hertz-ai/HARTOS.git'
+
+# HARTOS package dirs synced into python-embed's site-packages. Every
+# Python-package dir at the HARTOS repo root that ships to users MUST be
+# here, or a fix landing inside it never reaches an install (hevolvearmor,
+# 2026-06-08: a loader fix sat in HARTOS for 24h while installs stayed
+# broken because the dir wasn't listed). Guarded by
+# tests/test_build_hartos_sync.py — the drift test this comment used to
+# cite before it existed.
+HARTOS_SYNC_PACKAGES = [
+    'integrations', 'core', 'security',
+    'hartos',           # implementation package (root modules moved 2026-08-30)
+    'hevolvearmor',     # encrypted-module loader (__file__ fix lives here)
+    'agent_ledger',     # task ledger ORM + APIs (real dir via SYNC_PATH_OVERRIDES)
+    'hart_sdk',         # public SDK — pip ships it, sync keeps it FRESH
+    'desktop',          # ai_key_vault etc. — imported by core/agent_tools,
+                        # core/error_advice, the entry point; shipped 0 files
+                        # before 2026-08-30 (guard finding), features silently
+                        # no-op'd in the frozen app
+    'hevolve_database', # canonical DB models (when present locally)
+]
+
+# Package dirs whose on-disk location differs from their import name.
+# agent_ledger has NEVER synced: the loop looked for HARTOS/agent_ledger,
+# the package lives under agent-ledger-opensource/ — os.path.isdir() was
+# False so the loop silently `continue`d. Found by
+# tests/test_build_hartos_sync.py the first time it ran (2026-08-30).
+HARTOS_SYNC_PATH_OVERRIDES = {
+    'agent_ledger': os.path.join('agent-ledger-opensource', 'agent_ledger'),
+}
 HEVOLVE_BRANCH = 'gpt4.1'
 HEVOLVE_SOURCE_DIR = 'hartos_backend_src'
 
@@ -772,6 +801,41 @@ def _install_hartos_backend(python_exe):
     fetch_hartos_backend_source()
 
 
+def _ship_hartos_license(site_packages_dir):
+    """Copy the HARTOS repo-root LICENSE to a site-packages root.
+
+    security/origin_attestation.py requires LICENSE (with the Hevolve.ai
+    brand marker) at one of its candidate code roots — for the frozen
+    layout that is the site-packages directory holding security/ and
+    integrations/.  pip install puts the license only inside .dist-info,
+    which is NOT a candidate root, so every cx_Freeze desktop failed
+    "Origin attestation FAILED: Missing required file: LICENSE", could
+    not attest, and central's genuine-build gate rejected its federation
+    deltas ("unverified build").  Measured live 2026-08-25: copying this
+    one file flipped box9's /federation-delta verdict from rejected to
+    accepted and put the desktop in the hive census.  Abort the build if
+    the source is known and the copy fails — shipping without it
+    silently locks the install out of the hive.
+    """
+    src = None
+    local_path = _find_local_hartos_backend()
+    if local_path and os.path.isfile(os.path.join(local_path, 'LICENSE')):
+        src = os.path.join(local_path, 'LICENSE')
+    if src is None:
+        print_warn(
+            "HARTOS LICENSE not found next to a local sibling checkout — "
+            "the frozen build will fail origin attestation and central "
+            "will reject its federation deltas.")
+        return
+    dst = os.path.join(site_packages_dir, 'LICENSE')
+    try:
+        shutil.copy2(src, dst)
+        print_info(f"HARTOS LICENSE -> {dst}")
+    except OSError as e:
+        print_error(f"Failed to ship HARTOS LICENSE to site-packages: {e}")
+        sys.exit(1)
+
+
 def build_react_landing_page():
     """Build React landing-page if Node.js is available"""
     landing_dir = 'landing-page'
@@ -1349,8 +1413,8 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         # silently violating the consent append-only invariant in
         # the installed .exe).  The local-sibling HARTOS path is the
         # canonical dev source per build.py:34, 432, 622.
-        _hartos_dir = _local_hartos_path() if '_local_hartos_path' in dir() else \
-            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'HARTOS')
+        _hartos_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'HARTOS')
         _hartos_head = 'unknown'
         try:
             if os.path.isdir(_hartos_dir):
@@ -1380,6 +1444,13 @@ def build_windows(python_exe, app_only=False, installer_only=False):
     if _hartos_src:
         _embed_sp = os.path.join(embed_src, 'Lib', 'site-packages')
         _build_sp = os.path.join('build', 'Nunba', 'python-embed', 'Lib', 'site-packages')
+
+        # Attestation dependency — see _ship_hartos_license docstring.
+        # Must run here, against the frozen trees: shipping at the
+        # dependency-install stage put LICENSE in the dev venv, which
+        # cx_Freeze does not carry (build 15, 2026-08-25).
+        for _sp_dir in (_embed_sp, _build_sp):
+            _ship_hartos_license(_sp_dir)
         _synced = 0
 
         # Content-hash comparator — replaces the old size-only check.
@@ -1443,13 +1514,10 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         #         site-packages/hevolvearmor/ (the inner content
         #         only) — the sync must mirror that, not copy the
         #         outer wrapper into the install.
-        for _pkg_name in [
-                'integrations', 'core', 'security',
-                'hevolvearmor',     # encrypted-module loader (__file__ fix lives here)
-                'agent_ledger',     # task ledger ORM + APIs
-                'hevolve_database', # canonical DB models (when present locally)
-        ]:
-            _pkg_outer = os.path.join(_hartos_src, _pkg_name)
+        for _pkg_name in HARTOS_SYNC_PACKAGES:
+            _pkg_outer = os.path.join(
+                _hartos_src,
+                HARTOS_SYNC_PATH_OVERRIDES.get(_pkg_name, _pkg_name))
             if not os.path.isdir(_pkg_outer):
                 continue
             # Prefer FLAT (outer is the package itself); fall back to

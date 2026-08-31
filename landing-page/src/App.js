@@ -11,6 +11,7 @@ import {useReferral} from './hooks/useReferral';
 import useStorageSync from './hooks/useStorageSync';
 import MainRoutes from './MainRoute';
 import realtimeService from './services/realtimeService';
+import ScrollToTop from './utils/ScrollToTop';
 
 import React, {Suspense, useEffect, useState, useCallback} from 'react';
 import ReactGA from 'react-ga';
@@ -120,6 +121,22 @@ function App() {
                 is in scope for every page — Demopage's chip can portal into
                 the titlebar's right cluster when present, else render inline. */}
             <NunbaTitleBar>
+              {/* React Router does not reset scroll on navigation, so every
+                  page opened at whatever offset the PREVIOUS page was left at.
+                  Visible on the agent page as a document already scrolled a few
+                  tens of px down: the top-of-page banner sits under the 40px
+                  frameless titlebar and the composer is pushed up off its rest
+                  position.  utils/ScrollToTop.js has existed since the initial
+                  commit and had ZERO importers — mounting it here is the whole
+                  fix.  It must live inside the Router (App already calls
+                  useLocation above, so it is).
+                  Not a parallel path: the only other window.scrollTo callers are
+                  FeedPage (fires on [tab], an in-page switch) and
+                  CommunityDetailPage.flushNewPosts (user-triggered) — neither
+                  resets on route change.  Anchor scrolls that run AFTER mount
+                  still win: TaskLedgerPage's ?task_id= highlight and
+                  newHomeforDemo's scrollToSignup click handler. */}
+              <ScrollToTop />
               <ApiErrorBanner />
               <AgentContactRequest
                 request={contactRequest}

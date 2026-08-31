@@ -175,6 +175,10 @@ _state_lock = threading.Lock()
 _event_loop: asyncio.AbstractEventLoop | None = None
 _router_thread: threading.Thread | None = None
 _started = False
+# Shutdown drain budget.  start_wamp_router's dying-vs-starting join is
+# derived from this (+1s margin) — the two used to be independent
+# literals (4.0 vs 3.0) that could drift apart.
+_DRAIN_TIMEOUT_S = 3.0
 # Set to True once stop_wamp_router is registered as an atexit hook, so
 # we don't stack N copies of the callback when start_wamp_router is
 # called repeatedly (idempotent start + idempotent atexit registration).
@@ -848,14 +852,30 @@ def start_wamp_router(port: int = 8088, host: str = '127.0.0.1') -> bool:
     # thread. Result: two WampRouter threads racing for port 8088, one wins
     # the bind() and the other silently fails in _run_router. Wrap the
     # check-and-spawn in the module-level _state_lock so only one caller
-    # ever reaches thread.start(). _state_lock is NOT held during
-    # thread.start() itself (safe — the new thread only touches _started
-    # after its own event loop is up, not while we hold the lock), and
-    # neither _run_router nor is_running re-enter start_wamp_router, so
-    # no deadlock is possible.
+    # ever reaches thread.start().  The lock IS held across thread.start()
+    # (safe — the new thread only touches _started after its own event
+    # loop is up, never while we hold the lock), and neither _run_router
+    # nor is_running re-enter start_wamp_router, so no deadlock is
+    # possible.  (An older comment here claimed the lock was released
+    # before start(); main.py's _wamp_ensure_if_needed docstring had the
+    # accurate description — this one now matches the code.)
     with _state_lock:
-        if _started or (_router_thread and _router_thread.is_alive()):
+        if _started:
             return True
+        if _router_thread and _router_thread.is_alive():
+            # Alive + not-started is AMBIGUOUS: a STARTING thread that has
+            # not reached _started=True yet, or a DYING one — the watchdog's
+            # stop_fn just dropped _started and run_forever is draining its
+            # finally.  Treating both as running made the watchdog's
+            # restart_fn a no-op: live 2026-08-23 16:29 and 18:05, watchdog
+            # logged 'RESTARTED successfully' ~200ms after the old thread's
+            # mislabeled 'did not start' exit line, and :8088 had no
+            # listener afterwards.  A bounded join disambiguates: a dying
+            # thread exits within stop_wamp_router's drain, a starting
+            # one keeps running and we return True (it is coming up).
+            _router_thread.join(timeout=_DRAIN_TIMEOUT_S + 1.0)
+            if _router_thread.is_alive():
+                return True
 
         # Allow port override via environment variable
         port = int(os.environ.get('NUNBA_WAMP_PORT', port))
@@ -910,36 +930,73 @@ def _register_with_watchdog(port: int, host: str):
 
 
 _heartbeat_thread: threading.Thread | None = None
+_pulse_stop: threading.Event | None = None
 
 
 def _start_heartbeat_thread():
-    """Pulse a watchdog heartbeat every 30s while the router is alive."""
-    global _heartbeat_thread
-    if _heartbeat_thread and _heartbeat_thread.is_alive():
-        return
+    """Pulse a watchdog heartbeat every 30s while the router is alive.
+
+    Every call retires the previous pulse generation and spawns a fresh
+    one.  The old guard (`if _heartbeat_thread.is_alive(): return`)
+    raced the watchdog restart: at 2026-08-24 12:54:32,614 the restart's
+    re-registration saw the OLD pulse still alive — it exited 1ms later
+    on the stop window's _started=False — and skipped the spawn, so the
+    router ran with ZERO pulse threads and false-FROZEN again exactly
+    grace+threshold (660s) later, 39 restarts that day.  Same
+    alive-vs-dying ambiguity as the router-thread TOCTOU above; a
+    generation token disambiguates without a blocking join (a ≤10s
+    double-beat overlap is harmless — heartbeat() only refreshes a
+    timestamp).
+    """
+    global _heartbeat_thread, _pulse_stop
+    if _pulse_stop is not None:
+        _pulse_stop.set()
+    stop_evt = threading.Event()
+    _pulse_stop = stop_evt
 
     def _pulse():
         try:
             from security.node_watchdog import get_watchdog
         except ImportError:
             return
-        while _started:
-            wd = get_watchdog()
-            if wd:
-                # Use sleep_with_heartbeat to avoid GIL-stall false FROZEN
-                # (SRE finding: bare time.sleep re-introduces the 2026-04-11 cascade)
-                wd.sleep_with_heartbeat('wamp_router', 30,
-                                         stop_check=lambda: not _started)
-            else:
-                import time
-                time.sleep(30)
+        # _run_router flips _started asynchronously after its event loop
+        # is up; this thread can run first, read False, and die instantly
+        # (boot 2026-08-24 12:44: zero beats ever landed).  Wait bounded
+        # for the flip before deciding the router is down.
+        deadline = time.monotonic() + 30.0
+        while (not _started and not stop_evt.is_set()
+               and time.monotonic() < deadline):
+            time.sleep(0.25)
+        # Any exit of this loop stops 'wamp_router' heartbeats and, 600s
+        # later, the watchdog declares a FROZEN router and restarts it —
+        # even while the router is serving (live 2026-08-23: beats stopped
+        # ~16:19, router still answered at 16:20:53, false-FROZEN at
+        # 16:29).  The loop used to die without a trace; log every exit so
+        # the next occurrence is attributable.
+        try:
+            while _started and not stop_evt.is_set():
+                wd = get_watchdog()
+                if wd:
+                    # Use sleep_with_heartbeat to avoid GIL-stall false FROZEN
+                    # (SRE finding: bare time.sleep re-introduces the 2026-04-11 cascade)
+                    wd.sleep_with_heartbeat(
+                        'wamp_router', 30,
+                        stop_check=lambda: not _started or stop_evt.is_set())
+                else:
+                    time.sleep(30)
+        except BaseException:
+            logger.exception('WAMP heartbeat pulse thread DIED — watchdog '
+                             'will false-FROZEN the router in <=600s')
+            raise
+        logger.info('WAMP heartbeat pulse thread exiting '
+                    '(_started=%s, retired=%s)', _started, stop_evt.is_set())
 
     _heartbeat_thread = threading.Thread(target=_pulse, daemon=True,
                                          name='WampRouterHeartbeat')
     _heartbeat_thread.start()
 
 
-def stop_wamp_router(drain_timeout_s: float = 3.0):
+def stop_wamp_router(drain_timeout_s: float = _DRAIN_TIMEOUT_S):
     """Stop the embedded WAMP router cleanly.
 
     Drains pending asyncio tasks with a bounded timeout BEFORE stopping

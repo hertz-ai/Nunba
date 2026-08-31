@@ -49,7 +49,6 @@ ignore = [
   "S104",   # binding to all interfaces — intentional for local server
   "S602",   # subprocess shell=True — intentional in specific cases
   "S606",   # os.system — intentional in specific cases
-  "F821",   # undefined name — false positives from deferred imports
   "B023",   # function uses loop variable — will fix incrementally
   "UP022",  # prefer capture_output — will fix incrementally
   "UP028",  # yield from — will fix incrementally

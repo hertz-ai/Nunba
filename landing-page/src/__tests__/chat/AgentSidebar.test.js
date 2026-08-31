@@ -264,7 +264,10 @@ describe('AgentSidebar', () => {
       isGuestMode: true,
       guestUserId: 'abc12345',
     });
-    expect(screen.getByText(/Guest 2345/i)).toBeInTheDocument();
+    // The guest label renders in two spots by design — the top identity
+    // header and the bottom account row (AgentSidebar.js:256 & :280) — so
+    // assert at least one is present rather than a single match.
+    expect(screen.getAllByText(/Guest 2345/i).length).toBeGreaterThan(0);
   });
 
   // ── View All Agents button ───────────────────────────────────────────────

@@ -32,6 +32,17 @@ from tts._torch_probe import probe_err_path
 
 logger = logging.getLogger('NunbaTTSInstaller')
 
+# Packages a pip run can break WITHOUT naming them: pip aborting on a
+# locked .pyd mid-operation leaves every package in that run truncated.
+# 2026-08-25: yaml lost error.py to a constraints run that named neither
+# yaml nor numpy; yaml/torch/numpy/ctranslate2 torn over three days.
+# Dotted entries verify a submodule the tear pattern deletes first.
+# filelock: 2026-08-27 tear kept __init__/_api (top-level import passes)
+# but deleted the 7 async/typed modules — _async is the canary for that.
+_COLLATERAL_CRITICAL = ('yaml', 'yaml.error', 'numpy', 'torch',
+                        'ctranslate2', 'einops', 'filelock',
+                        'filelock._async')
+
 # huggingface_hub 0.29+ removes is_offline_mode needed by transformers <5.x
 # Re-exported from here for any caller that depends on the constant; the
 # canonical pin lives in HARTOS's tts_router._HF_HUB_PIN now.
@@ -773,24 +784,39 @@ def _verify_user_site_imports(success_line: str | None, args: list,
                 continue
             names.append(_canonical_import_name(a))
 
+    # Verify the collateral set too, not only what pip claims: a run
+    # that aborts on a locked .pyd tears packages it never named, and
+    # a collateral tear is exactly the case nobody retries by name.
+    names.extend(_COLLATERAL_CRITICAL)
+
     embed_sp = get_embed_site_packages() or ''
     python_exe = get_embed_python()
     failed: list[str] = []
 
     for name in dict.fromkeys(names):          # keep order, drop dupes
         candidate = name.replace('-', '_')
-        target_dir = os.path.join(user_sp, candidate)
-        target_mod = os.path.join(user_sp, candidate + '.py')
+        top = candidate.split('.')[0]          # filesystem unit for dotted names
+        target_dir = os.path.join(user_sp, top)
+        target_mod = os.path.join(user_sp, top + '.py')
         if not os.path.isdir(target_dir) and not os.path.isfile(target_mod):
             continue                            # nothing shadowing
 
         try:
+            # python_exe is console-subsystem and Nunba.exe is GUI-subsystem, so
+            # a naked spawn here paints a real console window -- and this runs
+            # once PER PACKAGE NAME, so it is a burst of them, one at a time.
+            # Same helper the three spawns above already use (:401, :578, :955);
+            # the comment at :399 records that a naked spawn in this very file
+            # was already found to cause "a repeating flash".
+            from tts._subprocess import hidden_startupinfo
+            _si, _cf = hidden_startupinfo()
             proc = subprocess.run(
                 [python_exe, '-c',
                  f"import sys; sys.path.insert(0, {user_sp!r}); "
                  f"import {candidate}"],
                 capture_output=True, text=True, timeout=120,
                 env={**os.environ, 'PYTHONNOUSERSITE': '1'},
+                startupinfo=_si, creationflags=_cf,
             )
             import_ok = proc.returncode == 0
             import_err = (proc.stdout + proc.stderr).strip()[-300:]
@@ -802,8 +828,8 @@ def _verify_user_site_imports(success_line: str | None, args: list,
 
         failed.append(name)
         bundled = (embed_sp and (
-            os.path.isdir(os.path.join(embed_sp, candidate))
-            or os.path.isfile(os.path.join(embed_sp, candidate + '.py'))))
+            os.path.isdir(os.path.join(embed_sp, top))
+            or os.path.isfile(os.path.join(embed_sp, top + '.py'))))
         if not bundled:
             logger.error(
                 "install verify: %s landed in user-site but fails import "
@@ -812,15 +838,15 @@ def _verify_user_site_imports(success_line: str | None, args: list,
             continue
 
         stamp = time.strftime('%Y%m%d-%H%M%S')
-        qdir = os.path.join(user_sp, f'_quarantine_{candidate}_{stamp}')
+        qdir = os.path.join(user_sp, f'_quarantine_{top}_{stamp}')
         try:
             os.makedirs(qdir, exist_ok=True)
             moved = []
             for entry in os.listdir(user_sp):
                 low = entry.lower()
-                if entry == candidate or entry == candidate + '.py' or (
+                if entry == top or entry == top + '.py' or (
                         low.endswith('.dist-info')
-                        and (low.startswith(candidate.lower() + '-')
+                        and (low.startswith(top.lower() + '-')
                              or low.startswith(name.lower() + '-'))):
                     os.rename(os.path.join(user_sp, entry),
                               os.path.join(qdir, entry))
@@ -870,6 +896,28 @@ def _run_pip(args: list[str], progress_cb: Callable | None = None,
     # instead of Program Files (which needs admin)
     user_sp = get_user_site_packages()
     if args and args[0] == 'install':
+        # Refuse to let pip REWRITE a package this live process has
+        # loaded: its .pyd is locked, pip dies partway, and every
+        # package in the same run is left truncated (the 2026-08-25
+        # tears).  Only explicitly-requested specs are checked — fresh
+        # installs of absent packages stay allowed, and collateral
+        # tears from constraint resolution are caught after the fact
+        # by the widened verify + quarantine below.
+        _live = []
+        for _a in args[1:]:
+            if _a.startswith('-') or os.path.sep in _a:
+                continue
+            _t = _canonical_import_name(_a).replace('-', '_').split('.')[0]
+            if _t in sys.modules and (
+                    os.path.isdir(os.path.join(user_sp, _t))
+                    or os.path.isfile(os.path.join(user_sp, _t + '.py'))):
+                _live.append(_t)
+        if _live:
+            logger.warning(
+                "install deferred: %s are loaded in this process AND "
+                "present in user-site — pip rewriting them would truncate "
+                "(next boot's warmup installs before they load)", _live)
+            return False, f"deferred: live modules {_live} in user-site"
         args = args[:1] + [
             '--target', user_sp,
             '--no-build-isolation',  # Use system setuptools (pip's isolated build fails in frozen builds)

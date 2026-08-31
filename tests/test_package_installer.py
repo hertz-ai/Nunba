@@ -2085,3 +2085,90 @@ class TestVerifyUserSiteImports:
         src = inspect.getsource(pi._run_pip)
         assert src.count("_verify_user_site_imports(") >= 2, (
             "_run_pip has a success return not gated by _verify_user_site_imports")
+
+
+class TestLiveRewriteGuardAndCollateralVerify:
+    """agent-5 2026-08-25: NunbaTTSInstaller tore yaml/torch/numpy/
+    ctranslate2 by pip-rewriting packages the live process held open.
+    Guard: explicit rewrites of loaded+present packages are deferred.
+    Verify: the collateral-critical set is checked after every install,
+    including dotted submodules (yaml.error is what the tear deletes)."""
+
+    def test_rewrite_of_loaded_present_package_is_deferred(
+            self, tmp_path, monkeypatch):
+        import tts.package_installer as pi
+        monkeypatch.setattr(pi, 'get_embed_python',
+                            lambda: sys.executable)
+        monkeypatch.setattr(pi, 'get_user_site_packages',
+                            lambda: str(tmp_path))
+        (tmp_path / 're').mkdir()          # present in user-site
+        assert 're' in sys.modules          # loaded in this process
+        ok, msg = pi._run_pip(['install', 're'])
+        assert not ok
+        assert 'deferred' in msg
+
+    def test_fresh_install_of_absent_package_reaches_pip(
+            self, tmp_path, monkeypatch):
+        import tts.package_installer as pi
+        monkeypatch.setattr(pi, 'get_embed_python',
+                            lambda: sys.executable)
+        monkeypatch.setattr(pi, 'get_user_site_packages',
+                            lambda: str(tmp_path))
+
+        def _boom(*a, **k):
+            raise RuntimeError('reached-pip')
+        monkeypatch.setattr(pi.subprocess, 'Popen', _boom)
+        # _run_pip catches launch failures into its error tuple; the
+        # assertion that matters is that the guard did NOT defer — the
+        # run got past it and failed at the pip stage instead.
+        ok, msg = pi._run_pip(['install', 'definitely-absent-pkg-xyz'])
+        assert not ok
+        assert 'deferred' not in msg
+
+    def test_collateral_verify_quarantines_torn_dotted_module(
+            self, tmp_path, monkeypatch):
+        import tts.package_installer as pi
+        user_sp = tmp_path / 'user'
+        embed_sp = tmp_path / 'embed'
+        (user_sp / 'yaml').mkdir(parents=True)
+        (user_sp / 'yaml' / '__init__.py').write_text('')  # error.py torn off
+        (embed_sp / 'yaml').mkdir(parents=True)             # bundled fallback
+        monkeypatch.setattr(pi, 'get_embed_python',
+                            lambda: sys.executable)
+        monkeypatch.setattr(pi, 'get_embed_site_packages',
+                            lambda: str(embed_sp))
+        ok, failed = pi._verify_user_site_imports(
+            'Successfully installed some-other-pkg-1.0', ['install'],
+            str(user_sp))
+        assert not ok
+        assert 'yaml.error' in failed
+        quarantined = [p.name for p in user_sp.iterdir()
+                       if p.name.startswith('_quarantine_yaml_')]
+        assert quarantined, 'torn yaml was not quarantined'
+        assert not (user_sp / 'yaml').exists()
+
+    def test_collateral_verify_catches_torn_filelock(
+            self, tmp_path, monkeypatch):
+        """2026-08-27 tear shape: __init__ survives so `import filelock`
+        passes, but the 7 async/typed modules are gone — only the
+        filelock._async canary catches it."""
+        import tts.package_installer as pi
+        user_sp = tmp_path / 'user'
+        embed_sp = tmp_path / 'embed'
+        (user_sp / 'filelock').mkdir(parents=True)
+        (user_sp / 'filelock' / '__init__.py').write_text('')
+        (embed_sp / 'filelock').mkdir(parents=True)
+        monkeypatch.setattr(pi, 'get_embed_python',
+                            lambda: sys.executable)
+        monkeypatch.setattr(pi, 'get_embed_site_packages',
+                            lambda: str(embed_sp))
+        ok, failed = pi._verify_user_site_imports(
+            'Successfully installed some-other-pkg-1.0', ['install'],
+            str(user_sp))
+        assert not ok
+        assert 'filelock._async' in failed
+        assert 'filelock' not in failed, \
+            'empty __init__ imports fine; the canary must be the catcher'
+        quarantined = [p.name for p in user_sp.iterdir()
+                       if p.name.startswith('_quarantine_filelock_')]
+        assert quarantined, 'torn filelock was not quarantined'

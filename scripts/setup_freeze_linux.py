@@ -16,6 +16,7 @@ import glob
 import os
 import py_compile
 import shutil
+import subprocess
 import sys
 
 # ── Fix transformers frozenset crash before cx_Freeze traces it ──
@@ -461,12 +462,10 @@ def find_hevolve_modules():
     if not hevolve_modules:
         # Fallback: hardcoded list
         hevolve_modules = [
-            'hart_intelligence', 'hart_intelligence_entry', 'helper', 'helper_ledger',
-            'create_recipe', 'reuse_recipe', 'lifecycle_hooks',
-            'threadlocal', 'gather_agentdetails',
-            'cultural_wisdom', 'recipe_experience', 'exception_collector',
-            'agent_identity', 'hart_onboarding', 'hartos_speech',
-            'hartos_speech_stitch',
+            # Entry/facade surface only — implementation modules live in the
+            # hartos/ package since 2026-08-30, shipped via _hartos_packages.
+            'hart_intelligence', 'hart_intelligence_entry',
+            'embedded_main', 'hart_version', 'asgi',
         ]
     found = {}
 
@@ -533,6 +532,7 @@ _hartos_packages = [
     ("integrations", "integrations"),
     ("core", "core"),
     ("security", "security"),
+    ("hartos", "hartos"),   # implementation package (root modules moved 2026-08-30)
 ]
 for _pkg_dir, _pkg_name in _hartos_packages:
     for _candidate in [

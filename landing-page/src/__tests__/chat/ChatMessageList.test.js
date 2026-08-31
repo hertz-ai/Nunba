@@ -467,9 +467,12 @@ describe('ChatMessageList', () => {
     expect(screen.getByTestId('lottie-animation')).toBeInTheDocument();
   });
 
-  it('hides loading animation when thinking id is active', () => {
+  it('keeps the loading animation visible even when a thinking id is active', () => {
+    // Owner-confirmed 2026-08: the in-flight loading indicator always
+    // animates while a request is pending, regardless of any active
+    // thinking id — the thinking container and the loading row coexist.
     renderList({isRequestInFlight: true, currentThinkingId: 'tc-active'});
-    expect(screen.queryByTestId('lottie-animation')).not.toBeInTheDocument();
+    expect(screen.getByTestId('lottie-animation')).toBeInTheDocument();
   });
 
   // ── System messages ──────────────────────────────────────────────────────
@@ -501,14 +504,18 @@ describe('ChatMessageList', () => {
     renderList({
       messages: [{type: 'assistant', content: 'Answer', source: 'local_llm'}],
     });
-    expect(screen.getByText('Local')).toBeInTheDocument();
+    // Badge relabelled in d872d612: local served_by -> "🔒 On-device"
+    // (formatTier, utils/tier.js). Emoji + label share one span, so a
+    // substring matcher is used instead of an exact-text match.
+    expect(screen.getByText(/On-device/)).toBeInTheDocument();
   });
 
   it('shows Hive badge for non-local source', () => {
     renderList({
       messages: [{type: 'assistant', content: 'Answer', source: 'hive_gpt'}],
     });
-    expect(screen.getByText('Hive')).toBeInTheDocument();
+    // "🐝 Hive" — emoji + label in one span (see note above).
+    expect(screen.getByText(/Hive/)).toBeInTheDocument();
   });
 
   // ── PERF-6: assistant Markdown memoization ───────────────────────────────

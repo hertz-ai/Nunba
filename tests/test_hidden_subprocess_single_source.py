@@ -180,6 +180,15 @@ def test_windows_reachable_spawn_modules_use_the_canonical_flags(site):
 _SPAWN_ATTRS = frozenset({'run', 'Popen', 'call', 'check_output',
                           'check_call', 'getoutput', 'getstatusoutput'})
 
+# Binaries that cannot run on Windows, so a naked spawn of them can never
+# flash a console there.  Map of binary name -> reason; membership checks
+# use the keys.  The name was referenced by the walker below but never
+# defined, so the first real offender would have crashed the guard with a
+# NameError instead of being reported (#727).
+_NON_WINDOWS_BINARIES: dict = {
+    'ioreg': 'macOS-only IOKit query (sys.platform == darwin branch)',
+}
+
 
 def _subprocess_aliases(tree):
     """Names bound to the subprocess module here — `subprocess`, `_sp`, `sp`…

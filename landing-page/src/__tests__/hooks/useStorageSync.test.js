@@ -26,6 +26,20 @@ const CLOUD_VALUES = {
   agentname: 'Hevolve',
 };
 
+// A real GUEST JWT (payload.username starts 'guest_') routes the hook to the
+// guest-hydration branch, where the Agent.js URL-param keyset — guest_user_id
+// / social_user_id / hevolve_access_id / guest_mode — is populated.  The
+// 'cloud-jwt-value' placeholder above is NOT a JWT, so post the 2026-05-26
+// cloud/guest split it falls to the CLOUD branch (encrypts user_id, clears
+// the guest keys) — which is why the two keyset tests must use this fixture.
+const GUEST_JWT = 'h.' + btoa(JSON.stringify({username: 'guest_10202'})) + '.s';
+const GUEST_VALUES = {
+  access_token: GUEST_JWT,
+  user_id: '10202',
+  email: 'Sales@hertzai.com',
+  agentname: 'Hevolve',
+};
+
 function mockStorageReturning(values) {
   axios.get.mockImplementation((url) => {
     const key = url.split('/').pop();
@@ -42,12 +56,12 @@ beforeEach(() => {
 
 describe('useStorageSync', () => {
   it('populates the Agent.js URL-param keyset when storage has token+user_id', async () => {
-    mockStorageReturning(CLOUD_VALUES);
+    mockStorageReturning(GUEST_VALUES);
 
     renderHook(() => useStorageSync());
 
     await waitFor(() => {
-      expect(localStorage.getItem('access_token')).toBe('cloud-jwt-value');
+      expect(localStorage.getItem('access_token')).toBe(GUEST_JWT);
     });
     expect(localStorage.getItem('hevolve_access_id')).toBe('10202');
     expect(localStorage.getItem('guest_user_id')).toBe('10202');
@@ -72,19 +86,17 @@ describe('useStorageSync', () => {
   });
 
   it('does not overwrite existing access_token / guest_user_id when in-page signin already happened', async () => {
-    // Scenario: an in-page signin already wrote access_token +
-    // guest_user_id.  useStorageSync must NOT clobber those values.
-    // Post-commit 150fad9b the hook DOES still top-up HART identity
-    // keys (hart_sealed / hart_name / hart_emoji / hart_language) via
-    // /api/storage/get/* when those keys are missing — this covers the
-    // WebView2-leveldb-wipe-but-user_data.json-survived case.  The
-    // assertion below verifies the cloud-identity keys are unchanged
-    // while accepting that the HART top-up may fire.
+    // Scenario: an in-page signin already wrote the full identity keyset.
+    // useStorageSync must NOT clobber access_token / guest_user_id.
+    // The hook always runs the unconditional hart_reset_on_first_run marker
+    // probe (consumeHartResetMarker) and, post-bbab79ea, backfills the
+    // encrypted user_id / email_address blobs when they are MISSING — so we
+    // seed those here too, leaving the marker probe as the only benign
+    // fetch and asserting the guarded keys survive untouched.
     localStorage.setItem('access_token', 'fresh-in-page-token');
     localStorage.setItem('guest_user_id', 'fresh-user-id');
-    // Set hart_sealed so the top-up arm also short-circuits.  Test
-    // verifies the BOTH-arms short-circuit path: no axios at all,
-    // no localStorage write.
+    localStorage.setItem('user_id', 'already-encrypted');
+    localStorage.setItem('email_address', 'already-encrypted');
     localStorage.setItem('hart_sealed', 'true');
 
     mockStorageReturning(CLOUD_VALUES);
@@ -93,7 +105,7 @@ describe('useStorageSync', () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(axios.get).not.toHaveBeenCalled();
+    // The fresh in-page identity survives — no clobber.
     expect(localStorage.getItem('access_token')).toBe('fresh-in-page-token');
     expect(localStorage.getItem('guest_user_id')).toBe('fresh-user-id');
   });
@@ -178,7 +190,7 @@ describe('useStorageSync', () => {
     // path passes a JSON number, the hook must still produce string
     // values (localStorage.setItem rejects non-strings).
     mockStorageReturning({
-      access_token: 'jwt',
+      access_token: GUEST_JWT,
       user_id: 10202,
       email: 'x@x.com',
       agentname: 'Hevolve',
@@ -187,7 +199,7 @@ describe('useStorageSync', () => {
     renderHook(() => useStorageSync());
 
     await waitFor(() => {
-      expect(localStorage.getItem('access_token')).toBe('jwt');
+      expect(localStorage.getItem('access_token')).toBe(GUEST_JWT);
     });
     expect(localStorage.getItem('guest_user_id')).toBe('10202');
     expect(localStorage.getItem('social_user_id')).toBe('10202');

@@ -215,10 +215,27 @@ class RealtimeService {
     // _dispatchSocialPayload normalises {type} from the payload — we
     // pass `type: name` explicitly so the dispatcher uses the event
     // channel name even when the payload omits its own type field.
+    // `agent.ui.update` is the channel EVERY agent-pushed component travels
+    // on -- approval/consent cards, qr_pair, metric, notification cards --
+    // and AgentOverlay subscribes to it (AgentOverlay.jsx:911) expecting to
+    // receive them. Without a listener registered for the NAME here, the
+    // frames arrive and EventSource discards them before any handler runs,
+    // so the overlay is mounted, subscribed, and permanently silent.
+    //
+    // MEASURED 2026-08-22: the agent raised a camera consent card via
+    // hart_intelligence_entry._request_capability_consent; the payload
+    // {"type":"approval","agent_id":"vision","action":"enable_camera"} was
+    // confirmed on the wire and the server logged targeted=7/7 delivered --
+    // and nothing rendered, because this array did not name the channel.
+    // That is the same failure this comment already documents for
+    // chat.response; the lesson did not reach the event that carries
+    // consent, which is the one place a silent drop is a privacy question
+    // and not just a missing message.
     [
       'notification',
       'setup_progress',
       'chat.response',
+      'agent.ui.update',
     ].forEach((name) => {
       es.addEventListener(name, (e) => {
         try {

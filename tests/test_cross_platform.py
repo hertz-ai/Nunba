@@ -498,17 +498,16 @@ class TestHartosModules(unittest.TestCase):
 
     HARTOS_MODULES = [
         'hart_intelligence',
-        'hart_intelligence',
-        'helper',
-        'helper_ledger',
-        'create_recipe',
-        'reuse_recipe',
-        'lifecycle_hooks',
-        'threadlocal',
-        'gather_agentdetails',
-        'cultural_wisdom',
-        'recipe_experience',
-        'exception_collector',
+        'hartos.helper',
+        'hartos.helper_ledger',
+        'hartos.create_recipe',
+        'hartos.reuse_recipe',
+        'hartos.lifecycle_hooks',
+        'hartos.threadlocal',
+        'hartos.gather_agentdetails',
+        'hartos.cultural_wisdom',
+        'hartos.recipe_experience',
+        'hartos.exception_collector',
     ]
 
     def test_all_hartos_modules_importable(self):

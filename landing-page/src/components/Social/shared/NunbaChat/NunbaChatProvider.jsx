@@ -14,6 +14,7 @@ import realtimeService, {
   subscribeChatNew,
 } from '../../../../services/realtimeService';
 import {chatApi} from '../../../../services/socialApi';
+import {rememberServerPromptId} from '../../../../utils/promptId';
 import {
   classifyError,
   getBackoff,
@@ -256,6 +257,10 @@ export default function NunbaChatProvider({children}) {
   const [isLoading, setIsLoading] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [currentAgent, setCurrentAgent] = useState(null); // { prompt_id, name }
+  // prompt_id minted mid-conversation by a create/reuse flow (see
+  // utils/promptId.js).  Send-body only — buffer keys stay on
+  // currentAgent so the visible thread never jumps.
+  const adoptedPromptIdRef = useRef(null);
   const [availableAgents, setAvailableAgents] = useState([]);
   const [ttsEnabled, setTtsEnabled] = useState(false);
   // Camera frame streaming — consented via an ApprovalOverlay "camera"
@@ -324,6 +329,8 @@ export default function NunbaChatProvider({children}) {
   const switchAgent = useCallback(
     (agent) => {
       tts.stop();
+      // Explicit agent choice supersedes any mid-conversation adoption.
+      adoptedPromptIdRef.current = null;
       setCurrentAgent(agent);
     },
     [tts]
@@ -791,7 +798,12 @@ export default function NunbaChatProvider({children}) {
             agent_type: 'local',
             conversation_id: conversationIdRef.current,
             media_mode: localStorage.getItem('nunba_media_mode') || 'audio',
-            prompt_id: currentAgent?.prompt_id || null,
+            // adoptedPromptIdRef: prompt_id the backend minted when a
+            // create/reuse flow started in this default session — the
+            // route derives casual (companion) vs agent-bound from its
+            // presence, so follow-up turns must carry it.
+            prompt_id:
+              currentAgent?.prompt_id || adoptedPromptIdRef.current || null,
             create_agent: false,
             autonomous_creation: false,
             ...(mentionedAgents.length > 0
@@ -815,6 +827,14 @@ export default function NunbaChatProvider({children}) {
           const agentStatus = data.Agent_status || data.agent_status || null;
           const respondingAgent =
             data.responding_agent || currentAgent?.name || null;
+
+          const adopted = rememberServerPromptId(
+            currentAgent?.prompt_id || adoptedPromptIdRef.current,
+            data.prompt_id
+          );
+          if (adopted) {
+            adoptedPromptIdRef.current = adopted;
+          }
 
           setMessages((prev) => [
             ...prev,
@@ -1104,6 +1124,11 @@ export default function NunbaChatProvider({children}) {
     const agentKey = currentAgent?.prompt_id || 'default';
     setMessages([]);
     conversationIdRef.current = uuidv4();
+    // A cleared chat is a NEW conversation — drop any server prompt_id
+    // remembered from a create/reuse flow, or the first message of the
+    // fresh thread would ship as that flow's continuation (review
+    // finding #13).
+    adoptedPromptIdRef.current = null;
     try {
       localStorage.removeItem(STORAGE_KEY(userId, agentKey));
     } catch (err) {

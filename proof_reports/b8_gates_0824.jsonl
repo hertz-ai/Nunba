@@ -1,0 +1,5 @@
+{"gate": "operational", "after_s": 0}
+{"gate": "routing_hi", "lat": 3.1, "reply": "Hello! How can I help you today?", "err": "", "markers": {"hart_intelligence_entry": 8}}
+{"gate": "routing_weather", "lat": 13.1, "reply": "Since Google Search and image generation failed, I'll try a direct data extraction. Please provide a specific URL for the weather website you'd like me to check.", "err": "", "markers": {"query------>": 1, "hart_intelligence_entry": 66}}
+{"gate": "mcp_list_agents", "has_hive_key": true, "head": "{'id': 1, 'jsonrpc': '2.0', 'result': {'content': [{'text': '{\"expert_agents\": 96, \"dynamic_agents\": 0, \"trained_agents\": 134, \"hive_agents\": 1, \"agents\": [{\"agent_id\": \"python_expert\", \"name\": \"Python Expert\", \"category\": \"SOFTWARE_DEV\", \"description\": \"Expert in Python development, from scripts to"}
+{"gate": "crash_scan", "str_name_crashes": 0, "override_logs": 0, "import_failures": 0}

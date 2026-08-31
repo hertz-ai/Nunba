@@ -375,6 +375,28 @@ DEFAULT_DEVICE_ID_FILE = os.path.join(PROGRAM_DATA_DIR, 'device_id.json')
 DEFAULT_STORAGE_DIR = os.path.join(PROGRAM_DATA_DIR, 'storage')
 DEFAULT_USER_DATA_FILE = os.path.join(DEFAULT_STORAGE_DIR, 'user_data.json')
 
+
+def _export_owner_identity():
+    """Boot-declare the desktop owner for daemon consent asks (#698).
+
+    hive_guardrails' consent gate can only ASK a human it can name;
+    daemon goals carry no requester, so the gate falls back to
+    HEVOLVE_OWNER_USER_ID — the same boot-set trust source
+    crossbar_server.py uses for publish auth.  Absent or unreadable
+    user_data.json leaves the env unset and the gate fail-closed,
+    which is the pre-login behavior.
+    """
+    try:
+        with open(DEFAULT_USER_DATA_FILE, encoding='utf-8') as fh:
+            uid = (json.load(fh) or {}).get('user_id')
+        if uid:
+            os.environ.setdefault('HEVOLVE_OWNER_USER_ID', str(uid))
+    except Exception:
+        pass
+
+
+_export_owner_identity()
+
 def get_app_directory():
     """Get the application directory - works in both dev and frozen environments"""
     if getattr(sys, 'frozen', False):
@@ -859,6 +881,14 @@ def after_request(response):
         "https://hevolve.ai https://*.hevolve.ai wss://*.hevolve.ai "
         "https://mcgroce.com https://*.mcgroce.com wss://*.mcgroce.com "
         "https://www.google-analytics.com https://www.googletagmanager.com; "
+        # frame-src was ABSENT, so the YouTube hero embed in
+        # landing-page/src/pages/newHomeforDemo.js:106 fell back to
+        # `default-src 'self'` and was blocked outright — the logged-out
+        # landing page rendered that section as an empty min-h-screen box
+        # (a full viewport of black) instead of the video.  Scoped to the
+        # two YouTube embed origins only; frame-ancestors 'none' below is
+        # untouched, so nothing may embed US.
+        "frame-src https://www.youtube.com https://www.youtube-nocookie.com; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self'"
@@ -910,6 +940,7 @@ def _get_machine_fingerprint():
             pass
     elif sys.platform == 'darwin':
         try:
+            from desktop.platform_utils import get_subprocess_flags
             result = subprocess.run(
                 ['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'],
                 capture_output=True, text=True, timeout=5
@@ -1054,6 +1085,14 @@ try:
     from desktop.guest_identity import get_guest_id as _get_guest_id
     GUEST_ID = _get_guest_id()
     logging.info(f"Guest ID (hardware-derived): {GUEST_ID}")
+    # Daemon consent asks work for guests too (#698, owner 2026-08-26):
+    # with nobody logged in the human at this desktop is still the
+    # guest — consent requests file against the guest id and render in
+    # the same UserConsent UI (UserConsent.user_id is a plain string,
+    # no FK).  setdefault keeps a logged-in owner (exported from
+    # user_data.json at import, _export_owner_identity) as the winner.
+    if GUEST_ID:
+        os.environ.setdefault('HEVOLVE_OWNER_USER_ID', str(GUEST_ID))
 except Exception as _gie:
     # Never crash Flask boot because of guest-id derivation — degrade
     # gracefully so the frontend's chain still works (it falls through
@@ -4553,7 +4592,7 @@ def _start_hartos_bootstrap():
         return
 
     try:
-        from hartos_bootstrap import bootstrap as _hartos_bootstrap
+        from hartos.hartos_bootstrap import bootstrap as _hartos_bootstrap
         _hartos_bootstrap(app, config={
             'device_id': DEVICE_ID,
             'nunba_db_path': NUNBA_DB_PATH,
@@ -5482,7 +5521,11 @@ def start_background_services():
     # has no equivalent emit yet, so that leg stays boot-only.
     def _wamp_is_needed() -> tuple[bool, str]:
         try:
-            _adapters = getattr(channels.registry, '_adapters', None) or {}
+            # Observe the singleton without creating it: get_registry()
+            # constructs on first call, and a boot-time predicate must not
+            # instantiate the channel registry just to find it empty.
+            from integrations.channels import registry as _ch_registry
+            _adapters = getattr(_ch_registry._registry, '_adapters', None) or {}
             _non_web = [ct for ct in _adapters if ct != 'web']
             if _non_web:
                 return True, f"channels={_non_web}"

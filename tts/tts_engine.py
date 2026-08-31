@@ -2063,10 +2063,10 @@ class TTSEngine:
                 import sys as _sys
                 # Lazy import to preserve the "TTS engine boots
                 # even without HARTOS imports" contract on Nunba.
-                if 'exception_collector' in _sys.modules:
-                    _ec = _sys.modules['exception_collector']
+                if 'hartos.exception_collector' in _sys.modules:
+                    _ec = _sys.modules['hartos.exception_collector']
                 else:
-                    import exception_collector as _ec  # type: ignore
+                    from hartos import exception_collector as _ec  # type: ignore
                 _ec.report_subsystem_failure(
                     subsystem='tts',
                     identifier=backend,

@@ -2348,11 +2348,11 @@ if getattr(args, 'validate', False):
         'routes.chatbot_routes',
         'routes.hartos_backend_adapter',
         # 3. LangChain pipeline (the chain that actually broke before)
-        'hart_intelligence', 'helper',
-        'cultural_wisdom', 'security.hive_guardrails',
+        'hart_intelligence', 'hartos.helper',
+        'hartos.cultural_wisdom', 'security.hive_guardrails',
         # 4. Autogen pipeline (agent creation)
-        'autogen', 'create_recipe', 'reuse_recipe',
-        'gather_agentdetails', 'lifecycle_hooks',
+        'autogen', 'hartos.create_recipe', 'hartos.reuse_recipe',
+        'hartos.gather_agentdetails', 'hartos.lifecycle_hooks',
         # 5. Integrations
         'integrations', 'integrations.social',
         'integrations.channels', 'integrations.service_tools',
@@ -3861,8 +3861,10 @@ if getattr(args, 'setup_ai', False):
                             root.after(2500, lambda: upd_overlay.destroy())
 
                         root.after(0, _finish)
-                    except Exception:
-                        root.after(0, lambda: upd_status.set(f"Error: {ex}"))
+                    except Exception as ex:
+                        # Default-arg capture: `ex` is unbound once the except
+                        # block exits, and root.after runs the lambda later.
+                        root.after(0, lambda ex=ex: upd_status.set(f"Error: {ex}"))
                         root.after(0, lambda: upd_spin_lbl.configure(
                             text="\u2717 Failed", fg=_WARN))
                         root.after(3000, lambda: upd_overlay.destroy())
@@ -4670,7 +4672,7 @@ def _refresh_sibling_deps(app_dir):
             return
 
         # Quick check: can we import agent_identity? (canary module)
-        if importlib.util.find_spec('agent_identity'):
+        if importlib.util.find_spec('hartos.agent_identity'):
             return  # finder is fresh
 
         _setup_logger.info("[STARTUP] Stale editable install detected — refreshing sibling deps")
