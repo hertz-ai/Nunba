@@ -4591,8 +4591,42 @@ def _start_hartos_bootstrap():
     if not HARTOS_BACKEND_DIRECT:
         return
 
+    # RETRY THE IMPORT. It races the concurrently-loading `hartos` package and
+    # loses transiently: measured 2026-08-31 23:38:49 on a build that HAS the
+    # module. `No module named 'hartos.hartos_bootstrap'` was logged while the
+    # exact same import succeeds under the bundle's own interpreter, so the file
+    # was never missing. One transient miss used to cost EVERY HARTOS blueprint
+    # for the life of the process, because register_all_blueprints only runs
+    # inside bootstrap. The user-visible result: /api/social/hive-census and
+    # /api/claude/v1/* both 404, and the UI shows ApiErrorBanner's 404 text,
+    # "Couldn't find what you asked for", while chat still works on Tier-3.
+    #
+    # Only the IMPORT is retried, never the bootstrap CALL: a call that failed
+    # part-way may have already initialised something, and re-running it is not
+    # known to be safe. And Tier-1 is NOT kicked early to cover the wait, because
+    # doing that concurrently with the bootstrap thread is the documented
+    # 2026-04-28 Admin Dashboard deadlock on the hart_intelligence import lock.
+    # Chat stays on Tier-3 during the retries, which is the same degradation the
+    # fallback already accepts.
+    _hartos_bootstrap = None
+    _last_err = None
+    for _attempt in range(1, 7):
+        try:
+            from hartos.hartos_bootstrap import bootstrap as _hartos_bootstrap
+            if _attempt > 1:
+                logging.info(
+                    "hartos_bootstrap import succeeded on attempt %d", _attempt)
+            break
+        except Exception as _e:
+            _last_err = _e
+            logging.info(
+                "hartos_bootstrap import attempt %d/6 failed (%s); retrying",
+                _attempt, _e)
+            time.sleep(min(2 * _attempt, 10))
+
     try:
-        from hartos.hartos_bootstrap import bootstrap as _hartos_bootstrap
+        if _hartos_bootstrap is None:
+            raise _last_err or ImportError('hartos.hartos_bootstrap unavailable')
         _hartos_bootstrap(app, config={
             'device_id': DEVICE_ID,
             'nunba_db_path': NUNBA_DB_PATH,
