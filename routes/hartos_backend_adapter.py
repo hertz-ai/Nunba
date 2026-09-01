@@ -486,7 +486,9 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
                 )
             system_prompt = (
                 f"{_BRAND} "
-                f"Privacy-first: everything stays on the user's device. "
+                f"Privacy-first: the user's data stays on this device. "
+                f"That does not mean offline — fetching public web pages "
+                f"with your tools is allowed when a task needs it. "
                 f"Respond in {lang}. Be concise and natural."
             )
 
