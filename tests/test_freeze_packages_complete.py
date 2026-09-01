@@ -177,15 +177,21 @@ def test_slim_python_embed_does_not_strip_sympy():
 # (Gate 6: cx_Freeze tracer misses runtime-dynamic imports).
 # ─────────────────────────────────────────────────────────────────────
 
-def _extract_packages_list_from_setup_freeze() -> list[str]:
-    """Parse scripts/setup_freeze_nunba.py and return the literal
-    strings inside build_exe_options['packages'].
+def _extract_packages_list_from_setup_freeze(
+    script: str = 'setup_freeze_nunba.py',
+) -> list[str]:
+    """Parse a freeze script and return the literal strings inside
+    build_exe_options['packages'].
 
     Walks the AST rather than importing the module because importing
     setup_freeze_nunba.py has heavy build-time side effects (writes
     to .ico, tries to import cx_Freeze, does pip subprocess calls).
+
+    `script` defaults to the Windows script so the Windows-specific
+    callers below (sympy, HARTOS excludes) read unchanged; the
+    cross-platform gate passes each of FREEZE_SCRIPTS in turn.
     """
-    setup_py = os.path.join(_SCRIPTS, 'setup_freeze_nunba.py')
+    setup_py = os.path.join(_SCRIPTS, script)
     with open(setup_py, encoding='utf-8') as fh:
         tree = ast.parse(fh.read(), filename=setup_py)
 
@@ -209,8 +215,8 @@ def _extract_packages_list_from_setup_freeze() -> list[str]:
                         if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
                     ]
     pytest.fail(
-        "Could not locate build_exe_options['packages'] in "
-        "scripts/setup_freeze_nunba.py — test needs updating."
+        f"Could not locate build_exe_options['packages'] in "
+        f"scripts/{script} — test needs updating."
     )
 
 
@@ -478,11 +484,14 @@ def _first_party_imports(source_path: str, first_party: set[str]) -> set[str]:
     return {m for m in found if m.split('.')[0] in first_party}
 
 
-def _bundle_reachable(first_party: set[str]) -> set[str]:
-    """Modules cx_Freeze will place in the bundle (see predicate above)."""
+def _bundle_reachable(
+    first_party: set[str],
+    script: str = 'setup_freeze_nunba.py',
+) -> set[str]:
+    """Modules cx_Freeze will place in `script`'s bundle (predicate above)."""
     queue = list(_first_party_imports(os.path.join(_REPO, 'app.py'), first_party))
 
-    for declared in _extract_packages_list_from_setup_freeze():
+    for declared in _extract_packages_list_from_setup_freeze(script):
         if declared.split('.')[0] not in first_party:
             continue
         as_dir = os.path.join(_REPO, declared.replace('.', os.sep))
@@ -520,12 +529,27 @@ def _bundle_reachable(first_party: set[str]) -> set[str]:
 # list cannot drift out from under the guard.
 SOURCE_SHIPPED_ENTRY_POINTS = ('main.py', 'wamp_router.py')
 
+# Every per-platform cx_Freeze script.  Each carries its OWN packages[],
+# so Gate 6 has to be proved once per platform: a module present in one
+# list and absent from another ships a working app on one OS and a boot
+# stub on the others.  That is not hypothetical — between 2026-08-04 and
+# 2026-08-09 Windows shipped correctly while macOS and Linux shipped a
+# main.py that could not import, because 9cc2ae8 added routes.spa_fallback
+# and friends to the Windows list only and this gate read that list alone.
+# Pinned by test_freeze_scripts_are_still_just_these.
+FREEZE_SCRIPTS = (
+    'setup_freeze_nunba.py',    # Windows
+    'setup_freeze_linux.py',    # Linux
+    'setup_freeze_mac.py',      # macOS
+)
+
 _BUNDLE_ROOT = os.path.join(_REPO, 'build', 'Nunba')
 
 
+@pytest.mark.parametrize('script', FREEZE_SCRIPTS)
 @pytest.mark.parametrize('entry', SOURCE_SHIPPED_ENTRY_POINTS)
-def test_source_shipped_entry_point_imports_are_bundled(entry):
-    """Gate 6, enforced mechanically instead of remembered.
+def test_source_shipped_entry_point_imports_are_bundled(entry, script):
+    """Gate 6, enforced mechanically instead of remembered — per platform.
 
     These files ship as source, so cx_Freeze never traces them.  Anything
     they import that packages[] does not reach is absent from the frozen
@@ -541,17 +565,41 @@ def test_source_shipped_entry_point_imports_are_bundled(entry):
 
     first_party = _first_party_packages()
     missing = sorted(
-        _first_party_imports(path, first_party) - _bundle_reachable(first_party))
+        _first_party_imports(path, first_party)
+        - _bundle_reachable(first_party, script))
     assert not missing, (
         f"{entry} imports first-party module(s) that will NOT be in the frozen "
-        f"bundle: {missing}.\n"
+        f"bundle built by scripts/{script}: {missing}.\n"
         f"{entry} is not a cx_Freeze entry point — it ships as source, so its "
         "imports are never traced.  Add each module to "
-        "build_exe_options['packages'] in scripts/setup_freeze_nunba.py "
+        f"build_exe_options['packages'] in scripts/{script} "
         "(CLAUDE.md Change Protocol, Gate 6).\n"
+        "Add it to EVERY platform's script, not just the one you build "
+        "locally — a module listed on one platform only ships a working app "
+        "there and a boot stub everywhere else.\n"
         "At module scope this kills the process that loads it — for main.py "
         "that is the entire Flask app, leaving the boot stub serving 503s.  "
         "Inside a try/except it silently disables the feature with no symptom."
+    )
+
+
+def test_freeze_scripts_are_still_just_these():
+    """The pinned tuple must match the freeze scripts actually in scripts/.
+
+    Without this, adding a fourth platform script would leave it
+    unguarded while the parametrized gate above stayed green — the guard
+    would quietly stop covering the thing it exists to cover.  Same
+    failure mode this whole file exists to prevent, one level up.
+    """
+    present = {
+        f for f in os.listdir(_SCRIPTS)
+        if f.startswith('setup_freeze_') and f.endswith('.py')
+    }
+    assert present == set(FREEZE_SCRIPTS), (
+        f"scripts/ contains {sorted(present)} but FREEZE_SCRIPTS is "
+        f"{sorted(FREEZE_SCRIPTS)}.  Every cx_Freeze script carries its own "
+        "packages[] and needs Gate 6 proved against it; add the new one to "
+        "the tuple so its bundle is checked too."
     )
 
 
