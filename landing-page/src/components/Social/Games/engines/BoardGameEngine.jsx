@@ -11,7 +11,9 @@ import {Local} from 'boardgame.io/multiplayer';
 import {Client} from 'boardgame.io/react';
 import React, {useState, useMemo, useEffect, useCallback} from 'react';
 
-const BOARD_REGISTRY = {
+// Exported so the catalog contract test can verify every boardgame entry's
+// board_type resolves here.
+export const BOARD_REGISTRY = {
   tictactoe: {game: TicTacToeGame, board: TicTacToeBoard},
   connect4: {game: ConnectFourGame, board: ConnectFourBoard},
   checkers: {game: CheckersGame, board: CheckersBoard},

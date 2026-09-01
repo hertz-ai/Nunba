@@ -73,6 +73,14 @@ function renderEngine(engine, props) {
       return <WordSearchEngine {...props} />;
     case 'sudoku':
       return <SudokuEngine {...props} />;
+    // Engines the backend catalog serves but this client has not implemented —
+    // an honest placeholder, never silently a different game.
+    case 'word_chain':
+    case 'collab_puzzle':
+    case 'compute_challenge':
+      return (
+        <EnginePlaceholder label="Coming soon — this game is not yet playable here" />
+      );
     default:
       return <EnginePlaceholder label={`Unknown engine: ${engine}`} />;
   }
@@ -139,24 +147,16 @@ export default function UnifiedGameScreen() {
             // API unavailable (401, network error, etc.) — fall through to local catalog
           }
 
-          // Fall back to client-side LOCAL_CATALOG (same source GameHub uses)
+          // Fall back to client-side LOCAL_CATALOG (same source GameHub uses).
+          // Entries carry backend-canonical engine + engine_config — guessing
+          // the engine from category mislaunched games (match3 → Sudoku).
           if (!resolved) {
-            const CATEGORY_TO_ENGINE = {
-              board: 'boardgame',
-              arcade: 'phaser',
-              trivia: 'trivia',
-              word: 'word_scramble',
-              puzzle: 'sudoku',
-              party: 'trivia',
-            };
             const local = LOCAL_CATALOG.find((g) => g.id === gameId);
             if (local) {
               resolved = {
                 ...local,
                 title: local.name,
-                engine: CATEGORY_TO_ENGINE[local.category] || local.category,
-                engine_config:
-                  local.category === 'arcade' ? {scene_id: local.id} : {},
+                engine_config: local.engine_config || {},
               };
             }
           }
@@ -276,7 +276,12 @@ export default function UnifiedGameScreen() {
   // ── Playing phase ──
   if (phase === 'playing') {
     return (
-      <Box sx={{...animFadeInUp()}}>
+      // data-testid names the engine that actually mounted — the E2E suite
+      // asserts on it so a mislaunch (match3 → Sudoku) fails loudly.
+      <Box
+        sx={{...animFadeInUp()}}
+        data-testid={`engine-${catalogEntry?.engine}`}
+      >
         <AdultGameShell
           title={catalogEntry?.title || 'Game'}
           onBack={handleBack}

@@ -1,8 +1,9 @@
 import {Box, Typography, CircularProgress} from '@mui/material';
 import React, {useEffect, useRef, useState} from 'react';
 
-// Scene registry — lazy imports
-const SCENE_REGISTRY = {
+// Scene registry — lazy imports. Exported so the catalog contract test can
+// verify every phaser entry's scene_id resolves here.
+export const SCENE_REGISTRY = {
   snake: () => import('../phaser-games/SnakeScene'),
   breakout: () => import('../phaser-games/BreakoutScene'),
   pong: () => import('../phaser-games/PongScene'),
