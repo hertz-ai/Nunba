@@ -2605,7 +2605,12 @@ if getattr(args, 'validate', False):
     _required_files = [
         ('main.py', 'Flask app entry point'),
         ('hart_intelligence', 'HART intelligence pipeline'),
-        ('helper', 'LangChain helper functions'),
+        # helper moved into the hartos/ package (HARTOS 3200888d). A clean CI
+        # build has NO flat helper anywhere, so the bare name failed both the
+        # path probes and find_spec, redding build.yml on all three platforms
+        # for two days (runs 196e820f..677f544e). Local builds masked it via a
+        # stale flat helper.pyc in the incrementally-reused library.zip.
+        ('hartos.helper', 'LangChain helper functions'),
     ]
     _optional_files = [
         ('langchain_config.json', 'LangChain tool config (search, API endpoints)'),
@@ -2616,11 +2621,12 @@ if getattr(args, 'validate', False):
     for _fname, _desc in _required_files:
         # Check root (.py), lib/ (.py or .pyc) — compiled builds put HARTOS modules in lib/
         _found = False
+        _fpath = _fname.replace('.', os.sep) if not _fname.endswith('.py') else _fname
         for _candidate in [
-            os.path.join(_base, f"{_fname}.py"),
+            os.path.join(_base, f"{_fpath}.py"),
             os.path.join(_base, _fname) if _fname.endswith('.py') else None,
-            os.path.join(_base, 'lib', f"{_fname}.py"),
-            os.path.join(_base, 'lib', f"{_fname}.pyc"),
+            os.path.join(_base, 'lib', f"{_fpath}.py"),
+            os.path.join(_base, 'lib', f"{_fpath}.pyc"),
         ]:
             if _candidate and os.path.isfile(_candidate):
                 _vprint(f"  [OK]   {_fname} — {_desc} ({os.path.basename(_candidate)})")

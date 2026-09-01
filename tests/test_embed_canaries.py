@@ -40,7 +40,7 @@ _REBUILD = os.path.join(_ROOT, 'scripts', 'rebuild_python_embed.py')
 _REAL_TOP_LEVEL = {
     # Post 2026-08-30: the flat implementation modules moved into the
     # hartos/ package; top_level.txt is the authority for this set.
-    'agent_ledger', 'asgi', 'core', 'desktop', 'embedded_main',
+    'agent_ledger', 'asgi', 'core', 'embedded_main',
     'hart_intelligence', 'hart_intelligence_entry',
     'hart_sdk', 'hart_version', 'hartos', 'integrations', 'security',
 }

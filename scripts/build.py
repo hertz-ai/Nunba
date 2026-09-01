@@ -82,10 +82,10 @@ HARTOS_SYNC_PACKAGES = [
     'hevolvearmor',     # encrypted-module loader (__file__ fix lives here)
     'agent_ledger',     # task ledger ORM + APIs (real dir via SYNC_PATH_OVERRIDES)
     'hart_sdk',         # public SDK — pip ships it, sync keeps it FRESH
-    'desktop',          # ai_key_vault etc. — imported by core/agent_tools,
-                        # core/error_advice, the entry point; shipped 0 files
-                        # before 2026-08-30 (guard finding), features silently
-                        # no-op'd in the frozen app
+    # NO 'desktop' here: Nunba owns the top-level desktop package (14 app
+    # modules). HARTOS's former desktop/ namesake shadowed it in the frozen
+    # app (12 ModuleNotFoundError, build 2026-08-31); HARTOS's vault now
+    # lives at hartos/ai_key_vault.py and rides the 'hartos' entry above.
     'hevolve_database', # canonical DB models (when present locally)
 ]
 
@@ -1416,14 +1416,29 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         _hartos_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'HARTOS')
         _hartos_head = 'unknown'
+        # When this stays 'unknown', SAY WHY. The 2026-04-25 drift detector
+        # was inert for months because every failure path here was silent:
+        # CI wrote hartos=unknown on every build and nobody could tell a
+        # stale install from a current one without reading thread names
+        # out of a watchdog dump (reviewer finding, 2026-09-01).
+        _hartos_why = f'sibling HARTOS dir missing: {_hartos_dir}'
         try:
             if os.path.isdir(_hartos_dir):
-                _hartos_head = subprocess.run(
+                _rp = subprocess.run(
                     ['git', '-C', _hartos_dir, 'rev-parse', 'HEAD'],
                     capture_output=True, text=True, check=False,
-                ).stdout.strip() or 'unknown'
-        except Exception:
-            pass
+                )
+                _hartos_head = _rp.stdout.strip() or 'unknown'
+                if _hartos_head == 'unknown':
+                    _hartos_why = (_rp.stderr.strip()
+                                   or 'git rev-parse returned empty')[:200]
+        except Exception as _rp_err:
+            _hartos_why = f'{type(_rp_err).__name__}: {_rp_err}'
+        if _hartos_head == 'unknown':
+            print_warn(
+                f"HARTOS_SHA=unknown — bundle-drift detector INERT this build "
+                f"({_hartos_why}); the installed exe cannot be traced to a "
+                f"HARTOS commit (2026-04-25 incident class)")
         _bi_path = os.path.join('build', 'Nunba', 'BUILD_INFO.txt')
         with open(_bi_path, 'w', encoding='utf-8') as _bi:
             _bi.write(f"BUILD_SHA={_head}\n")
@@ -1784,8 +1799,24 @@ def build_windows(python_exe, app_only=False, installer_only=False):
         _ac_ok = _tee_subprocess_to_log(
             [_built_exe, '--acceptance-test'],
             log_path=_acc_log,
-            description="Running Nunba --acceptance-test (180s timeout)...",
-            timeout_s=180,
+            # 180s was too tight and it went red on 2026-08-30, blocking EVERY
+            # nightly for three days: no installer shipped between Aug 30 and
+            # Sep 1 while four consecutive build.yml runs failed here. The
+            # acceptance CHECKS were passing throughout ("Passed: 9, Failed: 0
+            # - Bundle is ready for installer packaging"); only the wall clock
+            # failed. Measured durations of this exact subprocess from
+            # logs/build_acceptance.log: 67s, 69s, 176s, 50s, then two timeouts.
+            # py-spy sampling of a "hung" run showed MainThread PROGRESSING the
+            # whole time (prompts_backup._prune_old_snapshots -> shutil.rmtree,
+            # then module imports) and the process exiting on its own at ~125s.
+            # So this is startup variance, not a deadlock, and CI runners are
+            # slower than the dev box that produced those numbers.
+            #
+            # 600s keeps the gate meaningful - a genuine hang still fails the
+            # build - while giving a slow runner room. NUNBA_ACCEPTANCE_TIMEOUT_S
+            # overrides it without another commit if a runner needs more.
+            description="Running Nunba --acceptance-test...",
+            timeout_s=int(os.environ.get('NUNBA_ACCEPTANCE_TIMEOUT_S', '600')),
         )
         if not _ac_ok:
             if _strict_acc:

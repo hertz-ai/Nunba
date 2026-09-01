@@ -1965,6 +1965,36 @@ class LlamaConfig:
                 # current llama.cpp builds.  Cheapest possible win for
                 # ctx-overflow forensics.
                 "--log-timestamps",
+                # ``--embeddings`` exposes the native /embedding endpoint so
+                # hevolveai can encode against THIS already-resident model
+                # instead of loading a SECOND Qwen-VL in-process. That second
+                # model is what consumed the 50% VRAM cap, and it also holds
+                # accelerate's init_empty_weights patch, which left nn.Module
+                # registration patched and fired the C160/C172 meta-poison
+                # guards -- killing learn_from_reality outright (3 calls, 3
+                # raises, error reduction unchanged).
+                #
+                # WHY THIS IS SAFE TO RE-ENABLE. The flag was removed in Aug
+                # 2026 because Qwen3-VL tripped
+                # GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= embd_size).
+                # That reason is OBSOLETE: current llama.cpp self-mitigates and
+                # says so, "setting n_batch = n_ubatch = 512 to avoid assertion
+                # failure". Measured 2026-09-01 on the EXACT production config
+                # (Qwen3.5-4B-UD-Q4_K_XL + mmproj-Qwen3.5-4B-F16, CPU-only so
+                # the card was untouched): loaded clean with ZERO GGML_ASSERT,
+                # /embedding returned 4 tokens x 2560 dims PER TOKEN, and
+                # generation was unaffected ("The capital of France is" ->
+                # " Paris."). Per-token is the point: mean-pooling the sequence
+                # is precisely the language barrier hevolveai C252 exists to
+                # fix. Contextual senses already separate on this model:
+                # river-bank vs money-bank cos 0.400, money-bank vs cash-bank
+                # cos 0.767.
+                #
+                # NOTE: pooling stays "none" (the default) because that is what
+                # yields per-token vectors. The OAI /v1/embeddings route
+                # rejects pooling none as "not OAI compatible", so consumers
+                # must use the native /embedding endpoint.
+                "--embeddings",
             ]
 
             # ── N-gram speculative decoding (no draft model needed) ──

@@ -736,6 +736,33 @@ build_exe_options = {
         # pywebview platform backends — must be explicit; cx_Freeze can't trace dynamic loading
         "webview.platforms.edgechromium",
         "webview.platforms.winforms",
+        # ── hartos submodules cx_Freeze cannot trace ──
+        # The hartos package ships TWICE: complete, as an include_files copy at
+        # <root>/hartos/, and again as whatever cx_Freeze's static tracing found,
+        # at lib/hartos/.  lib/ is FIRST on sys.path in a frozen app, so the
+        # traced subset SHADOWS the complete copy.  Anything tracing missed is
+        # then unreachable at runtime even though the .py sits right there.
+        #
+        # Measured on the installed 2026-08-31 build (BUILD_SHA=677f544e): source
+        # hartos/ had 21 modules, lib/hartos/ had 14.  hartos.lifecycle_hooks
+        # imported fine (its .pyc was in lib/); hartos.hartos_bootstrap raised
+        # "No module named 'hartos.hartos_bootstrap'" on all 6 retries, on EVERY
+        # boot, because main.py imports it lazily INSIDE _start_hartos_bootstrap
+        # so tracing never saw it.  Consequence: bootstrap() never ran, so
+        # register_all_blueprints never ran, so the desktop had ZERO HARTOS
+        # blueprints — empty dashboard, empty agent_engine, and /api/claude/v1
+        # 404 on :5000, which silently disables the Claude Code EXPERT tier on
+        # every install.  Same shadowing class as the `desktop` namesake bug.
+        #
+        # run_debug and hart_cli are deliberately NOT here: both are dev-only
+        # entry points, and run_debug imports hart_intelligence_entry at module
+        # level, which would drag the whole app into cx_Freeze's trace (the same
+        # RecursionError risk that excludes hevolveai above).  The post-build
+        # gate below knows they are exempt.
+        "hartos.hartos_bootstrap",
+        "hartos.crossbar_server",
+        "hartos.hartos_speech",
+        "hartos.hartos_speech_stitch",
     ],
     "include_msvcr": True,
     "bin_includes": ["zlib.dll"],
@@ -963,8 +990,9 @@ _hartos_packages = [
     ("core", "core"),
     ("security", "security"),
     ("hartos", "hartos"),   # implementation package (root modules moved 2026-08-30)
-    ("desktop", "desktop"), # ai_key_vault — imported by core.agent_tools/error_advice;
-                            # never shipped before 2026-08-30 (drift-guard finding)
+    # NO ("desktop", ...) here: Nunba owns the top-level desktop package.
+    # HARTOS's former 2-file namesake shadowed it (12 import failures,
+    # 2026-08-31); its vault now ships inside the hartos package above.
 ]
 # Always include from sibling HARTOS — these are namespace packages when
 # pip-installed, so cx_Freeze can't trace them via `packages`. The
@@ -1660,6 +1688,51 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
             _root_cleaned += 1
     if _root_cleaned:
         print(f"Post-build: removed {_root_cleaned} stale HARTOS .py files from build root")
+
+# ── Post-build gate: lib/hartos must not shadow the complete hartos copy ──
+# The hartos package ships twice (see the "includes" note): complete via
+# include_files at <root>/hartos/, and as cx_Freeze's traced subset at
+# lib/hartos/, which wins on sys.path.  Any module in the complete copy with no
+# counterpart in lib/ is UNREACHABLE at runtime, and fails as
+# "No module named 'hartos.<name>'" while the file is plainly on disk.
+#
+# That is not hypothetical: it shipped.  The 2026-08-31 build was missing
+# hartos_bootstrap from lib/, so register_all_blueprints never ran and every
+# install had zero HARTOS blueprints and no Claude Code endpoint.  Nothing
+# failed the build, because a lazily-imported module going missing is invisible
+# until runtime.  This gate makes it a build failure instead.
+_HARTOS_LIB_EXEMPT = {
+    'run_debug',   # dev debug server; imports hart_intelligence_entry at module
+                   # level, so freezing it drags the whole app into the trace
+    'hart_cli',    # dev-only click CLI, never invoked from the desktop app
+}
+if 'build' in sys.argv or 'build_exe' in sys.argv:
+    _gate_root = os.path.abspath(build_exe_options["build_exe"])
+    _src_hartos = os.path.join(_gate_root, 'hartos')
+    _lib_hartos = os.path.join(_gate_root, 'lib', 'hartos')
+    if os.path.isdir(_src_hartos) and os.path.isdir(_lib_hartos):
+        _shipped = {
+            os.path.splitext(f)[0] for f in os.listdir(_src_hartos)
+            if f.endswith('.py')
+        }
+        _frozen = {
+            os.path.splitext(f)[0] for f in os.listdir(_lib_hartos)
+            if f.endswith(('.py', '.pyc'))
+        }
+        _shadowed = sorted(_shipped - _frozen - _HARTOS_LIB_EXEMPT)
+        if _shadowed:
+            print(
+                "\nPost-build: lib/hartos SHADOWS the complete hartos package "
+                "and is missing modules that would be unreachable at runtime:")
+            for _m in _shadowed:
+                print(f"  hartos.{_m}")
+            print(
+                "  Fix: add each as \"hartos.<name>\" to build_exe_options"
+                "[\"includes\"], or add it to _HARTOS_LIB_EXEMPT with a reason "
+                "if it is dev-only and must not ship frozen.")
+            sys.exit(1)
+        print(f"Post-build: lib/hartos complete "
+              f"({len(_shipped - _HARTOS_LIB_EXEMPT)} modules reachable)")
 
 # ── Post-build cleanup: remove stale __pycache__ dirs ──
 # cx_Freeze copies source .py files but may also leave behind .pyc caches
