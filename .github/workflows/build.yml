@@ -340,6 +340,56 @@ jobs:
           timestamp-digest: SHA256
         continue-on-error: true
 
+      # Did the signing actually take?  `continue-on-error: true` on the two
+      # steps above is deliberate (fork PRs cannot see org secrets and must
+      # still build), but it also swallowed a REAL failure for as long as this
+      # pipeline has existed:
+      #
+      #   The 'trusted-signing-account-name' input is required.
+      #   ##[error]Process completed with exit code 1
+      #   outcome=failure; conclusion=failure
+      #
+      # ...while the job still reported `completed success` and the step showed
+      # a green tick in the UI.  Every installer this pipeline has produced is
+      # UNSIGNED, and the run said otherwise.  Verified 2026-09-02 by
+      # downloading the artifact of run 33640326996 and running
+      # Get-AuthenticodeSignature on it: NotSigned.  On Windows that means
+      # SmartScreen warns "unrecognised publisher" on every download.
+      #
+      # Same shape as the `except Exception: pass` that hid the origin
+      # attestation failure and made 1,741 real nodes read as 5: a security
+      # step whose failure is indistinguishable from its success.
+      #
+      # This gate reports what is TRUE rather than deciding policy:
+      #   secrets present + unsigned  -> hard fail (a real regression)
+      #   secrets absent  + unsigned  -> loud warning + job summary; the build
+      #                                  still publishes, exactly as today, but
+      #                                  nobody can mistake it for signed.
+      # Flipping the second case to a hard fail is a one-line change once the
+      # AZURE_* signing secrets exist; that is the repo owner's call.
+      - name: Verify the installer is actually signed
+        if: ${{ !inputs.skip_signing }}
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path Output -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw "No installer in Output\ to verify." }
+          $sig = Get-AuthenticodeSignature $exe.FullName
+          $configured = -not [string]::IsNullOrWhiteSpace("${{ secrets.AZURE_CODE_SIGNING_ACCOUNT }}")
+          "installer : $($exe.Name)"
+          "signature : $($sig.Status)"
+          "signer    : $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -eq 'Valid') {
+            "::notice title=Installer signed::$($exe.Name) signed by $($sig.SignerCertificate.Subject)"
+            "- installer **signed**: ``$($exe.Name)``" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          if ($configured) {
+            "::error title=Signing configured but the installer is UNSIGNED::Azure signing secrets are set, yet $($exe.Name) is $($sig.Status). The signing step failed silently under continue-on-error."
+            exit 1
+          }
+          "::warning title=Installer is UNSIGNED::No Azure signing secrets in this repo, so $($exe.Name) is $($sig.Status). Windows SmartScreen will warn users on download."
+          "- installer **UNSIGNED** (``$($sig.Status)``) - no Azure signing secrets configured" >> $env:GITHUB_STEP_SUMMARY
+
       - name: Smoke test (validate frozen exe)
         run: |
           build\Nunba\Nunba.exe --validate
