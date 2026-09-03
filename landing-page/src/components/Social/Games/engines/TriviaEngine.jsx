@@ -1,14 +1,6 @@
-import {RADIUS} from '../../../../theme/socialTokens';
-
-import {
-  Box,
-  Typography,
-  Button,
-  LinearProgress,
-  Fade,
-  Grow,
-} from '@mui/material';
-import React, {useState, useEffect, useCallback, useRef} from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Box, Typography, Button, LinearProgress, Fade, Grow } from '@mui/material';
+import { RADIUS } from '../../../../theme/socialTokens';
 
 // ── Colors ──
 const COLOR_CORRECT = '#2ECC71';
@@ -19,12 +11,14 @@ const OPTION_LETTERS = ['A', 'B', 'C', 'D'];
 // ── Default config ──
 const DEFAULT_TIME_PER_QUESTION = 15; // seconds
 
-export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
+// How long to wait for questions before telling the player they are not
+// coming. Long enough for a slow session handshake, short enough that nobody
+// stares at a message that will never change.
+const QUESTION_WAIT_MS = 12000;
+
+export default function TriviaEngine({ multiplayer, catalogEntry, onComplete }) {
   const engineConfig = catalogEntry?.engine_config || {};
-  const timePerQuestion =
-    engineConfig.timePerQuestion ||
-    engineConfig.time_per_question ||
-    DEFAULT_TIME_PER_QUESTION;
+  const timePerQuestion = engineConfig.timePerQuestion || engineConfig.time_per_question || DEFAULT_TIME_PER_QUESTION;
 
   // ── State ──
   const [questions, setQuestions] = useState([]);
@@ -35,14 +29,22 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
   const [timeLeft, setTimeLeft] = useState(timePerQuestion);
   const [streak, setStreak] = useState(0);
 
+  // Questions arrive from the multiplayer session or the catalog entry. When
+  // neither supplies them — which is what an unauthenticated visitor gets,
+  // since LOCAL_CATALOG's trivia entries carry no engine_config.questions —
+  // this engine used to render "Waiting for questions..." forever. Measured:
+  // all seven trivia games sat there for the full 60s budget of the
+  // play-to-completion sweep with no error and no way forward. Bound the wait
+  // so the player is told what happened instead of staring at it.
+  const [waitedTooLong, setWaitedTooLong] = useState(false);
+
   const timerRef = useRef(null);
   const advanceTimeoutRef = useRef(null);
 
   const currentQuestion = questions[currentIdx] || null;
   const totalQuestions = questions.length;
   const isLastQuestion = currentIdx >= totalQuestions - 1;
-  const timerPercent =
-    totalQuestions > 0 ? (timeLeft / timePerQuestion) * 100 : 100;
+  const timerPercent = totalQuestions > 0 ? (timeLeft / timePerQuestion) * 100 : 100;
 
   // ── Load questions from multiplayer session state or catalog ──
   useEffect(() => {
@@ -56,8 +58,16 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
 
     if (sessionQuestions.length > 0) {
       setQuestions(sessionQuestions);
+      setWaitedTooLong(false);
     }
   }, [multiplayer?.sessionState, multiplayer?.gameState, catalogEntry]);
+
+  // Give up waiting after a bounded interval rather than never.
+  useEffect(() => {
+    if (questions.length > 0) return undefined;
+    const t = setTimeout(() => setWaitedTooLong(true), QUESTION_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [questions.length]);
 
   // ── Countdown timer ──
   useEffect(() => {
@@ -104,11 +114,7 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
 
     // Submit a timed-out move
     if (multiplayer?.submitMove) {
-      multiplayer.submitMove({
-        answer: null,
-        time_ms: timePerQuestion * 1000,
-        timed_out: true,
-      });
+      multiplayer.submitMove({ answer: null, time_ms: timePerQuestion * 1000, timed_out: true });
     }
 
     advanceTimeoutRef.current = setTimeout(() => {
@@ -125,10 +131,7 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
       clearInterval(timerRef.current);
       setSelectedAnswer(answer);
 
-      const correctAnswer =
-        currentQuestion?.a ||
-        currentQuestion?.answer ||
-        currentQuestion?.correct_answer;
+      const correctAnswer = currentQuestion?.a || currentQuestion?.answer || currentQuestion?.correct_answer;
       const isCorrect = answer === correctAnswer;
       const elapsedMs = (timePerQuestion - timeLeft) * 1000;
 
@@ -143,11 +146,7 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
 
       // Submit move to multiplayer
       if (multiplayer?.submitMove) {
-        multiplayer.submitMove({
-          answer,
-          time_ms: elapsedMs,
-          correct: isCorrect,
-        });
+        multiplayer.submitMove({ answer, time_ms: elapsedMs, correct: isCorrect });
       }
 
       // Advance after feedback delay
@@ -156,14 +155,7 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
       }, 1500);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      answerState,
-      selectedAnswer,
-      currentQuestion,
-      timePerQuestion,
-      timeLeft,
-      multiplayer,
-    ]
+    [answerState, selectedAnswer, currentQuestion, timePerQuestion, timeLeft, multiplayer],
   );
 
   // ── Advance to next question or complete ──
@@ -171,7 +163,7 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
     if (isLastQuestion) {
       // Game over — submit final score
       if (multiplayer?.submitFinalScore) {
-        multiplayer.submitFinalScore({correct: score, total: totalQuestions});
+        multiplayer.submitFinalScore({ correct: score, total: totalQuestions });
       }
       if (onComplete) onComplete();
     } else {
@@ -187,25 +179,29 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
     return (
       <Box
         sx={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          minHeight: 300,
+          display: 'flex', flexDirection: 'column', gap: 1,
+          justifyContent: 'center', alignItems: 'center', minHeight: 300,
         }}
+        data-testid={waitedTooLong ? 'trivia-no-questions' : 'trivia-waiting'}
       >
-        <Typography variant="body1" sx={{color: '#aaa'}}>
-          Waiting for questions...
+        <Typography variant="body1" sx={{ color: '#aaa' }}>
+          {waitedTooLong
+            ? 'No questions available for this quiz right now.'
+            : 'Waiting for questions...'}
         </Typography>
+        {waitedTooLong ? (
+          <Typography variant="body2" sx={{ color: '#777' }}>
+            This quiz needs a connection to load its questions. Check your
+            connection and try again.
+          </Typography>
+        ) : null}
       </Box>
     );
   }
 
   // ── Derive option list ──
   const options = currentQuestion?.options || currentQuestion?.choices || [];
-  const correctAnswer =
-    currentQuestion?.a ||
-    currentQuestion?.answer ||
-    currentQuestion?.correct_answer;
+  const correctAnswer = currentQuestion?.a || currentQuestion?.answer || currentQuestion?.correct_answer;
 
   // ── Determine button color for each option ──
   const getOptionSx = (option) => {
@@ -232,41 +228,22 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
 
     // After answer is revealed
     if (option === correctAnswer) {
-      return {
-        ...base,
-        bgcolor: COLOR_CORRECT,
-        borderColor: COLOR_CORRECT,
-        color: '#fff',
-        '&:hover': {},
-      };
+      return { ...base, bgcolor: COLOR_CORRECT, borderColor: COLOR_CORRECT, color: '#fff', '&:hover': {} };
     }
     if (option === selectedAnswer && answerState === 'incorrect') {
-      return {
-        ...base,
-        bgcolor: COLOR_INCORRECT,
-        borderColor: COLOR_INCORRECT,
-        color: '#fff',
-        '&:hover': {},
-      };
+      return { ...base, bgcolor: COLOR_INCORRECT, borderColor: COLOR_INCORRECT, color: '#fff', '&:hover': {} };
     }
-    return {...base, opacity: 0.4, '&:hover': {}};
+    return { ...base, opacity: 0.4, '&:hover': {} };
   };
 
   return (
-    <Box sx={{maxWidth: 640, mx: 'auto', py: 2}}>
+    <Box sx={{ maxWidth: 640, mx: 'auto', py: 2 }}>
       {/* ── Header: score + streak ── */}
-      <Box
-        sx={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          mb: 2,
-        }}
-      >
-        <Typography variant="body2" sx={{color: '#aaa'}}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+        <Typography variant="body2" sx={{ color: '#aaa' }}>
           Question {currentIdx + 1} / {totalQuestions}
         </Typography>
-        <Box sx={{display: 'flex', alignItems: 'center', gap: 2}}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
           {streak >= 3 && (
             <Fade in>
               <Typography
@@ -284,10 +261,7 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
               </Typography>
             </Fade>
           )}
-          <Typography
-            variant="body1"
-            sx={{color: COLOR_PRIMARY, fontWeight: 700}}
-          >
+          <Typography variant="body1" sx={{ color: COLOR_PRIMARY, fontWeight: 700 }}>
             Score: {score}
           </Typography>
         </Box>
@@ -311,7 +285,7 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
 
       {/* ── Question text ── */}
       <Fade in key={currentIdx} timeout={400}>
-        <Box sx={{textAlign: 'center', mb: 4}}>
+        <Box sx={{ textAlign: 'center', mb: 4 }}>
           <Typography
             variant="h5"
             sx={{
@@ -321,16 +295,10 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
               px: 2,
             }}
           >
-            {currentQuestion?.q ||
-              currentQuestion?.question ||
-              currentQuestion?.text ||
-              ''}
+            {currentQuestion?.q || currentQuestion?.question || currentQuestion?.text || ''}
           </Typography>
           {currentQuestion?.difficulty && (
-            <Typography
-              variant="caption"
-              sx={{color: '#888', mt: 1, display: 'block'}}
-            >
+            <Typography variant="caption" sx={{ color: '#888', mt: 1, display: 'block' }}>
               Difficulty: {currentQuestion.difficulty}
             </Typography>
           )}
@@ -341,7 +309,7 @@ export default function TriviaEngine({multiplayer, catalogEntry, onComplete}) {
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: {xs: '1fr', sm: '1fr 1fr'},
+          gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
           gap: 2,
         }}
       >
