@@ -139,9 +139,20 @@ export function MultiplayerResults({
   const sorted = getSortedParticipants(participants, scores);
 
   const winner = sorted[0];
+  // A winner only exists when there was someone to beat.
+  //
+  // 2026-09-03: solo runs rendered a trophy and "You Win! 0 points" even when
+  // the player had just crashed — measured on live hevolve.ai with Flappy Bird.
+  // Two compounding causes: the call sites passed `multiplayer={...}` while
+  // this component destructures {participants, scores, currentUserId}, so
+  // participants was undefined and sorted was empty; and the win test was
+  // `winner?.id === currentUserId`, i.e. `undefined === undefined`, which is
+  // TRUE. Require a real competitor AND a real id match.
+  const isCompetitive = sorted.length > 1;
   const winnerName = winner ? getDisplayName(winner, 0) : 'Unknown';
   const winnerScore = winner ? (scores?.[winner.id] ?? 0) : 0;
-  const isCurrentUserWinner = winner?.id === currentUserId;
+  const isCurrentUserWinner =
+    isCompetitive && winner?.id != null && winner.id === currentUserId;
 
   return (
     <Box
@@ -158,17 +169,26 @@ export function MultiplayerResults({
       {/* Winner celebration */}
       <Box sx={{textAlign: 'center', ...animFadeInScale()}}>
         <Typography sx={{fontSize: 48, lineHeight: 1, mb: 1}}>
-          {'\u{1F3C6}'}
+          {isCompetitive ? '\u{1F3C6}' : '\u{1F3AE}'}
         </Typography>
         <Typography variant="h4" sx={{fontWeight: 800, mb: 0.5}}>
-          {isCurrentUserWinner ? 'You Win!' : `${winnerName} Wins!`}
+          {!isCompetitive
+            ? 'Run complete'
+            : isCurrentUserWinner
+              ? 'You Win!'
+              : `${winnerName} Wins!`}
         </Typography>
-        <Typography
-          variant="h6"
-          sx={{color: theme.palette.primary.main, fontWeight: 600}}
-        >
-          {winnerScore} points
-        </Typography>
+        {/* Only claim a score we actually have — a solo run with no session
+            has no participant to read one from, and printing "0 points"
+            there reads as a real result the player did not earn. */}
+        {winner ? (
+          <Typography
+            variant="h6"
+            sx={{color: theme.palette.primary.main, fontWeight: 600}}
+          >
+            {winnerScore} points
+          </Typography>
+        ) : null}
       </Box>
 
       {/* Rankings list */}

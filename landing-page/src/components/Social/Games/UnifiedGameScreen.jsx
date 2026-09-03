@@ -310,7 +310,18 @@ export default function UnifiedGameScreen() {
           ...animFadeInUp(),
         }}
       >
-        <MultiplayerResults multiplayer={multiplayer} />
+        {/* MultiplayerResults destructures {participants, scores, ...} — passing
+            a single `multiplayer` prop left participants undefined, which made
+            the win test `undefined === undefined` and celebrated every solo
+            run as "You Win!". Same prop-contract mistake as AdultLobby's
+            onStart/onStartSolo. */}
+        <MultiplayerResults
+          participants={multiplayer?.participants}
+          scores={multiplayer?.scores}
+          currentUserId={multiplayer?.currentUserId}
+          onRematch={handlePlayAgain}
+          onLeave={handleBack}
+        />
 
         <Box sx={{display: 'flex', gap: 2, mt: 2}}>
           <Button
