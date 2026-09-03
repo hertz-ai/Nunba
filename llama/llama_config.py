@@ -1914,16 +1914,26 @@ class LlamaConfig:
         # autogen experts + daemon) sum past 12288 and the server logs
         # "failed to find free space in the KV cache" → prompt truncation +
         # GPU thrash (~10 t/s) + HTTP 503 — i.e. the "no LLM response"
-        # outage.  Cap parallel so the pool can't be over-subscribed:
-        # default 2 (2 × 4.4k = 8.8k < 12288, with headroom) lets one chat
-        # turn and one background autogen slot coexist.  Env-tunable via
-        # HEVOLVE_LLAMA_PARALLEL (1 = max per-request ctx + serialize;
-        # raise only on a box launched with a bigger --ctx-size budget).
+        # outage.  Cap parallel so the pool can't be over-subscribed.
+        # Default 1 (was 2).  Measured 2026-09-03 22:27:08 on the installed
+        # build running --parallel 2 --kv-unified: a background
+        # autogen.create call carrying 70 tool schemas ran concurrently with
+        # a reuse turn and llama failed BOTH with "Context size has been
+        # exceeded" (update_slots: decode() failed on the shared pool) — the
+        # user got "I hit an internal snag" while the pipeline's retry did
+        # the work after the reply had already gone out.  2 slots also halve
+        # the wire-trim budget (12288/2 - max_tokens 2048 - margin 2816 =
+        # 1280 tokens), which truncated the reuse system prompt (the recipe)
+        # on every call.  With 1 slot each request gets the whole ctx and
+        # daemon traffic serializes behind the chat turn (26/26 reuse calls
+        # 200 under HEVOLVE_LLAMA_PARALLEL=1 the same day).  Env-tunable via
+        # HEVOLVE_LLAMA_PARALLEL; raise only on a box launched with a bigger
+        # --ctx-size budget.
         try:
             n_parallel = int(os.environ.get('HEVOLVE_LLAMA_PARALLEL', '')
-                             or self.config.get('llama_parallel') or 2)
+                             or self.config.get('llama_parallel') or 1)
         except (TypeError, ValueError):
-            n_parallel = 2
+            n_parallel = 1
         n_parallel = max(1, min(n_parallel, 4))
 
         # Build server command — zinc uses simpler CLI than llama.cpp
