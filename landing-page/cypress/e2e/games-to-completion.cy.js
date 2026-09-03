@@ -72,9 +72,16 @@ const K = {
   space: { key: ' ', code: 'Space', keyCode: 32 },
 };
 
-// Completion marker. "Play Again" and "Run complete" exist only in the
+// Completion markers. "Play Again" and "Run complete" exist only in the
 // complete phase; a game in progress never renders either.
-const DONE_RE = /run complete|play again|you win|wins!/i;
+//
+// BoardGameEngine announces its own terminal state before handing back, as
+// "Player 1 wins!", "Player 2 wins!" or "It's a draw!". The draw wording was
+// missing here at first, and random play draws often — so finished board games
+// were being recorded as not-completed. Deliberately NOT matching
+// "Back to Games": that button also sits at the top of the lobby, so it would
+// mark every game finished the moment it launched.
+const DONE_RE = /run complete|play again|you win|wins!|it'?s a draw/i;
 
 function stubCatalogDown() {
   cy.intercept('GET', '**/api/social/games*', { statusCode: 503, body: {} });
@@ -153,6 +160,31 @@ describe('Every game is driven to completion', () => {
                   return r.width > 4 && r.height > 4 && r.top >= 0;
                 });
                 let chain = cy.wrap(null, { log: false });
+
+                // Board games render their cells as plain divs with click
+                // handlers, which no CSS selector here matches — measured:
+                // tic-tac-toe sat with a completely EMPTY board after 62s of
+                // clicking, because every click went to something else. So for
+                // boards, sweep a grid of points across the engine's own box
+                // and let the game decide which are cells.
+                if (g.kind === 'board') {
+                  const br = root.getBoundingClientRect();
+                  const N = 8;
+                  const cell = (idx) => {
+                    const col = idx % N;
+                    const row = Math.floor(idx / N) % N;
+                    return {
+                      x: br.left + (br.width * (col + 0.5)) / N,
+                      y: br.top + (br.height * (row + 0.5)) / N,
+                    };
+                  };
+                  for (let i = 0; i < 6; i++) {
+                    const pt = cell(n * 6 + i);
+                    chain = chain.then(() => clickApp(map, pt.x, pt.y));
+                  }
+                  return chain.then(() => cy.wait(500, { log: false })).then(() => false);
+                }
+
                 pick.slice(0, 6).forEach((el, i) => {
                   const r = el.getBoundingClientRect();
                   if (el.tagName === 'CANVAS') {

@@ -1,4 +1,5 @@
 import {gamesApi} from '../services/socialApi';
+import { TRIVIA_FALLBACK_QUESTIONS } from '../data/triviaFallbackQuestions';
 
 import {useState, useEffect, useCallback, useRef, useMemo} from 'react';
 
@@ -144,6 +145,7 @@ export const LOCAL_CATALOG = [
     name: 'General Trivia',
     category: 'trivia',
     engine: 'trivia',
+    engine_config: { questions: TRIVIA_FALLBACK_QUESTIONS['trivia-general'] },
     description: 'Test your general knowledge',
     multiplayer: true,
     featured: true,
@@ -154,6 +156,7 @@ export const LOCAL_CATALOG = [
     name: 'Science Quiz',
     category: 'trivia',
     engine: 'trivia',
+    engine_config: { questions: TRIVIA_FALLBACK_QUESTIONS['trivia-science'] },
     description: 'Questions about science and nature',
     multiplayer: true,
     emoji: '\uD83D\uDD2C',
@@ -163,6 +166,7 @@ export const LOCAL_CATALOG = [
     name: 'History Quiz',
     category: 'trivia',
     engine: 'trivia',
+    engine_config: { questions: TRIVIA_FALLBACK_QUESTIONS['trivia-history'] },
     description: 'Journey through historical events',
     multiplayer: true,
     emoji: '\uD83C\uDFDB\uFE0F',
@@ -172,6 +176,7 @@ export const LOCAL_CATALOG = [
     name: 'Geography Quiz',
     category: 'trivia',
     engine: 'trivia',
+    engine_config: { questions: TRIVIA_FALLBACK_QUESTIONS['trivia-geography'] },
     description: 'Explore the world through questions',
     multiplayer: true,
     emoji: '\uD83C\uDF0D',
@@ -181,6 +186,7 @@ export const LOCAL_CATALOG = [
     name: 'Tech Quiz',
     category: 'trivia',
     engine: 'trivia',
+    engine_config: { questions: TRIVIA_FALLBACK_QUESTIONS['trivia-tech'] },
     description: 'Test your technology knowledge',
     multiplayer: true,
     emoji: '\uD83D\uDCBB',
@@ -190,6 +196,7 @@ export const LOCAL_CATALOG = [
     name: 'Movie Trivia',
     category: 'trivia',
     engine: 'trivia',
+    engine_config: { questions: TRIVIA_FALLBACK_QUESTIONS['trivia-movies'] },
     description: 'How well do you know films?',
     multiplayer: true,
     emoji: '\uD83C\uDFAC',
@@ -254,6 +261,7 @@ export const LOCAL_CATALOG = [
     name: 'Party Trivia',
     category: 'party',
     engine: 'trivia',
+    engine_config: { questions: TRIVIA_FALLBACK_QUESTIONS['party-trivia'] },
     description: 'Fast-paced trivia for groups',
     multiplayer: true,
     emoji: '\uD83C\uDF89',
