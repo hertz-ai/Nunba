@@ -1,6 +1,6 @@
-import {Box, Typography} from '@mui/material';
-import {INVALID_MOVE} from 'boardgame.io/core';
 import React from 'react';
+import { Box, Typography } from '@mui/material';
+import { INVALID_MOVE } from 'boardgame.io/core';
 
 const PITS_PER_SIDE = 6;
 const INITIAL_STONES = 4;
@@ -28,8 +28,8 @@ function createInitialPits() {
 }
 
 function getPlayerPitRange(playerID) {
-  if (playerID === '0') return {start: 0, end: 5, store: STORE_0};
-  return {start: 7, end: 12, store: STORE_1};
+  if (playerID === '0') return { start: 0, end: 5, store: STORE_0 };
+  return { start: 7, end: 12, store: STORE_1 };
 }
 
 function getOppositeIndex(index) {
@@ -38,7 +38,7 @@ function getOppositeIndex(index) {
 }
 
 function playerSideEmpty(pits, playerID) {
-  const {start, end} = getPlayerPitRange(playerID);
+  const { start, end } = getPlayerPitRange(playerID);
   for (let i = start; i <= end; i++) {
     if (pits[i] > 0) return false;
   }
@@ -54,8 +54,8 @@ const MancalaGame = {
   }),
 
   moves: {
-    sowStones: ({G, playerID, events}, pitIndex) => {
-      const {start, end, store} = getPlayerPitRange(playerID);
+    sowStones: ({ G, playerID, events }, pitIndex) => {
+      const { start, end, store } = getPlayerPitRange(playerID);
       const opponentStore = playerID === '0' ? STORE_1 : STORE_0;
 
       // Validate: must be on player's side and have stones
@@ -96,7 +96,7 @@ const MancalaGame = {
     },
   },
 
-  endIf: ({G}) => {
+  endIf: ({ G }) => {
     const side0Empty = playerSideEmpty(G.pits, '0');
     const side1Empty = playerSideEmpty(G.pits, '1');
 
@@ -112,28 +112,28 @@ const MancalaGame = {
         finalPits[i] = 0;
       }
 
-      if (finalPits[STORE_0] > finalPits[STORE_1]) return {winner: '0'};
-      if (finalPits[STORE_1] > finalPits[STORE_0]) return {winner: '1'};
-      return {draw: true};
+      if (finalPits[STORE_0] > finalPits[STORE_1]) return { winner: '0' };
+      if (finalPits[STORE_1] > finalPits[STORE_0]) return { winner: '1' };
+      return { draw: true };
     }
   },
 
-  turn: {minMoves: 1, maxMoves: 1},
-
-  // AI move enumeration — a pit is playable iff it's on the current
-  // player's side and has stones (moves.sowStones validates the same
-  // invariants). The boardgame.io AI framework passes the current
-  // player via ctx.currentPlayer.
+  turn: { minMoves: 1, maxMoves: 1 },
   ai: {
+  // Legal moves for the bot that plays seat 1.
+  //
+  // These are two-player games but only seat 0 is ever mounted, so without
+  // an opponent the game stalls on "Opponent's turn" after the human's very
+  // first move and can never finish. boardgame.io bots need ai.enumerate to
+  // know what they may play.
     enumerate: (G, ctx) => {
-      const {start, end} = getPlayerPitRange(ctx.currentPlayer);
-      const moves = [];
-      for (let pit = start; pit <= end; pit++) {
-        if (G.pits[pit] > 0) {
-          moves.push({move: 'sowStones', args: [pit]});
-        }
+      // Seat 0 sows from pits 0-5, seat 1 from 7-12; stores are 6 and 13.
+      const base = ctx.currentPlayer === '0' ? 0 : 7;
+      const out = [];
+      for (let i = base; i < base + 6; i++) {
+        if (G.pits[i] > 0) out.push({ move: 'sowStones', args: [i] });
       }
-      return moves;
+      return out;
     },
   },
 };
@@ -141,16 +141,9 @@ const MancalaGame = {
 const WOOD_BG = '#8B6914';
 const WOOD_DARK = '#6B4F10';
 const PIT_BG = '#5C3A0A';
-const STONE_COLORS = [
-  '#E57373',
-  '#64B5F6',
-  '#81C784',
-  '#FFD54F',
-  '#CE93D8',
-  '#4DD0E1',
-];
+const STONE_COLORS = ['#E57373', '#64B5F6', '#81C784', '#FFD54F', '#CE93D8', '#4DD0E1'];
 
-function StoneCircle({count, size = 'normal'}) {
+function StoneCircle({ count, size = 'normal' }) {
   if (count === 0) return null;
 
   const maxDisplay = size === 'large' ? 20 : 8;
@@ -168,7 +161,7 @@ function StoneCircle({count, size = 'normal'}) {
         p: 0.5,
       }}
     >
-      {Array.from({length: displayCount}, (_, i) => (
+      {Array.from({ length: displayCount }, (_, i) => (
         <Box
           key={i}
           sx={{
@@ -181,7 +174,7 @@ function StoneCircle({count, size = 'normal'}) {
         />
       ))}
       {count > maxDisplay && (
-        <Typography sx={{fontSize: 9, color: 'rgba(255,255,255,0.6)'}}>
+        <Typography sx={{ fontSize: 9, color: 'rgba(255,255,255,0.6)' }}>
           +{count - maxDisplay}
         </Typography>
       )}
@@ -189,8 +182,8 @@ function StoneCircle({count, size = 'normal'}) {
   );
 }
 
-function MancalaBoard({G, ctx, moves, playerID, isActive}) {
-  const {start, end} = getPlayerPitRange(playerID);
+function MancalaBoard({ G, ctx, moves, playerID, isActive }) {
+  const { start, end } = getPlayerPitRange(playerID);
 
   const handlePitClick = (pitIndex) => {
     if (!isActive) return;
@@ -208,19 +201,12 @@ function MancalaBoard({G, ctx, moves, playerID, isActive}) {
   const isMyPit = (idx) => idx >= start && idx <= end;
 
   return (
-    <Box
-      sx={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 2,
-      }}
-    >
+    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
       {!ctx.gameover && (
-        <Typography sx={{color: 'rgba(255,255,255,0.7)', fontSize: 14}}>
+        <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>
           {currentTurnLabel}
           {G.lastLandedInStore && ctx.currentPlayer === playerID && (
-            <Box component="span" sx={{color: '#4CAF50', ml: 1}}>
+            <Box component="span" sx={{ color: '#4CAF50', ml: 1 }}>
               Extra turn!
             </Box>
           )}
@@ -254,21 +240,19 @@ function MancalaBoard({G, ctx, moves, playerID, isActive}) {
             p: 1,
           }}
         >
-          <Typography
-            sx={{color: 'rgba(255,255,255,0.5)', fontSize: 10, mb: 0.5}}
-          >
+          <Typography sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, mb: 0.5 }}>
             P2
           </Typography>
-          <Typography sx={{color: '#fff', fontWeight: 700, fontSize: 20}}>
+          <Typography sx={{ color: '#fff', fontWeight: 700, fontSize: 20 }}>
             {G.pits[STORE_1]}
           </Typography>
           <StoneCircle count={G.pits[STORE_1]} size="large" />
         </Box>
 
         {/* Center pits */}
-        <Box sx={{display: 'flex', flexDirection: 'column', gap: 1.5}}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
           {/* Top row: Player 1's pits */}
-          <Box sx={{display: 'flex', gap: 1}}>
+          <Box sx={{ display: 'flex', gap: 1 }}>
             {topRow.map((pitIdx) => (
               <Box
                 key={pitIdx}
@@ -282,25 +266,22 @@ function MancalaBoard({G, ctx, moves, playerID, isActive}) {
                   flexDirection: 'column',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  cursor:
-                    isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
-                      ? 'pointer'
-                      : 'default',
+                  cursor: isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
+                    ? 'pointer'
+                    : 'default',
                   transition: 'all 0.2s',
-                  border:
-                    isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
-                      ? '2px solid rgba(108, 99, 255, 0.4)'
-                      : '2px solid transparent',
-                  '&:hover':
-                    isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
-                      ? {
-                          background: '#7B4A1A',
-                          border: '2px solid rgba(108, 99, 255, 0.8)',
-                        }
-                      : {},
+                  border: isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
+                    ? '2px solid rgba(108, 99, 255, 0.4)'
+                    : '2px solid transparent',
+                  '&:hover': isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
+                    ? {
+                        background: '#7B4A1A',
+                        border: '2px solid rgba(108, 99, 255, 0.8)',
+                      }
+                    : {},
                 }}
               >
-                <Typography sx={{color: '#fff', fontWeight: 700, fontSize: 16}}>
+                <Typography sx={{ color: '#fff', fontWeight: 700, fontSize: 16 }}>
                   {G.pits[pitIdx]}
                 </Typography>
                 <StoneCircle count={G.pits[pitIdx]} />
@@ -309,7 +290,7 @@ function MancalaBoard({G, ctx, moves, playerID, isActive}) {
           </Box>
 
           {/* Bottom row: Player 0's pits */}
-          <Box sx={{display: 'flex', gap: 1}}>
+          <Box sx={{ display: 'flex', gap: 1 }}>
             {bottomRow.map((pitIdx) => (
               <Box
                 key={pitIdx}
@@ -323,25 +304,22 @@ function MancalaBoard({G, ctx, moves, playerID, isActive}) {
                   flexDirection: 'column',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  cursor:
-                    isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
-                      ? 'pointer'
-                      : 'default',
+                  cursor: isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
+                    ? 'pointer'
+                    : 'default',
                   transition: 'all 0.2s',
-                  border:
-                    isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
-                      ? '2px solid rgba(108, 99, 255, 0.4)'
-                      : '2px solid transparent',
-                  '&:hover':
-                    isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
-                      ? {
-                          background: '#7B4A1A',
-                          border: '2px solid rgba(108, 99, 255, 0.8)',
-                        }
-                      : {},
+                  border: isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
+                    ? '2px solid rgba(108, 99, 255, 0.4)'
+                    : '2px solid transparent',
+                  '&:hover': isActive && isMyPit(pitIdx) && G.pits[pitIdx] > 0
+                    ? {
+                        background: '#7B4A1A',
+                        border: '2px solid rgba(108, 99, 255, 0.8)',
+                      }
+                    : {},
                 }}
               >
-                <Typography sx={{color: '#fff', fontWeight: 700, fontSize: 16}}>
+                <Typography sx={{ color: '#fff', fontWeight: 700, fontSize: 16 }}>
                   {G.pits[pitIdx]}
                 </Typography>
                 <StoneCircle count={G.pits[pitIdx]} />
@@ -364,12 +342,10 @@ function MancalaBoard({G, ctx, moves, playerID, isActive}) {
             p: 1,
           }}
         >
-          <Typography
-            sx={{color: 'rgba(255,255,255,0.5)', fontSize: 10, mb: 0.5}}
-          >
+          <Typography sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, mb: 0.5 }}>
             P1
           </Typography>
-          <Typography sx={{color: '#fff', fontWeight: 700, fontSize: 20}}>
+          <Typography sx={{ color: '#fff', fontWeight: 700, fontSize: 20 }}>
             {G.pits[STORE_0]}
           </Typography>
           <StoneCircle count={G.pits[STORE_0]} size="large" />
@@ -377,11 +353,11 @@ function MancalaBoard({G, ctx, moves, playerID, isActive}) {
       </Box>
 
       {/* Score summary */}
-      <Box sx={{display: 'flex', gap: 3}}>
-        <Typography sx={{color: '#64B5F6', fontSize: 14}}>
+      <Box sx={{ display: 'flex', gap: 3 }}>
+        <Typography sx={{ color: '#64B5F6', fontSize: 14 }}>
           Player 1 (You): {G.pits[STORE_0]}
         </Typography>
-        <Typography sx={{color: '#FF8A65', fontSize: 14}}>
+        <Typography sx={{ color: '#FF8A65', fontSize: 14 }}>
           Player 2: {G.pits[STORE_1]}
         </Typography>
       </Box>
@@ -410,4 +386,4 @@ function MancalaBoard({G, ctx, moves, playerID, isActive}) {
 }
 
 export default MancalaGame;
-export {MancalaBoard};
+export { MancalaBoard };

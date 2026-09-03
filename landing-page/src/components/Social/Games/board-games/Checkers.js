@@ -1,13 +1,13 @@
-import {Box, Typography} from '@mui/material';
-import {INVALID_MOVE} from 'boardgame.io/core';
-import React, {useState, useMemo, useCallback} from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
+import { Box, Typography } from '@mui/material';
+import { INVALID_MOVE } from 'boardgame.io/core';
 
 const SIZE = 8;
 
 // Piece constants
 const EMPTY = null;
-const RED = 'red'; // player 0
-const BLACK = 'black'; // player 1
+const RED = 'red';       // player 0
+const BLACK = 'black';   // player 1
 const RED_KING = 'redK';
 const BLACK_KING = 'blackK';
 
@@ -33,7 +33,7 @@ function opponent(playerID) {
 }
 
 function createInitialBoard() {
-  const board = Array.from({length: SIZE}, () => Array(SIZE).fill(EMPTY));
+  const board = Array.from({ length: SIZE }, () => Array(SIZE).fill(EMPTY));
   // Black pieces (player 1) on top 3 rows
   for (let r = 0; r < 3; r++) {
     for (let c = 0; c < SIZE; c++) {
@@ -66,25 +66,13 @@ function getValidMoves(board, r, c, playerID) {
       const nc = c + dc;
       if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE) {
         if (board[nr][nc] === EMPTY) {
-          moves.push({toR: nr, toC: nc, capture: false});
+          moves.push({ toR: nr, toC: nc, capture: false });
         } else if (!belongsTo(board[nr][nc], playerID)) {
           // Check jump
           const jr = nr + dr;
           const jc = nc + dc;
-          if (
-            jr >= 0 &&
-            jr < SIZE &&
-            jc >= 0 &&
-            jc < SIZE &&
-            board[jr][jc] === EMPTY
-          ) {
-            moves.push({
-              toR: jr,
-              toC: jc,
-              capture: true,
-              capturedR: nr,
-              capturedC: nc,
-            });
+          if (jr >= 0 && jr < SIZE && jc >= 0 && jc < SIZE && board[jr][jc] === EMPTY) {
+            moves.push({ toR: jr, toC: jc, capture: true, capturedR: nr, capturedC: nc });
           }
         }
       }
@@ -102,7 +90,7 @@ function getAllCaptures(board, playerID) {
         const movesForPiece = getValidMoves(board, r, c, playerID);
         const captureMoves = movesForPiece.filter((m) => m.capture);
         if (captureMoves.length > 0) {
-          captures.push({fromR: r, fromC: c, moves: captureMoves});
+          captures.push({ fromR: r, fromC: c, moves: captureMoves });
         }
       }
     }
@@ -118,7 +106,7 @@ function getAllNonCaptures(board, playerID) {
         const movesForPiece = getValidMoves(board, r, c, playerID);
         const regularMoves = movesForPiece.filter((m) => !m.capture);
         if (regularMoves.length > 0) {
-          nonCaptures.push({fromR: r, fromC: c, moves: regularMoves});
+          nonCaptures.push({ fromR: r, fromC: c, moves: regularMoves });
         }
       }
     }
@@ -150,7 +138,7 @@ const CheckersGame = {
   }),
 
   moves: {
-    movePiece: ({G, playerID}, fromR, fromC, toR, toC) => {
+    movePiece: ({ G, playerID }, fromR, fromC, toR, toC) => {
       const piece = G.board[fromR][fromC];
       if (!piece || !belongsTo(piece, playerID)) return INVALID_MOVE;
 
@@ -175,48 +163,35 @@ const CheckersGame = {
     },
   },
 
-  endIf: ({G, ctx}) => {
+  endIf: ({ G, ctx }) => {
     const opp = opponent(ctx.currentPlayer);
     const oppPieces = countPieces(G.board, opp);
     if (oppPieces === 0) {
-      return {winner: ctx.currentPlayer};
+      return { winner: ctx.currentPlayer };
     }
     // Check if current player has no moves (they lose)
     const captures = getAllCaptures(G.board, ctx.currentPlayer);
     const nonCaptures = getAllNonCaptures(G.board, ctx.currentPlayer);
     if (captures.length === 0 && nonCaptures.length === 0) {
-      return {winner: opp};
+      return { winner: opp };
     }
   },
 
-  turn: {minMoves: 1, maxMoves: 1},
-
-  // AI move enumeration — respects the forced-capture rule: if any
-  // capture is available anywhere on the board, the AI MUST choose
-  // from captures only (matching moves.movePiece's INVALID_MOVE
-  // return when a non-capture is attempted while captures exist).
-  // Uses getAllCaptures + getAllNonCaptures so the rules stay in
-  // one place.
+  turn: { minMoves: 1, maxMoves: 1 },
   ai: {
+  // Legal moves for the bot that plays seat 1.
+  //
+  // These are two-player games but only seat 0 is ever mounted, so without
+  // an opponent the game stalls on "Opponent's turn" after the human's very
+  // first move and can never finish. boardgame.io bots need ai.enumerate to
+  // know what they may play.
     enumerate: (G, ctx) => {
-      const playerID = ctx.currentPlayer;
-      const captures = getAllCaptures(G.board, playerID);
-
-      if (captures.length > 0) {
-        const out = [];
-        for (const {fromR, fromC, moves: captureMoves} of captures) {
-          for (const m of captureMoves) {
-            out.push({move: 'movePiece', args: [fromR, fromC, m.toR, m.toC]});
-          }
-        }
-        return out;
-      }
-
-      const nonCaptures = getAllNonCaptures(G.board, playerID);
       const out = [];
-      for (const {fromR, fromC, moves: regularMoves} of nonCaptures) {
-        for (const m of regularMoves) {
-          out.push({move: 'movePiece', args: [fromR, fromC, m.toR, m.toC]});
+      for (let r = 0; r < G.board.length; r++) {
+        for (let c = 0; c < G.board[r].length; c++) {
+          getValidMoves(G.board, r, c, ctx.currentPlayer).forEach(({ toR, toC }) => {
+            out.push({ move: 'movePiece', args: [r, c, toR, toC] });
+          });
         }
       }
       return out;
@@ -229,7 +204,7 @@ const DARK_SQUARE = '#8B6914';
 const PIECE_RED = '#E53935';
 const PIECE_BLACK = '#333';
 
-function CheckersBoard({G, ctx, moves, playerID, isActive}) {
+function CheckersBoard({ G, ctx, moves, playerID, isActive }) {
   const [selected, setSelected] = useState(null);
 
   const validMovesForSelected = useMemo(() => {
@@ -263,7 +238,7 @@ function CheckersBoard({G, ctx, moves, playerID, isActive}) {
 
       // If clicking own piece, select it
       if (piece && belongsTo(piece, playerID)) {
-        setSelected({r, c});
+        setSelected({ r, c });
         return;
       }
 
@@ -277,16 +252,9 @@ function CheckersBoard({G, ctx, moves, playerID, isActive}) {
   const playerColor = playerID === '0' ? 'Red' : 'Black';
 
   return (
-    <Box
-      sx={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 2,
-      }}
-    >
+    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
       {!ctx.gameover && (
-        <Typography sx={{color: 'rgba(255,255,255,0.7)', fontSize: 14}}>
+        <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>
           {currentTurnLabel} &mdash; You are{' '}
           <Box
             component="span"
@@ -327,11 +295,9 @@ function CheckersBoard({G, ctx, moves, playerID, isActive}) {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  cursor:
-                    isActive &&
-                    (isValidDest || (cell && belongsTo(cell, playerID)))
-                      ? 'pointer'
-                      : 'default',
+                  cursor: isActive && (isValidDest || (cell && belongsTo(cell, playerID)))
+                    ? 'pointer'
+                    : 'default',
                   position: 'relative',
                   boxShadow: isSelected
                     ? 'inset 0 0 0 3px rgba(108, 99, 255, 0.8)'
@@ -390,11 +356,11 @@ function CheckersBoard({G, ctx, moves, playerID, isActive}) {
       </Box>
 
       {/* Piece counts */}
-      <Box sx={{display: 'flex', gap: 3}}>
-        <Typography sx={{color: PIECE_RED, fontSize: 14}}>
+      <Box sx={{ display: 'flex', gap: 3 }}>
+        <Typography sx={{ color: PIECE_RED, fontSize: 14 }}>
           Red: {countPieces(G.board, '0')}
         </Typography>
-        <Typography sx={{color: '#999', fontSize: 14}}>
+        <Typography sx={{ color: '#999', fontSize: 14 }}>
           Black: {countPieces(G.board, '1')}
         </Typography>
       </Box>
@@ -415,4 +381,4 @@ function CheckersBoard({G, ctx, moves, playerID, isActive}) {
 }
 
 export default CheckersGame;
-export {CheckersBoard};
+export { CheckersBoard };

@@ -1,66 +1,51 @@
-import {Box, Typography} from '@mui/material';
-import {INVALID_MOVE} from 'boardgame.io/core';
-import React, {useMemo} from 'react';
+import React, { useMemo } from 'react';
+import { Box, Typography } from '@mui/material';
+import { INVALID_MOVE } from 'boardgame.io/core';
 
 const WINNING_LINES = [
-  [0, 1, 2],
-  [3, 4, 5],
-  [6, 7, 8],
-  [0, 3, 6],
-  [1, 4, 7],
-  [2, 5, 8],
-  [0, 4, 8],
-  [2, 4, 6],
+  [0, 1, 2], [3, 4, 5], [6, 7, 8],
+  [0, 3, 6], [1, 4, 7], [2, 5, 8],
+  [0, 4, 8], [2, 4, 6],
 ];
 
 const TicTacToeGame = {
   name: 'tic-tac-toe',
 
-  setup: () => ({cells: Array(9).fill(null)}),
+  setup: () => ({ cells: Array(9).fill(null) }),
 
   moves: {
-    clickCell: ({G, playerID}, id) => {
+    clickCell: ({ G, playerID }, id) => {
       if (G.cells[id] !== null) return INVALID_MOVE;
       G.cells[id] = playerID;
     },
   },
 
-  endIf: ({G}) => {
+  endIf: ({ G }) => {
     for (const [a, b, c] of WINNING_LINES) {
-      if (
-        G.cells[a] !== null &&
-        G.cells[a] === G.cells[b] &&
-        G.cells[a] === G.cells[c]
-      ) {
-        return {winner: G.cells[a], winLine: [a, b, c]};
+      if (G.cells[a] !== null && G.cells[a] === G.cells[b] && G.cells[a] === G.cells[c]) {
+        return { winner: G.cells[a], winLine: [a, b, c] };
       }
     }
     if (G.cells.every((c) => c !== null)) {
-      return {draw: true};
+      return { draw: true };
     }
   },
 
-  turn: {minMoves: 1, maxMoves: 1},
-
-  // AI move enumeration — boardgame.io/ai bots (MCTSBot, RandomBot)
-  // call this to discover all legal moves for the current player.
-  // Source-of-truth: a cell is playable iff it's null (moves.clickCell
-  // returns INVALID_MOVE otherwise). Enumerate returns {move, args}
-  // objects matching the `moves` definition.
+  turn: { minMoves: 1, maxMoves: 1 },
   ai: {
-    enumerate: (G) => {
-      const moves = [];
-      for (let i = 0; i < G.cells.length; i++) {
-        if (G.cells[i] === null) {
-          moves.push({move: 'clickCell', args: [i]});
-        }
-      }
-      return moves;
-    },
+  // Legal moves for the bot that plays seat 1.
+  //
+  // These are two-player games but only seat 0 is ever mounted, so without
+  // an opponent the game stalls on "Opponent's turn" after the human's very
+  // first move and can never finish. boardgame.io bots need ai.enumerate to
+  // know what they may play.
+    enumerate: (G) => G.cells
+      .map((cell, i) => (cell === null ? { move: 'clickCell', args: [i] } : null))
+      .filter(Boolean),
   },
 };
 
-function TicTacToeBoard({G, ctx, moves, playerID, isActive}) {
+function TicTacToeBoard({ G, ctx, moves, playerID, isActive }) {
   const winLine = useMemo(() => {
     if (!ctx.gameover?.winLine) return [];
     return ctx.gameover.winLine;
@@ -90,20 +75,13 @@ function TicTacToeBoard({G, ctx, moves, playerID, isActive}) {
     ctx.currentPlayer === playerID ? 'Your turn' : "Opponent's turn";
 
   return (
-    <Box
-      sx={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 2,
-      }}
-    >
+    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
       {!ctx.gameover && (
-        <Typography sx={{color: 'rgba(255,255,255,0.7)', fontSize: 14}}>
+        <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>
           {currentTurnLabel} &mdash; You are{' '}
           <Box
             component="span"
-            sx={{color: getColor(playerID), fontWeight: 700}}
+            sx={{ color: getColor(playerID), fontWeight: 700 }}
           >
             {getSymbol(playerID)}
           </Box>
@@ -131,17 +109,18 @@ function TicTacToeBoard({G, ctx, moves, playerID, isActive}) {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              background: isWinCell(i) ? 'rgba(108, 99, 255, 0.2)' : '#1a1a2e',
+              background: isWinCell(i)
+                ? 'rgba(108, 99, 255, 0.2)'
+                : '#1a1a2e',
               borderRadius: '8px',
               cursor: cell === null && isActive ? 'pointer' : 'default',
               transition: 'all 0.2s ease',
-              '&:hover':
-                cell === null && isActive
-                  ? {
-                      background: '#252540',
-                      boxShadow: '0 0 12px rgba(108, 99, 255, 0.3)',
-                    }
-                  : {},
+              '&:hover': cell === null && isActive
+                ? {
+                    background: '#252540',
+                    boxShadow: '0 0 12px rgba(108, 99, 255, 0.3)',
+                  }
+                : {},
             }}
           >
             {cell !== null && (
@@ -186,4 +165,4 @@ function TicTacToeBoard({G, ctx, moves, playerID, isActive}) {
 }
 
 export default TicTacToeGame;
-export {TicTacToeBoard};
+export { TicTacToeBoard };

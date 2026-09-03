@@ -115,7 +115,11 @@ describe('Every game is driven to completion', () => {
   });
 
   GAMES.forEach((g) => {
-    const budgetMs = g.id === 'match3' ? 150000 : 75000; // match3 runs a 2:00 clock
+    // match3 runs a 2:00 clock; boards need enough turns for a real game to
+    // play out against the bot, which a 75s budget did not give them.
+    const budgetMs = g.id === 'match3' ? 150000
+      : g.kind === 'board' ? 180000
+      : 75000;
 
     it(`${g.name}: plays through to the end`, () => {
       cy.visit(`/social/games/${g.id}`, {
@@ -168,21 +172,29 @@ describe('Every game is driven to completion', () => {
                 // boards, sweep a grid of points across the engine's own box
                 // and let the game decide which are cells.
                 if (g.kind === 'board') {
-                  const br = root.getBoundingClientRect();
-                  const N = 8;
-                  const cell = (idx) => {
-                    const col = idx % N;
-                    const row = Math.floor(idx / N) % N;
-                    return {
-                      x: br.left + (br.width * (col + 0.5)) / N,
-                      y: br.top + (br.height * (row + 0.5)) / N,
-                    };
-                  };
-                  for (let i = 0; i < 6; i++) {
-                    const pt = cell(n * 6 + i);
-                    chain = chain.then(() => clickApp(map, pt.x, pt.y));
-                  }
-                  return chain.then(() => cy.wait(500, { log: false })).then(() => false);
+                  // Find the cells the way the player sees them: leaf elements
+                  // that carry a React onClick. A blind grid over the engine
+                  // box missed them — the container is far taller than the
+                  // board, so most grid rows fell outside the viewport and the
+                  // board stayed empty through the whole budget.
+                  const leaves = Array.from(root.querySelectorAll('div, td, button'))
+                    .filter((d) => {
+                      if (d.children.length) return false;
+                      const k = Object.keys(d).find((x) => x.startsWith('__reactProps$'));
+                      if (!k || typeof d[k].onClick !== 'function') return false;
+                      const r = d.getBoundingClientRect();
+                      return r.width > 8 && r.height > 8 && r.top >= 0;
+                    });
+                  leaves.slice(0, 8).forEach((el, i) => {
+                    const r = el.getBoundingClientRect();
+                    const idx = (n * 3 + i) % Math.max(leaves.length, 1);
+                    const t = leaves[idx].getBoundingClientRect();
+                    void r;
+                    chain = chain.then(() => clickApp(map,
+                      t.left + t.width / 2, t.top + t.height / 2));
+                  });
+                  // Give the bot on seat 1 time to answer before looking again.
+                  return chain.then(() => cy.wait(900, { log: false })).then(() => false);
                 }
 
                 pick.slice(0, 6).forEach((el, i) => {
@@ -210,8 +222,13 @@ describe('Every game is driven to completion', () => {
         };
 
         // Sequential rounds until done or out of budget.
+        // Rounds, not just the clock, bound the run. At 60 rounds the longer
+        // board games were stopping at ~76s with a 180s budget still unspent —
+        // the cap was the limiter, not the time. Tic Tac Toe finishes in 3s;
+        // Checkers and Reversi simply need more turns.
+        const maxRounds = g.kind === 'board' ? 200 : 60;
         let chain = cy.wrap(false, { log: false });
-        for (let n = 0; n < 60; n++) {
+        for (let n = 0; n < maxRounds; n++) {
           chain = chain.then((done) => (done ? true : round(n)));
         }
 

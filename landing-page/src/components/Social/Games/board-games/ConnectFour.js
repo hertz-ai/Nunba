@@ -1,12 +1,12 @@
-import {Box, Typography} from '@mui/material';
-import {INVALID_MOVE} from 'boardgame.io/core';
-import React, {useMemo} from 'react';
+import React, { useMemo } from 'react';
+import { Box, Typography } from '@mui/material';
+import { INVALID_MOVE } from 'boardgame.io/core';
 
 const ROWS = 6;
 const COLS = 7;
 
 function createEmptyBoard() {
-  return Array.from({length: ROWS}, () => Array(COLS).fill(null));
+  return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
 }
 
 function checkWin(board) {
@@ -14,21 +14,8 @@ function checkWin(board) {
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c <= COLS - 4; c++) {
       const v = board[r][c];
-      if (
-        v !== null &&
-        v === board[r][c + 1] &&
-        v === board[r][c + 2] &&
-        v === board[r][c + 3]
-      ) {
-        return {
-          winner: v,
-          cells: [
-            [r, c],
-            [r, c + 1],
-            [r, c + 2],
-            [r, c + 3],
-          ],
-        };
+      if (v !== null && v === board[r][c + 1] && v === board[r][c + 2] && v === board[r][c + 3]) {
+        return { winner: v, cells: [[r, c], [r, c + 1], [r, c + 2], [r, c + 3]] };
       }
     }
   }
@@ -36,21 +23,8 @@ function checkWin(board) {
   for (let r = 0; r <= ROWS - 4; r++) {
     for (let c = 0; c < COLS; c++) {
       const v = board[r][c];
-      if (
-        v !== null &&
-        v === board[r + 1][c] &&
-        v === board[r + 2][c] &&
-        v === board[r + 3][c]
-      ) {
-        return {
-          winner: v,
-          cells: [
-            [r, c],
-            [r + 1, c],
-            [r + 2, c],
-            [r + 3, c],
-          ],
-        };
+      if (v !== null && v === board[r + 1][c] && v === board[r + 2][c] && v === board[r + 3][c]) {
+        return { winner: v, cells: [[r, c], [r + 1, c], [r + 2, c], [r + 3, c]] };
       }
     }
   }
@@ -58,21 +32,8 @@ function checkWin(board) {
   for (let r = 0; r <= ROWS - 4; r++) {
     for (let c = 0; c <= COLS - 4; c++) {
       const v = board[r][c];
-      if (
-        v !== null &&
-        v === board[r + 1][c + 1] &&
-        v === board[r + 2][c + 2] &&
-        v === board[r + 3][c + 3]
-      ) {
-        return {
-          winner: v,
-          cells: [
-            [r, c],
-            [r + 1, c + 1],
-            [r + 2, c + 2],
-            [r + 3, c + 3],
-          ],
-        };
+      if (v !== null && v === board[r + 1][c + 1] && v === board[r + 2][c + 2] && v === board[r + 3][c + 3]) {
+        return { winner: v, cells: [[r, c], [r + 1, c + 1], [r + 2, c + 2], [r + 3, c + 3]] };
       }
     }
   }
@@ -80,21 +41,8 @@ function checkWin(board) {
   for (let r = 0; r <= ROWS - 4; r++) {
     for (let c = 3; c < COLS; c++) {
       const v = board[r][c];
-      if (
-        v !== null &&
-        v === board[r + 1][c - 1] &&
-        v === board[r + 2][c - 2] &&
-        v === board[r + 3][c - 3]
-      ) {
-        return {
-          winner: v,
-          cells: [
-            [r, c],
-            [r + 1, c - 1],
-            [r + 2, c - 2],
-            [r + 3, c - 3],
-          ],
-        };
+      if (v !== null && v === board[r + 1][c - 1] && v === board[r + 2][c - 2] && v === board[r + 3][c - 3]) {
+        return { winner: v, cells: [[r, c], [r + 1, c - 1], [r + 2, c - 2], [r + 3, c - 3]] };
       }
     }
   }
@@ -114,7 +62,7 @@ const ConnectFourGame = {
   }),
 
   moves: {
-    dropPiece: ({G, playerID}, col) => {
+    dropPiece: ({ G, playerID }, col) => {
       if (col < 0 || col >= COLS) return INVALID_MOVE;
       // Find lowest empty row in column
       let targetRow = -1;
@@ -126,43 +74,45 @@ const ConnectFourGame = {
       }
       if (targetRow === -1) return INVALID_MOVE;
       G.board[targetRow][col] = playerID;
-      G.lastDrop = {row: targetRow, col};
+      G.lastDrop = { row: targetRow, col };
     },
   },
 
-  endIf: ({G}) => {
+  endIf: ({ G }) => {
     const result = checkWin(G.board);
     if (result) {
-      return {winner: result.winner, winCells: result.cells};
+      return { winner: result.winner, winCells: result.cells };
     }
     if (isBoardFull(G.board)) {
-      return {draw: true};
+      return { draw: true };
     }
   },
 
-  turn: {minMoves: 1, maxMoves: 1},
-
-  // AI move enumeration — see TicTacToe.ai.enumerate for rationale.
-  // A column is playable iff its topmost cell (row 0) is empty.
-  ai: {
-    enumerate: (G) => {
-      const moves = [];
-      for (let col = 0; col < COLS; col++) {
-        if (G.board[0][col] === null) {
-          moves.push({move: 'dropPiece', args: [col]});
-        }
-      }
-      return moves;
-    },
-  },
+  turn: { minMoves: 1, maxMoves: 1 },
 };
 
 const PLAYER_COLORS = {
   0: '#FF6B6B',
   1: '#FFAB00',
+  ai: {
+  // Legal moves for the bot that plays seat 1.
+  //
+  // These are two-player games but only seat 0 is ever mounted, so without
+  // an opponent the game stalls on "Opponent's turn" after the human's very
+  // first move and can never finish. boardgame.io bots need ai.enumerate to
+  // know what they may play.
+    enumerate: (G) => {
+      const out = [];
+      for (let c = 0; c < G.board[0].length; c++) {
+        // A column is playable while its top cell is still empty.
+        if (G.board[0][c] === null) out.push({ move: 'dropPiece', args: [c] });
+      }
+      return out;
+    },
+  },
 };
 
-function ConnectFourBoard({G, ctx, moves, playerID, isActive}) {
+function ConnectFourBoard({ G, ctx, moves, playerID, isActive }) {
   const winCells = useMemo(() => {
     if (!ctx.gameover?.winCells) return new Set();
     return new Set(ctx.gameover.winCells.map(([r, c]) => `${r},${c}`));
@@ -180,16 +130,9 @@ function ConnectFourBoard({G, ctx, moves, playerID, isActive}) {
     ctx.currentPlayer === playerID ? 'Your turn' : "Opponent's turn";
 
   return (
-    <Box
-      sx={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 2,
-      }}
-    >
+    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
       {!ctx.gameover && (
-        <Typography sx={{color: 'rgba(255,255,255,0.7)', fontSize: 14}}>
+        <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>
           {currentTurnLabel} &mdash; You are{' '}
           <Box
             component="span"
@@ -207,8 +150,8 @@ function ConnectFourBoard({G, ctx, moves, playerID, isActive}) {
       )}
 
       {/* Column drop buttons */}
-      <Box sx={{display: 'flex', gap: '4px', mb: -1}}>
-        {Array.from({length: COLS}, (_, col) => (
+      <Box sx={{ display: 'flex', gap: '4px', mb: -1 }}>
+        {Array.from({ length: COLS }, (_, col) => (
           <Box
             key={col}
             onClick={() => handleColumnClick(col)}
@@ -218,22 +161,19 @@ function ConnectFourBoard({G, ctx, moves, playerID, isActive}) {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              cursor:
-                isActive && G.board[0][col] === null ? 'pointer' : 'default',
+              cursor: isActive && G.board[0][col] === null ? 'pointer' : 'default',
               borderRadius: '8px 8px 0 0',
-              background:
-                isActive && G.board[0][col] === null
-                  ? 'rgba(108, 99, 255, 0.2)'
-                  : 'transparent',
+              background: isActive && G.board[0][col] === null
+                ? 'rgba(108, 99, 255, 0.2)'
+                : 'transparent',
               transition: 'background 0.2s',
-              '&:hover':
-                isActive && G.board[0][col] === null
-                  ? {background: 'rgba(108, 99, 255, 0.4)'}
-                  : {},
+              '&:hover': isActive && G.board[0][col] === null
+                ? { background: 'rgba(108, 99, 255, 0.4)' }
+                : {},
             }}
           >
             {isActive && G.board[0][col] === null && (
-              <Typography sx={{color: 'rgba(255,255,255,0.4)', fontSize: 18}}>
+              <Typography sx={{ color: 'rgba(255,255,255,0.4)', fontSize: 18 }}>
                 &#9660;
               </Typography>
             )}
@@ -262,23 +202,23 @@ function ConnectFourBoard({G, ctx, moves, playerID, isActive}) {
                 width: 52,
                 height: 52,
                 borderRadius: '50%',
-                background: cell === null ? '#e8e8e8' : PLAYER_COLORS[cell],
+                background: cell === null
+                  ? '#e8e8e8'
+                  : PLAYER_COLORS[cell],
                 border: isWinCell(r, c)
                   ? '3px solid #fff'
                   : '2px solid rgba(0,0,0,0.2)',
-                boxShadow:
-                  cell !== null
-                    ? `inset 0 -3px 6px rgba(0,0,0,0.25)${isWinCell(r, c) ? `, 0 0 16px ${PLAYER_COLORS[cell]}` : ''}`
-                    : 'inset 0 3px 6px rgba(0,0,0,0.1)',
-                cursor:
-                  isActive && G.board[0][c] === null ? 'pointer' : 'default',
+                boxShadow: cell !== null
+                  ? `inset 0 -3px 6px rgba(0,0,0,0.25)${isWinCell(r, c) ? `, 0 0 16px ${PLAYER_COLORS[cell]}` : ''}`
+                  : 'inset 0 3px 6px rgba(0,0,0,0.1)',
+                cursor: isActive && G.board[0][c] === null ? 'pointer' : 'default',
                 transition: 'all 0.3s ease',
                 ...(G.lastDrop && G.lastDrop.row === r && G.lastDrop.col === c
                   ? {
                       animation: 'dropIn 0.3s ease-out',
                       '@keyframes dropIn': {
-                        '0%': {transform: 'translateY(-200px)', opacity: 0.5},
-                        '100%': {transform: 'translateY(0)', opacity: 1},
+                        '0%': { transform: 'translateY(-200px)', opacity: 0.5 },
+                        '100%': { transform: 'translateY(0)', opacity: 1 },
                       },
                     }
                   : {}),
@@ -310,4 +250,4 @@ function ConnectFourBoard({G, ctx, moves, playerID, isActive}) {
 }
 
 export default ConnectFourGame;
-export {ConnectFourBoard};
+export { ConnectFourBoard };
