@@ -13,7 +13,14 @@
  * unauthenticated, and the path that used to launch the wrong game entirely.
  */
 
+import { calibrate, clickApp, cdpMouse } from '../support/realInput';
+
 const FAKE_TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJpZCI6MSwicm9sZSI6ImZsYXQifQ.fake';
+
+// Transform from app coordinates to the browser-window coordinates CDP wants.
+// Re-measured on every launch() — see cypress/support/realInput.js for why
+// aiming with raw app coordinates silently missed by hundreds of pixels.
+let POINTER_MAP = null;
 
 function stubCatalogDown() {
   cy.intercept('GET', '**/api/social/games/catalog*', { statusCode: 503, body: {} });
@@ -35,6 +42,9 @@ function launch(id) {
   });
   cy.get('#root', { timeout: 120000 }).should('exist');
   cy.contains(/play solo/i, { timeout: 120000 }).click({ force: true });
+  // Re-measure per game: the runner's iframe scale/offset can change between
+  // specs, and a stale transform silently aims every click at the wrong place.
+  cy.window().then((win) => calibrate(win).then((m) => { POINTER_MAP = m; }));
 }
 
 /**
@@ -52,6 +62,33 @@ function launch(id) {
  * CHANGES is done out-of-band by comparing the before/after PNG screenshots
  * (see scripts/compare_game_frames.py) — artifact-mediated, not proxy-mediated.
  */
+/**
+ * A real click at APP coordinates: move → press → release.
+ *
+ * Phaser ignores Cypress's synthetic pointer events even with pointerId /
+ * isPrimary / buttons set, so this goes through the Chrome DevTools Protocol,
+ * which dispatches via the browser's own input pipeline and is
+ * indistinguishable from a human mouse.
+ *
+ * The coordinate conversion is the whole point. CDP addresses the browser
+ * window, but every coordinate a test can compute is app-relative, and the
+ * Cypress runner scales the app iframe (measured: 0.6) and offsets it
+ * (measured: 468, 80). Clicking raw app coordinates missed the target
+ * entirely — a Match-3 board with 15 legal moves survived all 112 adjacent
+ * swaps at score 0, which I nearly filed as a game defect.
+ */
+function realClickAt(x, y) {
+  if (!POINTER_MAP) throw new Error('pointer not calibrated — launch() first');
+  return clickApp(POINTER_MAP, x, y);
+}
+
+/** Move the pointer (no button) to APP coordinates. */
+function realMoveTo(x, y) {
+  if (!POINTER_MAP) throw new Error('pointer not calibrated — launch() first');
+  const p = POINTER_MAP(x, y);
+  return cdpMouse('mouseMoved', p.x, p.y, { button: 'none', buttons: 0 });
+}
+
 function countAnimationFrames(win, ms = 800) {
   return new Cypress.Promise((resolve) => {
     let frames = 0;
@@ -197,7 +234,40 @@ describe('Arcade games — input moves the game', () => {
           const cx = r.left + r.width * 0.5;
           const cy0 = r.top + r.height * 0.5;
 
-          if (g.id === 'match3') {
+          if (g.id === 'match3' || g.id === 'bubble-shooter') {
+            // POINTER-ONLY games — drive them with REAL CDP mouse input.
+            // Synthetic events never reached Phaser here (0.000% pixels).
+            const cell = Math.min(r.width, r.height) * 0.8 / 8;
+            if (g.id === 'match3') {
+              // Swap two ADJACENT gems — the only legal move.
+              cy.wrap(null).then(() => realClickAt(cx, cy0));
+              cy.wait(400);
+              cy.wrap(null).then(() => realClickAt(cx + cell, cy0));
+              cy.wait(1500);
+              // A second swap elsewhere, in case the first pair had no match.
+              cy.wrap(null).then(() => realClickAt(cx, cy0 + cell));
+              cy.wait(400);
+              cy.wrap(null).then(() => realClickAt(cx + cell, cy0 + cell));
+              cy.wait(900);
+              // Finally SELECT a single gem and leave it selected. A match-3
+              // board legitimately REVERTS a swap that forms no line, so the
+              // picture returns to its original state and a before/after diff
+              // reads 0% even though input was received. A selection highlight
+              // is the observable proof that the tap registered.
+              cy.wrap(null).then(() => realClickAt(cx - cell, cy0 - cell));
+            } else {
+              // Aim (mouseMoved) then fire (click), twice at different angles.
+              [-0.22, 0.18].forEach((skew) => {
+                const tx = cx + r.width * skew;
+                const ty = r.top + r.height * 0.28;
+                cy.wrap(null).then(() => realMoveTo(tx, ty));
+                cy.wait(300);
+                cy.wrap(null).then(() => realClickAt(tx, ty));
+                cy.wait(1600); // bubble flight + settle
+              });
+            }
+            cy.wait(1200);
+          } else if (g.id === '__never__') {
             // 8x8 grid, centred. A move is a swap of two ADJACENT cells, so
             // tap one cell then the one beside it. A generic centre drag is
             // not a legal move and left the board unchanged (0.03% pixels).
