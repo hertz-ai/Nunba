@@ -89,18 +89,14 @@ const ConnectFourGame = {
   },
 
   turn: { minMoves: 1, maxMoves: 1 },
-};
 
-const PLAYER_COLORS = {
-  0: '#FF6B6B',
-  1: '#FFAB00',
-  ai: {
   // Legal moves for the bot that plays seat 1.
   //
-  // These are two-player games but only seat 0 is ever mounted, so without
-  // an opponent the game stalls on "Opponent's turn" after the human's very
-  // first move and can never finish. boardgame.io bots need ai.enumerate to
-  // know what they may play.
+  // These are two-player games but only seat 0 is ever mounted, so without an
+  // opponent the game stalls on "Opponent's turn" after the human's very first
+  // move and can never finish. boardgame.io bots need ai.enumerate to know
+  // what they may play.
+  ai: {
     enumerate: (G) => {
       const out = [];
       for (let c = 0; c < G.board[0].length; c++) {
@@ -110,6 +106,11 @@ const PLAYER_COLORS = {
       return out;
     },
   },
+};
+
+const PLAYER_COLORS = {
+  0: '#FF6B6B',
+  1: '#FFAB00',
 };
 
 function ConnectFourBoard({ G, ctx, moves, playerID, isActive }) {

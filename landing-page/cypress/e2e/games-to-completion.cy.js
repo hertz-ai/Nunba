@@ -148,6 +148,16 @@ describe('Every game is driven to completion', () => {
             if (DONE_RE.test(doc.body.innerText || '')) return true;
             if (Date.now() - started > budgetMs) return false;
 
+            // Arcade games end when the player DIES, so after enough input to
+            // get one started, stop steering and let it happen. Pressing keys
+            // the whole way through actively keeps them alive — that is why
+            // Snake, Breakout, Flappy and Runner flipped between completed and
+            // timed-out from run to run depending on how well the random input
+            // happened to play.
+            if (g.kind === 'phaser' && g.id !== 'match3' && n > 10) {
+              return cy.wait(900, { log: false }).then(() => false);
+            }
+
             // Keys — held, because Phaser polls key state per frame.
             const keys = [K.space, K.right, K.up, K.down, K.left];
             const k = keys[n % keys.length];

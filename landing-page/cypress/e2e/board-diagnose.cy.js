@@ -26,7 +26,8 @@ describe('board move diagnosis', () => {
     });
 
     const report = {};
-    cy.visit('/social/games/tic-tac-toe', {
+    const GAME = Cypress.env('game') || 'tic-tac-toe';
+    cy.visit(`/social/games/${GAME}`, {
       failOnStatusCode: false,
       onBeforeLoad(win) {
         win.localStorage.setItem('access_token', FAKE_TOKEN);
@@ -65,11 +66,15 @@ describe('board move diagnosis', () => {
       report.cellsWithOnClick = withHandler.length;
 
       if (withHandler.length) {
-        cy.wrap(withHandler[Math.floor(withHandler.length / 2)]).click({ force: true });
+        // Click a handful of cells over successive turns so the bot gets
+        // several chances to answer, not just one.
+        cy.wrap(withHandler[withHandler.length - 1]).click({ force: true });
+        cy.wait(2500);
+        cy.wrap(withHandler[0]).click({ force: true });
       }
     });
 
-    cy.wait(2500);
+    cy.wait(4000);
     cy.get('[data-testid="engine-boardgame"]').then(($root) => {
       report.textAfter = ($root[0].innerText || '').replace(/\s+/g, ' ').slice(0, 120);
       report.changed = report.textAfter !== report.textBefore;
