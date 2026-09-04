@@ -103,12 +103,19 @@ describe('word search diagnosis', () => {
           cy.wrap(null, { log: false })
             .then(() => cdpMouse('mouseMoved', p0.x, p0.y, { button: 'none', buttons: 0 }))
             .then(() => cdpMouse('mousePressed', p0.x, p0.y));
+          // Let React commit isSelecting/selectionStart before the drag.
+          // handleCellMouseUp reads selectionStart from the closure it was
+          // bound with, so if no re-render lands between the press and the
+          // release it still sees the PREVIOUS value — which is exactly the
+          // shape of a strictly alternating hit/miss.
+          cy.wait(150);
           cells.forEach(([rr, cc]) => {
             cy.wrap(null, { log: false }).then(() => {
               const q = pt(rr, cc);
               return cdpMouse('mouseMoved', q.x, q.y);
             });
           });
+          cy.wait(150);
           cy.wrap(null, { log: false }).then(() => {
             const last = cells[cells.length - 1];
             const q = pt(last[0], last[1]);

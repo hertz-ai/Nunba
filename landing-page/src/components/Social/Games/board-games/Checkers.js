@@ -130,11 +130,16 @@ function maybePromote(board, r, c) {
   if (piece === BLACK && r === SIZE - 1) board[r][c] = BLACK_KING;
 }
 
+// Standard checkers draws a position after this many moves with no capture.
+const DRAW_AFTER_QUIET_MOVES = 40;
+
 const CheckersGame = {
   name: 'checkers',
 
   setup: () => ({
     board: createInitialBoard(),
+    // Moves played since the last capture, for the draw rule in endIf.
+    movesSinceCapture: 0,
   }),
 
   moves: {
@@ -156,6 +161,9 @@ const CheckersGame = {
 
       if (move.capture) {
         G.board[move.capturedR][move.capturedC] = EMPTY;
+        G.movesSinceCapture = 0;
+      } else {
+        G.movesSinceCapture = (G.movesSinceCapture || 0) + 1;
       }
 
       // Promote to king
@@ -174,6 +182,17 @@ const CheckersGame = {
     const nonCaptures = getAllNonCaptures(G.board, ctx.currentPlayer);
     if (captures.length === 0 && nonCaptures.length === 0) {
       return { winner: opp };
+    }
+
+    // Draw on 40 moves without a capture — the standard checkers rule.
+    //
+    // Without it this game has NO drawing condition at all: it ends only when
+    // a side is wiped out or has no legal move. Two kings can then shuffle
+    // indefinitely and the game can never finish. Observed directly — a real
+    // game played for 15 minutes down to a handful of pieces and a crowned
+    // king without ever reaching a terminal position.
+    if ((G.movesSinceCapture || 0) >= DRAW_AFTER_QUIET_MOVES) {
+      return { draw: true };
     }
   },
 

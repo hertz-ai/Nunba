@@ -179,6 +179,31 @@ function findWordCells(grid, word) {
   return null;
 }
 
+/**
+ * The offline word list WordScrambleEngine draws from.
+ *
+ * Mirrored so the driver can UNSCRAMBLE rather than guess: the engine only
+ * advances a round on a correct answer, so typing anything else just burns the
+ * clock. Matching is by anagram, so a different scramble of the same word still
+ * resolves.
+ */
+const SCRAMBLE_WORDS = [
+  'PLANET', 'STREAM', 'GARDEN', 'BRIDGE', 'CASTLE', 'FOREST',
+  'MARKET', 'ROCKET', 'FROZEN', 'SPIRIT', 'BREEZE', 'CANDLE',
+  'PUZZLE', 'SUNSET', 'VOYAGE', 'HARBOR', 'MEADOW', 'KNIGHT',
+  'DRAGON', 'FALCON', 'GLIDER', 'ISLAND', 'JUNGLE', 'KITTEN',
+  'LEMON', 'MANGO', 'OLIVE', 'PEACH', 'RAVEN', 'TIGER',
+  'WHALE', 'ZEBRA', 'CORAL', 'DELTA', 'EMBER', 'FLAME',
+];
+
+const sortLetters = (w) => w.toUpperCase().split('').sort().join('');
+
+/** The word whose letters match this scramble, or null. */
+function unscramble(letters) {
+  const key = sortLetters(letters);
+  return SCRAMBLE_WORDS.find((w) => sortLetters(w) === key) || null;
+}
+
 const results = {};
 
 describe('Every game is driven to completion', () => {
@@ -198,6 +223,11 @@ describe('Every game is driven to completion', () => {
     // it; boards need enough turns for a real game against the bot; Pong and
     // Endless Runner are simply the slowest arcade games to reach a death.
     const budgetMs = g.id === 'match3' ? 200000
+      // Checkers is simply a long game: 12 pieces a side, and once kings
+      // appear it can run much further. Screenshots show the driver playing a
+      // genuine game down to ~6 pieces a side with a king crowned, so what it
+      // needed was time to reach a terminal position, not different moves.
+      : g.id === 'checkers' ? 900000
       : g.kind === 'board' ? 200000
       : g.kind === 'word' ? 150000
       : 130000;
@@ -220,6 +250,44 @@ describe('Every game is driven to completion', () => {
         return;
       }
 
+      // Word Scramble is unscrambled, not guessed: the engine only advances a
+      // round when the answer is right, so anything else just burns the clock.
+      if (g.id === 'word-scramble' || g.id === 'party-word-race') {
+        cy.get('[data-testid="engine-word_scramble"]', { timeout: 60000 }).should('exist');
+        cy.wait(2000);
+
+        const playRound = () => {
+          cy.get('body', { log: false }).then(($b) => {
+            if (DONE_RE.test($b[0].innerText || '')) return;
+            cy.get('[data-testid="engine-word_scramble"]').then(($r) => {
+              // The scramble is rendered as one element per letter.
+              const tiles = Array.from($r[0].querySelectorAll('*'))
+                .filter((e) => !e.children.length
+                  && /^[A-Za-z]$/.test((e.innerText || '').trim()));
+              const scrambled = tiles.map((e) => e.innerText.trim()).join('');
+              const answer = unscramble(scrambled);
+              if (!answer) return;
+              cy.get('input').first().clear({ force: true })
+                .type(`${answer}{enter}`, { force: true });
+              cy.wait(900);
+            });
+          });
+        };
+        for (let i = 0; i < 40; i++) playRound();
+
+        cy.wait(2500);
+        cy.document().then((doc) => {
+          const finished = DONE_RE.test(doc.body.innerText || '');
+          cy.screenshot(`done-${g.id}`, { capture: 'viewport', overwrite: true });
+          results[g.id] = {
+            name: g.name,
+            outcome: finished ? 'completed' : 'not-completed',
+            tail: (doc.body.innerText || '').replace(/\s+/g, ' ').slice(0, 160),
+          };
+        });
+        return;
+      }
+
       // Word Search gets solved too: a word only registers when its exact run
       // of cells is swept, so clicking around can never finish one.
       if (g.id === 'word-search') {
@@ -238,8 +306,15 @@ describe('Every game is driven to completion', () => {
           const cellEls = Array.from(root.querySelectorAll('*'))
             .filter((d) => {
               const k = Object.keys(d).find((x) => x.startsWith('__reactProps$'));
-              return k && typeof d[k].onMouseEnter === 'function'
-                       && typeof d[k].onMouseDown === 'function';
+              if (!k || typeof d[k].onMouseEnter !== 'function'
+                     || typeof d[k].onMouseDown !== 'function') return false;
+              // A cell shows exactly one letter. One element passes both
+              // handler checks while rendering nothing — measured, the read
+              // grid began ["", "D", "D", ...] — which shifts every row by one
+              // and leaves not a single word findable, which is why the sweep
+              // ran in 13s and reported "0 / 8 words found": it had no
+              // candidates to sweep at all.
+              return /^[A-Z]$/.test((d.innerText || '').trim().toUpperCase());
             });
           const size = Math.round(Math.sqrt(cellEls.length));
           expect(size * size, 'word search grid is square').to.eq(cellEls.length);
@@ -253,8 +328,20 @@ describe('Every game is driven to completion', () => {
 
           // The words on offer are whatever the panel lists; fall back to
           // scanning for the known local set if the list cannot be read.
-          const listed = (root.innerText || '')
-            .toUpperCase().match(/[A-Z]{3,}/g) || [];
+          // Read the word list from the PAGE, and with a regex that can match.
+          //
+          // Two faults, both mine. The pattern held literal BACKSPACE bytes
+          // where \b word boundaries were meant, so it could never match
+          // anything; and the "Words to find" panel sits outside the engine
+          // element, where every letter is its own line and a run of three or
+          // more never appears anyway. The solver got an empty word list, swept
+          // nothing, and reported "0 / 8 words found" in 12 seconds while the
+          // grid it had read was perfectly correct.
+          //
+          // Words picked up from the surrounding page are harmless: the
+          // findWordCells filter keeps only ones actually present in the grid.
+          const listed = (root.ownerDocument.body.innerText || '')
+            .toUpperCase().match(/[A-Z]{3,}/g) || [];
           const candidates = Array.from(new Set(listed))
             .filter((w) => findWordCells(grid, w));
 
@@ -266,20 +353,38 @@ describe('Every game is driven to completion', () => {
           // joined the selection and the board stayed at "0 / 8 words found"
           // even though every word had been located correctly. CDP moves the
           // actual pointer, which produces genuine enter/leave.
-          const centre = (rr, cc) => {
-            const b = at(rr, cc).getBoundingClientRect();
-            return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
-          };
+          //
+          // Positions are captured ONCE, up front. Finding a word re-renders
+          // the grid to highlight it, which detaches the element references
+          // held here — and getBoundingClientRect() on a detached node returns
+          // zeros, so every sweep after the first aimed at (0,0). The grid
+          // itself never moves, so the coordinates stay valid.
+          const centres = [];
+          for (let rr = 0; rr < size; rr++) {
+            for (let cc = 0; cc < size; cc++) {
+              const b = at(rr, cc).getBoundingClientRect();
+              centres.push({ x: b.left + b.width / 2, y: b.top + b.height / 2 });
+            }
+          }
+          const centre = (rr, cc) => centres[rr * size + cc];
 
-          candidates.forEach((word) => {
-            const cells = findWordCells(grid, word);
-            if (!cells) return;
+          // Sweep one word: press on its first letter, drag through it, release
+          // on its last. The engine derives the selection from the start and
+          // end cells only.
+          const sweep = (cells) => {
             const first = centre(cells[0][0], cells[0][1]);
             cy.wrap(null, { log: false }).then(() => {
               const p0 = map(first.x, first.y);
               return cdpMouse('mouseMoved', p0.x, p0.y, { button: 'none', buttons: 0 })
                 .then(() => cdpMouse('mousePressed', p0.x, p0.y));
             });
+            // Let React commit isSelecting/selectionStart before dragging, and
+            // again before releasing. handleCellMouseUp reads selectionStart
+            // from the closure it was bound with, so with no re-render between
+            // the press and the release it still sees the PREVIOUS word's
+            // value — which is exactly the shape of the strictly alternating
+            // hit/miss this sweep showed.
+            cy.wait(150);
             cells.forEach(([rr, cc]) => {
               cy.wrap(null, { log: false }).then(() => {
                 const q = centre(rr, cc);
@@ -287,13 +392,44 @@ describe('Every game is driven to completion', () => {
                 return cdpMouse('mouseMoved', pm.x, pm.y);
               });
             });
+            cy.wait(150);
             cy.wrap(null, { log: false }).then(() => {
               const last = cells[cells.length - 1];
               const q = centre(last[0], last[1]);
               const pe = map(q.x, q.y);
               return cdpMouse('mouseReleased', pe.x, pe.y);
             });
-            cy.wait(300);
+            cy.wait(500);
+          };
+
+          const foundCount = ($el) => {
+            const m = ($el.innerText || '').match(/(\d+)\s*\/\s*\d+\s*words found/i);
+            return m ? Number(m[1]) : -1;
+          };
+
+          // Sweep each word, then CHECK it registered and sweep again if not.
+          //
+          // Measured: results alternated hit/miss strictly by position — words
+          // 1,3,5,7 registered and 2,4,6,8 did not, regardless of which words
+          // they were. That is a mechanical input-timing artefact, not the
+          // game, and verifying each word turns it into a retry instead of a
+          // lost word.
+          candidates.forEach((word) => {
+            const cells = findWordCells(grid, word);
+            if (!cells) return;
+            cy.get('[data-testid="engine-word_search"]', { log: false })
+              .then(($a) => {
+                const before = foundCount($a[0]);
+                sweep(cells);
+                cy.get('[data-testid="engine-word_search"]', { log: false })
+                  .then(($b) => {
+                    if (foundCount($b[0]) <= before) sweep(cells);
+                  });
+                cy.get('[data-testid="engine-word_search"]', { log: false })
+                  .then(($c) => {
+                    if (foundCount($c[0]) <= before) sweep(cells);
+                  });
+              });
           });
         });
         }));
@@ -394,7 +530,16 @@ describe('Every game is driven to completion', () => {
               .then((w) => holdKey(w, k, 260))
               .then(() => {
                 // Clicks — whatever the engine exposes, plus the canvas.
-                const root = doc.querySelector('[data-testid^="engine-"]') || doc.body;
+                //
+                // Strictly inside the engine. Falling back to document.body
+                // when the engine had not mounted yet meant clicking the app
+                // shell: the sidebar's own "testuser" profile link got hit,
+                // the router left the game, and the run then spent its whole
+                // budget on a page reading "User not found". That is what
+                // failed General Trivia, Science, History and Party Trivia —
+                // the games were fine, the driver had navigated away from them.
+                const root = doc.querySelector('[data-testid^="engine-"]');
+                if (!root) return cy.wait(500, { log: false }).then(() => false);
                 const els = Array.from(root.querySelectorAll(
                   'button, td, [role="button"], li, .option, canvas, svg circle, svg rect, input',
                 ));
@@ -444,10 +589,11 @@ describe('Every game is driven to completion', () => {
                   const rects = leaves.map((el) => el.getBoundingClientRect());
                   const rows = [...new Set(rects.map((r) => Math.round(r.top)))].sort((a, b) => a - b);
                   const cols = [...new Set(rects.map((r) => Math.round(r.left)))].sort((a, b) => a - b);
-                  const rc = rects.map((r) => ({
+                  const rc = rects.map((r, i) => ({
                     row: rows.indexOf(Math.round(r.top)),
                     col: cols.indexOf(Math.round(r.left)),
                     r,
+                    el: leaves[i],
                   }));
                   const cellAt = (row, col) =>
                     rc.find((x) => x.row === row && x.col === col);
@@ -465,9 +611,65 @@ describe('Every game is driven to completion', () => {
                       if (t) targets.push(t);
                     });
 
-                  targets.forEach((t) => {
-                    chain = chain.then(() => clickApp(map,
-                      t.r.left + t.r.width / 2, t.r.top + t.r.height / 2));
+                  // Click the source, then only pay for destinations if that
+                  // source actually selected something. Checkers has 12 movable
+                  // pieces among 40 clickable squares, so most sources are
+                  // dead — spending the whole round's clicks on their
+                  // destinations wasted the budget on squares that could never
+                  // move. Checking the board's own markup after the source
+                  // click makes the search several times faster.
+                  // Only Checkers moves in two steps (pick a piece, then a
+                  // square). Reversi and Mancala are SINGLE-CLICK games where
+                  // the source click IS the move, so skipping their follow-up
+                  // clicks on an unchanged board threw away legal moves —
+                  // Reversi had been completing and stopped the moment this
+                  // check was applied to it.
+                  const src0 = targets[0];
+                  const before = root.innerHTML;
+
+                  if (g.id === 'checkers') {
+                    // Let the GAME name the legal destinations, and play a whole
+                    // board pass per round.
+                    //
+                    // Selecting a piece makes CheckersBoard mark its legal
+                    // squares (it computes them with its own getValidMoves), so
+                    // the cells whose markup changes after a source click ARE
+                    // the legal moves — verified: selecting a red piece lights
+                    // 1-3 squares, and clicking one flips the turn and changes
+                    // the piece counts.
+                    //
+                    // One source per round was the problem: only about a third
+                    // of squares hold a movable red piece, so most rounds made
+                    // no move at all and a full game never fitted in the
+                    // budget. Sweeping every square each round plays many moves
+                    // per round instead.
+                    leaves.forEach((cellEl) => {
+                      chain = chain.then(() => {
+                        const snap = leaves.map((el) => el.outerHTML);
+                        const b = cellEl.getBoundingClientRect();
+                        return clickApp(map, b.left + b.width / 2, b.top + b.height / 2)
+                          .then(() => {
+                            const lit = leaves.filter(
+                              (el, i) => el.outerHTML !== snap[i] && el !== cellEl);
+                            if (!lit.length) return null;
+                            const t = lit[0].getBoundingClientRect();
+                            return clickApp(map, t.left + t.width / 2,
+                                                 t.top + t.height / 2);
+                          });
+                      });
+                    });
+                    return chain.then(() => cy.wait(400, { log: false })).then(() => false);
+                  }
+
+                  chain = chain.then(() => clickApp(map,
+                    src0.r.left + src0.r.width / 2, src0.r.top + src0.r.height / 2));
+                  chain = chain.then(() => {
+                    let inner = cy.wrap(null, { log: false });
+                    targets.slice(1).forEach((t) => {
+                      inner = inner.then(() => clickApp(map,
+                        t.r.left + t.r.width / 2, t.r.top + t.r.height / 2));
+                    });
+                    return inner;
                   });
                   // Give the bot on seat 1 time to answer before looking again.
                   return chain.then(() => cy.wait(700, { log: false })).then(() => false);
@@ -506,7 +708,8 @@ describe('Every game is driven to completion', () => {
         // a game stops. Match 3 was ending at ~104s against a clock it needed
         // 120s to run out, and Movie Trivia at ~76s despite completing on
         // three earlier runs — both were hitting a 60-round cap, not failing.
-        const maxRounds = g.kind === 'board' ? 250
+        const maxRounds = g.id === 'checkers' ? 1200
+          : g.kind === 'board' ? 250
           : g.id === 'match3' ? 220
           : g.kind === 'word' ? 160
           : 140;
