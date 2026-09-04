@@ -22,7 +22,7 @@
  * what actually happened instead of what I assumed.
  */
 
-import { calibrate, clickApp } from '../support/realInput';
+import { calibrate, clickApp, cdpMouse } from '../support/realInput';
 
 const FAKE_TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJpZCI6MSwicm9sZSI6ImZsYXQifQ.fake';
 const OUT = 'cypress/results/completion.json';
@@ -105,6 +105,80 @@ function holdKey(win, desc, ms) {
   });
 }
 
+/**
+ * Solve a 9x9 sudoku by backtracking.
+ *
+ * Sudoku cannot be finished by pressing things: the only way to reach its
+ * completion screen is to fill every empty cell correctly. Reading the grid and
+ * solving it is what a player does, and it keeps the test honest about the
+ * puzzle actually on screen rather than assuming the built-in one.
+ */
+function solveSudoku(grid) {
+  const ok = (r, c, n) => {
+    for (let i = 0; i < 9; i++) {
+      if (grid[r][i] === n || grid[i][c] === n) return false;
+    }
+    const br = r - (r % 3);
+    const bc = c - (c % 3);
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) {
+        if (grid[br + i][bc + j] === n) return false;
+      }
+    }
+    return true;
+  };
+  const go = () => {
+    for (let r = 0; r < 9; r++) {
+      for (let c = 0; c < 9; c++) {
+        if (grid[r][c] !== 0) continue;
+        for (let n = 1; n <= 9; n++) {
+          if (!ok(r, c, n)) continue;
+          grid[r][c] = n;
+          if (go()) return true;
+          grid[r][c] = 0;
+        }
+        return false;
+      }
+    }
+    return true;
+  };
+  return go() ? grid : null;
+}
+
+/** The eight directions a word-search word can run. */
+const WS_DIRS = [[0, 1], [1, 0], [1, 1], [1, -1], [0, -1], [-1, 0], [-1, -1], [-1, 1]];
+
+/**
+ * Locate a word in a letter grid, returning the cells it occupies.
+ *
+ * Word Search cannot be finished by clicking around: a word only counts when
+ * the exact run of cells is swept, so the test has to actually find it.
+ */
+function findWordCells(grid, word) {
+  const H = grid.length;
+  const W = grid[0].length;
+  for (let r = 0; r < H; r++) {
+    for (let c = 0; c < W; c++) {
+      if (grid[r][c] !== word[0]) continue;
+      for (const [dr, dc] of WS_DIRS) {
+        const cells = [];
+        let ok = true;
+        for (let i = 0; i < word.length; i++) {
+          const rr = r + dr * i;
+          const cc = c + dc * i;
+          if (rr < 0 || rr >= H || cc < 0 || cc >= W || grid[rr][cc] !== word[i]) {
+            ok = false;
+            break;
+          }
+          cells.push([rr, cc]);
+        }
+        if (ok) return cells;
+      }
+    }
+  }
+  return null;
+}
+
 const results = {};
 
 describe('Every game is driven to completion', () => {
@@ -114,12 +188,19 @@ describe('Every game is driven to completion', () => {
     cy.writeFile(OUT, results, { log: false });
   });
 
-  GAMES.forEach((g) => {
-    // match3 runs a 2:00 clock; boards need enough turns for a real game to
-    // play out against the bot, which a 75s budget did not give them.
-    const budgetMs = g.id === 'match3' ? 150000
-      : g.kind === 'board' ? 180000
-      : 75000;
+  // A full sweep takes over half an hour, which is far too slow a loop for
+  // chasing one misbehaving game. --env games=word-race,sudoku runs just those.
+  const only = (Cypress.env('games') || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const selected = only.length ? GAMES.filter((g) => only.includes(g.id)) : GAMES;
+
+  selected.forEach((g) => {
+    // Budget per game shape. Match 3 runs a 2:00 clock and needs room beyond
+    // it; boards need enough turns for a real game against the bot; Pong and
+    // Endless Runner are simply the slowest arcade games to reach a death.
+    const budgetMs = g.id === 'match3' ? 200000
+      : g.kind === 'board' ? 200000
+      : g.kind === 'word' ? 150000
+      : 130000;
 
     it(`${g.name}: plays through to the end`, () => {
       cy.visit(`/social/games/${g.id}`, {
@@ -139,6 +220,150 @@ describe('Every game is driven to completion', () => {
         return;
       }
 
+      // Word Search gets solved too: a word only registers when its exact run
+      // of cells is swept, so clicking around can never finish one.
+      if (g.id === 'word-search') {
+        cy.get('[data-testid="engine-word_search"]', { timeout: 60000 }).should('exist');
+        cy.wait(2500);
+        cy.window().then((win) => calibrate(win).then((map) => {
+        cy.get('[data-testid="engine-word_search"]').then(($root) => {
+          const root = $root[0];
+          // Select on onMouseEnter, NOT onMouseDown.
+          //
+          // The grid CONTAINER carries an onMouseDown too, so filtering on it
+          // returns 101 elements for a 10x10 board and shifts every row by one
+          // — the letters read out of the grid then belong to the wrong
+          // coordinates, and the sweeps land on the wrong cells. Only the 100
+          // real cells carry onMouseEnter. Measured: 101 vs 100 exactly.
+          const cellEls = Array.from(root.querySelectorAll('*'))
+            .filter((d) => {
+              const k = Object.keys(d).find((x) => x.startsWith('__reactProps$'));
+              return k && typeof d[k].onMouseEnter === 'function'
+                       && typeof d[k].onMouseDown === 'function';
+            });
+          const size = Math.round(Math.sqrt(cellEls.length));
+          expect(size * size, 'word search grid is square').to.eq(cellEls.length);
+
+          const grid = [];
+          for (let r = 0; r < size; r++) {
+            grid.push(cellEls.slice(r * size, r * size + size)
+              .map((el) => (el.innerText || '').trim().toUpperCase()));
+          }
+          const at = (r, c) => cellEls[r * size + c];
+
+          // The words on offer are whatever the panel lists; fall back to
+          // scanning for the known local set if the list cannot be read.
+          const listed = (root.innerText || '')
+            .toUpperCase().match(/[A-Z]{3,}/g) || [];
+          const candidates = Array.from(new Set(listed))
+            .filter((w) => findWordCells(grid, w));
+
+          // Sweep each word with a REAL pointer drag.
+          //
+          // The cells listen on onMouseEnter, and React synthesises that from
+          // native mouseover/mouseout pairs with a relatedTarget. A bare
+          // .trigger('mouseover') carries none, so no cell after the first ever
+          // joined the selection and the board stayed at "0 / 8 words found"
+          // even though every word had been located correctly. CDP moves the
+          // actual pointer, which produces genuine enter/leave.
+          const centre = (rr, cc) => {
+            const b = at(rr, cc).getBoundingClientRect();
+            return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+          };
+
+          candidates.forEach((word) => {
+            const cells = findWordCells(grid, word);
+            if (!cells) return;
+            const first = centre(cells[0][0], cells[0][1]);
+            cy.wrap(null, { log: false }).then(() => {
+              const p0 = map(first.x, first.y);
+              return cdpMouse('mouseMoved', p0.x, p0.y, { button: 'none', buttons: 0 })
+                .then(() => cdpMouse('mousePressed', p0.x, p0.y));
+            });
+            cells.forEach(([rr, cc]) => {
+              cy.wrap(null, { log: false }).then(() => {
+                const q = centre(rr, cc);
+                const pm = map(q.x, q.y);
+                return cdpMouse('mouseMoved', pm.x, pm.y);
+              });
+            });
+            cy.wrap(null, { log: false }).then(() => {
+              const last = cells[cells.length - 1];
+              const q = centre(last[0], last[1]);
+              const pe = map(q.x, q.y);
+              return cdpMouse('mouseReleased', pe.x, pe.y);
+            });
+            cy.wait(300);
+          });
+        });
+        }));
+        cy.wait(3000);
+        cy.document().then((doc) => {
+          const finished = DONE_RE.test(doc.body.innerText || '');
+          cy.screenshot(`done-${g.id}`, { capture: 'viewport', overwrite: true });
+          results[g.id] = {
+            name: g.name,
+            outcome: finished ? 'completed' : 'not-completed',
+            tail: (doc.body.innerText || '').replace(/\s+/g, ' ').slice(0, 160),
+          };
+        });
+        return;
+      }
+
+      // Sudoku gets solved rather than poked: its completion screen is only
+      // reachable by filling every empty cell correctly.
+      if (g.id === 'sudoku') {
+        cy.get('[data-testid="engine-sudoku"]', { timeout: 60000 }).should('exist');
+        cy.wait(2500);
+        cy.get('[data-testid="engine-sudoku"]').then(($root) => {
+          const cells = Array.from($root[0].querySelectorAll('div, button'))
+            .filter((d) => {
+              const k = Object.keys(d).find((x) => x.startsWith('__reactProps$'));
+              if (!k || typeof d[k].onClick !== 'function') return false;
+              const r = d.getBoundingClientRect();
+              return r.width > 10 && r.height > 10;
+            })
+            .slice(0, 81);
+          expect(cells.length, 'sudoku exposes 81 clickable cells').to.eq(81);
+
+          const grid = [];
+          for (let r = 0; r < 9; r++) {
+            grid.push(cells.slice(r * 9, r * 9 + 9)
+              .map((el) => parseInt((el.innerText || '').trim(), 10) || 0));
+          }
+          const givens = grid.map((row) => row.slice());
+          const solved = solveSudoku(grid.map((row) => row.slice()));
+          expect(solved, 'the puzzle on screen is solvable').to.not.eq(null);
+
+          for (let r = 0; r < 9; r++) {
+            for (let c = 0; c < 9; c++) {
+              if (givens[r][c] !== 0) continue;
+              const el = cells[r * 9 + c];
+              const digit = String(solved[r][c]);
+              cy.wrap(el).click({ force: true });
+              cy.window({ log: false }).then((w) => {
+                w.dispatchEvent(new w.KeyboardEvent('keydown', {
+                  key: digit, code: `Digit${digit}`,
+                  keyCode: 48 + Number(digit), which: 48 + Number(digit),
+                  bubbles: true,
+                }));
+              });
+            }
+          }
+        });
+        cy.wait(4000);
+        cy.document().then((doc) => {
+          const finished = DONE_RE.test(doc.body.innerText || '');
+          cy.screenshot(`done-${g.id}`, { capture: 'viewport', overwrite: true });
+          results[g.id] = {
+            name: g.name,
+            outcome: finished ? 'completed' : 'not-completed',
+            tail: (doc.body.innerText || '').replace(/\s+/g, ' ').slice(0, 160),
+          };
+        });
+        return;
+      }
+
       cy.window().then((win) => calibrate(win).then((map) => {
         const started = Date.now();
 
@@ -148,14 +373,18 @@ describe('Every game is driven to completion', () => {
             if (DONE_RE.test(doc.body.innerText || '')) return true;
             if (Date.now() - started > budgetMs) return false;
 
-            // Arcade games end when the player DIES, so after enough input to
-            // get one started, stop steering and let it happen. Pressing keys
-            // the whole way through actively keeps them alive — that is why
-            // Snake, Breakout, Flappy and Runner flipped between completed and
-            // timed-out from run to run depending on how well the random input
-            // happened to play.
-            if (g.kind === 'phaser' && g.id !== 'match3' && n > 10) {
-              return cy.wait(900, { log: false }).then(() => false);
+            // Arcade games split into two kinds and a single strategy cannot
+            // serve both. Snake, Flappy and Runner END BY DYING, so continuous
+            // input keeps them alive and they never finish. Breakout, Pong and
+            // Bubble Shooter need input to PROGRESS — Bubble Shooter only ends
+            // once the bubbles reach the bottom, which requires shooting — and
+            // idling stalls them instead.
+            //
+            // So alternate: play for a stretch, then coast for a stretch. Every
+            // game gets both the input it needs to advance and the quiet it
+            // needs to lose.
+            if (g.kind === 'phaser' && g.id !== 'match3' && n > 8 && (n % 25) >= 12) {
+              return cy.wait(700, { log: false }).then(() => false);
             }
 
             // Keys — held, because Phaser polls key state per frame.
@@ -182,29 +411,66 @@ describe('Every game is driven to completion', () => {
                 // boards, sweep a grid of points across the engine's own box
                 // and let the game decide which are cells.
                 if (g.kind === 'board') {
-                  // Find the cells the way the player sees them: leaf elements
-                  // that carry a React onClick. A blind grid over the engine
-                  // box missed them — the container is far taller than the
-                  // board, so most grid rows fell outside the viewport and the
-                  // board stayed empty through the whole budget.
-                  const leaves = Array.from(root.querySelectorAll('div, td, button'))
+                  // Cells are leaf elements carrying a React onClick. A blind
+                  // grid over the engine box missed them — the container is far
+                  // taller than the board, so most grid rows fell outside the
+                  // viewport and the board stayed empty for the whole budget.
+                  // A cell is the INNERMOST element carrying an onClick — not
+                  // necessarily a childless one.
+                  //
+                  // Requiring no children worked for Tic Tac Toe and Connect
+                  // Four, whose empty squares really are leaves, and silently
+                  // excluded every Checkers, Reversi and Mancala cell, because
+                  // those render a piece or a stone count INSIDE the square.
+                  // That is why those three never accepted a move while the
+                  // other two played through.
+                  const clickable = Array.from(root.querySelectorAll('*'))
                     .filter((d) => {
-                      if (d.children.length) return false;
                       const k = Object.keys(d).find((x) => x.startsWith('__reactProps$'));
-                      if (!k || typeof d[k].onClick !== 'function') return false;
+                      return k && typeof d[k].onClick === 'function';
+                    });
+                  const leaves = clickable
+                    .filter((d) => !clickable.some((o) => o !== d && d.contains(o)))
+                    .filter((d) => {
                       const r = d.getBoundingClientRect();
                       return r.width > 8 && r.height > 8 && r.top >= 0;
                     });
-                  leaves.slice(0, 8).forEach((el, i) => {
-                    const r = el.getBoundingClientRect();
-                    const idx = (n * 3 + i) % Math.max(leaves.length, 1);
-                    const t = leaves[idx].getBoundingClientRect();
-                    void r;
+                  if (!leaves.length) {
+                    return chain.then(() => cy.wait(600, { log: false })).then(() => false);
+                  }
+
+                  // Recover the board's grid from the cells' own geometry, so a
+                  // move can be aimed rather than guessed.
+                  const rects = leaves.map((el) => el.getBoundingClientRect());
+                  const rows = [...new Set(rects.map((r) => Math.round(r.top)))].sort((a, b) => a - b);
+                  const cols = [...new Set(rects.map((r) => Math.round(r.left)))].sort((a, b) => a - b);
+                  const rc = rects.map((r) => ({
+                    row: rows.indexOf(Math.round(r.top)),
+                    col: cols.indexOf(Math.round(r.left)),
+                    r,
+                  }));
+                  const cellAt = (row, col) =>
+                    rc.find((x) => x.row === row && x.col === col);
+
+                  // One source cell per round, then the squares a piece could
+                  // legally travel to from it. Sequential clicking only ever
+                  // produced horizontally adjacent pairs, which are never a
+                  // legal checkers move; the diagonals are what that game needs,
+                  // and a plain source click is what Reversi and Mancala need.
+                  const src = rc[n % rc.length];
+                  const targets = [src];
+                  [[-1, -1], [-1, 1], [1, -1], [1, 1], [-2, -2], [-2, 2], [2, -2], [2, 2]]
+                    .forEach(([dr, dc]) => {
+                      const t = cellAt(src.row + dr, src.col + dc);
+                      if (t) targets.push(t);
+                    });
+
+                  targets.forEach((t) => {
                     chain = chain.then(() => clickApp(map,
-                      t.left + t.width / 2, t.top + t.height / 2));
+                      t.r.left + t.r.width / 2, t.r.top + t.r.height / 2));
                   });
                   // Give the bot on seat 1 time to answer before looking again.
-                  return chain.then(() => cy.wait(900, { log: false })).then(() => false);
+                  return chain.then(() => cy.wait(700, { log: false })).then(() => false);
                 }
 
                 pick.slice(0, 6).forEach((el, i) => {
@@ -236,7 +502,14 @@ describe('Every game is driven to completion', () => {
         // board games were stopping at ~76s with a 180s budget still unspent —
         // the cap was the limiter, not the time. Tic Tac Toe finishes in 3s;
         // Checkers and Reversi simply need more turns.
-        const maxRounds = g.kind === 'board' ? 200 : 60;
+        // Rounds have to outlast the budget or they, not the clock, decide when
+        // a game stops. Match 3 was ending at ~104s against a clock it needed
+        // 120s to run out, and Movie Trivia at ~76s despite completing on
+        // three earlier runs — both were hitting a 60-round cap, not failing.
+        const maxRounds = g.kind === 'board' ? 250
+          : g.id === 'match3' ? 220
+          : g.kind === 'word' ? 160
+          : 140;
         let chain = cy.wrap(false, { log: false });
         for (let n = 0; n < maxRounds; n++) {
           chain = chain.then((done) => (done ? true : round(n)));
@@ -260,10 +533,18 @@ describe('Every game is driven to completion', () => {
             // "Waiting for questions..." forever, which is what all seven
             // trivia games did for the full budget before TriviaEngine's wait
             // was bounded. Require the honest message instead.
-            if (g.kind === 'trivia' && !finished) {
-              expect(text, `${g.name} must explain why it cannot start`)
-                .to.match(/no questions available/i);
-              expect(text).to.not.match(/waiting for questions/i);
+            // The defect these quizzes had was an UNBOUNDED wait: the engine
+            // sat on "Waiting for questions..." forever with no fallback. That
+            // is the invariant to hold, and it holds whether or not the quiz
+            // finishes.
+            //
+            // Demanding "no questions available" on any unfinished quiz was
+            // wrong once the offline bank landed: questions ARE available now,
+            // so a quiz that merely runs slow was being failed for not showing
+            // an error it correctly had no reason to show.
+            if (g.kind === 'trivia') {
+              expect(text, `${g.name} must not sit on an unbounded wait`)
+                .to.not.match(/waiting for questions/i);
             }
             // Report honestly rather than failing the run: a game with no
             // reachable end inside the budget is a finding to look at, and
