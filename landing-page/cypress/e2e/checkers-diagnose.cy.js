@@ -56,29 +56,31 @@ describe('checkers diagnosis', () => {
         // What does a square look like? Sample a few so piece markup is visible.
         rep.sampleMarkup = cells.slice(0, 3).map((c) => c.outerHTML.slice(0, 150));
 
-        // Play ONE real move: select a red piece, then click a square the
-        // board lit up in response. That is the sequence the driver runs, so
-        // if the header does not change here the driver cannot work either.
-        rep.moves = [];
-        cells.slice(40, 64).forEach((cell, idx0) => {
-          cy.wrap(null, { log: false }).then(() => {
-            if (rep.moves.length >= 3) return null;
-            const snap = cells.map((c) => c.outerHTML);
-            const b = cell.getBoundingClientRect();
-            return clickApp(map, b.left + b.width / 2, b.top + b.height / 2)
-              .then(() => {
-                const lit = cells.filter((c, i) => c.outerHTML !== snap[i] && c !== cell);
-                if (!lit.length) return null;
-                const t = lit[0].getBoundingClientRect();
-                return clickApp(map, t.left + t.width / 2, t.top + t.height / 2)
-                  .then(() => {
-                    rep.moves.push(`${idx0 + 40}->lit${lit.length}:` +
-                      (root.innerText || '').replace(/\s+/g, ' ').slice(0, 46));
-                  });
-              });
+        // Play many full board passes and record the header after each, so a
+        // game that is progressing looks different from one that resets or
+        // stalls. Piece counts are in the header, so the trace shows directly
+        // whether material is coming off the board.
+        rep.trace = [];
+        for (let pass = 0; pass < 25; pass++) {
+          cells.forEach((cell) => {
+            cy.wrap(null, { log: false }).then(() => {
+              if (/wins!|draw/i.test(root.innerText || '')) return null;
+              const snap = cells.map((c) => c.outerHTML);
+              const b = cell.getBoundingClientRect();
+              return clickApp(map, b.left + b.width / 2, b.top + b.height / 2)
+                .then(() => {
+                  const lit = cells.filter((c, i) => c.outerHTML !== snap[i] && c !== cell);
+                  if (!lit.length) return null;
+                  const t = lit[0].getBoundingClientRect();
+                  return clickApp(map, t.left + t.width / 2, t.top + t.height / 2);
+                });
+            });
           });
-          cy.wait(500);
-        });
+          cy.wait(300);
+          cy.wrap(null, { log: false }).then(() => {
+            rep.trace.push((root.innerText || '').replace(/\s+/g, ' ').slice(0, 52));
+          });
+        }
       });
     }));
 

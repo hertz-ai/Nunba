@@ -143,7 +143,7 @@ const CheckersGame = {
   }),
 
   moves: {
-    movePiece: ({ G, playerID }, fromR, fromC, toR, toC) => {
+    movePiece: ({ G, playerID, events }, fromR, fromC, toR, toC) => {
       const piece = G.board[fromR][fromC];
       if (!piece || !belongsTo(piece, playerID)) return INVALID_MOVE;
 
@@ -168,6 +168,16 @@ const CheckersGame = {
 
       // Promote to king
       maybePromote(G.board, toR, toC);
+
+      // End the turn explicitly, the way Mancala's sowStones does.
+      //
+      // The turn config alone was leaving the game wedged: once a player spent
+      // their single allowed move boardgame.io drops them from the active set,
+      // and if the turn does not then end, ctx.currentPlayer stays put while
+      // the client is inactive. That is exactly the observed failure — the
+      // header reads "Your turn" and no click is accepted, not even a
+      // selection ring, and the position never changes again.
+      if (events && events.endTurn) events.endTurn();
     },
   },
 
@@ -196,7 +206,9 @@ const CheckersGame = {
     }
   },
 
-  turn: { minMoves: 1, maxMoves: 1 },
+  // minMoves only: the move itself ends the turn (see movePiece). Pairing
+  // maxMoves with an explicit endTurn double-ends it.
+  turn: { minMoves: 1 },
   ai: {
   // Legal moves for the bot that plays seat 1.
   //
@@ -205,14 +217,29 @@ const CheckersGame = {
   // first move and can never finish. boardgame.io bots need ai.enumerate to
   // know what they may play.
     enumerate: (G, ctx) => {
+      // Built from the SAME helpers the rules use, so the bot can never be
+      // offered a move movePiece refuses, and can never be left with nothing
+      // to play while endIf still considers the game live.
+      //
+      // Captures are forced. An earlier version enumerated getValidMoves for
+      // every piece without that filter, so the bot could pick a quiet move,
+      // have it refused as INVALID_MOVE, and never finish its turn — the game
+      // then held one position indefinitely while still reporting "Your turn".
+      // Filtering by hand fixed most of it but left the same failure whenever
+      // the two code paths disagreed about what was legal. endIf decides the
+      // game is still live using exactly getAllCaptures/getAllNonCaptures, so
+      // enumerating from those keeps the bot and the end condition in step.
+      const captures = getAllCaptures(G.board, ctx.currentPlayer);
+      const source = captures.length > 0
+        ? captures
+        : getAllNonCaptures(G.board, ctx.currentPlayer);
+
       const out = [];
-      for (let r = 0; r < G.board.length; r++) {
-        for (let c = 0; c < G.board[r].length; c++) {
-          getValidMoves(G.board, r, c, ctx.currentPlayer).forEach(({ toR, toC }) => {
-            out.push({ move: 'movePiece', args: [r, c, toR, toC] });
-          });
-        }
-      }
+      source.forEach(({ fromR, fromC, moves }) => {
+        moves.forEach(({ toR, toC }) => {
+          out.push({ move: 'movePiece', args: [fromR, fromC, toR, toC] });
+        });
+      });
       return out;
     },
   },

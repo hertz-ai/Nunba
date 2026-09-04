@@ -227,7 +227,7 @@ describe('Every game is driven to completion', () => {
       // appear it can run much further. Screenshots show the driver playing a
       // genuine game down to ~6 pieces a side with a king crowned, so what it
       // needed was time to reach a terminal position, not different moves.
-      : g.id === 'checkers' ? 900000
+      : g.id === 'checkers' ? 600000
       : g.kind === 'board' ? 200000
       : g.kind === 'word' ? 150000
       : 130000;
@@ -643,16 +643,44 @@ describe('Every game is driven to completion', () => {
                     // no move at all and a full game never fitted in the
                     // budget. Sweeping every square each round plays many moves
                     // per round instead.
-                    leaves.forEach((cellEl) => {
+                    // Re-read the cells before EVERY source click.
+                    //
+                    // Each move re-renders the board and replaces these
+                    // elements, so a list captured once goes stale part-way
+                    // through the pass — and getBoundingClientRect() on a
+                    // detached node returns zeros, sending every later click to
+                    // (0,0). That is why the game advanced a few moves and then
+                    // appeared frozen: the same defect as the word-search
+                    // sweep, in a different game.
+                    const liveCells = () => {
+                      const all = Array.from(root.querySelectorAll('*')).filter((d) => {
+                        const k = Object.keys(d).find((x) => x.startsWith('__reactProps$'));
+                        return k && typeof d[k].onClick === 'function';
+                      });
+                      return all
+                        .filter((d) => !all.some((o) => o !== d && d.contains(o)))
+                        .filter((d) => {
+                          const r = d.getBoundingClientRect();
+                          return r.width > 8 && r.height > 8 && r.top >= 0;
+                        });
+                    };
+
+                    leaves.forEach((_ignored, idx) => {
                       chain = chain.then(() => {
-                        const snap = leaves.map((el) => el.outerHTML);
+                        const cur = liveCells();
+                        const cellEl = cur[idx];
+                        if (!cellEl) return null;
+                        const snap = cur.map((el) => el.outerHTML);
                         const b = cellEl.getBoundingClientRect();
+                        if (!b.width) return null;
                         return clickApp(map, b.left + b.width / 2, b.top + b.height / 2)
                           .then(() => {
-                            const lit = leaves.filter(
-                              (el, i) => el.outerHTML !== snap[i] && el !== cellEl);
+                            const after = liveCells();
+                            const lit = after.filter(
+                              (el, i) => el.outerHTML !== snap[i] && i !== idx);
                             if (!lit.length) return null;
                             const t = lit[0].getBoundingClientRect();
+                            if (!t.width) return null;
                             return clickApp(map, t.left + t.width / 2,
                                                  t.top + t.height / 2);
                           });
