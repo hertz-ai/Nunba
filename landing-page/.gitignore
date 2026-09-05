@@ -41,6 +41,7 @@ yarn-error.log*
 
 # Cypress artifacts
 cypress/screenshots/
+cypress/screenshots-desktop/
 cypress/videos/
 cypress/downloads/
 cypress/reports/
