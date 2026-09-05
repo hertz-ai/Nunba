@@ -18,6 +18,7 @@ SQLite storage at ~/Documents/Nunba/data/nunba_db.sqlite
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -385,6 +386,49 @@ def _get_prompts_dir():
     return prompts_dir
 
 
+# The agent pipeline writes several files BESIDE an agent record, in the same
+# directory.  None of them is an agent, and each carries a distinct shape:
+#
+#   {pid}_{flow}_{n}      per-action record written as each action is authored
+#   {pid}_{flow}_recipe   the assembled recipe
+#   {pid}_personality     the persona blob
+#   {pid}.proposed.rN     a proposal variant
+#   {pid}_vlm_agent       the vlm agent record
+#
+# Measured live 2026-09-06: GET /getprompt_all/ returned 1,844 rows of which
+# 1,161 (63%) were these files — 588 per-action, 386 personality, 187 proposal
+# — because the handlers excluded only '_recipe' and '_vlm_agent' and then used
+# the filename stem as the prompt_id.  974/974 of those ids were EXACTLY a
+# .json stem in the prompts dir, and 979 carried an empty prompt body.
+#
+# Matched on SHAPE, not on any underscore.  HARTOS's sibling site
+# (hart_intelligence_entry /prompts/public) uses `'_' not in fname`, which is
+# too aggressive for this directory: 9 live agents carry underscores in their
+# ids (hive_economics_*, hive_infra_*, p2p_food_*, p2p_bills_*, p2p_rental_*)
+# and a blanket underscore rule silently drops them.
+# '_recipe' and '_vlm_agent' stay substring matches, which is what the two
+# handlers did before and what tests/test_db_routes.py already pins.
+_ARTIFACT_STEM_RE = re.compile(
+    r'^\d+_\d+_\d+$'         # per-action
+    r'|_recipe'              # assembled recipe
+    r'|_vlm_agent'           # vlm agent record
+    r'|_personality$'        # personality blob
+    r'|\.proposed\.r\d+$'    # proposal variant
+)
+
+
+def _is_agent_record(path):
+    """True when a prompts-dir file is an agent record, not a build artifact.
+
+    ONE predicate for both listing handlers — they previously carried the same
+    incomplete filter inline, which is how the two drifted from what the
+    pipeline actually writes.
+    """
+    if path.suffix != '.json':
+        return False
+    return not _ARTIFACT_STEM_RE.search(path.stem)
+
+
 @db_bp.route('/createpromptlist', methods=['POST'])
 def create_prompt_list():
     """Sync agent configs. Matches cloud /createpromptlist contract.
@@ -476,7 +520,7 @@ def get_prompt_by_user():
         return jsonify(results)
 
     for f in prompts_dir.iterdir():
-        if not f.suffix == '.json' or '_recipe' in f.name or '_vlm_agent' in f.name:
+        if not _is_agent_record(f):
             continue
         try:
             with open(f, encoding='utf-8') as fh:
@@ -513,7 +557,7 @@ def get_all_prompts():
         return jsonify(results)
 
     for f in prompts_dir.iterdir():
-        if not f.suffix == '.json' or '_recipe' in f.name or '_vlm_agent' in f.name:
+        if not _is_agent_record(f):
             continue
         try:
             with open(f, encoding='utf-8') as fh:

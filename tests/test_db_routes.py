@@ -485,6 +485,67 @@ class TestGetAllPrompts:
         data = resp.get_json()
         assert len(data) >= 2
 
+    def test_excludes_build_artifacts_but_keeps_underscore_agent_ids(
+            self, client, db_mod):
+        """Only agent records — not the build files beside them.
+
+        Measured live 2026-09-06 against the running app: GET /getprompt_all/
+        returned 1,844 rows, of which 1,161 (63%) were not agents —
+
+            588  per-action    {pid}_{flow}_{n}      e.g. 10009855073_0_10
+            386  personality   {pid}_personality
+            187  proposal      {pid}.proposed.rN
+
+        and 974/974 of those ids were EXACTLY a .json filename stem in the
+        prompts directory, because the handler does `prompt_id = f.stem` over
+        every file whose name lacks '_recipe' / '_vlm_agent'.  979 of them
+        carried an empty prompt body and defaulted to user_id 0.
+
+        The filter must key on the artifact SHAPES.  HARTOS's sibling
+        (/prompts/public) uses `'_' not in fname`, which is too aggressive
+        here: 9 legitimate agents carry underscores in their ids
+        (hive_economics_*, hive_infra_*, p2p_food_*, p2p_bills_*,
+        p2p_rental_*) and a blanket underscore rule silently drops them.
+        """
+        prompts_dir = db_mod._get_prompts_dir()
+
+        artifacts = [
+            "10009855073_0_10",        # per-action
+            "10009855073_0_3",         # per-action
+            "10009855073_0_recipe",    # assembled recipe
+            "12165936867_personality",  # personality
+            "10009855073.proposed.r0",  # proposal variant
+            "10009855073.proposed.r1",
+        ]
+        for stem in artifacts:
+            (prompts_dir / f"{stem}.json").write_text(
+                json.dumps({"user_id": 0, "name": stem}), encoding="utf-8")
+
+        real_agents = [
+            "10009855073",              # ordinary numeric id
+            "hive_economics_d2f34440",  # underscores, but a REAL agent
+            "p2p_food_2d57bc33",
+        ]
+        for stem in real_agents:
+            (prompts_dir / f"{stem}.json").write_text(
+                json.dumps({"user_id": 7, "name": stem, "goal": "real work"}),
+                encoding="utf-8")
+
+        data = client.get("/getprompt_all/").get_json()
+        returned = {p["prompt_id"] for p in data}
+
+        leaked = sorted(returned & set(artifacts))
+        assert not leaked, (
+            f"build artifacts surfaced as agents: {leaked}. These are files "
+            "the pipeline writes beside an agent, not agents — live this put "
+            "1,161 non-agents (63%) into the registry.")
+
+        missing = sorted(set(real_agents) - returned)
+        assert not missing, (
+            f"real agents were filtered out: {missing}. An underscore in the "
+            "id does not make a file an artifact — excluding on any '_' drops "
+            "the 9 live hive_*/p2p_* agents.")
+
 
 # ============================================================
 # PDF file routes
