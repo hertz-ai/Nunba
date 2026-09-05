@@ -2,6 +2,33 @@
 
 Guidance for Claude Code (claude.ai/code) working in this repository.
 
+## RULE 0 — NEVER ASSUME (ranked above every other rule here)
+
+**Owner ruling 2026-09-05.  This outranks the Change Protocol, the
+branch discipline, and any ship-mode urgency.  It is not advice.**
+
+1. **Never assume.**  If a specific measurement of the exact claim does
+   not exist, the claim is not made.  "Probably", "consistent with",
+   "the logs suggest" are all assumptions wearing a hedge.  The honest
+   answer when unmeasured is **"I have not checked"**.
+2. **Grep only LOCATES.**  A grep hit is a pointer, never evidence, and
+   never a basis for a conclusion or an edit.
+3. **Read the FULL file — every file the grep matched, end to end.**
+   Not a window around the hit.  Partial reads are the documented cause
+   of this codebase's wrong diagnoses and parallel-path regressions.
+4. **Verify to the user-visible outcome**, not to the furthest log line
+   reached.  A pipeline that "ran" has produced nothing until the user's
+   actual result is read back.
+
+Measured cost of breaking this (single session, 2026-09-05): six
+conclusions asserted and withdrawn — a real tool called "fictional", a
+missing log marker read as "no tool executed" when those tools cannot
+emit it, and a 179-second turn analysed from internal logs while the
+user's actual response said *"Your local AI is busy with another task
+right now."*  Every one came from a fragment instead of the thing itself.
+
+Full rule + evidence table: `memory/feedback_never_assume.md`.
+
 ## Project Overview
 
 **Nunba — Local Mind Companion.**  A desktop/web app that hosts
