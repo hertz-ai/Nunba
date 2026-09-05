@@ -516,6 +516,12 @@ class TestGetAllPrompts:
             "12165936867_personality",  # personality
             "10009855073.proposed.r0",  # proposal variant
             "10009855073.proposed.r1",
+            # Per-action file whose PARENT id is a UUID, not digits.  Live
+            # 2026-09-06 the registry carried exactly one:
+            # c38e8b7c-ccbc-4127-a0a4-7604f69f9203_0_1, with an empty prompt
+            # body.  An artifact pattern anchored as ^\d+_\d+_\d+$ matches only
+            # numeric parents and lets this through.
+            "c38e8b7c-ccbc-4127-a0a4-7604f69f9203_0_1",
         ]
         for stem in artifacts:
             (prompts_dir / f"{stem}.json").write_text(

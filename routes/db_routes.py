@@ -408,8 +408,14 @@ def _get_prompts_dir():
 # and a blanket underscore rule silently drops them.
 # '_recipe' and '_vlm_agent' stay substring matches, which is what the two
 # handlers did before and what tests/test_db_routes.py already pins.
+# Anchored on the SUFFIX, not on a numeric parent id.  A first cut used
+# `^\d+_\d+_\d+$`, which matches only digit-prefixed parents and therefore let
+# c38e8b7c-ccbc-4127-a0a4-7604f69f9203_0_1 through — the one live per-action
+# file whose parent id is a UUID (empty prompt body, so plainly an artifact).
+# Measured against all 1,844 live rows: the suffix form excludes exactly that
+# one extra row and drops none of the underscore-bearing real agents.
 _ARTIFACT_STEM_RE = re.compile(
-    r'^\d+_\d+_\d+$'         # per-action
+    r'_\d+_\d+$'             # per-action        {pid}_{flow}_{n}
     r'|_recipe'              # assembled recipe
     r'|_vlm_agent'           # vlm agent record
     r'|_personality$'        # personality blob
