@@ -408,6 +408,13 @@ def _ensure_hartos():  # noqa: F811 — intentional override of earlier stub
 
 _first_chat_logged = False
 
+# Returned instead of a generic completion when a request NAMES an agent but
+# HARTOS has not finished loading.  ONE definition: this module produces it
+# and the guard test imports it, so the two cannot drift.
+HARTOS_STILL_LOADING = (
+    "Your agent is still starting up — it has not run yet, so nothing was "
+    "done. Give it a moment and send this again.")
+
 
 def _handle_response(response: requests.Response) -> dict[str, Any]:
     """Handle HTTP response and return JSON or error dict"""
@@ -588,8 +595,43 @@ def chat(
     import time as _time
 
     # If HARTOS (langchain) is still loading, use llama.cpp directly —
-    # no need to wait, the LLM is already running
+    # no need to wait, the LLM is already running.
+    #
+    # That reasoning holds for CASUAL chat only.  A request that NAMES an
+    # agent cannot be served here: _fallback_chat receives (text, user_id,
+    # **kwargs), and agent_id / create_agent / agentic_execute are NAMED
+    # parameters of this function, so they are structurally absent from
+    # kwargs.  The fallback answers from bare llama.cpp with no persona and
+    # no recipe -- a fluent "what would you like me to do?" that reads
+    # exactly like the agent itself replying with nothing to do.
+    #
+    # Measured live 2026-09-07 on the installed build: driving agent
+    # 60834540771 at 30s and 40s after launch produced that reply with ZERO
+    # hart_intelligence_entry lines; the same drive at ~6min entered reuse
+    # normally (3/3 by app age).  /backend/health said "operational"
+    # throughout, so nothing surfaced the substitution.
+    #
+    # Casual chat keeps the fallback unchanged.  An agent-addressed request
+    # gets an honest "still starting" the caller can retry on, rather than a
+    # generic answer standing in for work that never happened.
     if not _hartos_initialized:
+        _names_an_agent = (
+            (agent_id is not None and str(agent_id).isdigit())
+            or bool(create_agent)
+            or bool(agentic_execute)
+        )
+        if _names_an_agent:
+            logger.info(
+                "[CHAT] HARTOS still loading and this request names an agent "
+                f"(agent_id={agent_id}, create_agent={create_agent}, "
+                f"agentic_execute={agentic_execute}) — returning still-loading "
+                "instead of the generic fallback, which cannot be that agent")
+            return {
+                "text": HARTOS_STILL_LOADING,
+                "loading": True,
+                "source": "hartos_loading",
+                "agent_id": agent_id,
+            }
         logger.info("[CHAT] HARTOS still loading — using direct llama.cpp fallback")
         return _fallback_chat(text, user_id, **kwargs)
 

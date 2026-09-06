@@ -230,3 +230,76 @@ class TestRequestIdPropagation:
         traces = drain_thinking_traces('specific_req')
         assert len(traces) == 1
         assert traces[0]['request_id'] == 'specific_req'
+
+
+# ============================================================
+# Boot window — a request that NAMES an agent must not be
+# answered by the generic fallback
+# ============================================================
+
+class TestBootWindowDoesNotImpersonateAgent:
+    """While HARTOS loads, `chat()` must not answer AS a named agent.
+
+    Root cause, measured live 2026-09-07 on the installed build.  Driving
+    agent 60834540771 at 30s and 40s after launch produced a fluent
+    "Hello! I'm ready to help, but I need a specific task to get started..."
+    with ZERO hart_intelligence_entry lines in the log; the same drive at
+    ~6 min entered reuse normally (3/3 reproduction by app age).
+    /backend/health reported "operational" the whole time, so nothing
+    surfaced the substitution — the agent simply looked broken.
+
+    Mechanism: hartos_backend_adapter.chat falls back with
+    `_fallback_chat(text, user_id, **kwargs)`.  agent_id / create_agent /
+    agentic_execute are NAMED parameters of chat(), so they are
+    structurally absent from kwargs — the fallback cannot know which agent
+    was addressed, and answers from bare llama.cpp with no persona and no
+    recipe.
+
+    Casual chat keeps the fallback (that is the case it was written for and
+    the LLM really is up).  These tests pin the split.
+    """
+
+    _SENTINEL = {'text': 'FALLBACK-WAS-USED', 'source': 'local_llama'}
+
+    def _chat(self, **kw):
+        from routes.hartos_backend_adapter import chat
+        with patch('routes.hartos_backend_adapter._fallback_chat',
+                   return_value=dict(self._SENTINEL)):
+            with patch('routes.hartos_backend_adapter._hartos_initialized', False):
+                return chat(user_id='test_user', **kw)
+
+    def test_agent_addressed_request_is_not_answered_by_fallback(self):
+        """A saved agent must never be impersonated by a generic completion."""
+        result = self._chat(text='Carry out your assigned job now.',
+                            agent_id=60834540771)
+        assert result.get('text') != 'FALLBACK-WAS-USED', (
+            "a request naming agent 60834540771 was answered by the generic "
+            "llama.cpp fallback, which never receives agent_id and so has no "
+            "persona and no recipe — the user cannot tell their agent never ran")
+
+    def test_create_agent_request_is_not_answered_by_fallback(self):
+        """CREATE is agent work too — the fallback cannot author a recipe."""
+        result = self._chat(text='Build me an agent that files receipts.',
+                            create_agent=True)
+        assert result.get('text') != 'FALLBACK-WAS-USED', (
+            "a create_agent request was answered by the generic fallback, "
+            "which cannot author or save a recipe")
+
+    def test_boot_window_refusal_is_honest_and_marked_loading(self):
+        """The caller must be able to tell 'still starting' from 'agent replied'."""
+        result = self._chat(text='Carry out your assigned job now.',
+                            agent_id=60834540771)
+        assert result.get('loading') is True, (
+            "the boot-window result must be marked loading:true so the caller "
+            "can retry instead of treating it as the agent's answer")
+        blob = ' '.join(str(v) for v in result.values()).lower()
+        assert 'start' in blob, (
+            "the message must say the agent is still starting, not invent a "
+            "generic assistant reply")
+
+    def test_casual_chat_still_uses_the_fallback(self):
+        """Non-regression: the case the fallback was written for is untouched."""
+        result = self._chat(text='hi')
+        assert result.get('text') == 'FALLBACK-WAS-USED', (
+            "casual chat names no agent and the LLM is up — it must keep "
+            "using the direct llama.cpp fallback exactly as before")
