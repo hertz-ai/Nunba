@@ -3132,6 +3132,20 @@ def chat_route():
                         'node_tier': os.environ.get(
                             'HEVOLVE_NODE_TIER', 'flat'),
                     }
+                    # Boot window: the adapter refuses to let the generic
+                    # fallback answer AS a named agent (8b60a24e) and returns
+                    # loading:true + source='hartos_loading'.  Both are dropped
+                    # by the literals above, so the HTTP client saw
+                    # source='langchain_local' with no loading flag — the text
+                    # was honest but the machine-readable signal was not, and
+                    # the source actively named a leg that did not answer.
+                    # Measured live 2026-09-07 05:08:00.  Carry the adapter's
+                    # own verdict through instead of overwriting it.
+                    if result.get('loading'):
+                        response_json['loading'] = True
+                        response_json['source'] = result.get(
+                            'source') or response_json['source']
+
                     # Agent-driven resource request: 3 detection paths (ordered by priority)
                     # 1. Direct secret_request from backend/adapter
                     # 2. RESOURCE_REQUEST: marker from Request_Resource tool output
