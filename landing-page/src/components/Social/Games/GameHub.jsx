@@ -2,7 +2,7 @@ import GameCard from './GameCard';
 
 import useGameCatalog from '../../../hooks/useGameCatalog';
 import {gamesApi} from '../../../services/socialApi';
-import {RADIUS, GRADIENTS, socialTokens} from '../../../theme/socialTokens';
+import {RADIUS, socialTokens} from '../../../theme/socialTokens';
 import {animFadeInUp, animFadeInScale} from '../../../utils/animations';
 
 import GroupIcon from '@mui/icons-material/Group';
