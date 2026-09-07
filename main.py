@@ -6061,25 +6061,25 @@ def start_background_services():
             )
     threading.Thread(target=_warmup_watchdog, daemon=True, name='TTSWarmupWatchdog').start()
 
-    # Pre-warm HARTOS get_tools(is_first=True) singletons so the user's first
-    # casual-conv chat after restart doesn't pay the ~33s LangChain
-    # `load_tools(['google-search'])` cost.  Sub-singleton is module-level
-    # cached + double-checked-locked in HARTOS hart_intelligence_entry; calling
-    # it once on a boot thread populates the cache for all subsequent get_tools
-    # callers.  Daemon thread — never blocks shutdown.  If the import or call
-    # fails, we log a warning and the first user chat falls back to its
-    # previous behaviour (lazy-load on first call).
-    def _warmup_get_tools_cache():
-        try:
-            from hart_intelligence_entry import _safe_load_google_search
-            _safe_load_google_search()
-        except Exception as e:
-            logging.warning(
-                f"get_tools cache pre-warm failed (non-blocking): {e}"
-            )
-    threading.Thread(
-        target=_warmup_get_tools_cache, daemon=True, name='ToolsWarmup'
-    ).start()
+    # The get_tools google-search pre-warm used to start HERE as a separate
+    # 'ToolsWarmup' daemon thread.  It now runs on the canonical HARTOS loader
+    # thread instead — routes/hartos_backend_adapter._warm_get_tools_cache().
+    #
+    # WHY (#733, captured live 2026-09-07 with py-spy): warming here imports
+    # hart_intelligence_entry -> langchain_core.tracers -> langsmith -> xxhash
+    # concurrently with HARTOS bootstrap's own imports, and about one boot in
+    # five the two deadlock on Python's import machinery — ToolsWarmup holding
+    # the per-module locks for that chain while waiting on the global lock in a
+    # module-lock finalizer, hartos-bootstrap waiting on the same global lock
+    # for integrations.blueprint_registry.  Tier-1 then never goes ACTIVE and
+    # every chat hangs, with nothing raised.
+    #
+    # That is the same hazard as the 2026-04-28 Admin Dashboard deadlock
+    # recorded at :4606 — which is exactly why _kick_tier1_chat_adapter is
+    # wired into on_bootstrap_complete rather than started early.  This warm
+    # was the one heavy-import thread that escaped that rule, because the
+    # banned-api guard names `hart_intelligence` and this imported
+    # `hart_intelligence_entry`.  One thread owns the heavy import now.
 
 
 if __name__ == '__main__':

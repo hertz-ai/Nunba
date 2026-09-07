@@ -311,6 +311,62 @@ def _attempt_hartos_init():
 _HARTOS_INIT_BACKOFF_SCHEDULE = (60, 120, 240, 480)
 
 
+def _warm_get_tools_cache():
+    """Pre-warm the get_tools google-search singleton, ON THIS THREAD.
+
+    WHY IT LIVES HERE AND NOT ON ITS OWN BOOT THREAD (#733).  This warm used
+    to run as a separate 'ToolsWarmup' thread started unconditionally from
+    main.py's start_background_services().  It imports
+    ``hart_intelligence_entry``, which drags in the same heavy graph this
+    module's CANONICAL LOADER note (above) reserves to a single thread:
+    langchain_core.tracers -> langsmith -> xxhash.  Started that way it races
+    HARTOS bootstrap's own imports, and roughly one boot in five they
+    deadlock on the import machinery — captured live 2026-09-07 with py-spy:
+
+        ToolsWarmup      blocked in cb (<frozen importlib._bootstrap>:446),
+                         the module-lock finalizer, which wants the GLOBAL
+                         import lock while already holding the per-module
+                         locks for that whole chain
+        hartos-bootstrap blocked in _get_module_lock (:432) importing
+                         integrations.blueprint_registry, wanting the same
+                         global lock
+
+    The process stays alive, Tier-1 never goes ACTIVE, and every chat hangs.
+    Python's per-module _DeadlockError does not fire across the weakref
+    finalizer path, so nothing raises.
+
+    That is a REGRESSION of a fix this codebase already made: main.py:4606
+    records the 2026-04-28 Admin Dashboard deadlock and wires
+    _kick_tier1_chat_adapter into on_bootstrap_complete precisely so the heavy
+    import never runs beside bootstrap.  ToolsWarmup escaped the banned-api
+    guard only because that rule names ``hart_intelligence`` while this
+    imports ``hart_intelligence_entry`` — a different module, the same graph.
+
+    So the warm now runs on the canonical loader thread instead: one thread
+    owns the heavy import, which is the rule already written above.  This
+    DELETES a thread rather than adding coordination.
+
+    Called only after _attempt_hartos_init() has returned True, and always
+    OUTSIDE _hartos_init_lock — the warm costs ~33s and the lock is held
+    across the whole success branch, so warming inside it would stall any
+    concurrent ensure-init caller for that long.
+
+    TRADE, stated honestly: the cache is now warm at about Tier-1-ACTIVE time
+    rather than early boot, so a chat sent before that may pay the ~33s
+    google-search load once.  That is exactly the fallback the original warm
+    already documented ("the first user chat falls back to lazy-load"), and it
+    is strictly better than a 1-in-5 whole-process wedge.
+    """
+    try:
+        from hart_intelligence_entry import _safe_load_google_search
+        _t0 = time.time()
+        _safe_load_google_search()
+        logger.info(
+            f"  get_tools google-search cache: WARM ({round(time.time() - _t0, 1)}s)")
+    except Exception as _we:
+        logger.warning(f"get_tools pre-warm skipped (non-blocking): {_we}")
+
+
 def _background_hartos_init():
     """Driver: try HARTOS import, retry on transient failures with backoff.
 
@@ -326,6 +382,7 @@ def _background_hartos_init():
     global _hartos_initialized
 
     if _attempt_hartos_init():
+        _warm_get_tools_cache()
         return
 
     for _i, _wait in enumerate(_HARTOS_INIT_BACKOFF_SCHEDULE):
@@ -349,6 +406,7 @@ def _background_hartos_init():
             _hartos_initialized = False
 
         if _attempt_hartos_init():
+            _warm_get_tools_cache()
             return
 
     # All attempts failed — commit to fallback for the rest of this process.
