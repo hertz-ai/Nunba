@@ -204,6 +204,40 @@ function unscramble(letters) {
   return SCRAMBLE_WORDS.find((w) => sortLetters(w) === key) || null;
 }
 
+/**
+ * Click Play Solo until a game engine appears.
+ *
+ * Only ever clicks Play Solo: a fallback that clicked the last button matching
+ * anywhere on the page once pressed "Back to Games" and measured the hub.
+ */
+function startSolo(attempt = 0) {
+  cy.get('body', { log: false }).then(($b) => {
+    if ($b.find('[data-testid^="engine-"]').length) return;
+    if (attempt >= 6) return;
+    if (/play solo/i.test($b[0].innerText || '')) {
+      cy.contains('button', /play solo/i).then(($btn) => {
+        if ($btn.length) $btn[0].click();
+      });
+    }
+    cy.wait(1000, { log: false });
+    startSolo(attempt + 1);
+  });
+}
+
+/**
+ * What the GAME says, not what the page says.
+ *
+ * Recording document.body meant every failure report came back as the sidebar
+ * -- "Nunba / Thought Experiments / MEMBER / HUB / Agents ..." -- which is the
+ * same for a finished game, a stalled one and a lobby, and told me nothing
+ * across a dozen runs.
+ */
+function engineText(doc) {
+  const root = doc.querySelector('[data-testid^="engine-"]');
+  const src = root || doc.body;
+  return (src.innerText || '').replace(/\s+/g, ' ').slice(0, 180);
+}
+
 const results = {};
 
 describe('Every game is driven to completion', () => {
@@ -254,14 +288,15 @@ describe('Every game is driven to completion', () => {
       // button element, while cy.click({force:true}) on it still left the lobby
       // up on roughly a third of runs.
       cy.contains('button', /play solo/i, { timeout: 120000 }).should('exist');
-      // Let the lobby finish mounting before pressing anything. This wait is
-      // the whole difference between the diagnostic that started the game on
-      // 3 of 3 attempts and the same native click without it, which left the
-      // lobby up on most runs: the button exists in the DOM before its handler
-      // is attached, so the earliest possible click is the one that does
-      // nothing.
-      cy.wait(1500);
-      cy.contains('button', /play solo/i).then(($b) => { $b[0].click(); });
+      // Press Play Solo until the engine is actually on screen.
+      //
+      // The button is in the DOM before React attaches its handler, so the
+      // earliest possible click does nothing and the run then measures the
+      // lobby for its whole budget. A fixed wait only moves the problem: 1500ms
+      // made Movie Trivia pass four times running and General Trivia start
+      // failing instead. Retrying against the thing we actually want -- an
+      // engine -- has no timing to get wrong.
+      startSolo();
       cy.contains(/quick match|create room/i, { timeout: 20000 }).should('not.exist');
 
       if (g.kind === 'placeholder') {
@@ -306,7 +341,7 @@ describe('Every game is driven to completion', () => {
           results[g.id] = {
             name: g.name,
             outcome: finished ? 'completed' : 'not-completed',
-            tail: (doc.body.innerText || '').replace(/\s+/g, ' ').slice(0, 160),
+            tail: engineText(doc),
           };
         });
         return;
@@ -464,7 +499,7 @@ describe('Every game is driven to completion', () => {
           results[g.id] = {
             name: g.name,
             outcome: finished ? 'completed' : 'not-completed',
-            tail: (doc.body.innerText || '').replace(/\s+/g, ' ').slice(0, 160),
+            tail: engineText(doc),
           };
         });
         return;
@@ -518,7 +553,7 @@ describe('Every game is driven to completion', () => {
           results[g.id] = {
             name: g.name,
             outcome: finished ? 'completed' : 'not-completed',
-            tail: (doc.body.innerText || '').replace(/\s+/g, ' ').slice(0, 160),
+            tail: engineText(doc),
           };
         });
         return;
@@ -569,7 +604,16 @@ describe('Every game is driven to completion', () => {
                 ));
                 const pick = els.filter((e) => {
                   const r = e.getBoundingClientRect();
-                  return r.width > 4 && r.height > 4 && r.top >= 0;
+                  if (!(r.width > 4 && r.height > 4 && r.top >= 0)) return false;
+                  // Never press the way out. "Back to Games" is rendered by
+                  // UnifiedGameScreen and again inside BoardGameEngine, so it
+                  // is reachable even with clicks scoped to the engine, and
+                  // hitting it unmounts the game: the run then spends its whole
+                  // budget on the hub and is recorded as the GAME failing to
+                  // finish. That is what made the quizzes look flaky -- they
+                  // complete in 15-20s, and the failures were 130s spent
+                  // somewhere else entirely.
+                  return !/back to games/i.test(e.innerText || '');
                 });
                 let chain = cy.wrap(null, { log: false });
 
