@@ -4,14 +4,19 @@
 # A single 23-game run degrades: games that finish in 20-30 seconds on their own
 # time out when they run late in the sweep, because browser state accumulates
 # across the whole spec. Word Scramble completes in 32s alone and failed at 150s
-# in the sweep; the same happened to the trivia set on other runs. Batching keeps
-# each game's result honest, and the per-batch results are merged at the end.
+# in the sweep; the same happened to the trivia set on other runs.
+#
+# One game per invocation, because batches of five were not enough isolation:
+# Checkers finishes in 33s on its own and hit the full 600s budget when it ran
+# third in a group, twice. A cypress start costs about ten seconds, which is a
+# small price for a number that means what it says. BATCH=5 still works for a
+# quick pass.
 set -u
 cd "$(dirname "$0")/.."
 BASE="${CYPRESS_BASE_URL:-http://localhost:4173}"
 OUT=cypress/results
 MERGED="$OUT/completion-merged.json"
-BATCH="${BATCH:-5}"
+BATCH="${BATCH:-1}"
 
 mapfile -t IDS < <(grep -oE "\{ id: '[a-z0-9-]+'" cypress/e2e/games-to-completion.cy.js | sed "s/{ id: '//; s/'//")
 mkdir -p "$OUT"

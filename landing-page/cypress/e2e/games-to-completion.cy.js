@@ -238,6 +238,96 @@ function engineText(doc) {
   return (src.innerText || '').replace(/\s+/g, ' ').slice(0, 180);
 }
 
+/**
+ * Pick a legal Checkers move for Red, reading the board off the screen.
+ *
+ * Clicking a source and then its diagonals cannot finish this game. Random
+ * play loses Red down to one piece within five rounds, and from there the odds
+ * of blindly hitting that piece's single legal from/to pair are tiny: measured,
+ * the board sat at one red against eight black, on Red's turn, unchanged for
+ * 1,190 rounds.
+ *
+ * The board is readable without any hooks into the game. An occupied square
+ * holds exactly one child, and its background says whose piece it is: Red is
+ * rgb(229,57,53) and Black rgb(51,51,51). Red men move up the board (dr -1)
+ * and kings move both ways, so both directions are tried; a king is not
+ * distinguishable by colour, and offering an illegal backward move costs
+ * nothing because the engine rejects it.
+ *
+ * Captures are forced in this game -- movePiece returns INVALID_MOVE for a
+ * quiet move while any capture exists -- so captures are returned first.
+ */
+/** One character per square: r, b or . — enough to tell if the board moved. */
+function occupancySig(cell, win) {
+  const kindOf = (bg) => {
+    const m = /rgb\((\d+), (\d+), (\d+)\)/.exec(bg || '');
+    if (!m) return null;
+    const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (r > 140 && g < 120 && b < 120) return 'r';
+    if (r < 90 && g < 90 && b < 90) return 'b';
+    return null;
+  };
+  const own = kindOf(win.getComputedStyle(cell.el).backgroundColor);
+  if (own) return own;
+  for (const kid of cell.el.children) {
+    const k = kindOf(win.getComputedStyle(kid).backgroundColor);
+    if (k) return k;
+  }
+  return '.';
+}
+
+function chooseCheckersMove(rc, win) {
+  const at = (r, c) => rc.find((x) => x.row === r && x.col === c);
+
+  // Classify by hue rather than by an exact string. The men are
+  // rgb(229,57,53) and rgb(51,51,51), but a crowned king need not paint itself
+  // the same shade, and matching exact colours would quietly stop seeing a
+  // piece the moment it is promoted.
+  const kindOf = (bg) => {
+    const m = /rgb\((\d+), (\d+), (\d+)\)/.exec(bg || '');
+    if (!m) return null;
+    const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (r > 140 && g < 120 && b < 120) return 'red';
+    if (r < 90 && g < 90 && b < 90) return 'black';
+    return null;
+  };
+
+  // The square may BE the piece. This list holds the innermost clickable
+  // element, so on an occupied square that can be the piece itself rather than
+  // a cell wrapping one -- reading only children[0] then reports every square
+  // as empty, which is what left the board frozen at five pieces a side.
+  const occupantOf = (cell) => {
+    if (!cell) return 'off';
+    const own = kindOf(win.getComputedStyle(cell.el).backgroundColor);
+    if (own) return own;
+    for (const kid of cell.el.children) {
+      const k = kindOf(win.getComputedStyle(kid).backgroundColor);
+      if (k) return k;
+    }
+    return 'empty';
+  };
+
+  const captures = [];
+  const quiet = [];
+  rc.forEach((cell) => {
+    if (occupantOf(cell) !== 'red') return;
+    [-1, 1].forEach((dr) => {
+      [-1, 1].forEach((dc) => {
+        const step = at(cell.row + dr, cell.col + dc);
+        const land = at(cell.row + 2 * dr, cell.col + 2 * dc);
+        if (occupantOf(step) === 'black' && occupantOf(land) === 'empty') {
+          captures.push([cell, land]);
+        } else if (occupantOf(step) === 'empty') {
+          // Forward first: a man can only go that way, and a king can do both.
+          if (dr === -1) quiet.unshift([cell, step]);
+          else quiet.push([cell, step]);
+        }
+      });
+    });
+  });
+  return captures.length ? captures : quiet;
+}
+
 const results = {};
 
 describe('Every game is driven to completion', () => {
@@ -557,6 +647,9 @@ describe('Every game is driven to completion', () => {
         // all that was left to read was the sidebar.
         let sawEngine = false;
         const progress = [];
+        // Board fingerprint, so the driver can tell "thinking" from "stuck".
+        let lastBoardSig = '';
+        let stuckRounds = 0;
 
         const round = (n) => {
           return cy.document({ log: false }).then((doc) => {
@@ -691,6 +784,57 @@ describe('Every game is driven to completion', () => {
                   // produced horizontally adjacent pairs, which are never a
                   // legal checkers move; the diagonals are what that game needs,
                   // and a plain source click is what Reversi and Mancala need.
+                  // Checkers is played properly rather than swept: read the
+                  // board, pick a legal move, click its two squares. The sweep
+                  // reduces Red to one piece in five rounds and then cannot
+                  // find that piece's single legal from/to pair, which is the
+                  // whole reason this game never finished.
+                  if (g.id === 'checkers') {
+                    const moves = chooseCheckersMove(rc, doc.defaultView);
+                    if (!moves.length) {
+                      return chain.then(() => cy.wait(700, { log: false }))
+                        .then(() => false);
+                    }
+                    // Try several candidates per round, not one.
+                    //
+                    // Some of what this generates is not legal: a man offered
+                    // a backward square, or a quiet move while a capture the
+                    // reader missed is forced. Playing exactly one candidate a
+                    // round means an unlucky pick stalls the game — measured,
+                    // a won position of seven against three sat unchanged for
+                    // 1,190 rounds. A rejected move costs two clicks and
+                    // changes nothing, so it is cheap to keep trying.
+                    // If the position has not moved for a few rounds, stop
+                    // sampling and play EVERY candidate. The generator can be
+                    // wrong about legality — a man offered a backward square,
+                    // or a quiet move while a capture it did not see is forced
+                    // — and in the endgame there may be exactly one legal move
+                    // on the board. Sampling four a round then left won
+                    // positions (seven against three, five against five)
+                    // untouched for over a thousand rounds. A rejected move
+                    // costs two clicks and changes nothing.
+                    const sig = rc.map((c) => occupancySig(c, doc.defaultView)).join('');
+                    if (sig === lastBoardSig) {
+                      stuckRounds += 1;
+                    } else {
+                      stuckRounds = 0;
+                      lastBoardSig = sig;
+                    }
+                    const batch = [];
+                    const take = stuckRounds >= 3 ? moves.length : Math.min(4, moves.length);
+                    for (let i = 0; i < take; i++) {
+                      batch.push(moves[(n * 4 + i) % moves.length]);
+                    }
+                    batch.forEach(([from, to]) => {
+                      [from, to].forEach((t) => {
+                        chain = chain.then(() => clickApp(map,
+                          t.r.left + t.r.width / 2, t.r.top + t.r.height / 2));
+                      });
+                    });
+                    return chain.then(() => cy.wait(700, { log: false }))
+                      .then(() => false);
+                  }
+
                   const src = rc[n % rc.length];
                   const targets = [src];
                   [[-1, -1], [-1, 1], [1, -1], [1, 1], [-2, -2], [-2, 2], [2, -2], [2, 2]]
