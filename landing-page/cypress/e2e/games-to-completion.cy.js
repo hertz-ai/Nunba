@@ -273,31 +273,15 @@ describe('Every game is driven to completion', () => {
       });
       cy.get('#root', { timeout: 120000 }).should('exist');
 
-      // Start a solo game by clicking the BUTTON, not whatever element happens
-      // to contain the words.
+      // Start a solo game, if this one has a lobby at all.
       //
-      // cy.contains resolves to the outermost element holding the text, and
-      // force-clicking that does not always reach the button's handler, so the
-      // lobby stayed up and the run measured it instead of the game. Movie
-      // Trivia completed in 17-20s on some runs and burned the full 130s on
-      // others with identical code and data. A native click on the real button
-      // closed the lobby on 3 of 3 measured attempts: there is exactly one
-      // such button, enabled, carrying an onClick.
-      // A NATIVE click, which is what was actually measured to work: the
-      // diagnostic closed this lobby on 3 of 3 attempts calling .click() on the
-      // button element, while cy.click({force:true}) on it still left the lobby
-      // up on roughly a third of runs.
-      cy.contains('button', /play solo/i, { timeout: 120000 }).should('exist');
-      // Press Play Solo until the engine is actually on screen.
-      //
-      // The button is in the DOM before React attaches its handler, so the
-      // earliest possible click does nothing and the run then measures the
-      // lobby for its whole budget. A fixed wait only moves the problem: 1500ms
-      // made Movie Trivia pass four times running and General Trivia start
-      // failing instead. Retrying against the thing we actually want -- an
-      // engine -- has no timing to get wrong.
+      // startSolo presses Play Solo until an engine is on screen and does
+      // nothing when the engine is already there. Everything else this block
+      // accumulated has been removed: waiting on a Play Solo button to EXIST
+      // blocks for its full timeout on any game that has no lobby, and
+      // asserting the lobby is gone straight after the click regressed General
+      // Trivia from 18s to a timeout.
       startSolo();
-      cy.contains(/quick match|create room/i, { timeout: 20000 }).should('not.exist');
 
       if (g.kind === 'placeholder') {
         // No engine exists for these, so there is nothing to finish. The
@@ -563,9 +547,37 @@ describe('Every game is driven to completion', () => {
         const started = Date.now();
 
         // One round of "try to make progress", then look for the end.
+        // Whether an engine has ever been on screen for this game. Once the
+        // driver refuses to press "Back to Games" — in the generic path and in
+        // the board path, which builds its own list of clickables — the only
+        // remaining way for the engine to vanish is the game handing back after
+        // it ends. Checkers was reaching that point and being recorded as
+        // unfinished, because the result panel is shown briefly and the loop
+        // samples about once a second: by the next look the board was gone and
+        // all that was left to read was the sidebar.
+        let sawEngine = false;
+        const progress = [];
+
         const round = (n) => {
           return cy.document({ log: false }).then((doc) => {
             if (DONE_RE.test(doc.body.innerText || '')) return true;
+            if (doc.querySelector('[data-testid^="engine-"]')) {
+              sawEngine = true;
+              // Record how the material count moves. Checkers running the full
+              // budget could mean either "the driver never makes a legal move"
+              // or "it plays, just slowly" — opposite problems. The piece
+              // counts say which, and nothing else in the run does.
+              const txt = doc.body.innerText || '';
+              const m = txt.match(/Red:\s*(\d+)\s*Black:\s*(\d+)/i);
+              // Whose turn matters as much as the counts: a board stuck on
+              // "Your turn" means the driver cannot find a move, one stuck on
+              // "Opponent's turn" means the bot never answered. Opposite fixes.
+              const turn = /opponent's turn/i.test(txt) ? 'opp'
+                : /your turn/i.test(txt) ? 'you' : '?';
+              if (m) progress.push(`${n}:${m[1]}v${m[2]}:${turn}`);
+            } else if (sawEngine) {
+              return true;
+            }
             if (Date.now() - started > budgetMs) return false;
 
             // Arcade games split into two kinds and a single strategy cannot
@@ -640,7 +652,15 @@ describe('Every game is driven to completion', () => {
                   const clickable = Array.from(root.querySelectorAll('*'))
                     .filter((d) => {
                       const k = Object.keys(d).find((x) => x.startsWith('__reactProps$'));
-                      return k && typeof d[k].onClick === 'function';
+                      if (!k || typeof d[k].onClick !== 'function') return false;
+                      // BoardGameEngine renders its own "Back to Games" INSIDE
+                      // the engine, so it is picked up here as just another
+                      // clickable and pressing it unmounts the board. The
+                      // generic path already refuses it; this branch builds its
+                      // own list and did not, which is why Checkers alone kept
+                      // ending on the hub after 610s with no engine left to
+                      // read.
+                      return !/back to games/i.test(d.innerText || '');
                     });
                   const leaves = clickable
                     .filter((d) => !clickable.some((o) => o !== d && d.contains(o)))
@@ -832,6 +852,7 @@ describe('Every game is driven to completion', () => {
               outcome: finished ? 'completed' : 'not-completed',
               seconds: Math.round((Date.now() - started) / 1000),
               tail: text.slice(0, 160),
+              progress: progress.length ? progress.slice(0, 6).concat(progress.slice(-6)) : undefined,
             };
 
             // Trivia cannot finish without questions, and unauthenticated
