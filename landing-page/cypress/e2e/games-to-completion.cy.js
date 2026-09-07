@@ -238,7 +238,31 @@ describe('Every game is driven to completion', () => {
         onBeforeLoad(win) { win.localStorage.setItem('access_token', FAKE_TOKEN); },
       });
       cy.get('#root', { timeout: 120000 }).should('exist');
-      cy.contains(/play solo/i, { timeout: 120000 }).click({ force: true });
+
+      // Start a solo game by clicking the BUTTON, not whatever element happens
+      // to contain the words.
+      //
+      // cy.contains resolves to the outermost element holding the text, and
+      // force-clicking that does not always reach the button's handler, so the
+      // lobby stayed up and the run measured it instead of the game. Movie
+      // Trivia completed in 17-20s on some runs and burned the full 130s on
+      // others with identical code and data. A native click on the real button
+      // closed the lobby on 3 of 3 measured attempts: there is exactly one
+      // such button, enabled, carrying an onClick.
+      // A NATIVE click, which is what was actually measured to work: the
+      // diagnostic closed this lobby on 3 of 3 attempts calling .click() on the
+      // button element, while cy.click({force:true}) on it still left the lobby
+      // up on roughly a third of runs.
+      cy.contains('button', /play solo/i, { timeout: 120000 }).should('exist');
+      // Let the lobby finish mounting before pressing anything. This wait is
+      // the whole difference between the diagnostic that started the game on
+      // 3 of 3 attempts and the same native click without it, which left the
+      // lobby up on most runs: the button exists in the DOM before its handler
+      // is attached, so the earliest possible click is the one that does
+      // nothing.
+      cy.wait(1500);
+      cy.contains('button', /play solo/i).then(($b) => { $b[0].click(); });
+      cy.contains(/quick match|create room/i, { timeout: 20000 }).should('not.exist');
 
       if (g.kind === 'placeholder') {
         // No engine exists for these, so there is nothing to finish. The
@@ -676,10 +700,18 @@ describe('Every game is driven to completion', () => {
                         return clickApp(map, b.left + b.width / 2, b.top + b.height / 2)
                           .then(() => {
                             const after = liveCells();
-                            const lit = after.filter(
-                              (el, i) => el.outerHTML !== snap[i] && i !== idx);
+                            const lit = after
+                              .map((el, i) => ({ el, i }))
+                              .filter(({ el, i }) => el.outerHTML !== snap[i] && i !== idx);
                             if (!lit.length) return null;
-                            const t = lit[0].getBoundingClientRect();
+                            // Prefer a jump. Captures take material off the
+                            // board, which is what drives a game toward an
+                            // ending; always taking the first highlighted
+                            // square converges very slowly. Cells run 8 to a
+                            // row, so a jump lands 16 indices away.
+                            const jump = lit.find(({ i }) => Math.abs(i - idx) >= 15);
+                            const target = (jump || lit[0]).el;
+                            const t = target.getBoundingClientRect();
                             if (!t.width) return null;
                             return clickApp(map, t.left + t.width / 2,
                                                  t.top + t.height / 2);
