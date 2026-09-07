@@ -650,6 +650,7 @@ describe('Every game is driven to completion', () => {
         // Board fingerprint, so the driver can tell "thinking" from "stuck".
         let lastBoardSig = '';
         let stuckRounds = 0;
+        let lastMoveCount = -1;
 
         const round = (n) => {
           return cy.document({ log: false }).then((doc) => {
@@ -667,7 +668,10 @@ describe('Every game is driven to completion', () => {
               // "Opponent's turn" means the bot never answered. Opposite fixes.
               const turn = /opponent's turn/i.test(txt) ? 'opp'
                 : /your turn/i.test(txt) ? 'you' : '?';
-              if (m) progress.push(`${n}:${m[1]}v${m[2]}:${turn}`);
+              // moves offered and stuck-count too: a stall where the chooser
+              // offers nothing is a reading problem, one where it offers
+              // plenty is a clicking problem. Opposite fixes again.
+              if (m) progress.push(`${n}:${m[1]}v${m[2]}:${turn}:m${lastMoveCount}:s${stuckRounds}`);
             } else if (sawEngine) {
               return true;
             }
@@ -791,6 +795,7 @@ describe('Every game is driven to completion', () => {
                   // whole reason this game never finished.
                   if (g.id === 'checkers') {
                     const moves = chooseCheckersMove(rc, doc.defaultView);
+                    lastMoveCount = moves.length;
                     if (!moves.length) {
                       return chain.then(() => cy.wait(700, { log: false }))
                         .then(() => false);
