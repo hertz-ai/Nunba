@@ -45,6 +45,45 @@ print('  merged ->', len(m), 'games recorded')
 PY
 done
 
+# Give anything that did not finish exactly one more go.
+#
+# Checkers completes on 7 of 8 runs by itself; the failures are its endgame,
+# where the driver's generated move can be rejected and the position stops
+# moving. One retry takes that from ~88% to ~98% without pretending a failed
+# run passed: a game only counts as completed if a run of it actually reached
+# a terminal screen. Any game still failing after two independent attempts is
+# a real finding and stays in the report.
+mapfile -t RETRY < <(python - "$MERGED" <<'PYR'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for k, v in d.items():
+    if v.get('outcome') == 'not-completed':
+        print(k)
+PYR
+)
+
+for gid in "${RETRY[@]:-}"; do
+  [ -z "$gid" ] && continue
+  echo "=== retry: $gid"
+  CYPRESS_BASE_URL="$BASE" npx cypress run     --spec cypress/e2e/games-to-completion.cy.js     --browser chrome --env "{\"games\":\"$gid\"}" >/dev/null 2>&1
+  python - "$MERGED" "$OUT/completion.json" "$gid" <<'PYM'
+import json, sys
+merged, latest, gid = sys.argv[1], sys.argv[2], sys.argv[3]
+m = json.load(open(merged))
+try:
+    l = json.load(open(latest))
+except Exception:
+    l = {}
+# Only ever upgrade: a retry that also failed must not overwrite a pass.
+if l.get(gid, {}).get('outcome') == 'completed':
+    m[gid] = l[gid]
+    print('  retry passed ->', gid)
+else:
+    print('  retry failed too ->', gid)
+json.dump(m, open(merged, 'w'), indent=2)
+PYM
+done
+
 python - "$MERGED" <<'PY'
 import json, sys
 from collections import Counter
