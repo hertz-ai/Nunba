@@ -110,7 +110,9 @@ export default function SequenceOrderTemplate({config, onAnswer, onComplete}) {
     // Ensure not already in correct order
     let tries = 0;
     while (
-      shuffled.every((s, i) => s.origIdx === i) &&
+      // Compared by value for the same reason: a deal that reads correctly is
+      // already solved even when the two equal cards sit in swapped indices.
+      shuffled.every((s, i) => String(s.item) === String(correctOrder[i])) &&
       correctOrder.length > 1 &&
       tries < 10
     ) {
@@ -212,8 +214,13 @@ export default function SequenceOrderTemplate({config, onAnswer, onComplete}) {
     if (showFeedback) return;
 
     const elapsed = Date.now() - startTimeRef.current;
+    // Judged on the VALUE in each position, not on the index the card was
+    // dealt from. The Fibonacci run opens 1, 1, 2, so two cards read "1"; on
+    // origIdx exactly one arrangement of that identical pair counted, and a
+    // child who put the other one first had the whole run marked wrong with
+    // nothing on screen to tell the two cards apart.
     const statuses = order.map((item, idx) =>
-      item.origIdx === idx ? 'correct' : 'wrong'
+      String(item.item) === String(correctOrder[idx]) ? 'correct' : 'wrong'
     );
     const allCorrect = statuses.every((s) => s === 'correct');
     const correctCount = statuses.filter((s) => s === 'correct').length;
