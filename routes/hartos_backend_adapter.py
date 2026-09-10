@@ -1363,6 +1363,38 @@ def create_proxy_blueprint():
     def proxy_health():
         return jsonify(check_backend_health())
 
+    @proxy_bp.route('/api/vlm/stop', methods=['POST'])
+    def proxy_vlm_stop():
+        """Halt a running VLM computer-use loop.
+
+        LIVE-PROVEN BROKEN 2026-09-10 11:44: this path 404'd while a loop was
+        driving the desktop (54 alt+f4 that day), so Nunba's own Stop AI
+        Control button reported failure and the only way to stop the agent
+        was killing Nunba.exe.  HARTOS declares the route at
+        hart_intelligence_entry.py:10497 on ITS OWN Flask app, which the
+        desktop topology never mounts into the app serving :5000 (nothing
+        listens on :5001/:6777 either) -- so the route existed in the bundle
+        and was still unreachable.
+
+        DISPATCH, DON'T REIMPLEMENT.  The HARTOS handler owns user_id
+        validation, optional prompt_id, and the bulk-stop enumeration over
+        list_active_sessions(); re-deriving any of that here would be a
+        second implementation that drifts.  test_client() runs the real
+        handler in-process -- the same idiom chat() uses above, and correct
+        here for the same reason: the stop flags (local_loop._vlm_stop_flags)
+        live in THIS process, so an HTTP forward would target a server that
+        is not listening.
+        """
+        payload = flask_request.get_json(silent=True) or {}
+        if not (_hartos_backend_available and _hevolve_app):
+            return jsonify({
+                'error': 'hart-backend unavailable; cannot reach VLM stop',
+                'status': 'backend_unavailable',
+            }), 503
+        with _hevolve_app.test_client() as client:
+            resp = client.post('/api/vlm/stop', json=payload)
+            return jsonify(resp.get_json() or {}), resp.status_code
+
     # Proxy all /api/social/* requests
     @proxy_bp.route('/api/social/<path:path>', methods=['GET', 'POST', 'PATCH', 'DELETE'])
     def proxy_social(path):
