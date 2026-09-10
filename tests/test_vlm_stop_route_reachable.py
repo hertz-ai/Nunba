@@ -38,6 +38,7 @@ stop" is precisely the parallel path that must not exist.
 """
 import ast
 import os
+import re
 
 import pytest
 
@@ -51,18 +52,58 @@ def _adapter_src():
 
 
 def _proxy_blueprint_body():
-    """Return the source of create_proxy_blueprint() only.
+    """Return the source of create_vlm_control_blueprint() only.
 
     Scoping to the function matters: asserting on the whole module would
     pass on any stray mention of the path in a comment or docstring, which
     is the vacuous-guard failure mode.
+
+    NOT create_proxy_blueprint().  The first attempt at this fix put the
+    route there and it STILL 404'd live, because main.py mounts that
+    blueprint only under ``if not HARTOS_BACKEND_DIRECT`` and this install
+    runs direct.  Deployed, restarted, still 404 -- the reason
+    TestRegistrationIsUnconditional below exists.
     """
     src = _adapter_src()
     tree = ast.parse(src)
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == 'create_proxy_blueprint':
+        if isinstance(node, ast.FunctionDef) and node.name == 'create_vlm_control_blueprint':
             return ast.get_source_segment(src, node) or ''
-    raise AssertionError('create_proxy_blueprint() not found in the adapter')
+    raise AssertionError('create_vlm_control_blueprint() not found in the adapter')
+
+
+class TestRegistrationIsUnconditional:
+    """Declaring a route is not serving it.
+
+    This is the check whose absence made the first fix fail live: the route
+    existed, deployed cleanly with a verified sentinel, and still 404'd
+    because its blueprint was behind a mode guard that is False here.
+    """
+
+    def _main_src(self):
+        with open(os.path.join(REPO, 'main.py'), encoding='utf-8',
+                  errors='replace') as fh:
+            return fh.read()
+
+    def test_main_registers_the_vlm_control_blueprint(self):
+        assert 'create_vlm_control_blueprint' in self._main_src(), (
+            'main.py never registers the VLM control blueprint, so the route '
+            'is declared but not served')
+
+    def test_registration_is_not_behind_the_direct_mode_guard(self):
+        """It must not sit inside `if not HARTOS_BACKEND_DIRECT`.
+
+        Measured: that branch is False on this install, which is exactly how
+        the route stayed 404 after a clean deploy.
+        """
+        src = self._main_src()
+        guard = src.index('if not HARTOS_BACKEND_DIRECT')
+        reg = src.index('create_vlm_control_blueprint(')
+        block_end = src.index('\n# VLM run-control', guard)
+        assert not (guard < reg < block_end), (
+            'the VLM control blueprint is registered INSIDE the '
+            '`if not HARTOS_BACKEND_DIRECT` branch -- it will not be served '
+            'in direct mode, which is what this install runs')
 
 
 class TestTheStopRouteIsServed:
@@ -75,12 +116,18 @@ class TestTheStopRouteIsServed:
             "stopped (live-proven 2026-09-10 11:44)")
 
     def test_it_accepts_POST(self):
-        """call_stop_api() POSTs; a GET-only route would still 405."""
+        """call_stop_api() POSTs; a GET-only route would still 405.
+
+        Anchored on the @route DECORATOR, not the first occurrence of the
+        path string.  The blueprint's docstring also names the path (to
+        explain why it lives here), and matching that instead is the same
+        docstring trap this file hit twice already.
+        """
         body = _proxy_blueprint_body()
-        idx = body.index('/api/vlm/stop')
-        decorator = body[max(0, idx - 120): idx + 160]
-        assert 'POST' in decorator, (
-            f"route must accept POST -- call_stop_api() posts. Got: {decorator!r}")
+        m = re.search(r"@\w+\.route\(\s*'/api/vlm/stop'[^)]*\)", body)
+        assert m, 'no @route decorator for /api/vlm/stop found in the blueprint'
+        assert 'POST' in m.group(0), (
+            f"route must accept POST -- call_stop_api() posts. Got: {m.group(0)!r}")
 
 
 def _stop_handler_code():

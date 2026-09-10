@@ -4661,6 +4661,21 @@ if not HARTOS_BACKEND_DIRECT and HARTOS_BACKEND_AVAILABLE:
     except Exception as e:
         logging.warning(f"hart-backend adapter failed: {e}")
 
+# VLM run-control (/api/vlm/stop) is registered in BOTH backend modes, on
+# purpose.  The proxy blueprint above is mounted only when NOT direct, and
+# this install runs direct ("hart-backend direct: True"), so a stop route
+# living there is never served: measured 2026-09-10, /api/vlm/stop returned
+# 404 while a VLM loop was driving the desktop, leaving Stop AI Control dead
+# and killing Nunba.exe as the only way out.  Stopping a running agent must
+# work in every topology, so this registration is unconditional -- same
+# shape as the MCP blueprint immediately below.
+try:
+    from routes.hartos_backend_adapter import create_vlm_control_blueprint
+    app.register_blueprint(create_vlm_control_blueprint())
+    logging.info("VLM run-control registered (/api/vlm/stop)")
+except Exception as e:
+    logging.warning(f"VLM run-control registration failed: {e}")
+
 # ============== HARTOS MCP over HTTP (lifecycle-bound to Nunba) ==============
 # The HTTP MCP blueprint at /api/mcp/local replaces the standalone stdio
 # python subprocess that Claude Code would otherwise spawn (see

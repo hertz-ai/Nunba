@@ -1363,7 +1363,49 @@ def create_proxy_blueprint():
     def proxy_health():
         return jsonify(check_backend_health())
 
-    @proxy_bp.route('/api/vlm/stop', methods=['POST'])
+    # Proxy all /api/social/* requests
+    @proxy_bp.route('/api/social/<path:path>', methods=['GET', 'POST', 'PATCH', 'DELETE'])
+    def proxy_social(path):
+        url = f"{HEVOLVE_SOCIAL_URL}/{path}"
+
+        # Forward the request
+        resp = requests.request(
+            method=flask_request.method,
+            url=url,
+            headers={k: v for k, v in flask_request.headers if k.lower() != 'host'},
+            params=flask_request.args,
+            data=flask_request.get_data(),
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=False
+        )
+
+        # Return the response
+        return Response(
+            resp.content,
+            status=resp.status_code,
+            headers=dict(resp.headers)
+        )
+
+    return proxy_bp
+
+
+def create_vlm_control_blueprint():
+    """Blueprint for VLM run-control, registered in BOTH backend modes.
+
+    SEPARATE FROM create_proxy_blueprint() ON PURPOSE.  That one is mounted
+    only under ``if not HARTOS_BACKEND_DIRECT`` (main.py), and this install
+    runs direct ("hart-backend direct: True"), so a stop route living there
+    is never served -- measured: the route deployed, the app restarted, and
+    /api/vlm/stop still returned 404.  Stopping a running agent must work in
+    every topology, so this blueprint is registered unconditionally next to
+    mcp_local_bp.
+    """
+    from flask import Blueprint, jsonify
+    from flask import request as flask_request
+
+    vlm_bp = Blueprint('hevolve_vlm_control', __name__)
+
+    @vlm_bp.route('/api/vlm/stop', methods=['POST'])
     def proxy_vlm_stop():
         """Halt a running VLM computer-use loop.
 
@@ -1395,30 +1437,7 @@ def create_proxy_blueprint():
             resp = client.post('/api/vlm/stop', json=payload)
             return jsonify(resp.get_json() or {}), resp.status_code
 
-    # Proxy all /api/social/* requests
-    @proxy_bp.route('/api/social/<path:path>', methods=['GET', 'POST', 'PATCH', 'DELETE'])
-    def proxy_social(path):
-        url = f"{HEVOLVE_SOCIAL_URL}/{path}"
-
-        # Forward the request
-        resp = requests.request(
-            method=flask_request.method,
-            url=url,
-            headers={k: v for k, v in flask_request.headers if k.lower() != 'host'},
-            params=flask_request.args,
-            data=flask_request.get_data(),
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=False
-        )
-
-        # Return the response
-        return Response(
-            resp.content,
-            status=resp.status_code,
-            headers=dict(resp.headers)
-        )
-
-    return proxy_bp
+    return vlm_bp
 
 
 # ============== RSS/ATOM FEED API ==============
