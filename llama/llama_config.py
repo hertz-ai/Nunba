@@ -1562,7 +1562,23 @@ class LlamaConfig:
             # KV cache cost: ~1GB per 8K context for 4B Q4 model
             try:
                 from integrations.service_tools.vram_manager import vram_manager
-                free_gb = vram_manager.detect_gpu().get('free_gb', 0)
+                # force=True: detect_gpu() is a plain memo with no TTL of its
+                # own, and refresh_gpu_info()'s bundled TTL is 120 s -- a spawn
+                # is exactly the moment a cached VRAM reading is worthless,
+                # because the server we are replacing may still be holding its
+                # weights when the sample was taken.  MEASURED 2026-09-10:
+                #   16:19:58,967  nvidia-smi: 8.0 GB total, 2.98 GB free
+                #   16:20:16      llama-server on :8080 died
+                #   16:21:55,203  Dynamic context size: 4096 (free=3.0GB ...)
+                #   16:21:59,261  nvidia-smi: 8.0 GB total, 7.56 GB free
+                # The decision read a 117-second-old sample (inside the TTL,
+                # so an unforced refresh would have returned it too), saw
+                # 0.1 GB of headroom where there was 4.76, and pinned n_ctx at
+                # 4096 for the whole process -- under the 8026-token tool
+                # schema, so every create/reuse turn 400'd and agent
+                # 28160128202 produced 0 action files in 3 CREATE turns.
+                free_gb = vram_manager.refresh_gpu_info(
+                    force=True).get('free_gb', 0)
                 model_gb = model_preset.size_mb / 1024.0
                 remaining = free_gb - model_gb  # VRAM after model loads
                 if remaining >= 3:
