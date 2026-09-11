@@ -175,3 +175,114 @@ class TestItDispatchesRatherThanReimplements:
             f"{forbidden} appears in live proxy CODE (not merely in its "
             f"docstring) -- that is a SECOND implementation of which sessions "
             f"to stop, and it will drift from the HARTOS handler.")
+
+
+# The status values hart_intelligence_entry.vlm_stop ACTUALLY RETURNS.
+#
+# Pinned here rather than imported because this repo must be testable without
+# the HARTOS tree on disk; TestTheAcceptedSetCoversWhatTheHandlerEmits
+# re-derives it from HARTOS source when that tree IS findable, so a drift in
+# the producer cannot sit undetected behind a stale constant.
+#
+# Source (HARTOS, hart_intelligence_entry.py, vlm_stop):
+#     Response:
+#         {"status": "stopped"|"no_active_session", "user_id", "prompt_id"}
+#     ...
+#     'status': 'stopped' if found else 'no_active_session',
+HANDLER_EMITS = frozenset({'stopped', 'no_active_session'})
+
+
+def _accepted_status_values():
+    """The set call_stop_api() treats as success, read from live CODE.
+
+    AST, not a substring scan: the branch is a multi-line
+    ``result.get('status') in (...)`` and the surrounding comment names the
+    same literals to explain them.  Matching the comment instead of the
+    comparison is the docstring trap this file already records twice.
+    """
+    with open(os.path.join(REPO, 'main.py'), encoding='utf-8',
+              errors='replace') as fh:
+        src = fh.read()
+    tree = ast.parse(src)
+    for fn in ast.walk(tree):
+        if not (isinstance(fn, ast.FunctionDef) and fn.name == 'call_stop_api'):
+            continue
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Compare) and node.ops
+                    and isinstance(node.ops[0], ast.In)):
+                continue
+            # left must be the status read, not some other membership test
+            left = node.left
+            if not (isinstance(left, ast.Call)
+                    and isinstance(left.func, ast.Attribute)
+                    and left.func.attr == 'get'
+                    and left.args
+                    and isinstance(left.args[0], ast.Constant)
+                    and left.args[0].value == 'status'):
+                continue
+            comp = node.comparators[0]
+            if isinstance(comp, (ast.Tuple, ast.List, ast.Set)):
+                return frozenset(
+                    e.value for e in comp.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str))
+        raise AssertionError(
+            "call_stop_api() has no `result.get('status') in (...)` test -- "
+            'the success branch this guard protects has moved or gone')
+    raise AssertionError('call_stop_api() not found in main.py')
+
+
+class TestTheAcceptedSetCoversWhatTheHandlerEmits:
+    """Reachability is not comprehension.
+
+    Every other test in this file proves the DOOR exists: the route is
+    declared, registered unconditionally, accepts POST, dispatches instead of
+    reimplementing.  All of them passed on 2026-09-11 while the button was
+    still broken, because call_stop_api accepted only ('success', 'warning')
+    -- the retired cloud endpoint's vocabulary -- and the handler it now
+    reaches answers 'stopped' / 'no_active_session'.  The request arrived,
+    succeeded, and was reported to the user as a failure; indicator_window's
+    "stopped" branch was unreachable.  Fixed 2bf3540c.
+
+    A reachability suite cannot catch that class at all.  This one asserts the
+    two vocabularies meet.
+    """
+
+    def test_every_value_the_handler_emits_is_accepted(self):
+        accepted = _accepted_status_values()
+        missing = HANDLER_EMITS - accepted
+        assert not missing, (
+            f'call_stop_api() rejects {sorted(missing)}, which '
+            f'hart_intelligence_entry.vlm_stop returns -- a successful stop '
+            f'would be reported to the user as a failure. accepted={sorted(accepted)}')
+
+    def test_the_legacy_cloud_values_are_still_accepted(self):
+        """Not a tautology: it pins the non-bundled path against a narrowing fix.
+
+        get_stop_api_url still resolves to the cloud endpoint when not
+        bundled, so dropping these would break that topology silently.
+        """
+        accepted = _accepted_status_values()
+        assert {'success', 'warning'} <= accepted, (
+            f'the legacy cloud vocabulary was dropped; the non-bundled path '
+            f'would regress. accepted={sorted(accepted)}')
+
+    def test_the_pin_still_matches_hartos_when_that_tree_is_findable(self):
+        """Best-effort drift check; skips where HARTOS is not on disk.
+
+        Deliberately NOT the primary assertion -- a test that only runs when a
+        sibling repo happens to be present is a test that silently stops
+        running.  This one only catches the pin going stale.
+        """
+        hartos = os.environ.get('HARTOS_REPO') or os.path.join(
+            os.path.dirname(REPO), 'HARTOS')
+        entry = os.path.join(hartos, 'hart_intelligence_entry.py')
+        if not os.path.isfile(entry):
+            pytest.skip(f'HARTOS tree not found at {entry}')
+        with open(entry, encoding='utf-8', errors='replace') as fh:
+            src = fh.read()
+        found = set(re.findall(
+            r"'status':\s*'([a-z_]+)'\s+if\s+\w+\s+else\s+'([a-z_]+)'", src))
+        emitted = {v for pair in found for v in pair}
+        assert emitted, 'could not re-derive vlm_stop status values from HARTOS'
+        assert HANDLER_EMITS <= emitted, (
+            f'HANDLER_EMITS is stale: HARTOS now emits {sorted(emitted)}')
