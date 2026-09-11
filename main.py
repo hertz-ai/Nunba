@@ -1055,8 +1055,19 @@ def call_stop_api():
             result = response.json()
             logger.info(f"Stop request result: {result}")
 
-            # Check for succes in the response
-            if isinstance(result, dict) and result.get('status') in ('success', 'warning'):
+            # The vocabulary here is the STOP HANDLER's, not the retired
+            # cloud /stop endpoint's.  hart_intelligence_entry.vlm_stop
+            # documents and returns {"status": "stopped"|"no_active_session"};
+            # neither was accepted, so this branch was false on every
+            # successful stop and indicator_window's "✓ Stopped" (:626) was
+            # unreachable -- the user was told the Stop failed while the VLM
+            # session had in fact been stopped.  Both values satisfy the
+            # postcondition the button promises (no VLM session is running),
+            # and call_stop_api returns a bool, so both are True.
+            # 'success'/'warning' stay for the non-bundled path, where
+            # get_stop_api_url still resolves to the cloud endpoint.
+            if isinstance(result, dict) and result.get('status') in (
+                    'stopped', 'no_active_session', 'success', 'warning'):
                 logger.info("Stop request successfully send and acknowledged")
                 return True
             else:
