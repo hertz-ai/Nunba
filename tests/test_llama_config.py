@@ -638,13 +638,13 @@ class TestDiagnoseUsesOrchestrator:
         assert 'action' in diag
 
 
-class TestTheDraftServerIsNeverAdoptedAsMain:
-    """_do_start_server must not take Nunba's own caption/draft server for the
+class TestTheCaptionServerIsNeverAdoptedAsMain:
+    """_do_start_server must not take Nunba's own 0.8B caption server for the
     main LLM.
 
     Live 2026-09-13: the main server on :8080 died of "bad allocation" at
     12:23.  The watchdog's restart called start_server(); its "is a llama
-    already running?" scan found the 0.8B draft on :8081, rewrote
+    already running?" scan found the caption server on :8081, rewrote
     server_port to 8081, re-pointed every LLM URL at it, marked the 0.8B as
     the loaded 'llm' and returned True -- logged as "Nunba LLM restart
     SUCCEEDED on port 8081".  :8080 stayed empty.
@@ -653,12 +653,12 @@ class TestTheDraftServerIsNeverAdoptedAsMain:
     alive, requests.get (the adoption branch's /v1/models catalog sync)
     raises and is swallowed there, and _propagate_llm_url is recorded instead
     of setting process env.  Ports 18080/18081 stand in for the main and
-    draft ports wherever the code really binds one (the desired-port
+    caption ports wherever the code really binds one (the desired-port
     re-check and the alternative-port search).
     """
 
     _UNUSED_PORT = 18080
-    _UNUSED_DRAFT_PORT = 18081
+    _UNUSED_CAPTION_PORT = 18081
 
     @staticmethod
     def _alive_on(ports):
@@ -680,11 +680,11 @@ class TestTheDraftServerIsNeverAdoptedAsMain:
             result = cfg._do_start_server(model_preset=None)
         return cfg, result, propagate
 
-    def test_a_dead_main_does_not_adopt_the_draft_port(self, tmp_config_dir, monkeypatch):
+    def test_a_dead_main_does_not_adopt_the_caption_port(self, tmp_config_dir, monkeypatch):
         monkeypatch.delenv('HEVOLVE_VLM_CAPTION_PORT', raising=False)
         cfg, result, propagate = self._start(tmp_config_dir, alive={8081})
         assert cfg.config['server_port'] == self._UNUSED_PORT, (
-            'the draft server on 8081 was adopted as the main LLM')
+            'the caption server on 8081 was adopted as the main LLM')
         propagate.assert_not_called()
         # It went on to spawn the main server; the mocked installer has no
         # binary, so that attempt returns False.
@@ -694,7 +694,7 @@ class TestTheDraftServerIsNeverAdoptedAsMain:
         monkeypatch.setenv('HEVOLVE_VLM_CAPTION_PORT', '8080')
         cfg, result, propagate = self._start(tmp_config_dir, alive={8080})
         assert cfg.config['server_port'] == self._UNUSED_PORT, (
-            'the draft server on HEVOLVE_VLM_CAPTION_PORT was adopted as main')
+            'the caption server on HEVOLVE_VLM_CAPTION_PORT was adopted as main')
         propagate.assert_not_called()
         assert result is False
 
@@ -707,29 +707,29 @@ class TestTheDraftServerIsNeverAdoptedAsMain:
         assert cfg.config['server_port'] == 8080
         propagate.assert_called_once_with('http://127.0.0.1:8080/v1')
 
-    def test_a_server_port_left_on_the_draft_port_moves_off_it(self, tmp_config_dir, monkeypatch):
-        """The residue: server_port rewritten to the draft's port.  As the
-        desired port it is checked first, so it would re-adopt the draft on
-        every start.  It must be neither adopted nor bound."""
-        monkeypatch.setenv('HEVOLVE_VLM_CAPTION_PORT', str(self._UNUSED_DRAFT_PORT))
+    def test_a_server_port_left_on_the_caption_port_moves_off_it(self, tmp_config_dir, monkeypatch):
+        """The residue: server_port rewritten to the caption server's port.  As
+        the desired port it is checked first, so it would re-adopt the caption
+        server on every start.  It must be neither adopted nor bound."""
+        monkeypatch.setenv('HEVOLVE_VLM_CAPTION_PORT', str(self._UNUSED_CAPTION_PORT))
         cfg, result, propagate = self._start(
-            tmp_config_dir, alive={self._UNUSED_DRAFT_PORT},
-            server_port=self._UNUSED_DRAFT_PORT)
-        assert cfg.config['server_port'] != self._UNUSED_DRAFT_PORT, (
-            'server_port still names the draft server')
+            tmp_config_dir, alive={self._UNUSED_CAPTION_PORT},
+            server_port=self._UNUSED_CAPTION_PORT)
+        assert cfg.config['server_port'] != self._UNUSED_CAPTION_PORT, (
+            'server_port still names the caption server')
         propagate.assert_not_called()
         assert result is False
 
-    def test_a_pending_llama_upgrade_waits_for_the_draft_server(self, tmp_config_dir, monkeypatch):
-        """The binary swap must not run while the draft server holds the
-        binary, and that server is on the caption port, wherever that is."""
+    def test_a_pending_llama_upgrade_waits_for_the_caption_server(self, tmp_config_dir, monkeypatch):
+        """The binary swap must not run while the caption server holds the
+        binary, wherever its port is configured."""
         from llama.llama_config import LlamaConfig
-        monkeypatch.setenv('HEVOLVE_VLM_CAPTION_PORT', str(self._UNUSED_DRAFT_PORT))
+        monkeypatch.setenv('HEVOLVE_VLM_CAPTION_PORT', str(self._UNUSED_CAPTION_PORT))
         cfg = LlamaConfig(config_dir=tmp_config_dir)
         cfg.config['server_port'] = self._UNUSED_PORT
         cfg.config['pending_llama_swap'] = True
         with patch.object(cfg, 'check_server_type',
-                          side_effect=self._alive_on({self._UNUSED_DRAFT_PORT})), \
+                          side_effect=self._alive_on({self._UNUSED_CAPTION_PORT})), \
              patch('requests.get', side_effect=OSError('no network in this test')), \
              patch.object(LlamaConfig, '_propagate_llm_url'), \
              patch.object(cfg, 'apply_pending_llama_upgrade') as upgrade:

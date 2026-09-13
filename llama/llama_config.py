@@ -387,7 +387,7 @@ class LlamaConfig:
 
     @staticmethod
     def _caption_server_port() -> int:
-        """Port of Nunba's own 0.8B caption/draft server.
+        """Port of Nunba's own 0.8B caption server (start_caption_server).
 
         core.port_registry.get_port('vlm_caption') decides it: HARTOS sends
         that port on vlm_caption.requested, and main.py passes it to
@@ -1636,8 +1636,8 @@ class LlamaConfig:
         # Gate on check_server_running() (a real llama-server on the port), NOT
         # is_llm_available() — the latter returns True when a cloud API is
         # configured, which would skip the LOCAL binary swap forever.
-        # Check EVERY managed port: the main server AND the caption/draft
-        # server run from the same binary dir, so a swap while either is up
+        # Check EVERY managed port: the main server AND the caption server
+        # run from the same binary dir, so a swap while either is up
         # would fail the move-aside (Windows locks the running .exe).
         try:
             _main_port = self.config.get("server_port", 8080)
@@ -1653,10 +1653,11 @@ class LlamaConfig:
         # Check desired port AND common llama.cpp ports for existing servers.
         # Avoids starting a second GPU server when trueflow/other already runs.
         #
-        # Never the caption/draft port, not even as the desired port: what
-        # listens there is Nunba's own 0.8B.  Live 2026-09-13 the main server
-        # on :8080 crashed at 12:23; the watchdog's restart came through here,
-        # found the 0.8B on :8081, wrote server_port=8081 and returned True
+        # Never the caption server's port, not even as the desired port: what
+        # listens there is Nunba's 0.8B caption model, not a main LLM.  Live
+        # 2026-09-13 the main server on :8080 crashed at 12:23; the watchdog's
+        # restart came through here, found the caption server on :8081, wrote
+        # server_port=8081 and returned True
         # ("Nunba LLM restart SUCCEEDED on port 8081") with :8080 left empty.
         _check_ports = [p for p in dict.fromkeys([desired_port, 8080, 8081])
                         if p != _caption_port]
@@ -1764,7 +1765,7 @@ class LlamaConfig:
             if server_type == ServerType.OTHER_SERVICE:
                 logger.warning(f"Port {desired_port} is occupied by a non-llama.cpp service")
             elif desired_port == _caption_port:
-                logger.warning(f"Port {desired_port} is the caption/draft server's port — finding alternative")
+                logger.warning(f"Port {desired_port} is the caption server's port — finding alternative")
             elif not port_free:
                 logger.warning(f"Port {desired_port} has phantom connections (TIME_WAIT) — finding alternative")
 
