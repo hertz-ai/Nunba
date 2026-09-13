@@ -424,6 +424,89 @@ def _pdf_to_images_fitz(pdf_path):
     return pages
 
 
+def _pdf_text_pages(pdf_path):
+    """Text-only page source, used when no rasteriser is available.
+
+    Returns (pages_data, toc_entries) in the SAME shape _parse_page_via_vision
+    produces, so _assign_chapters_to_pages, _save_parse_to_db and the job
+    result all run unchanged.  Uses PyPDF2, which the bundle already ships
+    (lib/PyPDF2 3.0.1; requirements.txt:47) -- unlike pdf2image (needs the
+    poppler binary) and PyMuPDF, neither of which is in the Nunba install
+    (measured 2026-09-13).
+
+    Chapters come from the PDF's own outline (bookmarks).  A PDF with no
+    outline yields pages without chapter_name, and navigation degrades to
+    page-wise.  A scanned PDF has no text layer: returns ([], []) so the
+    caller fails honestly instead of storing empty pages.
+    """
+    try:
+        from PyPDF2 import PdfReader
+        reader = PdfReader(str(pdf_path))
+    except Exception as e:
+        logger.error(f"PyPDF2 cannot read {pdf_path}: {e}")
+        return [], []
+
+    pages_data = []
+    for i, page in enumerate(reader.pages, 1):
+        try:
+            text = page.extract_text() or ''
+        except Exception as e:
+            logger.warning(f"PyPDF2 text extraction failed on page {i}: {e}")
+            text = ''
+        pages_data.append({"page_number": i, "page_type": "content",
+                           "text": text, "elements": []})
+    if not any(p["text"].strip() for p in pages_data):
+        logger.warning(f"No text layer in {pdf_path} (scanned PDF?)")
+        return [], []
+
+    toc_entries = []
+
+    def _walk(items):
+        for item in items:
+            if isinstance(item, list):          # a nested outline level
+                _walk(item)
+                continue
+            try:
+                toc_entries.append({
+                    "title": getattr(item, "title", "") or "",
+                    "page": reader.get_destination_page_number(item) + 1,
+                })
+            except Exception as e:
+                logger.debug(f"PDF outline entry skipped: {e}")
+
+    try:
+        _walk(reader.outline or [])
+    except Exception as e:
+        logger.debug(f"PDF outline unreadable: {e}")
+    return pages_data, toc_entries
+
+
+def _mark_pdf_failed(file_id, error):
+    """Record a failed parse on the DURABLE row, not only the in-memory job.
+
+    _run_pdf_parse inserts the pdf_files row first (status 'pending') and used
+    to return on failure without touching it, so the row stayed 'pending' for
+    good while the job dict -- gone on restart -- said 'failed'.  Observed
+    live: file_id 1 still 'pending' two days after its parse died (2026-09-13).
+    """
+    if not file_id:
+        return
+    try:
+        from datetime import datetime, timezone
+        from routes.db_routes import _get_db
+        conn = _get_db()
+        try:
+            conn.execute(
+                "UPDATE pdf_files SET status = 'failed', updated_at = ? WHERE file_id = ?",
+                (datetime.now(timezone.utc).isoformat(), file_id))
+            conn.commit()
+        finally:
+            conn.close()
+        logger.warning(f"pdf_files {file_id} marked failed: {error}")
+    except Exception as e:
+        logger.warning(f"Could not mark pdf_files {file_id} failed: {e}")
+
+
 def _parse_page_via_vision(page_num, image_path):
     """Parse a single PDF page using Qwen Vision. Returns structured page data."""
     prompt = (
@@ -658,20 +741,36 @@ def _run_pdf_parse(job_id, pdf_path, user_id, request_id):
         # Step 1: Convert PDF to images
         job['status'] = 'converting'
         pages = _pdf_to_images(pdf_path)
+
+        results = []
+        whole_text_parts = []
+        toc_entries = []
+        vlm_pages = pages
+
         if not pages:
-            job['status'] = 'failed'
-            job['error'] = 'Failed to convert PDF to images'
-            return
+            # No rasteriser in this build (pdf2image needs poppler; PyMuPDF is
+            # not bundled).  Fall back to the text layer via the PyPDF2 the
+            # bundle already ships, instead of failing the whole book.  Pages
+            # get text + chapters (from the outline) but no page images.
+            results, toc_entries = _pdf_text_pages(pdf_path)
+            if not results:
+                job['status'] = 'failed'
+                job['error'] = 'Failed to convert PDF to images, and no text layer to read'
+                _mark_pdf_failed(file_id, job['error'])
+                return
+            whole_text_parts = [p.get('text', '') for p in results]
+            # Downstream counts pages via len(pages); keep that truthful.
+            pages = [(p['page_number'], None) for p in results]
+            vlm_pages = []
+            job['progress'] = len(pages)
+            logger.info(f"PDF parse [{job_id}] text-only fallback: {len(pages)} pages, "
+                        f"{len(toc_entries)} outline entries")
 
         job['total_pages'] = len(pages)
         job['status'] = 'parsing'
 
         # Step 2: Parse each page via Qwen Vision (replaces 7 ML microservices)
-        results = []
-        whole_text_parts = []
-        toc_entries = []
-
-        for page_num, img_path in pages:
+        for page_num, img_path in vlm_pages:
             page_data = _parse_page_via_vision(page_num, img_path)
             results.append(page_data)
             whole_text_parts.append(page_data.get('text', ''))
@@ -738,6 +837,9 @@ def _run_pdf_parse(job_id, pdf_path, user_id, request_id):
         logger.error(f"PDF parse [{job_id}] failed: {e}")
         job['status'] = 'failed'
         job['error'] = str(e)
+        # The row was inserted before anything could throw; without this it
+        # stays 'pending' for good while the in-memory job says 'failed'.
+        _mark_pdf_failed(file_id, str(e))
 
 
 @upload_bp.route('/upload/parse_pdf', methods=['POST'])
