@@ -31,6 +31,9 @@ Fix invariants (these tests enforce):
   E. The companion HTML MUST contain the input bar markup
      (`id="promptInput"`, `id="sendBtn"`) the JS submitPrompt() path
      depends on.
+  F. The companion window MUST be creatable: its background colour is
+     one pywebview accepts, and a creation failure is logged where it
+     can be seen.
 """
 
 from __future__ import annotations
@@ -224,6 +227,52 @@ class RestartMinimizeStaticTests(unittest.TestCase):
             "`npm run build` or copy public/nanba-companion.html to "
             "build/nanba-companion.html.",
         )
+
+    # ── Invariant F: the companion window can actually be created ─────
+    def test_companion_background_colour_is_one_pywebview_accepts(self):
+        """pywebview.create_window() raises ValueError for anything but a
+        3- or 6-digit hex colour.  The companion shipped '#00000000' from
+        0eef59b8d (2026-04-04), so create_window raised on every boot and
+        the window never existed: on the running install (13-09) UI
+        Automation found one top-level Nunba window and no 'Nanba', and no
+        '[COMPANION] ... created' line exists in any log.  transparent=True
+        is what makes it see-through (WinForms paints Color.Transparent and
+        ignores background_color).
+        """
+        import inspect
+        import re
+
+        src = APP_PY.read_text(encoding="utf-8")
+        m = re.search(r"title='Nanba'.*?background_color='([^']*)'", src, re.S)
+        self.assertIsNotNone(m, "companion create_window() call not found")
+        colour = m.group(1)
+
+        # pywebview's own rule when it is importable, so this cannot drift
+        # from the library; its current literal otherwise.
+        pattern = r"^#(?:[0-9a-fA-F]{3}){1,2}$"
+        try:
+            import webview
+            found = re.search(r"valid_color\s*=\s*r'([^']+)'",
+                              inspect.getsource(webview.create_window))
+            if found:
+                pattern = found.group(1)
+        except Exception:
+            pass
+        self.assertRegex(
+            colour, pattern,
+            f"companion background_color {colour!r} is rejected by "
+            "pywebview.create_window, so the floating companion is never "
+            "created.")
+
+    def test_companion_creation_failure_is_logged_where_it_can_be_seen(self):
+        """The failure above was logged with logger.debug under an INFO root
+        logger, so it left no trace.  A window that fails to appear must say
+        so."""
+        src = APP_PY.read_text(encoding="utf-8")
+        self.assertNotIn(
+            'logger.debug("[COMPANION] Companion window not created', src)
+        self.assertIn(
+            'logger.warning("[COMPANION] Companion window not created', src)
 
 
 class RestartMinimizeBehaviouralTests(unittest.TestCase):

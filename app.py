@@ -8162,8 +8162,13 @@ def main():
                 frameless=True,
                 easy_drag=True,
                 on_top=True,
+                # transparent=True is what makes the window see-through
+                # (WinForms paints Color.Transparent and ignores the colour).
+                # pywebview only accepts a 3- or 6-digit hex here: the
+                # '#00000000' this shipped with made create_window raise on
+                # every boot, so the companion never existed.
                 transparent=True,
-                background_color='#00000000',
+                background_color='#000000',
                 js_api=_companion_api,
             )
             logger.info("[COMPANION] Nanba companion window created at (%d, %d)",
@@ -8194,7 +8199,7 @@ def main():
                 _companion_window.events.loaded += _on_companion_loaded
 
         except Exception as _comp_err:
-            logger.debug("[COMPANION] Companion window not created: %s", _comp_err)
+            logger.warning("[COMPANION] Companion window not created: %s", _comp_err)
 
         # Apply positioning after window creation
         if position_info:
