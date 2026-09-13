@@ -5781,6 +5781,9 @@ def start_flask():
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
 
+            # The lazy loader had no caller, so these three routes answered
+            # "Indicator module not available" while main.py's ribbon was up.
+            _load_indicator()
             if INDICATOR_AVAILABLE:
                 try:
                     indicator_module.toggle_indicator(True)
@@ -5796,6 +5799,7 @@ def start_flask():
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
 
+            _load_indicator()
             if INDICATOR_AVAILABLE:
                 try:
                     indicator_module.toggle_indicator(False)
@@ -5811,6 +5815,7 @@ def start_flask():
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
 
+            _load_indicator()
             if INDICATOR_AVAILABLE:
                 try:
                     status = indicator_module.get_status()

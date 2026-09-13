@@ -909,6 +909,13 @@ def toggle_indicator(show=True, server_port=5000):
             indicator_active = True
             control_start_time = time.time()
             logger.info("Ribbon indicator shown")
+        elif show:
+            # Already up: a show request is activity, so re-arm the 15 s
+            # auto-hide.  HARTOS's VLM loop asks once per action; without
+            # this a run longer than 15 s lost its ribbon half way through.
+            # The on-screen timer reads the ribbon's own start_time, so it
+            # keeps counting from when control began.
+            control_start_time = time.time()
         elif not show and indicator_active:
             _indicator_window.hide()
             indicator_active = False
