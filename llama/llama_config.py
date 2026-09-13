@@ -385,6 +385,26 @@ class LlamaConfig:
             os.environ['HEVOLVE_LOCAL_LLM_URL'] = url
             logger.info(f"LLM URL set: {url}")
 
+    @staticmethod
+    def _caption_server_port() -> int:
+        """Port of Nunba's own 0.8B caption/draft server.
+
+        core.port_registry.get_port('vlm_caption') decides it: HARTOS sends
+        that port on vlm_caption.requested, and main.py passes it to
+        start_caption_server().  Without HARTOS (standalone Nunba dev) this
+        is start_caption_server()'s own rule: HEVOLVE_VLM_CAPTION_PORT, else
+        8081.
+        """
+        try:
+            from core.port_registry import get_port
+            return get_port('vlm_caption')
+        except ImportError:
+            pass
+        try:
+            return int(os.environ.get('HEVOLVE_VLM_CAPTION_PORT') or 8081)
+        except ValueError:
+            return 8081
+
     def is_first_run(self) -> bool:
         """Check if this is the first run"""
         return self.config.get("first_run", True)
@@ -1610,17 +1630,19 @@ class LlamaConfig:
 
     def _do_start_server(self, model_preset=None, force_new_port=False):
         """Internal server start — called by start_server() with lock protection."""
+        _caption_port = self._caption_server_port()
         # #124/#134 — apply any queued llama.cpp binary upgrade BEFORE (re)start,
         # but ONLY when NO local llama-server is holding the (shared) binary.
         # Gate on check_server_running() (a real llama-server on the port), NOT
         # is_llm_available() — the latter returns True when a cloud API is
         # configured, which would skip the LOCAL binary swap forever.
-        # Check EVERY managed port: the main server AND the :8081 caption/draft
+        # Check EVERY managed port: the main server AND the caption/draft
         # server run from the same binary dir, so a swap while either is up
         # would fail the move-aside (Windows locks the running .exe).
         try:
             _main_port = self.config.get("server_port", 8080)
-            _busy = self.check_server_running(_main_port) or self.check_server_running(8081)
+            _busy = (self.check_server_running(_main_port)
+                     or self.check_server_running(_caption_port))
             if self.config.get('pending_llama_swap') and not _busy:
                 self.apply_pending_llama_upgrade()
         except Exception as _upg_err:
@@ -1630,10 +1652,14 @@ class LlamaConfig:
 
         # Check desired port AND common llama.cpp ports for existing servers.
         # Avoids starting a second GPU server when trueflow/other already runs.
-        _check_ports = [desired_port]
-        for _common_port in [8080, 8081]:
-            if _common_port != desired_port:
-                _check_ports.append(_common_port)
+        #
+        # Never the caption/draft port, not even as the desired port: what
+        # listens there is Nunba's own 0.8B.  Live 2026-09-13 the main server
+        # on :8080 crashed at 12:23; the watchdog's restart came through here,
+        # found the 0.8B on :8081, wrote server_port=8081 and returned True
+        # ("Nunba LLM restart SUCCEEDED on port 8081") with :8080 left empty.
+        _check_ports = [p for p in dict.fromkeys([desired_port, 8080, 8081])
+                        if p != _caption_port]
 
         for _port in _check_ports:
             server_type, server_info = self.check_server_type(_port)
@@ -1730,9 +1756,15 @@ class LlamaConfig:
         port_free = _is_port_really_free(desired_port)
         server_type, server_info = self.check_server_type(desired_port)
 
-        if server_type == ServerType.OTHER_SERVICE or force_new_port or not port_free:
+        # A server_port naming the caption port -- what the adoption above
+        # wrote live -- is not bound either: the main server takes the next
+        # free port, as it does for any other occupied one.
+        if (server_type == ServerType.OTHER_SERVICE or force_new_port or not port_free
+                or desired_port == _caption_port):
             if server_type == ServerType.OTHER_SERVICE:
                 logger.warning(f"Port {desired_port} is occupied by a non-llama.cpp service")
+            elif desired_port == _caption_port:
+                logger.warning(f"Port {desired_port} is the caption/draft server's port — finding alternative")
             elif not port_free:
                 logger.warning(f"Port {desired_port} has phantom connections (TIME_WAIT) — finding alternative")
 
