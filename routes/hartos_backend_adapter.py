@@ -1389,92 +1389,55 @@ def create_proxy_blueprint():
     return proxy_bp
 
 
-def create_vlm_control_blueprint():
-    """Blueprint for VLM run-control, registered in BOTH backend modes.
-
-    SEPARATE FROM create_proxy_blueprint() ON PURPOSE.  That one is mounted
-    only under ``if not HARTOS_BACKEND_DIRECT`` (main.py), and this install
-    runs direct ("hart-backend direct: True"), so a stop route living there
-    is never served -- measured: the route deployed, the app restarted, and
-    /api/vlm/stop still returned 404.  Stopping a running agent must work in
-    every topology, so this blueprint is registered unconditionally next to
-    mcp_local_bp.
-    """
-    from flask import Blueprint, jsonify
-    from flask import request as flask_request
-
-    vlm_bp = Blueprint('hevolve_vlm_control', __name__)
-
-    @vlm_bp.route('/api/vlm/stop', methods=['POST'])
-    def proxy_vlm_stop():
-        """Halt a running VLM computer-use loop.
-
-        LIVE-PROVEN BROKEN 2026-09-10 11:44: this path 404'd while a loop was
-        driving the desktop (54 alt+f4 that day), so Nunba's own Stop AI
-        Control button reported failure and the only way to stop the agent
-        was killing Nunba.exe.  HARTOS declares the route at
-        hart_intelligence_entry.py:10497 on ITS OWN Flask app, which the
-        desktop topology never mounts into the app serving :5000 (nothing
-        listens on :5001/:6777 either) -- so the route existed in the bundle
-        and was still unreachable.
-
-        DISPATCH, DON'T REIMPLEMENT.  The HARTOS handler owns user_id
-        validation, optional prompt_id, and the bulk-stop enumeration over
-        list_active_sessions(); re-deriving any of that here would be a
-        second implementation that drifts.  test_client() runs the real
-        handler in-process -- the same idiom chat() uses above, and correct
-        here for the same reason: the stop flags (local_loop._vlm_stop_flags)
-        live in THIS process, so an HTTP forward would target a server that
-        is not listening.
-        """
-        payload = flask_request.get_json(silent=True) or {}
-        if not (_hartos_backend_available and _hevolve_app):
-            return jsonify({
-                'error': 'hart-backend unavailable; cannot reach VLM stop',
-                'status': 'backend_unavailable',
-            }), 503
-        with _hevolve_app.test_client() as client:
-            resp = client.post('/api/vlm/stop', json=payload)
-            return jsonify(resp.get_json() or {}), resp.status_code
-
-    return vlm_bp
-
-
-# HARTOS routes that live on HARTOS's OWN Flask app AND that HARTOS itself calls
-# back over HTTP.  Same defect as /api/vlm/stop above: the desktop topology never
-# mounts that app onto the one serving :5000, and nothing listens on :6777.
-# Measured 2026-09-13: the scheduler (hartos/reuse_recipe.py execute_python_file
-# and call_visual_task, same pair in create_recipe.py) POSTed to
-# localhost:6777/time_agent -> connection refused, and /time_agent was absent
-# from /debug/routes, so every scheduled agent action was silently dropped.
+# Routes that live on HARTOS's OWN Flask app, served here on the app that
+# answers :5000.  The desktop topology never mounts HARTOS's app there and
+# nothing listens on :5001/:6777, so without these doors the routes are in the
+# bundle and still unreachable:
+#   /api/vlm/stop    measured 2026-09-10 11:44: 404 while a VLM loop drove the
+#                    desktop (54 alt+f4 that day); Stop AI Control reported
+#                    failure and killing Nunba.exe was the only way out.
+#   /time_agent,     measured 2026-09-13: the scheduler (hartos/reuse_recipe.py
+#   /visual_agent    execute_python_file and call_visual_task, same pair in
+#                    create_recipe.py) POSTed to localhost:6777 -> connection
+#                    refused, so every scheduled agent action was dropped.
 _INPROCESS_DISPATCH_ROUTES = (
     # (path, methods) -- dispatched into HARTOS, never reimplemented here
+    ('/api/vlm/stop', ('POST',)),    # Stop AI Control (call_stop_api)
     ('/time_agent', ('POST',)),      # scheduled recipe actions
     ('/visual_agent', ('POST',)),    # scheduled visual (VLM) actions
 )
 
 
 def create_inprocess_dispatch_blueprint():
-    """Serve HARTOS's scheduler callback routes on :5000, in every topology.
+    """Serve HARTOS's own-app routes on :5000, in every topology.
 
-    DISPATCH, DON'T REIMPLEMENT -- the same idiom as proxy_vlm_stop: the request
-    is handed to HARTOS's real handler through test_client(), so the time-based
-    and visual executors stay the ONE implementation.
+    main.py registers this unconditionally: the proxy blueprint is mounted only
+    under ``if not HARTOS_BACKEND_DIRECT`` and the desktop runs direct, so a
+    route living there is never served (measured for /api/vlm/stop: deployed,
+    restarted, still 404).
 
-    LOCAL-ONLY.  HARTOS declares both handlers without auth because on a
-    standalone node they sit behind localhost.  :5000 binds 0.0.0.0, so without
-    require_local_or_token any device on the LAN could trigger agent runs for
-    any user_id.  The scheduler calls from this machine, so it passes.
+    DISPATCH, DON'T REIMPLEMENT.  The request goes to HARTOS's real handler
+    through test_client() -- the idiom chat() uses above -- so user_id
+    validation, the stop registry and the executors stay one implementation.
+    The stop flags (local_loop._vlm_stop_flags) live in THIS process, so an
+    HTTP forward would reach a server that is not listening.
+
+    GUARDED HERE.  :5000 binds 0.0.0.0 and HARTOS declares /time_agent and
+    /visual_agent without auth, so without a guard any device on the LAN could
+    start agent runs for any user_id.  And test_client() reaches HARTOS from
+    127.0.0.1 with no Origin, so HARTOS's own guard on /api/vlm/stop never sees
+    the real caller.  require_local_or_token_csrf_safe passes the scheduler
+    and call_stop_api (local, no Origin) and refuses cross-origin pages.
     """
     from flask import Blueprint, Response, jsonify
     from flask import request as flask_request
 
-    from routes.auth import require_local_or_token
+    from routes.auth import require_local_or_token_csrf_safe
 
     bp = Blueprint('hevolve_inprocess_dispatch', __name__)
 
     def _dispatcher(path):
-        @require_local_or_token
+        @require_local_or_token_csrf_safe
         def dispatch():
             if not (_hartos_backend_available and _hevolve_app):
                 return jsonify({

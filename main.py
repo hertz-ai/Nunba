@@ -4672,28 +4672,18 @@ if not HARTOS_BACKEND_DIRECT and HARTOS_BACKEND_AVAILABLE:
     except Exception as e:
         logging.warning(f"hart-backend adapter failed: {e}")
 
-# VLM run-control (/api/vlm/stop) is registered in BOTH backend modes, on
-# purpose.  The proxy blueprint above is mounted only when NOT direct, and
-# this install runs direct ("hart-backend direct: True"), so a stop route
-# living there is never served: measured 2026-09-10, /api/vlm/stop returned
-# 404 while a VLM loop was driving the desktop, leaving Stop AI Control dead
-# and killing Nunba.exe as the only way out.  Stopping a running agent must
-# work in every topology, so this registration is unconditional -- same
-# shape as the MCP blueprint immediately below.
-try:
-    from routes.hartos_backend_adapter import create_vlm_control_blueprint
-    app.register_blueprint(create_vlm_control_blueprint())
-    logging.info("VLM run-control registered (/api/vlm/stop)")
-except Exception as e:
-    logging.warning(f"VLM run-control registration failed: {e}")
-
-# HARTOS scheduler callbacks (/time_agent, /visual_agent) -- unconditional for
-# the same reason as the VLM control above: HARTOS dials them on its own local
-# base URL (core.port_registry.get_local_backend_url), which here is :5000.
+# HARTOS own-app routes (/api/vlm/stop, /time_agent, /visual_agent) are
+# registered in BOTH backend modes, on purpose.  The proxy blueprint above is
+# mounted only when NOT direct, and the desktop runs direct, so a route living
+# there is never served: measured 2026-09-10, /api/vlm/stop returned 404 while
+# a VLM loop was driving the desktop.  HARTOS's scheduler also dials
+# /time_agent and /visual_agent on its local base URL
+# (core.port_registry.get_local_backend_url), which here is :5000.
 try:
     from routes.hartos_backend_adapter import create_inprocess_dispatch_blueprint
     app.register_blueprint(create_inprocess_dispatch_blueprint())
-    logging.info("HARTOS in-process dispatch registered (/time_agent, /visual_agent)")
+    logging.info("HARTOS in-process dispatch registered "
+                 "(/api/vlm/stop, /time_agent, /visual_agent)")
 except Exception as e:
     logging.warning(f"HARTOS in-process dispatch registration failed: {e}")
 
