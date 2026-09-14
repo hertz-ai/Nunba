@@ -412,8 +412,13 @@ class RealtimeService {
       eventType = 'tts';
     }
 
-    // Agent UI update → emit as 'agent.ui.update' (avoid double-fire)
-    if (payload.component_type || (payload.type && payload.agent_id && payload.type !== 'notification')) {
+    // Agent UI update → emit as 'agent.ui.update' (avoid double-fire).
+    // A HARTOS consent ask is agent UI whether or not it names an agent:
+    // an ask for every agent (VisionService screen capture, a computer-
+    // control ask from an agent that could not be identified) carries
+    // agent_id null and was dropped here, so its card never showed.
+    const isConsentAsk = payload.type === 'consent.request';
+    if (payload.component_type || isConsentAsk || (payload.type && payload.agent_id && payload.type !== 'notification')) {
       if (eventType !== 'agent.ui.update') {
         this._emit('agent.ui.update', payload);
       }

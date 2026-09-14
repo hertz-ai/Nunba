@@ -1,7 +1,10 @@
 import { API_BASE_URL } from '../../config/apiBase';
+import {
+  allowAllLabel, canDecline, consentAskText, declineLabel,
+} from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
-import { notificationsApi } from '../../services/socialApi';
+import { consentApi, notificationsApi } from '../../services/socialApi';
 import { QRCodeSVG } from 'qrcode.react';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -23,7 +26,10 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 const MAX_OVERLAYS = 3;
 const AUTO_DISMISS_MS = 15000;
-const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot']);
+// consent.request: a gate is waiting for the answer (HARTOS
+// computer_control_block waits up to 90 s), so the card stays until
+// answered instead of vanishing at AUTO_DISMISS_MS.
+const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request']);
 
 const GLASS = {
   background: 'rgba(20, 20, 30, 0.92)',
@@ -763,6 +769,7 @@ function OverlayContent({ data, onDismiss, navigate }) {
     case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} />;
     case 'meet_copilot': return <MeetCopilotOverlay data={data} onDismiss={onDismiss} />;
     case 'consent_prompt': return <ConsentPromptOverlay data={data} onDismiss={onDismiss} />;
+    case 'consent.request': return <ConsentPromptOverlay data={data} onDismiss={onDismiss} />;
     case 'post_preview': return <PostPreviewOverlay data={data} onDismiss={onDismiss} />;
     default:
       return (
@@ -776,15 +783,58 @@ function OverlayContent({ data, onDismiss, navigate }) {
 
 // ─── Browser Research overlays (BR-C7 + C8) ─────────────────────────
 
+// One consent card for two shapes: the browser-research consent_prompt
+// (cloud_capability for one platform) and a HARTOS consent.request ask
+// (ConsentService.request_consent).  The consent API grant writes a row
+// with no agent, so a consent.request grant covers every agent and its
+// button says so (constants/consentAsks.allowAllLabel).
+function consentCardFor(data) {
+  if (data.type === 'consent.request') {
+    return {
+      consentType: data.consent_type,
+      scope: data.scope || '*',
+      agentId: data.agent_id || null,
+      title: 'Permission needed',
+      text: data.reason || `An agent asks to ${consentAskText(data.consent_type)}.`,
+      grantLabel: allowAllLabel(data.consent_type),
+      // A no stands until the owner allows the type again on the privacy
+      // page, so only a type with a card there can be declined here.
+      declineLabel: canDecline(data.consent_type) ? declineLabel(data.agent_id) : null,
+    };
+  }
+  const platform = data.platform || data.scope || 'platform';
+  const scope = data.scope || `web_research:${platform}`;
+  return {
+    consentType: 'cloud_capability',
+    scope,
+    agentId: null,
+    title: `Grant ${platform} research access`,
+    text: data.description ||
+      `The agent wants to use your logged-in ${platform} session to research. Cookies stay on your machine.`,
+    grantLabel: `Grant ${scope}`,
+    declineLabel: null,
+  };
+}
+
 function ConsentPromptOverlay({ data, onDismiss }) {
-  const platform = data?.platform || data?.scope || 'platform';
-  const scope = data?.scope || `web_research:${platform}`;
+  const card = consentCardFor(data || {});
   const grant = async () => {
     try {
-      const { consentApi } = await import('../../services/socialApi');
-      await consentApi.grant({consent_type: 'cloud_capability', scope});
+      await consentApi.grant({consent_type: card.consentType, scope: card.scope});
     } catch (e) {
       console.error('[consent_prompt] grant failed', e);
+    } finally {
+      if (onDismiss) onDismiss();
+    }
+  };
+  // The ask's own agent: a no to one agent's ask leaves the others open.
+  const decline = async () => {
+    try {
+      await consentApi.decline({
+        consent_type: card.consentType, scope: card.scope, agent_id: card.agentId,
+      });
+    } catch (e) {
+      console.error('[consent_prompt] decline failed', e);
     } finally {
       if (onDismiss) onDismiss();
     }
@@ -792,18 +842,27 @@ function ConsentPromptOverlay({ data, onDismiss }) {
   return (
     <Box data-testid="liquid-consent-prompt" sx={{p: 1.5}}>
       <Typography variant="subtitle1" sx={{fontWeight: 700, mb: 0.5}}>
-        Grant {platform} research access
+        {card.title}
       </Typography>
       <Typography variant="body2" sx={{opacity: 0.8, mb: 1.5}}>
-        {data?.description ||
-          `The agent wants to use your logged-in ${platform} session to research. Cookies stay on your machine.`}
+        {card.text}
       </Typography>
-      <Box sx={{display: 'flex', gap: 1, justifyContent: 'flex-end'}}>
+      {card.declineLabel && (
+        <Typography variant="caption" sx={{display: 'block', opacity: 0.6, mb: 1}}>
+          {`"${card.declineLabel}" lasts until you allow it again in Privacy settings; "Not now" leaves the ask open.`}
+        </Typography>
+      )}
+      <Box sx={{display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'flex-end'}}>
         <button onClick={onDismiss} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
           Not now
         </button>
+        {card.declineLabel && (
+          <button onClick={decline} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #FF6B6B', background: 'transparent', color: '#FF6B6B', cursor: 'pointer'}}>
+            {card.declineLabel}
+          </button>
+        )}
         <button data-testid="liquid-consent-grant" onClick={grant} style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
-          Grant {scope}
+          {card.grantLabel}
         </button>
       </Box>
     </Box>
@@ -862,12 +921,25 @@ function PostPreviewOverlay({ data, onDismiss }) {
 export default function AgentOverlay({ navigate, onInlineChatCard }) {
   const [overlays, setOverlays] = useState([]);
   const timersRef = useRef({});
+  // msg_id -> overlay id, for the cards on screen now.  A producer that
+  // sends the same message again while it waits for an answer (HARTOS
+  // request_consent re-sends its ask on every look, same msg_id) shows one
+  // card.  Once that card is answered, dismissed or evicted, its msg_id is
+  // forgotten, so a later ask with the same id (after a revoke) shows.
+  const showingRef = useRef(new Map());
+
+  const forgetShowing = useCallback((id) => {
+    for (const [msgId, overlayId] of showingRef.current) {
+      if (overlayId === id) showingRef.current.delete(msgId);
+    }
+  }, []);
 
   const dismiss = useCallback((id) => {
     clearTimeout(timersRef.current[id]);
     delete timersRef.current[id];
+    forgetShowing(id);
     setOverlays(prev => prev.filter(o => o._id !== id));
-  }, []);
+  }, [forgetShowing]);
 
   const handleEvent = useCallback((payload) => {
     if (!payload) return;
@@ -879,6 +951,10 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
       return;
     }
 
+    // This message is already on screen.
+    const msgId = payload.msg_id;
+    if (msgId && showingRef.current.has(msgId)) return;
+
     // Inline chat card types: forward to Demopage message list AND show overlay
     if (onInlineChatCard && ['product_card', 'cart', 'checkout', 'comparison'].includes(type)) {
       onInlineChatCard(payload);
@@ -886,6 +962,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
 
     const id = ++_overlayIdCounter;
     const entry = { ...payload, _id: id, _type: type };
+    if (msgId) showingRef.current.set(msgId, id);
 
     setOverlays(prev => {
       const next = [...prev, entry];
@@ -894,6 +971,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
         const evicted = next.shift();
         clearTimeout(timersRef.current[evicted._id]);
         delete timersRef.current[evicted._id];
+        forgetShowing(evicted._id);
       }
       return next;
     });
@@ -902,7 +980,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
     if (!PERSIST_TYPES.has(type)) {
       timersRef.current[id] = setTimeout(() => dismiss(id), AUTO_DISMISS_MS);
     }
-  }, [navigate, onInlineChatCard, dismiss]);
+  }, [navigate, onInlineChatCard, dismiss, forgetShowing]);
 
   useEffect(() => {
     // Single subscription — realtimeService handles all transports

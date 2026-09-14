@@ -48,16 +48,19 @@ import {
   scopeRequiresAgeClaim,
 } from './cloudCapabilityScopes';
 
+import {allowAllLabel} from '../../../constants/consentAsks';
 import {consentApi} from '../../../services/socialApi';
 
 import {
   CloudOff,
   Cloud,
   CheckCircleOutline,
+  Computer,
   HighlightOff,
   ExpandMore,
   ExpandLess,
   History,
+  Visibility,
 } from '@mui/icons-material';
 import {
   Box,
@@ -528,13 +531,28 @@ function AuditHistory({rows, expanded, onToggle}) {
 }
 
 // ── Main Page ────────────────────────────────────────────────────────────
-// ── Autonomous external posting (public_exposure consent) ────────────────
-// Self-contained card.  Reuses the SAME consentApi (`/api/social/consent`)
-// the cloud_capability section uses — no parallel data path, and zero changes
-// to the cloud_capability logic.  Default OFF; granting flips the server-side
-// gate that marketing_tools._external_post_allowed + federated_aggregator
-// enforce (fail-closed).  Revoke is an instant kill-switch.
-function PublicExposureConsentCard() {
+// ── On/off consent cards (one consent type, scope '*') ───────────────────
+// Each card reads and writes its own consent type through the SAME
+// consentApi (`/api/social/consent`) the cloud_capability section uses — no
+// parallel data path, and zero changes to the cloud_capability logic.
+// Default OFF.  Revoke is an instant kill-switch: HARTOS
+// consent_api.revoke_consent ends every active grant of the type.
+function BlanketConsentCard({
+  consentType,
+  Icon = Cloud,
+  title,
+  description,
+  enableLabel,
+  disableLabel,
+  confirmTitle,
+  confirmText,
+  understandLabel,
+  confirmLabel,
+  enabledMessage,
+  disabledMessage,
+}) {
+  // public_exposure -> public-exposure-card, -status, -grant, -revoke, ...
+  const testId = consentType.replace(/_/g, '-');
   const [active, setActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -546,7 +564,7 @@ function PublicExposureConsentCard() {
     setLoading(true);
     try {
       const res = await consentApi.list({
-        consent_type: 'public_exposure', active_only: true,
+        consent_type: consentType, active_only: true,
       });
       const rows = (res && (res.consents || (res.data && res.data.consents))) || [];
       setActive(rows.some((r) => isActive(r)) || rows.length > 0);
@@ -555,7 +573,7 @@ function PublicExposureConsentCard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [consentType]);
 
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => { if (confirmOpen) setUnderstood(false); }, [confirmOpen]);
@@ -563,8 +581,8 @@ function PublicExposureConsentCard() {
   const onGrant = useCallback(async () => {
     setBusy(true);
     try {
-      await consentApi.grant({consent_type: 'public_exposure', scope: '*'});
-      setSnack({severity: 'success', msg: 'Autonomous external posting enabled.'});
+      await consentApi.grant({consent_type: consentType, scope: '*'});
+      setSnack({severity: 'success', msg: enabledMessage});
       setConfirmOpen(false);
       await refresh();
     } catch (e) {
@@ -572,32 +590,32 @@ function PublicExposureConsentCard() {
     } finally {
       setBusy(false);
     }
-  }, [refresh]);
+  }, [consentType, enabledMessage, refresh]);
 
   const onRevoke = useCallback(async () => {
     setBusy(true);
     try {
-      await consentApi.revoke({consent_type: 'public_exposure', scope: '*'});
-      setSnack({severity: 'success', msg: 'Autonomous external posting disabled.'});
+      await consentApi.revoke({consent_type: consentType, scope: '*'});
+      setSnack({severity: 'success', msg: disabledMessage});
       await refresh();
     } catch (e) {
       setSnack({severity: 'error', msg: 'Could not disable — please retry.'});
     } finally {
       setBusy(false);
     }
-  }, [refresh]);
+  }, [consentType, disabledMessage, refresh]);
 
   return (
-    <Paper sx={{...glass, p: 2.5, mb: 2.5}} data-testid="public-exposure-card">
+    <Paper sx={{...glass, p: 2.5, mb: 2.5}} data-testid={`${testId}-card`}>
       <Box sx={{display: 'flex', alignItems: 'center', gap: 1, mb: 1}}>
-        <Cloud sx={{color: '#6C63FF'}} />
+        <Icon sx={{color: '#6C63FF'}} />
         <Typography variant="subtitle1" sx={{color: '#fff', fontWeight: 600}}>
-          Autonomous external posting
+          {title}
         </Typography>
         <Chip
           size="small"
           label={active ? 'Enabled' : 'Off'}
-          data-testid="public-exposure-status"
+          data-testid={`${testId}-status`}
           sx={{
             ml: 'auto',
             bgcolor: active ? STATUS_COLORS.active.bg : STATUS_COLORS.revoked.bg,
@@ -607,10 +625,7 @@ function PublicExposureConsentCard() {
         />
       </Box>
       <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.6)', mb: 2}}>
-        Lets your agents post on your behalf to external channels (your social
-        accounts, communities) to grow reach — without asking each time. Off by
-        default; nothing leaves the platform until you enable it. Reversible
-        anytime — revoking stops all autonomous external posting immediately.
+        {description}
       </Typography>
       {loading ? (
         <CircularProgress size={18} />
@@ -621,20 +636,20 @@ function PublicExposureConsentCard() {
           variant="outlined"
           color="inherit"
           startIcon={busy ? <CircularProgress size={16} /> : <HighlightOff />}
-          data-testid="public-exposure-revoke"
+          data-testid={`${testId}-revoke`}
         >
-          Disable external posting
+          {disableLabel}
         </Button>
       ) : (
         <Button
           onClick={() => setConfirmOpen(true)}
           disabled={busy}
           variant="contained"
-          startIcon={<Cloud />}
-          data-testid="public-exposure-grant"
+          startIcon={<Icon />}
+          data-testid={`${testId}-grant`}
           sx={{bgcolor: '#6C63FF', '&:hover': {bgcolor: '#5A52E0'}}}
         >
-          Enable external posting
+          {enableLabel}
         </Button>
       )}
 
@@ -644,22 +659,20 @@ function PublicExposureConsentCard() {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle sx={{fontWeight: 600}}>Enable autonomous external posting?</DialogTitle>
+        <DialogTitle sx={{fontWeight: 600}}>{confirmTitle}</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{mb: 2}}>
-            Your agents will be able to publish posts to external channels under
-            your identity, on their own, to grow reach. You can revoke this at
-            any time and it stops immediately.
+            {confirmText}
           </DialogContentText>
           <FormControlLabel
             control={
               <Checkbox
                 checked={understood}
                 onChange={(e) => setUnderstood(e.target.checked)}
-                inputProps={{'data-testid': 'public-exposure-understand'}}
+                inputProps={{'data-testid': `${testId}-understand`}}
               />
             }
-            label="I understand my agents may post publicly on my behalf."
+            label={understandLabel}
           />
         </DialogContent>
         <DialogActions sx={{px: 3, pb: 2}}>
@@ -670,11 +683,11 @@ function PublicExposureConsentCard() {
             onClick={onGrant}
             disabled={!understood || busy}
             variant="contained"
-            data-testid="public-exposure-confirm"
-            startIcon={busy ? <CircularProgress size={16} /> : <Cloud />}
+            data-testid={`${testId}-confirm`}
+            startIcon={busy ? <CircularProgress size={16} /> : <Icon />}
             sx={{bgcolor: '#6C63FF', '&:hover': {bgcolor: '#5A52E0'}}}
           >
-            Enable
+            {confirmLabel}
           </Button>
         </DialogActions>
       </Dialog>
@@ -694,6 +707,90 @@ function PublicExposureConsentCard() {
     </Paper>
   );
 }
+
+// Autonomous external posting.  Granting flips the server-side gate that
+// marketing_tools._external_post_allowed + federated_aggregator enforce
+// (fail-closed).
+const PUBLIC_EXPOSURE_CARD = {
+  consentType: 'public_exposure',
+  title: 'Autonomous external posting',
+  description:
+    'Lets your agents post on your behalf to external channels (your social ' +
+    'accounts, communities) to grow reach — without asking each time. Off by ' +
+    'default; nothing leaves the platform until you enable it. Reversible ' +
+    'anytime — revoking stops all autonomous external posting immediately.',
+  enableLabel: 'Enable external posting',
+  disableLabel: 'Disable external posting',
+  confirmTitle: 'Enable autonomous external posting?',
+  confirmText:
+    'Your agents will be able to publish posts to external channels under ' +
+    'your identity, on their own, to grow reach. You can revoke this at ' +
+    'any time and it stops immediately.',
+  understandLabel: 'I understand my agents may post publicly on my behalf.',
+  confirmLabel: 'Enable',
+  enabledMessage: 'Autonomous external posting enabled.',
+  disabledMessage: 'Autonomous external posting disabled.',
+};
+
+// Agents acting on this computer.  HARTOS integrations/vlm/safety.
+// computer_control_block asks the owner before any agent runs shell
+// commands, writes files or drives the mouse and keyboard; the ask itself
+// names what is covered.  A grant here is the way back after the owner
+// answered an agent's ask with "Don't allow": it covers every agent.
+const COMPUTER_CONTROL_CARD = {
+  consentType: 'computer_control',
+  Icon: Computer,
+  title: 'Agents controlling this computer',
+  description:
+    'Lets every agent act on this computer without asking each time. Off ' +
+    'by default: until you allow it, each agent asks you first, and an ' +
+    'agent you said no to stays refused until you allow agents here. ' +
+    'Revoking stops it immediately.',
+  enableLabel: allowAllLabel('computer_control'),
+  disableLabel: 'Stop agents controlling this computer',
+  confirmTitle: `${allowAllLabel('computer_control')}?`,
+  confirmText:
+    'Every agent will be able to act on this computer without asking you ' +
+    'first. You can revoke this at any time and it stops immediately.',
+  understandLabel: 'I understand every agent can act on this computer without asking.',
+  confirmLabel: 'Allow',
+  enabledMessage: 'Agents may control this computer.',
+  disabledMessage: 'Agents can no longer control this computer.',
+};
+
+// Agents seeing this screen.  HARTOS VisionService captures and describes
+// the desktop's screen for the visual agent once the owner allows it
+// (#701); until then its capture loop asks the owner.  This card is also
+// the way back after a "Don't allow" on that ask.
+const SCREEN_CAPTURE_CARD = {
+  consentType: 'screen_capture',
+  Icon: Visibility,
+  title: 'Agents seeing this screen',
+  description:
+    "Lets agents capture and describe this computer's screen, so the " +
+    'visual agent can see what you see. Off by default: until you allow ' +
+    'it, the agent asks you first. Revoking stops it immediately.',
+  enableLabel: allowAllLabel('screen_capture'),
+  disableLabel: 'Stop agents seeing this screen',
+  confirmTitle: `${allowAllLabel('screen_capture')}?`,
+  confirmText:
+    'Every agent will be able to capture and describe this screen without ' +
+    'asking you first. You can revoke this at any time and it stops ' +
+    'immediately.',
+  understandLabel: 'I understand every agent can see this screen without asking.',
+  confirmLabel: 'Allow',
+  enabledMessage: 'Agents may see this screen.',
+  disabledMessage: 'Agents can no longer see this screen.',
+};
+
+// Every on/off card on the page.  constants/consentAsks.PRIVACY_CARD_TYPES
+// names the ask types that rely on one of these as the way back after a
+// "Don't allow"; PrivacyComputerControlCard.test checks each is here.
+const CONSENT_CARDS = [
+  PUBLIC_EXPOSURE_CARD,
+  COMPUTER_CONTROL_CARD,
+  SCREEN_CAPTURE_CARD,
+];
 
 export default function PrivacySettingsPage() {
   const [rows, setRows] = useState([]);
@@ -871,7 +968,9 @@ export default function PrivacySettingsPage() {
         trail.
       </Typography>
 
-      <PublicExposureConsentCard />
+      {CONSENT_CARDS.map((card) => (
+        <BlanketConsentCard key={card.consentType} {...card} />
+      ))}
 
       {error && !snack && (
         <Alert severity="warning" sx={{mb: 2}}>

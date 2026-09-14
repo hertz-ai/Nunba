@@ -346,6 +346,16 @@ export const consentApi = {
       agent_id,
     }),
 
+  // POST /api/social/consent/decline — say no to a pending ask (the
+  // consent card's "Don't allow").  agent_id is the ask's agent, so a no
+  // to one agent's ask leaves other agents' asks open.
+  decline: ({consent_type, scope, agent_id}) =>
+    socialApi.post('/consent/decline', {
+      consent_type,
+      scope,
+      agent_id,
+    }),
+
   // GET /api/social/consent — list (newest-first by granted_at)
   list: ({consent_type, active_only} = {}) => {
     const params = {};

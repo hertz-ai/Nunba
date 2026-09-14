@@ -34,6 +34,13 @@ jest.mock('../../../services/realtimeService', () => ({
 jest.mock('../../../config/apiBase', () => ({API_BASE_URL: ''}));
 jest.mock('../../../constants/events', () => ({NUNBA_CAMERA_CONSENT: 'evt'}));
 jest.mock('qrcode.react', () => ({QRCodeSVG: () => null}));
+// AgentOverlay imports socialApi, whose module body builds clients from
+// SOCIAL_API_URL; the apiBase mock above has no SOCIAL_API_URL, so the
+// real module threw on import and this suite never ran.
+jest.mock('../../../services/socialApi', () => ({
+  consentApi: {grant: jest.fn(() => Promise.resolve({}))},
+  notificationsApi: {markRead: jest.fn(() => Promise.resolve({}))},
+}));
 
 // Import after mocks.
 const {default: AgentOverlay} = require('../../../components/AgentOverlay/AgentOverlay');

@@ -21,6 +21,14 @@
  *   g) network 5xx on list → Snackbar with retry.
  *   h) re-grant after revoke → list shows BOTH the old revoked row
  *      AND the new active row (proves append-only at UI level).
+ *
+ * The page's consent cards (public_exposure, computer_control) list their
+ * own consent types when they mount, after the page's first list resolves.
+ * Answers queued with mockListReturns go to cloud_capability calls only, in
+ * order, and cloudListCalls() counts only those, so a card's own call can
+ * neither take a queued answer nor move a count.  (When the public_exposure
+ * card first shipped, its call took the answer queued for the refresh after
+ * a revoke, and test (h) failed on main.)
  */
 /* eslint-disable no-unused-vars */
 /* eslint-disable import/order, import/first */
@@ -60,14 +68,32 @@ const ROW_ICEBREAKER_REVOKED = {
   revoked_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
 };
 
+// Answers for the page's cloud_capability list calls, in order.
+let cloudAnswers = [];
+
 function mockListReturns(consents) {
-  consentApi.list.mockResolvedValueOnce({
+  cloudAnswers.push({
     data: {success: true, data: {consents, count: consents.length}},
   });
 }
 
+function cloudListCalls() {
+  return consentApi.list.mock.calls.filter(
+    ([args]) => args && args.consent_type === 'cloud_capability',
+  ).length;
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
+  cloudAnswers = [];
+  consentApi.list.mockImplementation((args = {}) => {
+    if (args.consent_type !== 'cloud_capability') {
+      return Promise.resolve({
+        data: {success: true, data: {consents: [], count: 0}},
+      });
+    }
+    return Promise.resolve(cloudAnswers.shift());
+  });
 });
 
 // ── (a) mount → list call ─────────────────────────────────────────────────
@@ -76,7 +102,7 @@ describe('PrivacySettingsPage mount', () => {
     mockListReturns([]);
     renderWithProviders(<PrivacySettingsPage />);
     await waitFor(() => {
-      expect(consentApi.list).toHaveBeenCalledTimes(1);
+      expect(cloudListCalls()).toBe(1);
     });
     expect(consentApi.list).toHaveBeenCalledWith({
       consent_type: 'cloud_capability',
@@ -133,7 +159,7 @@ describe('PrivacySettingsPage revoke flow', () => {
     });
     // Refetch happened
     await waitFor(() => {
-      expect(consentApi.list).toHaveBeenCalledTimes(2);
+      expect(cloudListCalls()).toBe(2);
     });
   });
 });
@@ -212,7 +238,7 @@ describe('PrivacySettingsPage grant flow', () => {
       scope: '*',
     });
     await waitFor(() => {
-      expect(consentApi.list).toHaveBeenCalledTimes(2);
+      expect(cloudListCalls()).toBe(2);
     });
   });
 });
@@ -271,6 +297,7 @@ describe('PrivacySettingsPage audit history', () => {
 // ── (g) 5xx on list → Snackbar retry ─────────────────────────────────────
 describe('PrivacySettingsPage error handling', () => {
   test('Network 5xx on list shows Snackbar with retry action', async () => {
+    // The page's first list call happens before any card mounts.
     consentApi.list.mockRejectedValueOnce({
       response: {status: 500, data: {error: 'boom'}},
     });
@@ -330,7 +357,7 @@ describe('PrivacySettingsPage append-only audit', () => {
       await screen.findByTestId('revoke-btn-encounter_icebreaker'),
     );
     fireEvent.click(await screen.findByTestId('revoke-confirm-button'));
-    await waitFor(() => expect(consentApi.list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(cloudListCalls()).toBe(2));
 
     // Re-grant
     fireEvent.click(
@@ -340,7 +367,7 @@ describe('PrivacySettingsPage append-only audit', () => {
     fireEvent.click(screen.getByTestId('grant-age18-checkbox'));
     fireEvent.click(screen.getByTestId('grant-confirm-button'));
 
-    await waitFor(() => expect(consentApi.list).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(cloudListCalls()).toBe(3));
 
     // Expand audit history → both rows visible
     fireEvent.click(screen.getByTestId('audit-history-toggle'));
