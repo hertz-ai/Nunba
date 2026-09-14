@@ -11,6 +11,8 @@ the real HARTOS tree — no source grepping.
 """
 import importlib.util
 import os
+import shutil
+import subprocess
 import sys
 import unittest
 
@@ -84,6 +86,37 @@ class TestHartosSyncListDrift(unittest.TestCase):
         self.assertEqual(ghosts, [],
                          'HARTOS_SYNC_PACKAGES entries with no matching '
                          'HARTOS dir: %s' % ghosts)
+
+
+class TestRootModuleSync(unittest.TestCase):
+    """build.py copies HARTOS's root *.py files into python-embed as top-level
+    modules: the tracked ones, never the gitignored probe scripts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ships = staticmethod(_load_build_module().ships_as_root_module)
+
+    def test_the_probe_scripts_and_the_build_files_stay_out(self):
+        for name in ('_probe_x.py', '_consent_relay.py', '_seed_mock_revenue.py',
+                     'setup.py', 'embedded_main.py', 'conftest.py', 'README.md'):
+            self.assertFalse(self.ships(name), name)
+        # hart_version.py is gitignored too, but generated and needed.
+        for name in ('hart_intelligence_entry.py', 'hart_version.py', 'asgi.py'):
+            self.assertTrue(self.ships(name), name)
+
+    @unittest.skipUnless(os.path.isdir(os.path.join(_HARTOS, '.git')) and shutil.which('git'),
+                         'HARTOS clone or git absent')
+    def test_the_underscore_filter_holds_back_no_tracked_module(self):
+        """Every root module HARTOS tracks that starts with '_' would silently
+        stop shipping; today there is none, and one must not appear unseen."""
+        tracked = subprocess.run(
+            ['git', '-C', _HARTOS, 'ls-files', '--', '*.py'],
+            capture_output=True, text=True, timeout=60, check=True).stdout.split()
+        held_back = [p for p in tracked
+                     if '/' not in p and p.startswith('_') and not self.ships(p)]
+        self.assertEqual(held_back, [],
+                         'tracked HARTOS root modules the probe-script filter '
+                         'would leave out of the install: %s' % held_back)
 
 
 if __name__ == '__main__':

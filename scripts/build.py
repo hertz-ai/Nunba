@@ -101,6 +101,17 @@ HEVOLVE_BRANCH = 'gpt4.1'
 HEVOLVE_SOURCE_DIR = 'hartos_backend_src'
 
 
+def ships_as_root_module(fname):
+    """True for a HARTOS root file the sync copies into python-embed as a
+    top-level module: every .py but the setup script, the embedded entry
+    point and pytest's conftest -- and the gitignored probe scripts
+    (.gitignore `/_*.py`: _probe_*.py, _consent_relay.py, ...), which shipped
+    as top-level modules until 2026-09-14. No tracked root module starts with
+    '_'; tests/test_build_hartos_sync.py holds that."""
+    return fname.endswith('.py') and not fname.startswith(
+        ('setup', 'embedded_main', 'conftest', '_'))
+
+
 def fetch_hartos_backend_source():
     """Clone latest hart-backend source for bundling into the installer.
 
@@ -1494,7 +1505,7 @@ def build_windows(python_exe, app_only=False, installer_only=False):
 
         # Sync top-level HARTOS .py modules (hart_intelligence_entry.py, create_recipe.py, etc.)
         for _fname in os.listdir(_hartos_src):
-            if _fname.endswith('.py') and not _fname.startswith(('setup', 'embedded_main', 'conftest')):
+            if ships_as_root_module(_fname):
                 _src_file = os.path.join(_hartos_src, _fname)
                 for _dst_dir in [_embed_sp, _build_sp]:
                     if os.path.isdir(_dst_dir):
