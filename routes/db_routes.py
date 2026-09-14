@@ -474,8 +474,16 @@ def get_prompt():
 
 
 @db_bp.route('/getprompt_onlyuserid/', methods=['GET'])
+@db_bp.route('/getprompt_userid/', methods=['GET'])
 def get_prompt_by_user():
-    """List user's agents. Matches cloud /getprompt_onlyuserid/?user_id=X.
+    """List user's agents. Matches cloud /getprompt_onlyuserid/?user_id=X and
+    /getprompt_userid/?user_id=X.
+
+    Both spellings are live client calls: the Android app's
+    GetPromptListApi.getCustomChats (GetPromptListApi.java:18) and the RN
+    client's chatApi.getCustomBots (services/chatApi.js:92) ask for
+    getprompt_userid/.  With only the _onlyuserid spelling here, those calls
+    404'd whenever this node answered.
 
     Returns: list of prompt dicts
     """

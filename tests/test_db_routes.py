@@ -8,7 +8,7 @@ Covers all public functions and route handlers:
 - POST/GET /conversation
 - POST /db/getstudent_by_user_id, /getstudent_by_user_id
 - POST /createpromptlist
-- GET /getprompt/, /getprompt_onlyuserid/, /getprompt_all/
+- GET /getprompt/, /getprompt_onlyuserid/ (+ /getprompt_userid/), /getprompt_all/
 - register_db_routes
 
 The book library routes moved to HARTOS (integrations/learning/api_books.py)
@@ -404,34 +404,39 @@ class TestGetPrompt:
         assert data["source"] == "local"
 
 
+# Both spellings are live client calls; see get_prompt_by_user's docstring.
+GETPROMPT_BY_USER_PATHS = ("/getprompt_onlyuserid/", "/getprompt_userid/")
+
+
+@pytest.mark.parametrize("path", GETPROMPT_BY_USER_PATHS)
 class TestGetPromptByUser:
 
-    def test_returns_user_prompts(self, client):
+    def test_returns_user_prompts(self, client, path):
         client.post("/createpromptlist", json={
             "listprompts": [
                 {"prompt_id": "u1-agent", "user_id": 10, "name": "A"},
                 {"prompt_id": "u2-agent", "user_id": 20, "name": "B"},
             ]
         })
-        resp = client.get("/getprompt_onlyuserid/?user_id=10")
+        resp = client.get(f"{path}?user_id=10")
         assert resp.status_code == 200
         data = resp.get_json()
         assert len(data) == 1
         assert data[0]["prompt_id"] == "u1-agent"
 
-    def test_no_user_id_returns_all(self, client):
+    def test_no_user_id_returns_all(self, client, path):
         client.post("/createpromptlist", json={
             "listprompts": [
                 {"prompt_id": "all-1", "user_id": 1, "name": "X"},
                 {"prompt_id": "all-2", "user_id": 2, "name": "Y"},
             ]
         })
-        resp = client.get("/getprompt_onlyuserid/")
+        resp = client.get(path)
         assert resp.status_code == 200
         data = resp.get_json()
         assert len(data) >= 2
 
-    def test_filters_out_recipe_and_vlm_files(self, client, db_mod):
+    def test_filters_out_recipe_and_vlm_files(self, client, db_mod, path):
         """Files with _recipe or _vlm_agent in name should be excluded."""
         prompts_dir = db_mod._get_prompts_dir()
         # Write a recipe file directly
@@ -440,7 +445,7 @@ class TestGetPromptByUser:
         vlm_file = prompts_dir / "test_vlm_agent.json"
         vlm_file.write_text(json.dumps({"user_id": 1, "name": "vlm"}))
 
-        resp = client.get("/getprompt_onlyuserid/?user_id=1")
+        resp = client.get(f"{path}?user_id=1")
         data = resp.get_json()
         names = [p["name"] for p in data]
         assert "recipe" not in names
