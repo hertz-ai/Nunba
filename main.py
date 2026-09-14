@@ -565,6 +565,17 @@ def initialize_indicator_window():
 
 app = Flask(__name__, static_folder=None)
 
+# HARTOS's API gate before the app serves anything.  The desktop's socket is
+# 0.0.0.0, and app.py's dispatcher hands this app to another machine only once
+# the gate is confirmed on it.  If HARTOS cannot be imported yet, bootstrap
+# installs it later (security.middleware.install_api_gate).
+try:
+    from security.middleware import install_api_gate
+    install_api_gate(app)
+except Exception as _gate_err:
+    logging.warning(f"API gate not installed at app creation ({_gate_err}); "
+                    f"HARTOS bootstrap installs it")
+
 # Bootstrap HARTOS subsystems in background — none of these are needed
 # for serving the React SPA or handling the first chat message.
 def _deferred_platform_init():

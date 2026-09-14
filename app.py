@@ -5700,9 +5700,17 @@ def setup_connectivity_monitor(window, port):
 
 
 def _dynamic_wsgi_app(environ, start_response):
-    """WSGI dispatcher that routes to flask_app (full) when available, else gui_app."""
-    app = flask_app if flask_app is not None else gui_app
-    return app(environ, start_response)
+    """WSGI dispatcher that routes to flask_app (full) when available, else gui_app.
+
+    Another machine reaches flask_app only once HARTOS's API gate is on it
+    (security.middleware.install_api_gate marks the app after confirming the
+    hook).  Until then it gets gui_app's boot stubs, so the desktop never
+    serves /chat ungated to its network, whatever fails at boot; this
+    machine's own callers always get flask_app.  Measured 2026-09-14: a
+    device on the same Wi-Fi could drive /chat on an installed desktop.
+    """
+    from routes.auth import app_for_caller
+    return app_for_caller(environ, flask_app, gui_app)(environ, start_response)
 
 
 def start_flask():
@@ -6786,7 +6794,10 @@ def start_flask():
         # /health stay responsive while a TTS install grinds.
         # Falls through to Waitress on ImportError so older bundles /
         # cx_Freeze installs missing the h2/wsproto chain still boot.
-        _wsgi_target = _serving_app if _serving_app is flask_app else _dynamic_wsgi_app
+        # Always the dispatcher, even when main.py finished importing first:
+        # it is where another machine is kept off an app with no API gate yet
+        # (see _dynamic_wsgi_app).  Serving flask_app directly skipped that.
+        _wsgi_target = _dynamic_wsgi_app
         try:
             _worker_threads = int(os.environ.get('NUNBA_WORKER_THREADS', '128'))
         except (TypeError, ValueError):
@@ -6914,7 +6925,10 @@ def start_flask():
                             _stream.fileno()
                         except (ValueError, OSError, _io.UnsupportedOperation):
                             setattr(sys, _attr, open(os.devnull, 'w', encoding='utf-8'))
-                _serving_app.run(debug=False, host="0.0.0.0", port=args.port, use_reloader=False)
+                # The dispatcher, like the other two servers (see _wsgi_target).
+                from werkzeug.serving import run_simple
+                run_simple("0.0.0.0", args.port, _wsgi_target,
+                           use_reloader=False, use_debugger=False, threaded=True)
     except Exception as e:
         logger.error(f"Error starting Flask server: {str(e)}")
         logger.error(traceback.format_exc())

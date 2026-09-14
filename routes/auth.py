@@ -13,28 +13,54 @@ from flask import jsonify, request
 API_TOKEN = os.environ.get('NUNBA_API_TOKEN', '')
 
 
-def _is_local_request():
-    """Check if request is truly local, accounting for proxies.
+def is_local_environ(environ):
+    """True when a WSGI request comes from this machine, accounting for proxies.
 
     When running behind a reverse proxy, *all* requests appear as 127.0.0.1
     because the proxy connects locally.  If the ``TRUSTED_PROXY`` env-var is
     set to the proxy's address we inspect ``X-Forwarded-For`` to determine the
-    *real* client IP.  Without the env-var, only ``remote_addr`` is checked
+    *real* client IP.  Without the env-var, only ``REMOTE_ADDR`` is checked
     (safe default for direct connections).
 
     CI bypass: when ``NUNBA_CI=1`` (set ONLY by docker-compose.staging.yml)
     all requests are trusted.  The e2e probe hits the container via docker
     NAT so requests appear from the docker bridge IP, not 127.0.0.1, and
     would otherwise be rejected.  Production builds NEVER set this var.
+
+    The one loopback rule: _is_local_request applies it to the current Flask
+    request, and app.py's dispatcher to a raw environ before any app has it.
     """
     if os.environ.get('NUNBA_CI', '') == '1':
         return True
+    remote_addr = environ.get('REMOTE_ADDR', '')
     trusted_proxy = os.environ.get('TRUSTED_PROXY', '')
-    if trusted_proxy and request.remote_addr == trusted_proxy:
-        forwarded_for = request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+    if trusted_proxy and remote_addr == trusted_proxy:
+        forwarded_for = environ.get('HTTP_X_FORWARDED_FOR', '').split(',')[0].strip()
         return forwarded_for in ('127.0.0.1', '::1', 'localhost')
-    # Direct connection - check remote_addr
-    return request.remote_addr in ('127.0.0.1', '::1')
+    # Direct connection - check REMOTE_ADDR
+    return remote_addr in ('127.0.0.1', '::1')
+
+
+def _is_local_request():
+    """Check if the current Flask request is truly local (is_local_environ)."""
+    return is_local_environ(request.environ)
+
+
+def app_for_caller(environ, full_app, boot_app):
+    """The app a request is served by, for app.py's dispatcher.
+
+    This machine's callers get full_app as soon as it exists.  Another machine
+    gets it only once HARTOS's API gate is confirmed on it
+    (security.middleware.install_api_gate sets ``_hartos_api_gate`` after
+    checking the hook is in place), and boot_app's stubs until then, so the
+    desktop never serves /chat ungated to its network whatever fails at boot.
+    Peers see the stubs for that window too.
+    """
+    if full_app is None:
+        return boot_app
+    if getattr(full_app, '_hartos_api_gate', False) or is_local_environ(environ):
+        return full_app
+    return boot_app
 
 
 def _has_valid_token():
