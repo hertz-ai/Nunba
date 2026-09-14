@@ -2,8 +2,8 @@
 
 Handles:
   POST /upload/file       — generic file upload (image/pdf/audio) + Qwen Vision inference for images
-  POST /upload/image      — agent avatar upload (save + optional toonify placeholder)
-  POST /upload/audio      — agent voice signature upload
+  POST /upload/image      — agent avatar upload (save + record; toonify is a placeholder)
+  POST /upload/audio      — agent voice signature upload (save + record)
   POST /upload/vision     — standalone image→Qwen Vision inference (base64 or URL)
   POST /upload/native     — upload from a path picked in the native file dialog
 
@@ -178,7 +178,12 @@ def upload_image():
     """Agent avatar upload (replaces MakeItTalk /upload_image/).
 
     Accepts multipart form: image, user_id, name, request_id, prompt_id.
-    Saves avatar image. Toonify is a no-op locally (would need a separate model).
+    Saves the image and records it as a teacher avatar in this node's DB
+    (routes/db_routes.py), as MakeItTalk records it in central's.  The reply
+    carries its teacher_avatar_id, the id a chat names to speak as this
+    avatar; its voice is the recording uploaded with the same request_id.
+    Toonify is a no-op locally (would need a separate model), so the image
+    is the avatar.
     """
     image_file = request.files.get('image')
     if not image_file:
@@ -192,12 +197,23 @@ def upload_image():
     logger.info(f"upload_image (avatar): {name} for user {user_id}")
 
     avatar_url = f"/uploads/avatars/{name}"
+    try:
+        from routes.db_routes import record_teacher_avatar
+        avatar_id, voice_id = record_teacher_avatar(
+            name, avatar_url, user_id, request_id, name_param)
+    except Exception:
+        # MakeItTalk fails the upload when its DB write fails; a 200 would
+        # hand back an avatar no chat can name.
+        logger.exception(f"upload_image: {name} saved but not recorded")
+        return jsonify({"error": "The avatar could not be recorded"}), 500
 
     return jsonify({
         "response": "Avatar uploaded successfully",
         "avatar_url": avatar_url,
         "file_name": name,
         "request_id": request_id,
+        "teacher_avatar_id": avatar_id,
+        "voice_id": voice_id,
     })
 
 
@@ -206,7 +222,11 @@ def upload_audio():
     """Agent voice signature upload (replaces MakeItTalk /upload_audio).
 
     Accepts multipart form: audio, user_id, request_id.
-    Saves audio file for voice cloning / signature.
+    Saves the recording and records it as a voice sample in this node's DB
+    (routes/db_routes.py): the avatar uploaded with the same request_id then
+    speaks with it, through a cloning TTS engine.  Stored as uploaded:
+    MakeItTalk converts a non-wav recording to wav with ffmpeg, which this
+    node does not do yet (Android's AMR recordings go to central, not here).
     """
     audio_file = request.files.get('audio')
     if not audio_file:
@@ -219,12 +239,23 @@ def upload_audio():
     logger.info(f"upload_audio (voice sig): {name} for user {user_id}")
 
     audio_url = f"/uploads/audio/{name}"
+    try:
+        from routes.db_routes import record_voice_sample
+        voice_id = record_voice_sample(name, audio_url, user_id, request_id)
+    except Exception:
+        logger.exception(f"upload_audio: {name} saved but not recorded")
+        return jsonify({"error": "The voice could not be recorded"}), 500
 
     return jsonify({
         "response": "Voice signature uploaded",
         "audio_url": audio_url,
         "file_name": name,
         "request_id": request_id,
+        # Android's AudioResponse reads this (MakeItTalk returns the DB row)
+        # and counts an upload without it as failed, so a successful upload
+        # always carries it: the recording's own URL, never empty.
+        "voice_sample_url": audio_url,
+        "voice_id": voice_id,
     })
 
 

@@ -46,6 +46,16 @@ def client(app):
     return app.test_client()
 
 
+@pytest.fixture(autouse=True)
+def _temp_db(tmp_path_factory, monkeypatch):
+    """/upload/image and /upload/audio record rows in routes/db_routes.py's
+    DB: keep them in a temp one, never the real nunba_db.sqlite."""
+    from routes import db_routes
+    monkeypatch.setattr(db_routes, 'DB_PATH',
+                        tmp_path_factory.mktemp('db') / 'nunba_db.sqlite')
+    db_routes._init_db()
+
+
 def _make_file_storage(filename='test.png', content=b'fake image data',
                        content_type='image/png'):
     """Build a BytesIO that mimics a file upload."""

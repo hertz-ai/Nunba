@@ -10,6 +10,8 @@ Replaces these cloud endpoints (previously at azurekong.hertzai.com):
   GET  /getprompt             — Fetch agent config by prompt_id
   GET  /getprompt_onlyuserid  — List user's agents
   GET  /getprompt_all         — List all public agents
+  GET  /get_image_by_id/<id>     — A teacher avatar: its image and its voice id
+  GET  /get_voice_sample_id/<id> — A voice sample: its recording's URL
 
 The parsed-book library (pdf_files / page_layouts, GET /db/pdf_files and
 GET /db/layouts) is HARTOS's: integrations/learning/api_books.py serves it on
@@ -46,6 +48,14 @@ NUNBA_DIR = Path(_resolve_nunba_dir())
 DATA_DIR = NUNBA_DIR / 'data'
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / 'nunba_db.sqlite'
+
+#: The first teacher avatar id this node hands out.  Clients send CENTRAL
+#: avatar ids here too (the landing page and Android hardcode 1802, 2759,
+#: 2933, ...), and an avatar id names one avatar wherever it is read, so a
+#: local id must be one central can never issue.  Central's ids are in the
+#: thousands, and Android carries the id as a Java Integer, so local ids
+#: start at a billion and stay below 2**31.
+LOCAL_AVATAR_ID_BASE = 1_000_000_000
 
 
 def _get_db():
@@ -109,6 +119,53 @@ def _init_db():
             CREATE INDEX IF NOT EXISTS idx_conv_request_id ON conversations(request_id);
         """)
         conn.commit()
+        # Teacher avatars and their voice samples (replace cloud
+        # /upload_teacher_avatar, /upload_voice_sample, /get_image_by_id and
+        # /get_voice_sample_id): central's columns (Hevolve_Database
+        # sql/models.py), so a row reads the same from either.  Written by
+        # routes/upload_routes.py; read by HARTOS core/teacher_avatar.lookup_avatar.
+        # ONE transaction creates the tables and seeds the avatar id sequence
+        # (AUTOINCREMENT gives max(seq, largest id) + 1, so the first local
+        # avatar is LOCAL_AVATAR_ID_BASE), so no init leaves the table unseeded.
+        conn.execute('BEGIN')
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS voice_sample (
+                    voice_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    voice_sample_name TEXT,
+                    voice_sample_url TEXT NOT NULL,
+                    user_id TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    in_use INTEGER NOT NULL DEFAULT 1,
+                    upload_date TEXT NOT NULL DEFAULT (datetime('now')),
+                    request_id TEXT
+                )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_voice_upload "
+                         "ON voice_sample(user_id, request_id)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS teacher_avatar (
+                    teacher_avatar_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    image_name TEXT,
+                    image_url TEXT,
+                    user_id TEXT,
+                    in_use INTEGER NOT NULL DEFAULT 1,
+                    is_cartoon INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    upload_date TEXT NOT NULL DEFAULT (datetime('now')),
+                    voice_id INTEGER REFERENCES voice_sample(voice_id),
+                    request_id TEXT,
+                    name TEXT
+                )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_avatar_upload "
+                         "ON teacher_avatar(user_id, request_id)")
+            conn.execute(
+                "INSERT INTO sqlite_sequence (name, seq) SELECT 'teacher_avatar', ? "
+                "WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'teacher_avatar')",
+                (LOCAL_AVATAR_ID_BASE - 1,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     finally:
         conn.close()
 
@@ -553,6 +610,131 @@ def get_all_prompts():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TEACHER AVATAR + VOICE SAMPLE — replaces cloud /upload_teacher_avatar,
+# /upload_voice_sample, /get_image_by_id and /get_voice_sample_id
+# Writers: routes/upload_routes.py (/upload/image, /upload/audio), as MakeItTalk
+#          writes central's rows for Android's uploads
+# Readers: HARTOS core/teacher_avatar.lookup_avatar, on get_db_url() (this node
+#          on the desktop): a chat's teacher_avatar_id -> voice_id -> the
+#          recording a cloning TTS engine speaks from
+# ══════════════════════════════════════════════════════════════════════════════
+
+def record_voice_sample(voice_sample_name, voice_sample_url, user_id, request_id):
+    """Store an uploaded voice recording; returns its voice id.
+
+    Mirrors central crud.upload_voice_sample, plus the one link central makes
+    elsewhere.  Central links an avatar to a voice when the TOONIFIED avatar
+    row lands, and toonifying runs after both uploads, so the voice is always
+    there first.  This node does not toonify: the avatar row lands at upload
+    time, usually before the voice.  So the link is made by whichever upload
+    arrives second, and here that is the voice: every avatar of the same
+    upload (user_id + request_id) speaks with it, the newest recording.
+    """
+    user_id = str(user_id)
+    conn = _get_db()
+    try:
+        voice_id = conn.execute(
+            """INSERT INTO voice_sample
+               (voice_sample_name, voice_sample_url, user_id, request_id, upload_date)
+               VALUES (?, ?, ?, ?, ?)""",
+            (voice_sample_name, voice_sample_url, user_id, request_id,
+             datetime.now(UTC).isoformat()),
+        ).lastrowid
+        if request_id:
+            conn.execute(
+                "UPDATE teacher_avatar SET voice_id = ? WHERE user_id = ? AND request_id = ?",
+                (voice_id, user_id, request_id))
+        conn.commit()
+        return voice_id
+    finally:
+        conn.close()
+
+
+def record_teacher_avatar(image_name, image_url, user_id, request_id, name=''):
+    """Store an uploaded avatar image; returns (teacher_avatar_id, voice_id).
+
+    Mirrors central crud.upload_teacher_avatar: the avatar speaks with the
+    newest recording of the same upload (user_id + request_id) when one is
+    already here; record_voice_sample makes the link in the other order.  An
+    upload without a request_id links nothing, because the request_id is the
+    only thing that says which recording belongs to which image.  Nothing is
+    toonified here, so the image is the avatar as uploaded (is_cartoon 0).
+    An id below LOCAL_AVATAR_ID_BASE is refused, never issued.
+    """
+    user_id = str(user_id)
+    conn = _get_db()
+    try:
+        voice = conn.execute(
+            "SELECT voice_id FROM voice_sample WHERE user_id = ? AND request_id = ? "
+            "ORDER BY voice_id DESC LIMIT 1",
+            (user_id, request_id),
+        ).fetchone() if request_id else None
+        voice_id = voice['voice_id'] if voice else None
+        avatar_id = conn.execute(
+            """INSERT INTO teacher_avatar
+               (image_name, image_url, user_id, request_id, name, voice_id, upload_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (image_name, image_url, user_id, request_id, name or None, voice_id,
+             datetime.now(UTC).isoformat()),
+        ).lastrowid
+        if avatar_id < LOCAL_AVATAR_ID_BASE:
+            # Only an id sequence that lost its seed gets here, and an id below
+            # the base can be central's: refuse it rather than issue it.
+            conn.rollback()
+            raise RuntimeError(
+                f'teacher_avatar id {avatar_id} is below LOCAL_AVATAR_ID_BASE')
+        conn.commit()
+        return avatar_id, voice_id
+    finally:
+        conn.close()
+
+
+@db_bp.route('/get_image_by_id/<int:avatar_id>', methods=['GET'])
+def get_image_by_id(avatar_id):
+    """An active teacher avatar with every column, or null.
+
+    Matches cloud /get_image_by_id/{id} (crud.get_image_by_id): lookup_avatar
+    reads its image_url, and its voice_id names the voice sample to speak with.
+    """
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM teacher_avatar WHERE teacher_avatar_id = ? AND is_active = 1",
+            (avatar_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return jsonify(None)
+    avatar = dict(row)
+    for flag in ('in_use', 'is_cartoon', 'is_active'):
+        avatar[flag] = bool(avatar[flag])
+    return jsonify(avatar)
+
+
+@db_bp.route('/get_voice_sample_id/<int:voice_id>', methods=['GET'])
+def get_voice_sample_id(voice_id):
+    """An in-use voice sample, or null.
+
+    Matches cloud /get_voice_sample_id/{id} (schemas.voiceSampleResponse):
+    voice_id, voice_sample_url and upload_date.  Central answers an unknown
+    id with an error and this node with null; lookup_avatar reads either as
+    no voice.  voice_sample_url is the recording's /uploads/ URL on this
+    node, which voice_reference turns into the file.
+    """
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT voice_id, voice_sample_url, upload_date FROM voice_sample "
+            "WHERE voice_id = ? AND in_use = 1",
+            (voice_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return jsonify(dict(row) if row else None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # REGISTRATION
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -561,6 +743,7 @@ def register_db_routes(app):
     app.register_blueprint(db_bp)
     logger.info(
         "DB routes registered: /create_action, /conversation, /createpromptlist, "
-        "/getprompt, /getprompt_onlyuserid, /getprompt_all, /db/getstudent_by_user_id"
+        "/getprompt, /getprompt_onlyuserid, /getprompt_all, /db/getstudent_by_user_id, "
+        "/get_image_by_id, /get_voice_sample_id"
     )
     logger.info(f"DB storage: {DB_PATH}")
