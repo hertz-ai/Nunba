@@ -344,6 +344,33 @@ const executeAction = (actionData) => {
   logResponse('CALLING_RPC', {uri: screenshotUri, command});
 };
 
+// A string payload is JSON from HARTOS; an older producer sent a Python
+// repr, which parses only after swapping its quotes and None. Strict JSON
+// goes first: the swap breaks any JSON string holding an apostrophe.
+const parseStringPayload = (data, topic) => {
+  logResponse('STRING_DATA', {data, from: topic});
+  try {
+    const parsed = JSON.parse(data);
+    logResponse('PARSED_DATA', {data: parsed, from: topic});
+    return parsed;
+  } catch {
+    try {
+      const parsed = JSON.parse(
+        data.replace(/'/g, '"').replace(/None/g, 'null')
+      );
+      logResponse('PARSED_DATA', {data: parsed, from: topic});
+      return parsed;
+    } catch (parseError) {
+      logResponse('PARSE_ERROR', {
+        error: parseError.message,
+        data,
+        from: topic,
+      });
+      return data;
+    }
+  }
+};
+
 const handleTopicData = (data, topic) => {
   try {
     logResponse('RECEIVED_DATA', {topic, data});
@@ -355,28 +382,20 @@ const handleTopicData = (data, topic) => {
     }
     processedMessages.add(messageId);
 
-    if (data?.percentage !== undefined) {
-      postWorkerMessage('PROGRESS_UPDATE', data.percentage);
-      logResponse('PROGRESS', {percentage: data.percentage, from: topic});
+    // Parse first, then read fields: HARTOS publishes JSON strings (the
+    // MessageBus Crossbar leg json.dumps every payload) where central's
+    // pipeline published objects, and a percentage read off the unparsed
+    // string was always undefined, so book progress never moved the bar.
+    const processedData =
+      typeof data === 'string' ? parseStringPayload(data, topic) : data;
+
+    if (processedData?.percentage !== undefined) {
+      postWorkerMessage('PROGRESS_UPDATE', processedData.percentage);
+      logResponse('PROGRESS', {
+        percentage: processedData.percentage,
+        from: topic,
+      });
       return;
-    }
-
-    let processedData = data;
-
-    if (typeof data === 'string') {
-      logResponse('STRING_DATA', {data, from: topic});
-      try {
-        const cleanedData = data.replace(/'/g, '"').replace(/None/g, 'null');
-        processedData = JSON.parse(cleanedData);
-        logResponse('PARSED_DATA', {data: processedData, from: topic});
-      } catch (parseError) {
-        logResponse('PARSE_ERROR', {
-          error: parseError.message,
-          data,
-          from: topic,
-        });
-        processedData = data;
-      }
     }
 
     postWorkerMessage('DATA_RECEIVED', {
@@ -1093,3 +1112,6 @@ onmessage = function (e) {
       logResponse('UNKNOWN_MESSAGE_TYPE', type);
   }
 };
+
+// For the unit tests; the worker itself is driven through onmessage.
+export {handleTopicData};
