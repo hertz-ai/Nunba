@@ -638,6 +638,8 @@ def chat(
     agentic_execute: bool = False,
     agentic_plan: dict = None,
     intelligence_preference: str = 'auto',
+    teacher_avatar_id=None,
+    draft_first=None,
     **kwargs
 ) -> dict[str, Any]:
     """
@@ -734,6 +736,18 @@ def chat(
     # the payload shape don't see spurious defaults.
     if intelligence_preference and intelligence_preference != 'auto':
         payload["intelligence_preference"] = intelligence_preference
+    # The avatar the reply is spoken as: HARTOS core/teacher_avatar.py turns it
+    # into that avatar's recorded voice.  Sent only when a caller has one.
+    if teacher_avatar_id is not None:
+        payload["teacher_avatar_id"] = teacher_avatar_id
+    # Per-request draft override: HARTOS /chat honours `draft_first` in the
+    # body.  Sent only when a caller sets it, so every other caller keeps
+    # HARTOS's default.
+    if draft_first is not None:
+        # bool("false") is True: a client's string is read, not cast.
+        payload["draft_first"] = (
+            draft_first if isinstance(draft_first, bool)
+            else str(draft_first).strip().lower() in ('1', 'true', 'yes', 'on'))
 
     # Direct in-process call when hart-backend is available
     if _hartos_backend_available and _hevolve_app:
@@ -1329,7 +1343,11 @@ def create_proxy_blueprint():
         result = chat(
             text=data.get('text', ''),
             user_id=data.get('user_id'),
-            agent_id=data.get('teacher_avatar_id') or data.get('agent_id'),
+            # teacher_avatar_id is the AVATAR, shared by many agents, never
+            # the agent: it goes to HARTOS as the avatar the reply is spoken
+            # as (owner ruling 2026-09-14).
+            agent_id=data.get('agent_id'),
+            teacher_avatar_id=data.get('teacher_avatar_id'),
             conversation_id=data.get('conversation_id'),
             request_id=data.get('request_id')
         )

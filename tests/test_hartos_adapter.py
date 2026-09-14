@@ -337,6 +337,74 @@ class TestChatRouting:
         assert isinstance(result, dict)
 
 
+class TestChatPayloadOptionalFields:
+    """teacher_avatar_id and draft_first reach HARTOS /chat only when a
+    caller sets them; every other caller's payload is unchanged."""
+
+    @staticmethod
+    def _payload(**kwargs):
+        from routes import hartos_backend_adapter as hba
+        posted = {}
+
+        class _Resp:
+            @staticmethod
+            def get_json():
+                return {'response': 'ok'}
+
+        class _Client:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def post(self, path, json=None):
+                posted['path'], posted['json'] = path, json
+                return _Resp()
+
+        app = MagicMock()
+        app.test_client.return_value = _Client()
+        with patch.object(hba, '_hartos_initialized', True), \
+                patch.object(hba, '_hartos_backend_available', True), \
+                patch.object(hba, '_hevolve_app', app):
+            hba.chat(text='hi', user_id='u', **kwargs)
+        assert posted['path'] == '/chat'
+        return posted['json']
+
+    def test_absent_by_default(self):
+        payload = self._payload()
+        assert 'teacher_avatar_id' not in payload
+        assert 'draft_first' not in payload
+
+    def test_forwarded_when_set(self):
+        payload = self._payload(teacher_avatar_id=2933, draft_first=False)
+        assert payload['teacher_avatar_id'] == 2933
+        assert payload['draft_first'] is False
+
+    def test_a_string_is_read_not_cast(self):
+        """bool("false") is True, so a client's string must be read."""
+        assert self._payload(draft_first='false')['draft_first'] is False
+        assert self._payload(draft_first='true')['draft_first'] is True
+
+
+class TestProxyChatKeepsAvatarAndAgentApart:
+    """teacher_avatar_id is the avatar, shared by many agents; the proxy /chat
+    must never use it as the agent id (owner ruling 2026-09-14)."""
+
+    def test_the_avatar_is_not_the_agent(self):
+        from flask import Flask
+
+        from routes import hartos_backend_adapter as hba
+        app = Flask(__name__)
+        app.register_blueprint(hba.create_proxy_blueprint())
+        with patch.object(hba, 'chat', return_value={'text': 'ok'}) as chat:
+            app.test_client().post('/chat', json={
+                'text': 'hi', 'user_id': 'u', 'teacher_avatar_id': 2933})
+        kwargs = chat.call_args.kwargs
+        assert kwargs['agent_id'] is None
+        assert kwargs['teacher_avatar_id'] == 2933
+
+
 # ============================================================
 # Module Constants
 # ============================================================

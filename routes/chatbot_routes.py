@@ -15,11 +15,9 @@ import inspect
 import json
 import logging
 import os
-import random
 import re
 import sys
 import time
-from collections import deque
 from functools import wraps
 
 import requests
@@ -225,7 +223,6 @@ class _BoundedSessionDict(OrderedDict):
             self.popitem(last=False)
 
 sessions = _BoundedSessionDict()
-custom_sessions = {}
 
 # ---------------------------------------------------------------------------
 # USER-INTENT CLASSIFICATION LIVES IN THE HARTOS DRAFT MODEL.
@@ -886,22 +883,6 @@ def vision_frame_ingest():
         return jsonify({'ok': False, 'error': str(_e)[:120]}), 500
 
 
-def create_sessions(user_id, teacher_avatar_id, data, data_keys):
-    """
-    Stub for session creation
-    TODO: Implement complete session initialization
-    """
-    logger.info(f'STUB: create_sessions called for user {user_id}')
-    if user_id not in sessions:
-        with _sessions_lock:
-            sessions[user_id] = {
-                "user_id": user_id,
-                "teacher_avatar_id": teacher_avatar_id,
-                "state": "start",
-                "preffered_lang": "en"
-            }
-
-
 def exception_publish(line_no, message, user_id=None):
     """
     Stub for exception publishing
@@ -966,55 +947,56 @@ def answer_fetcher(inp, user_id, request_id):
     return f"Answer to '{inp}': This is a stub response. Implement actual QA system."
 
 
-# ========== Response Functions (Stubs) ==========
+# ========== Agent reply ==========
 
-async def teachme_response2(text=[], options=[], teachme="False", user_id=0, inp="",
-                           cartoon_id=None, teacher_avatar_id=None, request_id=0,
-                           lang='en', topic='', rev=False, conv_bot_name='RASA',
-                           video_req=False, bot="Teach Yourself", dialogue_id=1,
-                           action='Teachme', profile_time=None, content=None, priority=99):
+def _reply_parts(body):
+    """The reply's text as its non-empty parts: a multi-part reply keeps
+    every part, and a reply that is Liquid UI alone has none."""
+    text = body.get('text') or body.get('response') or ''
+    parts = text if isinstance(text, list) else [text]
+    return [p for p in parts if isinstance(p, str) and p.strip()]
+
+
+def _agent_reply(turn_body, request_id, dynamic_data=None, status=200):
+    """The reply to a chat turn: ONE shape for every agent and every path.
+
+    It is the body /chat returns (text, the agent and routing fields,
+    dynamic_layout, ...) plus two things:
+
+      * `dynamic_data`, the flexible map.  Any agent puts its own keys here
+        (a Teach Yourself topic and its "continue" option, a custom agent's
+        name and avatar), merged over whatever the turn itself returned.
+        Liquid UI binds dynamic_layout's nodes to it: the same layout + data
+        pair HARTOS's core.peer_link.ui_commands.ui_overlay_show sends, and
+        the key RN/iOS LiquidOverlay already read (res.dynamic_data).  A
+        client that does not know a key ignores it.
+      * what a phone's native chat screen needs to show any reply.  Android
+        parses this body as Revision_Response_Message, which has no `text`
+        field: the bubble is drawn from answerList, a message without a
+        priority is dropped (AbstractChatActivity.addNewMessage), answer
+        chips come from optionLists (the map's `options`) and the Teach
+        Yourself mode from `teachme`.  Derived the same way for every agent.
     """
-    Stub for teachme response function
-    TODO: Implement actual video generation and response formatting
-    """
-    logger.info(f'STUB: teachme_response2 called for user {user_id}, action: {action}')
-
-    response = {
-        "status": "success",
-        "text": text,
-        "options": options,
-        "user_id": user_id,
-        "request_id": request_id,
-        "action": action,
-        "bot": bot,
-        "video_req": video_req,
-        "message": "This is a stub response. Implement actual teachme response logic."
-    }
-
-    return jsonify(response)
-
-
-async def customgpt_response(text=[], options=[], user_id=0, inp="",
-                            teacher_avatar_id=None, request_id=0,
-                            video_req=True, action='Custom GPT', priority=99):
-    """
-    Stub for custom GPT response function
-    TODO: Implement actual custom GPT response formatting and video generation
-    """
-    logger.info(f'STUB: customgpt_response called for user {user_id}, action: {action}')
-
-    response = {
-        "status": "success",
-        "text": text,
-        "options": options,
-        "user_id": user_id,
-        "request_id": request_id,
-        "action": action,
-        "video_req": video_req,
-        "message": "This is a stub response. Implement actual custom GPT response logic."
-    }
-
-    return jsonify(response)
+    body = dict(turn_body or {})
+    # RN's CustomBotChatScreen shows `message` before `text`, so nothing but
+    # the reply may sit there; central's reply carries no `message` at all.
+    body.pop('message', None)
+    parts = _reply_parts(body)
+    data = dict(body.get('dynamic_data') or {})
+    data.update(dynamic_data or {})
+    body.update({
+        # a string, as central sends; every part stays in answerList
+        'text': '\n'.join(parts),
+        # never [] -- AbstractChatActivity reads answerList.get(0)
+        'answerList': parts or [''],
+        'priority': 99,
+        'optionLists': [str(o) for o in (data.get('options') or [])],
+        'request_id': str(request_id),
+        'dynamic_data': data,
+    })
+    if 'teachme' in data:
+        body['teachme'] = bool(data['teachme'])
+    return jsonify(body), status
 
 
 # ========== Main Route Functions ==========
@@ -1179,158 +1161,185 @@ async def customgpt_response(text=[], options=[], user_id=0, inp="",
 #     )
 
 
-@error_handler
-async def custom_gpt():
+# ========== Central chat paths served by this node ==========
+
+def _turn_text(data):
+    """The message of a /custom_gpt or /chat/teachme2 body.
+
+    `text` first: every caller puts the message there -- Android as a
+    one-item list (translated to English; `raw_text` keeps the original),
+    RN's custom-bot screen as a string, and RN's kids calls their full
+    instruction, with a short label in `raw_text` -- so `raw_text` never wins
+    over it.  `message` is RN's alias.
     """
-    Custom GPT route handler (simplified stub version)
+    for key in ('text', 'message', 'raw_text'):
+        value = data.get(key)
+        if isinstance(value, list):
+            value = value[0] if value else ''
+        if isinstance(value, str) and value.strip():
+            return value
+    return ''
 
-    This is a simplified version of the custom_gpt functionality. The full implementation
-    requires prompt database, custom session management, and various external services.
 
-    TODO: Gradually add the full functionality from the original implementation
+#: What the phone shows when a turn produced no answer.  Never the error
+#: itself: exception text and backend envelopes are not for the user.
+_TURN_FAILED_TEXT = "Sorry, I couldn't answer that just now. Please try again."
+
+
+def _run_turn(turn):
+    """(body, status) of one turn run by _chat_turn, the body of /chat.
+
+    A turn that failed, or answered with neither text nor a Liquid UI
+    payload (dynamic_layout / dynamic_data: a reply can be the overlay
+    alone), comes back as an empty body with a non-2xx status; why stays
+    in the log, never in the reply.
     """
-    start_time = time.time()
-    data = request.get_json(force=True)
-
-    logger.info('|'*50)
-    logger.info("Custom GPT Request: "+str(data))
-
-    # Extract parameters
     try:
-        user_id = data.get('user_id', 0)
-        teacher_avatar_id = data.get('teacher_avatar_id')
-        request_id = data.get('request_id', int(time.time()))
-        video_req = data.get('video_req', True)
-        create_agent = data.get('create_agent', False)
-        prompt_name = data.get('prompt_name')
-        file_id = data.get('file_id')
-        prompt_id = data.get('prompt_id')
-        inp = data.get("text", '')
-        raw_inp = data.get("raw_inp")
-        image_url = data.get('image_url')
-        file_url = data.get('file_url')
+        result = _chat_turn(turn)
+    except Exception:
+        logger.exception('chat turn failed for user %s', turn.get('user_id'))
+        return {}, 500
+    response, status = result if isinstance(result, tuple) else (result, None)
+    status = status or getattr(response, 'status_code', 200)
+    try:
+        body = response.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    if status >= 400:
+        return {}, status
+    if not (_reply_parts(body) or body.get('dynamic_layout')
+            or body.get('dynamic_data')):
+        return {}, 502
+    return body, status
 
-        if isinstance(raw_inp, list):
-            raw_inp = ' '.join(raw_inp)
-        if isinstance(inp, list):
-            inp = inp[0] if len(inp) > 0 else ''
 
-    except Exception as e:
-        logger.error(f'Error extracting parameters: {e}')
-        return await customgpt_response(
-            text=[f"Error processing request: {str(e)}"],
-            user_id=0,
-            request_id=0
-        )
+def custom_gpt():
+    """POST /custom_gpt and /chat/custom_gpt: a turn with a custom agent.
 
-    # Validate input
-    if inp.strip() == "":
-        return await customgpt_response(
-            text=["Request cannot be blank, Please enter something as request.."],
-            user_id=user_id,
-            inp=inp,
-            teacher_avatar_id=teacher_avatar_id,
-            request_id=request_id,
-            video_req=video_req,
-            action='Validation Error'
-        )
+    Central serves this at /chat/custom_gpt, and the phone clients post there
+    (Android's CustomChatBotAPI, RN's chatApi.customGpt and its kids calls)
+    over a base URL their local->LAN->cloud cascade picks.  So this node
+    answers with a real turn: the SAME one /chat runs (_chat_turn), returned
+    in the one agent reply shape (_agent_reply).  draft_first is off because
+    these screens show only this synchronous reply, and a draft's standby
+    ("let me check...") would otherwise be the whole answer.
+    """
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id', 'guest')
+    request_id = data.get('request_id') or str(int(time.time() * 1000))
+    text = _turn_text(data)
+    if not text.strip():
+        return _agent_reply(
+            {'text': "Request cannot be blank, Please enter something as request.."},
+            request_id, status=400)
+    prompt_id = data.get('prompt_id') or data.get('bot_id')
+    turn = {
+        'text': text,
+        'user_id': user_id,
+        'request_id': request_id,
+        'conversation_id': (data.get('conversation_id')
+                            or f'custom_{prompt_id or "default"}'),
+        'create_agent': bool(data.get('create_agent')),
+        'teacher_avatar_id': data.get('teacher_avatar_id'),
+        'draft_first': False,
+    }
+    if prompt_id not in (None, '', 0, '0'):
+        turn['prompt_id'] = prompt_id
+    for key in ('preferred_lang', 'language', 'media_mode'):
+        if data.get(key):
+            turn[key] = data[key]
+    body, status = _run_turn(turn)
+    if not body:
+        return _agent_reply({'text': _TURN_FAILED_TEXT}, request_id, status=status)
+    return _agent_reply(body, request_id)
 
-    # Initialize session if needed
-    if user_id not in sessions or sessions[user_id].get("state") == "end":
-        create_sessions(user_id, teacher_avatar_id, data, list(data.keys()))
 
-    if user_id not in custom_sessions or custom_sessions[user_id].get("state") == "end":
-        logger.info('Creating custom sessions')
-        with _sessions_lock:
-            custom_sessions[user_id] = {
-                "user_id": user_id,
-                "teacher_avatar_id": teacher_avatar_id,
-                "conv_bot_name": "Custom GPT",
-                "state": "start",
-                "preffered_lang": "en",
-                "casual_conv_queue": deque(maxlen=10),
-                "request_id": request_id,
-                "prompt": "You are a helpful AI assistant.",
-                "prompt_id": prompt_id,
-                "file_id": file_id
-            }
+#: The goals scopes the Teach Yourself screen sends when the learner picks
+#: what to learn.  Other callers post chat/teachme2 as a transport (kids
+#: progress reports, catalog requests); those must not start a topic.
+_TEACH_SCOPES = ('book', 'course', 'topic', 'goals')
 
-    # Update session
+#: What a learner sends to go on with the current topic.
+_TEACH_CONTINUE = ('continue', 'next', 'go on')
+
+#: The goals scopes the kids clients post to chat/teachme2 as a TRANSPORT
+#: (iOS and RN's committed kidsLearningApi: getAdaptiveQuestion 'kids_game',
+#: reportGameCompletion 'progress_report', syncResults 'batch_sync').  They
+#: are not lessons.  Central answers them with an error, and that error is
+#: what makes the client keep the result and retry; a 2xx would drop it.
+_KIDS_TRANSPORT_SCOPES = ('kids_game', 'progress_report', 'batch_sync')
+
+
+def _tutor_opening(goals, learner_text):
+    """The first turn of a topic: what to teach, and how much of it.
+
+    Deliberately short.  Measured 2026-09-13, an opening carrying HARTOS's
+    full tutor persona ran past the 120 s LLM timeout on this node, while the
+    same model answered a scoped "first step, then one check question" turn
+    in about 45 s.
+    """
+    name = goals.get('name') or goals.get('book_name') or 'this topic'
+    book, pages = goals.get('book_name') or '', goals.get('pages') or []
+    where = f' (pages {pages[0]}-{pages[-1]} of "{book}")' if pages and book else ''
+    about = f" -- {goals['text']}" if goals.get('text') else ''
+    ask = learner_text or f'Teach me {name}.'
+    return (f'{ask}\nYou are my patient tutor. Teach {name}{where}{about}: '
+            f'the first step only, simply, then one quick check question.')
+
+
+def teachme2():
+    """POST /chat/teachme2: central's Teach Yourself turn, served here.
+
+    Android's TeachYourselfActivity posts every turn to chat/teachme2.  This
+    node runs the SAME turn /chat runs (_chat_turn); a newly picked topic is
+    framed as a short tutoring request (_tutor_opening).  Android sends the
+    topic (`goals`) on the first turn only, so it is kept on the learner's
+    entry in the bounded `sessions` store and "continue" keeps teaching it.
+    The topic and its "continue" option travel in the reply's dynamic_data,
+    like any agent's own fields.
+
+    TRANSITIONAL (owner ruling 2026-09-14): Teach Yourself is to become a
+    created agent.  This route has no agent id and is retired when that agent
+    builds.
+    """
+    data = request.get_json(silent=True) or {}
+    user_id = str(data.get('user_id', 'guest'))
+    request_id = data.get('request_id') or str(int(time.time() * 1000))
+    text = _turn_text(data)
+    goals = data.get('goals')
+    if isinstance(goals, dict) and goals.get('scope') in _KIDS_TRANSPORT_SCOPES:
+        return _agent_reply({'text': 'This request is not served on this node.'},
+                            request_id, status=501)
     with _sessions_lock:
-        custom_sessions[user_id]['request_id'] = request_id
-        custom_sessions[user_id]['teacher_avatar_id'] = teacher_avatar_id
-        custom_sessions[user_id]['file_id'] = file_id
-
-    # Add to conversation queue (with image if present)
-    with _sessions_lock:
-        user_content = raw_inp if raw_inp else inp
-        if image_url and image_url.startswith('/uploads/'):
-            # Multimodal message: include image for Qwen Vision via llama.cpp
-            custom_sessions[user_id]['casual_conv_queue'].append(
-                {"role": "user", "content": user_content, "image_url": image_url}
-            )
-        else:
-            custom_sessions[user_id]['casual_conv_queue'].append(
-                {"role": "user", "content": user_content}
-            )
-
-    logger.info(f"SESSION: {custom_sessions[user_id]}")
-    logger.info(f"*** inp {inp}")
-
-    # Check for abusive language
-    labels = ["change language", "revision", "topic listing", "abusive language",
-              "explain", "question", "learn", "affirm", "goodbye", "greet"]
-    zeroshot_label = zeroshot(inp, labels, request_id)
-
-    if zeroshot_label['labels'][0] == 'abusive language':
-        zeroshot_label = zeroshot2(inp, labels, request_id)
-        if zeroshot_label['labels'][0] == 'abusive language':
-            text = [random.choice(abusive)]
-            return await customgpt_response(
-                text=text,
-                options=[],
-                user_id=user_id,
-                inp=inp,
-                teacher_avatar_id=teacher_avatar_id,
-                request_id=request_id,
-                video_req=video_req
-            )
-
-    with _sessions_lock:
-        custom_sessions[user_id]['zeroshot_label'] = zeroshot_label['labels'][0]
-
-    # Build request data with system prompt and conversation history
-    request_data = [
-        {"role": "system", "content": custom_sessions[user_id]['prompt']}
-    ]
-    request_data.extend(custom_sessions[user_id]['casual_conv_queue'])
-
-    # Validate prompt_id — must be integer (DB column is int(11))
-    if prompt_id is not None:
-        if str(prompt_id).isdigit():
-            prompt_id = int(prompt_id)
-        else:
-            logger.warning(f'custom_gpt: rejecting non-integer prompt_id={prompt_id}, using None')
-            prompt_id = None
-
-    # Get response from bot
-    response_text = vicuna_bot(
-        message=request_data,
-        user_id=user_id,
-        prompt_id=prompt_id,
-        create_agent=create_agent,
-        custom_agent=True
-    )
-
-    return await customgpt_response(
-        text=[response_text],
-        options=[],
-        user_id=user_id,
-        inp=inp,
-        teacher_avatar_id=teacher_avatar_id,
-        request_id=request_id,
-        video_req=video_req
-    )
+        entry = sessions.get(user_id) or {}
+        if isinstance(goals, dict) and goals.get('scope') in _TEACH_SCOPES:
+            entry['teach_topic'] = goals
+            text = _tutor_opening(goals, text)
+        topic = entry.get('teach_topic')
+        # Assigned, not setdefault: _BoundedSessionDict enforces its cap in
+        # __setitem__, which dict.setdefault never calls.
+        sessions[user_id] = entry
+    if topic and text.strip().lower() in _TEACH_CONTINUE:
+        name = topic.get('name') or topic.get('book_name') or 'the topic'
+        text = (f'Continue teaching {name}: the next step, '
+                f'then one quick check question.')
+    teach_data = ({'topic': topic.get('name') or topic.get('book_name') or '',
+                   'options': ['continue'], 'teachme': True} if topic else {})
+    if not text.strip():
+        return _agent_reply({'text': "Please enter something as response.."},
+                            request_id, dynamic_data=teach_data, status=400)
+    body, status = _run_turn({
+        'text': text,
+        'user_id': user_id,
+        'request_id': request_id,
+        'conversation_id': f'teachme_{user_id}',
+        'teacher_avatar_id': data.get('teacher_avatar_id'),
+        'draft_first': False,
+    })
+    if not body:
+        return _agent_reply({'text': _TURN_FAILED_TEXT}, request_id,
+                            dynamic_data=teach_data, status=status)
+    return _agent_reply(body, request_id, dynamic_data=teach_data)
 
 
 # ========== TTS Routes ==========
@@ -2603,7 +2612,18 @@ def chat_route():
 
     Routes to local LLM or cloud based on agent_type.
     """
-    data = request.get_json() or {}
+    return _chat_turn(request.get_json() or {})
+
+
+def _chat_turn(data):
+    """One chat turn, whichever path it arrived on.
+
+    The body of POST /chat, taking the request dict so /custom_gpt,
+    /chat/custom_gpt and /chat/teachme2 run the SAME turn (agent
+    resolution, the Tier-1/Tier-2 ladder, server TTS) after mapping their
+    payloads, instead of a second chat implementation.  Returns what /chat
+    returns: a Flask response, or (response, status).
+    """
     text = data.get('text', '')
     user_id = data.get('user_id', 'guest')
     agent_id = data.get('agent_id', 'local_assistant')
@@ -2617,6 +2637,10 @@ def chat_route():
     autonomous_creation = data.get('autonomous_creation', False) or data.get('autonomous', False)
     agentic_execute = data.get('agentic_execute', False)
     agentic_plan = data.get('agentic_plan', None)
+    # Per-request draft override: custom_gpt and teachme2 turn it off,
+    # because their screens show only the synchronous reply.  None keeps
+    # HARTOS's default.
+    draft_first = data.get('draft_first')
     # Tier ladder preference from the Demopage toggle (localStorage key
     # `intelligence_preference`).  Accepts the existing 3-value enum:
     #   'local_only' — always local models, never the hive
@@ -3053,6 +3077,8 @@ def chat_route():
                     agentic_plan=agentic_plan,
                     preferred_lang=preferred_lang,
                     intelligence_preference=intelligence_preference,
+                    teacher_avatar_id=teacher_avatar_id,
+                    draft_first=draft_first,
                 )
                 # Surface explicit LangChain errors (guardrails, prompt injection, etc.)
                 if result.get('error') and not (result.get('text') or result.get('response')):
@@ -3194,6 +3220,10 @@ def chat_route():
                     # Pass through dynamic_layout for Liquid UI rendering
                     # (creative tools: Movie_Maker, Game_Asset_Creator, Story_Director
                     #  return JSON that the Liquid UI renders natively)
+                    # The agent's own flexible map: Liquid UI binds the
+                    # layout's nodes to it (see _agent_reply).
+                    if result.get('dynamic_data'):
+                        response_json['dynamic_data'] = result['dynamic_data']
                     if result.get('dynamic_layout'):
                         response_json['dynamic_layout'] = result['dynamic_layout']
                     elif response_text and response_text.lstrip().startswith('{'):
@@ -4614,10 +4644,6 @@ def register_routes(app):
     Args:
         app: Flask application instance
     """
-    # Chatbot routes
-    # app.route("/teachme2", methods=["POST"])(teachme2)
-    app.route("/custom_gpt", methods=["POST"])(custom_gpt)
-
     # Chat API routes (local + cloud agents).  Mark /chat as a user-facing turn
     # (B1) so background daemons yield the shared model to the live chat instead
     # of force-running onto it.  SINGLE SOURCE: core.foreground.mark_view — the
@@ -4630,6 +4656,16 @@ def register_routes(app):
         def _fg_mark(_f):
             return _f
     app.route("/chat", methods=["POST"])(_fg_mark(chat_route))
+    # Central's chat paths.  Kong serves /chat/custom_gpt and /chat/teachme2
+    # and the phone clients post there, over a base URL their
+    # local->LAN->cloud cascade picks, so this node serves the same paths;
+    # /custom_gpt is this node's own spelling.  Each handler is wrapped once
+    # with the same foreground rule as /chat, so both custom_gpt paths are
+    # rules on ONE view.
+    _custom_gpt_view = _fg_mark(custom_gpt)
+    app.add_url_rule("/custom_gpt", view_func=_custom_gpt_view, methods=["POST"])
+    app.add_url_rule("/chat/custom_gpt", view_func=_custom_gpt_view, methods=["POST"])
+    app.add_url_rule("/chat/teachme2", view_func=_fg_mark(teachme2), methods=["POST"])
     app.route("/prompts", methods=["GET"])(get_prompts_route)
     app.route("/backend/health", methods=["GET"])(backend_health_route)
     app.route("/network/status", methods=["GET"])(network_status_route)
