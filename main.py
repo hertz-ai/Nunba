@@ -4687,6 +4687,16 @@ try:
 except Exception as e:
     logging.warning(f"VLM run-control registration failed: {e}")
 
+# HARTOS scheduler callbacks (/time_agent, /visual_agent) -- unconditional for
+# the same reason as the VLM control above: HARTOS dials them on its own local
+# base URL (core.port_registry.get_local_backend_url), which here is :5000.
+try:
+    from routes.hartos_backend_adapter import create_inprocess_dispatch_blueprint
+    app.register_blueprint(create_inprocess_dispatch_blueprint())
+    logging.info("HARTOS in-process dispatch registered (/time_agent, /visual_agent)")
+except Exception as e:
+    logging.warning(f"HARTOS in-process dispatch registration failed: {e}")
+
 # ============== HARTOS MCP over HTTP (lifecycle-bound to Nunba) ==============
 # The HTTP MCP blueprint at /api/mcp/local replaces the standalone stdio
 # python subprocess that Claude Code would otherwise spawn (see

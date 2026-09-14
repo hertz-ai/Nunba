@@ -1440,6 +1440,60 @@ def create_vlm_control_blueprint():
     return vlm_bp
 
 
+# HARTOS routes that live on HARTOS's OWN Flask app AND that HARTOS itself calls
+# back over HTTP.  Same defect as /api/vlm/stop above: the desktop topology never
+# mounts that app onto the one serving :5000, and nothing listens on :6777.
+# Measured 2026-09-13: the scheduler (hartos/reuse_recipe.py execute_python_file
+# and call_visual_task, same pair in create_recipe.py) POSTed to
+# localhost:6777/time_agent -> connection refused, and /time_agent was absent
+# from /debug/routes, so every scheduled agent action was silently dropped.
+_INPROCESS_DISPATCH_ROUTES = (
+    # (path, methods) -- dispatched into HARTOS, never reimplemented here
+    ('/time_agent', ('POST',)),      # scheduled recipe actions
+    ('/visual_agent', ('POST',)),    # scheduled visual (VLM) actions
+)
+
+
+def create_inprocess_dispatch_blueprint():
+    """Serve HARTOS's scheduler callback routes on :5000, in every topology.
+
+    DISPATCH, DON'T REIMPLEMENT -- the same idiom as proxy_vlm_stop: the request
+    is handed to HARTOS's real handler through test_client(), so the time-based
+    and visual executors stay the ONE implementation.
+
+    LOCAL-ONLY.  HARTOS declares both handlers without auth because on a
+    standalone node they sit behind localhost.  :5000 binds 0.0.0.0, so without
+    require_local_or_token any device on the LAN could trigger agent runs for
+    any user_id.  The scheduler calls from this machine, so it passes.
+    """
+    from flask import Blueprint, Response, jsonify
+    from flask import request as flask_request
+
+    from routes.auth import require_local_or_token
+
+    bp = Blueprint('hevolve_inprocess_dispatch', __name__)
+
+    def _dispatcher(path):
+        @require_local_or_token
+        def dispatch():
+            if not (_hartos_backend_available and _hevolve_app):
+                return jsonify({
+                    'error': f'hart-backend unavailable; cannot reach {path}',
+                    'status': 'backend_unavailable',
+                }), 503
+            with _hevolve_app.test_client() as client:
+                resp = client.open(path, method=flask_request.method,
+                                   json=flask_request.get_json(silent=True) or {})
+                return Response(resp.get_data(), status=resp.status_code,
+                                content_type=resp.content_type)
+        return dispatch
+
+    for path, methods in _INPROCESS_DISPATCH_ROUTES:
+        bp.add_url_rule(path, endpoint='dispatch_' + path.strip('/'),
+                        view_func=_dispatcher(path), methods=list(methods))
+    return bp
+
+
 # ============== RSS/ATOM FEED API ==============
 
 def get_rss_feed(feed_type: str = 'global', limit: int = 50) -> str:
