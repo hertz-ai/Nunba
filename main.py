@@ -372,8 +372,6 @@ except Exception as _cre:
 DEFAULT_LOG_DIR = os.path.join(PROGRAM_DATA_DIR, 'logs')
 DEFAULT_LOG_FILE = os.path.join(DEFAULT_LOG_DIR, 'server.log')
 DEFAULT_DEVICE_ID_FILE = os.path.join(PROGRAM_DATA_DIR, 'device_id.json')
-DEFAULT_STORAGE_DIR = os.path.join(PROGRAM_DATA_DIR, 'storage')
-DEFAULT_USER_DATA_FILE = os.path.join(DEFAULT_STORAGE_DIR, 'user_data.json')
 
 
 def _export_owner_identity():
@@ -382,15 +380,18 @@ def _export_owner_identity():
     hive_guardrails' consent gate can only ASK a human it can name;
     daemon goals carry no requester, so the gate falls back to
     HEVOLVE_OWNER_USER_ID — the same boot-set trust source
-    crossbar_server.py uses for publish auth.  Absent or unreadable
-    user_data.json leaves the env unset and the gate fail-closed,
-    which is the pre-login behavior.
+    crossbar_server.py uses for publish auth.  The owner is the signed-in
+    user, else this desktop's guest (desktop.guest_identity
+    .get_desktop_owner_id).  This used to read user_data.json from
+    get_data_dir()/storage, which nothing writes, so the signed-in user was
+    never exported and asks went to the guest id, which the signed-in
+    clients do not subscribe to (live 2026-09-14: targeted=0 of 2).
     """
     try:
-        with open(DEFAULT_USER_DATA_FILE, encoding='utf-8') as fh:
-            uid = (json.load(fh) or {}).get('user_id')
-        if uid:
-            os.environ.setdefault('HEVOLVE_OWNER_USER_ID', str(uid))
+        from desktop.guest_identity import get_desktop_owner_id
+        owner = get_desktop_owner_id()
+        if owner:
+            os.environ.setdefault('HEVOLVE_OWNER_USER_ID', owner)
     except Exception:
         pass
 
@@ -1008,32 +1009,19 @@ def call_stop_api():
     try:
         logger.info("Initiating stop request via API")
 
-        # Try to get user data from storage
+        # Stop the desktop owner's loops: the signed-in user, else the guest.
+        # HARTOS's vlm_stop rejects an empty user_id with 400, which is what
+        # every Stop press got while this read a user_data.json nothing writes
+        # (gui_app.log 2026-09-14 17:14, 17:15).
         try:
             stop_payload = {}
-
-            if os.path.exists(DEFAULT_USER_DATA_FILE):
-                try:
-                    with open(DEFAULT_USER_DATA_FILE) as f:
-                        user_data = json.load(f)
-                        user_id = user_data.get('user_id')
-
-                        if user_id:
-                            # Add the user_id to payload regardless if we've prompt_id or not
-                            stop_payload['user_id'] = user_id
-
-                            # if we've prompt_id, include it too
-                            prompt_id = user_data.get('prompt_id')
-                            if prompt_id:
-                                stop_payload['prompt_id'] = prompt_id
-                                logger.info(f"Using speific stop for user_id={user_id}, prompt_id={prompt_id}")
-                            else:
-                                logger.info(f"Using user-specific stop for user_id={user_id}")
-
-                except Exception as e:
-                    logger.error(f"Error reading user data: {str(e)}")
+            from desktop.guest_identity import get_desktop_owner_id
+            owner = get_desktop_owner_id()
+            if owner:
+                stop_payload['user_id'] = owner
+                logger.info(f"Using user-specific stop for user_id={owner}")
             else:
-                logger.info("No user data file found, using global stop")
+                logger.info("No desktop owner found, using global stop")
         except Exception as e:
                 logger.error(f"Error preparing stop payload: {str(e)}")
                 stop_payload = {}
@@ -1107,14 +1095,9 @@ try:
     from desktop.guest_identity import get_guest_id as _get_guest_id
     GUEST_ID = _get_guest_id()
     logging.info(f"Guest ID (hardware-derived): {GUEST_ID}")
-    # Daemon consent asks work for guests too (#698, owner 2026-08-26):
-    # with nobody logged in the human at this desktop is still the
-    # guest — consent requests file against the guest id and render in
-    # the same UserConsent UI (UserConsent.user_id is a plain string,
-    # no FK).  setdefault keeps a logged-in owner (exported from
-    # user_data.json at import, _export_owner_identity) as the winner.
-    if GUEST_ID:
-        os.environ.setdefault('HEVOLVE_OWNER_USER_ID', str(GUEST_ID))
+    # The guest as consent owner when nobody is signed in (#698, owner
+    # 2026-08-26) is decided once, in get_desktop_owner_id, which
+    # _export_owner_identity exported at import.
 except Exception as _gie:
     # Never crash Flask boot because of guest-id derivation — degrade
     # gracefully so the frontend's chain still works (it falls through

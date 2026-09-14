@@ -61,6 +61,8 @@ Public API
 ----------
     get_guest_id() -> str            # "g_<16 hex>", cached
     get_guest_id_file_path() -> str  # absolute path to guest_id.json
+    get_user_data_file_path() -> str # the signed-in user's user_data.json
+    get_desktop_owner_id() -> str    # signed-in user_id, else the guest id
     _derive_guest_id() -> (str, str) # (id, source) — no cache, for tests
 """
 
@@ -312,6 +314,50 @@ def get_guest_id() -> str:
 
     _cached_id = guest_id
     return guest_id
+
+
+# The signed-in user's record.  app.py's /api/storage/set writes it at sign-in
+# and useStorageSync reads it back on the next boot.  It lives under the
+# legacy "HevolveAi Agent Companion" folder, not get_data_dir(), because every
+# install since 96661414e has written it there.
+_USER_DATA_DIR_PARTS = ("Documents", "HevolveAi Agent Companion", "storage")
+
+
+def get_user_data_file_path() -> str:
+    """Absolute path of user_data.json, the signed-in user's record.
+
+    The one definition of this path: app.py writes and reads it, and main.py
+    reads the desktop owner and the Stop AI Control payload from it.  main.py
+    used to build its own path from get_data_dir()
+    (~/Documents/Nunba/storage/user_data.json, which nothing writes), so the
+    signed-in user was never found.  Measured 2026-09-14: consent asks went
+    to the guest id with no subscriber, and the indicator's Stop sent {} and
+    HARTOS answered 400 "user_id required".
+    """
+    return os.path.join(os.path.expanduser("~"), *_USER_DATA_DIR_PARTS,
+                        "user_data.json")
+
+
+def get_desktop_owner_id() -> str | None:
+    """The person this desktop acts for: the signed-in user, else the guest.
+
+    user_data.json is read on every call, so a sign-in after boot is seen by
+    the next caller.  An absent, unreadable or id-less file means nobody is
+    signed in, and the hardware guest id stands in, as it does for the
+    frontend.
+    """
+    try:
+        with open(get_user_data_file_path(), encoding="utf-8") as fh:
+            uid = (json.load(fh) or {}).get("user_id")
+        if uid:
+            return str(uid)
+    except Exception:  # noqa: BLE001 -- no readable record = nobody signed in
+        pass
+    try:
+        return get_guest_id()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("desktop owner: guest id unavailable (%s)", e)
+        return None
 
 
 def reset_cache_for_tests() -> None:

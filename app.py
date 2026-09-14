@@ -1864,9 +1864,8 @@ def _load_deferred_config():
             # The enclosing try/except makes this best-effort: keys are only
             # popped from an in-memory dict before the write, so any failure
             # leaves the stored identity untouched.
-            _hart_store = os.path.join(
-                os.path.expanduser('~'), 'Documents',
-                'HevolveAi Agent Companion', 'storage', 'user_data.json')
+            from desktop.guest_identity import get_user_data_file_path
+            _hart_store = get_user_data_file_path()
             if os.path.isfile(_hart_store):
                 with open(_hart_store, encoding='utf-8') as _f:
                     _hart_data = _json_llm.load(_f)
@@ -4476,74 +4475,6 @@ def setup_always_on_top(window_instance):
         logger.error(f"Error setting up always on top: {str(e)}")
         return False
 
-# Function to call the Stop API endpoint
-def call_stop_api():
-    """
-    Call the stop API to stop AI control processing
-    """
-    try:
-        # Skip the cloud-trainer notification when the URL isn't
-        # configured.  Local installs have no cloud trainer to stop,
-        # so an empty stop_api_url is the documented "no-op" path
-        # (see core.config_cache.get_stop_api_url docstring).
-        if not args.stop_api_url:
-            logger.info(
-                "stop API not configured (HEVOLVE_STOP_API_URL unset) — "
-                "skipping cloud-trainer stop notification (no-op for "
-                "local installs)"
-            )
-            return True
-        logger.info(f"Calling stop API ay {args.stop_api_url}")
-
-        # Try to get user data from storage
-        user_data_file = os.path.join(user_docs, 'HevolveAi Agent Companion', 'storage', 'user_data.json')
-        stop_payload = {}
-
-        if os.path.exists(user_data_file):
-            try:
-                with open(user_data_file) as f:
-                    user_data = json.load(f)
-                    user_id = user_data.get('user_id')
-
-                    if user_id:
-                        stop_payload['user_id'] = user_id
-
-                        # If we've prompt_id, include it too
-                        prompt_id = user_data.get('prompt_id')
-                        if prompt_id:
-                            stop_payload['prompt_id'] = prompt_id
-                            logger.info(f"Using specific stop for user_id={user_id}, prompt_id={prompt_id}")
-                        else:
-                            logger.info(f"Using user-specific stop for user_id={user_id}")
-            except Exception as e:
-                logger.error(f"Error reading user data: {str(e)}")
-        else:
-            logger.info("No user data file found, using global stop")
-
-        # Call the API in a daemon thread so it never blocks the UI
-        def _do_stop():
-            try:
-                response = requests.post(
-                    args.stop_api_url,
-                    json=stop_payload,
-                    headers={"Content-Type": "application/json"},
-                    timeout=5
-                )
-                if response.status_code == 200:
-                    logger.info(f"Stop API response: {response.json()}")
-                else:
-                    logger.error(f"Stop API failed: {response.status_code}")
-            except Exception as ex:
-                logger.error(f"Stop API error: {ex}")
-
-        import threading as _stop_threading
-        _stop_threading.Thread(target=_do_stop, daemon=True).start()
-        return True
-    except Exception as e:
-        logger.error(f"Error calling stop API: {str(e)}")
-        logger.error(traceback.format_exc())
-        return False
-
 # Ensure we're in the right directory when started from registry
 def ensure_working_directory():
     """Ensure we're in the right working directory when launched from startup"""
@@ -4830,8 +4761,8 @@ def _import_main_app():
 def check_existing_user_data():
     """Check for existing user data and update URL if all required data is present"""
     try:
-        storage_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'HevolveAi Agent Companion', 'storage')
-        user_data_file = os.path.join(storage_dir, 'user_data.json')
+        from desktop.guest_identity import get_user_data_file_path
+        user_data_file = get_user_data_file_path()
 
         if os.path.exists(user_data_file):
             logger.info("Found existing user_data.json, checking contents")
@@ -5946,9 +5877,9 @@ def start_flask():
                 set_keys = [key for key in found_keys if data[key] != '']
 
                 # Store in a file
-                storage_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'HevolveAi Agent Companion', 'storage')
-                os.makedirs(storage_dir, exist_ok=True)
-                user_data_file = os.path.join(storage_dir, 'user_data.json')
+                from desktop.guest_identity import get_user_data_file_path
+                user_data_file = get_user_data_file_path()
+                os.makedirs(os.path.dirname(user_data_file), exist_ok=True)
 
                 # What THIS request asserted.  The URL-update and DB-upsert
                 # blocks below gate on `all(k in user_data for k in
@@ -6104,7 +6035,8 @@ def start_flask():
                 return jsonify({"status": "ok"})
 
             try:
-                user_data_file = os.path.join(os.path.expanduser('~'), 'Documents', 'HevolveAi Agent Companion', 'storage', 'user_data.json')
+                from desktop.guest_identity import get_user_data_file_path
+                user_data_file = get_user_data_file_path()
 
                 if os.path.exists(user_data_file):
                     with open(user_data_file) as f:

@@ -117,9 +117,13 @@ def test_the_scheduler_request_shape_gets_through(nunba, received, path):
 
 
 def _stop_caller_shapes():
-    """The headers each call_stop_api POST really sends, read from CODE."""
+    """The headers call_stop_api's POST really sends, read from CODE.
+
+    main.py holds the one call_stop_api (GET /indicator/stop calls it).
+    app.py carried a second copy that nothing called; #58 deleted it.
+    """
     shapes = []
-    for name in ('main.py', 'app.py'):
+    for name in ('main.py',):
         with open(os.path.join(REPO, name), encoding='utf-8', errors='replace') as fh:
             tree = ast.parse(fh.read())
         fns = [n for n in ast.walk(tree)
