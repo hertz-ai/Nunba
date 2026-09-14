@@ -276,6 +276,9 @@ build_exe_options = {
         "routes.auth",
         "routes.spa_fallback",
         "routes.kids_game_recommendation",
+        # Reached the bundle only through routes.upload_routes' PDF pipeline,
+        # which moved to HARTOS (2026-09-13); main.py imports it directly.
+        "routes.db_routes",
         "desktop.guest_identity",
         "desktop.chat_settings",
         "desktop.chat_sync",

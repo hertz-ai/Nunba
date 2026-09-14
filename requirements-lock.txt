@@ -120,7 +120,7 @@ PyGetWindow==0.0.9
 Pygments==2.19.2
 PyJWT==2.11.0
 PyMsgBox==2.0.1
-PyPDF2==3.0.1
+pypdfium2==5.13.0
 pyperclip==1.11.0
 pypiwin32==223
 pyreadline3==3.5.4

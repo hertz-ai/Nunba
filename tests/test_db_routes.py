@@ -2,22 +2,20 @@
 test_db_routes.py - Comprehensive tests for routes/db_routes.py
 
 Covers all public functions and route handlers:
-- _resolve_nunba_dir, _get_db, _init_db, _flatten
+- _resolve_nunba_dir, _get_db, _init_db
 - POST/GET /create_action
 - GET /get_visual_bymins, /action_by_user_id
 - POST/GET /conversation
 - POST /db/getstudent_by_user_id, /getstudent_by_user_id
 - POST /createpromptlist
 - GET /getprompt/, /getprompt_onlyuserid/, /getprompt_all/
-- POST /db/pdf_file, PUT /db/pdf_file/<id>
-- POST /db/layout, GET /db/layouts
-- GET /db/pdf_files
-- POST /add_batch_layouts
 - register_db_routes
+
+The book library routes moved to HARTOS (integrations/learning/api_books.py)
+and are tested there, in tests/unit/test_api_books.py.
 """
 import json
 import os
-import sqlite3
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -108,28 +106,6 @@ class TestResolveNunbaDir:
                 from routes.db_routes import _resolve_nunba_dir
                 result = _resolve_nunba_dir()
                 assert result == "/custom/platform/path"
-
-
-# ============================================================
-# Unit tests: _flatten
-# ============================================================
-
-class TestFlatten:
-
-    def test_flat_list(self, db_mod):
-        assert db_mod._flatten(["a", "b", "c"]) == ["a", "b", "c"]
-
-    def test_nested_lists(self, db_mod):
-        assert db_mod._flatten([["a", "b"], "c", ["d"]]) == ["a", "b", "c", "d"]
-
-    def test_empty_list(self, db_mod):
-        assert db_mod._flatten([]) == []
-
-    def test_integers_become_strings(self, db_mod):
-        assert db_mod._flatten([1, [2, 3]]) == ["1", "2", "3"]
-
-    def test_mixed_types(self, db_mod):
-        assert db_mod._flatten(["x", [1, "y"]]) == ["x", "1", "y"]
 
 
 # ============================================================
@@ -554,225 +530,6 @@ class TestGetAllPrompts:
 
 
 # ============================================================
-# PDF file routes
-# ============================================================
-
-class TestPdfFileRoutes:
-
-    def test_create_pdf_file(self, client):
-        resp = client.post("/db/pdf_file", json={
-            "user_id": 1, "filename": "test.pdf", "directory": "/tmp",
-        })
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert "file_id" in data
-
-    def test_update_pdf_file(self, client):
-        # Create first
-        create_resp = client.post("/db/pdf_file", json={
-            "user_id": 1, "filename": "update.pdf",
-        })
-        file_id = create_resp.get_json()["file_id"]
-
-        # Update
-        resp = client.put(f"/db/pdf_file/{file_id}", json={
-            "status": "completed", "total_pages": 42,
-            "book_name": "Test Book",
-        })
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["status"] == "updated"
-        assert data["file_id"] == file_id
-
-    def test_get_pdf_files_by_user(self, client):
-        client.post("/db/pdf_file", json={"user_id": 77, "filename": "a.pdf"})
-        client.post("/db/pdf_file", json={"user_id": 77, "filename": "b.pdf"})
-        client.post("/db/pdf_file", json={"user_id": 88, "filename": "c.pdf"})
-
-        resp = client.get("/db/pdf_files?user_id=77")
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert len(data) == 2
-
-    def test_get_pdf_files_no_user_returns_all(self, client):
-        client.post("/db/pdf_file", json={"user_id": 1, "filename": "x.pdf"})
-        resp = client.get("/db/pdf_files")
-        assert resp.status_code == 200
-        assert len(resp.get_json()) >= 1
-
-
-# ============================================================
-# Layout routes
-# ============================================================
-
-class TestLayoutRoutes:
-
-    def _create_pdf(self, client):
-        resp = client.post("/db/pdf_file", json={"user_id": 1, "filename": "lay.pdf"})
-        return resp.get_json()["file_id"]
-
-    def test_create_single_layout(self, client):
-        file_id = self._create_pdf(client)
-        resp = client.post("/db/layout", json={
-            "file_id": file_id, "page_number": 1, "passage": "Hello world",
-        })
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert "layout_id" in data
-
-    def test_create_batch_layouts(self, client):
-        file_id = self._create_pdf(client)
-        resp = client.post("/db/layout", json={
-            "layouts": [
-                {"file_id": file_id, "page_number": 1, "passage": "p1"},
-                {"file_id": file_id, "page_number": 2, "passage": "p2"},
-            ]
-        })
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert "layout_ids" in data
-        assert len(data["layout_ids"]) == 2
-
-    def test_get_layouts_requires_file_id(self, client):
-        resp = client.get("/db/layouts")
-        assert resp.status_code == 400
-        assert "error" in resp.get_json()
-
-    def test_get_layouts_by_file_id(self, client):
-        file_id = self._create_pdf(client)
-        client.post("/db/layout", json={"file_id": file_id, "page_number": 1, "passage": "a"})
-        client.post("/db/layout", json={"file_id": file_id, "page_number": 2, "passage": "b"})
-
-        resp = client.get(f"/db/layouts?file_id={file_id}")
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert len(data) == 2
-
-    def test_get_layouts_with_page_filter(self, client):
-        file_id = self._create_pdf(client)
-        client.post("/db/layout", json={"file_id": file_id, "page_number": 1, "passage": "page1"})
-        client.post("/db/layout", json={"file_id": file_id, "page_number": 2, "passage": "page2"})
-
-        resp = client.get(f"/db/layouts?file_id={file_id}&page_number=1")
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert len(data) == 1
-
-    def test_layout_bbox_serialized_as_json(self, client):
-        file_id = self._create_pdf(client)
-        bbox = [10, 20, 100, 200]
-        client.post("/db/layout", json={
-            "file_id": file_id, "page_number": 1, "bbox": bbox,
-        })
-        resp = client.get(f"/db/layouts?file_id={file_id}")
-        data = resp.get_json()
-        stored_bbox = json.loads(data[0]["bbox"])
-        assert stored_bbox == bbox
-
-
-# ============================================================
-# Batch layouts: POST /add_batch_layouts
-# ============================================================
-
-class TestAddBatchLayouts:
-
-    def _create_pdf(self, client):
-        resp = client.post("/db/pdf_file", json={"user_id": 1, "filename": "batch.pdf"})
-        return resp.get_json()["file_id"]
-
-    def test_batch_layouts_basic(self, client):
-        file_id = self._create_pdf(client)
-        resp = client.post("/add_batch_layouts", json={
-            "file_id": file_id,
-            "response_dict": {
-                "output": {"page_1": "Text of page 1", "page_2": "Text of page 2"},
-                "whole_text": "Full text",
-            },
-            "total_pages_in_book": 2,
-        })
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert len(data["layout_text_list"]) == 2
-        assert len(data["layout_id_list"]) == 2
-
-    def test_batch_layouts_with_topics_and_chapters(self, client):
-        file_id = self._create_pdf(client)
-        resp = client.post("/add_batch_layouts", json={
-            "file_id": file_id,
-            "response_dict": {
-                "output": {"page_1": "Intro text"},
-                "whole_text": "All",
-            },
-            "final_topic_names": ["Introduction"],
-            "final_topic_page_numbers": ["1"],
-            "toc_chapter_names": ["Chapter 1"],
-            "toc_chapter_page_numbers": ["1"],
-            "page_types": {"page_1": "content"},
-        })
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert len(data["layout_id_list"]) == 1
-
-    def test_batch_layouts_nested_topic_lists(self, client):
-        file_id = self._create_pdf(client)
-        resp = client.post("/add_batch_layouts", json={
-            "file_id": file_id,
-            "response_dict": {
-                "output": {"page_1": "T1", "page_2": "T2"},
-                "whole_text": "",
-            },
-            "final_topic_names": [["Topic A"], ["Topic B"]],
-            "final_topic_page_numbers": [["1"], ["2"]],
-        })
-        assert resp.status_code == 200
-        assert len(resp.get_json()["layout_id_list"]) == 2
-
-    def test_batch_layouts_updates_pdf_file(self, client):
-        file_id = self._create_pdf(client)
-        client.post("/add_batch_layouts", json={
-            "file_id": file_id,
-            "response_dict": {"output": {"page_1": "t"}, "whole_text": "full"},
-            "total_pages_in_book": 10,
-        })
-        # Verify pdf_files record was updated
-        resp = client.get("/db/pdf_files?user_id=1")
-        pdfs = resp.get_json()
-        match = [p for p in pdfs if p["file_id"] == file_id]
-        assert len(match) == 1
-        assert match[0]["status"] == "completed"
-        assert match[0]["total_pages"] == 10
-
-    def test_batch_layouts_empty_response_dict(self, client):
-        file_id = self._create_pdf(client)
-        resp = client.post("/add_batch_layouts", json={
-            "file_id": file_id,
-            "response_dict": {},
-        })
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["layout_text_list"] == []
-        assert data["layout_id_list"] == []
-
-    def test_batch_layouts_page_type_list(self, client):
-        """page_types values can be lists (first element used)."""
-        file_id = self._create_pdf(client)
-        resp = client.post("/add_batch_layouts", json={
-            "file_id": file_id,
-            "response_dict": {"output": {"page_1": "txt"}, "whole_text": ""},
-            "page_types": {"page_1": ["content", "toc"]},
-        })
-        assert resp.status_code == 200
-
-    def test_batch_layouts_no_file_id_fails_integrity(self, client):
-        """When file_id is None, INSERT fails due to NOT NULL constraint on page_layouts.file_id."""
-        with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
-            client.post("/add_batch_layouts", json={
-                "file_id": None,
-                "response_dict": {"output": {"page_1": "txt"}, "whole_text": ""},
-            })
-
-
-# ============================================================
 # register_db_routes
 # ============================================================
 
@@ -787,4 +544,8 @@ class TestRegisterDbRoutes:
         assert "/create_action" in rules
         assert "/conversation" in rules
         assert "/createpromptlist" in rules
-        assert "/db/layout" in rules
+        # The book library is HARTOS's (integrations/learning/api_books.py) on
+        # every node; registering it here too would be a second, drifting copy.
+        for moved in ("/db/layout", "/db/layouts", "/db/pdf_file", "/db/pdf_files",
+                      "/add_batch_layouts"):
+            assert moved not in rules

@@ -124,7 +124,7 @@ def test_local_env_var_is_built_from_helper():
     )
 
 
-def test_both_thinking_off_layers_are_present():
+def test_both_thinking_off_layers_are_present(tmp_path):
     """TWO-WAY drift guard over the two DELIBERATE layers.
 
     This is NOT one concern implemented twice.  There are two independent
@@ -135,32 +135,40 @@ def test_both_thinking_off_layers_are_present():
          covers EVERY path including ones nobody has written yet.  Cannot
          help when the endpoint is a llama-server this process did not spawn
          (externally started, remote, or cloud).
-      2. REQUEST layer (routes/upload_routes.py, 2026-08-04) — travels with
-         the payload, so it survives ANY endpoint.  Cannot help a call site
-         that forgets it.
+      2. REQUEST layer (2026-08-04) — travels with the payload, so it
+         survives ANY endpoint.  Cannot help a call site that forgets it.
+         It lives in HARTOS now (integrations/vision/image_describe.py, fed
+         by core.constants.LLM_THINKING_OFF_KWARGS), and the vision routes
+         here call it as routes.upload_routes._describe_image_via_llm -- so
+         it is checked by DRIVING that call and reading the payload it sends.
 
     The vision route found this bug FIRST (empty description, HTTP 200, no
     log) and its per-request kwarg is defence-in-depth, not drift — see
     memory/feedback_dry_overengineering.md.  Deleting either layer because
     "the other one covers it" is the regression this test exists to stop.
     """
-    root = _CONFIG_PATH.parents[1]
+    from unittest.mock import MagicMock, patch
+
+    from routes import upload_routes
 
     server_layer = _CONFIG_PATH.read_text(encoding='utf-8')
     assert 'enable_thinking' in server_layer, 'server layer lost (task #652)'
-
-    vision = root / 'routes' / 'upload_routes.py'
-    assert vision.exists(), 'routes/upload_routes.py moved — re-point this test'
-    vision_src = vision.read_text(encoding='utf-8')
-    assert 'enable_thinking' in vision_src, (
-        'routes/upload_routes.py no longer disables thinking on the vision '
-        'request — that is the 2026-08-04 empty-description bug, and the '
-        'server-level env var does NOT cover a llama-server we did not spawn'
-    )
     # The value must AGREE across layers: one says false, the other must not
     # say true.  A future edit flipping one is a silent split-brain.
-    assert '"enable_thinking": True' not in vision_src
     assert '"enable_thinking":true' not in server_layer.replace(' ', '')
+
+    img = tmp_path / 'page.png'
+    img.write_bytes(b'\x89PNG\r\n\x1a\n')
+    reply = MagicMock(status_code=200)
+    reply.json.return_value = {'choices': [{'message': {'content': 'a red square'}}]}
+    with patch('core.port_registry.get_local_llm_url', return_value='http://127.0.0.1:8080/v1'), \
+         patch('core.http_pool.pooled_post', return_value=reply) as post:
+        assert upload_routes._describe_image_via_llm(str(img)) == 'a red square'
+    assert post.call_args.kwargs['json'].get('chat_template_kwargs') == \
+        {'enable_thinking': False}, (
+        'the vision request no longer disables thinking — that is the '
+        '2026-08-04 empty-description bug, and the server-level env var does '
+        'NOT cover a llama-server we did not spawn')
 
 
 def test_no_third_unaudited_copy():
@@ -172,9 +180,9 @@ def test_no_third_unaudited_copy():
     root = _CONFIG_PATH.parents[1]
     allowed = {
         Path('llama') / 'llama_config.py',                 # server layer
-        Path('routes') / 'upload_routes.py',               # request layer
-        Path('tests') / 'test_vision_reasoning_budget.py',  # pins layer 2
-        Path('tests') / Path(__file__).name,               # pins layer 1
+        # The request layer is HARTOS's (integrations/vision/image_describe.py,
+        # via core.constants.LLM_THINKING_OFF_KWARGS), outside this tree.
+        Path('tests') / Path(__file__).name,               # pins both layers
     }
     skip_dirs = {'python-embed', 'node_modules', '.venv', '__pycache__',
                  'build', '.git', 'dist', 'pip', 'landing-page'}
@@ -193,8 +201,9 @@ def test_no_third_unaudited_copy():
             hits.append(str(rel))
     assert not hits, (
         f'new enable_thinking site(s): {hits}. Decide deliberately: reuse '
-        'llama_child_env() (server layer) or the vision route pattern '
-        '(request layer), then add the file here with the reason.'
+        'llama_child_env() (server layer) or HARTOS core.constants.'
+        'LLM_THINKING_OFF_KWARGS (request layer), then add the file here with '
+        'the reason.'
     )
 
 

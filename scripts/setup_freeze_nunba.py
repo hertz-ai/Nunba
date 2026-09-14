@@ -443,6 +443,13 @@ build_exe_options = {
                         # try/except Exception — the same ModuleNotFoundError
                         # was swallowed into a debug line, so this blueprint
                         # silently never registered in ANY frozen build.
+        "routes.db_routes",  # main.py:_register_nunba_consumer_routes, inside
+                        # try/except.  It reached the bundle only because
+                        # routes.upload_routes imported it for the PDF
+                        # pipeline; that pipeline moved to HARTOS (2026-09-13),
+                        # and without this entry every frozen build would
+                        # silently lose /create_action, /conversation and the
+                        # prompt routes.
 
         # core / integrations / security are HARTOS packages.  They are
         # NOT listed here on purpose — see the matching excludes[] entry

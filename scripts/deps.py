@@ -97,7 +97,6 @@ CORE_DEPS = {
     "apscheduler": "3.11.2",
     "json-repair": "0.57.1",
     "beautifulsoup4": "4.14.3",
-    "PyPDF2": "3.0.1",
     "redis": "7.1.1",
     "websockets": "16.0",
     "python-multipart": "0.0.22",
@@ -261,6 +260,18 @@ EMBED_DEPS = {
     # numpy 1.26.4 + pillow pins above satisfy imageio's constraints.
     "imageio": "2.37.3",
     "imageio-ffmpeg": "0.6.0",
+    # pypdfium2: the book pipeline's one PDF engine.  HARTOS
+    # integrations/learning/book_pipeline.py renders each page, reads its text
+    # layer and the outline with it, in the HARTOS main process.  Here and not
+    # in CORE_DEPS for the imageio-ffmpeg reason above: it ships a native
+    # pdfium.dll inside pypdfium2_raw/ that ctypes loads from the package's own
+    # directory, which a pip install into python-embed keeps intact -- and
+    # cx_Freeze never traces HARTOS modules, so nothing would pull it into
+    # lib/ anyway.  No dependencies of its own.  It replaced PyPDF2 (dropped
+    # from CORE_DEPS; nothing in Nunba, HARTOS, hevolveai or Hevolve_Database
+    # imports it), whose last release loops forever on a crafted content
+    # stream (CVE-2023-36464, reproduced 2026-09-13).
+    "pypdfium2": "5.13.0",
     # ML
     "scikit-learn": "1.7.2",
     # Tokenization

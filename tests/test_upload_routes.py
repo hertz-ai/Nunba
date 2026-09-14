@@ -2,20 +2,20 @@
 test_upload_routes.py - Comprehensive tests for upload route handlers.
 
 Covers:
-- Helper functions: _unique_name, _file_type, _save_file, _get_llama_vision_url,
-  _describe_image_via_llm, _assign_chapters_to_pages, _parse_page_via_vision,
-  _generate_book_name
+- Helper functions: _unique_name, _file_type, _save_file
 - Route handlers: /upload/file, /upload/image, /upload/audio, /upload/vision,
-  /upload/parse_pdf, /upload/parse_pdf/status, /uploads/<path>
+  /uploads/<path>
 - register_upload_routes
 - Happy path, error path, and edge cases for each
+
+Describing an image and parsing a PDF book are HARTOS's (integrations/vision/
+image_describe.py, integrations/learning/book_pipeline.py) and are tested
+there; here it is tested that these routes USE them.
 """
 import base64
 import io
-import json
 import os
 import sys
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -156,211 +156,14 @@ class TestSaveFile:
         assert ftype == 'pdf'
 
 
-class TestGetLlamaVisionUrl:
-    """Tests for _get_llama_vision_url()."""
+class TestImageDescriptionIsHartos:
+    """The vision routes describe images with HARTOS's one implementation."""
 
-    def setup_method(self):
-        from routes.upload_routes import _get_llama_vision_url
-        self.get_url = _get_llama_vision_url
+    def test_it_is_the_same_function_not_a_copy(self):
+        from integrations.vision.image_describe import describe_image
 
-    def test_default_url(self):
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop('LLAMA_CPP_URL', None)
-            assert self.get_url() == 'http://127.0.0.1:8080'
-
-    def test_custom_url(self):
-        with patch.dict(os.environ, {'LLAMA_CPP_URL': 'http://localhost:9999'}):
-            assert self.get_url() == 'http://localhost:9999'
-
-
-class TestDescribeImageViaLlm:
-    """Tests for _describe_image_via_llm()."""
-
-    def setup_method(self):
         from routes.upload_routes import _describe_image_via_llm
-        self.describe = _describe_image_via_llm
-
-    @patch('routes.upload_routes.os.environ', {'LLAMA_CPP_URL': 'http://localhost:8080'})
-    def test_success(self, tmp_path):
-        img = tmp_path / "test.jpg"
-        img.write_bytes(b'\xff\xd8\xff\xe0fake jpeg data')
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            'choices': [{'message': {'content': '{"description":"a cat","category":"photograph"}'}}]
-        }
-
-        with patch('requests.post', return_value=mock_resp):
-            result = self.describe(str(img))
-            assert 'cat' in result
-
-    def test_file_not_found(self):
-        result = self.describe("/nonexistent/path.jpg")
-        assert result is None
-
-    def test_connection_error(self, tmp_path):
-        import requests
-        img = tmp_path / "test.png"
-        img.write_bytes(b'fake png')
-
-        with patch('requests.post', side_effect=requests.ConnectionError("refused")):
-            result = self.describe(str(img))
-            assert result is None
-
-    def test_non_200_response(self, tmp_path):
-        img = tmp_path / "test.png"
-        img.write_bytes(b'fake png')
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
-        mock_resp.text = "Internal Server Error"
-
-        with patch('requests.post', return_value=mock_resp):
-            result = self.describe(str(img))
-            assert result is None
-
-    def test_custom_prompt(self, tmp_path):
-        img = tmp_path / "test.jpg"
-        img.write_bytes(b'fake jpg')
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            'choices': [{'message': {'content': 'Custom response'}}]
-        }
-
-        with patch('requests.post', return_value=mock_resp) as mock_post:
-            result = self.describe(str(img), prompt="What color is this?")
-            assert result == 'Custom response'
-            call_payload = mock_post.call_args[1]['json']
-            assert call_payload['messages'][0]['content'][1]['text'] == "What color is this?"
-
-
-class TestAssignChaptersToPages:
-    """Tests for _assign_chapters_to_pages()."""
-
-    def setup_method(self):
-        from routes.upload_routes import _assign_chapters_to_pages
-        self.assign = _assign_chapters_to_pages
-
-    def test_empty_toc(self):
-        pages = [{"page_number": 1, "text": "hello"}]
-        result = self.assign(pages, [])
-        assert result == pages
-
-    def test_none_toc(self):
-        pages = [{"page_number": 1}]
-        result = self.assign(pages, None)
-        assert result == pages
-
-    def test_assigns_chapters(self):
-        toc = [
-            {"title": "Introduction", "page": 1},
-            {"title": "Methods", "page": 5},
-            {"title": "Results", "page": 10},
-        ]
-        pages = [
-            {"page_number": 1}, {"page_number": 3},
-            {"page_number": 5}, {"page_number": 7},
-            {"page_number": 10}, {"page_number": 12},
-        ]
-        result = self.assign(pages, toc)
-        assert result[0]['chapter_name'] == 'Introduction'
-        assert result[1]['chapter_name'] == 'Introduction'
-        assert result[2]['chapter_name'] == 'Methods'
-        assert result[3]['chapter_name'] == 'Methods'
-        assert result[4]['chapter_name'] == 'Results'
-        assert result[5]['chapter_name'] == 'Results'
-
-    def test_does_not_overwrite_existing_chapter(self):
-        toc = [{"title": "Ch1", "page": 1}]
-        pages = [{"page_number": 1, "chapter_name": "Already Set"}]
-        result = self.assign(pages, toc)
-        assert result[0]['chapter_name'] == 'Already Set'
-
-    def test_invalid_toc_entries_skipped(self):
-        toc = [
-            {"title": "Good", "page": 1},
-            {"title": "", "page": 5},        # empty title
-            {"title": "Bad", "page": "abc"},  # non-numeric page
-        ]
-        pages = [{"page_number": 1}, {"page_number": 6}]
-        result = self.assign(pages, toc)
-        assert result[0]['chapter_name'] == 'Good'
-        # Page 6 still gets "Good" since no valid next chapter
-        assert result[1]['chapter_name'] == 'Good'
-
-
-class TestGenerateBookName:
-    """Tests for _generate_book_name()."""
-
-    def setup_method(self):
-        from routes.upload_routes import _generate_book_name
-        self.generate = _generate_book_name
-
-    def test_success(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            'choices': [{'message': {'content': 'Introduction to Machine Learning'}}]
-        }
-        with patch('requests.post', return_value=mock_resp):
-            result = self.generate("This book covers ML...", [{"title": "Neural Networks"}])
-            assert result == 'Introduction to Machine Learning'
-
-    def test_failure_returns_none(self):
-        with patch('requests.post', side_effect=Exception("timeout")):
-            result = self.generate("text", [])
-            assert result is None
-
-    def test_non_200_returns_none(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
-        with patch('requests.post', return_value=mock_resp):
-            result = self.generate("text", [])
-            assert result is None
-
-
-class TestParsePageViaVision:
-    """Tests for _parse_page_via_vision()."""
-
-    def setup_method(self):
-        from routes.upload_routes import _parse_page_via_vision
-        self.parse_page = _parse_page_via_vision
-
-    def test_vision_unavailable(self):
-        with patch('routes.upload_routes._describe_image_via_llm', return_value=None):
-            result = self.parse_page(1, "/fake/page.jpg")
-            assert result['page_number'] == 1
-            assert result['page_type'] == 'unknown'
-            assert 'error' in result
-
-    def test_structured_json_response(self):
-        response_json = json.dumps({
-            "page_type": "content",
-            "text": "Hello world",
-            "elements": [{"type": "paragraph", "content": "Hello world"}]
-        })
-        with patch('routes.upload_routes._describe_image_via_llm', return_value=response_json):
-            result = self.parse_page(3, "/fake/page.jpg")
-            assert result['page_number'] == 3
-            assert result['page_type'] == 'content'
-            assert result['text'] == 'Hello world'
-
-    def test_markdown_code_fence_stripped(self):
-        response = '```json\n{"page_type": "cover", "text": "Title Page", "elements": []}\n```'
-        with patch('routes.upload_routes._describe_image_via_llm', return_value=response):
-            result = self.parse_page(1, "/fake/page.jpg")
-            assert result['page_type'] == 'cover'
-
-    def test_unstructured_text_wrapped(self):
-        with patch('routes.upload_routes._describe_image_via_llm', return_value="Just some text on the page"):
-            result = self.parse_page(2, "/fake/page.jpg")
-            assert result['page_number'] == 2
-            assert result['page_type'] == 'content'
-            assert result['text'] == 'Just some text on the page'
-            assert len(result['elements']) == 1
+        assert _describe_image_via_llm is describe_image
 
 
 # ============================================================
@@ -407,15 +210,33 @@ class TestUploadFileRoute:
             body = resp.get_json()
             assert body['file_type'] == 'agent'
 
-    @patch('routes.upload_routes._run_pdf_parse')
-    def test_upload_pdf_triggers_parse_job(self, mock_parse, client, tmp_path):
-        with patch('routes.upload_routes.FILE_DIR', tmp_path):
+    def test_upload_pdf_starts_the_book_pipeline(self, client, tmp_path):
+        """A PDF goes to HARTOS's book pipeline; its job id comes back."""
+        started = {'job_id': 'job-7', 'file_id': 7, 'status': 'queued'}
+        with patch('routes.upload_routes.FILE_DIR', tmp_path), \
+             patch('integrations.learning.book_pipeline.start_parse',
+                   return_value=started) as start:
+            data = {'file': _make_file_storage('document.pdf', b'%PDF-1.4 fake'),
+                    'user_id': '42', 'request_id': 'req-9'}
+            resp = client.post('/upload/file', data=data,
+                               content_type='multipart/form-data')
+        body = resp.get_json()
+        assert body['file_type'] == 'pdf'
+        assert body['pdf_parse_job_id'] == 'job-7'
+        path, user_id, request_id = start.call_args.args
+        assert (path.parent, path.name) == (tmp_path, body['file_name'])
+        assert (user_id, request_id) == ('42', 'req-9')
+
+    def test_a_book_that_cannot_start_leaves_the_upload_standing(self, client, tmp_path):
+        with patch('routes.upload_routes.FILE_DIR', tmp_path), \
+             patch('integrations.learning.book_pipeline.start_parse',
+                   side_effect=RuntimeError('database is locked')):
             data = {'file': _make_file_storage('document.pdf', b'%PDF-1.4 fake')}
             resp = client.post('/upload/file', data=data,
                                content_type='multipart/form-data')
-            body = resp.get_json()
-            assert body['file_type'] == 'pdf'
-            assert body['pdf_parse_job_id'] is not None
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert (body['file_type'], body['pdf_parse_job_id']) == ('pdf', None)
 
     def test_upload_document_type(self, client, tmp_path):
         with patch('routes.upload_routes.FILE_DIR', tmp_path):
@@ -568,163 +389,6 @@ class TestVisionInferenceRoute:
         assert resp.status_code == 400
 
 
-class TestParsePdfRoute:
-    """Tests for POST /upload/parse_pdf."""
-
-    def test_multipart_no_file_returns_400(self, client):
-        resp = client.post('/upload/parse_pdf', data={},
-                           content_type='multipart/form-data')
-        assert resp.status_code == 400
-
-    def test_multipart_non_pdf_returns_400(self, client):
-        data = {'file': _make_file_storage('image.png', b'fake')}
-        resp = client.post('/upload/parse_pdf', data=data,
-                           content_type='multipart/form-data')
-        assert resp.status_code == 400
-        assert 'Only PDF' in resp.get_json()['error']
-
-    def test_json_missing_file_url_returns_400(self, client):
-        resp = client.post('/upload/parse_pdf', json={})
-        assert resp.status_code == 400
-
-    def test_json_file_not_found_returns_404(self, client, tmp_path):
-        with patch('routes.upload_routes.UPLOAD_DIR', tmp_path):
-            resp = client.post('/upload/parse_pdf',
-                               json={'file_url': '/uploads/files/missing.pdf'})
-            assert resp.status_code == 404
-
-    @patch('routes.upload_routes._run_pdf_parse')
-    def test_small_pdf_sync_success(self, mock_run, client, tmp_path):
-        """Small PDF (<2MB) should be processed synchronously."""
-        def fake_run(job_id, pdf_path, user_id, request_id):
-            from routes.upload_routes import _parse_jobs
-            _parse_jobs[job_id]['status'] = 'completed'
-            _parse_jobs[job_id]['result'] = {
-                'job_id': job_id, 'total_pages': 1,
-                'pages': [], 'whole_text': 'text',
-            }
-
-        mock_run.side_effect = fake_run
-
-        with patch('routes.upload_routes.FILE_DIR', tmp_path):
-            # Create a small "PDF" file
-            data = {'file': _make_file_storage('small.pdf', b'%PDF small')}
-            resp = client.post('/upload/parse_pdf', data=data,
-                               content_type='multipart/form-data')
-            assert resp.status_code == 200
-            body = resp.get_json()
-            assert body['total_pages'] == 1
-
-    @patch('routes.upload_routes._run_pdf_parse')
-    def test_small_pdf_sync_failure(self, mock_run, client, tmp_path):
-        def fake_run(job_id, pdf_path, user_id, request_id):
-            from routes.upload_routes import _parse_jobs
-            _parse_jobs[job_id]['status'] = 'failed'
-            _parse_jobs[job_id]['error'] = 'PDF conversion failed'
-
-        mock_run.side_effect = fake_run
-
-        with patch('routes.upload_routes.FILE_DIR', tmp_path):
-            data = {'file': _make_file_storage('bad.pdf', b'%PDF broken')}
-            resp = client.post('/upload/parse_pdf', data=data,
-                               content_type='multipart/form-data')
-            assert resp.status_code == 500
-            assert 'job_id' in resp.get_json()
-
-    @patch('routes.upload_routes.threading.Thread')
-    def test_large_pdf_async(self, mock_thread, client, tmp_path):
-        """Large PDF (>=2MB) should be processed asynchronously."""
-        with patch('routes.upload_routes.FILE_DIR', tmp_path):
-            # Create a large "PDF" — need the file to exist for os.path.getsize
-            large_content = b'%PDF' + b'x' * (3 * 1024 * 1024)  # 3MB
-            data = {'file': _make_file_storage('large.pdf', large_content)}
-            resp = client.post('/upload/parse_pdf', data=data,
-                               content_type='multipart/form-data')
-            assert resp.status_code == 202
-            body = resp.get_json()
-            assert body['status'] == 'queued'
-            assert 'job_id' in body
-            mock_thread.return_value.start.assert_called_once()
-
-
-class TestParsePdfStatusRoute:
-    """Tests for GET/POST /upload/parse_pdf/status."""
-
-    def test_get_unknown_job_returns_404(self, client):
-        resp = client.get('/upload/parse_pdf/status?job_id=nonexistent')
-        assert resp.status_code == 404
-
-    def test_get_empty_job_id_returns_404(self, client):
-        resp = client.get('/upload/parse_pdf/status')
-        assert resp.status_code == 404
-
-    def test_post_unknown_job_returns_404(self, client):
-        resp = client.post('/upload/parse_pdf/status',
-                           json={'job_id': 'missing'})
-        assert resp.status_code == 404
-
-    def test_get_queued_job(self, client):
-        from routes.upload_routes import _parse_jobs
-        _parse_jobs['test-job-1'] = {
-            'status': 'queued', 'total_pages': 0, 'progress': 0,
-            'result': None, 'error': None, 'created_at': time.time(),
-        }
-        try:
-            resp = client.get('/upload/parse_pdf/status?job_id=test-job-1')
-            assert resp.status_code == 200
-            body = resp.get_json()
-            assert body['status'] == 'queued'
-            assert body['job_id'] == 'test-job-1'
-        finally:
-            _parse_jobs.pop('test-job-1', None)
-
-    def test_get_completed_job_includes_result(self, client):
-        from routes.upload_routes import _parse_jobs
-        _parse_jobs['test-job-2'] = {
-            'status': 'completed', 'total_pages': 5, 'progress': 5,
-            'result': {'pages': [], 'total_pages': 5},
-            'error': None, 'created_at': time.time(),
-        }
-        try:
-            resp = client.get('/upload/parse_pdf/status?job_id=test-job-2')
-            body = resp.get_json()
-            assert body['status'] == 'completed'
-            assert 'result' in body
-            assert body['result']['total_pages'] == 5
-        finally:
-            _parse_jobs.pop('test-job-2', None)
-
-    def test_get_failed_job_includes_error(self, client):
-        from routes.upload_routes import _parse_jobs
-        _parse_jobs['test-job-3'] = {
-            'status': 'failed', 'total_pages': 0, 'progress': 0,
-            'result': None, 'error': 'Conversion error',
-            'created_at': time.time(),
-        }
-        try:
-            resp = client.get('/upload/parse_pdf/status?job_id=test-job-3')
-            body = resp.get_json()
-            assert body['status'] == 'failed'
-            assert body['error'] == 'Conversion error'
-        finally:
-            _parse_jobs.pop('test-job-3', None)
-
-    def test_post_method_works(self, client):
-        from routes.upload_routes import _parse_jobs
-        _parse_jobs['test-job-4'] = {
-            'status': 'parsing', 'total_pages': 10, 'progress': 3,
-            'result': None, 'error': None, 'created_at': time.time(),
-        }
-        try:
-            resp = client.post('/upload/parse_pdf/status',
-                               json={'job_id': 'test-job-4'})
-            body = resp.get_json()
-            assert body['status'] == 'parsing'
-            assert body['progress'] == 3
-        finally:
-            _parse_jobs.pop('test-job-4', None)
-
-
 class TestServeUpload:
     """Tests for GET /uploads/<path>."""
 
@@ -766,8 +430,10 @@ class TestRegisterUploadRoutes:
         assert '/upload/image' in rules
         assert '/upload/audio' in rules
         assert '/upload/vision' in rules
-        assert '/upload/parse_pdf' in rules
-        assert '/upload/parse_pdf/status' in rules
+        # Book parsing is HARTOS's (integrations/learning/api_books.py), on
+        # every node; registering it here too would be a second, drifting copy.
+        assert '/upload/parse_pdf' not in rules
+        assert '/upload/parse_pdf/status' not in rules
 
 
 class TestResolveNunbaDir:

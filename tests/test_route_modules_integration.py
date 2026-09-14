@@ -78,13 +78,9 @@ class TestHartosBackendAdapterExports:
 class TestUploadRoutesExports:
     @pytest.mark.parametrize('name', [
         '_resolve_nunba_dir', '_unique_name', '_file_type',
-        '_save_file', '_get_llama_vision_url',
+        '_save_file', '_start_book_parse',
         '_describe_image_via_llm', 'upload_file', 'upload_image',
         'upload_audio', 'vision_inference',
-        '_pdf_to_images', '_pdf_to_images_fitz',
-        '_parse_page_via_vision', '_assign_chapters_to_pages',
-        '_generate_book_name', '_save_parse_to_db',
-        '_run_pdf_parse', 'parse_pdf', 'parse_pdf_status',
         'serve_upload', 'register_upload_routes',
     ])
     def test_symbol_exported(self, name):

@@ -5,7 +5,11 @@ Handles:
   POST /upload/image      — agent avatar upload (save + optional toonify placeholder)
   POST /upload/audio      — agent voice signature upload
   POST /upload/vision     — standalone image→Qwen Vision inference (base64 or URL)
-  POST /upload/parse_pdf  — PDF page-wise parsing via Qwen Vision (replaces cloud pipeline)
+  POST /upload/native     — upload from a path picked in the native file dialog
+
+A PDF uploaded here goes to HARTOS's book pipeline
+(integrations/learning/book_pipeline.py), which also serves POST
+/upload/parse_pdf and the book library on every HARTOS node, desktop or not.
 
 All files stored under ~/Documents/Nunba/uploads/<type>/<uuid_name>
 Served statically via /uploads/<path>
@@ -14,10 +18,7 @@ import base64
 import json
 import logging
 import os
-import threading
-import time
 import uuid
-from datetime import UTC
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_from_directory
@@ -87,110 +88,40 @@ def _save_file(file_obj, dest_dir):
     return dest, name, ftype
 
 
-def _get_llama_vision_url():
-    """Get llama.cpp server URL for vision inference."""
-    return os.environ.get('LLAMA_CPP_URL', 'http://127.0.0.1:8080')
+# Describing an image is HARTOS's one implementation
+# (integrations/vision/image_describe.py): the request body, the switch that
+# keeps a reasoning model from spending its budget thinking, the empty-answer
+# warning.  It moved there from this file so a node without Nunba can read
+# images too.  The name stays because routes/chatbot_routes.py imports it from
+# here.
+try:
+    from integrations.vision.image_describe import describe_image as _describe_image_via_llm
+except ImportError as _e:
+    # A HARTOS older than this Nunba.  Uploads still save and /upload/vision
+    # answers 503 "unavailable", instead of this whole blueprint -- avatar,
+    # audio and file uploads with it -- failing to import.
+    logger.warning(f"Image description unavailable: {_e}")
 
-
-def _describe_image_via_llm(image_path, prompt=None):
-    """Send image to local Qwen Vision (llama.cpp) for description.
-
-    Uses OpenAI-compatible /v1/chat/completions with image_url (base64).
-    Returns description string or None on failure.
-    """
-    import requests as req
-
-    llama_url = _get_llama_vision_url()
-
-    # Read and encode image
-    try:
-        with open(image_path, 'rb') as f:
-            img_bytes = f.read()
-        ext = Path(image_path).suffix.lower().lstrip('.')
-        mime = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png',
-                'gif': 'gif', 'webp': 'webp', 'bmp': 'bmp'}.get(ext, 'jpeg')
-        b64 = base64.b64encode(img_bytes).decode('ascii')
-        data_url = f"data:image/{mime};base64,{b64}"
-    except Exception as e:
-        logger.error(f"Failed to read image for vision: {e}")
+    def _describe_image_via_llm(image_path, prompt=None):
         return None
 
-    if not prompt:
-        prompt = (
-            "Describe this image concisely. Classify it as one of: "
-            "'academic content', 'animated/cartoon', 'art/illustration', "
-            "'real-world photograph', 'screenshot', 'diagram/chart', or 'other'. "
-            "Respond as JSON: {\"description\": \"...\", \"category\": \"...\"}"
-        )
 
-    payload = {
-        "model": "qwen",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
-        # Qwen3.5 is a HYBRID REASONING model: it writes its chain-of-thought
-        # into a separate `reasoning_content` field and only afterwards fills
-        # `content`.  We read `content`, so if the budget runs out mid-thought
-        # we get "" back with no error at all.  Measured live 2026-08-04 with
-        # the JSON-classification prompt below:
-        #     max_tokens=300  -> finish=length, content=0,   reasoning=1242
-        #     max_tokens=2000 -> finish=stop,   content=178, reasoning=6228
-        # Describing an image is not a reasoning task, so turn thinking off
-        # rather than pay for it.  Verified on this server: reasoning went
-        # 760 -> 0 chars and the call got FASTER.  (`reasoning_effort: none`
-        # was also tried and is NOT honoured here — don't substitute it.)
-        # KEEP THIS even though llama_config now also disables thinking at
-        # SPAWN time (task #652 — the same defect hit the draft classifier on
-        # 2026-08-12 after a llama.cpp rebuild made `--reasoning-budget 0`
-        # stop working).  The two layers cover different holes: the spawn-time
-        # env var reaches every path but only for a server WE started, while
-        # this per-request kwarg travels with the payload and so survives an
-        # externally-started / remote / cloud endpoint.  Both are pinned by
-        # tests/test_llama_think_off.py::test_both_thinking_off_layers_are_present.
-        "chat_template_kwargs": {"enable_thinking": False},
-        # Headroom, not the fix: 300 suffices once thinking is off, but a
-        # future model or a longer prompt should degrade to slow, not empty.
-        "max_tokens": 1024,
-        "temperature": 0.3,
-    }
+def _start_book_parse(pdf_path, user_id, request_id):
+    """Hand an uploaded PDF to HARTOS's book pipeline and return its job id.
 
+    The pipeline (integrations/learning/book_pipeline.py) is the one
+    implementation, run by every HARTOS node: it renders and reads the pages,
+    stores the book, and publishes progress on com.hertzai.bookparsing.<user>;
+    /upload/parse_pdf/status reports on the job.  It used to run here, where a
+    node without Nunba could not reach it.  None when the parse could not be
+    started -- the upload itself still stands.
+    """
     try:
-        resp = req.post(
-            f"{llama_url}/v1/chat/completions",
-            json=payload,
-            timeout=60,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            choice = (data.get('choices') or [{}])[0]
-            message = choice.get('message') or {}
-            content = (message.get('content') or '').strip()
-            if not content:
-                # THE signature of the bug above.  Never let this be silent
-                # again — an empty description used to surface as
-                # {"category":"unknown","description":""} with nothing logged.
-                logger.warning(
-                    "Vision inference produced EMPTY content "
-                    "(finish_reason=%s, reasoning_content=%d chars). The model "
-                    "likely spent the whole max_tokens=%s budget thinking; "
-                    "raise the budget or keep enable_thinking disabled.",
-                    choice.get('finish_reason'),
-                    len(message.get('reasoning_content') or ''),
-                    payload.get('max_tokens'),
-                )
-            return content
-        logger.warning(f"Vision inference returned {resp.status_code}: {resp.text[:200]}")
-    except req.ConnectionError:
-        logger.info("llama.cpp not running — skipping vision inference")
+        from integrations.learning import book_pipeline
+        return book_pipeline.start_parse(pdf_path, user_id, request_id).get('job_id')
     except Exception as e:
-        logger.warning(f"Vision inference failed: {e}")
-    return None
+        logger.warning(f"Book parse not started for {pdf_path}: {e}")
+        return None
 
 
 # ── Routes ──
@@ -228,19 +159,7 @@ def upload_file():
     file_url = f"/uploads/files/{name}"
 
     # Auto-trigger PDF parsing when a PDF is uploaded
-    pdf_job_id = None
-    if ftype == 'pdf':
-        pdf_job_id = uuid.uuid4().hex[:12]
-        _parse_jobs[pdf_job_id] = {
-            'status': 'queued', 'total_pages': 0, 'progress': 0,
-            'result': None, 'error': None, 'created_at': time.time(),
-        }
-        thread = threading.Thread(
-            target=_run_pdf_parse,
-            args=(pdf_job_id, str(saved_path), user_id, request_id),
-            daemon=True,
-        )
-        thread.start()
+    pdf_job_id = _start_book_parse(saved_path, user_id, request_id) if ftype == 'pdf' else None
 
     return jsonify({
         'file_url': file_url,
@@ -362,591 +281,6 @@ def vision_inference():
         return jsonify(parsed)
     except (json.JSONDecodeError, TypeError):
         return jsonify({"description": desc, "category": "unknown"})
-
-
-# ── PDF Parsing via Qwen Vision ──
-# Replaces the entire cloud pipeline (7 ML microservices) with one VLM call per page.
-# Cloud pipeline: pdf2image → SetFit (page classify) → PubLayNet (layout) → PixelLink
-#   (text detect) → DocTR+CRNN (OCR) → Detectron2 (objects) → Segformer (segmentation)
-# Local replacement: pdf2image → Qwen3.5 Vision (all-in-one per page)
-
-PDF_PARSE_DIR = UPLOAD_DIR / 'pdf_parse'
-PDF_PARSE_DIR.mkdir(parents=True, exist_ok=True)
-
-# In-progress parse jobs: job_id → {status, pages, progress, result, error}
-_parse_jobs = {}
-
-
-def _pdf_to_images(pdf_path):
-    """Convert PDF pages to JPEG images. Returns list of (page_num, image_path)."""
-    try:
-        from pdf2image import convert_from_path
-    except ImportError:
-        logger.warning("pdf2image not installed — trying PyMuPDF fallback")
-        return _pdf_to_images_fitz(pdf_path)
-
-    output_dir = PDF_PARSE_DIR / Path(pdf_path).stem
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        images = convert_from_path(str(pdf_path), dpi=200, fmt='jpeg',
-                                   thread_count=4)
-        pages = []
-        for i, img in enumerate(images, 1):
-            page_path = output_dir / f"page_{i}.jpg"
-            img.save(str(page_path), 'JPEG', quality=85)
-            pages.append((i, str(page_path)))
-        return pages
-    except Exception as e:
-        logger.error(f"pdf2image failed: {e}")
-        return _pdf_to_images_fitz(pdf_path)
-
-
-def _pdf_to_images_fitz(pdf_path):
-    """Fallback PDF→images using PyMuPDF (fitz)."""
-    try:
-        import fitz
-    except ImportError:
-        logger.error("Neither pdf2image nor PyMuPDF available for PDF conversion")
-        return []
-
-    output_dir = PDF_PARSE_DIR / Path(pdf_path).stem
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    pages = []
-    doc = fitz.open(str(pdf_path))
-    for i, page in enumerate(doc, 1):
-        pix = page.get_pixmap(dpi=200)
-        page_path = output_dir / f"page_{i}.jpg"
-        pix.save(str(page_path))
-        pages.append((i, str(page_path)))
-    doc.close()
-    return pages
-
-
-def _pdf_text_pages(pdf_path):
-    """Text-only page source, used when no rasteriser is available.
-
-    Returns (pages_data, toc_entries) in the SAME shape _parse_page_via_vision
-    produces, so _assign_chapters_to_pages, _save_parse_to_db and the job
-    result all run unchanged.  Uses PyPDF2, which the bundle already ships
-    (lib/PyPDF2 3.0.1; requirements.txt:47) -- unlike pdf2image (needs the
-    poppler binary) and PyMuPDF, neither of which is in the Nunba install
-    (measured 2026-09-13).
-
-    Chapters come from the PDF's own outline (bookmarks).  A PDF with no
-    outline yields pages without chapter_name, and navigation degrades to
-    page-wise.  A scanned PDF has no text layer: returns ([], []) so the
-    caller fails honestly instead of storing empty pages.
-    """
-    try:
-        from PyPDF2 import PdfReader
-        reader = PdfReader(str(pdf_path))
-    except Exception as e:
-        logger.error(f"PyPDF2 cannot read {pdf_path}: {e}")
-        return [], []
-
-    pages_data = []
-    for i, page in enumerate(reader.pages, 1):
-        try:
-            text = page.extract_text() or ''
-        except Exception as e:
-            logger.warning(f"PyPDF2 text extraction failed on page {i}: {e}")
-            text = ''
-        pages_data.append({"page_number": i, "page_type": "content",
-                           "text": text, "elements": []})
-    if not any(p["text"].strip() for p in pages_data):
-        logger.warning(f"No text layer in {pdf_path} (scanned PDF?)")
-        return [], []
-
-    toc_entries = []
-
-    def _walk(items):
-        for item in items:
-            if isinstance(item, list):          # a nested outline level
-                _walk(item)
-                continue
-            try:
-                toc_entries.append({
-                    "title": getattr(item, "title", "") or "",
-                    "page": reader.get_destination_page_number(item) + 1,
-                })
-            except Exception as e:
-                logger.debug(f"PDF outline entry skipped: {e}")
-
-    try:
-        _walk(reader.outline or [])
-    except Exception as e:
-        logger.debug(f"PDF outline unreadable: {e}")
-    return pages_data, toc_entries
-
-
-def _mark_pdf_failed(file_id, error):
-    """Record a failed parse on the DURABLE row, not only the in-memory job.
-
-    _run_pdf_parse inserts the pdf_files row first (status 'pending') and used
-    to return on failure without touching it, so the row stayed 'pending' for
-    good while the job dict -- gone on restart -- said 'failed'.  Observed
-    live: file_id 1 still 'pending' two days after its parse died (2026-09-13).
-    """
-    if not file_id:
-        return
-    try:
-        from datetime import datetime, timezone
-        from routes.db_routes import _get_db
-        conn = _get_db()
-        try:
-            conn.execute(
-                "UPDATE pdf_files SET status = 'failed', updated_at = ? WHERE file_id = ?",
-                (datetime.now(timezone.utc).isoformat(), file_id))
-            conn.commit()
-        finally:
-            conn.close()
-        logger.warning(f"pdf_files {file_id} marked failed: {error}")
-    except Exception as e:
-        logger.warning(f"Could not mark pdf_files {file_id} failed: {e}")
-
-
-def _parse_page_via_vision(page_num, image_path):
-    """Parse a single PDF page using Qwen Vision. Returns structured page data."""
-    prompt = (
-        "You are a document parser. Analyze this page image and extract:\n"
-        "1. ALL text content (OCR), preserving paragraph structure\n"
-        "2. Page type: 'cover', 'table_of_contents', 'chapter_start', 'content', 'index', 'blank'\n"
-        "3. Layout elements found: list of {type, content} where type is one of: "
-        "'heading', 'paragraph', 'table', 'figure', 'equation', 'list', 'caption', 'footer', 'header'\n"
-        "4. If this is a table of contents, extract chapter/topic names with page numbers\n"
-        "5. If there are tables, extract as markdown tables\n"
-        "6. If there are figures/images, describe them\n\n"
-        "Respond as JSON:\n"
-        "{\n"
-        '  "page_type": "content",\n'
-        '  "text": "full extracted text...",\n'
-        '  "elements": [\n'
-        '    {"type": "heading", "content": "Chapter 1: Introduction"},\n'
-        '    {"type": "paragraph", "content": "Lorem ipsum..."},\n'
-        '    {"type": "table", "content": "| Col1 | Col2 |\\n|---|---|\\n| a | b |"},\n'
-        '    {"type": "figure", "content": "Diagram showing neural network architecture"}\n'
-        '  ],\n'
-        '  "toc_entries": [{"title": "Chapter 1", "page": 5}],\n'
-        '  "chapter_name": "Introduction",\n'
-        '  "has_equations": false,\n'
-        '  "has_tables": true,\n'
-        '  "has_figures": false\n'
-        "}"
-    )
-
-    result = _describe_image_via_llm(image_path, prompt)
-    if not result:
-        return {
-            "page_number": page_num,
-            "page_type": "unknown",
-            "text": "",
-            "elements": [],
-            "error": "Vision inference unavailable",
-        }
-
-    # Try to parse structured JSON from VLM response
-    try:
-        # Strip markdown code fences if present
-        cleaned = result.strip()
-        if cleaned.startswith('```'):
-            cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
-        if cleaned.endswith('```'):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-        if cleaned.startswith('json'):
-            cleaned = cleaned[4:].strip()
-
-        parsed = json.loads(cleaned)
-        parsed["page_number"] = page_num
-        return parsed
-    except (json.JSONDecodeError, TypeError):
-        # VLM returned unstructured text — wrap it
-        return {
-            "page_number": page_num,
-            "page_type": "content",
-            "text": result,
-            "elements": [{"type": "paragraph", "content": result}],
-        }
-
-
-def _assign_chapters_to_pages(pages_data, toc_entries):
-    """Cross-page intelligence: assign chapter/topic names to pages using ToC data.
-
-    Reuses logic from pipeline db_page_wise_call.py:
-    - Build chapter→page_number mapping from ToC
-    - For each page, find which chapter range it falls into
-    - Assign chapter_name and topic_name
-    """
-    if not toc_entries:
-        return pages_data
-
-    # Build sorted chapter boundaries
-    chapters = []
-    for entry in toc_entries:
-        try:
-            page = int(entry.get('page', 0))
-            title = entry.get('title', entry.get('chapter_name', ''))
-            if page > 0 and title:
-                chapters.append((page, title))
-        except (ValueError, TypeError):
-            continue
-
-    chapters.sort(key=lambda x: x[0])
-
-    if not chapters:
-        return pages_data
-
-    # Assign chapter to each page based on page ranges
-    for page_data in pages_data:
-        page_num = page_data.get('page_number', 0)
-        assigned_chapter = None
-
-        # Find which chapter range this page falls into
-        for i, (ch_page, ch_name) in enumerate(chapters):
-            next_ch_page = chapters[i + 1][0] if i + 1 < len(chapters) else float('inf')
-            if ch_page <= page_num < next_ch_page:
-                assigned_chapter = ch_name
-                break
-
-        if assigned_chapter and not page_data.get('chapter_name'):
-            page_data['chapter_name'] = assigned_chapter
-
-    return pages_data
-
-
-def _generate_book_name(first_page_text, toc_entries, llama_url=None):
-    """Generate book name using LLM. Reuses pipeline find_book_name_if_not_good() logic."""
-    import requests as req
-
-    if not llama_url:
-        llama_url = _get_llama_vision_url()
-
-    topic_names = [e.get('title', '') for e in toc_entries[:20]]
-    prompt = (
-        f"Based on the following information, suggest a short book title (max 10 words).\n"
-        f"Topics: {', '.join(topic_names)}\n"
-        f"First page text: {first_page_text[:500]}\n\n"
-        f"Respond with ONLY the book title, nothing else."
-    )
-
-    try:
-        resp = req.post(
-            f"{llama_url}/v1/chat/completions",
-            json={
-                "model": "qwen",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 50,
-                "temperature": 0.3,
-            },
-            timeout=30,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return data.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
-    except Exception as e:
-        logger.debug(f"Book name generation failed: {e}")
-    return None
-
-
-def _save_parse_to_db(file_id, pages_data, whole_text, toc_entries, book_name, user_id):
-    """Save parsed PDF data to local SQLite DB. Reuses pipeline DB storage patterns."""
-    try:
-        from routes.db_routes import _get_db
-        conn = _get_db()
-        try:
-            from datetime import datetime
-            now = datetime.now(UTC).isoformat()
-
-            # Update PDF file record
-            conn.execute(
-                """UPDATE pdf_files SET text_response = ?, book_name = ?,
-                   total_pages = ?, status = 'completed', updated_at = ?
-                   WHERE file_id = ?""",
-                (whole_text, book_name, len(pages_data), now, file_id)
-            )
-
-            # Insert page layouts (one per element per page)
-            for page_data in pages_data:
-                page_num = page_data.get('page_number', 0)
-                page_type = page_data.get('page_type', 'content')
-                chapter_name = page_data.get('chapter_name')
-                elements = page_data.get('elements', [])
-
-                if not elements:
-                    # No structured elements — store full page text as single layout
-                    conn.execute(
-                        """INSERT INTO page_layouts
-                           (file_id, page_number, layout_number, num_layouts_per_page,
-                            passage, chapter_name, page_type, element_type, created_date)
-                           VALUES (?, ?, 1, 1, ?, ?, ?, 'full_page', ?)""",
-                        (file_id, page_num, page_data.get('text', ''),
-                         chapter_name, page_type, now)
-                    )
-                else:
-                    for idx, elem in enumerate(elements, 1):
-                        conn.execute(
-                            """INSERT INTO page_layouts
-                               (file_id, page_number, layout_number, num_layouts_per_page,
-                                passage, chapter_name, page_type, element_type, label,
-                                created_date)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (file_id, page_num, idx, len(elements),
-                             elem.get('content', ''), chapter_name, page_type,
-                             elem.get('type', 'paragraph'),
-                             elem.get('type', ''), now)
-                        )
-
-            conn.commit()
-            logger.info(f"PDF parse saved to DB: file_id={file_id}, pages={len(pages_data)}")
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning(f"Failed to save parse to DB (non-blocking): {e}")
-
-
-def _run_pdf_parse(job_id, pdf_path, user_id, request_id):
-    """Background worker: parse all PDF pages via Qwen Vision.
-
-    Reuses pipeline orchestration logic (views.py, wrapper.py):
-    1. PDF → images (pdf2image / PyMuPDF)
-    2. Per-page VLM parsing (replaces DocTR+PubLayNet+PixelLink+CRNN+Segformer+Detectron2)
-    3. Cross-page ToC → chapter assignment (from db_page_wise_call.py)
-    4. Book name generation (from upload_all_image.py find_book_name_if_not_good)
-    5. DB storage (replaces MySQL hertz_ocr_req_res_table + layout tables)
-    6. Crossbar progress publishing (same pattern as pipeline)
-    """
-    job = _parse_jobs[job_id]
-    file_id = None
-    try:
-        # Register PDF file in DB (replaces pipeline insertVariblesIntoTable)
-        try:
-            from routes.db_routes import _get_db
-            conn = _get_db()
-            from datetime import datetime
-            now = datetime.now(UTC).isoformat()
-            cursor = conn.execute(
-                """INSERT INTO pdf_files (user_id, filename, directory, request_id, created_date)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (user_id, Path(pdf_path).name, str(Path(pdf_path).parent),
-                 request_id, now)
-            )
-            conn.commit()
-            file_id = cursor.lastrowid
-            conn.close()
-        except Exception as e:
-            logger.warning(f"DB registration failed: {e}")
-
-        # Step 1: Convert PDF to images
-        job['status'] = 'converting'
-        pages = _pdf_to_images(pdf_path)
-
-        results = []
-        whole_text_parts = []
-        toc_entries = []
-        vlm_pages = pages
-
-        if not pages:
-            # No rasteriser in this build (pdf2image needs poppler; PyMuPDF is
-            # not bundled).  Fall back to the text layer via the PyPDF2 the
-            # bundle already ships, instead of failing the whole book.  Pages
-            # get text + chapters (from the outline) but no page images.
-            results, toc_entries = _pdf_text_pages(pdf_path)
-            if not results:
-                job['status'] = 'failed'
-                job['error'] = 'Failed to convert PDF to images, and no text layer to read'
-                _mark_pdf_failed(file_id, job['error'])
-                return
-            whole_text_parts = [p.get('text', '') for p in results]
-            # Downstream counts pages via len(pages); keep that truthful.
-            pages = [(p['page_number'], None) for p in results]
-            vlm_pages = []
-            job['progress'] = len(pages)
-            logger.info(f"PDF parse [{job_id}] text-only fallback: {len(pages)} pages, "
-                        f"{len(toc_entries)} outline entries")
-
-        job['total_pages'] = len(pages)
-        job['status'] = 'parsing'
-
-        # Step 2: Parse each page via Qwen Vision (replaces 7 ML microservices)
-        for page_num, img_path in vlm_pages:
-            page_data = _parse_page_via_vision(page_num, img_path)
-            results.append(page_data)
-            whole_text_parts.append(page_data.get('text', ''))
-
-            # Accumulate ToC entries (pipeline's post_processing_of_toc_page_image logic)
-            if page_data.get('toc_entries'):
-                toc_entries.extend(page_data['toc_entries'])
-
-            job['progress'] = page_num
-            logger.info(f"PDF parse [{job_id}] page {page_num}/{len(pages)} done")
-
-        # Step 3: Cross-page intelligence (from pipeline db_page_wise_call.py)
-        # Assign chapter names to pages using ToC data
-        job['status'] = 'post_processing'
-        results = _assign_chapters_to_pages(results, toc_entries)
-
-        # Step 4: Generate book name (from pipeline find_book_name_if_not_good)
-        book_name = None
-        if whole_text_parts:
-            book_name = _generate_book_name(
-                whole_text_parts[0][:500] if whole_text_parts[0] else '',
-                toc_entries
-            )
-
-        whole_text = '\n\n'.join(whole_text_parts)
-
-        # Step 5: Save to DB (replaces pipeline MySQL insert + batch_db)
-        if file_id:
-            _save_parse_to_db(file_id, results, whole_text, toc_entries,
-                              book_name, user_id)
-
-        # Step 6: Build final result
-        job['result'] = {
-            'job_id': job_id,
-            'file_id': file_id,
-            'file_name': Path(pdf_path).name,
-            'book_name': book_name,
-            'total_pages': len(pages),
-            'pages': results,
-            'whole_text': whole_text,
-            'toc': toc_entries,
-            'user_id': user_id,
-            'request_id': request_id,
-        }
-        job['status'] = 'completed'
-        logger.info(f"PDF parse [{job_id}] completed: {len(pages)} pages, "
-                    f"file_id={file_id}, book='{book_name}'")
-
-        # Step 7: Publish completion via Crossbar (same pattern as pipeline publish())
-        try:
-            from routes.chatbot_routes import publish_to_crossbar
-            publish_to_crossbar(user_id, {
-                'type': 'pdf_parse_complete',
-                'job_id': job_id,
-                'file_id': file_id,
-                'total_pages': len(pages),
-                'book_name': book_name,
-                'request_id': request_id,
-            })
-        except Exception:
-            pass
-
-    except Exception as e:
-        logger.error(f"PDF parse [{job_id}] failed: {e}")
-        job['status'] = 'failed'
-        job['error'] = str(e)
-        # The row was inserted before anything could throw; without this it
-        # stays 'pending' for good while the in-memory job says 'failed'.
-        _mark_pdf_failed(file_id, str(e))
-
-
-@upload_bp.route('/upload/parse_pdf', methods=['POST'])
-def parse_pdf():
-    """PDF page-wise parsing via Qwen Vision.
-
-    Replaces the cloud pipeline (pipeline repo: PubLayNet + DocTR + PixelLink + CRNN
-    + Segformer + Detectron2 + SetFit) with a single VLM call per page.
-
-    Accepts multipart form: file, user_id, request_id.
-    Or JSON: { file_url, user_id, request_id } for already-uploaded PDFs.
-
-    Returns immediately with job_id for async tracking (large PDFs).
-    For small PDFs (<=3 pages), processes synchronously.
-    """
-    # Get PDF from upload or reference
-    if request.content_type and 'multipart' in request.content_type:
-        file_obj = request.files.get('file')
-        if not file_obj:
-            return jsonify({"error": "No file provided"}), 400
-        if not file_obj.filename.lower().endswith('.pdf'):
-            return jsonify({"error": "Only PDF files accepted"}), 400
-        saved_path, name, _ = _save_file(file_obj, FILE_DIR)
-        user_id = request.form.get('user_id', '0')
-        request_id = request.form.get('request_id', '')
-    else:
-        data = request.get_json(force=True)
-        file_url = data.get('file_url', '')
-        user_id = data.get('user_id', '0')
-        request_id = data.get('request_id', '')
-
-        if file_url and file_url.startswith('/uploads/'):
-            rel = file_url.replace('/uploads/', '')
-            saved_path = UPLOAD_DIR / rel
-            name = Path(rel).name
-            if not saved_path.is_file():
-                return jsonify({"error": f"File not found: {file_url}"}), 404
-        else:
-            return jsonify({"error": "Provide PDF file or file_url"}), 400
-
-    job_id = uuid.uuid4().hex[:12]
-    _parse_jobs[job_id] = {
-        'status': 'queued',
-        'total_pages': 0,
-        'progress': 0,
-        'result': None,
-        'error': None,
-        'created_at': time.time(),
-    }
-
-    # For small PDFs, try synchronous processing
-    # For large ones, go async
-    file_size = os.path.getsize(str(saved_path))
-    if file_size < 2 * 1024 * 1024:  # < 2MB — likely <=3 pages, do sync
-        _run_pdf_parse(job_id, str(saved_path), user_id, request_id)
-        job = _parse_jobs[job_id]
-        if job['status'] == 'completed':
-            return jsonify(job['result'])
-        return jsonify({"error": job.get('error', 'Parse failed'), "job_id": job_id}), 500
-
-    # Async for larger PDFs
-    thread = threading.Thread(
-        target=_run_pdf_parse,
-        args=(job_id, str(saved_path), user_id, request_id),
-        daemon=True,
-    )
-    thread.start()
-
-    return jsonify({
-        "job_id": job_id,
-        "status": "queued",
-        "message": "PDF parsing started. Poll /upload/parse_pdf/status for progress.",
-        "file_url": f"/uploads/files/{name}",
-        "request_id": request_id,
-    }), 202
-
-
-@upload_bp.route('/upload/parse_pdf/status', methods=['GET', 'POST'])
-def parse_pdf_status():
-    """Check PDF parse job status.
-
-    GET /upload/parse_pdf/status?job_id=xxx
-    POST with JSON: { job_id }
-    """
-    if request.method == 'GET':
-        job_id = request.args.get('job_id', '')
-    else:
-        data = request.get_json(force=True)
-        job_id = data.get('job_id', '')
-
-    if not job_id or job_id not in _parse_jobs:
-        return jsonify({"error": "Unknown job_id"}), 404
-
-    job = _parse_jobs[job_id]
-    response = {
-        "job_id": job_id,
-        "status": job['status'],
-        "total_pages": job['total_pages'],
-        "progress": job['progress'],
-    }
-
-    if job['status'] == 'completed' and job['result']:
-        response['result'] = job['result']
-    elif job['status'] == 'failed':
-        response['error'] = job.get('error', 'Unknown error')
-
-    return jsonify(response)
 
 
 # ── Upload from native file-picker path (pywebview NSOpenPanel) ──
@@ -1077,19 +411,7 @@ def upload_native():
     subdir = 'images' if ftype == 'image' else 'files'
     file_url = f'/uploads/{subdir}/{name}'
 
-    pdf_job_id = None
-    if ftype == 'pdf':
-        pdf_job_id = uuid.uuid4().hex[:12]
-        _parse_jobs[pdf_job_id] = {
-            'status': 'queued', 'total_pages': 0, 'progress': 0,
-            'result': None, 'error': None, 'created_at': time.time(),
-        }
-        thread = threading.Thread(
-            target=_run_pdf_parse,
-            args=(pdf_job_id, str(dest), user_id, request_id),
-            daemon=True,
-        )
-        thread.start()
+    pdf_job_id = _start_book_parse(dest, user_id, request_id) if ftype == 'pdf' else None
 
     return jsonify({
         'file_url': file_url,
@@ -1118,6 +440,6 @@ def register_upload_routes(app):
     app.register_blueprint(upload_bp)
     logger.info(
         "Upload routes registered: /upload/file, /upload/image, /upload/audio, "
-        "/upload/vision, /upload/parse_pdf"
+        "/upload/vision"
     )
     logger.info(f"Upload storage: {UPLOAD_DIR}")
