@@ -178,6 +178,50 @@ class TestMainFunction:
 
 
 # ============================================================
+# Step 7b: which HARTOS tree the embed gets
+# ============================================================
+
+class TestHartBackendSource:
+    """The sibling HARTOS first; the hartos_backend_src clone only as fallback.
+
+    Measured 2026-09-14: build.py had cloned HARTOS's abandoned gpt4.1 branch
+    (2026-04-23, the pre-08-30 flat layout) into hartos_backend_src, and 7b
+    preferred that clone, so a fresh python-embed would have got April code.
+    """
+
+    @staticmethod
+    def _tree(path, installable=True):
+        path.mkdir(parents=True, exist_ok=True)
+        if installable:
+            (path / 'pyproject.toml').write_text('[project]\nname = "hart-backend"\n')
+        return str(path)
+
+    @staticmethod
+    def _source(monkeypatch, sibling, clone):
+        import scripts.rebuild_python_embed as rpe
+        monkeypatch.setattr(rpe, 'LLM_LANGCHAIN_SRC', sibling)
+        monkeypatch.setattr(rpe, 'HARTOS_BACKEND_SRC', clone)
+        return rpe._hart_backend_source()
+
+    def test_the_sibling_wins_over_a_clone(self, monkeypatch, tmp_path):
+        sibling = self._tree(tmp_path / 'HARTOS')
+        clone = self._tree(tmp_path / 'hartos_backend_src')
+        assert self._source(monkeypatch, sibling, clone) == sibling
+
+    def test_the_clone_serves_when_there_is_no_sibling(self, monkeypatch, tmp_path):
+        clone = self._tree(tmp_path / 'hartos_backend_src')
+        assert self._source(monkeypatch, str(tmp_path / 'HARTOS'), clone) == clone
+
+    def test_a_sibling_that_cannot_be_installed_is_passed_over(self, monkeypatch, tmp_path):
+        sibling = self._tree(tmp_path / 'HARTOS', installable=False)
+        clone = self._tree(tmp_path / 'hartos_backend_src')
+        assert self._source(monkeypatch, sibling, clone) == clone
+
+    def test_nothing_installable_is_none(self, monkeypatch, tmp_path):
+        assert self._source(monkeypatch, str(tmp_path / 'a'), str(tmp_path / 'b')) is None
+
+
+# ============================================================
 # deps.py integration
 # ============================================================
 

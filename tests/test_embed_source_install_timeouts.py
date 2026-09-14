@@ -100,6 +100,19 @@ class TestSourceTreeInstallTimeouts(unittest.TestCase):
                     f'Use {HEAVY_INSTALL_TIMEOUT} like the other heavy '
                     f'installs in this file.')
 
+    def test_the_torch_install_gets_the_long_timeout(self):
+        """torch is the biggest install in the file. On 2026-09-14 it ran past
+        600 s (a 113.7 MB wheel downloaded in 5 s, then thousands of files
+        walked by the OS scanner on a loaded box) and aborted the rebuild."""
+        torch_calls = [(lineno, timeout) for lineno, timeout, target
+                       in _source_tree_pip_installs() if target == 'torch_spec']
+        self.assertEqual(len(torch_calls), 1, torch_calls)
+        lineno, timeout = torch_calls[0]
+        self.assertGreaterEqual(
+            timeout, 1800,
+            f'{_SCRIPT}:{lineno} installs torch with timeout={timeout}; it '
+            f'needs the long-step budget the Cython rebuild uses (1800)')
+
     def test_heavy_timeout_matches_what_the_script_already_uses(self):
         """HEAVY_INSTALL_TIMEOUT is not a new constant -- pin that the
         script really does use 600 elsewhere, so this test can never

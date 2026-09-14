@@ -111,6 +111,44 @@ def _resolve_sibling_repo(name: str) -> str:
 HEVOLVEAI_SRC = _resolve_sibling_repo("hevolveai")
 LLM_LANGCHAIN_SRC = _resolve_sibling_repo("HARTOS")
 
+
+#: Step 8's hart-backend canary: the post-2026-08-30 layout, and only that.
+#: `core` imports clean and fast (see the canary's comment in step 8);
+#: `hartos` is the implementation package that layout introduced, weightless
+#: on import by design (hartos/__init__.py); a top-level `create_recipe` is
+#: the pre-08-30 flat layout, which only a stale source such as the gpt4.1
+#: clone still ships. Run by the EMBED's own python, so it reads the embed's
+#: site-packages -- the files that ship -- not a pip log line.
+HART_BACKEND_CANARY = (
+    "import core, hartos, importlib.util as u; "
+    "assert u.find_spec('create_recipe') is None, "
+    "'pre-2026-08-30 flat layout: a top-level create_recipe is installed'; "
+    "print('hart-backend OK (post-08-30 layout)')"
+)
+
+
+def _hart_backend_source():
+    """The HARTOS tree step 7b installs into python-embed, or None.
+
+    The sibling repo first: it is what build.py syncs over the embed
+    afterwards and what setup_freeze_nunba.py takes HARTOS's packages from.
+    hartos_backend_src is only a fallback. build.py clones it when its own
+    install from the sibling fails, from the fixed HEVOLVE_BRANCH, and it can
+    be months behind. Measured 2026-09-14: the clone was gpt4.1 at 3e9d4d2
+    (2026-04-23), still in the pre-2026-08-30 flat layout with
+    create_recipe.py and the rest at its root. Installed first, it would
+    have put those April modules back into a fresh python-embed.
+
+    Each must be INSTALLABLE (pyproject.toml present), not merely exist: a
+    partly removed clone (shutil.rmtree(ignore_errors=True) cannot delete a
+    locked .git pack on Windows) otherwise makes pip fail with "Neither
+    setup.py nor pyproject.toml found".
+    """
+    for src in (LLM_LANGCHAIN_SRC, HARTOS_BACKEND_SRC):
+        if os.path.isfile(os.path.join(src, 'pyproject.toml')):
+            return src
+    return None
+
 # Import version + deps from centralized deps.py
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
@@ -799,7 +837,12 @@ def _run_rebuild_steps():
          "setuptools", "wheel",
          "--no-warn-script-location"], timeout=120)
 
-    # Install torch first (needs special --index-url for CUDA variant)
+    # Install torch first (needs special --index-url for CUDA variant).
+    # 1800 s, like the Cython rebuild in 7a-prebuild: torch is by far the
+    # biggest install here.  Measured 2026-09-14: torch 2.10.0+cpu (a
+    # 113.7 MB wheel, downloaded in 5 s) was still installing at 600 s --
+    # thousands of files, each walked by the OS scanner, on a loaded box --
+    # and the timeout aborted the whole rebuild.
     torch_spec = get_torch_spec()
     torchaudio_ver = EMBED_DEPS.get("torchaudio")
     torchaudio_spec = f"torchaudio=={torchaudio_ver}" if torchaudio_ver else "torchaudio"
@@ -807,7 +850,7 @@ def _run_rebuild_steps():
     run([python_exe, "-m", "pip", "install",
          torch_spec, torchaudio_spec,
          "--index-url", TORCH_INDEX_URL,
-         "--no-warn-script-location"], timeout=600)
+         "--no-warn-script-location"], timeout=1800)
 
     # Install remaining embed deps from deps.py
     print(f"  Installing {len(embed_deps)} embed dependencies...")
@@ -865,19 +908,8 @@ def _run_rebuild_steps():
 
     # 7b. Install hart-backend (non-editable for cx_Freeze compatibility)
     step("7b. Installing hart-backend")
-    hevolve_src = None
-    # Require an INSTALLABLE source (pyproject.toml present), not merely an
-    # existing directory.  A broken/empty hartos_backend_src — e.g. a clone
-    # whose worktree was partially removed (shutil.rmtree(ignore_errors=True)
-    # can't delete a memory-mapped/locked .git pack on Windows, leaving only
-    # .git/objects/pack/) — would otherwise win this check and make
-    # `pip install` fail with "Neither setup.py nor pyproject.toml found",
-    # shadowing the working local sibling.  Probe pyproject.toml, mirroring
-    # _find_local_hartos_backend()'s own installability check.
-    if os.path.isfile(os.path.join(HARTOS_BACKEND_SRC, 'pyproject.toml')):
-        hevolve_src = HARTOS_BACKEND_SRC
-    elif os.path.isfile(os.path.join(LLM_LANGCHAIN_SRC, 'pyproject.toml')):
-        hevolve_src = LLM_LANGCHAIN_SRC
+    # The sibling HARTOS, not a stale fallback clone -- see _hart_backend_source.
+    hevolve_src = _hart_backend_source()
 
     _hart_backend_installed = False
     if hevolve_src:
@@ -1048,8 +1080,13 @@ _inject_path(_lib_dir, front=False)
     # have.  `core` is the canonical HARTOS package (CLAUDE.md), imports
     # clean and fast, and doubles as a check that Nunba has not grown its
     # own colliding `core/`.
+    #
+    # `core` alone passed an April install too: it existed before
+    # 2026-08-30. HART_BACKEND_CANARY also requires the `hartos` package and
+    # NO top-level create_recipe, so a stale flat-layout install fails here
+    # and is never swapped in.
     _verify("hart-backend import",
-            [python_exe, "-c", "import core; print('hart-backend OK')"],
+            [python_exe, "-c", HART_BACKEND_CANARY],
             critical=_hart_backend_installed)
 
     # Informational — package count + python version

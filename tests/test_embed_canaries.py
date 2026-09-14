@@ -30,6 +30,8 @@ fail the build is indistinguishable from one that is merely being lenient.
 """
 import os
 import re
+import subprocess
+import sys
 import unittest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -58,20 +60,27 @@ def _hart_canary_block(src):
     return src[start:end]
 
 
+def _canary_code():
+    """The -c code step 8 actually runs (HART_BACKEND_CANARY), imported, not scraped."""
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    from scripts.rebuild_python_embed import HART_BACKEND_CANARY
+    return HART_BACKEND_CANARY
+
+
 class TestHartBackendCanaryIsReal(unittest.TestCase):
 
     def test_canary_does_not_import_the_source_directory_name(self):
         """`hartos_backend` is HARTOS_BACKEND_SRC's basename, not a module."""
-        block = _hart_canary_block(_source())
+        code = _canary_code()
         self.assertNotIn(
-            'import hartos_backend', block,
+            'import hartos_backend', code,
             'the hart-backend canary imports `hartos_backend`, which is the '
             'source-directory name (hartos_backend_src), not a module -- it '
             'raises ModuleNotFoundError on every build and verifies nothing')
 
     def test_canary_imports_a_real_top_level_module(self):
-        block = _hart_canary_block(_source())
-        m = re.search(r'import\s+([A-Za-z_][A-Za-z0-9_]*)', block)
+        m = re.search(r'import\s+([A-Za-z_][A-Za-z0-9_]*)', _canary_code())
         self.assertIsNotNone(m, 'no import found in the hart-backend canary')
         mod = m.group(1)
         self.assertIn(
@@ -87,9 +96,7 @@ class TestHartBackendCanaryIsReal(unittest.TestCase):
         side effects, so these two names are excluded even though both ARE
         real top-level modules.
         """
-        block = _hart_canary_block(_source())
-        for heavy in ('import hart_intelligence_entry', 'import hart_intelligence;'):
-            self.assertNotIn(heavy, block)
+        self.assertNotIn('hart_intelligence', _canary_code())
 
     def test_criticality_is_flag_driven_not_a_constant(self):
         """A canary that can never fail the build cannot guard it.
@@ -106,6 +113,10 @@ class TestHartBackendCanaryIsReal(unittest.TestCase):
             'whether step 7b actually installed it')
         self.assertIn('critical=_hart_backend_installed', block)
 
+    def test_step_8_runs_the_constant(self):
+        """The checks above read HART_BACKEND_CANARY; this ties it to step 8."""
+        self.assertIn('HART_BACKEND_CANARY', _hart_canary_block(_source()))
+
     def test_install_step_sets_the_flag_on_both_paths(self):
         """The flag must be False when 7b skips and True when it installs."""
         src = _source()
@@ -118,6 +129,48 @@ class TestHartBackendCanaryIsReal(unittest.TestCase):
         # the pip call, not unconditionally at the top
         self.assertLess(block.index('_hart_backend_installed = False'),
                         block.index('_hart_backend_installed = True'))
+
+
+# ── The canary, run exactly as step 8 runs it, against layouts on disk ──
+# Found 2026-09-14: `import core` alone passed an April (pre-08-30) install,
+# because core/ predates the move. These run the real HART_BACKEND_CANARY in
+# a bare interpreter (-S: no site-packages, no editable finders) whose only
+# path is a site-packages tree built for the test.
+
+def _run_canary(site_packages):
+    env = {k: v for k, v in os.environ.items() if k not in ('PYTHONPATH', 'PYTHONHOME')}
+    env.update(PYTHONPATH=str(site_packages), PYTHONNOUSERSITE='1')
+    return subprocess.run([sys.executable, '-S', '-c', _canary_code()],
+                          cwd=str(site_packages), env=env,
+                          capture_output=True, text=True, timeout=60)
+
+
+def _layout(root, *files):
+    for rel in files:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('')
+    return root
+
+
+def test_the_canary_passes_the_current_layout(tmp_path):
+    result = _run_canary(_layout(tmp_path, 'core/__init__.py', 'hartos/__init__.py'))
+    assert result.returncode == 0, result.stderr
+    assert 'post-08-30 layout' in result.stdout
+
+
+def test_the_canary_fails_the_april_flat_layout(tmp_path):
+    """gpt4.1 at 3e9d4d2: core/ and flat root modules, no hartos/ package."""
+    result = _run_canary(_layout(tmp_path, 'core/__init__.py', 'create_recipe.py'))
+    assert result.returncode != 0
+
+
+def test_the_canary_fails_flat_leftovers_beside_the_new_package(tmp_path):
+    """The embed installed on 2026-09-14: hartos/ AND stale root copies."""
+    result = _run_canary(_layout(tmp_path, 'core/__init__.py', 'hartos/__init__.py',
+                                 'create_recipe.py'))
+    assert result.returncode != 0
+    assert 'flat layout' in result.stderr
 
 
 if __name__ == '__main__':
