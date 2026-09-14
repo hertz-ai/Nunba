@@ -128,6 +128,17 @@ def test_the_dispatcher_and_the_decorator_share_one_loopback_rule(
         assert _is_local_request() is local
 
 
+def test_an_installed_build_ignores_nunba_ci(monkeypatch):
+    """NUNBA_CI=1 trusts every caller only in a build run from source
+    (HARTOS's core.auth_local.ci_trusts_every_caller, which this rule
+    imports): an installed desktop that somehow carried it still treats the
+    LAN as remote."""
+    monkeypatch.setenv('NUNBA_CI', '1')
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    assert is_local_environ({'REMOTE_ADDR': '192.168.0.50'}) is False
+    assert is_local_environ({'REMOTE_ADDR': '127.0.0.1'}) is True
+
+
 def _tree(name):
     with open(os.path.join(PROJECT_ROOT, name), encoding='utf-8') as f:
         return ast.parse(f.read())

@@ -13,6 +13,18 @@ from flask import jsonify, request
 API_TOKEN = os.environ.get('NUNBA_API_TOKEN', '')
 
 
+def _ci_trusts_every_caller():
+    """HARTOS's rule for Nunba's staging container
+    (core.auth_local.ci_trusts_every_caller), imported rather than copied so
+    the dispatcher, these decorators and HARTOS's gate cannot disagree about
+    it.  Without HARTOS, nobody is trusted that way."""
+    try:
+        from core.auth_local import ci_trusts_every_caller
+    except Exception:
+        return False
+    return ci_trusts_every_caller()
+
+
 def is_local_environ(environ):
     """True when a WSGI request comes from this machine, accounting for proxies.
 
@@ -22,15 +34,17 @@ def is_local_environ(environ):
     *real* client IP.  Without the env-var, only ``REMOTE_ADDR`` is checked
     (safe default for direct connections).
 
-    CI bypass: when ``NUNBA_CI=1`` (set ONLY by docker-compose.staging.yml)
-    all requests are trusted.  The e2e probe hits the container via docker
-    NAT so requests appear from the docker bridge IP, not 127.0.0.1, and
-    would otherwise be rejected.  Production builds NEVER set this var.
+    CI bypass: HARTOS's core.auth_local.ci_trusts_every_caller, imported
+    rather than copied so the two rules cannot diverge again.  NUNBA_CI=1
+    (set ONLY by docker-compose.staging.yml, whose e2e probe arrives through
+    Docker's port mapping from the bridge IP, not 127.0.0.1) trusts every
+    caller in a build run from source; an installed (frozen) build ignores
+    it.  Without HARTOS, nobody is trusted that way.
 
     The one loopback rule: _is_local_request applies it to the current Flask
     request, and app.py's dispatcher to a raw environ before any app has it.
     """
-    if os.environ.get('NUNBA_CI', '') == '1':
+    if _ci_trusts_every_caller():
         return True
     remote_addr = environ.get('REMOTE_ADDR', '')
     trusted_proxy = os.environ.get('TRUSTED_PROXY', '')
