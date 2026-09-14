@@ -229,6 +229,35 @@ def test_without_hartos_the_guard_does_not_fail_open(nunba, received, monkeypatc
     assert len(received) == 1
 
 
+def test_a_broken_hartos_check_refuses_browsers_and_never_500s(nunba, received, monkeypatch):
+    """An error other than ImportError while loading the check (a HARTOS
+    module that fails part-way) is handled like a missing check, not raised
+    as a 500 on the Stop route."""
+    broken = types.ModuleType('core.auth_local')
+
+    def _explode(name):
+        raise RuntimeError('core.auth_local failed while loading')
+    broken.__getattr__ = _explode
+    monkeypatch.setitem(sys.modules, 'core.auth_local', broken)
+    assert nunba.post('/api/vlm/stop', json={}).status_code == 200
+    resp = nunba.post('/api/vlm/stop', json={}, headers={'Origin': EVIL})
+    assert resp.status_code == 403
+    assert len(received) == 1
+
+
+def test_source_guard_one_local_or_token_rule():
+    """The CSRF-safe decorator is require_local_or_token plus an Origin check.
+    A second copy of the local-or-token rule (its own 401) drifts from the
+    first; routes/auth.py returns 401 from exactly one place."""
+    with open(os.path.join(REPO, 'routes', 'auth.py'), encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    returns_401 = [n.lineno for n in ast.walk(tree)
+                   if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple)
+                   and any(isinstance(e, ast.Constant) and e.value == 401
+                           for e in n.value.elts)]
+    assert len(returns_401) == 1, f'401 returned at routes/auth.py lines {returns_401}'
+
+
 # -- edges ---------------------------------------------------------------------
 
 def test_a_non_json_body_reaches_hartos_as_empty_json(nunba, received):

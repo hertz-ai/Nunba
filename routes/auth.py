@@ -3,6 +3,7 @@
 Single source of truth — used by main.py and chatbot_routes.py.
 """
 import hmac
+import logging
 import os
 from functools import wraps
 
@@ -72,18 +73,47 @@ def require_local_or_token(f):
     return decorated_function
 
 
+_origin_check_unavailable_logged = False
+
+
 def _browser_origin_allowed():
     """HARTOS's Origin/Referer check, core.auth_local.is_safe_csrf_origin.
 
     Imported rather than copied, so "is this a same-origin browser request"
-    has one implementation.  If HARTOS cannot be imported, only requests with
-    no Origin and no Referer (non-browser callers) pass.
+    has one implementation.  A request with neither header is not from a
+    browser (the scheduler, call_stop_api) and passes without HARTOS being
+    importable.  If HARTOS's check cannot be loaded, anything a browser sent
+    is refused, Nunba's own loopback page included: none of the routes behind
+    this guard has a browser caller.
     """
+    global _origin_check_unavailable_logged
+    if not (request.headers.get('Origin') or request.headers.get('Referer')):
+        return True
     try:
         from core.auth_local import is_safe_csrf_origin
-    except ImportError:
-        return not (request.headers.get('Origin') or request.headers.get('Referer'))
+    except Exception as e:
+        if not _origin_check_unavailable_logged:
+            _origin_check_unavailable_logged = True
+            logging.getLogger(__name__).warning(
+                "HARTOS core.auth_local.is_safe_csrf_origin unavailable (%s); "
+                "browser requests to CSRF-guarded routes are refused", e)
+        return False
     return is_safe_csrf_origin()
+
+
+def _refuse_cross_origin(f):
+    """403 for a browser request from another origin.  A valid NUNBA_API_TOKEN
+    skips the check: a page in the browser cannot read the token."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if _has_valid_token() or _browser_origin_allowed():
+            return f(*args, **kwargs)
+        return jsonify({
+            'error': 'Forbidden',
+            'message': 'Cross-origin browser request rejected'
+        }), 403
+
+    return decorated_function
 
 
 def require_local_or_token_csrf_safe(f):
@@ -97,21 +127,8 @@ def require_local_or_token_csrf_safe(f):
     Callers with no Origin (the scheduler, call_stop_api) and same-origin
     pages pass.  A valid NUNBA_API_TOKEN skips the Origin check, as HARTOS's
     decorator of the same name does.
-    """
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if _has_valid_token():
-            return f(*args, **kwargs)
-        if not _is_local_request():
-            return jsonify({
-                'error': 'Unauthorized',
-                'message': 'This endpoint requires local access or valid API token'
-            }), 401
-        if not _browser_origin_allowed():
-            return jsonify({
-                'error': 'Forbidden',
-                'message': 'Cross-origin browser request rejected'
-            }), 403
-        return f(*args, **kwargs)
 
-    return decorated_function
+    Composed from require_local_or_token rather than restating it, so the
+    local-or-token rule and its 401 have one implementation.
+    """
+    return require_local_or_token(_refuse_cross_origin(f))
