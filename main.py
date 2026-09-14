@@ -1009,23 +1009,22 @@ def call_stop_api():
     try:
         logger.info("Initiating stop request via API")
 
-        # Stop the desktop owner's loops: the signed-in user, else the guest.
-        # HARTOS's vlm_stop rejects an empty user_id with 400, which is what
-        # every Stop press got while this read a user_data.json nothing writes
-        # (gui_app.log 2026-09-14 17:14, 17:15).
+        # Stop every screen-driving loop on this machine, whoever it runs as:
+        # each VLM loop registers under its agent's creator, so a stop for the
+        # desktop owner alone left another creator's loop driving the mouse
+        # (live 2026-09-14, agent 88659566083).  HARTOS's vlm_stop accepts
+        # scope=node only from this machine.  user_id stays for a bundled
+        # HARTOS that predates the scope: it stops the owner's loops, and
+        # answers a body with no user_id with 400 (gui_app.log 2026-09-14
+        # 17:14, 17:15).
+        stop_payload = {'scope': 'node'}
         try:
-            stop_payload = {}
             from desktop.guest_identity import get_desktop_owner_id
             owner = get_desktop_owner_id()
             if owner:
                 stop_payload['user_id'] = owner
-                logger.info(f"Using user-specific stop for user_id={owner}")
-            else:
-                logger.info("No desktop owner found, using global stop")
         except Exception as e:
-                logger.error(f"Error preparing stop payload: {str(e)}")
-                stop_payload = {}
-
+            logger.error(f"Error reading the desktop owner for the stop: {e}")
 
         # Skip the cloud-trainer notification when the URL isn't
         # configured.  Local installs have no cloud trainer to stop,
