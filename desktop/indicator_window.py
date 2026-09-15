@@ -51,6 +51,17 @@ logging.basicConfig(
 
 logger = logging.getLogger('LLM_Control_Indicator_TK')
 
+#: The panel's own colour: every NON-interactive widget's background, and on
+#: Windows the transparent key behind which the glass tint (platform_utils.
+#: set_window_glass) shows, so the text floats on glass.
+PANEL_BG = '#1E1E1E'
+#: What a CLICKABLE control is painted: one step off the key.  A colour-keyed
+#: pixel is transparent to hit-testing too, so a button painted PANEL_BG would
+#: pass clicks to whatever is behind the ribbon, and this ribbon is on screen
+#: exactly while the AI drives the machine; the surface around Stop is where a
+#: person aims to interrupt it.  Visually identical, never keyed.
+CONTROL_BG = '#1E1E1F'
+
 # Global variables
 indicator_window = None
 indicator_active = False
@@ -298,8 +309,8 @@ class RibbonIndicator:
             tab_label = tab_frame.winfo_children()[0]
             
             if active:
-                tab_frame.config(bg='#1E1E1E')  # Darker when active
-                tab_label.config(bg='#1E1E1E', text="🔺")  # Pin icon
+                tab_frame.config(bg=PANEL_BG)  # Darker when active
+                tab_label.config(bg=PANEL_BG, text="🔺")  # Pin icon
             else:
                 tab_frame.config(bg='#2F2F2F')
                 tab_label.config(bg='#2F2F2F', text="🔻")
@@ -320,15 +331,11 @@ class RibbonIndicator:
             self.panel_window.geometry(f"{self.panel_width}x0+{self.panel_x}+{self.panel_y}")  # Start with 0 height
             self.panel_window.overrideredirect(True)
             self.panel_window.attributes('-topmost', True)
-            
-            try:
-                self.panel_window.attributes('-alpha', 0.95)
-            except Exception:
-                pass
-            
+
             # Set up the panel content
             self.setup_modern_panel_content()
-            
+            self._apply_glass()
+
             # Animate the expansion
             self.animate_expand(0)
             
@@ -336,6 +343,35 @@ class RibbonIndicator:
             logger.error(f"Error creating panel: {str(e)}")
             self.reset_animation_state()
     
+    def _panel_hwnd(self):
+        """The panel's own Win32 window (tk's frame handle), or None."""
+        try:
+            self.panel_window.update_idletasks()
+            return int(self.panel_window.wm_frame(), 16)
+        except Exception as e:
+            logger.debug(f"panel hwnd unavailable: {e}")
+            return None
+
+    def _apply_glass(self):
+        """A glass backdrop (owner 2026-09-15: "the floating window should
+        have a transparent glass-like background").  On Windows the panel's
+        colour becomes the transparent key and DWM paints a blurred, tinted
+        acrylic behind it (platform_utils.set_window_glass), so the timer,
+        the step text and Stop float on glass.  Anywhere that cannot, the
+        panel keeps its solid, slightly translucent look."""
+        try:
+            from desktop.platform_utils import set_window_glass
+            hwnd = self._panel_hwnd()
+            if hwnd and set_window_glass(hwnd, tint=PANEL_BG, opacity=0.6):
+                self.panel_window.attributes('-transparentcolor', PANEL_BG)
+                return
+        except Exception as e:
+            logger.debug(f"panel glass unavailable: {e}")
+        try:
+            self.panel_window.attributes('-alpha', 0.95)
+        except Exception:
+            pass
+
     def animate_expand(self, current_height):
         """Smooth expansion animation"""
         try:
@@ -421,26 +457,26 @@ class RibbonIndicator:
         """Set up the modern control panel content matching the HTML design"""
         try:
             # Main container with dark theme
-            main_frame = tk.Frame(self.panel_window, bg='#1E1E1E', bd=1, relief='solid')
+            main_frame = tk.Frame(self.panel_window, bg=PANEL_BG, bd=1, relief='solid')
             main_frame.pack(fill=tk.BOTH, expand=True)
             
             # Create the toolbar
-            toolbar = tk.Frame(main_frame, bg='#1E1E1E')
+            toolbar = tk.Frame(main_frame, bg=PANEL_BG)
             toolbar.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
             
             # Left side - Timer section
-            timer_frame = tk.Frame(toolbar, bg='#1E1E1E')
+            timer_frame = tk.Frame(toolbar, bg=PANEL_BG)
             timer_frame.pack(side=tk.LEFT, fill=tk.Y)
             
             # Timer icon and counter
-            timer_container = tk.Frame(timer_frame, bg='#1E1E1E')
+            timer_container = tk.Frame(timer_frame, bg=PANEL_BG)
             timer_container.pack(side=tk.LEFT, pady=8)
             
             # Timer icon
             timer_icon = tk.Label(
                 timer_container, 
                 text="T", 
-                bg='#1E1E1E', 
+                bg=PANEL_BG, 
                 fg='white', 
                 font=('Segoe UI', 13, 'bold')
             )
@@ -450,7 +486,7 @@ class RibbonIndicator:
             self.timer_label = tk.Label(
                 timer_container, 
                 text="00:00", 
-                bg='#1E1E1E', 
+                bg=PANEL_BG, 
                 fg='white', 
                 font=('Segoe UI', 13, 'bold')
             )
@@ -461,14 +497,14 @@ class RibbonIndicator:
             separator.pack(side=tk.LEFT, fill=tk.Y, padx=12)
 
             # Right side - Stop button section
-            button_frame = tk.Frame(toolbar, bg='#1E1E1E')
+            button_frame = tk.Frame(toolbar, bg=PANEL_BG)
             button_frame.pack(side=tk.RIGHT, fill=tk.Y)
 
             # Middle - what the AI is doing now (one line, left-aligned)
             self.step_label = tk.Label(
                 toolbar,
                 text=self.step_text,
-                bg='#1E1E1E',
+                bg=PANEL_BG,
                 fg='#DDDDDD',
                 font=('Segoe UI', 10),
                 anchor='w',
@@ -477,14 +513,14 @@ class RibbonIndicator:
             self.step_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
             
             # Stop button container
-            stop_container = tk.Frame(button_frame, bg='#1E1E1E')
+            stop_container = tk.Frame(button_frame, bg=PANEL_BG)
             stop_container.pack(side=tk.RIGHT, pady=6)
             
             # Pulse indicator
             self.pulse_label = tk.Label(
                 stop_container,
                 text="●",  # Bullet point as pulse
-                bg='#1E1E1E',
+                bg=PANEL_BG,
                 fg='#FF5F57',
                 font=('Segoe UI', 8)
             )
@@ -510,7 +546,7 @@ class RibbonIndicator:
             collapse_button = tk.Button(
                 stop_container,
                 text="×",
-                bg='#1E1E1E',
+                bg=CONTROL_BG,
                 fg='#666',
                 font=('Segoe UI', 12, 'bold'),
                 relief=tk.FLAT,
@@ -602,12 +638,30 @@ class RibbonIndicator:
                 seconds = elapsed % 60
                 time_str = f"{minutes:02d}:{seconds:02d}"
                 self.timer_label.config(text=time_str)
-                
+
+                # A pointer resting on the panel keeps it open.  Asked here,
+                # once a second, from the cursor position: on the glass the
+                # keyed pixels are transparent to hit-testing, so the
+                # <Enter>/<Motion> bindings below never fire for them.
+                if self._pointer_over_panel():
+                    self.reset_auto_collapse_timer()
+
                 # Schedule next update
                 self.panel_window.after(1000, self.update_timer)
             except Exception as e:
                 logger.error(f"Error updating timer: {str(e)}")
     
+    def _pointer_over_panel(self):
+        """True when the mouse pointer is inside the panel's rectangle, by
+        position (winfo_pointerxy), which needs no hit-testing."""
+        try:
+            w = self.panel_window
+            px, py = w.winfo_pointerxy()
+            x, y = w.winfo_rootx(), w.winfo_rooty()
+            return x <= px < x + w.winfo_width() and y <= py < y + w.winfo_height()
+        except Exception:
+            return False
+
     def reset_auto_collapse_timer(self):
         """Reset the auto-collapse timer"""
         if not self.expanded:
@@ -713,6 +767,9 @@ class RibbonIndicator:
                     and not self.step_opened_panel):
                 self.step_opened_panel = True
                 self.expand_panel()
+            elif self.step_text:
+                # A new step is something to read: keep the panel open.
+                self.reset_auto_collapse_timer()
         except Exception as e:
             logger.error(f"Error showing step text: {str(e)}")
     
