@@ -8225,11 +8225,17 @@ def main():
                 except Exception:
                     pass
                 # A floating presence is a tool window: no taskbar entry, no
-                # Alt-Tab.  Then on top, for the reason in _companion_raise.
+                # Alt-Tab.  Sized back to the page's 220x310 (pywebview set
+                # the OUTER size before dropping the frame: 198x254 measured
+                # 2026-09-15).  Then on top, for the reason in _companion_raise.
                 _comp_hwnd = _resolve_hwnd(_companion_window)
                 if _comp_hwnd:
-                    from desktop.platform_utils import set_window_tool_window
+                    from desktop.platform_utils import (
+                        set_window_size,
+                        set_window_tool_window,
+                    )
                     set_window_tool_window(_comp_hwnd, True)
+                    set_window_size(_comp_hwnd, _comp_w, _comp_h)
                 _companion_raise()
             if _companion_window:
                 _companion_window.events.loaded += _on_companion_loaded

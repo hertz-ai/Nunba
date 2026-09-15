@@ -57,6 +57,9 @@ Fix invariants (these tests enforce):
      the test), so "orb only" means clipping the window to the orb's rect
      (SetWindowRgn), and the card is a rounded rect.  The page sends
      'orb' | 'shown' with the CSS rect; one helper maps it to the window.
+  M. The companion MUST end up 220x310 logical px: pywebview sets the
+     OUTER size while the form still wears a caption + frame, then drops
+     the frame and keeps the smaller client (198x254 measured).
 """
 
 from __future__ import annotations
@@ -542,6 +545,34 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertIn("function shapeFor(state, orbBox)", page)
         for state in ("'hidden'", "'orb'", "'shown'"):
             self.assertIn(state, page)
+
+    # ── Invariant M: the window is the size the page was designed for ─
+    def test_companion_is_resized_to_its_logical_size_once_loaded(self):
+        """Measured 2026-09-15 on the live companion (rect 198x254 logical
+        on a 150% display) and again in a throwaway pywebview process (the
+        page reported innerWidth 198, innerHeight 254): pywebview 6.1 sets
+        Form.Size = (220, 310) while the form still has its default caption
+        and frame, then switches to FormBorderStyle.None, which keeps the
+        client area -- 22 px narrower and 56 px shorter than the page was
+        laid out for.  Once loaded, the frameless window is sized back to
+        the designed logical size through the canonical DPI scale.
+        """
+        import re
+
+        from desktop.platform_utils import _logical_to_physical
+
+        # 150% display: logical 220x310 is physical 330x465; 1.0 is identity.
+        self.assertEqual(_logical_to_physical(220, 310, 1.5), (330, 465))
+        self.assertEqual(_logical_to_physical(220, 310, 1.0), (220, 310))
+        self.assertEqual(_logical_to_physical(220, 310, 1.25), (275, 388))
+
+        src = APP_PY.read_text(encoding="utf-8")
+        loaded = re.search(r"def _on_companion_loaded\(\):(.*?)\n            if _companion_window:",
+                           src, re.S).group(1)
+        self.assertIn("set_window_size(_comp_hwnd, _comp_w, _comp_h)", loaded)
+        helper = (REPO_ROOT / "desktop" / "platform_utils.py").read_text(encoding="utf-8")
+        self.assertIn("def set_window_size(window_handle, width, height):", helper)
+        self.assertIn("_get_win32_dpi_scale()", helper.split("def set_window_size(")[1])
 
 
 class RestartMinimizeBehaviouralTests(unittest.TestCase):

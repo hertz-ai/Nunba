@@ -410,14 +410,19 @@ export default function VoiceOrbPage() {
   }, [active]);
 
   // Hosted: the window follows the page's state and shape.  Sent on every
-  // change and again at 'pywebviewready', since `.api` may not exist when
-  // the first state is decided.
+  // change, again at 'pywebviewready' (`.api` may not exist when the first
+  // state is decided), and on resize (app.py sizes the window once loaded;
+  // a shape mapped against the old size would be stale).
   useEffect(() => {
     if (!hosted.current) return undefined;
     const send = () => companionApi('on_companion_presence', presence, shapeFor(presence, orbBox));
     send();
     window.addEventListener('pywebviewready', send);
-    return () => window.removeEventListener('pywebviewready', send);
+    window.addEventListener('resize', send);
+    return () => {
+      window.removeEventListener('pywebviewready', send);
+      window.removeEventListener('resize', send);
+    };
   }, [presence]);
 
   // Idle = away.  The shell keeps the corner peek; the companion window

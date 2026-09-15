@@ -206,6 +206,37 @@ def set_window_tool_window(window_handle, tool=True):
             logger.error(f"Error setting tool-window style: {e}")
 
 
+def _logical_to_physical(width, height, scale):
+    """A logical (DPI-independent) size in physical pixels at `scale`."""
+    return (round(width * scale), round(height * scale))
+
+
+def set_window_size(window_handle, width, height):
+    """Size a frameless window to width x height LOGICAL px.
+
+    pywebview sizes a window by Form.Size while the form still wears its
+    caption and frame, then drops the frame and keeps the smaller client
+    (measured 2026-09-15: 220x310 asked, 198x254 on screen).  A frameless
+    window's outer size is its client size, so SetWindowPos with the
+    designed size, scaled by the same DPI factor get_screen_dimensions()
+    normalises with, restores what the page was laid out for.
+    """
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            SWP_NOMOVE = 0x0002
+            SWP_NOZORDER = 0x0004
+            SWP_NOACTIVATE = 0x0010
+
+            phys_w, phys_h = _logical_to_physical(width, height, _get_win32_dpi_scale())
+            ctypes.windll.user32.SetWindowPos(
+                window_handle, 0, 0, 0, phys_w, phys_h,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        except Exception as e:
+            logger.error(f"Error setting window size: {e}")
+
+
 def _shape_box(shape, client_w, client_h):
     """Map a page rect (CSS px) onto a window's client rect (physical px).
 
