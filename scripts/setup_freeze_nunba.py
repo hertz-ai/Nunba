@@ -902,25 +902,15 @@ def find_hevolve_modules():
         ]
     found = {}  # mod_name -> (src_path, dst_name)
 
-    # 1. pip-installed modules
-    import importlib.util
-    for mod_name in hevolve_modules:
-        spec = importlib.util.find_spec(mod_name)
-        if spec and spec.origin and os.path.isfile(spec.origin):
-            # Place in lib/ (compiled by cx_Freeze), not root (raw .py)
-            found[mod_name] = (spec.origin, os.path.join("lib", f"{mod_name}.py"))
+    # Same source order as _hartos_packages below: the sibling checkout
+    # first, so lib/'s root modules and <root>/<package>/ come from ONE
+    # tree.  The hartos_backend_src clone comes LAST: build.py makes it
+    # from the fixed HEVOLVE_BRANCH and it can be months behind.  Measured
+    # 2026-09-15 (build 1001): pip's lookup found nothing mid-build, the
+    # clone (gpt4.1 at 3e9d4d2, 2026-04-23) won, and lib/ froze an April
+    # hart_intelligence_entry under a current python-embed.
 
-    # 2. local clone in hartos_backend_src/
-    src_dir = 'hartos_backend_src'
-    if os.path.isdir(src_dir):
-        for mod_name in hevolve_modules:
-            if mod_name in found:
-                continue
-            mod_path = os.path.join(src_dir, f"{mod_name}.py")
-            if os.path.isfile(mod_path):
-                found[mod_name] = (mod_path, os.path.join("lib", f"{mod_name}.py"))
-
-    # 3. sibling HARTOS directory (developer + CI-with-symlink) or
+    # 1. sibling HARTOS directory (developer + CI-with-symlink) or
     #    CI _deps/HARTOS fallback (when the symlink failed).
     _hartos_root_candidates = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -934,6 +924,26 @@ def find_hevolve_modules():
             if mod_name in found:
                 continue
             mod_path = os.path.join(llm_dir, f"{mod_name}.py")
+            if os.path.isfile(mod_path):
+                # Place in lib/ (compiled by cx_Freeze), not root (raw .py)
+                found[mod_name] = (mod_path, os.path.join("lib", f"{mod_name}.py"))
+
+    # 2. pip-installed modules
+    import importlib.util
+    for mod_name in hevolve_modules:
+        if mod_name in found:
+            continue
+        spec = importlib.util.find_spec(mod_name)
+        if spec and spec.origin and os.path.isfile(spec.origin):
+            found[mod_name] = (spec.origin, os.path.join("lib", f"{mod_name}.py"))
+
+    # 3. local clone in hartos_backend_src/ (stale by construction; last resort)
+    src_dir = 'hartos_backend_src'
+    if os.path.isdir(src_dir):
+        for mod_name in hevolve_modules:
+            if mod_name in found:
+                continue
+            mod_path = os.path.join(src_dir, f"{mod_name}.py")
             if os.path.isfile(mod_path):
                 found[mod_name] = (mod_path, os.path.join("lib", f"{mod_name}.py"))
 
