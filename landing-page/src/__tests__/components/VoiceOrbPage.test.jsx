@@ -13,10 +13,15 @@ import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
 import React from 'react';
 
 let ttsHandler = null;
+let uiHandler = null;
 jest.mock('../../services/realtimeService', () => ({
   __esModule: true,
   default: {
-    on: (ev, fn) => { if (ev === 'tts') ttsHandler = fn; },
+    on: (ev, fn) => {
+      if (ev === 'tts') ttsHandler = fn;
+      if (ev === 'agent.ui.update') uiHandler = fn;
+      return () => {};
+    },
     off: () => { ttsHandler = null; },
   },
 }));
@@ -24,6 +29,19 @@ jest.mock('../../services/realtimeService', () => ({
 jest.mock('../../components/VoiceVisualizer', () => ({
   __esModule: true,
   default: ({ isActive }) => <div data-testid="viz" data-active={isActive ? '1' : '0'} />,
+}));
+
+// The consent card is AgentOverlay's (one card, one API); its module pulls
+// the social API client and a QR renderer that jsdom has no use for.
+jest.mock('../../config/apiBase', () => ({API_BASE_URL: ''}));
+jest.mock('../../constants/events', () => ({NUNBA_CAMERA_CONSENT: 'evt'}));
+jest.mock('qrcode.react', () => ({QRCodeSVG: () => null}));
+jest.mock('../../services/socialApi', () => ({
+  consentApi: {
+    grant: jest.fn(() => Promise.resolve({})),
+    decline: jest.fn(() => Promise.resolve({})),
+  },
+  notificationsApi: {markRead: jest.fn(() => Promise.resolve({}))},
 }));
 
 // jsdom has no real media element; stub Audio so the duration probe is inert.
@@ -41,8 +59,22 @@ import VoiceOrbPage from '../../components/VoiceOrb/VoiceOrbPage';
 
 afterEach(() => {
   ttsHandler = null;
+  uiHandler = null;
   try { localStorage.clear(); } catch (e) { /* noop */ }
 });
+
+// The ask integrations/vlm/safety.computer_control_block files while it waits
+// (re-sent every 3 s with the same msg_id, up to 90 s); agent_name is the
+// name HARTOS resolved where the ask was built (HARTOS 6d77030c1).
+const ASK = {
+  type: 'consent.request',
+  msg_id: 'consent.request:row-1',
+  consent_type: 'computer_control',
+  scope: '*',
+  agent_id: '79211163351',
+  agent_name: 'Spider-Man',
+  reason: '',
+};
 
 test('defaults to the visualiser skin', () => {
   render(<VoiceOrbPage />);
@@ -158,6 +190,65 @@ describe('hosted in the desktop companion window', () => {
     const shape = presence.mock.calls.find((c) => c[0] === 'shown')[1];
     expect(shape.w).toBe(shape.vw);
     expect(shape.h).toBe(shape.vh);
+  });
+
+  // A HARTOS consent ask is an agent wanting to talk: it is the one thing
+  // an autonomous agent stops for (owner 2026-09-15 (c): "if it is
+  // autonomous it shd auto ask").  Measured 2026-09-15: the only consent
+  // card, AgentOverlay's, is mounted in Demopage alone, and /voice-orb
+  // mounts this page, so the floating window could never show an ask.
+  describe('a consent ask', () => {
+    const {consentApi} = require('../../services/socialApi');
+    beforeEach(() => { consentApi.grant.mockClear(); consentApi.decline.mockClear(); });
+
+    test('shows the card, by the agent\'s name, and raises the window', () => {
+      render(<VoiceOrbPage />);
+      act(() => { jest.advanceTimersByTime(1500); });
+      presence.mockClear();
+
+      act(() => { uiHandler(ASK); });
+      act(() => { jest.advanceTimersByTime(50); });
+      expect(screen.getByText('Spider-Man asks to control this computer.')).toBeInTheDocument();
+      expect(screen.queryByText('79211163351')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', {name: "Don't allow Spider-Man"})).toBeInTheDocument();
+      // The card needs the owner: the whole window, however idle it was.
+      expect(presence).toHaveBeenCalledWith('shown', expect.objectContaining({x: 0, y: 0, r: 24}));
+      expect(screen.getByTestId('voice-orb').dataset.presence).toBe('shown');
+    });
+
+    test('an ask with no name says "An agent"', () => {
+      render(<VoiceOrbPage />);
+      act(() => { uiHandler({...ASK, msg_id: 'consent.request:row-2', agent_name: undefined}); });
+      expect(screen.getByText('An agent asks to control this computer.')).toBeInTheDocument();
+    });
+
+    test('the same ask re-sent while its card is up shows one card', () => {
+      render(<VoiceOrbPage />);
+      act(() => { uiHandler(ASK); uiHandler(ASK); uiHandler(ASK); });
+      expect(screen.getAllByText('Spider-Man asks to control this computer.')).toHaveLength(1);
+    });
+
+    test('granting answers through the one consent API and lets the window go', async () => {
+      jest.useRealTimers();
+      render(<VoiceOrbPage />);
+      act(() => { uiHandler(ASK); });
+      fireEvent.click(screen.getByRole('button', {name: 'Allow ALL agents to control this computer'}));
+      await waitFor(() => expect(consentApi.grant).toHaveBeenCalledWith({
+        consent_type: 'computer_control', scope: '*',
+      }));
+      await waitFor(() =>
+        expect(screen.queryByText('Spider-Man asks to control this computer.')).not.toBeInTheDocument());
+      // Answered: the ask no longer holds the window open (the presence
+      // effect runs after the dismiss, which arrives from the grant's promise).
+      await waitFor(() =>
+        expect(screen.getByTestId('voice-orb').dataset.presence).toBe('hidden'));
+    });
+
+    test('other agent UI (a notification card) does not reach the floating window', () => {
+      render(<VoiceOrbPage />);
+      act(() => { uiHandler({type: 'notification', agent_id: 'x', message: 'Digest ready'}); });
+      expect(screen.queryByText('Digest ready')).not.toBeInTheDocument();
+    });
   });
 });
 

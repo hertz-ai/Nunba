@@ -1,5 +1,6 @@
 
 import realtimeService from '../../services/realtimeService';
+import { ConsentPromptOverlay } from '../AgentOverlay/AgentOverlay';
 import VoiceVisualizer from '../VoiceVisualizer';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -34,10 +35,17 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
  *   'hidden' -> idle: no window at all;
  *   'orb'    -> an agent is speaking (or just stopped): the window is cut to
  *               the orb's own rect, a floating disc and nothing else;
- *   'shown'  -> the owner reached for it (pointer / keys): the whole card,
- *               orb + quick prompt, with rounded corners.
+ *   'shown'  -> the owner reached for it (pointer / keys), or an agent is
+ *               asking for consent: the whole card, with rounded corners.
  * Owner 2026-09-15: the floating window exists only while an agent wants to
- * talk, and morphs from the orb to the card on demand.  `shape` is the CSS
+ * talk, and morphs from the orb to the card on demand.  A HARTOS consent ask
+ * (type 'consent.request' on the agent.ui.update channel) is an agent
+ * wanting to talk, and the one thing an autonomous agent stops for (owner
+ * (c): "if it is autonomous it shd auto ask"), so the page shows
+ * AgentOverlay's own consent card in the orb's place and holds the window
+ * open until it is answered.  Measured 2026-09-15: that card was mounted in
+ * Demopage alone, so an ask reached the main window only, and the floating
+ * window built for exactly this stayed hidden.  `shape` is the CSS
  * rect to keep (x, y, w, h, corner radius r, viewport vw/vh); the bridge
  * clips the window to it.  That clipping is the only way to get the look
  * here: measured that day with the install's own pywebview, a transparent
@@ -346,8 +354,24 @@ export default function VoiceOrbPage() {
   // after a clip so consecutive sentences do not blink the window.
   const lastSpoke = useRef(0);
   const orbBox = useRef(null);
+  // HARTOS consent asks waiting for the owner, oldest first; one card at a
+  // time.  Keyed by msg_id while on screen, the way AgentOverlay does it: a
+  // gate that waits re-sends the same ask every 3 s, and after "Not now" it
+  // may show again.
+  const [asks, setAsks] = useState([]);
+  const asking = asks.length > 0;
 
   const active = speaking;
+
+  useEffect(() => {
+    function onAgentUi(payload) {
+      if (!payload || payload.type !== 'consent.request') return;
+      setAsks((prev) => (payload.msg_id && prev.some((a) => a.msg_id === payload.msg_id)
+        ? prev : [...prev, payload]));
+    }
+    return realtimeService.on('agent.ui.update', onAgentUi);
+  }, []);
+  const answerAsk = useCallback(() => setAsks((prev) => prev.slice(1)), []);
 
   // Skin follows the admin setting, live across documents.
   useEffect(() => {
@@ -386,14 +410,14 @@ export default function VoiceOrbPage() {
     };
   }, []);
 
-  // Presence: the owner reaching for it wins ('shown'), then the agent
-  // talking ('orb', lingering one idle window past the clip), else idle
-  // ('hidden').  Decided on every change of speaking and once a second, like
-  // a taskbar's auto-hide.
+  // Presence: an ask waiting for the owner, or the owner reaching for it,
+  // wins ('shown'), then the agent talking ('orb', lingering one idle window
+  // past the clip), else idle ('hidden').  Decided on every change of
+  // speaking or asking and once a second, like a taskbar's auto-hide.
   useEffect(() => {
     const decide = () => {
       const now = Date.now();
-      const interacting = now - lastInteract.current < IDLE_MS;
+      const interacting = asking || now - lastInteract.current < IDLE_MS;
       const lingering = now - lastSpoke.current < IDLE_MS;
       const next = interacting ? 'shown' : (active || lingering) ? 'orb' : 'hidden';
       setPresence((prev) => (prev === next ? prev : next));
@@ -407,7 +431,7 @@ export default function VoiceOrbPage() {
       evs.forEach((ev) => window.removeEventListener(ev, wake, true));
       clearInterval(id);
     };
-  }, [active]);
+  }, [active, asking]);
 
   // Hosted: the window follows the page's state and shape.  Sent on every
   // change, again at 'pywebviewready' (`.api` may not exist when the first
@@ -456,32 +480,48 @@ export default function VoiceOrbPage() {
         overflow: 'hidden',
       }}
     >
-      <div
-        ref={orbBox}
-        onClick={() => companionApi('on_companion_click')}
-        onDoubleClick={() => companionApi('on_companion_dblclick')}
-        title="Open Nunba"
-        style={{
-          flex: '1 1 auto',
-          // Full width, so the visualiser measures the page's width and not
-          // its own canvas (alignItems:center would shrink-wrap this box to
-          // the canvas, and the 80% cap then shrinks the canvas on every
-          // measure).
-          alignSelf: 'stretch',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          minHeight: 0,
-          // Clickable (-> bring the main app forward); no-drag so the click
-          // registers. Empty areas of the root stay draggable.
-          WebkitAppRegion: 'no-drag',
-          cursor: 'pointer',
-        }}
-      >
-        {skin === 'character'
-          ? <Character active={active} />
-          : <VoiceVisualizer isActive={active} size={140} />}
-      </div>
+      {asking ? (
+        // The ask in the orb's place: AgentOverlay's own card, answered
+        // through the one consent API.  Scrolls inside the 220x310 card; the
+        // buttons opt out of window drag so they take the click.
+        <div
+          data-testid="companion-consent"
+          style={{
+            flex: '1 1 auto', alignSelf: 'stretch', minHeight: 0,
+            overflow: 'auto', color: '#fff', fontSize: 12,
+            WebkitAppRegion: 'no-drag',
+          }}
+        >
+          <ConsentPromptOverlay data={asks[0]} onDismiss={answerAsk} />
+        </div>
+      ) : (
+        <div
+          ref={orbBox}
+          onClick={() => companionApi('on_companion_click')}
+          onDoubleClick={() => companionApi('on_companion_dblclick')}
+          title="Open Nunba"
+          style={{
+            flex: '1 1 auto',
+            // Full width, so the visualiser measures the page's width and not
+            // its own canvas (alignItems:center would shrink-wrap this box to
+            // the canvas, and the 80% cap then shrinks the canvas on every
+            // measure).
+            alignSelf: 'stretch',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minHeight: 0,
+            // Clickable (-> bring the main app forward); no-drag so the click
+            // registers. Empty areas of the root stay draggable.
+            WebkitAppRegion: 'no-drag',
+            cursor: 'pointer',
+          }}
+        >
+          {skin === 'character'
+            ? <Character active={active} />
+            : <VoiceVisualizer isActive={active} size={140} />}
+        </div>
+      )}
       <InputBar />
     </div>
   );

@@ -818,7 +818,10 @@ function consentCardFor(data) {
   };
 }
 
-function ConsentPromptOverlay({ data, onDismiss }) {
+// Exported: the desktop companion window (VoiceOrb/VoiceOrbPage) shows the
+// same card for a HARTOS consent.request, so an ask reaches the owner while
+// the main window is behind other windows.  One card, one consent API.
+export function ConsentPromptOverlay({ data, onDismiss }) {
   const card = consentCardFor(data || {});
   const grant = async () => {
     try {
