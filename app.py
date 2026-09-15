@@ -6902,17 +6902,26 @@ def _resolve_hwnd(window_instance):
         return 0
     try:
         import ctypes as _ct
+
+        def _as_int(handle):
+            # pythonnet hands Form.Handle over as a System.IntPtr, which int()
+            # rejects (TypeError) -- measured on the install 2026-09-15, where
+            # that made this resolver return 0 for every window.  pywebview
+            # itself reads the handle with Handle.ToInt32().
+            to_int = getattr(handle, 'ToInt64', None)
+            return int(to_int()) if to_int else int(handle)
+
         # pywebview 6.x: Window.native is the WinForms form (set at creation).
         # Checked first so a second window (the companion) resolves to its own
         # handle and never falls through to the main window's title.
         native = getattr(window_instance, 'native', None)
         if native is not None and getattr(native, 'Handle', None):
-            return int(native.Handle)
+            return _as_int(native.Handle)
         ow = getattr(window_instance, 'original_window', None)
         if ow is not None and getattr(ow, 'handle', None):
-            return int(ow.handle)
+            return _as_int(ow.handle)
         if getattr(window_instance, 'handle', None):
-            return int(window_instance.handle)
+            return _as_int(window_instance.handle)
         return int(_ct.windll.user32.FindWindowW(None, args.title) or 0)
     except Exception as _e:
         logger.debug("_resolve_hwnd failed: %s", _e)

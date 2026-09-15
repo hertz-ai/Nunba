@@ -49,6 +49,9 @@ Fix invariants (these tests enforce):
      shows + raises it otherwise; the page sends it; the window is a tool
      window (no taskbar entry).  Owner 2026-09-15: the floating window
      exists only while an agent wants to talk.
+  K. _resolve_hwnd MUST turn pywebview's Window.native.Handle (a
+     System.IntPtr under pythonnet) into an int: int(IntPtr) raises, and
+     the resolver's catch-all turned that into hwnd 0 for EVERY window.
 """
 
 from __future__ import annotations
@@ -431,6 +434,56 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         helper = (REPO_ROOT / "desktop" / "platform_utils.py").read_text(encoding="utf-8")
         self.assertIn("def set_window_tool_window(window_handle, tool=True):", helper)
         self.assertIn("WS_EX_TOOLWINDOW = 0x00000080", helper)
+
+    # ── Invariant K: the resolver reads pythonnet's IntPtr handle ─────
+    def test_resolve_hwnd_converts_pywebviews_intptr_handle(self):
+        """Live 2026-09-15 (hot-patched 6bc7b4f8, PID 49556): the companion
+        was created on screen and hid itself, yet its exstyle stayed 0x50008
+        (no WS_EX_TOOLWINDOW) and the main window logged "Error applying
+        window positioning" instead of snap_to_work_area, which the two
+        earlier boots logged.  Measured under the install's own pythonnet
+        (lib\\pythonnet): Window.native.Handle is a System.IntPtr, bool() is
+        True, int() raises "int() argument must be ... not 'IntPtr'", and
+        IntPtr.ToInt64() returns the handle.  _resolve_hwnd swallowed that
+        TypeError at DEBUG and returned 0, so every hwnd-gated step (tool
+        window, raise, snap) was skipped for every window.  pywebview reads
+        the handle with Handle.ToInt32(); the resolver must convert the
+        same way.
+        """
+        import logging
+        import types
+
+        src = APP_PY.read_text(encoding="utf-8")
+        start = src.index("def _resolve_hwnd(window_instance):")
+        end = src.index("\ndef _clamped_maximize", start)
+        ns = {
+            "sys": types.SimpleNamespace(platform="win32"),
+            "logger": logging.getLogger("test_resolve_hwnd"),
+            "args": types.SimpleNamespace(title="Nunba"),
+        }
+        exec(compile(src[start:end], str(APP_PY), "exec"), ns)  # noqa: S102
+        resolve = ns["_resolve_hwnd"]
+
+        class _IntPtr:
+            # System.IntPtr as pythonnet exposes it: no __int__/__index__,
+            # ToInt64/ToInt32 return the value.
+            def __init__(self, value):
+                self._value = value
+
+            def ToInt64(self):
+                return self._value
+
+            def ToInt32(self):
+                return self._value
+
+        with self.assertRaises(TypeError):
+            int(_IntPtr(1052598))  # the measured failure mode
+
+        form = types.SimpleNamespace(Handle=_IntPtr(1052598))
+        self.assertEqual(resolve(types.SimpleNamespace(native=form)), 1052598)
+        # A host that already hands over an int keeps working.
+        self.assertEqual(resolve(types.SimpleNamespace(
+            native=types.SimpleNamespace(Handle=594172))), 594172)
 
 
 class RestartMinimizeBehaviouralTests(unittest.TestCase):
