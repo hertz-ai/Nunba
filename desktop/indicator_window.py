@@ -51,6 +51,22 @@ logging.basicConfig(
 
 logger = logging.getLogger('LLM_Control_Indicator_TK')
 
+#: The panel's one colour: every widget background in the panel.  One source,
+#: so a stray shade cannot creep in as a solid block against the rest.
+PANEL_BG = '#1E1E1E'
+
+#: How much of what is behind the panel shows through (tk -alpha, a layered
+#: window: whole-window translucency, full hit-testing).  Owner 2026-09-15:
+#: "the floatinf window shd have transparent glass like bg".  Translucency is
+#: what this desktop can give a tk window: blurred glass is not reachable
+#: here, measured by screen pixels on Windows 11 25H2 (build 26200) on
+#: 2026-09-15: the legacy accent policy (SetWindowCompositionAttribute
+#: ACRYLICBLURBEHIND) paints its tint solid, and the Win11 system backdrop
+#: turns the panel flat grey with its text faded; -alpha is the one
+#: mechanism whose blend the pixels confirmed (a white window behind the
+#: panel reads 30/30/30 opaque, 75/75/75 at 0.8).
+PANEL_ALPHA = 0.8
+
 # Global variables
 indicator_window = None
 indicator_active = False
@@ -298,8 +314,8 @@ class RibbonIndicator:
             tab_label = tab_frame.winfo_children()[0]
             
             if active:
-                tab_frame.config(bg='#1E1E1E')  # Darker when active
-                tab_label.config(bg='#1E1E1E', text="🔺")  # Pin icon
+                tab_frame.config(bg=PANEL_BG)  # Darker when active
+                tab_label.config(bg=PANEL_BG, text="🔺")  # Pin icon
             else:
                 tab_frame.config(bg='#2F2F2F')
                 tab_label.config(bg='#2F2F2F', text="🔻")
@@ -322,7 +338,7 @@ class RibbonIndicator:
             self.panel_window.attributes('-topmost', True)
             
             try:
-                self.panel_window.attributes('-alpha', 0.95)
+                self.panel_window.attributes('-alpha', PANEL_ALPHA)
             except Exception:
                 pass
             
@@ -421,26 +437,26 @@ class RibbonIndicator:
         """Set up the modern control panel content matching the HTML design"""
         try:
             # Main container with dark theme
-            main_frame = tk.Frame(self.panel_window, bg='#1E1E1E', bd=1, relief='solid')
+            main_frame = tk.Frame(self.panel_window, bg=PANEL_BG, bd=1, relief='solid')
             main_frame.pack(fill=tk.BOTH, expand=True)
             
             # Create the toolbar
-            toolbar = tk.Frame(main_frame, bg='#1E1E1E')
+            toolbar = tk.Frame(main_frame, bg=PANEL_BG)
             toolbar.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
             
             # Left side - Timer section
-            timer_frame = tk.Frame(toolbar, bg='#1E1E1E')
+            timer_frame = tk.Frame(toolbar, bg=PANEL_BG)
             timer_frame.pack(side=tk.LEFT, fill=tk.Y)
             
             # Timer icon and counter
-            timer_container = tk.Frame(timer_frame, bg='#1E1E1E')
+            timer_container = tk.Frame(timer_frame, bg=PANEL_BG)
             timer_container.pack(side=tk.LEFT, pady=8)
             
             # Timer icon
             timer_icon = tk.Label(
                 timer_container, 
                 text="T", 
-                bg='#1E1E1E', 
+                bg=PANEL_BG, 
                 fg='white', 
                 font=('Segoe UI', 13, 'bold')
             )
@@ -450,7 +466,7 @@ class RibbonIndicator:
             self.timer_label = tk.Label(
                 timer_container, 
                 text="00:00", 
-                bg='#1E1E1E', 
+                bg=PANEL_BG, 
                 fg='white', 
                 font=('Segoe UI', 13, 'bold')
             )
@@ -461,14 +477,14 @@ class RibbonIndicator:
             separator.pack(side=tk.LEFT, fill=tk.Y, padx=12)
 
             # Right side - Stop button section
-            button_frame = tk.Frame(toolbar, bg='#1E1E1E')
+            button_frame = tk.Frame(toolbar, bg=PANEL_BG)
             button_frame.pack(side=tk.RIGHT, fill=tk.Y)
 
             # Middle - what the AI is doing now (one line, left-aligned)
             self.step_label = tk.Label(
                 toolbar,
                 text=self.step_text,
-                bg='#1E1E1E',
+                bg=PANEL_BG,
                 fg='#DDDDDD',
                 font=('Segoe UI', 10),
                 anchor='w',
@@ -477,14 +493,14 @@ class RibbonIndicator:
             self.step_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
             
             # Stop button container
-            stop_container = tk.Frame(button_frame, bg='#1E1E1E')
+            stop_container = tk.Frame(button_frame, bg=PANEL_BG)
             stop_container.pack(side=tk.RIGHT, pady=6)
             
             # Pulse indicator
             self.pulse_label = tk.Label(
                 stop_container,
                 text="●",  # Bullet point as pulse
-                bg='#1E1E1E',
+                bg=PANEL_BG,
                 fg='#FF5F57',
                 font=('Segoe UI', 8)
             )
@@ -510,7 +526,7 @@ class RibbonIndicator:
             collapse_button = tk.Button(
                 stop_container,
                 text="×",
-                bg='#1E1E1E',
+                bg=PANEL_BG,
                 fg='#666',
                 font=('Segoe UI', 12, 'bold'),
                 relief=tk.FLAT,
