@@ -8069,10 +8069,14 @@ def main():
                             _port = 5000
                         _url = f"http://127.0.0.1:{_port}/chat"
                         try:
+                            # /chat's contract names the prompt `text`
+                            # (routes/chatbot_routes.py chat_route); the
+                            # `message` alias this sent was a 400 on every
+                            # companion prompt (2026-09-15).
                             r = requests.post(
                                 _url,
                                 json={
-                                    "message": prompt,
+                                    "text": prompt,
                                     "source": "companion_input_bar",
                                 },
                                 timeout=60,

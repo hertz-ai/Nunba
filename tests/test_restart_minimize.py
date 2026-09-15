@@ -41,6 +41,9 @@ Fix invariants (these tests enforce):
   H. Once its page has loaded, the companion MUST re-assert topmost
      through Win32 (the canonical desktop.platform_utils helper) on its
      OWN handle: on_top=True at creation left it below ordinary windows.
+  I. Both companion senders MUST post the prompt to /chat under `text`,
+     the key /chat's contract names (routes/chatbot_routes.py chat_route
+     docstring); `message` is a /custom_gpt alias and /chat 400s on it.
 """
 
 from __future__ import annotations
@@ -355,6 +358,37 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         resolver = r.group(1)
         self.assertLess(resolver.index("'native'"),
                         resolver.index("FindWindowW(None"))
+
+    # ── Invariant I: the companion speaks /chat's contract ────────────
+    def test_companion_senders_post_the_prompt_as_text(self):
+        """Live 2026-09-15 (Nunba 89096d49): every prompt typed into the
+        floating "Ask HART" bar came back "Error 400 -- try again"
+        ([COMPANION] /chat returned 400 at 13:46:13).  /chat's contract is
+        {text, user_id, agent_id, agent_type, conversation_id, video_req}
+        (chat_route docstring) and its turn reads `text`; both companion
+        senders posted the prompt as `message`, the RN alias only
+        /custom_gpt's _turn_text accepts.  The client conforms; the server
+        contract stays.
+        """
+        import re
+
+        src = APP_PY.read_text(encoding="utf-8")
+        m = re.search(r"def on_companion_prompt\(self, text\):(.*?)\n                def |"
+                      r"def on_companion_prompt\(self, text\):(.*?)\n            _companion_api",
+                      src, re.S)
+        self.assertIsNotNone(m, "on_companion_prompt not found")
+        bridge = m.group(1) or m.group(2)
+        body = re.search(r"json=\{(.*?)\}", bridge, re.S)
+        self.assertIsNotNone(body, "the bridge's /chat body not found")
+        self.assertIn('"text": prompt', body.group(1))
+        self.assertNotIn('"message"', body.group(1))
+
+        page = (REPO_ROOT / "landing-page" / "src" / "components" / "VoiceOrb"
+                / "VoiceOrbPage.jsx").read_text(encoding="utf-8")
+        fetch = re.search(r"fetch\('/chat',(.*?)\}\);", page, re.S)
+        self.assertIsNotNone(fetch, "VoiceOrbPage /chat fallback not found")
+        self.assertIn("text: t", fetch.group(1))
+        self.assertNotIn("message: t", fetch.group(1))
 
 
 class RestartMinimizeBehaviouralTests(unittest.TestCase):

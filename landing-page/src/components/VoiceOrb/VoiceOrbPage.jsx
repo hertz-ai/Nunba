@@ -171,10 +171,12 @@ function InputBar() {
       if (api && api.on_companion_prompt) {
         answer = await api.on_companion_prompt(t);
       } else {
+        // /chat's contract names the prompt `text` (chat_route docstring);
+        // `message` is the /custom_gpt alias and /chat answers it with 400.
         const r = await fetch('/chat', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({message: t, source: 'companion_input_bar'}),
+          body: JSON.stringify({text: t, source: 'companion_input_bar'}),
         });
         const d = r.ok ? await r.json() : null;
         answer = (d && (d.response || d.message || d.text)) || 'OK';
