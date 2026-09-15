@@ -343,6 +343,73 @@ describe('AgentOverlay consent.request — answered on another surface', () => {
   });
 });
 
+describe('AgentOverlay consent.request — a device ask (#111)', () => {
+  // HARTOS files this when a person's phone asks to reach this desktop's
+  // agents from the network (hevolve-react-native-1e, #111 phase 1):
+  // consent_type device_access, scope 'device:<64 hex key>', agent_id null,
+  // requester_name the person, reason the sentence.  The grant is that
+  // exact scope: one phone, never a blanket over every agent.
+  const KEY = 'a'.repeat(64);
+  const DEVICE_ASK = {
+    type: 'consent.request',
+    msg_id: 'consent.request:row-9',
+    consent_type: 'device_access',
+    scope: `device:${KEY}`,
+    agent_id: null,
+    requester_name: 'Giri',
+    reason: "Giri's phone asks to use this computer's agents from the network.",
+  };
+
+  test('names the person, grants that one phone, and never says ALL agents', async () => {
+    const send = mountOverlay();
+    send(DEVICE_ASK);
+    expect(await screen.findByText(DEVICE_ASK.reason)).toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: /ALL agents/})).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', {name: "Always allow Giri's phone"}));
+    await waitFor(() => {
+      expect(consentApi.grant).toHaveBeenCalledWith({
+        consent_type: 'device_access',
+        scope: `device:${KEY}`,
+      });
+    });
+  });
+
+  test('an ask with no reason still says who asks and for what', async () => {
+    const send = mountOverlay();
+    send({...DEVICE_ASK, msg_id: 'consent.request:row-10', reason: ''});
+    expect(
+      await screen.findByText('Giri asks to reach this computer from their phone.'),
+    ).toBeInTheDocument();
+  });
+
+  test('offers no decline until the privacy page can re-allow a person', async () => {
+    // A no stands until the owner allows again on the privacy page; that
+    // page has no per-person device card yet (#111 phase 1, in review), so
+    // a decline here would strand the phone.  Flips with privacyCard.
+    const send = mountOverlay();
+    send(DEVICE_ASK);
+    await screen.findByText(DEVICE_ASK.reason);
+    expect(screen.queryByRole('button', {name: /Don't allow/})).toBeNull();
+  });
+
+  test('a grant for that phone dismisses the ask; a grant for another phone does not', async () => {
+    const send = mountOverlay();
+    send(DEVICE_ASK);
+    await screen.findByText(DEVICE_ASK.reason);
+
+    send({type: 'consent.granted', consent_type: 'device_access',
+      scope: `device:${'b'.repeat(64)}`, agent_id: null}, 'consent.granted');
+    expect(screen.getByText(DEVICE_ASK.reason)).toBeInTheDocument();
+
+    send({type: 'consent.granted', consent_type: 'device_access',
+      scope: `device:${KEY}`, agent_id: null}, 'consent.granted');
+    await waitFor(() => {
+      expect(screen.queryByText(DEVICE_ASK.reason)).not.toBeInTheDocument();
+    });
+  });
+});
+
 describe('AgentOverlay consent_prompt (browser research)', () => {
   test('still grants cloud_capability for its platform', async () => {
     const send = mountOverlay();

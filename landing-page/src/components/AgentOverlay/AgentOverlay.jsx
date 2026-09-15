@@ -1,7 +1,7 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import {
-  CONSENT_ANSWER_TYPES, allowAllLabel, answerCoversAsk, askerName, canDecline,
-  consentAskText, declineLabel,
+  CONSENT_ANSWER_TYPES, answerCoversAsk, askerName, canDecline, consentAskText,
+  declineLabel, grantLabel,
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
@@ -788,21 +788,24 @@ function OverlayContent({ data, onDismiss, navigate }) {
 // (cloud_capability for one platform) and a HARTOS consent.request ask
 // (ConsentService.request_consent).  The consent API grant writes a row
 // with no agent, so a consent.request grant covers every agent and its
-// button says so (constants/consentAsks.allowAllLabel).
+// button says so (constants/consentAsks.grantLabel) — except a person's
+// device ask (#111), granted for that one phone by its exact scope.
 function consentCardFor(data) {
   if (data.type === 'consent.request') {
+    // An agent's ask names the agent; a person's ask names the person.
+    const who = data.agent_name || data.requester_name;
     return {
       consentType: data.consent_type,
       scope: data.scope || '*',
       agentId: data.agent_id || null,
       title: 'Permission needed',
       text: data.reason ||
-        `${askerName(data.agent_name)} asks to ${consentAskText(data.consent_type)}.`,
-      grantLabel: allowAllLabel(data.consent_type),
+        `${askerName(who, data.consent_type)} asks to ${consentAskText(data.consent_type)}.`,
+      grantLabel: grantLabel(data.consent_type, who),
       // A no stands until the owner allows the type again on the privacy
       // page, so only a type with a card there can be declined here.
       declineLabel: canDecline(data.consent_type)
-        ? declineLabel(data.agent_id, data.agent_name) : null,
+        ? declineLabel(data.consent_type, data.agent_id, who) : null,
     };
   }
   const platform = data.platform || data.scope || 'platform';
