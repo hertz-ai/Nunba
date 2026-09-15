@@ -3,10 +3,14 @@
  *
  * HARTOS asks the desktop owner through ConsentService.request_consent
  * (integrations/social/consent_service.py); the ask arrives as
- * {type: 'consent.request', consent_type, scope, agent_id, reason}.
+ * {type: 'consent.request', consent_type, scope, agent_id, agent_name, reason}.
  * When the producer gives a reason (integrations/vlm/safety.
  * computer_control_block does), the card shows that reason; this module
  * says what is asked when there is none, and names the answers.
+ *
+ * Who asks: agent_name is the agent's own name, resolved by HARTOS where the
+ * ask is built.  agent_id is a prompt id, which means nothing to a person, so
+ * the card never shows it; an ask without a name says "An agent".
  *
  * Allow: every grant the SPA makes goes through /api/social/consent, which
  * writes a row with no agent, so it covers every agent.  The button says
@@ -43,6 +47,12 @@ export function consentAskText(consentType) {
   return `use ${name}`;
 }
 
+// Who is asking, as a person would say it: the agent's name, else "An agent".
+export function askerName(agentName) {
+  const name = String(agentName || '').trim();
+  return name || 'An agent';
+}
+
 // The grant button: a grant from the SPA covers every agent.
 export function allowAllLabel(consentType) {
   return `Allow ALL agents to ${consentAskText(consentType)}`;
@@ -52,7 +62,10 @@ export function canDecline(consentType) {
   return PRIVACY_CARD_TYPES.includes(consentType);
 }
 
-// The decline button: an ask that names an agent is declined for it only.
-export function declineLabel(agentId) {
-  return agentId ? "Don't allow this agent" : "Don't allow";
+// The decline button: an ask that names an agent is declined for it only,
+// and says which one when the agent has a name.
+export function declineLabel(agentId, agentName) {
+  if (!agentId) return "Don't allow";
+  const name = String(agentName || '').trim();
+  return name ? `Don't allow ${name}` : "Don't allow this agent";
 }

@@ -87,6 +87,16 @@ class RibbonIndicator:
         self.panel_window = None
         self.start_time = time.time()
         self.timer_label = None
+        # What the AI is doing right now, in words.  HARTOS's VLM loop sends
+        # each step's action with its show request (integrations/vlm/
+        # local_loop._notify_desktop_indicator); the panel shows the latest.
+        # Before this the ribbon could only say THAT the AI was in control.
+        self.step_text = ''
+        self.step_label = None
+        # The panel opens by itself for a run's FIRST caption only; after
+        # that a collapse by the owner stands, since the loop sends a
+        # captioned show before every action.  hide() (run end) resets it.
+        self.step_opened_panel = False
         self.auto_collapse_timer = None
         self.pulse_animation = None
         self.is_hovering = False
@@ -103,10 +113,12 @@ class RibbonIndicator:
         self.tab_x = (self.screen_width - self.tab_width) // 2
         self.tab_y = 8           # Very close to top edge
         
-        # Expanded panel dimensions - larger and more modern
-        self.panel_width = 320
+        # Expanded panel dimensions - larger and more modern.  Wide enough
+        # for a line of step text between the timer and the Stop button,
+        # never wider than the screen.
+        self.panel_width = max(320, min(520, self.screen_width - 16))
         self.panel_height = 60
-        self.panel_x = (self.screen_width - self.panel_width) // 2
+        self.panel_x = max(0, (self.screen_width - self.panel_width) // 2)
         self.panel_y = self.tab_y + self.tab_height + 8
         
         # Create only the ribbon tab (no main bar)
@@ -447,10 +459,22 @@ class RibbonIndicator:
             # Separator line
             separator = tk.Frame(toolbar, bg='#444444', width=1)
             separator.pack(side=tk.LEFT, fill=tk.Y, padx=12)
-            
+
             # Right side - Stop button section
             button_frame = tk.Frame(toolbar, bg='#1E1E1E')
             button_frame.pack(side=tk.RIGHT, fill=tk.Y)
+
+            # Middle - what the AI is doing now (one line, left-aligned)
+            self.step_label = tk.Label(
+                toolbar,
+                text=self.step_text,
+                bg='#1E1E1E',
+                fg='#DDDDDD',
+                font=('Segoe UI', 10),
+                anchor='w',
+                justify=tk.LEFT,
+            )
+            self.step_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
             
             # Stop button container
             stop_container = tk.Frame(button_frame, bg='#1E1E1E')
@@ -666,6 +690,31 @@ class RibbonIndicator:
                 logger.info("Ribbon tab shown")
         except Exception as e:
             logger.error(f"Error showing ribbon tab: {str(e)}")
+
+    def set_step(self, text):
+        """Say what the AI is doing now.  Safe from any thread: the widget
+        work runs on the tk loop.  The run's first text opens the panel so
+        it can be read; later texts only update the line, so a collapse by
+        the owner stands.  An empty text clears the line."""
+        self.step_text = _one_line(text)
+        try:
+            if self.ribbon_window:
+                self.ribbon_window.after(0, self._apply_step)
+        except Exception as e:
+            logger.error(f"Error queueing step text: {str(e)}")
+
+    def _apply_step(self):
+        try:
+            if (self.step_label and self.panel_window and
+                    self.panel_window.winfo_exists() and
+                    self.step_label.winfo_exists()):
+                self.step_label.config(text=self.step_text)
+            if (self.step_text and not self.expanded
+                    and not self.step_opened_panel):
+                self.step_opened_panel = True
+                self.expand_panel()
+        except Exception as e:
+            logger.error(f"Error showing step text: {str(e)}")
     
     def hide(self):
         """Hide the ribbon tab"""
@@ -680,7 +729,9 @@ class RibbonIndicator:
             # Reset state
             self.expanded = False
             self.is_animating = False
-            
+            self.step_text = ''
+            self.step_opened_panel = False
+
             if self.ribbon_window:
                 self.ribbon_window.withdraw()
                 logger.info("Ribbon tab hidden")
@@ -895,15 +946,27 @@ def initialize_indicator(server_port=5000):
         logger.error(f"Error initializing ribbon indicator: {str(e)}")
         return False
 
-def toggle_indicator(show=True, server_port=5000):
-    """Toggle the ribbon visibility"""
+def _one_line(text, limit=160):
+    """A step caption fit for one panel line."""
+    words = str(text or '').split()
+    line = ' '.join(words)
+    return line if len(line) <= limit else line[:limit - 1].rstrip() + '…'
+
+
+def toggle_indicator(show=True, server_port=5000, text=None):
+    """Toggle the ribbon visibility.
+
+    ``text`` says what the AI is doing now (HARTOS sends each VLM step's
+    action with its show request); it rides only with ``show`` and is left
+    alone when the caller sends none, so a bare show keeps the last line.
+    """
     global indicator_active, control_start_time, _indicator_window
-    
+
     try:
         if _indicator_window is None:
             initialize_indicator(server_port)
             time.sleep(0.5)
-        
+
         if show and not indicator_active:
             _indicator_window.show()
             indicator_active = True
@@ -920,7 +983,11 @@ def toggle_indicator(show=True, server_port=5000):
             _indicator_window.hide()
             indicator_active = False
             logger.info("Ribbon indicator hidden")
-        
+
+        if show and text is not None:
+            _indicator_window.set_step(text)
+            logger.info(f"Ribbon step: {_one_line(text)}")
+
         return indicator_active
     except Exception as e:
         logger.error(f"Error toggling ribbon indicator: {str(e)}")
@@ -936,7 +1003,9 @@ def show_indicator(server_port=5000):
 
 def get_status():
     """Get current status"""
-    return {"active": indicator_active, "start_time": control_start_time}
+    step = getattr(_indicator_window, 'step_text', '') if _indicator_window else ''
+    return {"active": indicator_active, "start_time": control_start_time,
+            "step": step}
 
 def reset_timer():
     """Reset the control timer"""

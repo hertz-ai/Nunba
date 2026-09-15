@@ -1,6 +1,6 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import {
-  allowAllLabel, canDecline, consentAskText, declineLabel,
+  allowAllLabel, askerName, canDecline, consentAskText, declineLabel,
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
@@ -795,11 +795,13 @@ function consentCardFor(data) {
       scope: data.scope || '*',
       agentId: data.agent_id || null,
       title: 'Permission needed',
-      text: data.reason || `An agent asks to ${consentAskText(data.consent_type)}.`,
+      text: data.reason ||
+        `${askerName(data.agent_name)} asks to ${consentAskText(data.consent_type)}.`,
       grantLabel: allowAllLabel(data.consent_type),
       // A no stands until the owner allows the type again on the privacy
       // page, so only a type with a card there can be declined here.
-      declineLabel: canDecline(data.consent_type) ? declineLabel(data.agent_id) : null,
+      declineLabel: canDecline(data.consent_type)
+        ? declineLabel(data.agent_id, data.agent_name) : null,
     };
   }
   const platform = data.platform || data.scope || 'platform';
@@ -1009,9 +1011,11 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
             animation: 'agentSlideUp 0.3s ease',
             '@keyframes agentSlideUp': { from: { opacity: 0, transform: 'translateY(20px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
           }}>
-            {/* Agent badge */}
-            {overlay.agent_id && (
-              <Chip label={overlay.agent_id} size="small"
+            {/* Agent badge: the agent's name.  A bare id (a prompt id) means
+                nothing to a person, so an overlay with only an id gets no
+                badge. */}
+            {overlay.agent_name && (
+              <Chip label={overlay.agent_name} size="small"
                 sx={{ position: 'absolute', top: 8, left: 12, fontSize: '0.65rem', height: 20,
                   background: 'rgba(108,99,255,0.2)', color: ACCENT, border: '1px solid rgba(108,99,255,0.3)' }} />
             )}
@@ -1020,7 +1024,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
               sx={{ position: 'absolute', top: 4, right: 4, color: 'rgba(255,255,255,0.4)', '&:hover': { color: '#fff' } }}>
               <CloseIcon sx={{ fontSize: 16 }} />
             </IconButton>
-            <Box sx={{ mt: overlay.agent_id ? 2.5 : 0 }}>
+            <Box sx={{ mt: overlay.agent_name ? 2.5 : 0 }}>
               <OverlayContent data={overlay} onDismiss={() => dismiss(overlay._id)} navigate={navigate} />
             </Box>
           </Box>

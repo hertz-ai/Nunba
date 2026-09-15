@@ -178,6 +178,38 @@ describe('AgentOverlay consent.request', () => {
       });
     });
   });
+
+  test('a named agent is asked for by name, never by its id', async () => {
+    // HARTOS resolves agent_name where the ask is built
+    // (consent_service.agent_display_name); the id is a prompt id.
+    const send = mountOverlay();
+    send({
+      type: 'consent.request',
+      msg_id: 'consent.request:row-3',
+      consent_type: 'computer_control',
+      scope: '*',
+      agent_id: '79211163351',
+      agent_name: 'Spider-Man',
+      reason: '',
+    });
+
+    expect(
+      await screen.findByText('Spider-Man asks to control this computer.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: "Don't allow Spider-Man"})).toBeInTheDocument();
+    expect(screen.getAllByText('Spider-Man').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('79211163351')).not.toBeInTheDocument();
+  });
+
+  test('an ask with only an id shows no id anywhere', async () => {
+    const send = mountOverlay();
+    send({...ASK, msg_id: 'consent.request:row-4', reason: ''});
+    expect(
+      await screen.findByText('An agent asks to control this computer.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(ASK.agent_id)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {name: "Don't allow this agent"})).toBeInTheDocument();
+  });
 });
 
 describe("AgentOverlay consent.request — Don't allow", () => {

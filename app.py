@@ -5725,9 +5725,29 @@ def start_flask():
                 _ensure_page_rendered(_window, args.port)
             return jsonify({"success": True})
 
+        # The ribbon is the surface the owner reads to know what the AI is
+        # doing, and its only caller is HARTOS on this machine
+        # (integrations/vlm/local_loop._notify_desktop_indicator, at
+        # _local_base(), no Origin header).  show and hide change what the
+        # owner sees, and a GET from any web page the owner visits (an <img
+        # src=...>) arrives from 127.0.0.1 too, so they take the loopback-or-
+        # token rule WITH the cross-origin refusal (routes/auth.
+        # require_local_or_token_csrf_safe, the d2f33033 lesson); status is
+        # a read and takes the plain rule.  A LAN peer is refused by both.
+        from routes.auth import (
+            require_local_or_token as _local_or_token,
+            require_local_or_token_csrf_safe as _local_or_token_csrf_safe,
+        )
+
         @_serving_app.route('/indicator/show', methods=['GET', 'OPTIONS'])
+        @_local_or_token_csrf_safe
         def show_indicator_endpoint():
-            """Show the LLM control indicator"""
+            """Show the LLM control indicator.
+
+            ``?text=`` says what the AI is doing now; HARTOS's VLM loop sends
+            each step's action so the ribbon reads it out instead of only
+            showing that the AI is in control.
+            """
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
 
@@ -5736,7 +5756,8 @@ def start_flask():
             _load_indicator()
             if INDICATOR_AVAILABLE:
                 try:
-                    indicator_module.toggle_indicator(True)
+                    text = (request.args.get('text') or '').strip()
+                    indicator_module.toggle_indicator(True, text=text or None)
                     return jsonify({"success": True, "status": "showing"})
                 except Exception as e:
                     return jsonify({"success": False, "error": str(e)})
@@ -5744,6 +5765,7 @@ def start_flask():
                 return jsonify({"success": False, "error": "Indicator module not available"})
 
         @_serving_app.route('/indicator/hide', methods=['GET', 'OPTIONS'])
+        @_local_or_token_csrf_safe
         def hide_indicator_endpoint():
             """Hide the LLM control indicator"""
             if request.method == 'OPTIONS':
@@ -5760,6 +5782,7 @@ def start_flask():
                 return jsonify({"success": False, "error": "Indicator module not available"})
 
         @_serving_app.route('/indicator/status', methods=['GET', 'OPTIONS'])
+        @_local_or_token
         def indicator_status_endpoint():
             """Get the status of the LLM control indicator"""
             if request.method == 'OPTIONS':
