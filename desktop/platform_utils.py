@@ -162,6 +162,18 @@ def hide_console_window():
             logger.debug(f"Could not hide console: {e}")
 
 
+def _hwnd(window_handle):
+    """A window handle as Win32 takes it: pointer-sized.
+
+    Without argtypes (none are set on the shared ctypes.windll.user32: the
+    c1a026f4 lesson) ctypes marshals a bare int as a 32-bit C int, while an
+    HWND is pointer-sized on x64.  int() first, so a handle that is still
+    a pythonnet IntPtr fails here, at the boundary, not inside a call.
+    """
+    import ctypes
+    return ctypes.c_void_p(int(window_handle))
+
+
 def set_window_always_on_top(window_handle, on_top=True):
     """Set a window to be always on top"""
     if IS_WINDOWS:
@@ -172,10 +184,9 @@ def set_window_always_on_top(window_handle, on_top=True):
             SWP_NOMOVE = 0x0002
             SWP_NOSIZE = 0x0001
 
-            hwnd = window_handle
             flag = HWND_TOPMOST if on_top else HWND_NOTOPMOST
             ctypes.windll.user32.SetWindowPos(
-                hwnd, flag, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE
+                _hwnd(window_handle), flag, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE
             )
         except Exception as e:
             logger.error(f"Error setting window on top: {e}")
@@ -196,12 +207,13 @@ def set_window_tool_window(window_handle, tool=True):
             WS_EX_APPWINDOW = 0x00040000
 
             user32 = ctypes.windll.user32
-            style = user32.GetWindowLongW(window_handle, GWL_EXSTYLE)
+            hwnd = _hwnd(window_handle)
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             if tool:
                 style = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
             else:
                 style = (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
-            user32.SetWindowLongW(window_handle, GWL_EXSTYLE, style)
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
         except Exception as e:
             logger.error(f"Error setting tool-window style: {e}")
 
@@ -219,22 +231,30 @@ def set_window_size(window_handle, width, height):
     (measured 2026-09-15: 220x310 asked, 198x254 on screen).  A frameless
     window's outer size is its client size, so SetWindowPos with the
     designed size, scaled by the same DPI factor get_screen_dimensions()
-    normalises with, restores what the page was laid out for.
+    normalises with, restores what the page was laid out for.  Returns
+    True when the window took the size; a refusal is logged, not silent.
     """
-    if IS_WINDOWS:
-        try:
-            import ctypes
-            SWP_NOMOVE = 0x0002
-            SWP_NOZORDER = 0x0004
-            SWP_NOACTIVATE = 0x0010
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        SWP_NOMOVE = 0x0002
+        SWP_NOZORDER = 0x0004
+        SWP_NOACTIVATE = 0x0010
 
-            phys_w, phys_h = _logical_to_physical(width, height, _get_win32_dpi_scale())
-            ctypes.windll.user32.SetWindowPos(
-                window_handle, 0, 0, 0, phys_w, phys_h,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            )
-        except Exception as e:
-            logger.error(f"Error setting window size: {e}")
+        user32 = ctypes.windll.user32
+        phys_w, phys_h = _logical_to_physical(width, height, _get_win32_dpi_scale())
+        if not user32.SetWindowPos(
+            _hwnd(window_handle), 0, 0, 0, phys_w, phys_h,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        ):
+            logger.warning("SetWindowPos refused %dx%d for hwnd %s (error %s)",
+                           phys_w, phys_h, window_handle, user32.GetLastError())
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error setting window size: {e}")
+        return False
 
 
 def _shape_box(shape, client_w, client_h):
@@ -274,24 +294,40 @@ def set_window_shape(window_handle, shape):
     Control colour or WebView2's own #202020, and a colour key changed
     nothing), while a window region clips the WebView2 child with the form.
     So the floating presence that should be "just the orb" is the window cut
-    to the orb's rect.  The region is owned by the system after SetWindowRgn.
+    to the orb's rect.  The system owns the region once SetWindowRgn ACCEPTS
+    it; a refused region is still ours, and this runs on every change of
+    presence while an agent talks, so it is deleted here rather than leaked
+    toward the process's GDI-object ceiling (hartos-3e review, 2026-09-15).
+    Returns True when the window took the shape.
     """
-    if IS_WINDOWS:
-        try:
-            import ctypes
-            from ctypes import wintypes
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
 
-            rc = wintypes.RECT()
-            ctypes.windll.user32.GetClientRect(window_handle, ctypes.byref(rc))
-            box = _shape_box(shape, rc.right - rc.left, rc.bottom - rc.top)
-            if box is None:
-                return
-            left, top, right, bottom, ew, eh = box
-            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(left, top, right, bottom, ew, eh)
-            if rgn:
-                ctypes.windll.user32.SetWindowRgn(window_handle, rgn, True)
-        except Exception as e:
-            logger.error(f"Error setting window shape: {e}")
+        user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+        hwnd = _hwnd(window_handle)
+        rc = wintypes.RECT()
+        user32.GetClientRect(hwnd, ctypes.byref(rc))
+        box = _shape_box(shape, rc.right - rc.left, rc.bottom - rc.top)
+        if box is None:
+            return False
+        left, top, right, bottom, ew, eh = box
+        rgn = gdi32.CreateRoundRectRgn(left, top, right, bottom, ew, eh)
+        if not rgn:
+            logger.warning("CreateRoundRectRgn failed for %s (error %s)",
+                           box, user32.GetLastError())
+            return False
+        if not user32.SetWindowRgn(hwnd, rgn, True):
+            gdi32.DeleteObject(rgn)
+            logger.warning("SetWindowRgn refused %s for hwnd %s (error %s)",
+                           box, window_handle, user32.GetLastError())
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error setting window shape: {e}")
+        return False
 
 
 def register_protocol_handler(protocol="hevolveai", app_path=None):

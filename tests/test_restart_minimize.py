@@ -620,5 +620,135 @@ class RestartMinimizeBehaviouralTests(unittest.TestCase):
         self.assertFalse(start_hidden)
 
 
+class _Win32Fake:
+    """user32/gdi32 as the companion helpers call them, recording each call.
+
+    Stands in for ctypes.windll on every platform: GetClientRect fills the
+    RECT through byref's _obj, CreateRoundRectRgn hands out a region handle,
+    SetWindowRgn / SetWindowPos succeed or fail as configured.
+    """
+
+    def __init__(self, set_rgn_ok=True, set_pos_ok=True, client=(330, 465)):
+        import types
+
+        self.calls = []
+        self.set_rgn_ok = set_rgn_ok
+        self.set_pos_ok = set_pos_ok
+        self.client = client
+        self.user32 = types.SimpleNamespace(
+            GetClientRect=self._get_client_rect,
+            SetWindowRgn=self._set_window_rgn,
+            SetWindowPos=self._set_window_pos,
+            GetLastError=lambda: 1400,          # ERROR_INVALID_WINDOW_HANDLE
+        )
+        self.gdi32 = types.SimpleNamespace(
+            CreateRoundRectRgn=self._create_rgn,
+            DeleteObject=self._delete_object,
+        )
+
+    def _get_client_rect(self, hwnd, prc):
+        self.calls.append(("GetClientRect", hwnd))
+        prc._obj.left = prc._obj.top = 0
+        prc._obj.right, prc._obj.bottom = self.client
+        return 1
+
+    def _create_rgn(self, *box):
+        self.calls.append(("CreateRoundRectRgn", box))
+        return 0x7A5E
+
+    def _set_window_rgn(self, hwnd, rgn, redraw):
+        self.calls.append(("SetWindowRgn", hwnd, rgn))
+        return 1 if self.set_rgn_ok else 0
+
+    def _delete_object(self, handle):
+        self.calls.append(("DeleteObject", handle))
+        return 1
+
+    def _set_window_pos(self, hwnd, after, x, y, w, h, flags):
+        self.calls.append(("SetWindowPos", hwnd, (w, h), flags))
+        return 1 if self.set_pos_ok else 0
+
+    def named(self, name):
+        return [c for c in self.calls if c[0] == name]
+
+
+class CompanionWin32ContractTests(unittest.TestCase):
+    """hartos-3e review of 4e828bc4 / 053bd47d (2026-09-15): the Win32 side
+    of the companion helpers must (1) not leak a region when SetWindowRgn
+    refuses it -- the system takes ownership ONLY on success, and the
+    shape is reapplied while an agent talks, so a persistent refusal walks
+    toward the process's GDI-object ceiling silently; (2) pass every HWND
+    as a pointer-sized c_void_p, never a bare int that ctypes marshals as a
+    32-bit C int; (3) say so when a resize is refused instead of staying
+    silent.  Runs on every platform: ctypes.windll is stood in.
+    """
+
+    SHAPE = {"x": 40, "y": 20, "w": 140, "h": 140, "r": 70, "vw": 220, "vh": 310}
+    HWND = 0x000A0B0C
+
+    def _patched(self, fake):
+        import ctypes
+        from unittest import mock
+
+        from desktop import platform_utils
+
+        return (mock.patch.object(ctypes, "windll", fake, create=True),
+                mock.patch.object(platform_utils, "IS_WINDOWS", True),
+                mock.patch.object(platform_utils, "_get_win32_dpi_scale", lambda: 1.5))
+
+    def test_refused_region_is_deleted_and_reported(self):
+        from desktop import platform_utils
+
+        fake = _Win32Fake(set_rgn_ok=False)
+        with self._patched(fake)[0], self._patched(fake)[1]:
+            with self.assertLogs(platform_utils.logger, level="WARNING") as logs:
+                applied = platform_utils.set_window_shape(self.HWND, self.SHAPE)
+        self.assertFalse(applied)
+        self.assertEqual(fake.named("DeleteObject"), [("DeleteObject", 0x7A5E)])
+        self.assertTrue(any("SetWindowRgn" in line for line in logs.output), logs.output)
+
+    def test_accepted_region_belongs_to_the_system(self):
+        from desktop import platform_utils
+
+        fake = _Win32Fake(set_rgn_ok=True)
+        with self._patched(fake)[0], self._patched(fake)[1]:
+            applied = platform_utils.set_window_shape(self.HWND, self.SHAPE)
+        self.assertTrue(applied)
+        self.assertEqual(fake.named("DeleteObject"), [])
+        # The mapped box reached CreateRoundRectRgn (the same numbers
+        # test_shape_box_maps_the_pages_css_rect_to_window_pixels pins).
+        self.assertEqual(fake.named("CreateRoundRectRgn"),
+                         [("CreateRoundRectRgn", (60, 30, 270, 240, 210, 210))])
+
+    def test_every_hwnd_crosses_as_a_pointer(self):
+        import ctypes
+
+        from desktop import platform_utils
+
+        fake = _Win32Fake()
+        patches = self._patched(fake)
+        with patches[0], patches[1], patches[2]:
+            platform_utils.set_window_shape(self.HWND, self.SHAPE)
+            platform_utils.set_window_size(self.HWND, 220, 310)
+        handles = [c[1] for c in fake.calls
+                   if c[0] in ("GetClientRect", "SetWindowRgn", "SetWindowPos")]
+        self.assertEqual(len(handles), 3)
+        for h in handles:
+            self.assertIsInstance(h, ctypes.c_void_p, h)
+            self.assertEqual(h.value, self.HWND)
+
+    def test_refused_resize_is_reported(self):
+        from desktop import platform_utils
+
+        fake = _Win32Fake(set_pos_ok=False)
+        patches = self._patched(fake)
+        with patches[0], patches[1], patches[2]:
+            with self.assertLogs(platform_utils.logger, level="WARNING") as logs:
+                sized = platform_utils.set_window_size(self.HWND, 220, 310)
+        self.assertFalse(sized)
+        self.assertEqual(fake.named("SetWindowPos")[0][2], (330, 465))
+        self.assertTrue(any("SetWindowPos" in line for line in logs.output), logs.output)
+
+
 if __name__ == "__main__":
     unittest.main()
