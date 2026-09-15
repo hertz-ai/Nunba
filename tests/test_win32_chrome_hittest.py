@@ -75,3 +75,29 @@ def test_chip_slot_stays_client():
 
 def test_max_hover_getter_defaults_false():
     assert wc.get_max_button_hover(0xDEADBEEF) is False
+
+
+# ── the module's ctypes bindings stay private to the module ──
+
+def test_bindings_do_not_stamp_the_shared_user32():
+    """Live 2026-09-15 14:43:42 (gui_app.log): "Error applying window
+    positioning: argument 5: TypeError: 'NoneType' object cannot be
+    interpreted as an integer".  pywebview's WinForms move() calls
+    SetWindowPos(hwnd, None, x, y, None, None, flags) through
+    ctypes.windll.user32 — the ONE function object ctypes caches per process.
+    This module set argtypes (c_int for cx/cy) on that same object, so every
+    pywebview move() in the process raised on its None size arguments; the
+    default-dock snap path masked it until the snap's hwnd resolved to 0.
+    The bindings belong on a WinDLL instance this module owns.
+    """
+    import ctypes
+    import sys
+
+    import pytest
+
+    if sys.platform != 'win32':
+        pytest.skip('user32 bindings exist only on Windows')
+    assert wc.user32 is not ctypes.windll.user32
+    assert ctypes.windll.user32.SetWindowPos.argtypes is None
+    # The private handle still carries the typed signature the wndproc needs.
+    assert wc.user32.GetWindowLongPtrW.restype is ctypes.c_ssize_t

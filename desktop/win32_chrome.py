@@ -171,7 +171,12 @@ WNDPROC = ctypes.WINFUNCTYPE(
 # ── ctypes bindings (Windows only) ────────────────────────────────────
 
 if sys.platform == 'win32':
-    user32 = ctypes.windll.user32
+    # A WinDLL instance of our own, NOT ctypes.windll.user32: ctypes caches one
+    # function object per loader, so argtypes set on the shared instance apply
+    # to every caller in the process.  pywebview's WinForms move() passes None
+    # for the SetWindowPos size arguments and raised "argument 5: TypeError"
+    # against the c_int signature below (gui_app.log 2026-09-15 14:43:42).
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
 
     user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
