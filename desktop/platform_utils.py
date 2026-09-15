@@ -181,54 +181,6 @@ def set_window_always_on_top(window_handle, on_top=True):
             logger.error(f"Error setting window on top: {e}")
 
 
-def set_window_glass(window_handle, tint='#1E1E1E', opacity=0.6):
-    """Give a floating window a translucent, blurred ("glass") backdrop.
-
-    Windows 10 1803+ acrylic through DWM's SetWindowCompositionAttribute
-    (ACCENT_ENABLE_ACRYLICBLURBEHIND; plain blur-behind as the fallback):
-    what is behind the window shows through, blurred and tinted with
-    ``tint`` at ``opacity``.  The window's own pixels still paint over it,
-    so the caller makes its background transparent (tk: a -transparentcolor
-    key; a web view: a transparent page background) and keeps its text and
-    controls opaque.  Owner 2026-09-15: the floating windows are glass, not
-    solid panels.  Returns True when applied; False on other platforms or
-    an older Windows, where the caller keeps its solid look.
-    """
-    if not IS_WINDOWS or not window_handle:
-        return False
-    try:
-        import ctypes
-
-        class ACCENT_POLICY(ctypes.Structure):
-            _fields_ = [('AccentState', ctypes.c_int),
-                        ('AccentFlags', ctypes.c_int),
-                        ('GradientColor', ctypes.c_uint),
-                        ('AnimationId', ctypes.c_int)]
-
-        class WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
-            _fields_ = [('Attribute', ctypes.c_int),
-                        ('Data', ctypes.c_void_p),
-                        ('SizeOfData', ctypes.c_size_t)]
-
-        ACCENT_ENABLE_BLURBEHIND = 3
-        ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
-        WCA_ACCENT_POLICY = 19
-        r, g, b = (int(tint.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))
-        a = max(0, min(255, int(round(opacity * 255))))
-        set_attr = ctypes.windll.user32.SetWindowCompositionAttribute
-        for state in (ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_BLURBEHIND):
-            accent = ACCENT_POLICY(state, 2, (a << 24) | (b << 16) | (g << 8) | r, 0)
-            data = WINDOWCOMPOSITIONATTRIBDATA(
-                WCA_ACCENT_POLICY, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
-                ctypes.sizeof(accent))
-            if set_attr(ctypes.c_void_p(int(window_handle)), ctypes.byref(data)):
-                return True
-        return False
-    except Exception as e:
-        logger.error(f"Error applying window glass: {e}")
-        return False
-
-
 def set_window_tool_window(window_handle, tool=True):
     """Keep a window out of the taskbar and Alt-Tab (WS_EX_TOOLWINDOW).
 
