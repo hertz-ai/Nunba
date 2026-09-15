@@ -38,6 +38,9 @@ Fix invariants (these tests enforce):
      positions windows in (logical pixels, via get_screen_dimensions),
      so the whole window lands inside the working area on a scaled
      display.
+  H. Once its page has loaded, the companion MUST re-assert topmost
+     through Win32 (the canonical desktop.platform_utils helper) on its
+     OWN handle: on_top=True at creation left it below ordinary windows.
 """
 
 from __future__ import annotations
@@ -321,6 +324,37 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertLessEqual(y + 310, 912)
         # A display smaller than the window still yields an on-screen origin.
         self.assertEqual(origin(200, 200, 220, 310), (0, 0))
+
+    # ── Invariant H: the companion stays on top once loaded ───────────
+    def test_companion_reasserts_topmost_on_its_own_handle_after_load(self):
+        """Live 2026-09-15 (Nunba 89096d49): the companion form carried
+        WS_EX_TOPMOST (exstyle 0x50008) yet enumerated BELOW a plain
+        maximized Paint window (z=9 vs z=12), and WindowFromPoint at its
+        centre returned Paint; SetWindowPos(HWND_TOPMOST) on its handle put
+        it on screen.  pywebview 6.1 shows, hides and re-shows a transparent
+        EdgeChromium form around navigation start, so the re-assert must run
+        after the page has loaded, on the companion's own HWND (never the
+        main window's title), and through Win32 rather than
+        _companion_window.on_top (the #593 cross-thread hang).
+        """
+        import re
+
+        src = APP_PY.read_text(encoding="utf-8")
+        m = re.search(r"def _on_companion_loaded\(\):(.*?)\n            if _companion_window:",
+                      src, re.S)
+        self.assertIsNotNone(m, "_on_companion_loaded not found")
+        body = m.group(1)
+        self.assertIn("_resolve_hwnd(_companion_window)", body)
+        self.assertIn("set_window_always_on_top(_comp_hwnd, True)", body)
+        self.assertNotIn(".on_top = ", body)
+
+        # _resolve_hwnd must read pywebview 6's Window.native before any
+        # title lookup, or the companion resolves to the main window.
+        r = re.search(r"def _resolve_hwnd\(window_instance\):(.*?)\ndef ", src, re.S)
+        self.assertIsNotNone(r)
+        resolver = r.group(1)
+        self.assertLess(resolver.index("'native'"),
+                        resolver.index("FindWindowW(None"))
 
 
 class RestartMinimizeBehaviouralTests(unittest.TestCase):

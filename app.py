@@ -6902,6 +6902,12 @@ def _resolve_hwnd(window_instance):
         return 0
     try:
         import ctypes as _ct
+        # pywebview 6.x: Window.native is the WinForms form (set at creation).
+        # Checked first so a second window (the companion) resolves to its own
+        # handle and never falls through to the main window's title.
+        native = getattr(window_instance, 'native', None)
+        if native is not None and getattr(native, 'Handle', None):
+            return int(native.Handle)
         ow = getattr(window_instance, 'original_window', None)
         if ow is not None and getattr(ow, 'handle', None):
             return int(ow.handle)
@@ -8156,6 +8162,19 @@ def main():
                         f"window.companionAPI && window.companionAPI.setLanguage('{lang}')")
                 except Exception:
                     pass
+                # on_top=True is not enough for this window.  pywebview 6.1
+                # shows a transparent EdgeChromium form, hides it, and shows
+                # it again when navigation starts; measured live 2026-09-15
+                # (Nunba 89096d49) the form carried WS_EX_TOPMOST yet sat
+                # below a plain maximized window in z-order, so nothing of it
+                # reached the screen.  SetWindowPos(HWND_TOPMOST) after the
+                # page loads put it back on top.  Win32 through the canonical
+                # helper: writing _companion_window.on_top off the UI thread
+                # is the /api/focus hang (#593).
+                _comp_hwnd = _resolve_hwnd(_companion_window)
+                if _comp_hwnd:
+                    from desktop.platform_utils import set_window_always_on_top
+                    set_window_always_on_top(_comp_hwnd, True)
             if _companion_window:
                 _companion_window.events.loaded += _on_companion_loaded
 
