@@ -52,6 +52,11 @@ Fix invariants (these tests enforce):
   K. _resolve_hwnd MUST turn pywebview's Window.native.Handle (a
      System.IntPtr under pythonnet) into an int: int(IntPtr) raises, and
      the resolver's catch-all turned that into hwnd 0 for EVERY window.
+  L. The window takes the page's SHAPE: pywebview's transparent window is
+     a transparent WebView2 over an OPAQUE form (measured 2026-09-15, see
+     the test), so "orb only" means clipping the window to the orb's rect
+     (SetWindowRgn), and the card is a rounded rect.  The page sends
+     'orb' | 'shown' with the CSS rect; one helper maps it to the window.
 """
 
 from __future__ import annotations
@@ -413,7 +418,7 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         import re
 
         src = APP_PY.read_text(encoding="utf-8")
-        m = re.search(r"def on_companion_presence\(self, state\):(.*?)\n            _companion_api",
+        m = re.search(r"def on_companion_presence\(self, state, shape=None\):(.*?)\n            _companion_api",
                       src, re.S)
         self.assertIsNotNone(m, "on_companion_presence not found on the bridge")
         body = m.group(1)
@@ -428,7 +433,7 @@ class RestartMinimizeStaticTests(unittest.TestCase):
 
         page = (REPO_ROOT / "landing-page" / "src" / "components" / "VoiceOrb"
                 / "VoiceOrbPage.jsx").read_text(encoding="utf-8")
-        self.assertIn("companionApi('on_companion_presence', peeked ? 'hidden' : 'shown')",
+        self.assertIn("companionApi('on_companion_presence', presence, shapeFor(presence, orbBox))",
                       page)
 
         helper = (REPO_ROOT / "desktop" / "platform_utils.py").read_text(encoding="utf-8")
@@ -484,6 +489,59 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         # A host that already hands over an int keeps working.
         self.assertEqual(resolve(types.SimpleNamespace(
             native=types.SimpleNamespace(Handle=594172))), 594172)
+
+    # ── Invariant L: the window is clipped to the page's shape ────────
+    def test_shape_box_maps_the_pages_css_rect_to_window_pixels(self):
+        """Measured 2026-09-15 with the install's own pywebview + WebView2 in
+        a throwaway process (scratchpad owner863/transparent_probe.py):
+        transparent=True renders the page over an OPAQUE form -- the
+        "see-through" area read #F0F0F0 (Control) on one run and #202020
+        (WebView2's own default) on the next; a WinForms TransparencyKey
+        changed nothing (WebView2 composes its own surface, so pixels of the
+        key colour were displayed as-is); a Form.Region ellipse DID clip the
+        window, WebView2 child included -- the desktop showed at all four
+        corners.  So the orb-only presence is a window clipped to the orb's
+        rect.  The page reports CSS px (WebView2 scales CSS px by the DPI:
+        a 240-css window measured 357 physical px wide at 150%), and the
+        helper maps them by the client-rect ratio.
+        """
+        from desktop.platform_utils import _shape_box
+
+        # 220x310 css page on a 150% display: client rect 330x465.
+        shape = {"x": 40, "y": 20, "w": 140, "h": 140, "r": 70, "vw": 220, "vh": 310}
+        self.assertEqual(_shape_box(shape, 330, 465), (60, 30, 270, 240, 210, 210))
+        # The card: full page, 24px corners -> a 36px-radius rounded rect.
+        card = {"x": 0, "y": 0, "w": 220, "h": 310, "r": 24, "vw": 220, "vh": 310}
+        self.assertEqual(_shape_box(card, 330, 465), (0, 0, 330, 465, 72, 72))
+        # Nothing to map: no clipping.
+        self.assertIsNone(_shape_box({"x": 0, "y": 0, "w": 0, "h": 0, "vw": 220, "vh": 310}, 330, 465))
+        self.assertIsNone(_shape_box(None, 330, 465))
+        self.assertIsNone(_shape_box(shape, 0, 0))
+
+    def test_presence_carries_the_shape_to_the_window(self):
+        import re
+
+        src = APP_PY.read_text(encoding="utf-8")
+        m = re.search(r"def on_companion_presence\(self, state, shape=None\):(.*?)\n            _companion_api",
+                      src, re.S)
+        self.assertIsNotNone(m, "on_companion_presence must accept the page's shape")
+        body = m.group(1)
+        self.assertIn("set_window_shape(_comp_hwnd, shape)", body)
+        self.assertIn("_companion_window.hide()", body)
+        self.assertIn("_companion_raise()", body)
+
+        helper = (REPO_ROOT / "desktop" / "platform_utils.py").read_text(encoding="utf-8")
+        self.assertIn("def set_window_shape(window_handle, shape):", helper)
+        self.assertIn("SetWindowRgn(", helper)
+        self.assertIn("CreateRoundRectRgn(", helper)
+
+        page = (REPO_ROOT / "landing-page" / "src" / "components" / "VoiceOrb"
+                / "VoiceOrbPage.jsx").read_text(encoding="utf-8")
+        self.assertIn("companionApi('on_companion_presence', presence, shapeFor(presence, orbBox))",
+                      page)
+        self.assertIn("function shapeFor(state, orbBox)", page)
+        for state in ("'hidden'", "'orb'", "'shown'"):
+            self.assertIn(state, page)
 
 
 class RestartMinimizeBehaviouralTests(unittest.TestCase):

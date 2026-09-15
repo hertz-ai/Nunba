@@ -8123,23 +8123,36 @@ def main():
                         logger.exception("[COMPANION] on_companion_prompt failed: %s", _prompt_err)
                         return "Something went wrong. Try the main window."
 
-                def on_companion_presence(self, state):
+                def on_companion_presence(self, state, shape=None):
                     """The page owns the presence; the window follows it.
 
-                    'shown'  -> an agent wants to talk (speaking, an ask, a
-                                reply) or the owner is interacting.
                     'hidden' -> idle: no floating window at all.
+                    'orb'    -> an agent is speaking: the window is cut to
+                                the orb's rect (`shape`, CSS px), nothing
+                                else of the page is on screen or clickable.
+                    'shown'  -> the owner reached for it: the whole card
+                                (orb + quick prompt), rounded corners.
                     Owner 2026-09-15: the floating window exists only while
-                    an agent wants to talk; idle showed a second Nunba entry
-                    on the taskbar.  pywebview's show()/hide() marshal to
-                    the UI thread themselves; the topmost re-assert is Win32.
+                    an agent wants to talk, and morphs from the orb to the
+                    card on demand.  The clipping is the only way to get
+                    that look here: measured that day with the install's
+                    own pywebview, transparent=True is a transparent
+                    WebView2 over an OPAQUE form and a colour key does not
+                    reach WebView2's pixels, while a window region clips
+                    the child too (desktop/platform_utils.set_window_shape).
+                    pywebview's show()/hide() marshal to the UI thread
+                    themselves; the region and topmost calls are Win32.
                     """
                     try:
                         if state == 'hidden':
                             _companion_window.hide()
-                        else:
-                            _companion_window.show()
-                            _companion_raise()
+                            return
+                        _comp_hwnd = _resolve_hwnd(_companion_window)
+                        if _comp_hwnd and shape:
+                            from desktop.platform_utils import set_window_shape
+                            set_window_shape(_comp_hwnd, shape)
+                        _companion_window.show()
+                        _companion_raise()
                     except Exception as _pres_err:
                         logger.debug("[COMPANION] presence %s failed: %s",
                                      state, _pres_err)

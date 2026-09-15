@@ -206,6 +206,63 @@ def set_window_tool_window(window_handle, tool=True):
             logger.error(f"Error setting tool-window style: {e}")
 
 
+def _shape_box(shape, client_w, client_h):
+    """Map a page rect (CSS px) onto a window's client rect (physical px).
+
+    `shape` is {x, y, w, h, r, vw, vh}: the rect to keep visible, its corner
+    radius, and the page's viewport size, all in CSS px.  WebView2 scales CSS
+    px by the display DPI, so the ratio client/viewport is the scale.  Returns
+    (left, top, right, bottom, ellipse_w, ellipse_h) for CreateRoundRectRgn,
+    or None when there is nothing to clip to.
+    """
+    if not shape or not client_w or not client_h:
+        return None
+    try:
+        vw, vh = float(shape["vw"]), float(shape["vh"])
+        x, y, w, h = (float(shape["x"]), float(shape["y"]),
+                      float(shape["w"]), float(shape["h"]))
+        r = float(shape.get("r", 0) or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if vw <= 0 or vh <= 0 or w <= 0 or h <= 0:
+        return None
+    sx, sy = client_w / vw, client_h / vh
+    left, top = round(x * sx), round(y * sy)
+    right, bottom = round((x + w) * sx), round((y + h) * sy)
+    # Corner ellipse: 2r each way, capped at the box so r >= w/2 is a circle.
+    ew = min(right - left, round(2 * r * sx))
+    eh = min(bottom - top, round(2 * r * sy))
+    return (left, top, right, bottom, ew, eh)
+
+
+def set_window_shape(window_handle, shape):
+    """Clip a window to the page's rect (SetWindowRgn).
+
+    pywebview's transparent window is a transparent WebView2 over an opaque
+    form (measured 2026-09-15: the "see-through" area painted the form's
+    Control colour or WebView2's own #202020, and a colour key changed
+    nothing), while a window region clips the WebView2 child with the form.
+    So the floating presence that should be "just the orb" is the window cut
+    to the orb's rect.  The region is owned by the system after SetWindowRgn.
+    """
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            rc = wintypes.RECT()
+            ctypes.windll.user32.GetClientRect(window_handle, ctypes.byref(rc))
+            box = _shape_box(shape, rc.right - rc.left, rc.bottom - rc.top)
+            if box is None:
+                return
+            left, top, right, bottom, ew, eh = box
+            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(left, top, right, bottom, ew, eh)
+            if rgn:
+                ctypes.windll.user32.SetWindowRgn(window_handle, rgn, True)
+        except Exception as e:
+            logger.error(f"Error setting window shape: {e}")
+
+
 def register_protocol_handler(protocol="hevolveai", app_path=None):
     """Register one or more custom URL protocol handlers.
 

@@ -27,19 +27,34 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
  *
  * Auto-hide: idle AND not speaking is "away"; any pointer interaction, or
  * speaking, brings it back.  In the HART OS shell "away" is a corner peek
- * (translate, taskbar-style).  In the desktop companion window "away" is NO
- * window: the page owns the state and tells the bridge
- * (on_companion_presence 'hidden' | 'shown') and app.py hides/shows the
- * window.  Owner 2026-09-15: the floating window exists only while an agent
- * wants to talk.  Measured that day on Nunba 89096d49: the corner peek
- * (translate + scale(.5)) inside a fixed 220x310 window read as an opaque
- * black rectangle with the orb shrunk to a dot -- the visualiser measures
- * its box with getBoundingClientRect, which includes the ancestor scale, so
- * every shrink re-measured smaller until the canvas was 1px.
+ * (translate, taskbar-style).
+ *
+ * In the desktop companion window the page owns the presence and the window
+ * follows it (on_companion_presence(state, shape), app.py):
+ *   'hidden' -> idle: no window at all;
+ *   'orb'    -> an agent is speaking (or just stopped): the window is cut to
+ *               the orb's own rect, a floating disc and nothing else;
+ *   'shown'  -> the owner reached for it (pointer / keys): the whole card,
+ *               orb + quick prompt, with rounded corners.
+ * Owner 2026-09-15: the floating window exists only while an agent wants to
+ * talk, and morphs from the orb to the card on demand.  `shape` is the CSS
+ * rect to keep (x, y, w, h, corner radius r, viewport vw/vh); the bridge
+ * clips the window to it.  That clipping is the only way to get the look
+ * here: measured that day with the install's own pywebview, a transparent
+ * window is a transparent WebView2 over an OPAQUE form (the "see-through"
+ * area painted Control grey or WebView2's #202020), so the page paints its
+ * own opaque card and the window shape does the rest.  Also measured on
+ * 89096d49: the corner peek (translate + scale(.5)) inside the 220x310
+ * window read as an opaque black rectangle with the orb shrunk to a dot --
+ * the visualiser measures its box with getBoundingClientRect, which includes
+ * the ancestor scale, so every shrink re-measured smaller until the canvas
+ * was 1px.  The companion never applies the peek transform.
  */
 const SKIN_KEY = 'hart_orb_skin';
 const IDLE_MS = 6000;
 const ACCENT = '#6C63FF';
+const CARD_BG = '#0F0E17';
+const CARD_RADIUS = 24;
 
 function readSkin() {
   try {
@@ -68,6 +83,29 @@ function companionApi(method, ...args) {
   } catch (e) {
     /* not in the pywebview companion — no-op */
   }
+}
+
+// The window shape for a presence state, in CSS px of this page.
+//   'shown' -> the whole card with rounded corners;
+//   'orb'   -> the circle inscribed in the orb's own box: the visualiser's
+//              square canvas, else its root (the character face), else the
+//              wrapper.  An unmeasurable box (0 size) falls back to the card
+//              rather than to nothing.
+function shapeFor(state, orbBox) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const card = { x: 0, y: 0, w: vw, h: vh, r: CARD_RADIUS, vw, vh };
+  if (state === 'shown') return card;
+  if (state !== 'orb') return null;
+  const box = orbBox && orbBox.current;
+  const target = box && (box.querySelector('canvas') || box.firstElementChild || box);
+  const r = target && target.getBoundingClientRect();
+  if (!r || !(r.width > 0) || !(r.height > 0)) return card;
+  const d = Math.min(r.width, r.height);
+  return {
+    x: r.left + (r.width - d) / 2, y: r.top + (r.height - d) / 2,
+    w: d, h: d, r: d / 2, vw, vh,
+  };
 }
 
 // Curious character SVG — eyes follow the cursor, mouth animates while the agent
@@ -301,9 +339,13 @@ export default function VoiceOrbPage() {
   const [speaking, setSpeaking] = useState(false);
   const hosted = useRef(inCompanion());
   // Hosted: born away (no window) until an agent speaks or the owner acts.
-  const [peeked, setPeeked] = useState(hosted.current);
+  const [presence, setPresence] = useState(hosted.current ? 'hidden' : 'shown');
   const speakTimer = useRef(null);
   const lastInteract = useRef(hosted.current ? 0 : Date.now());
+  // When the agent last stopped speaking: the orb lingers one idle window
+  // after a clip so consecutive sentences do not blink the window.
+  const lastSpoke = useRef(0);
+  const orbBox = useRef(null);
 
   const active = speaking;
 
@@ -328,8 +370,10 @@ export default function VoiceOrbPage() {
       const probe = new Audio();
       probe.preload = 'metadata';
       const finish = (secs) => {
-        speakTimer.current = setTimeout(
-          () => setSpeaking(false), (secs > 0 ? secs : 3) * 1000 + 250);
+        speakTimer.current = setTimeout(() => {
+          lastSpoke.current = Date.now();
+          setSpeaking(false);
+        }, (secs > 0 ? secs : 3) * 1000 + 250);
       };
       probe.onloadedmetadata = () => finish(isFinite(probe.duration) ? probe.duration : 3);
       probe.onerror = () => finish(3);
@@ -342,34 +386,44 @@ export default function VoiceOrbPage() {
     };
   }, []);
 
-  // Taskbar-style auto-hide.
-  const wake = useCallback(() => { lastInteract.current = Date.now(); setPeeked(false); }, []);
+  // Presence: the owner reaching for it wins ('shown'), then the agent
+  // talking ('orb', lingering one idle window past the clip), else idle
+  // ('hidden').  Decided on every change of speaking and once a second, like
+  // a taskbar's auto-hide.
   useEffect(() => {
+    const decide = () => {
+      const now = Date.now();
+      const interacting = now - lastInteract.current < IDLE_MS;
+      const lingering = now - lastSpoke.current < IDLE_MS;
+      const next = interacting ? 'shown' : (active || lingering) ? 'orb' : 'hidden';
+      setPresence((prev) => (prev === next ? prev : next));
+    };
+    const wake = () => { lastInteract.current = Date.now(); decide(); };
     const evs = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel'];
     evs.forEach((ev) => window.addEventListener(ev, wake, true));
-    const id = setInterval(() => {
-      if (active) { lastInteract.current = Date.now(); setPeeked(false); return; }
-      if (Date.now() - lastInteract.current > IDLE_MS) setPeeked(true);
-    }, 1000);
+    decide();
+    const id = setInterval(decide, 1000);
     return () => {
       evs.forEach((ev) => window.removeEventListener(ev, wake, true));
       clearInterval(id);
     };
-  }, [active, wake]);
+  }, [active]);
 
-  // Hosted: the window follows the page's state.  Sent on every change and
-  // again at 'pywebviewready', since `.api` may not exist when the first
-  // state is decided.
+  // Hosted: the window follows the page's state and shape.  Sent on every
+  // change and again at 'pywebviewready', since `.api` may not exist when
+  // the first state is decided.
   useEffect(() => {
     if (!hosted.current) return undefined;
-    const send = () => companionApi('on_companion_presence', peeked ? 'hidden' : 'shown');
+    const send = () => companionApi('on_companion_presence', presence, shapeFor(presence, orbBox));
     send();
     window.addEventListener('pywebviewready', send);
     return () => window.removeEventListener('pywebviewready', send);
-  }, [peeked]);
+  }, [presence]);
 
-  // The shell keeps the corner peek; the companion window hides instead
-  // (see the module docstring for why a scaled peek cannot live there).
+  // Idle = away.  The shell keeps the corner peek; the companion window
+  // hides instead (see the module docstring for why a scaled peek cannot
+  // live there).
+  const peeked = presence === 'hidden';
   const shellPeek = peeked && !hosted.current;
 
   return (
@@ -378,11 +432,16 @@ export default function VoiceOrbPage() {
       data-skin={skin}
       data-active={active ? '1' : '0'}
       data-away={peeked ? '1' : '0'}
+      data-presence={presence}
       style={{
         position: 'fixed', inset: 0,
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'flex-end',
-        padding: '0 10px 14px', background: 'transparent',
+        padding: '0 10px 14px',
+        // Hosted, the window cannot be see-through (module docstring), so the
+        // page paints the card itself and the window shape cuts it out.
+        background: hosted.current ? CARD_BG : 'transparent',
+        borderRadius: hosted.current ? CARD_RADIUS : 0,
         // Drag the frameless companion window by the orb body; the input bar
         // opts out (no-drag, in InputBar) so it stays interactive.
         WebkitAppRegion: 'drag',
@@ -393,6 +452,7 @@ export default function VoiceOrbPage() {
       }}
     >
       <div
+        ref={orbBox}
         onClick={() => companionApi('on_companion_click')}
         onDoubleClick={() => companionApi('on_companion_dblclick')}
         title="Open Nunba"
