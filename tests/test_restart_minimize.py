@@ -44,6 +44,11 @@ Fix invariants (these tests enforce):
   I. Both companion senders MUST post the prompt to /chat under `text`,
      the key /chat's contract names (routes/chatbot_routes.py chat_route
      docstring); `message` is a /custom_gpt alias and /chat 400s on it.
+  J. The window follows the page: the bridge exposes
+     on_companion_presence(state) that hides the window on 'hidden' and
+     shows + raises it otherwise; the page sends it; the window is a tool
+     window (no taskbar entry).  Owner 2026-09-15: the floating window
+     exists only while an agent wants to talk.
 """
 
 from __future__ import annotations
@@ -347,9 +352,13 @@ class RestartMinimizeStaticTests(unittest.TestCase):
                       src, re.S)
         self.assertIsNotNone(m, "_on_companion_loaded not found")
         body = m.group(1)
-        self.assertIn("_resolve_hwnd(_companion_window)", body)
-        self.assertIn("set_window_always_on_top(_comp_hwnd, True)", body)
+        self.assertIn("_companion_raise()", body)
         self.assertNotIn(".on_top = ", body)
+        r = re.search(r"def _companion_raise\(\):(.*?)\n\n", src, re.S)
+        self.assertIsNotNone(r, "_companion_raise not found")
+        self.assertIn("_resolve_hwnd(_companion_window)", r.group(1))
+        self.assertIn("set_window_always_on_top(_comp_hwnd, True)", r.group(1))
+        self.assertNotIn(".on_top = ", r.group(1))
 
         # _resolve_hwnd must read pywebview 6's Window.native before any
         # title lookup, or the companion resolves to the main window.
@@ -389,6 +398,39 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertIsNotNone(fetch, "VoiceOrbPage /chat fallback not found")
         self.assertIn("text: t", fetch.group(1))
         self.assertNotIn("message: t", fetch.group(1))
+
+    # ── Invariant J: the window follows the page's presence ───────────
+    def test_companion_window_follows_the_pages_presence(self):
+        """Owner 2026-09-15: the floating window exists only while an agent
+        wants to talk; idle showed a second Nunba entry on the taskbar.  The
+        page owns the state (VoiceOrbPage 'hidden' | 'shown'), the bridge
+        applies it through pywebview's own show()/hide() (they marshal to
+        the UI thread; on_top off the UI thread is the #593 hang), and the
+        window is a tool window so it never lands on the taskbar."""
+        import re
+
+        src = APP_PY.read_text(encoding="utf-8")
+        m = re.search(r"def on_companion_presence\(self, state\):(.*?)\n            _companion_api",
+                      src, re.S)
+        self.assertIsNotNone(m, "on_companion_presence not found on the bridge")
+        body = m.group(1)
+        self.assertIn("_companion_window.hide()", body)
+        self.assertIn("_companion_window.show()", body)
+        self.assertIn("_companion_raise()", body)
+        self.assertNotIn(".on_top = ", body)
+
+        loaded = re.search(r"def _on_companion_loaded\(\):(.*?)\n            if _companion_window:",
+                           src, re.S).group(1)
+        self.assertIn("set_window_tool_window(_comp_hwnd, True)", loaded)
+
+        page = (REPO_ROOT / "landing-page" / "src" / "components" / "VoiceOrb"
+                / "VoiceOrbPage.jsx").read_text(encoding="utf-8")
+        self.assertIn("companionApi('on_companion_presence', peeked ? 'hidden' : 'shown')",
+                      page)
+
+        helper = (REPO_ROOT / "desktop" / "platform_utils.py").read_text(encoding="utf-8")
+        self.assertIn("def set_window_tool_window(window_handle, tool=True):", helper)
+        self.assertIn("WS_EX_TOOLWINDOW = 0x00000080", helper)
 
 
 class RestartMinimizeBehaviouralTests(unittest.TestCase):

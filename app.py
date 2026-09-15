@@ -8114,7 +8114,43 @@ def main():
                         logger.exception("[COMPANION] on_companion_prompt failed: %s", _prompt_err)
                         return "Something went wrong. Try the main window."
 
+                def on_companion_presence(self, state):
+                    """The page owns the presence; the window follows it.
+
+                    'shown'  -> an agent wants to talk (speaking, an ask, a
+                                reply) or the owner is interacting.
+                    'hidden' -> idle: no floating window at all.
+                    Owner 2026-09-15: the floating window exists only while
+                    an agent wants to talk; idle showed a second Nunba entry
+                    on the taskbar.  pywebview's show()/hide() marshal to
+                    the UI thread themselves; the topmost re-assert is Win32.
+                    """
+                    try:
+                        if state == 'hidden':
+                            _companion_window.hide()
+                        else:
+                            _companion_window.show()
+                            _companion_raise()
+                    except Exception as _pres_err:
+                        logger.debug("[COMPANION] presence %s failed: %s",
+                                     state, _pres_err)
+
             _companion_api = CompanionAPI()
+
+            def _companion_raise():
+                # on_top=True is not enough for this window.  pywebview 6.1
+                # shows a transparent EdgeChromium form, hides it, and shows
+                # it again when navigation starts; measured live 2026-09-15
+                # (Nunba 89096d49) the form carried WS_EX_TOPMOST yet sat
+                # below a plain maximized window in z-order, so nothing of it
+                # reached the screen.  SetWindowPos(HWND_TOPMOST) after the
+                # page loads put it back on top.  Win32 through the canonical
+                # helper: writing _companion_window.on_top off the UI thread
+                # is the /api/focus hang (#593).
+                _comp_hwnd = _resolve_hwnd(_companion_window)
+                if _comp_hwnd:
+                    from desktop.platform_utils import set_window_always_on_top
+                    set_window_always_on_top(_comp_hwnd, True)
 
             # Companion serves from the same Flask server. The React /voice-orb
             # route (SPA fallback -> index.html) is the unified floating presence
@@ -8166,19 +8202,13 @@ def main():
                         f"window.companionAPI && window.companionAPI.setLanguage('{lang}')")
                 except Exception:
                     pass
-                # on_top=True is not enough for this window.  pywebview 6.1
-                # shows a transparent EdgeChromium form, hides it, and shows
-                # it again when navigation starts; measured live 2026-09-15
-                # (Nunba 89096d49) the form carried WS_EX_TOPMOST yet sat
-                # below a plain maximized window in z-order, so nothing of it
-                # reached the screen.  SetWindowPos(HWND_TOPMOST) after the
-                # page loads put it back on top.  Win32 through the canonical
-                # helper: writing _companion_window.on_top off the UI thread
-                # is the /api/focus hang (#593).
+                # A floating presence is a tool window: no taskbar entry, no
+                # Alt-Tab.  Then on top, for the reason in _companion_raise.
                 _comp_hwnd = _resolve_hwnd(_companion_window)
                 if _comp_hwnd:
-                    from desktop.platform_utils import set_window_always_on_top
-                    set_window_always_on_top(_comp_hwnd, True)
+                    from desktop.platform_utils import set_window_tool_window
+                    set_window_tool_window(_comp_hwnd, True)
+                _companion_raise()
             if _companion_window:
                 _companion_window.events.loaded += _on_companion_loaded
 

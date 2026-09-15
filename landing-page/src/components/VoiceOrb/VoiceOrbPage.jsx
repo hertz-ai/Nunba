@@ -25,8 +25,17 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
  * cross-surface broadcast that doesn't exist yet, so it is intentionally not
  * faked.
  *
- * Auto-hide: peeks to the corner when idle AND not speaking; any pointer
- * interaction, or speaking, reveals it (taskbar-style).
+ * Auto-hide: idle AND not speaking is "away"; any pointer interaction, or
+ * speaking, brings it back.  In the HART OS shell "away" is a corner peek
+ * (translate, taskbar-style).  In the desktop companion window "away" is NO
+ * window: the page owns the state and tells the bridge
+ * (on_companion_presence 'hidden' | 'shown') and app.py hides/shows the
+ * window.  Owner 2026-09-15: the floating window exists only while an agent
+ * wants to talk.  Measured that day on Nunba 89096d49: the corner peek
+ * (translate + scale(.5)) inside a fixed 220x310 window read as an opaque
+ * black rectangle with the orb shrunk to a dot -- the visualiser measures
+ * its box with getBoundingClientRect, which includes the ancestor scale, so
+ * every shrink re-measured smaller until the canvas was 1px.
  */
 const SKIN_KEY = 'hart_orb_skin';
 const IDLE_MS = 6000;
@@ -40,12 +49,22 @@ function readSkin() {
   }
 }
 
+// True inside the pywebview companion window.  pywebview puts `window.pywebview`
+// on the document at creation; `.api` fills in at 'pywebviewready'.
+function inCompanion() {
+  try {
+    return !!window.pywebview;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Call a companion bridge method when running inside the pywebview companion
 // window (desktop); a safe no-op everywhere else (HART OS shell / browser).
-function companionApi(method) {
+function companionApi(method, ...args) {
   try {
     const api = window.pywebview && window.pywebview.api;
-    if (api && typeof api[method] === 'function') api[method]();
+    if (api && typeof api[method] === 'function') api[method](...args);
   } catch (e) {
     /* not in the pywebview companion — no-op */
   }
@@ -280,9 +299,11 @@ function InputBar() {
 export default function VoiceOrbPage() {
   const [skin, setSkin] = useState(readSkin);
   const [speaking, setSpeaking] = useState(false);
-  const [peeked, setPeeked] = useState(false);
+  const hosted = useRef(inCompanion());
+  // Hosted: born away (no window) until an agent speaks or the owner acts.
+  const [peeked, setPeeked] = useState(hosted.current);
   const speakTimer = useRef(null);
-  const lastInteract = useRef(Date.now());
+  const lastInteract = useRef(hosted.current ? 0 : Date.now());
 
   const active = speaking;
 
@@ -336,11 +357,27 @@ export default function VoiceOrbPage() {
     };
   }, [active, wake]);
 
+  // Hosted: the window follows the page's state.  Sent on every change and
+  // again at 'pywebviewready', since `.api` may not exist when the first
+  // state is decided.
+  useEffect(() => {
+    if (!hosted.current) return undefined;
+    const send = () => companionApi('on_companion_presence', peeked ? 'hidden' : 'shown');
+    send();
+    window.addEventListener('pywebviewready', send);
+    return () => window.removeEventListener('pywebviewready', send);
+  }, [peeked]);
+
+  // The shell keeps the corner peek; the companion window hides instead
+  // (see the module docstring for why a scaled peek cannot live there).
+  const shellPeek = peeked && !hosted.current;
+
   return (
     <div
       data-testid="voice-orb"
       data-skin={skin}
       data-active={active ? '1' : '0'}
+      data-away={peeked ? '1' : '0'}
       style={{
         position: 'fixed', inset: 0,
         display: 'flex', flexDirection: 'column',
@@ -349,8 +386,8 @@ export default function VoiceOrbPage() {
         // Drag the frameless companion window by the orb body; the input bar
         // opts out (no-drag, in InputBar) so it stays interactive.
         WebkitAppRegion: 'drag',
-        transform: peeked ? 'translate(118px, 46px) scale(.5)' : 'none',
-        opacity: peeked ? 0.4 : 1,
+        transform: shellPeek ? 'translate(118px, 46px) scale(.5)' : undefined,
+        opacity: shellPeek ? 0.4 : 1,
         transition: 'transform .45s cubic-bezier(.34,1.3,.64,1), opacity .45s ease',
         overflow: 'hidden',
       }}
@@ -361,6 +398,11 @@ export default function VoiceOrbPage() {
         title="Open Nunba"
         style={{
           flex: '1 1 auto',
+          // Full width, so the visualiser measures the page's width and not
+          // its own canvas (alignItems:center would shrink-wrap this box to
+          // the canvas, and the 80% cap then shrinks the canvas on every
+          // measure).
+          alignSelf: 'stretch',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',

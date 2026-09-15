@@ -181,6 +181,31 @@ def set_window_always_on_top(window_handle, on_top=True):
             logger.error(f"Error setting window on top: {e}")
 
 
+def set_window_tool_window(window_handle, tool=True):
+    """Keep a window out of the taskbar and Alt-Tab (WS_EX_TOOLWINDOW).
+
+    For a floating presence that comes and goes: the owner saw two Nunba
+    entries on the taskbar (2026-09-15).  Takes effect on the next show,
+    so call it while the window is hidden or before it is shown.
+    """
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            GWL_EXSTYLE = -20
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_APPWINDOW = 0x00040000
+
+            user32 = ctypes.windll.user32
+            style = user32.GetWindowLongW(window_handle, GWL_EXSTYLE)
+            if tool:
+                style = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+            else:
+                style = (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
+            user32.SetWindowLongW(window_handle, GWL_EXSTYLE, style)
+        except Exception as e:
+            logger.error(f"Error setting tool-window style: {e}")
+
+
 def register_protocol_handler(protocol="hevolveai", app_path=None):
     """Register one or more custom URL protocol handlers.
 
