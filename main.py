@@ -5036,7 +5036,8 @@ def admin_mcp_token_get():
       {
         token: '<bearer token from %LOCALAPPDATA%/Nunba/mcp.token>',
         url: 'http://localhost:5000/api/mcp/local',
-        config_snippet: '<JSON blob for .claude/settings.local.json>'
+        config_snippet: '<JSON blob for .claude/settings.local.json>',
+        enabled: <bool>   # the copilot switch, so the page can render it
       }
     """
     try:
@@ -5044,14 +5045,35 @@ def admin_mcp_token_get():
         # underscore-prefix `_ensure_mcp_token` which coupled Nunba's
         # release cadence to HARTOS internal naming.
         from integrations.mcp import get_mcp_token
+        from integrations.coding_agent.claude_code_backend import copilot_enabled
         token = get_mcp_token()
         return jsonify({
             'token': token,
             'url': _MCP_CONFIG_URL,
             'config_snippet': _mcp_config_snippet(token),
+            'enabled': copilot_enabled(),
         })
     except Exception as e:
         logging.error(f"mcp token admin endpoint failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/mcp/enable', methods=['POST'])
+@require_local_or_token
+def admin_mcp_enable():
+    """Switch the Claude Code copilot off/on: {"enabled": bool}.  Same shape
+    as the provider switch.  Off gates claude_code_available(), so the expert
+    tier stops routing to Claude and /api/mcp/local answers 503; the token is
+    untouched, so on again costs no client reconfiguration (rotate does).
+    Returns the state IN FORCE (HARTOS_COPILOT_ENABLED can pin it)."""
+    try:
+        from integrations.coding_agent.claude_code_backend import set_copilot_enabled
+        wanted = bool((request.get_json(force=True, silent=True) or {}).get('enabled', True))
+        in_force = set_copilot_enabled(wanted)
+        return jsonify({'success': True, 'enabled': in_force,
+                        'pinned_by_env': in_force != wanted})
+    except Exception as e:
+        logging.error(f"mcp enable admin endpoint failed: {e}")
         return jsonify({'error': str(e)}), 500
 
 

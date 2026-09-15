@@ -65,6 +65,7 @@ export default function ClaudeCodeIntegrationPage() {
   const [tokenRevealed, setTokenRevealed] = useState(false);
   const [snackbar, setSnackbar] = useState({open: false, message: ''});
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [toggling, setToggling] = useState(false);
 
   const fetchToken = useCallback(async () => {
     setLoading(true);
@@ -100,6 +101,42 @@ export default function ClaudeCodeIntegrationPage() {
     }
   };
 
+  // The copilot's off-switch.  Unlike rotating, this leaves the token alone:
+  // switching back on costs the operator nothing, where a rotation makes them
+  // re-paste a new token into every client.  The server answers with the state
+  // actually IN FORCE — HARTOS_COPILOT_ENABLED can pin it — so we render its
+  // answer, never the value we asked for.
+  const handleToggle = async (next) => {
+    setToggling(true);
+    setError(null);
+    try {
+      const res = await fetch(`${ADMIN_API_URL}/mcp/enable`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: next}),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
+      }
+      const json = await res.json();
+      setData((prev) => ({...prev, enabled: json.enabled}));
+      setSnackbar({
+        open: true,
+        message: json.pinned_by_env
+          ? `HARTOS_COPILOT_ENABLED pins the copilot ${json.enabled ? 'on' : 'off'} — the switch did not take`
+          : json.enabled
+            ? 'Copilot on — your existing token still works'
+            : 'Copilot off — clients get 503; your token is unchanged',
+      });
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setToggling(false);
+    }
+  };
+
   const handleRotate = async () => {
     setConfirmOpen(false);
     setRotating(true);
@@ -114,7 +151,9 @@ export default function ClaudeCodeIntegrationPage() {
         throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
       }
       const json = await res.json();
-      setData(json);
+      // MERGE, don't replace: the rotate response carries no `enabled`, and
+      // overwriting would blank the switch's state in the UI until a reload.
+      setData((prev) => ({...prev, ...json}));
       setTokenRevealed(true); // user just rotated — they need the new value
       setSnackbar({
         open: true,
@@ -453,6 +492,35 @@ export default function ClaudeCodeIntegrationPage() {
       </Card>
 
       <Divider sx={{my: 3, borderColor: 'rgba(255,255,255,0.08)'}} />
+
+      {/* Copilot on/off — the switch, not the rotate */}
+      <Card sx={{background: CARD_BG, border: `1px solid ${CARD_BORDER}`, mb: 3}}>
+        <CardContent>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
+            <Box>
+              <Typography sx={{fontWeight: 700, color: '#fff'}}>
+                Copilot {data?.enabled === false ? 'off' : 'on'}
+              </Typography>
+              <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.6)'}}>
+                Off stops agents escalating to Claude and refuses MCP calls. Your token is kept,
+                so turning it back on needs no reconfiguration — unlike rotating.
+              </Typography>
+            </Box>
+            <Button
+              variant="contained"
+              disabled={toggling || !data}
+              onClick={() => handleToggle(data?.enabled === false)}
+              sx={{
+                background: data?.enabled === false ? '#4CAF50' : '#f44336',
+                whiteSpace: 'nowrap',
+                '&:hover': {background: data?.enabled === false ? '#43a047' : '#e53935'},
+              }}
+            >
+              {toggling ? '…' : data?.enabled === false ? 'Turn on' : 'Turn off'}
+            </Button>
+          </Stack>
+        </CardContent>
+      </Card>
 
       {/* Rotate token */}
       <Card
