@@ -34,6 +34,10 @@ Fix invariants (these tests enforce):
   F. The companion window MUST be creatable: its background colour is
      one pywebview accepts, and a creation failure is logged where it
      can be seen.
+  G. The companion MUST be placed in the coordinate space pywebview
+     positions windows in (logical pixels, via get_screen_dimensions),
+     so the whole window lands inside the working area on a scaled
+     display.
 """
 
 from __future__ import annotations
@@ -273,6 +277,50 @@ class RestartMinimizeStaticTests(unittest.TestCase):
             'logger.debug("[COMPANION] Companion window not created', src)
         self.assertIn(
             'logger.warning("[COMPANION] Companion window not created', src)
+
+    # ── Invariant G: the companion lands on the screen ────────────────
+    def test_companion_is_placed_in_pywebview_logical_pixels(self):
+        """Live 2026-09-15 (Nunba 89096d49, 2560x1440 at 150%): the
+        companion was created at (2310, 1050) from GetSystemMetrics, which
+        returns physical pixels in this DPI-aware process, while pywebview
+        placed it in logical pixels, where the screen is 1707x960.  The
+        window existed, visible=True, rect (2310,1050)-(2508,1304): wholly
+        off the screen, so the owner never saw it.  The main window uses
+        get_screen_dimensions(), which normalises to logical pixels; the
+        companion must use the same source.
+        """
+        import re
+
+        src = APP_PY.read_text(encoding="utf-8")
+        m = re.search(r"Nanba Companion: floating desktop pet.*?title='Nanba'",
+                      src, re.S)
+        self.assertIsNotNone(m, "companion block not found")
+        block = m.group(0)
+        self.assertFalse(
+            "GetSystemMetrics" in block,
+            "the companion position is computed in physical pixels but "
+            "applied in logical ones; use get_screen_dimensions()")
+        self.assertTrue("get_screen_dimensions()" in block,
+                        "the companion must take its screen size from "
+                        "get_screen_dimensions(), like the main window")
+
+    def test_companion_origin_keeps_the_window_inside_the_working_area(self):
+        # app.py runs the whole app at import; lift the pure helper alone.
+        src = APP_PY.read_text(encoding="utf-8")
+        start = src.index("def _companion_origin(")
+        end = src.index("\n\n\n", start)
+        ns = {}
+        exec(compile(src[start:end], str(APP_PY), "exec"), ns)  # noqa: S102
+        origin = ns["_companion_origin"]
+
+        # The measured working area on the owner's display (logical).
+        x, y = origin(1707, 912, 220, 310)
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+        self.assertLessEqual(x + 220, 1707)
+        self.assertLessEqual(y + 310, 912)
+        # A display smaller than the window still yields an on-screen origin.
+        self.assertEqual(origin(200, 200, 220, 310), (0, 0))
 
 
 class RestartMinimizeBehaviouralTests(unittest.TestCase):

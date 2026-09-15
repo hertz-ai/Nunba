@@ -4293,6 +4293,17 @@ def get_screen_dimensions():
         return 1920, 1020
 
 
+def _companion_origin(screen_w, screen_h, width, height, margin=30):
+    """Bottom-right origin for the floating companion, clamped on-screen.
+
+    screen_w/screen_h are the working area from get_screen_dimensions()
+    (logical pixels, taskbar excluded), so one margin serves both axes.
+    """
+    x = max(0, screen_w - width - margin)
+    y = max(0, screen_h - height - margin)
+    return x, y
+
+
 def calculate_perfect_right_dock():
     """Dock window to the right edge of the screen in portrait mode.
 
@@ -7977,15 +7988,19 @@ def main():
         # listens via STT, and gamifies the conversation experience.
         _companion_window = None
         try:
-            import ctypes as _ct
-            _screen_w = _ct.windll.user32.GetSystemMetrics(0) if sys.platform == 'win32' else 1920
-            _screen_h = _ct.windll.user32.GetSystemMetrics(1) if sys.platform == 'win32' else 1080
             # 220x310: character + status bar + input bar + platform hint.
             # Must match the html/body size in landing-page/public/nanba-companion.html
             # (DRY Gate 2 — window size and HTML size are the same contract).
             _comp_w, _comp_h = 220, 310
-            _comp_x = _screen_w - _comp_w - 30  # Bottom-right, 30px margin
-            _comp_y = _screen_h - _comp_h - 80  # Above taskbar
+            # get_screen_dimensions() is the working area in the logical
+            # pixels pywebview positions windows in, the same source the main
+            # window uses.  The raw user32 screen size is physical pixels in
+            # this DPI-aware process (2560x1440 on a 150% display, logical
+            # 1707x960), so the window was created at (2310, 1050):
+            # visible=True and wholly off-screen.
+            _screen_w, _screen_h = get_screen_dimensions()
+            _comp_x, _comp_y = _companion_origin(_screen_w, _screen_h,
+                                                 _comp_w, _comp_h)
 
             class CompanionAPI:
                 """Python bridge for the companion window JS.
