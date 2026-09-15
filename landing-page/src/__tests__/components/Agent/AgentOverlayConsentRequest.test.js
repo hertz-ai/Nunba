@@ -67,15 +67,17 @@ const ASK = {
 const ALLOW_ALL = 'Allow ALL agents to control this computer';
 
 function mountOverlay() {
-  let handleEvent;
+  // One handler per topic: the overlay subscribes to agent.ui.update for
+  // cards and to the answer topics (consent.granted / consent.revoked).
+  const handlers = {};
   const rt = require('../../../services/realtimeService').default;
-  rt.on = jest.fn((_topic, cb) => {
-    handleEvent = cb;
+  rt.on = jest.fn((topic, cb) => {
+    handlers[topic] = cb;
     return () => {};
   });
   render(<AgentOverlay navigate={jest.fn()} />);
-  return (payload) => act(() => {
-    handleEvent(payload);
+  return (payload, topic = 'agent.ui.update') => act(() => {
+    handlers[topic](payload);
   });
 }
 
@@ -273,6 +275,71 @@ describe("AgentOverlay consent.request — Don't allow", () => {
 
     await screen.findByText('An agent asks to use your data.');
     expect(screen.queryByRole('button', {name: /Don't allow/})).toBeNull();
+  });
+});
+
+describe('AgentOverlay consent.request — answered on another surface', () => {
+  // Owner 2026-09-15: giving consent in one place dismisses the ask on every
+  // surface it was shown on, for that user or the network guests.  HARTOS
+  // already tells every device: grant_consent emits consent.granted and
+  // revoke_consent (the card's "Don't allow") emits consent.revoked, both
+  // through the on_notification fan-out the ask itself rides (consent_service
+  // ._emit), each {consent_type, scope, agent_id}.  The overlay reads those
+  // as answers, never as cards.
+  const GRANT_ALL = {type: 'consent.granted', consent_type: 'computer_control',
+    scope: '*', agent_id: null};
+
+  test('a grant made on another device dismisses the card here', async () => {
+    const send = mountOverlay();
+    send(ASK);
+    await screen.findByText(ASK.reason);
+
+    send(GRANT_ALL, 'consent.granted');
+    await waitFor(() => {
+      expect(screen.queryByText(ASK.reason)).not.toBeInTheDocument();
+    });
+    expect(consentApi.grant).not.toHaveBeenCalled();
+  });
+
+  test("a 'Don't allow' for this agent made elsewhere dismisses the card", async () => {
+    const send = mountOverlay();
+    send(ASK);
+    await screen.findByText(ASK.reason);
+
+    send({type: 'consent.revoked', consent_type: 'computer_control',
+      scope: '*', agent_id: ASK.agent_id}, 'consent.revoked');
+    await waitFor(() => {
+      expect(screen.queryByText(ASK.reason)).not.toBeInTheDocument();
+    });
+  });
+
+  test("a 'Don't allow' for another agent leaves this ask open", async () => {
+    const send = mountOverlay();
+    send(ASK);
+    await screen.findByText(ASK.reason);
+
+    send({type: 'consent.revoked', consent_type: 'computer_control',
+      scope: '*', agent_id: 'someone-else'}, 'consent.revoked');
+    expect(screen.getByText(ASK.reason)).toBeInTheDocument();
+  });
+
+  test('an answer for another consent type leaves this ask open', async () => {
+    const send = mountOverlay();
+    send(ASK);
+    await screen.findByText(ASK.reason);
+
+    send({...GRANT_ALL, consent_type: 'screen_capture'}, 'consent.granted');
+    expect(screen.getByText(ASK.reason)).toBeInTheDocument();
+  });
+
+  test('an answer never renders as a card of its own', () => {
+    // A per-agent answer carries agent_id, so realtimeService also puts it
+    // on agent.ui.update; the overlay used to render it through the default
+    // branch as raw JSON.
+    const send = mountOverlay();
+    send({...GRANT_ALL, agent_id: ASK.agent_id});
+    expect(screen.queryByText(/consent\.granted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/computer_control/)).not.toBeInTheDocument();
   });
 });
 

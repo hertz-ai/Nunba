@@ -1,6 +1,7 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import {
-  allowAllLabel, askerName, canDecline, consentAskText, declineLabel,
+  CONSENT_ANSWER_TYPES, allowAllLabel, answerCoversAsk, askerName, canDecline,
+  consentAskText, declineLabel,
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
@@ -946,9 +947,32 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
     setOverlays(prev => prev.filter(o => o._id !== id));
   }, [forgetShowing]);
 
+  // An ask answered on any surface (this one, another window, another
+  // device, a network guest) closes its card here: HARTOS broadcasts the
+  // answer to every device of the user (constants/consentAsks).
+  const settleAsks = useCallback((answer) => {
+    setOverlays((prev) => {
+      const gone = prev.filter((o) => o._type === 'consent.request'
+        && answerCoversAsk(answer, o));
+      if (gone.length === 0) return prev;
+      gone.forEach((o) => {
+        clearTimeout(timersRef.current[o._id]);
+        delete timersRef.current[o._id];
+        forgetShowing(o._id);
+      });
+      return prev.filter((o) => !gone.includes(o));
+    });
+  }, [forgetShowing]);
+
   const handleEvent = useCallback((payload) => {
     if (!payload) return;
     const type = payload.type || payload.component_type || 'notification';
+
+    // An answer is not a card.  One that names an agent also travels on
+    // agent.ui.update (realtimeService puts every typed payload with an
+    // agent_id there) and used to render through the default branch as
+    // raw JSON; the answer listener below is what acts on it.
+    if (CONSENT_ANSWER_TYPES.includes(type)) return;
 
     // Navigate type: orchestrate page navigation, don't render overlay
     if (type === 'navigate' && navigate && payload.target) {
@@ -992,12 +1016,15 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
     // (WAMP primary, SSE fallback with auto-reconnect and dedup).
     // No transport-specific code here.
     const unsub = realtimeService.on('agent.ui.update', handleEvent);
+    const unsubAnswers = CONSENT_ANSWER_TYPES.map(
+      (t) => realtimeService.on(t, settleAsks));
 
     return () => {
       unsub();
+      unsubAnswers.forEach((u) => u && u());
       Object.values(timersRef.current).forEach(clearTimeout);
     };
-  }, [handleEvent]);
+  }, [handleEvent, settleAsks]);
 
   if (overlays.length === 0) return null;
 

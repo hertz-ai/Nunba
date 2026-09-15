@@ -1,4 +1,5 @@
 
+import { CONSENT_ANSWER_TYPES, answerCoversAsk } from '../../constants/consentAsks';
 import realtimeService from '../../services/realtimeService';
 import { ConsentPromptOverlay } from '../AgentOverlay/AgentOverlay';
 import VoiceVisualizer from '../VoiceVisualizer';
@@ -369,7 +370,17 @@ export default function VoiceOrbPage() {
       setAsks((prev) => (payload.msg_id && prev.some((a) => a.msg_id === payload.msg_id)
         ? prev : [...prev, payload]));
     }
-    return realtimeService.on('agent.ui.update', onAgentUi);
+    // Answered on any surface (the main window, another device, a network
+    // guest): HARTOS broadcasts the answer to every device of the user, and
+    // the asks it covers leave here too (constants/consentAsks).
+    function onAnswer(answer) {
+      setAsks((prev) => prev.filter((a) => !answerCoversAsk(answer, a)));
+    }
+    const unsubs = [
+      realtimeService.on('agent.ui.update', onAgentUi),
+      ...CONSENT_ANSWER_TYPES.map((t) => realtimeService.on(t, onAnswer)),
+    ];
+    return () => unsubs.forEach((u) => u && u());
   }, []);
   const answerAsk = useCallback(() => setAsks((prev) => prev.slice(1)), []);
 

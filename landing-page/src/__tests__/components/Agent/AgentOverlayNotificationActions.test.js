@@ -53,8 +53,10 @@ describe('AgentOverlay NotificationCard actions', () => {
     // Spy the realtime subscription so we can inject a notification
     // event directly into the overlay.
     const rt = require('../../../services/realtimeService').default;
-    rt.on = jest.fn((_topic, cb) => {
-      handleEvent = cb;
+    // The overlay also subscribes to the consent answer topics; the card
+    // handler is the agent.ui.update one.
+    rt.on = jest.fn((topic, cb) => {
+      if (topic === 'agent.ui.update') handleEvent = cb;
       return () => {};
     });
 
@@ -93,8 +95,10 @@ describe('AgentOverlay NotificationCard actions', () => {
     const navigateSpy = jest.fn();
     let handleEvent;
     const rt = require('../../../services/realtimeService').default;
-    rt.on = jest.fn((_topic, cb) => {
-      handleEvent = cb;
+    // The overlay also subscribes to the consent answer topics; the card
+    // handler is the agent.ui.update one.
+    rt.on = jest.fn((topic, cb) => {
+      if (topic === 'agent.ui.update') handleEvent = cb;
       return () => {};
     });
 

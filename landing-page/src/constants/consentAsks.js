@@ -21,6 +21,16 @@
  * the type again on the privacy page (hartos-3e ruling (a)), so an ask card
  * offers it only for a type that has an on/off card there.
  *
+ * Answered elsewhere: an answer given on any surface dismisses the ask on
+ * every surface it was shown on, for that user or the network guests (owner
+ * 2026-09-15).  HARTOS tells every device: grant_consent emits
+ * consent.granted and revoke_consent (the card's "Don't allow") emits
+ * consent.revoked, both {consent_type, scope, agent_id}, through the same
+ * on_notification fan-out the ask rides (consent_service._emit).  Every
+ * surface that shows the card listens for those and drops the asks they
+ * cover (answerCoversAsk).  "Not now" is local: the server has no ack for
+ * an open ask, and a waiting gate re-sends it anyway.
+ *
  * Presentation only: HARTOS CONSENT_TYPES decides which types exist.  A
  * type not listed here still renders, from its own name, without a decline.
  */
@@ -68,4 +78,19 @@ export function declineLabel(agentId, agentName) {
   if (!agentId) return "Don't allow";
   const name = String(agentName || '').trim();
   return name ? `Don't allow ${name}` : "Don't allow this agent";
+}
+
+// The events HARTOS broadcasts when an ask is answered, on any surface.
+export const CONSENT_ANSWER_TYPES = Object.freeze(['consent.granted', 'consent.revoked']);
+
+// True when an answer settles an ask, by ConsentService.check_consent's own
+// lookup: the same consent type; the answer's scope is the ask's or '*';
+// the answer names no agent (a grant or decline for every agent) or the
+// ask's agent.  An answer for another agent leaves this ask open.
+export function answerCoversAsk(answer, ask) {
+  if (!answer || !ask || !answer.consent_type
+      || answer.consent_type !== ask.consent_type) return false;
+  const scope = answer.scope || '*';
+  if (scope !== '*' && scope !== (ask.scope || '*')) return false;
+  return answer.agent_id == null || String(answer.agent_id) === String(ask.agent_id);
 }

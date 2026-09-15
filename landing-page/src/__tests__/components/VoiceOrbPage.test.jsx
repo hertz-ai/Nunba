@@ -14,12 +14,14 @@ import React from 'react';
 
 let ttsHandler = null;
 let uiHandler = null;
+const handlers = {};   // every other topic the page subscribes to
 jest.mock('../../services/realtimeService', () => ({
   __esModule: true,
   default: {
     on: (ev, fn) => {
       if (ev === 'tts') ttsHandler = fn;
-      if (ev === 'agent.ui.update') uiHandler = fn;
+      else if (ev === 'agent.ui.update') uiHandler = fn;
+      else handlers[ev] = fn;
       return () => {};
     },
     off: () => { ttsHandler = null; },
@@ -242,6 +244,25 @@ describe('hosted in the desktop companion window', () => {
       // effect runs after the dismiss, which arrives from the grant's promise).
       await waitFor(() =>
         expect(screen.getByTestId('voice-orb').dataset.presence).toBe('hidden'));
+    });
+
+    test('an answer given on another surface clears the ask and lets the window go', () => {
+      // Owner 2026-09-15: giving consent in one place dismisses the ask on
+      // every surface, for that user or the network guests.  HARTOS tells
+      // every device (consent.granted / consent.revoked, the same fan-out
+      // the ask rides); the companion reads it as the answer.
+      render(<VoiceOrbPage />);
+      act(() => { uiHandler(ASK); });
+      act(() => { jest.advanceTimersByTime(50); });
+      expect(screen.getByTestId('voice-orb').dataset.presence).toBe('shown');
+
+      act(() => {
+        handlers['consent.granted']({type: 'consent.granted',
+          consent_type: 'computer_control', scope: '*', agent_id: null});
+      });
+      act(() => { jest.advanceTimersByTime(50); });
+      expect(screen.queryByText('Spider-Man asks to control this computer.')).not.toBeInTheDocument();
+      expect(screen.getByTestId('voice-orb').dataset.presence).toBe('hidden');
     });
 
     test('other agent UI (a notification card) does not reach the floating window', () => {
