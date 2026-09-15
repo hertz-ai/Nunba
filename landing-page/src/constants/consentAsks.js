@@ -119,13 +119,25 @@ export function declineLabel(consentType, agentId, name) {
 export const CONSENT_ANSWER_TYPES = Object.freeze(['consent.granted', 'consent.revoked']);
 
 // True when an answer settles an ask, by ConsentService.check_consent's own
-// lookup: the same consent type; the answer's scope is the ask's or '*';
-// the answer names no agent (a grant or decline for every agent) or the
-// ask's agent.  An answer for another agent leaves this ask open.
+// lookup, step for step:
+//   1. exact: the same type, scope and agent;
+//   2. wildcard: the ask's own agent answered for every scope ('*');
+//   3. blanket: every agent answered for every scope ('*', no agent).
+// Steps 2 and 3 run only for an ask that names an agent (check_consent
+// guards both with `agent_id is not None`), so an ask with no agent — a
+// person's phone (device_access, scope 'device:<key>') — is settled by its
+// exact scope alone: a blanket device_access row admits no phone, and the
+// gate keeps answering consent_pending, so the card must stay up
+// (hartos-3e review of ef237047).  An answer for another agent or another
+// phone leaves this ask open.
 export function answerCoversAsk(answer, ask) {
   if (!answer || !ask || !answer.consent_type
       || answer.consent_type !== ask.consent_type) return false;
   const scope = answer.scope || '*';
-  if (scope !== '*' && scope !== (ask.scope || '*')) return false;
+  const askScope = ask.scope || '*';
+  const sameAgent = answer.agent_id == null
+    ? ask.agent_id == null : String(answer.agent_id) === String(ask.agent_id);
+  if (scope === askScope && sameAgent) return true;
+  if (ask.agent_id == null || scope !== '*') return false;
   return answer.agent_id == null || String(answer.agent_id) === String(ask.agent_id);
 }

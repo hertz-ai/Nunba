@@ -408,6 +408,36 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
       expect(screen.queryByText(DEVICE_ASK.reason)).not.toBeInTheDocument();
     });
   });
+
+  test('a blanket device_access answer leaves every phone ask standing', async () => {
+    // check_consent's wildcard and blanket steps run only for an ask that
+    // names an agent (agent_id is not None); a device ask names none, so a
+    // blanket ('*', no agent) device_access row admits NO phone and the
+    // gate keeps answering 403 consent_pending.  The card must stay up
+    // (hartos-3e review of ef237047).
+    const KEY_B = 'b'.repeat(64);
+    const ASK_B = {...DEVICE_ASK, msg_id: 'consent.request:row-11',
+      scope: `device:${KEY_B}`, requester_name: 'Mani',
+      reason: "Mani's phone asks to use this computer's agents from the network."};
+    const send = mountOverlay();
+    send(DEVICE_ASK);
+    send(ASK_B);
+    await screen.findByText(DEVICE_ASK.reason);
+    await screen.findByText(ASK_B.reason);
+
+    send({type: 'consent.granted', consent_type: 'device_access',
+      scope: '*', agent_id: null}, 'consent.granted');
+    expect(screen.getByText(DEVICE_ASK.reason)).toBeInTheDocument();
+    expect(screen.getByText(ASK_B.reason)).toBeInTheDocument();
+
+    // The exact scope still settles only its own phone.
+    send({type: 'consent.granted', consent_type: 'device_access',
+      scope: `device:${KEY_B}`, agent_id: null}, 'consent.granted');
+    await waitFor(() => {
+      expect(screen.queryByText(ASK_B.reason)).not.toBeInTheDocument();
+    });
+    expect(screen.getByText(DEVICE_ASK.reason)).toBeInTheDocument();
+  });
 });
 
 describe('AgentOverlay consent_prompt (browser research)', () => {
