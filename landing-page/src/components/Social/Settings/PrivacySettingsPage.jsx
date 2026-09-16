@@ -47,6 +47,7 @@ import {
   formatScopeDescription,
   scopeRequiresAgeClaim,
 } from './cloudCapabilityScopes';
+import {DEVICE_ACCESS, PHONE_STATES, trustedPhones} from './trustedPhones';
 
 import {allowAllLabel} from '../../../constants/consentAsks';
 import {consentApi} from '../../../services/socialApi';
@@ -60,6 +61,7 @@ import {
   ExpandMore,
   ExpandLess,
   History,
+  Smartphone,
   Visibility,
 } from '@mui/icons-material';
 import {
@@ -708,6 +710,161 @@ function BlanketConsentCard({
   );
 }
 
+const PHONE_STATE_STYLE = {
+  [PHONE_STATES.ALLOWED]: STATUS_COLORS.active,
+  [PHONE_STATES.BLOCKED]: STATUS_COLORS.revoked,
+  [PHONE_STATES.PENDING]: {
+    bg: 'rgba(243,156,18,0.18)', border: 'rgba(243,156,18,0.55)', fg: '#F39C12',
+  },
+};
+
+// The owner's phones (#111).  A phone on the network asks for this
+// computer's agents through the consent card; every phone that ever asked
+// is one row here -- the name it gave itself, the fingerprint of its key,
+// and its state -- acted on by its own scope.  There is no allow-all: a
+// blanket device_access row admits no phone (HARTOS consent_api refuses it
+// with 400), so offering one would only look like consent.  Allow = POST
+// /consent (a granted row for that key; the gate admits the phone), Block =
+// POST /consent/revoke (ends its grants), Don't allow on a pending ask =
+// POST /consent/decline with no agent (the ask is declined and not asked
+// again; Allow here is the way back).  Exported for its own test.
+export function TrustedPhonesCard() {
+  const [phones, setPhones] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyScope, setBusyScope] = useState(null);
+  const [snack, setSnack] = useState(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      // Every row, not active_only: BLOCKED and PENDING live in the revoked
+      // and ungranted rows.  axiosFactory resolves the response body, HARTOS's
+      // {success, data: {consents}} envelope.
+      const res = await consentApi.list({consent_type: DEVICE_ACCESS});
+      setPhones(trustedPhones((res && res.data && res.data.consents) || []));
+    } catch (e) {
+      setSnack({severity: 'error', msg: 'Could not load your phones — please retry.'});
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const act = useCallback(async (scope, call, doneMsg, failMsg) => {
+    setBusyScope(scope);
+    try {
+      await call();
+      setSnack({severity: 'success', msg: doneMsg});
+      await refresh();
+    } catch (e) {
+      setSnack({severity: 'error', msg: failMsg});
+    } finally {
+      setBusyScope(null);
+    }
+  }, [refresh]);
+
+  // The messages name the phone by its fingerprint: the label is what the
+  // phone said about itself.
+  const allow = (phone) => act(phone.scope,
+    () => consentApi.grant({consent_type: DEVICE_ACCESS, scope: phone.scope}),
+    `Phone ${phone.fingerprint} may reach this computer.`, 'Could not allow — please retry.');
+  const block = (phone) => act(phone.scope,
+    () => consentApi.revoke({consent_type: DEVICE_ACCESS, scope: phone.scope}),
+    `Phone ${phone.fingerprint} can no longer reach this computer.`,
+    'Could not block — please retry.');
+  const decline = (phone) => act(phone.scope,
+    () => consentApi.decline({consent_type: DEVICE_ACCESS, scope: phone.scope, agent_id: null}),
+    `Phone ${phone.fingerprint} was not allowed.`, 'Could not answer — please retry.');
+
+  return (
+    <Paper sx={{...glass, p: 2.5, mb: 2.5}} data-testid="device-access-card">
+      <Box sx={{display: 'flex', alignItems: 'center', gap: 1, mb: 1}}>
+        <Smartphone sx={{color: '#6C63FF'}} />
+        <Typography variant="subtitle1" sx={{color: '#fff', fontWeight: 600}}>
+          Phones reaching this computer
+        </Typography>
+      </Box>
+      <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.6)', mb: 2}}>
+        A phone on your network can ask to use this computer&apos;s agents. Each
+        phone is allowed or blocked on its own, by the code it shows; the name
+        is what the phone calls itself. Blocking stops it immediately.
+      </Typography>
+      {loading && phones.length === 0 ? (
+        <CircularProgress size={18} />
+      ) : phones.length === 0 ? (
+        <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.55)'}}
+          data-testid="phones-empty">
+          No phone has asked to reach this computer yet. When one does, a card
+          asks you, and the phone appears here.
+        </Typography>
+      ) : (
+        <Stack spacing={1}>
+          {phones.map((phone) => {
+            const id = phone.fingerprint.replace(/\s+/g, '');
+            const style = PHONE_STATE_STYLE[phone.state];
+            const busy = busyScope === phone.scope;
+            return (
+              <Box key={phone.scope} data-testid={`phone-row-${id}`}
+                sx={{display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1,
+                  p: 1.25, borderRadius: 1.5, bgcolor: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.06)'}}>
+                <Box sx={{flex: 1, minWidth: 160}}>
+                  <Typography variant="body2" sx={{color: '#fff', fontWeight: 600}}>
+                    {phone.label}
+                  </Typography>
+                  <Typography component="code"
+                    sx={{display: 'block', fontFamily: 'monospace', letterSpacing: '0.08em',
+                      color: 'rgba(255,255,255,0.75)'}}>
+                    {phone.fingerprint}
+                  </Typography>
+                </Box>
+                <Chip size="small" label={phone.state} data-testid={`phone-state-${id}`}
+                  sx={{bgcolor: style.bg, color: style.fg, border: `1px solid ${style.border}`}} />
+                {phone.state === PHONE_STATES.ALLOWED ? (
+                  <Button size="small" variant="outlined" color="inherit" disabled={busy}
+                    onClick={() => block(phone)} data-testid={`phone-block-${id}`}
+                    startIcon={busy ? <CircularProgress size={14} /> : <HighlightOff />}>
+                    Block
+                  </Button>
+                ) : (
+                  <>
+                    <Button size="small" variant="contained" disabled={busy}
+                      onClick={() => allow(phone)} data-testid={`phone-allow-${id}`}
+                      sx={{bgcolor: '#6C63FF', '&:hover': {bgcolor: '#5A52E0'}}}>
+                      Allow
+                    </Button>
+                    {phone.state === PHONE_STATES.PENDING && (
+                      <Button size="small" variant="outlined" disabled={busy}
+                        onClick={() => decline(phone)} data-testid={`phone-decline-${id}`}
+                        sx={{color: '#FF6B6B', borderColor: '#FF6B6B'}}>
+                        Don&apos;t allow
+                      </Button>
+                    )}
+                  </>
+                )}
+              </Box>
+            );
+          })}
+        </Stack>
+      )}
+
+      <Snackbar
+        open={Boolean(snack)}
+        autoHideDuration={4000}
+        onClose={() => setSnack(null)}
+        anchorOrigin={{vertical: 'bottom', horizontal: 'center'}}
+      >
+        {snack ? (
+          <Alert severity={snack.severity} onClose={() => setSnack(null)}>
+            {snack.msg}
+          </Alert>
+        ) : undefined}
+      </Snackbar>
+    </Paper>
+  );
+}
+
 // Autonomous external posting.  Granting flips the server-side gate that
 // marketing_tools._external_post_allowed + federated_aggregator enforce
 // (fail-closed).
@@ -811,8 +968,9 @@ const COPILOT_ACCESS_CARD = {
 };
 
 // Every on/off card on the page.  constants/consentAsks.PRIVACY_CARD_TYPES
-// names the ask types that rely on one of these as the way back after a
-// "Don't allow"; PrivacyComputerControlCard.test checks each is here.
+// names the ask types that rely on a card here as the way back after a
+// "Don't allow": one of these for an agent type, TrustedPhonesCard for
+// device_access; PrivacyComputerControlCard.test checks each is here.
 const CONSENT_CARDS = [
   PUBLIC_EXPOSURE_CARD,
   COMPUTER_CONTROL_CARD,
@@ -999,6 +1157,9 @@ export default function PrivacySettingsPage() {
       {CONSENT_CARDS.map((card) => (
         <BlanketConsentCard key={card.consentType} {...card} />
       ))}
+      {/* device_access: one row per phone, never a blanket
+          (constants/consentAsks PRIVACY_CARD_TYPES names it). */}
+      <TrustedPhonesCard />
 
       {error && !snack && (
         <Alert severity="warning" sx={{mb: 2}}>

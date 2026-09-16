@@ -345,11 +345,17 @@ describe('AgentOverlay consent.request — answered on another surface', () => {
 
 describe('AgentOverlay consent.request — a device ask (#111)', () => {
   // HARTOS files this when a person's phone asks to reach this desktop's
-  // agents from the network (hevolve-react-native-1e, #111 phase 1):
-  // consent_type device_access, scope 'device:<64 hex key>', agent_id null,
-  // requester_name the person, reason the sentence.  The grant is that
-  // exact scope: one phone, never a blanket over every agent.
+  // agents from the network (#111): consent_type device_access, scope
+  // 'device:<64 hex key>', agent_id null, requester_name the name the
+  // phone signed into the ask (self-asserted), requester_fingerprint the
+  // key's first 16 hex in four groups (consent_service.device_fingerprint,
+  // HARTOS 29a188036), reason the server's sentence.  The wording IS the
+  // security control (hartos-63): the name is shown only as a claim, the
+  // fingerprint is what the owner matches against the phone, the grant is
+  // that exact scope -- one phone, never a blanket over every agent.
   const KEY = 'a'.repeat(64);
+  const FINGERPRINT = 'aaaa aaaa aaaa aaaa';
+  const TITLE = 'A phone calling itself "Giri"';
   const DEVICE_ASK = {
     type: 'consent.request',
     msg_id: 'consent.request:row-9',
@@ -357,16 +363,27 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
     scope: `device:${KEY}`,
     agent_id: null,
     requester_name: 'Giri',
+    requester_fingerprint: FINGERPRINT,
     reason: "Giri's phone asks to use this computer's agents from the network.",
   };
 
-  test('names the person, grants that one phone, and never says ALL agents', async () => {
+  test('names the phone as a claim, shows the code to match, grants that one phone', async () => {
     const send = mountOverlay();
     send(DEVICE_ASK);
-    expect(await screen.findByText(DEVICE_ASK.reason)).toBeInTheDocument();
-    expect(screen.queryByRole('button', {name: /ALL agents/})).toBeNull();
+    expect(await screen.findByText(TITLE)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', {name: "Always allow Giri's phone"}));
+    const code = screen.getByTestId('liquid-consent-fingerprint');
+    expect(code).toHaveTextContent(FINGERPRINT);
+    expect(code.tagName).toBe('CODE');
+    expect(screen.getByText('Check the code matches on the phone')).toBeInTheDocument();
+    // The server's sentence states the self-asserted name as fact; the
+    // card does not repeat it, and the name appears nowhere else.
+    expect(screen.queryByText(DEVICE_ASK.reason)).toBeNull();
+    expect(screen.getAllByText(/Giri/)).toHaveLength(1);
+    expect(screen.queryByRole('button', {name: /ALL agents/})).toBeNull();
+    expect(screen.queryByRole('button', {name: /Giri/})).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', {name: 'Always allow this phone'}));
     await waitFor(() => {
       expect(consentApi.grant).toHaveBeenCalledWith({
         consent_type: 'device_access',
@@ -375,37 +392,61 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
     });
   });
 
-  test('an ask with no reason still says who asks and for what', async () => {
+  test('says what the phone asks for, without the name', async () => {
     const send = mountOverlay();
     send({...DEVICE_ASK, msg_id: 'consent.request:row-10', reason: ''});
+    await screen.findByText(TITLE);
     expect(
-      await screen.findByText('Giri asks to reach this computer from their phone.'),
+      screen.getByText("This phone asks to use this computer's agents from the network."),
     ).toBeInTheDocument();
   });
 
-  test('offers no decline until the privacy page can re-allow a person', async () => {
-    // A no stands until the owner allows again on the privacy page; that
-    // page has no per-person device card yet (#111 phase 1, in review), so
-    // a decline here would strand the phone.  Flips with privacyCard.
+  test('without a fingerprint from the server the card derives it from the key', async () => {
+    const send = mountOverlay();
+    send({...DEVICE_ASK, msg_id: 'consent.request:row-12', requester_fingerprint: undefined});
+    await screen.findByText(TITLE);
+    expect(screen.getByTestId('liquid-consent-fingerprint')).toHaveTextContent(FINGERPRINT);
+  });
+
+  test('a phone that signed no name is an unnamed phone', async () => {
+    const send = mountOverlay();
+    send({...DEVICE_ASK, msg_id: 'consent.request:row-13', requester_name: ''});
+    expect(await screen.findByText('An unnamed phone')).toBeInTheDocument();
+  });
+
+  test("Don't allow declines that phone's ask, for no agent, and closes the card", async () => {
+    // The way back is the privacy page's per-phone row (Allow), so the no
+    // can be offered here.
     const send = mountOverlay();
     send(DEVICE_ASK);
-    await screen.findByText(DEVICE_ASK.reason);
-    expect(screen.queryByRole('button', {name: /Don't allow/})).toBeNull();
+    await screen.findByText(TITLE);
+    fireEvent.click(screen.getByRole('button', {name: "Don't allow"}));
+    await waitFor(() => {
+      expect(consentApi.decline).toHaveBeenCalledWith({
+        consent_type: 'device_access',
+        scope: `device:${KEY}`,
+        agent_id: null,
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText(TITLE)).not.toBeInTheDocument();
+    });
+    expect(consentApi.grant).not.toHaveBeenCalled();
   });
 
   test('a grant for that phone dismisses the ask; a grant for another phone does not', async () => {
     const send = mountOverlay();
     send(DEVICE_ASK);
-    await screen.findByText(DEVICE_ASK.reason);
+    await screen.findByText(TITLE);
 
     send({type: 'consent.granted', consent_type: 'device_access',
       scope: `device:${'b'.repeat(64)}`, agent_id: null}, 'consent.granted');
-    expect(screen.getByText(DEVICE_ASK.reason)).toBeInTheDocument();
+    expect(screen.getByText(TITLE)).toBeInTheDocument();
 
     send({type: 'consent.granted', consent_type: 'device_access',
       scope: `device:${KEY}`, agent_id: null}, 'consent.granted');
     await waitFor(() => {
-      expect(screen.queryByText(DEVICE_ASK.reason)).not.toBeInTheDocument();
+      expect(screen.queryByText(TITLE)).not.toBeInTheDocument();
     });
   });
 
@@ -416,27 +457,29 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
     // gate keeps answering 403 consent_pending.  The card must stay up
     // (hartos-3e review of ef237047).
     const KEY_B = 'b'.repeat(64);
+    const TITLE_B = 'A phone calling itself "Mani"';
     const ASK_B = {...DEVICE_ASK, msg_id: 'consent.request:row-11',
       scope: `device:${KEY_B}`, requester_name: 'Mani',
+      requester_fingerprint: 'bbbb bbbb bbbb bbbb',
       reason: "Mani's phone asks to use this computer's agents from the network."};
     const send = mountOverlay();
     send(DEVICE_ASK);
     send(ASK_B);
-    await screen.findByText(DEVICE_ASK.reason);
-    await screen.findByText(ASK_B.reason);
+    await screen.findByText(TITLE);
+    await screen.findByText(TITLE_B);
 
     send({type: 'consent.granted', consent_type: 'device_access',
       scope: '*', agent_id: null}, 'consent.granted');
-    expect(screen.getByText(DEVICE_ASK.reason)).toBeInTheDocument();
-    expect(screen.getByText(ASK_B.reason)).toBeInTheDocument();
+    expect(screen.getByText(TITLE)).toBeInTheDocument();
+    expect(screen.getByText(TITLE_B)).toBeInTheDocument();
 
     // The exact scope still settles only its own phone.
     send({type: 'consent.granted', consent_type: 'device_access',
       scope: `device:${KEY_B}`, agent_id: null}, 'consent.granted');
     await waitFor(() => {
-      expect(screen.queryByText(ASK_B.reason)).not.toBeInTheDocument();
+      expect(screen.queryByText(TITLE_B)).not.toBeInTheDocument();
     });
-    expect(screen.getByText(DEVICE_ASK.reason)).toBeInTheDocument();
+    expect(screen.getByText(TITLE)).toBeInTheDocument();
   });
 });
 

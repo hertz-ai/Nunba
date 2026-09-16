@@ -1,7 +1,7 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import {
-  CONSENT_ANSWER_TYPES, answerCoversAsk, askerName, canDecline, consentAskText,
-  declineLabel, grantLabel,
+  CONSENT_ANSWER_TYPES, FINGERPRINT_CAPTION, answerCoversAsk, askTitle, askerName,
+  canDecline, consentAskText, declineLabel, deviceFingerprint, grantLabel, isPerRequester,
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
@@ -792,20 +792,37 @@ function OverlayContent({ data, onDismiss, navigate }) {
 // device ask (#111), granted for that one phone by its exact scope.
 function consentCardFor(data) {
   if (data.type === 'consent.request') {
-    // An agent's ask names the agent; a person's ask names the person.
-    const who = data.agent_name || data.requester_name;
+    const type = data.consent_type;
+    // An agent's ask names the agent; a phone's ask names the phone, and
+    // that name is self-asserted: it goes in the title as a claim, the
+    // body says what is asked without it, and the server's reason (which
+    // states the name as fact) is not repeated.  The fingerprint of the
+    // phone's key is what the owner matches against the phone.
+    if (isPerRequester(type)) {
+      return {
+        consentType: type,
+        scope: data.scope || '*',
+        agentId: data.agent_id || null,
+        title: askTitle(type, data.requester_name),
+        text: `This phone asks to ${consentAskText(type)}.`,
+        fingerprint: data.requester_fingerprint || deviceFingerprint(data.scope),
+        caption: FINGERPRINT_CAPTION,
+        grantLabel: grantLabel(type),
+        declineLabel: canDecline(type) ? declineLabel(type, data.agent_id) : null,
+      };
+    }
     return {
-      consentType: data.consent_type,
+      consentType: type,
       scope: data.scope || '*',
       agentId: data.agent_id || null,
-      title: 'Permission needed',
+      title: askTitle(type),
       text: data.reason ||
-        `${askerName(who, data.consent_type)} asks to ${consentAskText(data.consent_type)}.`,
-      grantLabel: grantLabel(data.consent_type, who),
+        `${askerName(data.agent_name)} asks to ${consentAskText(type)}.`,
+      grantLabel: grantLabel(type),
       // A no stands until the owner allows the type again on the privacy
       // page, so only a type with a card there can be declined here.
-      declineLabel: canDecline(data.consent_type)
-        ? declineLabel(data.consent_type, data.agent_id, who) : null,
+      declineLabel: canDecline(type)
+        ? declineLabel(type, data.agent_id, data.agent_name) : null,
     };
   }
   const platform = data.platform || data.scope || 'platform';
@@ -856,6 +873,20 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
       <Typography variant="body2" sx={{opacity: 0.8, mb: 1.5}}>
         {card.text}
       </Typography>
+      {card.fingerprint && (
+        // The phone's key, as the phone shows it too: the owner matches the
+        // two by eye before allowing.  monospace so the groups line up.
+        <Box sx={{mb: 1.5}}>
+          <Typography component="code" data-testid="liquid-consent-fingerprint"
+            sx={{display: 'block', fontFamily: 'monospace', fontSize: '1.15rem',
+              letterSpacing: '0.08em', color: '#fff'}}>
+            {card.fingerprint}
+          </Typography>
+          <Typography variant="caption" sx={{display: 'block', opacity: 0.7}}>
+            {card.caption}
+          </Typography>
+        </Box>
+      )}
       {card.declineLabel && (
         <Typography variant="caption" sx={{display: 'block', opacity: 0.6, mb: 1}}>
           {`"${card.declineLabel}" lasts until you allow it again in Privacy settings; "Not now" leaves the ask open.`}

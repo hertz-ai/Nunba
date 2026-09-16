@@ -12,18 +12,27 @@
  * ask is built.  agent_id is a prompt id, which means nothing to a person, so
  * the card never shows it; an ask without a name says "An agent".  A
  * person's phone asking for this desktop (#111, device_access) carries
- * requester_name instead, and agent_id null.
+ * requester_name instead, and agent_id null.  That name is self-asserted
+ * (the phone signed it into its ask), so the card shows it only as a claim
+ * -- title 'A phone calling itself "Giri"' -- beside requester_fingerprint,
+ * the first 16 hex of the phone's key in four groups (HARTOS
+ * consent_service.device_fingerprint; the phone shows its own key the same
+ * way), with the caption telling the owner to match the two.  The wording
+ * is the security control (hartos-63, 2026-09-16): the name never appears
+ * as fact, not in the body and not on a button.
  *
  * Allow: every grant the SPA makes goes through /api/social/consent, which
  * writes a row with no agent, so it covers every agent.  The button says
  * so (hartos-3e ruling (c): "Allow ALL agents to control this computer").
  * A per-requester type (device_access) grants the ask's exact scope, one
- * phone, and the button names it: "Always allow Giri's phone".
+ * phone: "Always allow this phone".
  *
  * Don't allow: /api/social/consent/decline says no to the ask, for the
  * ask's agent only when it names one.  A no stands until the owner allows
  * the type again on the privacy page (hartos-3e ruling (a)), so an ask card
- * offers it only for a type that has an on/off card there.
+ * offers it only for a type that has a card there: an on/off card for an
+ * agent type, the per-phone rows (Allow / Block / Don't allow, one scope
+ * each) for device_access.
  *
  * Answered elsewhere: an answer given on any surface dismisses the ask on
  * every surface it was shown on, for that user or the network guests (owner
@@ -40,12 +49,14 @@
  */
 
 // Per consent type an ask can carry:
-//   asks         finishes "An agent asks to ..."
-//   privacyCard  the privacy page has an on/off card for the type (the way
-//                back after a "Don't allow"); PrivacyComputerControlCard.test
-//                checks every one of them is on the page.
-//   perRequester the ask comes from a person, not an agent (requester_name),
-//                and the grant is the ask's exact scope: that one requester,
+//   asks         finishes "An agent asks to ..." / "This phone asks to ..."
+//   privacyCard  the privacy page has a card for the type (the way back
+//                after a "Don't allow"): on/off for an agent type, one row
+//                per phone for a per-requester type.
+//                PrivacyComputerControlCard.test checks every one is there.
+//   perRequester the ask comes from a person's phone, not an agent
+//                (requester_name + requester_fingerprint, agent_id null),
+//                and the grant is the ask's exact scope: that one phone,
 //                never a blanket over every agent.
 export const CONSENT_ASKS = Object.freeze({
   computer_control: {asks: 'control this computer', privacyCard: true},
@@ -58,15 +69,39 @@ export const CONSENT_ASKS = Object.freeze({
   // card is the way back after a no.  Node-wide, so a blanket grant.
   copilot_access: {asks: 'use your Claude subscription for a hard step', privacyCard: true},
   // A person's phone asking to reach this desktop's agents from the network
-  // (#111 phase 1): scope 'device:<64 hex key>', agent_id null.  The privacy
-  // page's per-person device card (#111, in review) is the way back after a
-  // "Don't allow"; privacyCard flips when it lands.
+  // (#111): scope 'device:<64 hex key>', agent_id null.  The privacy page's
+  // trusted-phones card (one row per phone: Allow / Block / Don't allow) is
+  // the way back after a "Don't allow".
   device_access: {
-    asks: 'reach this computer from their phone', privacyCard: false, perRequester: true,
+    asks: "use this computer's agents from the network", privacyCard: true, perRequester: true,
   },
 });
 
-// The consent types with an on/off card on the privacy page.
+// A phone is its Ed25519 key; the consent scope is 'device:<64 hex>'.  What
+// the owner reads is the key's first 16 hex in four groups -- the same rule
+// as HARTOS consent_service.device_fingerprint and the phone's own display
+// (PeerLinkCrypto.getEd25519PublicHex, take 16, 4x4), so the two match by
+// eye.  The server sends it on the ask (requester_fingerprint) and on every
+// device_access row (fingerprint) since HARTOS 29a188036; this third copy of
+// the rule (one per language, each pinned by its own test) is the fallback
+// for the transition only -- this SPA in front of an older HARTOS, whose
+// asks and rows arrive without the field.
+const DEVICE_SCOPE_PREFIX = 'device:';
+const DEVICE_KEY_RE = /^[0-9a-f]{64}$/;
+
+export function deviceFingerprint(scopeOrKey) {
+  if (typeof scopeOrKey !== 'string') return null;
+  let key = scopeOrKey.toLowerCase();
+  if (key.startsWith(DEVICE_SCOPE_PREFIX)) key = key.slice(DEVICE_SCOPE_PREFIX.length);
+  if (!DEVICE_KEY_RE.test(key)) return null;
+  return [0, 4, 8, 12].map((i) => key.slice(i, i + 4)).join(' ');
+}
+
+// Under the fingerprint on a device card.
+export const FINGERPRINT_CAPTION = 'Check the code matches on the phone';
+
+// The consent types with a card on the privacy page: the way back after a
+// "Don't allow" (on/off for an agent type, one row per phone for device_access).
 export const PRIVACY_CARD_TYPES = Object.freeze(
   Object.keys(CONSENT_ASKS).filter((type) => CONSENT_ASKS[type].privacyCard),
 );
@@ -77,22 +112,23 @@ export function consentAskText(consentType) {
   return `use ${name}`;
 }
 
-function isPerRequester(consentType) {
+export function isPerRequester(consentType) {
   return Boolean(CONSENT_ASKS[consentType] && CONSENT_ASKS[consentType].perRequester);
 }
 
-// Who is asking, as a person would say it: the name the ask carries, else
-// "An agent" (a person's ask with no name: "Someone").
-export function askerName(name, consentType) {
+// Who is asking, as a person would say it: the agent's name, else "An
+// agent".  (A phone's name is a claim and goes in the title, askTitle.)
+export function askerName(name) {
   const who = String(name || '').trim();
-  if (who) return who;
-  return isPerRequester(consentType) ? 'Someone' : 'An agent';
+  return who || 'An agent';
 }
 
-// What a per-requester grant or decline covers: "Giri's phone".
-function requesterDevice(name) {
-  const who = String(name || '').trim();
-  return who ? `${who}'s phone` : 'this phone';
+// The card's title.  A phone's name is what the phone said about itself,
+// so it is quoted as a claim, never stated.
+export function askTitle(consentType, requesterName) {
+  if (!isPerRequester(consentType)) return 'Permission needed';
+  const who = String(requesterName || '').trim();
+  return who ? `A phone calling itself "${who}"` : 'An unnamed phone';
 }
 
 // The grant button: a grant from the SPA covers every agent.
@@ -100,10 +136,10 @@ export function allowAllLabel(consentType) {
   return `Allow ALL agents to ${consentAskText(consentType)}`;
 }
 
-// The grant button for an ask: every agent, or the one requester the ask's
-// scope names.
-export function grantLabel(consentType, requesterName) {
-  if (isPerRequester(consentType)) return `Always allow ${requesterDevice(requesterName)}`;
+// The grant button for an ask: every agent, or the one phone the ask's
+// scope names -- "this phone", never the self-asserted name.
+export function grantLabel(consentType) {
+  if (isPerRequester(consentType)) return 'Always allow this phone';
   return allowAllLabel(consentType);
 }
 
@@ -111,12 +147,11 @@ export function canDecline(consentType) {
   return PRIVACY_CARD_TYPES.includes(consentType);
 }
 
-// The decline button: a person's ask is declined for that requester; an
-// ask that names an agent is declined for it only, and says which one when
-// the agent has a name.
+// The decline button: a phone's ask is declined for that phone ("Don't
+// allow"; the phone is the title); an ask that names an agent is declined
+// for it only, and says which one when the agent has a name.
 export function declineLabel(consentType, agentId, name) {
-  if (isPerRequester(consentType)) return `Don't allow ${requesterDevice(name)}`;
-  if (!agentId) return "Don't allow";
+  if (isPerRequester(consentType) || !agentId) return "Don't allow";
   const who = String(name || '').trim();
   return who ? `Don't allow ${who}` : "Don't allow this agent";
 }

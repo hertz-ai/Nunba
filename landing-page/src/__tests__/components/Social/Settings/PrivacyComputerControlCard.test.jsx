@@ -13,6 +13,12 @@
  * axios client returns ({success, data: {consents}}), so each card reads
  * its own rows whatever order the cards mount in.  Each card shows a
  * spinner until its own list call resolves, so every button is awaited.
+ *
+ * The way-back check covers two card shapes: a blanket card ("Allow ALL
+ * agents to ...") and, for a per-requester type (device_access, #111), the
+ * per-phone row whose Allow re-admits the one phone the owner said no to
+ * -- a blanket device_access row admits no phone, so that card must never
+ * offer an allow-all.
  */
 /* eslint-disable import/order, import/first */
 
@@ -42,6 +48,18 @@ const ACTIVE_ROW = {
   granted: true,
   granted_at: new Date(Date.now() - 60 * 1000).toISOString(),
   revoked_at: null,
+};
+
+// A phone the owner said no to: the privacy page's Allow is its way back.
+const BLOCKED_PHONE_ROW = {
+  id: 'da-declined-1',
+  consent_type: 'device_access',
+  scope: `device:${'a'.repeat(64)}`,
+  granted: false,
+  granted_at: null,
+  revoked_at: new Date(Date.now() - 60 * 1000).toISOString(),
+  label: 'Giri',
+  fingerprint: 'aaaa aaaa aaaa aaaa',
 };
 
 function listAnswers(rowsByType) {
@@ -142,20 +160,29 @@ describe('the way back after a "Don\'t allow"', () => {
     // A no stands until the owner allows the type again here (HARTOS
     // consent_api.decline_consent), so a declinable type with no card here
     // would strand the owner.
-    const {PRIVACY_CARD_TYPES} = require('../../../../constants/consentAsks');
+    const {CONSENT_ASKS, PRIVACY_CARD_TYPES} = require('../../../../constants/consentAsks');
     expect(PRIVACY_CARD_TYPES.length).toBeGreaterThan(0);
-    listAnswers({});
+    expect(PRIVACY_CARD_TYPES).toContain('device_access');
+    listAnswers({device_access: [BLOCKED_PHONE_ROW]});
     renderWithProviders(<PrivacySettingsPage />);
 
     for (const type of PRIVACY_CARD_TYPES) {
       const card = await screen.findByTestId(
         `${type.replace(/_/g, '-')}-card`, {}, WAIT,
       );
-      expect(
-        await within(card).findByRole(
-          'button', {name: /^Allow ALL agents to /}, WAIT,
-        ),
-      ).toBeInTheDocument();
+      if (CONSENT_ASKS[type].perRequester) {
+        // One phone, by its own row: Allow re-admits exactly it.
+        expect(
+          await within(card).findByRole('button', {name: 'Allow'}, WAIT),
+        ).toBeInTheDocument();
+        expect(within(card).queryByRole('button', {name: /ALL/})).toBeNull();
+      } else {
+        expect(
+          await within(card).findByRole(
+            'button', {name: /^Allow ALL agents to /}, WAIT,
+          ),
+        ).toBeInTheDocument();
+      }
     }
   });
 });
