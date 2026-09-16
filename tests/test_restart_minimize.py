@@ -493,6 +493,37 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertEqual(resolve(types.SimpleNamespace(
             native=types.SimpleNamespace(Handle=594172))), 594172)
 
+    def test_resolve_hwnd_failure_is_visible_not_debug(self):
+        """Why the portrait dock regressed unseen (owner 2026-09-16): dd34d410
+        made this resolver raise on every window, the catch-all turned that
+        into hwnd 0 at DEBUG, and the main window's snap was skipped with
+        nothing in gui_app.log but a later, unrelated-looking move() error.
+        A resolver that fails must say so at WARNING, with the failure, so
+        the next such break shows on the boot it happens."""
+        import logging
+        import types
+
+        src = APP_PY.read_text(encoding="utf-8")
+        start = src.index("def _resolve_hwnd(window_instance):")
+        end = src.index("\ndef _clamped_maximize", start)
+        log = logging.getLogger("test_resolve_hwnd_warns")
+        ns = {
+            "sys": types.SimpleNamespace(platform="win32"),
+            "logger": log,
+            "args": types.SimpleNamespace(title="Nunba"),
+        }
+        exec(compile(src[start:end], str(APP_PY), "exec"), ns)  # noqa: S102
+        resolve = ns["_resolve_hwnd"]
+
+        class _BrokenHandle:
+            def ToInt64(self):
+                raise TypeError("handle cannot be read")
+
+        form = types.SimpleNamespace(Handle=_BrokenHandle())
+        with self.assertLogs(log, level="WARNING") as logs:
+            self.assertEqual(resolve(types.SimpleNamespace(native=form)), 0)
+        self.assertTrue(any("handle cannot be read" in line for line in logs.output), logs.output)
+
     # ── Invariant L: the window is clipped to the page's shape ────────
     def test_shape_box_maps_the_pages_css_rect_to_window_pixels(self):
         """Measured 2026-09-15 with the install's own pywebview + WebView2 in

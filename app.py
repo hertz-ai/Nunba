@@ -6947,7 +6947,13 @@ def _resolve_hwnd(window_instance):
             return _as_int(window_instance.handle)
         return int(_ct.windll.user32.FindWindowW(None, args.title) or 0)
     except Exception as _e:
-        logger.debug("_resolve_hwnd failed: %s", _e)
+        # Every hwnd-gated step (the main window's work-area snap, the
+        # companion's shape, tool-window and topmost) is skipped on 0, so a
+        # resolver failure must be visible on the boot it happens: at DEBUG
+        # it hid dd34d410's int(IntPtr) TypeError for a whole afternoon while
+        # the portrait dock sat unsnapped (owner 2026-09-16).
+        logger.warning("_resolve_hwnd failed for %r: %s",
+                       getattr(window_instance, 'title', window_instance), _e)
         return 0
 
 def _clamped_maximize(window_instance):
