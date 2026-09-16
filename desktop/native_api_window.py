@@ -107,6 +107,9 @@ class WindowApi:
             return False
 
     def window_close(self) -> bool:
+        """The React X requests a close; the app's `closing` handler
+        (app.py on_closing) decides -- it hides the window to the tray and
+        cancels, so this never destroys the form.  Quit is the tray menu."""
         w = self._window()
         if w is None:
             return False

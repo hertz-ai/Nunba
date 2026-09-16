@@ -7281,20 +7281,25 @@ def notify_minimized_to_tray(icon, message="Application minimized to system tray
         logger.error(f"Error showing notification: {e}")
 
 # Better event handlers that don't return None
-def on_closed():
-    logger.info("Window close button clicked, minimizing to system tray")
+def on_closing():
+    """Close (the React X, Alt+F4, a taskbar close) hides the window to the
+    tray; Quit lives in the tray menu.
+
+    This is pywebview's `closing` event, the one point where a close can be
+    cancelled: a handler returning False makes winforms set args.Cancel
+    (webview/event.py Event.set, platforms/winforms.py on_closing).  Until
+    2026-09-16 the hide hung on `closed`, which fires after WinForms has
+    already closed the form (and, for the last window, ended the message
+    loop) -- the window was gone, tray Restore had nothing to show, and the
+    app served headless until Quit (gui_app.log 11:28:38 -> 11:29:04)."""
+    global _window
     try:
-        global _window
         if _window:
             _window.hide()
-            logger.info("Window hidden successfully")
-
-            # No notification on close, only on minimize
+        logger.info("Window close requested -- hidden to the system tray (Quit is in the tray menu)")
     except Exception as e:
-        logger.error(f"Error hiding window in on_closed: {str(e)}")
-
-    # Return True to prevent default window closing
-    return True
+        logger.error(f"Error hiding window in on_closing: {str(e)}")
+    return False  # cancel the close; the form stays alive for Restore
 
 # on_minimized — let the OS handle normal minimize (stays in taskbar).
 # Do NOT call _window.hide() here — that removes it from the taskbar.
@@ -7308,7 +7313,7 @@ def setup_window_events(window_instance):
 
     try:
         # Add our handlers
-        window_instance.events.closed += on_closed
+        window_instance.events.closing += on_closing
         window_instance.events.minimized += on_minimized
 
         logger.info("Window event handlers set up successfully")
@@ -7319,7 +7324,7 @@ def setup_window_events(window_instance):
 
         # As a fallback, try the direct approach without clearing
         try:
-            window_instance.events.closed += on_closed
+            window_instance.events.closing += on_closing
             window_instance.events.minimized += on_minimized
             logger.info("Applied event handlers with fallback method")
             return True
@@ -8283,7 +8288,7 @@ def main():
         logger.info(f"System tray setup result: {_tray_icon is not None}")
 
         # Event handlers
-        _window.events.closed += on_closed
+        _window.events.closing += on_closing
         _window.events.minimized += on_minimized
 
         # Register Win+N global hotkey for toggling window visibility (Windows only)
@@ -9881,8 +9886,8 @@ if __name__ == "__main__":
 
         # ── PARK: the app lives in the tray; the main thread must NOT finish ──
         # webview.start() returns when the window is closed, but closing only
-        # HIDES to the system tray (on_closed) — the app is still meant to
-        # serve. Letting the main thread fall off the end here is what broke
+        # HIDES to the system tray (on_closing cancels the close) — the app is
+        # still meant to serve. Letting the main thread fall off the end here is what broke
         # the backend, and the chain is CPython's, not ours:
         #
         #   main thread finishes

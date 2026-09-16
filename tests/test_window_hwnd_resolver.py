@@ -107,6 +107,22 @@ class ResolveHwndTests(unittest.TestCase):
         self.assertTrue(any("handle cannot be read" in line and "Nunba" in line
                             for line in logs.output), logs.output)
 
+    def test_the_same_failure_on_the_same_window_warns_once(self):
+        """Live 2026-09-16 11:28:41-11:29:04: after the form was disposed the
+        taskbar watchdog's 0.5s poll turned this WARNING into 2 lines/s with a
+        .NET stack each.  One WARNING per (window, failure); repeats at DEBUG."""
+
+        class _Disposed:
+            def ToInt64(self):
+                raise RuntimeError("Cannot access a disposed object")
+
+        w = types.SimpleNamespace(native=types.SimpleNamespace(Handle=_Disposed()), title="Nunba")
+        with self.assertLogs("nunba.win32_chrome", level="DEBUG") as logs:
+            for _ in range(5):
+                self.assertEqual(wc.resolve_hwnd(w, "Nunba"), 0)
+        warnings = [line for line in logs.output if line.startswith("WARNING")]
+        self.assertEqual(len(warnings), 1, logs.output)
+
 
 class WindowApiUsesTheOneResolverTests(unittest.TestCase):
     """The titlebar drag and the edge grips reach the OS only through

@@ -536,6 +536,10 @@ def _handle_to_int(handle) -> int:
     return int(to_int()) if to_int else int(handle)
 
 
+# (id(window), str(exc)) pairs already reported at WARNING -- see resolve_hwnd.
+_resolve_failures_warned: set = set()
+
+
 def resolve_hwnd(window, title=None) -> int:
     """The HWND of a pywebview window as an int, 0 when it cannot be read.
 
@@ -550,6 +554,10 @@ def resolve_hwnd(window, title=None) -> int:
     A failure is a WARNING naming the window: every hwnd-gated step (the
     work-area snap, drag, edge resize, tool-window, topmost) is skipped on
     0, and dd34d410's int(IntPtr) break hid for an afternoon at DEBUG.
+    The same failure on the same window warns once, then logs at DEBUG:
+    the taskbar watchdog resolves every 0.5s, and a disposed form turned
+    the WARNING into 2 lines/s with a .NET stack each (gui_app.log
+    2026-09-16 11:28:41 -> 11:29:04).
     """
     if window is None:
         return 0
@@ -566,8 +574,12 @@ def resolve_hwnd(window, title=None) -> int:
             return int(user32.FindWindowW(None, title) or 0)
         return 0
     except Exception as exc:
-        logger.warning('resolve_hwnd failed for %r: %s',
-                       getattr(window, 'title', window), exc)
+        key = (id(window), str(exc))
+        first = key not in _resolve_failures_warned
+        _resolve_failures_warned.add(key)
+        (logger.warning if first else logger.debug)(
+            'resolve_hwnd failed for %r: %s',
+            getattr(window, 'title', window), exc)
         return 0
 
 
