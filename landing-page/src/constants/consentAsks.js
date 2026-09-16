@@ -51,6 +51,12 @@ export const CONSENT_ASKS = Object.freeze({
   computer_control: {asks: 'control this computer', privacyCard: true},
   screen_capture: {asks: 'see this screen', privacyCard: true},
   data_access: {asks: 'use your data', privacyCard: false},
+  // An agent's stuck step handed to the expert, when the expert is the
+  // owner's Claude Code subscription and the copilot switch is off.  The
+  // owner's Allow / Don't allow acts on that ONE switch (HARTOS
+  // set_copilot_enabled), the same one the admin page flips; the privacy
+  // card is the way back after a no.  Node-wide, so a blanket grant.
+  copilot_access: {asks: 'use your Claude subscription for a hard step', privacyCard: true},
   // A person's phone asking to reach this desktop's agents from the network
   // (#111 phase 1): scope 'device:<64 hex key>', agent_id null.  The privacy
   // page's per-person device card (#111, in review) is the way back after a

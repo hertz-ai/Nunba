@@ -783,6 +783,33 @@ const SCREEN_CAPTURE_CARD = {
   disabledMessage: 'Agents can no longer see this screen.',
 };
 
+// Agents using the owner's Claude Code subscription as their expert.  When a
+// goal's step cannot be finished on the local model and the copilot switch is
+// off, the daemon asks the owner through the consent card; Allow turns the
+// switch ON, "Don't allow" leaves it off and stands until this card allows it
+// again.  Same switch as Admin -> Integrations -> Claude Code.
+const COPILOT_ACCESS_CARD = {
+  consentType: 'copilot_access',
+  Icon: Visibility,
+  title: 'Agents using your Claude subscription',
+  description:
+    "Lets agents hand a step they cannot finish locally to Claude Code, " +
+    'using the account the copilot is signed in with. Off by default: ' +
+    'until you allow it, an agent asks you first. Revoking switches the ' +
+    'copilot off immediately.',
+  enableLabel: allowAllLabel('copilot_access'),
+  disableLabel: 'Stop agents using your Claude subscription',
+  confirmTitle: `${allowAllLabel('copilot_access')}?`,
+  confirmText:
+    'Every agent will be able to hand hard steps to Claude Code on your ' +
+    'subscription without asking you first. You can revoke this at any ' +
+    'time and the copilot switches off immediately.',
+  understandLabel: 'I understand agents can use my Claude subscription without asking.',
+  confirmLabel: 'Allow',
+  enabledMessage: 'Agents may use your Claude subscription.',
+  disabledMessage: 'Agents can no longer use your Claude subscription.',
+};
+
 // Every on/off card on the page.  constants/consentAsks.PRIVACY_CARD_TYPES
 // names the ask types that rely on one of these as the way back after a
 // "Don't allow"; PrivacyComputerControlCard.test checks each is here.
@@ -790,6 +817,7 @@ const CONSENT_CARDS = [
   PUBLIC_EXPOSURE_CARD,
   COMPUTER_CONTROL_CARD,
   SCREEN_CAPTURE_CARD,
+  COPILOT_ACCESS_CARD,
 ];
 
 export default function PrivacySettingsPage() {
