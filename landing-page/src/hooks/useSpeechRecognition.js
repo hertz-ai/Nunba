@@ -8,8 +8,20 @@
  * API matches the RN hook exactly:
  *   { transcript, isListening, confidence, startListening, stopListening, resetTranscript, error }
  *
+ * Language.  `language` PINS the recognizer to one language: the local
+ * Whisper is told to decode that language and nothing else, and the browser
+ * fallback is set to it.  The kids' games pass 'en' because they are English
+ * by design.  Without it (the chat mic) the local Whisper detects the
+ * language of each utterance itself -- the streaming server treats a config
+ * with no language as "auto-detect per utterance" -- so a person can speak
+ * Tamil, Hindi or English to the same mic.  Until 2026-09-16 the chat mic
+ * pinned the stream to hart_language ('en' on the owner's box), so anything
+ * spoken in another language was decoded as English.  The browser fallback
+ * (Web Speech) cannot detect and must be told a language, so startListening
+ * takes `preferredLanguage` (the person's hart_language) for that path.
+ *
  * @param {Object} [config]
- * @param {string} [config.language='en'] - BCP-47 language code
+ * @param {string} [config.language] - ISO 639-1 code to pin the recognizer to (absent = detect)
  * @param {function} [config.onResult] - Callback with final transcript text
  * @param {function} [config.onPartialResult] - Callback with partial transcript text
  * @param {function} [config.onError] - Callback with error string
@@ -25,9 +37,16 @@ const SpeechRecognitionAPI =
     ? window.SpeechRecognition || window.webkitSpeechRecognition
     : null;
 
+// The streaming server's per-connection config: {type:'config', language}
+// pins the language; the same message without `language` leaves Whisper to
+// detect it per utterance (whisper_tool._stt_stream_handler).
+export function sttConfigMessage(language) {
+  return language ? {type: 'config', language} : {type: 'config'};
+}
+
 export default function useSpeechRecognition(config = {}) {
   const {
-    language: defaultLanguage = 'en',
+    language: defaultLanguage = null,
     onResult,
     onPartialResult,
     onError: onErrorCallback,
@@ -80,8 +99,8 @@ export default function useSpeechRecognition(config = {}) {
 
         ws.onopen = () => {
           clearTimeout(timeout);
-          // Send config message
-          ws.send(JSON.stringify({type: 'config', language: lang}));
+          // Send config message (no language = Whisper detects per utterance)
+          ws.send(JSON.stringify(sttConfigMessage(lang)));
 
           // Set up audio streaming via AudioContext + ScriptProcessor
           // Note: WKWebView may ignore sampleRate and give hardware rate
@@ -241,18 +260,24 @@ export default function useSpeechRecognition(config = {}) {
   const startListening = useCallback(async (options = {}) => {
     if (!mountedRef.current) return;
 
-    const lang = options.language || defaultLanguage;
+    // A pinned language (options or hook config) binds both paths.  With
+    // none, the local Whisper detects the spoken language; the browser
+    // fallback cannot, so it takes the person's preference, else the
+    // browser's own language.
+    const pinned = options.language || defaultLanguage || null;
 
     setError(null);
     setTranscript('');
     setConfidence(-1);
 
     // Try WebSocket STT first (local HARTOS Whisper)
-    const wsOk = await startWebSocketSTT(lang);
+    const wsOk = await startWebSocketSTT(pinned);
     if (wsOk) return;
 
     // Fallback to browser SpeechRecognition
-    startBrowserSTT(lang);
+    const browserLang = pinned || options.preferredLanguage
+      || (typeof navigator !== 'undefined' && navigator.language) || 'en';
+    startBrowserSTT(browserLang);
   }, [defaultLanguage, startWebSocketSTT, startBrowserSTT]);
 
   const stopListening = useCallback(() => {

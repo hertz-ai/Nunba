@@ -504,8 +504,11 @@ function PanelContent() {
     // reads the live value (no stale closure) without mutating it, so the
     // cumulative transcript replaces the dictated tail instead of stacking.
     setInput((cur) => { voiceBaseRef.current = cur; return cur; });
-    const lang = localStorage.getItem('hart_language') || 'en';
-    startListening({language: lang});
+    // No pinned language: the local Whisper detects what was spoken, so the
+    // person can talk in any language.  hart_language is only the preference
+    // for the browser fallback, which cannot detect (useSpeechRecognition).
+    const preferredLanguage = localStorage.getItem('hart_language') || 'en';
+    startListening({preferredLanguage});
   }, [isListening, startListening, stopListening, resetTranscript]);
 
   // Friendly inline message for permission errors (browser denial / blocked

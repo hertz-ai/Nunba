@@ -61,6 +61,7 @@ import realtimeService from '../services/realtimeService';
 
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
+import {sttConfigMessage} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
 
 // ── Local engine readiness — gates messageQueue while local LLM is booting.
@@ -3198,9 +3199,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         ws.onopen = () => {
           wsReady = true;
-          // Send language config so Whisper doesn't auto-detect
-          const hartLang = localStorage.getItem('hart_language') || 'en';
-          ws.send(JSON.stringify({ type: 'config', language: hartLang }));
+          // No pinned language: Whisper detects what was spoken, so the
+          // person can talk in any language.  (This used to pin
+          // hart_language "so Whisper doesn't auto-detect"; on an 'en' box
+          // that decoded every other language as English.)  Same message the
+          // canonical hook sends -- useSpeechRecognition.sttConfigMessage.
+          ws.send(JSON.stringify(sttConfigMessage()));
         };
         ws.onmessage = (evt) => {
           try {

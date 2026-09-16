@@ -147,20 +147,25 @@ describe('NunbaChatPanel mic — mount', () => {
   });
 });
 
-// ── (b) Click idle mic → startListening with userLang ─────────────────────
+// ── (b) Click idle mic → startListening, no pinned language ────────────────
+// The local Whisper detects the spoken language (a person can talk in any
+// language to the chat mic); hart_language is only the preference for the
+// browser fallback, which cannot detect.  Until 2026-09-16 the mic pinned the
+// stream to hart_language, so an 'en' box decoded Tamil as English.
 
 describe('NunbaChatPanel mic — start listening', () => {
-  it('calls startListening with the persisted hart_language on click', () => {
+  it('passes the persisted hart_language as the fallback preference, never as a pin', () => {
     localStorage.setItem('hart_language', 'hi');
     renderPanel();
     fireEvent.click(screen.getByTestId('mic-toggle-button'));
-    expect(mockStartListening).toHaveBeenCalledWith({language: 'hi'});
+    expect(mockStartListening).toHaveBeenCalledWith({preferredLanguage: 'hi'});
+    expect(mockStartListening.mock.calls[0][0]).not.toHaveProperty('language');
   });
 
-  it('defaults to "en" when hart_language is not set', () => {
+  it('prefers "en" for the fallback when hart_language is not set', () => {
     renderPanel();
     fireEvent.click(screen.getByTestId('mic-toggle-button'));
-    expect(mockStartListening).toHaveBeenCalledWith({language: 'en'});
+    expect(mockStartListening).toHaveBeenCalledWith({preferredLanguage: 'en'});
   });
 
   it('resets the transcript before starting a new session', () => {
