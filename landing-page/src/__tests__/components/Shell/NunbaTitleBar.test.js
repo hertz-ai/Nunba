@@ -421,6 +421,29 @@ describe('Frameless resize grips', () => {
     fireEvent.mouseDown(screen.getByTestId('nunba-resize-left'), { button: 2 });
     expect(beginResize).not.toHaveBeenCalled();
   });
+
+  test('the grips stack above the titlebar, so the top edge resizes like a native caption border', () => {
+    // Owner 2026-09-16: "resize ... from all edges".  A native window
+    // resizes from the top few pixels of its caption and drags below them.
+    // With the grips under the 32px titlebar the top 6px were drag-only.
+    mockPywebview();
+    setPlatform('Win32');
+    render(<NunbaTitleBar />);
+    const z = (el) => Number((/z-index:\s*(\d+)/i.exec(el.getAttribute('style') || '') || [])[1]);
+    expect(z(screen.getByTestId('nunba-resize-grips')))
+      .toBeGreaterThan(z(screen.getByTestId('nunba-titlebar')));
+  });
+
+  test('a mousedown on the top grip starts a resize, not a drag', () => {
+    const beginResize = jest.fn();
+    const startDrag = jest.fn();
+    mockPywebview({ window_begin_resize: beginResize, window_start_drag: startDrag });
+    setPlatform('Win32');
+    render(<NunbaTitleBar />);
+    fireEvent.mouseDown(screen.getByTestId('nunba-resize-top'), { button: 0 });
+    expect(beginResize).toHaveBeenCalledWith('top');
+    expect(startDrag).not.toHaveBeenCalled();
+  });
 });
 
 // ── Liquid UI shell drift-guard ──────────────────────────────────────

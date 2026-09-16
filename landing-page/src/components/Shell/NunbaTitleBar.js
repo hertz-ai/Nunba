@@ -88,12 +88,15 @@ function looksLikeLinux() {
   return /Linux|X11/i.test(p) || /Linux/i.test(ua);
 }
 
-// The 8 resize grips for the GTK frameless window.  Each maps to a
+// The 8 resize grips for the frameless window (Win + Linux).  Each maps to a
 // Gdk.WindowEdge name the WindowApi.window_begin_resize() understands.
 // Thin invisible strips at the viewport edges + slightly larger corner
-// squares.  z-index sits ABOVE the app body but BELOW the 32px titlebar
-// (titlebar is z:10000) so the titlebar drag/buttons keep priority.
+// squares.  They stack ABOVE the 32px titlebar (RESIZE_GRIPS_Z): a native
+// window resizes from the top few pixels of its caption and drags below
+// them, and the owner asked for resize from every edge (2026-09-16).
 const RESIZE_GRIP_PX = 6;
+const TITLEBAR_Z = 10000;
+const RESIZE_GRIPS_Z = TITLEBAR_Z + 1;
 const RESIZE_CORNER_PX = 12;
 
 // Pointer travel (in CSS px, summed |dx|+|dy|) past which a mouse-down on the
@@ -491,11 +494,11 @@ export default function NunbaTitleBar({ children }) {
         WindowApi.window_begin_resize(edge) (Win: SendMessage WM_NCLBUTTONDOWN
         HT<edge>; Linux/GTK: begin_resize_drag).  Rendered whenever the
         frameless titlebar is visible (never on macOS / browser, which return
-        early above).  z-index 9999 sits below the 32px titlebar (10000), so
-        L/R/B + bottom corners resize; the top strip stays drag (acceptable —
-        bottom-right is the canonical resize handle). */}
+        early above).  The grips stack above the titlebar so the top 6px and
+        the top corners resize like a native caption's border; the strip
+        below them drags. */}
     {(
-      <div data-testid="nunba-resize-grips" aria-hidden style={{ position: 'fixed', inset: 0, zIndex: 9999, pointerEvents: 'none' }}>
+      <div data-testid="nunba-resize-grips" aria-hidden style={{ position: 'fixed', inset: 0, zIndex: RESIZE_GRIPS_Z, pointerEvents: 'none' }}>
         {RESIZE_GRIPS.map((g) => (
           <div
             key={g.edge}
@@ -521,7 +524,7 @@ export default function NunbaTitleBar({ children }) {
         left: 0,
         right: 0,
         height: 32,
-        zIndex: 10000,
+        zIndex: TITLEBAR_Z,
         display: 'flex',
         alignItems: 'center',
         // Full black, always, everywhere (steward: #0F0E17 "looks like not
