@@ -8,3 +8,9 @@
 *.scss text eol=lf
 *.md text eol=lf
 *.py text eol=lf
+
+# Shell scripts run under bash on every platform (the React prebuild, the
+# Linux/mac build scripts). `text=auto` above writes them with the native line
+# ending on checkout, and bash refuses CRLF; measured 2026-09-15 on a fresh
+# Windows clone: landing-page/scripts/setup-env.sh failed and no installer built.
+*.sh text eol=lf
