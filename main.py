@@ -581,18 +581,49 @@ except Exception as _gate_err:
 # for serving the React SPA or handling the first chat message.
 def _deferred_platform_init():
     """Bootstrap EventBus + Crossbar subscribers in background."""
-    # Point HARTOS crossbar_server.py (WAMP client) at our embedded router
-    # so it connects locally instead of trying the unreachable cloud router.
+    # WAMP transport target depends on the node's mode (canonical getter
+    # LlamaConfig.get_llm_mode).  A LOCAL-only node stays on its own embedded
+    # router and never dials out; an auto/hive node joins CENTRAL's relay so
+    # the hive can fan pub/sub across nodes.
+    #
+    # This block used to hard-point CBURL at localhost "instead of the
+    # unreachable cloud router", but central's router has answered on 8088 for
+    # months (core.wamp_url canonicalised the endpoint).  Because this runs
+    # BEFORE bootstrap_platform, a preset CBURL short-circuited bootstrap's
+    # resolve_router_url() branch, so the canonical central URL was never used
+    # and every desktop node was islanded on its own router.  Gate it on mode.
     _wamp_port = os.environ.get('NUNBA_WAMP_PORT', '8088')
-    if not os.environ.get('CBURL'):
-        os.environ['CBURL'] = f'ws://localhost:{_wamp_port}/ws'
-    # Point HARTOS realtime.py HTTP publisher at our Flask HTTP bridge
-    # (crossbarhttp3 defaults to :8088/publish which is the full Crossbar
-    # node's HTTP bridge — our embedded router doesn't have that, but
-    # Flask :5000/publish acts as the equivalent).
-    if not os.environ.get('WAMP_URL'):
-        _flask_port = os.environ.get('NUNBA_PORT', '5000')
-        os.environ['WAMP_URL'] = f'http://localhost:{_flask_port}/publish'
+    _flask_port = os.environ.get('NUNBA_PORT', '5000')
+    _local_router = f'ws://localhost:{_wamp_port}/ws'
+    _local_publish = f'http://localhost:{_flask_port}/publish'
+
+    _local_only = True
+    try:
+        from llama.llama_config import LlamaConfig
+        _local_only = (LlamaConfig().get_llm_mode() == 'local')
+    except Exception:
+        # Config unreadable at boot: stay on the safe, private local router.
+        _local_only = True
+
+    if _local_only:
+        # Private node: own embedded router + Flask publish bridge, no dial-out.
+        if not os.environ.get('CBURL'):
+            os.environ['CBURL'] = _local_router
+        if not os.environ.get('WAMP_URL'):
+            os.environ['WAMP_URL'] = _local_publish
+    elif not os.environ.get('CBURL') and not os.environ.get('WAMP_URL'):
+        # auto/hive: join CENTRAL's relay via the canonical resolver.  Leaving
+        # CBURL unset lets core.platform.bootstrap call resolve_router_url() and
+        # connect_wamp() dial central; resolve_publish_url() normalises the SAME
+        # URL to central's /publish bridge.  Resolver failure falls back local
+        # rather than leaving the bridge dark.  An operator-set CBURL/WAMP_URL
+        # is always respected (this branch only runs when both are unset).
+        try:
+            from core.wamp_url import resolve_router_url
+            os.environ['WAMP_URL'] = resolve_router_url()
+        except Exception:
+            os.environ['CBURL'] = _local_router
+            os.environ['WAMP_URL'] = _local_publish
 
     try:
         from core.platform.bootstrap import bootstrap_platform
