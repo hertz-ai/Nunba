@@ -210,6 +210,10 @@ if sys.platform == 'win32':
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
     user32.GetWindowRect.restype = wintypes.BOOL
 
+    # resolve_hwnd's last resort: the window by title.
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
+
     # For the JS-initiated native move (drag from the chip strip, which is
     # carved to HTCLIENT — see begin_window_drag).
     user32.ReleaseCapture.argtypes = []
@@ -519,6 +523,52 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int,
         return user32.CallWindowProcW(orig_wndproc_addr, hwnd, msg, wparam, lparam)
 
     return WNDPROC(proc)
+
+
+# ── HWND resolution ───────────────────────────────────────────────────
+
+
+def _handle_to_int(handle) -> int:
+    """pythonnet hands Form.Handle over as a System.IntPtr, which int()
+    rejects (TypeError, measured on the install 2026-09-15); pywebview reads
+    it with Handle.ToInt32().  A host that already gives an int passes."""
+    to_int = getattr(handle, 'ToInt64', None)
+    return int(to_int()) if to_int else int(handle)
+
+
+def resolve_hwnd(window, title=None) -> int:
+    """The HWND of a pywebview window as an int, 0 when it cannot be read.
+
+    The ONE resolver: app.py's _resolve_hwnd and WindowApi._win_hwnd both
+    come here.  pywebview 6.x sets Window.native to the WinForms form once
+    the window exists (winforms.py: `self.pywebview_window.native = self`),
+    so the form's Handle is read first -- a second window (the companion)
+    resolves to its own handle and never falls through to the main window's
+    title.  Older spellings (original_window.handle, handle) come next; the
+    window's title is the last resort, for a form that is not up yet.
+
+    A failure is a WARNING naming the window: every hwnd-gated step (the
+    work-area snap, drag, edge resize, tool-window, topmost) is skipped on
+    0, and dd34d410's int(IntPtr) break hid for an afternoon at DEBUG.
+    """
+    if window is None:
+        return 0
+    try:
+        native = getattr(window, 'native', None)
+        if native is not None and getattr(native, 'Handle', None):
+            return _handle_to_int(native.Handle)
+        ow = getattr(window, 'original_window', None)
+        if ow is not None and getattr(ow, 'handle', None):
+            return _handle_to_int(ow.handle)
+        if getattr(window, 'handle', None):
+            return _handle_to_int(window.handle)
+        if title and sys.platform == 'win32':
+            return int(user32.FindWindowW(None, title) or 0)
+        return 0
+    except Exception as exc:
+        logger.warning('resolve_hwnd failed for %r: %s',
+                       getattr(window, 'title', window), exc)
+        return 0
 
 
 # ── Public install ────────────────────────────────────────────────────

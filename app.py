@@ -4449,15 +4449,7 @@ def setup_always_on_top(window_instance):
 
         def set_always_on_top():
             try:
-                # Get window handle
-                if hasattr(window_instance, 'original_window') and hasattr(window_instance.original_window, 'handle'):
-                    hwnd = window_instance.original_window.handle
-                elif hasattr(window_instance, 'handle'):
-                    hwnd = window_instance.handle
-                else:
-                    # Try to find window by title
-                    hwnd = windll.user32.FindWindowW(None, args.title)
-
+                hwnd = _resolve_hwnd(window_instance)
                 if not hwnd:
                     logger.error("Could not get window handle for always on top")
                     return False
@@ -6218,7 +6210,7 @@ def start_flask():
                     if sys.platform == "win32":
                         from ctypes import windll
 
-                        hwnd = windll.user32.FindWindowW(None, args.title)
+                        hwnd = _resolve_hwnd(_window)
                         if hwnd:
                             HWND_NOTOPMOST = -2
                             SWP_NOMOVE = 0x0002
@@ -6320,8 +6312,7 @@ def start_flask():
                         from ctypes import byref, windll
                         from ctypes.wintypes import RECT
 
-                        # Find window by title
-                        hwnd = windll.user32.FindWindowW(None, args.title)
+                        hwnd = _resolve_hwnd(_window)
                         if hwnd:
                             rect = RECT()
                             if windll.user32.GetWindowRect(hwnd, byref(rect)):
@@ -6917,44 +6908,18 @@ def get_server_info():
     return {"device_id": "Unknown"}
 
 def _resolve_hwnd(window_instance):
-    """Best-effort HWND for a pywebview window on Windows.  Mirrors the resolver
-    the caption max-button path uses (original_window.handle -> handle ->
-    FindWindowW by title), consolidated so the maximize helpers below don't each
-    re-implement it."""
+    """HWND of a pywebview window on Windows, 0 when it cannot be read.
+
+    The walk (native.Handle via ToInt64 -> original_window.handle -> handle ->
+    the window by title) and its WARNING live in the one resolver,
+    desktop.win32_chrome.resolve_hwnd, which WindowApi shares; this only adds
+    the main window's title as the last resort.  Every window-handle step in
+    this file (snap, chrome, topmost, dark mode, watchdog, foreground) calls
+    here -- a second walk drifts (eight did, two of them int()'ing the IntPtr)."""
     if sys.platform != 'win32' or window_instance is None:
         return 0
-    try:
-        import ctypes as _ct
-
-        def _as_int(handle):
-            # pythonnet hands Form.Handle over as a System.IntPtr, which int()
-            # rejects (TypeError) -- measured on the install 2026-09-15, where
-            # that made this resolver return 0 for every window.  pywebview
-            # itself reads the handle with Handle.ToInt32().
-            to_int = getattr(handle, 'ToInt64', None)
-            return int(to_int()) if to_int else int(handle)
-
-        # pywebview 6.x: Window.native is the WinForms form (set at creation).
-        # Checked first so a second window (the companion) resolves to its own
-        # handle and never falls through to the main window's title.
-        native = getattr(window_instance, 'native', None)
-        if native is not None and getattr(native, 'Handle', None):
-            return _as_int(native.Handle)
-        ow = getattr(window_instance, 'original_window', None)
-        if ow is not None and getattr(ow, 'handle', None):
-            return _as_int(ow.handle)
-        if getattr(window_instance, 'handle', None):
-            return _as_int(window_instance.handle)
-        return int(_ct.windll.user32.FindWindowW(None, args.title) or 0)
-    except Exception as _e:
-        # Every hwnd-gated step (the main window's work-area snap, the
-        # companion's shape, tool-window and topmost) is skipped on 0, so a
-        # resolver failure must be visible on the boot it happens: at DEBUG
-        # it hid dd34d410's int(IntPtr) TypeError for a whole afternoon while
-        # the portrait dock sat unsnapped (owner 2026-09-16).
-        logger.warning("_resolve_hwnd failed for %r: %s",
-                       getattr(window_instance, 'title', window_instance), _e)
-        return 0
+    from desktop.win32_chrome import resolve_hwnd
+    return resolve_hwnd(window_instance, getattr(args, 'title', None))
 
 def _clamped_maximize(window_instance):
     """Maximize respecting the taskbar WORK AREA.
@@ -7009,15 +6974,7 @@ def set_window_theme_attribute(window_instance):
 
         def on_shown():
             try:
-                # Get window handle
-                if hasattr(window_instance, 'original_window') and hasattr(window_instance.original_window, 'handle'):
-                    hwnd = window_instance.original_window.handle
-                elif hasattr(window_instance, 'handle'):
-                    hwnd = window_instance.handle
-                else:
-                    # Alternative approach - try to find window by title
-                    hwnd = windll.user32.FindWindowW(None, args.title)
-
+                hwnd = _resolve_hwnd(window_instance)
                 if not hwnd:
                     logger.error("Could not get window handle")
                     return False
@@ -8288,7 +8245,6 @@ def main():
         # Teams, Discord, and VSCode use.  Hooks `events.loaded` because the
         # HWND only resolves once pywebview's GUI thread has run a tick.
         if _use_frameless and sys.platform == 'win32':
-            from ctypes import windll as _wd_chrome
             _chrome_done = [False]
             def _install_chrome():
                 # Native frame PARITY for the frameless window (work-area maximize
@@ -8301,13 +8257,7 @@ def main():
                 if _chrome_done[0]:
                     return
                 try:
-                    if (hasattr(_window, 'original_window')
-                            and hasattr(_window.original_window, 'handle')):
-                        _hwnd = _window.original_window.handle
-                    elif hasattr(_window, 'handle'):
-                        _hwnd = _window.handle
-                    else:
-                        _hwnd = _wd_chrome.user32.FindWindowW(None, args.title)
+                    _hwnd = _resolve_hwnd(_window)
                     if not _hwnd:
                         logger.warning("[CHROME] Could not resolve HWND for custom chrome")
                         return
@@ -8533,27 +8483,7 @@ def main():
                 _is_maximized = False
                 if sys.platform == 'win32':
                     import ctypes as _wc
-                    _hwnd = 0
-                    try:
-                        _native = getattr(_window, 'native', None)
-                        if _native is not None:
-                            _hwnd = int(getattr(_native, 'Handle', 0) or 0)
-                    except Exception:
-                        _hwnd = 0
-                    if not _hwnd:
-                        try:
-                            _ow = getattr(_window, 'original_window', None)
-                            if _ow is not None:
-                                _hwnd = int(getattr(_ow, 'handle', 0) or 0)
-                        except Exception:
-                            _hwnd = 0
-                    if not _hwnd:
-                        try:
-                            _hwnd = int(
-                                _wc.windll.user32.FindWindowW(None, args.title)
-                                or 0)
-                        except Exception:
-                            _hwnd = 0
+                    _hwnd = _resolve_hwnd(_window)
                     if _hwnd:
                         # IsZoomed: TRUE iff window is in maximized state.
                         # FALSE for: normal, minimized, hidden.
@@ -8832,31 +8762,6 @@ def main():
                 _last_visible = None
                 _poll_interval = 0.5  # 500ms — fast enough to feel instant
 
-                def _resolve_hwnd():
-                    # Prefer pywebview's exposed native handle (winforms)
-                    try:
-                        native = getattr(_window, 'native', None)
-                        if native is not None:
-                            h = getattr(native, 'Handle', None)
-                            if h:
-                                return int(h)
-                    except Exception:
-                        pass
-                    # original_window.handle (older pywebview)
-                    try:
-                        ow = getattr(_window, 'original_window', None)
-                        if ow is not None:
-                            h = getattr(ow, 'handle', None)
-                            if h:
-                                return int(h)
-                    except Exception:
-                        pass
-                    # Fallback: FindWindowW by title
-                    try:
-                        return int(_user32.FindWindowW(None, args.title) or 0)
-                    except Exception:
-                        return 0
-
                 while True:
                     # Stop cleanly if window was destroyed (main() teardown
                     # sets _window = None in the __main__ block).
@@ -8866,7 +8771,7 @@ def main():
                             "watchdog exiting")
                         return
                     try:
-                        hwnd = _resolve_hwnd()
+                        hwnd = _resolve_hwnd(_window)
                         if not hwnd:
                             time.sleep(_poll_interval)
                             continue
@@ -9207,7 +9112,7 @@ window.addEventListener('unhandledrejection', function(e) {
             def _bring_to_front():
                 time.sleep(1)
                 try:
-                    hwnd = ctypes.windll.user32.FindWindowW(None, args.title)
+                    hwnd = _resolve_hwnd(_window)
                     if hwnd:
                         ctypes.windll.user32.SetForegroundWindow(hwnd)
                         ctypes.windll.user32.BringWindowToTop(hwnd)
@@ -9281,9 +9186,7 @@ window.addEventListener('unhandledrejection', function(e) {
                 if sys.platform == 'win32':
                     try:
                         from ctypes import windll
-                        hwnd = (getattr(getattr(_window, 'original_window', None), 'handle', 0)
-                                or getattr(_window, 'handle', 0)
-                                or windll.user32.FindWindowW(None, args.title))
+                        hwnd = _resolve_hwnd(_window)
                         if hwnd:
                             windll.user32.SetForegroundWindow(hwnd)
                             logger.info("[SHOWN] Window brought to foreground")

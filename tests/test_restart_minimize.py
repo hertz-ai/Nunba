@@ -371,9 +371,11 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertIn("set_window_always_on_top(_comp_hwnd, True)", r.group(1))
         self.assertNotIn(".on_top = ", r.group(1))
 
-        # _resolve_hwnd must read pywebview 6's Window.native before any
-        # title lookup, or the companion resolves to the main window.
-        r = re.search(r"def _resolve_hwnd\(window_instance\):(.*?)\ndef ", src, re.S)
+        # The one resolver (desktop.win32_chrome.resolve_hwnd, which app.py's
+        # _resolve_hwnd wraps) must read pywebview 6's Window.native before
+        # any title lookup, or the companion resolves to the main window.
+        chrome = (REPO_ROOT / "desktop" / "win32_chrome.py").read_text(encoding="utf-8")
+        r = re.search(r"def resolve_hwnd\(window, title=None\) -> int:(.*?)\ndef ", chrome, re.S)
         self.assertIsNotNone(r)
         resolver = r.group(1)
         self.assertLess(resolver.index("'native'"),
@@ -506,10 +508,9 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         src = APP_PY.read_text(encoding="utf-8")
         start = src.index("def _resolve_hwnd(window_instance):")
         end = src.index("\ndef _clamped_maximize", start)
-        log = logging.getLogger("test_resolve_hwnd_warns")
         ns = {
             "sys": types.SimpleNamespace(platform="win32"),
-            "logger": log,
+            "logger": logging.getLogger("test_resolve_hwnd_warns"),
             "args": types.SimpleNamespace(title="Nunba"),
         }
         exec(compile(src[start:end], str(APP_PY), "exec"), ns)  # noqa: S102
@@ -520,7 +521,8 @@ class RestartMinimizeStaticTests(unittest.TestCase):
                 raise TypeError("handle cannot be read")
 
         form = types.SimpleNamespace(Handle=_BrokenHandle())
-        with self.assertLogs(log, level="WARNING") as logs:
+        # The walk and its WARNING live in the one resolver's module.
+        with self.assertLogs("nunba.win32_chrome", level="WARNING") as logs:
             self.assertEqual(resolve(types.SimpleNamespace(native=form)), 0)
         self.assertTrue(any("handle cannot be read" in line for line in logs.output), logs.output)
 

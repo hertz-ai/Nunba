@@ -227,20 +227,20 @@ class WindowApi:
 
     @staticmethod
     def _win_hwnd(w):
-        """Resolve the top-level HWND for a pywebview window on Windows.
+        """The window's HWND through the one resolver
+        (desktop.win32_chrome.resolve_hwnd), or None.
 
-        Mirrors app.py's chrome-install HWND resolution: the winforms backend
-        exposes the Form handle as `w.original_window.handle`; some builds put
-        it directly on `w.handle`.  Returns an int HWND or None."""
+        Until 2026-09-16 this read `original_window.handle` / `handle`,
+        attributes pywebview has never exposed (6.1: Window.native is the
+        WinForms form), so it returned None on every call and the titlebar
+        drag, the edge grips and the clamped maximize silently did nothing.
+        """
         try:
-            ow = getattr(w, 'original_window', None)
-            if ow is not None and getattr(ow, 'handle', None):
-                return int(ow.handle)
-            if getattr(w, 'handle', None):
-                return int(w.handle)
+            from desktop.win32_chrome import resolve_hwnd
         except Exception as exc:
-            logger.debug('win hwnd resolve failed: %s', exc)
-        return None
+            logger.debug('win32_chrome import failed: %s', exc)
+            return None
+        return resolve_hwnd(w, getattr(w, 'title', None)) or None
 
     def _win_begin_drag(self, w) -> bool:
         """Start the native move loop via desktop.win32_chrome.begin_window_drag.
