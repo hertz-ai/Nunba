@@ -238,7 +238,10 @@ describe('AgentSidebar', () => {
       isGuestMode: false,
     });
     const accounts = screen.getAllByText('Account');
-    expect(accounts.length).toBeGreaterThan(0);
+    expect(accounts).toHaveLength(1);
+    // The same footer control stays mounted when the sidebar expands.
+    fireEvent.click(accounts[0]);
+    expect(defaultProps.toggleDropdown).toHaveBeenCalledTimes(1);
     // Must NOT show the unauth placeholder
     expect(screen.queryByText('Welcome! Log in')).toBeNull();
   });
@@ -264,10 +267,9 @@ describe('AgentSidebar', () => {
       isGuestMode: true,
       guestUserId: 'abc12345',
     });
-    // The guest label renders in two spots by design — the top identity
-    // header and the bottom account row (AgentSidebar.js:256 & :280) — so
-    // assert at least one is present rather than a single match.
-    expect(screen.getAllByText(/Guest 2345/i).length).toBeGreaterThan(0);
+    // The collapsed and expanded states share one bottom-anchored account
+    // control, so opening the sidebar cannot move or duplicate this identity.
+    expect(screen.getAllByText(/Guest 2345/i)).toHaveLength(1);
   });
 
   // ── View All Agents button ───────────────────────────────────────────────
