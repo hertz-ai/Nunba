@@ -227,6 +227,21 @@ class TestPopulateLLMPresets:
         assert entry.capabilities.get('context_length') == 256000
         assert entry.capabilities.get('chat_template') == 'jinja'
 
+    @pytest.mark.parametrize('name', [
+        'Qwen3.6-35B-A3B MoE UD-Q4_K_M',
+        'Tiel-Coder-35B-A3B MoE UD-Q4_K_XL',
+    ])
+    def test_qwen35_family_model_gets_context_length(self, name):
+        presets = [self._make_preset(name=name)]
+        catalog = MagicMock(spec=ModelCatalog)
+        catalog.get.return_value = None
+        mock_installer = MagicMock()
+        mock_installer.MODEL_PRESETS = presets
+        with patch.dict('sys.modules', {'llama': MagicMock(), 'llama.llama_installer': mock_installer}):
+            populate_llm_presets(catalog)
+        entry = catalog.register.call_args[0][0]
+        assert entry.capabilities.get('context_length') == 256000
+
 
 # ===========================================================================
 # 4. populate_media_gen

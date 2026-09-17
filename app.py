@@ -8045,7 +8045,7 @@ def main():
                     except Exception:
                         pass
 
-                def on_companion_prompt(self, text):
+                def on_companion_prompt(self, text, context=None):
                     """User submitted a quick prompt from the floating input bar.
 
                     Forwards to the Flask /chat endpoint on this instance (loopback,
@@ -8067,7 +8067,18 @@ def main():
                             _port = args.port
                         except Exception:
                             _port = 5000
-                        _url = f"http://127.0.0.1:{_port}/chat"
+                        # Route contextual guidance through the same live
+                        # GroupChat injection endpoint as the operations drawer.
+                        _agent_id = (context or {}).get('agent_id') if isinstance(context, dict) else None
+                        if _agent_id:
+                            _url = (f"http://127.0.0.1:{_port}/api/social/dashboard/agents/"
+                                    f"{requests.utils.quote(str(_agent_id), safe='')}/inject")
+                            _body = {"instruction": prompt, "actor_id": "companion"}
+                            _steering = True
+                        else:
+                            _url = f"http://127.0.0.1:{_port}/chat"
+                            _body = {"text": prompt, "source": "companion_input_bar"}
+                            _steering = False
                         try:
                             # /chat's contract names the prompt `text`
                             # (routes/chatbot_routes.py chat_route); the
@@ -8075,10 +8086,7 @@ def main():
                             # companion prompt (2026-09-15).
                             r = requests.post(
                                 _url,
-                                json={
-                                    "text": prompt,
-                                    "source": "companion_input_bar",
-                                },
+                                json=_body,
                                 timeout=60,
                             )
                         except requests.Timeout:
@@ -8093,6 +8101,10 @@ def main():
                             data = r.json()
                         except Exception:
                             return (r.text or "").strip()[:240] or "OK"
+                        if _steering:
+                            return ("Guidance sent to the active HART."
+                                    if data.get('success') else
+                                    "That HART is no longer running.")
                         reply = (
                             (isinstance(data, dict) and (
                                 data.get("response")

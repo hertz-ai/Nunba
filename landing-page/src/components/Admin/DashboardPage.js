@@ -198,11 +198,11 @@ export default function DashboardPage() {
     const load = async () => {
       try {
         const [s, m, l] = await Promise.all([
-          adminApi.stats(),
-          adminApi.metrics().catch(() => null),
-          adminApi.latency().catch(() => null),
+          adminApi.stats({silentError: true}).catch(() => null),
+          adminApi.metrics({silentError: true}).catch(() => null),
+          adminApi.latency({silentError: true}).catch(() => null),
         ]);
-        setStats(s.data || s);
+        setStats(s?.data || s);
         setMetrics(m?.data || m);
         setLatency(l?.data || l);
       } catch (err) {

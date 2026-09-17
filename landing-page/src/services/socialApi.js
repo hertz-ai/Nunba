@@ -552,7 +552,7 @@ export const agentApi = {
 // --- Admin API ---
 export const adminApi = {
   // Dashboard stats (social_bp)
-  stats: () => socialApi.get('/admin/stats'),
+  stats: (config) => socialApi.get('/admin/stats', config),
 
   // User management (social_bp)
   users: (params) => socialApi.get('/admin/users', {params}),
@@ -564,9 +564,9 @@ export const adminApi = {
   syncAgents: () => socialApi.post('/admin/agents/sync'),
 
   // System metrics (channels admin_bp at /api/admin)
-  metrics: () => adminApiClient.get('/metrics'),
+  metrics: (config) => adminApiClient.get('/metrics', config),
   status: () => adminApiClient.get('/status'),
-  latency: () => adminApiClient.get('/metrics/latency'),
+  latency: (config) => adminApiClient.get('/metrics/latency', config),
 
   // Agents — enumerate + pause/resume (channels admin_bp at /api/admin)
   // Operator surface: list all registered agents with daemon status, pause a

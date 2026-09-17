@@ -432,6 +432,7 @@ function PanelContent() {
   const {
     setIsExpanded,
     messages,
+    computerActivity,
     isLoading,
     isTyping,
     currentAgent,
@@ -727,6 +728,28 @@ function PanelContent() {
       )}
 
       {/* ── Messages ── */}
+      {computerActivity && (
+        <Box
+          sx={{
+            mx: 1.5, mt: 1, px: 1.25, py: 0.8, borderRadius: RADIUS.md,
+            bgcolor: computerActivity.phase === 'failed'
+              ? alpha(theme.palette.error.main, 0.14)
+              : alpha(theme.palette.primary.main, 0.12),
+            border: `1px solid ${alpha(theme.palette.primary.main, 0.25)}`,
+          }}
+        >
+          <Typography variant="caption" sx={{fontWeight: 700}}>
+            {computerActivity.summary}
+            {computerActivity.phase === 'blocked' ? ' — needs your help' : ''}
+          </Typography>
+          {computerActivity.caption && computerActivity.caption !== computerActivity.summary && (
+            <Typography variant="caption" sx={{display: 'block', mt: 0.25, color: 'text.secondary'}}>
+              {computerActivity.caption}
+            </Typography>
+          )}
+        </Box>
+      )}
+
       {messages.length === 0 && !isLoading ? (
         <WelcomeState onStart={() => inputRef.current?.focus()} />
       ) : (

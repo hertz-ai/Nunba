@@ -29,6 +29,17 @@ from llama.llama_installer import MODEL_PRESETS, LlamaInstaller, ModelPreset
 logger = logging.getLogger('NunbaLlamaConfig')
 
 
+def _uses_qwen35_runtime(model_preset) -> bool:
+    """Whether a preset needs the Qwen3.5-MoE runtime settings.
+
+    Qwen3.6 and Tiel-Coder use the same llama.cpp architecture family as the
+    shipped Qwen3.5 presets, so keeping this as a family predicate prevents new
+    catalog rows from silently losing their context and sampler configuration.
+    """
+    name = model_preset.display_name
+    return 'Qwen3.5' in name or 'Qwen3.6' in name or 'Tiel-Coder' in name
+
+
 # Task #652 — thinking MUST be off for every local llama-server.
 #
 # ``--reasoning-budget 0`` below already DECLARES that intent, but on
@@ -1572,8 +1583,8 @@ class LlamaConfig:
         recipe pipeline that share :8081 (measured overflows at 2066, 3223
         and 4386 tokens, all reporting n_ctx 2048).
         """
-        # Context size is VRAM-aware for Qwen3.5.
-        is_qwen35 = "Qwen3.5" in model_preset.display_name
+        # Context size is VRAM-aware for the Qwen3.5-MoE model family.
+        is_qwen35 = _uses_qwen35_runtime(model_preset)
         if is_qwen35:
             # Scale context with available VRAM:
             #   ≥3GB remaining → 16384 (full multi-turn agent conversations)
@@ -2153,11 +2164,11 @@ class LlamaConfig:
                     _mtp_n,
                 )
 
-            # Qwen3.5 models need additional flags.  Test display_name
-            # directly: the `is_qwen35` local moved into _derive_ctx_size
-            # (0f47a478), and reading it here raised NameError, which
-            # killed every spawn before launch.
-            if "Qwen3.5" in model_preset.display_name:
+            # Qwen3.5-MoE family models need additional flags.  Test the
+            # shared family predicate directly: the `is_qwen35` local moved
+            # into _derive_ctx_size (0f47a478), and reading it here raised
+            # NameError, which killed every spawn before launch.
+            if _uses_qwen35_runtime(model_preset):
                 cmd.extend([
                     "--temp", "0.7",
                     "--top-k", "20",

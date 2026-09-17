@@ -102,6 +102,38 @@ test('honours the admin character-skin setting', () => {
   expect(screen.queryByTestId('viz')).not.toBeInTheDocument();
 });
 
+test('renders the existing computer-use projection without a new transport', () => {
+  render(<VoiceOrbPage />);
+  act(() => handlers['computer_use.update']({
+    type: 'computer_use.update', task_id: 'computer_use_run_1',
+    prompt_id: '42', agent_id: 'goal-42', summary: 'Selecting a control',
+    phase: 'executing',
+  }));
+  expect(screen.getByText('Selecting a control')).toBeInTheDocument();
+  expect(screen.getByTestId('voice-orb').dataset.active).toBe('1');
+});
+
+test('Ask HART injects guidance into the active HART context', async () => {
+  const prompt = jest.fn(() => Promise.resolve('Guidance sent to the active HART.'));
+  window.pywebview = {api: {on_companion_prompt: prompt}};
+  try {
+    render(<VoiceOrbPage />);
+    act(() => handlers['computer_use.update']({
+      type: 'computer_use.update', task_id: 'computer_use_run_1',
+      prompt_id: '42', agent_id: 'goal-42', summary: 'Selecting a control',
+      phase: 'executing',
+    }));
+    fireEvent.change(screen.getByLabelText('Quick prompt'), {target: {value: 'Use the safer option'}});
+    fireEvent.submit(screen.getByLabelText('Quick prompt').closest('form'));
+    await waitFor(() => expect(prompt).toHaveBeenCalledWith(
+      'Use the safer option',
+      expect.objectContaining({agent_id: 'goal-42', prompt_id: '42', task_id: 'computer_use_run_1'}),
+    ));
+  } finally {
+    delete window.pywebview;
+  }
+});
+
 describe('hosted in the desktop companion window', () => {
   // Owner 2026-09-15: the floating window exists only when an agent wants
   // to talk, and it morphs: the orb alone while the agent speaks, the card

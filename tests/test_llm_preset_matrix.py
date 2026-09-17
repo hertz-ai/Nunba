@@ -127,6 +127,22 @@ def test_at_least_3_vision_models():
     vision = [p for p in MODEL_PRESETS if p.has_vision]
     assert len(vision) >= 3
 
+
+def test_qwen36_and_tiel_coder_presets_have_their_real_projectors():
+    by_name = {p.display_name: p for p in MODEL_PRESETS}
+    qwen36 = by_name['Qwen3.6-35B-A3B MoE UD-Q4_K_M']
+    tiel = by_name['Tiel-Coder-35B-A3B MoE UD-Q4_K_XL']
+    assert (qwen36.repo_id, qwen36.file_name, qwen36.mmproj_source_file) == (
+        'unsloth/Qwen3.6-35B-A3B-GGUF',
+        'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf',
+        'mmproj-F16.gguf',
+    )
+    assert (tiel.repo_id, tiel.file_name, tiel.mmproj_source_file) == (
+        'peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF',
+        'Tiel-Coder-35B-A3B-UD-Q4_K_XL.gguf',
+        'mmproj-BF16.gguf',
+    )
+
 def test_at_least_1_text_only():
     text = [p for p in MODEL_PRESETS if not p.has_vision]
     assert len(text) >= 1

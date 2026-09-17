@@ -159,7 +159,7 @@ export function createApiClient(
       // mirror.  Mirrors the (path, status, method) shape both clients
       // emit so cross-platform diagnostic discipline stays uniform.
       try {
-        if (typeof window !== 'undefined' && error?.config) {
+        if (typeof window !== 'undefined' && error?.config && !error.config.silentError) {
           const status = Number(error.response?.status) || 0;
           const url = (error.config.baseURL || '') + (error.config.url || '');
           const method = String(error.config.method || 'get').toUpperCase();

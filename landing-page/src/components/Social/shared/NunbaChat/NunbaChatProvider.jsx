@@ -5,6 +5,7 @@
  * Does NOT import Demopage — lightweight direct API calls only.
  */
 
+import {SOCIAL_API_URL} from '../../../../config/apiBase';
 import {NUNBA_CAMERA_CONSENT} from '../../../../constants/events';
 import {useSocial} from '../../../../contexts/SocialContext';
 import useAuthSession from '../../../../hooks/useAuthSession';
@@ -254,6 +255,8 @@ export default function NunbaChatProvider({children}) {
     }
   });
   const [messages, setMessages] = useState([]);
+  // Compact projection of the durable Task Ledger for every chat variant.
+  const [computerActivity, setComputerActivity] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [currentAgent, setCurrentAgent] = useState(null); // { prompt_id, name }
@@ -710,6 +713,14 @@ export default function NunbaChatProvider({children}) {
     );
   }, []);
 
+  useEffect(() => {
+    const onComputerUse = (data) => {
+      if (data?.task_id && data?.summary) setComputerActivity(data);
+    };
+    const unsub = realtimeService.on('computer_use.update', onComputerUse);
+    return () => { if (unsub) unsub(); };
+  }, []);
+
   /** Parse @mentions from input text. Returns { cleanText, mentionedAgents[] } */
   const parseMentions = useCallback(
     (text) => {
@@ -756,6 +767,39 @@ export default function NunbaChatProvider({children}) {
       setMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
       setIsTyping(true);
+
+      // A live computer-use event names a database goal accepted by the
+      // existing GroupChat injector. Send guidance there, as the operations
+      // drawer and companion already do, so it reaches the running agent
+      // instead of starting a parallel general-chat turn.
+      const activeRun = computerActivity?.agent_id ? computerActivity : null;
+      if (activeRun) {
+        try {
+          const res = await fetch(
+            `${SOCIAL_API_URL}/dashboard/agents/${encodeURIComponent(activeRun.agent_id)}/inject`,
+            {
+              method: 'POST', credentials: 'include',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({instruction: text.trim(), actor_id: 'nunba-chat'}),
+            },
+          );
+          const data = res.ok ? await res.json() : null;
+          if (!data?.success) throw new Error(data?.error || 'That HART is no longer running');
+          updateMsgById(msgId, {status: 'sent', error: null, retryCount: undefined});
+          setMessages((prev) => [...prev, {
+            role: 'assistant', text: 'Guidance sent to the active HART.',
+            ts: Date.now(), agentName: currentAgent?.name || null,
+          }]);
+        } catch (err) {
+          updateMsgById(msgId, {
+            status: 'failed', error: err?.message || 'Could not reach the active HART',
+          });
+        } finally {
+          setIsLoading(false);
+          setIsTyping(false);
+        }
+        return;
+      }
 
       let retryCount = 0;
       let lastReason = '';
@@ -881,6 +925,7 @@ export default function NunbaChatProvider({children}) {
       tts,
       updateMsgById,
       parseMentions,
+      computerActivity,
     ]
   );
 
@@ -1143,6 +1188,7 @@ export default function NunbaChatProvider({children}) {
     dismiss,
     undismiss,
     messages,
+    computerActivity,
     isLoading,
     isTyping,
     currentAgent,

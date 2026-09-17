@@ -634,6 +634,12 @@ function AddModelDialog({onClose, onSave}) {
     model_type: 'llm',
     source: 'huggingface',
     repo_id: '',
+    model_file: '',
+    has_vision: false,
+    mmproj_file: '',
+    mmproj_source_file: '',
+    context_length: '',
+    min_build: '',
     backend: 'llama.cpp',
     vram_gb: 0,
     ram_gb: 1,
@@ -649,8 +655,20 @@ function AddModelDialog({onClose, onSave}) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    const files = form.model_file ? {model: form.model_file} : {};
+    if (form.has_vision && form.mmproj_file) {
+      files.mmproj = form.mmproj_file;
+      files.mmproj_source = form.mmproj_source_file || form.mmproj_file;
+    }
+    const capabilities = {chat: form.model_type === 'llm'};
+    if (form.has_vision) capabilities.vision = true;
+    const contextLength = parseInt(form.context_length, 10);
+    if (contextLength > 0) capabilities.context_length = contextLength;
     const entry = {
       ...form,
+      files,
+      capabilities,
+      min_build: parseInt(form.min_build, 10) || null,
       vram_gb: parseFloat(form.vram_gb) || 0,
       ram_gb: parseFloat(form.ram_gb) || 1,
       disk_gb: parseFloat(form.disk_gb) || 0,
@@ -663,6 +681,11 @@ function AddModelDialog({onClose, onSave}) {
       tags: form.tags ? form.tags.split(',').map((s) => s.trim()) : [],
       enabled: true,
     };
+    delete entry.model_file;
+    delete entry.has_vision;
+    delete entry.mmproj_file;
+    delete entry.mmproj_source_file;
+    delete entry.context_length;
     onSave(entry);
   };
 
@@ -773,6 +796,59 @@ function AddModelDialog({onClose, onSave}) {
               placeholder="unsloth/Qwen3.5-4B-GGUF or chatterbox-tts"
             />
           </div>
+          <div style={{gridColumn: '1 / -1'}}>
+            <label style={labelStyle}>Model file (GGUF filename)</label>
+            <input
+              style={inputStyle}
+              value={form.model_file}
+              required={form.backend === 'llama.cpp'}
+              onChange={(e) =>
+                setForm((f) => ({...f, model_file: e.target.value}))
+              }
+              placeholder="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            />
+          </div>
+          <div style={{gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 8}}>
+            <input
+              id="new-model-vision"
+              type="checkbox"
+              checked={form.has_vision}
+              onChange={(e) =>
+                setForm((f) => ({...f, has_vision: e.target.checked}))
+              }
+            />
+            <label htmlFor="new-model-vision" style={{...labelStyle, margin: 0}}>
+              Vision model (download a projector too)
+            </label>
+          </div>
+          {form.has_vision && (
+            <>
+              <div>
+                <label style={labelStyle}>Local projector filename</label>
+                <input
+                  style={inputStyle}
+                  value={form.mmproj_file}
+                  required
+                  onChange={(e) =>
+                    setForm((f) => ({...f, mmproj_file: e.target.value}))
+                  }
+                  placeholder="mmproj-Qwen3.6-35B-A3B-F16.gguf"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Hub projector filename</label>
+                <input
+                  style={inputStyle}
+                  value={form.mmproj_source_file}
+                  required
+                  onChange={(e) =>
+                    setForm((f) => ({...f, mmproj_source_file: e.target.value}))
+                  }
+                  placeholder="mmproj-F16.gguf"
+                />
+              </div>
+            </>
+          )}
           <div>
             <label style={labelStyle}>Backend</label>
             <select
@@ -822,6 +898,32 @@ function AddModelDialog({onClose, onSave}) {
               onChange={(e) =>
                 setForm((f) => ({...f, disk_gb: e.target.value}))
               }
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Context length (tokens)</label>
+            <input
+              style={inputStyle}
+              type="number"
+              step="1"
+              value={form.context_length}
+              onChange={(e) =>
+                setForm((f) => ({...f, context_length: e.target.value}))
+              }
+              placeholder="262144"
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Minimum llama.cpp build</label>
+            <input
+              style={inputStyle}
+              type="number"
+              step="1"
+              value={form.min_build}
+              onChange={(e) =>
+                setForm((f) => ({...f, min_build: e.target.value}))
+              }
+              placeholder="9180"
             />
           </div>
           <div>

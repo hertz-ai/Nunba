@@ -159,6 +159,28 @@ MODEL_PRESETS = [
         mmproj_source_file="mmproj-F16.gguf",
         min_build=MIN_LLAMACPP_BUILD_QWEN35
     ),
+    ModelPreset(
+        "Qwen3.6-35B-A3B MoE UD-Q4_K_M",
+        "unsloth/Qwen3.6-35B-A3B-GGUF",
+        "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        22630,
+        "256K context, 35B MoE (active 3B), vision+text, improved agentic coding",
+        has_vision=True,
+        mmproj_file="mmproj-Qwen3.6-35B-A3B-F16.gguf",
+        mmproj_source_file="mmproj-F16.gguf",
+        min_build=MIN_LLAMACPP_BUILD_QWEN35
+    ),
+    ModelPreset(
+        "Tiel-Coder-35B-A3B MoE UD-Q4_K_XL",
+        "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF",
+        "Tiel-Coder-35B-A3B-UD-Q4_K_XL.gguf",
+        22938,
+        "256K context, 35B MoE (active 3B), vision+text, tuned for agentic coding",
+        has_vision=True,
+        mmproj_file="mmproj-Tiel-Coder-35B-A3B-BF16.gguf",
+        mmproj_source_file="mmproj-BF16.gguf",
+        min_build=MIN_LLAMACPP_BUILD_QWEN35
+    ),
 ]
 
 

@@ -214,7 +214,7 @@ function Character({ active }) {
 // Quick-prompt input bar — the same send path the static companion used:
 // prefer the pywebview bridge (window.pywebview.api.on_companion_prompt, so the
 // main app owns the HARTOS dispatch), fall back to POST /chat (browser/debug).
-function InputBar() {
+function InputBar({computerActivity}) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [reply, setReply] = useState('');
@@ -234,18 +234,29 @@ function InputBar() {
     try {
       let answer;
       const api = window.pywebview && window.pywebview.api;
+      const context = computerActivity?.agent_id ? {
+        agent_id: computerActivity.agent_id,
+        prompt_id: computerActivity.prompt_id,
+        task_id: computerActivity.task_id,
+      } : null;
       if (api && api.on_companion_prompt) {
-        answer = await api.on_companion_prompt(t);
+        answer = await api.on_companion_prompt(t, context);
       } else {
-        // /chat's contract names the prompt `text` (chat_route docstring);
-        // `message` is the /custom_gpt alias and /chat answers it with 400.
-        const r = await fetch('/chat', {
+        const url = context
+          ? `/api/social/dashboard/agents/${encodeURIComponent(context.agent_id)}/inject`
+          : '/chat';
+        const body = context
+          ? {instruction: t, actor_id: 'companion'}
+          : {text: t, source: 'companion_input_bar'};
+        const r = await fetch(url, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({text: t, source: 'companion_input_bar'}),
+          body: JSON.stringify(body),
         });
         const d = r.ok ? await r.json() : null;
-        answer = (d && (d.response || d.message || d.text)) || 'OK';
+        answer = context
+          ? (d?.success ? 'Guidance sent to the active HART.' : 'That HART is no longer running.')
+          : ((d && (d.response || d.message || d.text)) || 'OK');
       }
       showReply(typeof answer === 'string' && answer ? answer : 'Done');
       setText('');
@@ -254,7 +265,7 @@ function InputBar() {
     } finally {
       setBusy(false);
     }
-  }, [text, busy, showReply]);
+  }, [text, busy, showReply, computerActivity]);
 
   useEffect(
     () => () => { if (replyTimer.current) clearTimeout(replyTimer.current); },
@@ -361,8 +372,10 @@ export default function VoiceOrbPage() {
   // may show again.
   const [asks, setAsks] = useState([]);
   const asking = asks.length > 0;
+  const [computerActivity, setComputerActivity] = useState(null);
+  const activityTimer = useRef(null);
 
-  const active = speaking;
+  const active = speaking || computerActivity?.phase === 'executing';
 
   useEffect(() => {
     function onAgentUi(payload) {
@@ -383,6 +396,22 @@ export default function VoiceOrbPage() {
     return () => unsubs.forEach((u) => u && u());
   }, []);
   const answerAsk = useCallback(() => setAsks((prev) => prev.slice(1)), []);
+
+  useEffect(() => {
+    const onComputerUse = (data) => {
+      if (!data?.task_id || !data?.summary) return;
+      setComputerActivity(data);
+      if (activityTimer.current) clearTimeout(activityTimer.current);
+      if (data.phase !== 'executing') {
+        activityTimer.current = setTimeout(() => setComputerActivity(null), 5000);
+      }
+    };
+    const unsub = realtimeService.on('computer_use.update', onComputerUse);
+    return () => {
+      if (unsub) unsub();
+      if (activityTimer.current) clearTimeout(activityTimer.current);
+    };
+  }, []);
 
   // Skin follows the admin setting, live across documents.
   useEffect(() => {
@@ -428,7 +457,7 @@ export default function VoiceOrbPage() {
   useEffect(() => {
     const decide = () => {
       const now = Date.now();
-      const interacting = asking || now - lastInteract.current < IDLE_MS;
+      const interacting = asking || Boolean(computerActivity) || now - lastInteract.current < IDLE_MS;
       const lingering = now - lastSpoke.current < IDLE_MS;
       const next = interacting ? 'shown' : (active || lingering) ? 'orb' : 'hidden';
       setPresence((prev) => (prev === next ? prev : next));
@@ -442,7 +471,7 @@ export default function VoiceOrbPage() {
       evs.forEach((ev) => window.removeEventListener(ev, wake, true));
       clearInterval(id);
     };
-  }, [active, asking]);
+  }, [active, asking, computerActivity]);
 
   // Hosted: the window follows the page's state and shape.  Sent on every
   // change, again at 'pywebviewready' (`.api` may not exist when the first
@@ -506,34 +535,48 @@ export default function VoiceOrbPage() {
           <ConsentPromptOverlay data={asks[0]} onDismiss={answerAsk} />
         </div>
       ) : (
-        <div
-          ref={orbBox}
-          onClick={() => companionApi('on_companion_click')}
-          onDoubleClick={() => companionApi('on_companion_dblclick')}
-          title="Open Nunba"
-          style={{
-            flex: '1 1 auto',
-            // Full width, so the visualiser measures the page's width and not
-            // its own canvas (alignItems:center would shrink-wrap this box to
-            // the canvas, and the 80% cap then shrinks the canvas on every
-            // measure).
-            alignSelf: 'stretch',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            minHeight: 0,
-            // Clickable (-> bring the main app forward); no-drag so the click
-            // registers. Empty areas of the root stay draggable.
-            WebkitAppRegion: 'no-drag',
-            cursor: 'pointer',
-          }}
-        >
-          {skin === 'character'
-            ? <Character active={active} />
-            : <VoiceVisualizer isActive={active} size={140} />}
-        </div>
+        <>
+          {computerActivity && (
+            <div
+              onClick={() => companionApi('on_companion_click')}
+              title="Open Nunba and view this agent run"
+              style={{
+                alignSelf: 'stretch', margin: '0 4px 6px', padding: '7px 9px',
+                borderRadius: 10, color: '#fff', fontSize: 12, lineHeight: 1.3,
+                background: computerActivity.phase === 'failed'
+                  ? 'rgba(180,50,50,.82)' : 'rgba(28,27,45,.90)',
+                border: '1px solid rgba(255,255,255,.14)',
+                WebkitAppRegion: 'no-drag', cursor: 'pointer',
+              }}
+            >
+              {computerActivity.summary}
+              {computerActivity.phase === 'blocked' ? ' — needs attention' : ''}
+              {computerActivity.phase === 'failed' ? ' — step failed' : ''}
+              {computerActivity.caption && computerActivity.caption !== computerActivity.summary ? (
+                <div style={{marginTop: 3, color: 'rgba(255,255,255,.72)', fontSize: 11}}>
+                  {computerActivity.caption}
+                </div>
+              ) : null}
+            </div>
+          )}
+          <div
+            ref={orbBox}
+            onClick={() => companionApi('on_companion_click')}
+            onDoubleClick={() => companionApi('on_companion_dblclick')}
+            title="Open Nunba"
+            style={{
+              flex: '1 1 auto', alignSelf: 'stretch', display: 'flex',
+              alignItems: 'center', justifyContent: 'center', minHeight: 0,
+              WebkitAppRegion: 'no-drag', cursor: 'pointer',
+            }}
+          >
+            {skin === 'character'
+              ? <Character active={active} />
+              : <VoiceVisualizer isActive={active} size={140} />}
+          </div>
+        </>
       )}
-      <InputBar />
+      <InputBar computerActivity={computerActivity} />
     </div>
   );
 }

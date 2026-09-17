@@ -107,11 +107,25 @@ const ENGINE_BOOT_GRACE_MS = 20000;
 //   - different jobTypes -> all kept (two distinct cards both render)
 // The caller filters out dismissed cards before carrying, so a user-dismissed
 // card is never resurrected.
+function isGlobalSetupCard(message) {
+  return !!message && !message.dismissed && (
+    message.type === 'setup_progress' || message.type === 'llm_setup_card'
+  );
+}
+
+function setupCardKey(message) {
+  if (message.type === 'llm_setup_card') {
+    const card = message.setupCard || {};
+    return `llm:${card.model_id || card.model_name || 'recommended'}`;
+  }
+  return `setup:${message.jobType || 'unknown'}`;
+}
+
 function mergeCarriedSetupCards(loaded, carried) {
   if (!carried || carried.length === 0) return loaded || [];
-  const carriedKeys = new Set(carried.map((c) => c.jobType));
+  const carriedKeys = new Set(carried.map(setupCardKey));
   const loadedWithoutDupes = (loaded || []).filter(
-    (m) => !(m.type === 'setup_progress' && carriedKeys.has(m.jobType))
+    (m) => !(isGlobalSetupCard(m) && carriedKeys.has(setupCardKey(m)))
   );
   return [...loadedWithoutDupes, ...carried];
 }
@@ -1022,9 +1036,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           // Setup/install cards are system-global, not agent-scoped — carry
           // the live (non-dismissed) ones across the switch instead of wiping
           // them with the rest of the per-agent message list.
-          const carriedSetup = messages.filter(
-            (m) => m.type === 'setup_progress' && !m.dismissed
-          );
+          const carriedSetup = messages.filter(isGlobalSetupCard);
           logger.log(
             `🧹 Clearing messages for agent switch to: ${matchedAgent.name} ` +
             `(carrying ${carriedSetup.length} setup card(s))`
@@ -1078,7 +1090,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       logger.log(
         `🧹 Clearing messages for new agent: ${agentDatafromApi.name}`
       );
-      setMessages([]);
+      setMessages((prev) => prev.filter(isGlobalSetupCard));
 
       setAllAgents((prevAgents) => {
         const newAgents = [...prevAgents, agentDatafromApi];
@@ -1816,7 +1828,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
 
       logger.log(`🧹 Clearing messages for agent selection: ${agent.name}`);
-      setMessages([]);
+      setMessages((prev) => prev.filter(isGlobalSetupCard));
 
       setTimeout(() => {
         handleButtonClick(agent);
@@ -2999,7 +3011,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
 
       logger.log(`🧹 Clearing messages for agent switch to: ${chat.name}`);
-      setMessages([]);
+      const carriedSetup = messages.filter(isGlobalSetupCard);
+      setMessages(carriedSetup);
 
       const idleFiller = chat.fillers?.find((filler) => filler.type === 'idle');
       setVideoUrl(idleFiller?.video_link);
@@ -3010,7 +3023,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `📥 Loading ${savedMessages.length} messages for agent: ${chat.name}`
         );
-        setMessages(savedMessages);
+        setMessages(mergeCarriedSetupCards(savedMessages, carriedSetup));
       }, 100);
 
       setIsOpen(false);
