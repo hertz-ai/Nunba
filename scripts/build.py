@@ -1858,6 +1858,225 @@ def build_windows(python_exe, app_only=False, installer_only=False):
     return _build_windows_installer(python_exe)
 
 
+def find_iscc():
+    """Locate the Inno Setup compiler, or None.
+
+    The ONE resolver: the preflight in main() calls it to fail fast, and
+    _build_windows_installer calls it to actually run the thing.  They have
+    to agree -- a preflight that passes and a build step that then cannot
+    find ISCC is worse than no preflight at all.
+
+    Searched, in order of trustworthiness:
+      1. NUNBA_ISCC, for a portable or non-standard install;
+      2. PATH, which is where a scooped/chocolatey install lands;
+      3. the registry key Inno Setup writes at install time, which is the
+         only source that knows a custom install directory;
+      4. the default Program Files locations, 6 then 5.
+
+    Before this, only (4) was checked -- so a working Inno Setup installed
+    anywhere else read as "not installed" (2026-09-20).
+    """
+    env = os.environ.get('NUNBA_ISCC', '').strip('"').strip()
+    if env and os.path.exists(env):
+        return env
+
+    on_path = shutil.which('ISCC') or shutil.which('iscc')
+    if on_path:
+        return on_path
+
+    if sys.platform == 'win32':
+        try:
+            import winreg
+            # Inno Setup registers its install dir here; the value is the
+            # directory, not the exe.
+            for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                for key in (r'SOFTWARE\Microsoft\Windows\CurrentVersion'
+                            r'\Uninstall\Inno Setup 6_is1',
+                            r'SOFTWARE\Microsoft\Windows\CurrentVersion'
+                            r'\Uninstall\Inno Setup 5_is1'):
+                    try:
+                        with winreg.OpenKey(root, key) as k:
+                            loc, _ = winreg.QueryValueEx(k, 'InstallLocation')
+                        cand = os.path.join(loc, 'ISCC.exe')
+                        if loc and os.path.exists(cand):
+                            return cand
+                    except OSError:
+                        continue
+        except Exception:
+            pass  # registry unreadable — fall through to the fixed paths
+
+    for path in (
+        os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'Inno Setup 6', 'ISCC.exe'),
+        os.path.join(os.environ.get('ProgramFiles', ''), 'Inno Setup 6', 'ISCC.exe'),
+        os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'Inno Setup 5', 'ISCC.exe'),
+    ):
+        if os.path.exists(path):
+            return path
+    return None
+
+
+ISCC_DOWNLOAD_URL = 'https://jrsoftware.org/download.php/is.exe'
+# MEASURED 2026-09-21 off the genuine ISCC.EXE on this machine, not guessed
+# from the domain: Inno Setup binaries are Authenticode-signed
+#   CN=Pyrsys B.V., O=Pyrsys B.V., S=Noord-Holland, C=NL
+# An earlier version of this file assumed 'jrsoftware' and would therefore
+# have REJECTED the real installer.  'jordan russell' is the historical
+# signer on older releases.  If a future release is signed by someone else
+# the check fails loudly and prints the actual subject -- which is the point:
+# a changed signer is exactly the event a human should look at.
+ISCC_SIGNERS = ('pyrsys', 'jordan russell')
+
+
+def _authenticode_ok(path):
+    """True only if `path` carries a VALID signature from Inno Setup's vendor.
+
+    This gate is the reason the auto-install is acceptable at all: a build
+    script that downloads an .exe and runs it is a supply-chain step, so the
+    binary has to prove who signed it BEFORE it executes.  Status must be
+    Valid (not UnknownError, not NotSigned, not HashMismatch) and the signer
+    subject must name the vendor.
+
+    A failure here is never "probably fine" -- it returns False and the
+    caller refuses to run the file.
+    """
+    if sys.platform != 'win32':
+        return False
+    try:
+        # The path goes through the environment, not into the command text:
+        # a path containing a quote would otherwise change what PowerShell
+        # executes.
+        env = dict(os.environ, NUNBA_VERIFY_PATH=path)
+        out = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             '$s = Get-AuthenticodeSignature -FilePath $env:NUNBA_VERIFY_PATH; '
+             'Write-Output $s.Status; '
+             'Write-Output $s.SignerCertificate.Subject'],
+            capture_output=True, text=True, timeout=120, env=env)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print_error(f"Could not verify the signature of {path}: {e}")
+        return False
+    lines = [ln.strip() for ln in (out.stdout or '').splitlines() if ln.strip()]
+    status = lines[0] if lines else '(no status)'
+    subject = ' '.join(lines[1:]) if len(lines) > 1 else ''
+    if status != 'Valid':
+        print_error(f"Signature status is {status!r}, not 'Valid' — refusing "
+                    f"to run the downloaded installer.")
+        return False
+    if not any(s in subject.lower() for s in ISCC_SIGNERS):
+        print_error(f"Signed, but not by a recognised Inno Setup vendor — "
+                    f"refusing. Subject: {subject}")
+        print_info(f"Recognised: {', '.join(ISCC_SIGNERS)}. If the vendor has "
+                   f"legitimately changed, verify it yourself and add it to "
+                   f"ISCC_SIGNERS — do not bypass this check.")
+        return False
+    print_info(f"Signature verified: {status}, signed by {subject}")
+    return True
+
+
+def _install_iscc_via_winget():
+    """Try winget. It does its own signature/hash checking, so preferred."""
+    if not shutil.which('winget'):
+        return False
+    print_info("Installing Inno Setup via winget...")
+    try:
+        r = subprocess.run(
+            ['winget', 'install', '--id', 'JRSoftware.InnoSetup',
+             '--silent', '--accept-package-agreements',
+             '--accept-source-agreements'],
+            capture_output=True, text=True, timeout=900)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print_info(f"winget did not complete: {e}")
+        return False
+    if r.returncode != 0:
+        print_info(f"winget exited {r.returncode}; falling back to direct "
+                   f"download. {(r.stdout or r.stderr or '').strip()[:200]}")
+        return False
+    return True
+
+
+def _install_iscc_via_download():
+    """Download the official installer, verify its signature, run it silently.
+
+    Per-user (/CURRENTUSER) so no elevation prompt: this is a developer
+    toolchain, not a machine-wide change, and it matches where Inno Setup
+    already installs itself on this box.
+    """
+    import urllib.request
+
+    dest = os.path.join(tempfile.gettempdir(), 'innosetup-bootstrap.exe')
+    print_info(f"Downloading Inno Setup from {ISCC_DOWNLOAD_URL} ...")
+    try:
+        req = urllib.request.Request(
+            ISCC_DOWNLOAD_URL, headers={'User-Agent': 'nunba-build'})
+        with urllib.request.urlopen(req, timeout=120) as resp, \
+                open(dest, 'wb') as fh:
+            shutil.copyfileobj(resp, fh)
+    except Exception as e:
+        print_error(f"Download failed: {e}")
+        return False
+
+    size = os.path.getsize(dest) if os.path.exists(dest) else 0
+    print_info(f"Downloaded {size / (1 << 20):.1f} MB -> {dest}")
+    if not _authenticode_ok(dest):
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        return False
+
+    print_info("Running the installer silently (per-user, no elevation)...")
+    try:
+        r = subprocess.run(
+            [dest, '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+             '/CURRENTUSER'],
+            capture_output=True, text=True, timeout=900)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print_error(f"Installer did not complete: {e}")
+        return False
+    finally:
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+    if r.returncode != 0:
+        print_error(f"Installer exited {r.returncode}")
+        return False
+    return True
+
+
+def ensure_iscc():
+    """find_iscc(), and if it is missing, install Inno Setup and look again.
+
+    Owner decision 2026-09-21: the build bootstraps its own toolchain rather
+    than telling the developer to go and do it.  Set
+    NUNBA_NO_AUTO_INSTALL_ISCC=1 to keep the old behaviour (report and stop),
+    for locked-down machines where a build must never install anything.
+
+    The post-install lookup is what decides success -- not the installer's
+    exit code -- because "it said 0" and "ISCC.exe is now findable" are
+    different claims.
+    """
+    found = find_iscc()
+    if found:
+        return found
+    if sys.platform != 'win32':
+        return None
+    if os.environ.get('NUNBA_NO_AUTO_INSTALL_ISCC', '').strip():
+        print_info("Inno Setup missing and NUNBA_NO_AUTO_INSTALL_ISCC is set "
+                   "— not installing.")
+        return None
+
+    print_header("Inno Setup not found — installing it")
+    if _install_iscc_via_winget() or _install_iscc_via_download():
+        found = find_iscc()
+        if found:
+            print_info(f"Inno Setup ready: {found}")
+            return found
+        print_error("Install reported success but ISCC.exe is still not "
+                    "findable — set NUNBA_ISCC to its full path.")
+    return None
+
+
 def _build_windows_installer(python_exe):
     """Build Windows installer with Inno Setup (assumes exe already built)"""
     # Verify exe exists
@@ -1874,19 +2093,7 @@ def _build_windows_installer(python_exe):
     # Build installer with Inno Setup
     print_header("Creating installer with Inno Setup")
 
-    # Find Inno Setup
-    iscc_paths = [
-        os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'Inno Setup 6', 'ISCC.exe'),
-        os.path.join(os.environ.get('ProgramFiles', ''), 'Inno Setup 6', 'ISCC.exe'),
-        os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'Inno Setup 5', 'ISCC.exe'),
-    ]
-
-    iscc = None
-    for path in iscc_paths:
-        if os.path.exists(path):
-            iscc = path
-            break
-
+    iscc = ensure_iscc()
     if not iscc:
         print_error("Inno Setup Compiler (ISCC.exe) not found!")
         print_info("Please install Inno Setup from https://jrsoftware.org/isinfo.php")
@@ -2497,6 +2704,23 @@ def main():
         # let installs fail halfway through (witnessed 2026-04-21,
         # FreeSpace=4.3GB during a partial build that left python-embed
         # corrupt and required full rebuild).
+        # Toolchain before resources.  A missing ISCC used to surface only at
+        # the END of the build, so a full cx_Freeze cycle was spent to learn
+        # a 2ms fact (witnessed 2026-09-20: app built fine, then "ISCC.exe
+        # not found").  Resolve it up front, installing if needed, so the
+        # freeze never runs for an installer that cannot be produced.
+        if args.mode in ('full', 'installer') and sys.platform == 'win32':
+            if not ensure_iscc():
+                print_error("Inno Setup Compiler (ISCC.exe) is not available "
+                            "and could not be installed — stopping before "
+                            "the freeze rather than after it.")
+                print_info("Install manually: https://jrsoftware.org/isinfo.php")
+                print_info("Already installed elsewhere? Set NUNBA_ISCC to "
+                           "the full path of ISCC.exe.")
+                print_info("Only want the .exe, no installer? "
+                           "python scripts/build.py app")
+                return 1
+
         _MIN_DISK_GB = 7.0
         if _free_gb_cwd < _MIN_DISK_GB:
             sys.exit(
