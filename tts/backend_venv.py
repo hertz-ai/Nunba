@@ -203,6 +203,7 @@ def ensure_venv(backend: str, python_version: str = "3.11") -> Path:
     pyexe = _python_exe_in(vpath)
 
     if pyexe.is_file():
+        _expose_parent_packages(backend)
         return pyexe
 
     vpath.parent.mkdir(parents=True, exist_ok=True)
@@ -270,7 +271,32 @@ def ensure_venv(backend: str, python_version: str = "3.11") -> Path:
         )
 
     logger.info("Venv ready for backend %r (python %s)", backend, pyexe)
+    _expose_parent_packages(backend)
     return pyexe
+
+
+def _expose_parent_packages(backend: str) -> None:
+    """Keep the venv's ``nunba_parent_packages.pth`` current, so the worker
+    spawned from it can import the HARTOS dispatcher.
+
+    A venv created from python-embed runs isolated (python-embed's
+    ``._pth`` applies to it) and ignores PYTHONPATH, so this file is the
+    only route to the app packages; measured 2026-09-20 when
+    chatterbox_turbo died with ``No module named 'integrations'`` on every
+    spawn.  ``core.venv_paths`` owns the writer; HARTOS's spawn path calls
+    the same one, so install and spawn can never disagree about what the
+    venv sees.  Never raises: a venv that cannot be told is logged and
+    fails at spawn with the worker's own error.
+    """
+    try:
+        from core.venv_paths import ensure_parent_packages_visible
+    except Exception as exc:
+        logger.warning(
+            "venv %r: core.venv_paths unavailable, parent packages not "
+            "exposed: %s", backend, exc,
+        )
+        return
+    ensure_parent_packages_visible(backend)
 
 
 # ── install_into_venv ────────────────────────────────────────────────
