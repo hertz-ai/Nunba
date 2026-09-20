@@ -62,7 +62,9 @@ import {
   ExpandLess,
   History,
   Smartphone,
+  Videocam,
   Visibility,
+  VolumeUp,
 } from '@mui/icons-material';
 import {
   Box,
@@ -940,6 +942,32 @@ const SCREEN_CAPTURE_CARD = {
   disabledMessage: 'Agents can no longer see this screen.',
 };
 
+// Agents seeing through this computer's camera.  The sibling of the screen
+// card: HARTOS VisionService's camera channel, asked for by the
+// Request_Camera_Access tool.  Before the consent migration the camera had
+// no consent type, so this ask was a LiquidUI 'approval' card that wrote no
+// record — nothing to list here and nothing to revoke (#863).
+const CAMERA_CAPTURE_CARD = {
+  consentType: 'camera_capture',
+  Icon: Videocam,
+  title: 'Agents seeing through your camera',
+  description:
+    'Lets agents look through this computer\'s camera and describe what ' +
+    'they see, so the visual agent can see you and what you show it. Off ' +
+    'by default: until you allow it, the agent asks you first. Revoking ' +
+    'stops the camera immediately.',
+  enableLabel: allowAllLabel('camera_capture'),
+  disableLabel: 'Stop agents using your camera',
+  confirmTitle: `${allowAllLabel('camera_capture')}?`,
+  confirmText:
+    'Every agent will be able to use this camera without asking you first. ' +
+    'You can revoke this at any time and the camera stops immediately.',
+  understandLabel: 'I understand every agent can use this camera without asking.',
+  confirmLabel: 'Allow',
+  enabledMessage: 'Agents may use your camera.',
+  disabledMessage: 'Agents can no longer use your camera.',
+};
+
 // Agents using the owner's Claude Code subscription as their expert.  When a
 // goal's step cannot be finished on the local model and the copilot switch is
 // off, the daemon asks the owner through the consent card; Allow turns the
@@ -967,6 +995,28 @@ const COPILOT_ACCESS_CARD = {
   disabledMessage: 'Agents can no longer use your Claude subscription.',
 };
 
+// Proactive voice speech consent — asked when people land on the platform as the
+// first proactive step under Privacy by Design.
+const VOICE_SPEECH_CARD = {
+  consentType: 'voice_speech',
+  Icon: VolumeUp,
+  title: 'Proactive Voice & Speech Guidance',
+  description:
+    'Lets the servicing layer and AI agents speak aloud to provide proactive guidance, ' +
+    'spoken answers, and audio narration. Off by default under Privacy by Design. ' +
+    'Revoking mutes all voice output immediately, switching to quiet text-only mode.',
+  enableLabel: allowAllLabel('voice_speech'),
+  disableLabel: 'Mute AI voice output (Text Only)',
+  confirmTitle: `${allowAllLabel('voice_speech')}?`,
+  confirmText:
+    'Agents will be able to speak aloud to guide you and answer your questions. ' +
+    'You can mute speech at any time with the voice toggle in the chat header or here in Privacy settings.',
+  understandLabel: 'I understand agents will be permitted to speak aloud.',
+  confirmLabel: 'Allow Voice Guidance',
+  enabledMessage: 'Voice speech guidance enabled.',
+  disabledMessage: 'Voice output muted (Text Only mode).',
+};
+
 // Every on/off card on the page.  constants/consentAsks.PRIVACY_CARD_TYPES
 // names the ask types that rely on a card here as the way back after a
 // "Don't allow": one of these for an agent type, TrustedPhonesCard for
@@ -975,7 +1025,9 @@ const CONSENT_CARDS = [
   PUBLIC_EXPOSURE_CARD,
   COMPUTER_CONTROL_CARD,
   SCREEN_CAPTURE_CARD,
+  CAMERA_CAPTURE_CARD,
   COPILOT_ACCESS_CARD,
+  VOICE_SPEECH_CARD,
 ];
 
 export default function PrivacySettingsPage() {

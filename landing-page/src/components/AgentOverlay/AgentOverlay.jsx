@@ -1,7 +1,8 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import {
-  CONSENT_ANSWER_TYPES, FINGERPRINT_CAPTION, answerCoversAsk, askTitle, askerName,
-  canDecline, consentAskText, declineLabel, deviceFingerprint, grantLabel, isPerRequester,
+  CAMERA_CONSENT_TYPE, CONSENT_ANSWER_TYPES, FINGERPRINT_CAPTION, answerCoversAsk,
+  askTitle, askerName, canDecline, consentAskText, declineLabel, deviceFingerprint,
+  grantLabel, isPerRequester,
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
@@ -844,9 +845,24 @@ function consentCardFor(data) {
 // the main window is behind other windows.  One card, one consent API.
 export function ConsentPromptOverlay({ data, onDismiss }) {
   const card = consentCardFor(data || {});
+  // A camera answer has to act HERE.  Every other consent is actuated
+  // server-side (HARTOS grant_consent drives the embodied feed, and the
+  // screen capture loop polls its own consent), but the camera frames come
+  // from this browser: NunbaChatProvider listens for this event and mounts
+  // useCameraFrameStream, which opens the WS to VisionService :5460.
+  // Without it a camera grant would be a row that turns nothing on.
+  const applyCamera = (approved) => {
+    if (card.consentType !== CAMERA_CONSENT_TYPE) return;
+    try {
+      window.dispatchEvent(new CustomEvent(NUNBA_CAMERA_CONSENT, {
+        detail: {approved, user_id: data?.user_id || data?.agent_id},
+      }));
+    } catch { /* CustomEvent unavailable (older WebView) */ }
+  };
   const grant = async () => {
     try {
       await consentApi.grant({consent_type: card.consentType, scope: card.scope});
+      applyCamera(true);
     } catch (e) {
       console.error('[consent_prompt] grant failed', e);
     } finally {
@@ -859,6 +875,7 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
       await consentApi.decline({
         consent_type: card.consentType, scope: card.scope, agent_id: card.agentId,
       });
+      applyCamera(false);
     } catch (e) {
       console.error('[consent_prompt] decline failed', e);
     } finally {

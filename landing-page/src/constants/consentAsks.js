@@ -61,6 +61,12 @@
 export const CONSENT_ASKS = Object.freeze({
   computer_control: {asks: 'control this computer', privacyCard: true},
   screen_capture: {asks: 'see this screen', privacyCard: true},
+  // The camera's half of the pair.  screen_capture has existed since #701;
+  // the camera had no consent type at all, so Request_Camera_Access could
+  // only push a LiquidUI 'approval' component that this file's whole
+  // vocabulary never saw -- unrecorded, unrevocable, and invisible on the
+  // floating companion (#863).  HARTOS files it as camera_capture now.
+  camera_capture: {asks: 'see through your camera', privacyCard: true},
   data_access: {asks: 'use your data', privacyCard: false},
   // An agent's stuck step handed to the expert, when the expert is the
   // owner's Claude Code subscription and the copilot switch is off.  The
@@ -75,7 +81,19 @@ export const CONSENT_ASKS = Object.freeze({
   device_access: {
     asks: "use this computer's agents from the network", privacyCard: true, perRequester: true,
   },
+  // Proactive speech consent — asked when people land on the platform as the
+  // first proactive step under Privacy by Design.
+  voice_speech: {
+    asks: 'speak aloud and provide voice guidance', privacyCard: true,
+  },
 });
+
+// The camera's consent type, by name, because the SPA has to act on it and
+// not just describe it: the frames come from THIS browser (getUserMedia ->
+// WS to VisionService), so granting has to start the stream client-side,
+// unlike screen_capture, which HARTOS's own capture loop polls and starts on
+// its next tick.  One spelling, here beside the vocabulary it belongs to.
+export const CAMERA_CONSENT_TYPE = 'camera_capture';
 
 // A phone is its Ed25519 key; the consent scope is 'device:<64 hex>'.  What
 // the owner reads is the key's first 16 hex in four groups -- the same rule
