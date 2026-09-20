@@ -37,7 +37,7 @@ def populate_llm_presets(catalog: ModelCatalog) -> int:
     """Import MODEL_PRESETS from llama_installer into the catalog."""
     added = 0
     try:
-        from llama.llama_installer import MODEL_PRESETS
+        from llama.llama_installer import MODEL_PRESETS, QWEN35_RUNTIME_FAMILY
         for i, preset in enumerate(MODEL_PRESETS):
             slug = preset.display_name.lower().replace(" ", "-").replace("(", "").replace(")", "")
             entry_id = f'llm-{slug}'
@@ -53,9 +53,9 @@ def populate_llm_presets(catalog: ModelCatalog) -> int:
                 # purely from the catalog without re-importing MODEL_PRESETS.
                 files['mmproj_source'] = preset.mmproj_source_file or preset.mmproj_file
             caps = {'has_vision': preset.has_vision}
-            if ('Qwen3.5' in preset.display_name or
-                    'Qwen3.6' in preset.display_name or
-                    'Tiel-Coder' in preset.display_name):
+            # The preset declares its runtime family; llama_config keys its
+            # context sizing and sampler flags off the same attribute.
+            if getattr(preset, 'runtime_family', None) == QWEN35_RUNTIME_FAMILY:
                 caps['context_length'] = 256000
                 caps['chat_template'] = 'jinja'
 

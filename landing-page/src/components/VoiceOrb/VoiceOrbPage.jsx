@@ -1,5 +1,6 @@
 
 import { CONSENT_ANSWER_TYPES, answerCoversAsk } from '../../constants/consentAsks';
+import useComputerActivity from '../../hooks/useComputerActivity';
 import realtimeService from '../../services/realtimeService';
 import { ConsentPromptOverlay } from '../AgentOverlay/AgentOverlay';
 import VoiceVisualizer from '../VoiceVisualizer';
@@ -63,6 +64,7 @@ const SKIN_KEY = 'hart_orb_skin';
 const IDLE_MS = 6000;
 const ACCENT = '#6C63FF';
 const CARD_BG = '#0F0E17';
+const GLASS_BG = 'linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(15, 14, 23, 0.68) 100%)';
 const CARD_RADIUS = 24;
 
 function readSkin() {
@@ -214,7 +216,7 @@ function Character({ active }) {
 // Quick-prompt input bar — the same send path the static companion used:
 // prefer the pywebview bridge (window.pywebview.api.on_companion_prompt, so the
 // main app owns the HARTOS dispatch), fall back to POST /chat (browser/debug).
-function InputBar({computerActivity}) {
+function InputBar({liveRun}) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [reply, setReply] = useState('');
@@ -234,28 +236,38 @@ function InputBar({computerActivity}) {
     try {
       let answer;
       const api = window.pywebview && window.pywebview.api;
-      const context = computerActivity?.agent_id ? {
-        agent_id: computerActivity.agent_id,
-        prompt_id: computerActivity.prompt_id,
-        task_id: computerActivity.task_id,
-      } : null;
+      // Guidance is routed to the run only while useComputerActivity says
+      // it is still live; afterwards the bar is an ordinary quick prompt.
+      const context = liveRun ? {
+        agent_id: liveRun.agent_id,
+        prompt_id: liveRun.prompt_id,
+        task_id: liveRun.task_id,
+        priority: 'high',
+        user_priority: true,
+      } : {
+        priority: 'high',
+        user_priority: true,
+      };
       if (api && api.on_companion_prompt) {
         answer = await api.on_companion_prompt(t, context);
       } else {
-        const url = context
+        const url = context && context.agent_id
           ? `/api/social/dashboard/agents/${encodeURIComponent(context.agent_id)}/inject`
           : '/chat';
-        const body = context
-          ? {instruction: t, actor_id: 'companion'}
-          : {text: t, source: 'companion_input_bar'};
+        const body = context && context.agent_id
+          ? {instruction: t, actor_id: 'companion', priority: 'high', user_priority: true}
+          : {text: t, source: 'companion_input_bar', priority: 'high', user_priority: true};
         const r = await fetch(url, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(body),
         });
-        const d = r.ok ? await r.json() : null;
-        answer = context
-          ? (d?.success ? 'Guidance sent to the active HART.' : 'That HART is no longer running.')
+        // A refused steer is a 400 WITH a JSON reason; read it either way.
+        const d = await r.json().catch(() => null);
+        answer = (context && context.agent_id)
+          ? (d?.success
+            ? 'Guidance sent to the active HART.'
+            : `Guidance not delivered: ${d?.error || d?.data?.error || `HTTP ${r.status}`}`)
           : ((d && (d.response || d.message || d.text)) || 'OK');
       }
       showReply(typeof answer === 'string' && answer ? answer : 'Done');
@@ -265,7 +277,7 @@ function InputBar({computerActivity}) {
     } finally {
       setBusy(false);
     }
-  }, [text, busy, showReply, computerActivity]);
+  }, [text, busy, showReply, liveRun]);
 
   useEffect(
     () => () => { if (replyTimer.current) clearTimeout(replyTimer.current); },
@@ -372,10 +384,38 @@ export default function VoiceOrbPage() {
   // may show again.
   const [asks, setAsks] = useState([]);
   const asking = asks.length > 0;
-  const [computerActivity, setComputerActivity] = useState(null);
-  const activityTimer = useRef(null);
+  // The computer-use projection, reduced by the ONE hook NunbaChat also
+  // reads: the card and the guidance route can never disagree.
+  const {activity: computerActivity, liveRun} = useComputerActivity();
+  const [indicatorStep, setIndicatorStep] = useState(null);
+  const [mainForeground, setMainForeground] = useState(false);
 
-  const active = speaking || computerActivity?.phase === 'executing';
+  const active = speaking || computerActivity?.phase === 'executing' || Boolean(indicatorStep);
+
+  // Canonical bridge listener for live indicator commentary and main window foreground detection
+  useEffect(() => {
+    const onIndicatorStep = (text) => {
+      setIndicatorStep(text ? String(text).trim() : null);
+    };
+    const onMainForeground = (isFg) => {
+      setMainForeground(Boolean(isFg));
+    };
+
+    window.__onIndicatorStep = onIndicatorStep;
+    window.__setMainForeground = onMainForeground;
+    if (!window.companionAPI) window.companionAPI = {};
+    window.companionAPI.setIndicatorStep = onIndicatorStep;
+    window.companionAPI.setMainForeground = onMainForeground;
+
+    return () => {
+      delete window.__onIndicatorStep;
+      delete window.__setMainForeground;
+      if (window.companionAPI) {
+        delete window.companionAPI.setIndicatorStep;
+        delete window.companionAPI.setMainForeground;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     function onAgentUi(payload) {
@@ -396,22 +436,6 @@ export default function VoiceOrbPage() {
     return () => unsubs.forEach((u) => u && u());
   }, []);
   const answerAsk = useCallback(() => setAsks((prev) => prev.slice(1)), []);
-
-  useEffect(() => {
-    const onComputerUse = (data) => {
-      if (!data?.task_id || !data?.summary) return;
-      setComputerActivity(data);
-      if (activityTimer.current) clearTimeout(activityTimer.current);
-      if (data.phase !== 'executing') {
-        activityTimer.current = setTimeout(() => setComputerActivity(null), 5000);
-      }
-    };
-    const unsub = realtimeService.on('computer_use.update', onComputerUse);
-    return () => {
-      if (unsub) unsub();
-      if (activityTimer.current) clearTimeout(activityTimer.current);
-    };
-  }, []);
 
   // Skin follows the admin setting, live across documents.
   useEffect(() => {
@@ -452,12 +476,17 @@ export default function VoiceOrbPage() {
 
   // Presence: an ask waiting for the owner, or the owner reaching for it,
   // wins ('shown'), then the agent talking ('orb', lingering one idle window
-  // past the clip), else idle ('hidden').  Decided on every change of
+  // past the clip), else idle ('hidden'). Decided on every change of
   // speaking or asking and once a second, like a taskbar's auto-hide.
+  // Suppressed contextually if the main Nunba desktop app is already in the foreground.
   useEffect(() => {
     const decide = () => {
+      if (mainForeground) {
+        setPresence('hidden');
+        return;
+      }
       const now = Date.now();
-      const interacting = asking || Boolean(computerActivity) || now - lastInteract.current < IDLE_MS;
+      const interacting = asking || Boolean(computerActivity) || Boolean(indicatorStep) || now - lastInteract.current < IDLE_MS;
       const lingering = now - lastSpoke.current < IDLE_MS;
       const next = interacting ? 'shown' : (active || lingering) ? 'orb' : 'hidden';
       setPresence((prev) => (prev === next ? prev : next));
@@ -471,7 +500,7 @@ export default function VoiceOrbPage() {
       evs.forEach((ev) => window.removeEventListener(ev, wake, true));
       clearInterval(id);
     };
-  }, [active, asking, computerActivity]);
+  }, [active, asking, computerActivity, indicatorStep, mainForeground]);
 
   // Hosted: the window follows the page's state and shape.  Sent on every
   // change, again at 'pywebviewready' (`.api` may not exist when the first
@@ -507,10 +536,13 @@ export default function VoiceOrbPage() {
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'flex-end',
         padding: '0 10px 14px',
-        // Hosted, the window cannot be see-through (module docstring), so the
-        // page paints the card itself and the window shape cuts it out.
-        background: hosted.current ? CARD_BG : 'transparent',
+        // Translucent frosted futuristic glass shell with GPU blur
+        background: hosted.current ? GLASS_BG : 'transparent',
+        backdropFilter: hosted.current ? 'blur(24px) saturate(180%)' : undefined,
+        WebkitBackdropFilter: hosted.current ? 'blur(24px) saturate(180%)' : undefined,
+        border: hosted.current ? '1px solid rgba(255, 255, 255, 0.16)' : 'none',
         borderRadius: hosted.current ? CARD_RADIUS : 0,
+        boxShadow: hosted.current ? '0 12px 40px 0 rgba(0, 0, 0, 0.45), inset 0 1px 1px 0 rgba(255, 255, 255, 0.22)' : 'none',
         // Drag the frameless companion window by the orb body; the input bar
         // opts out (no-drag, in InputBar) so it stays interactive.
         WebkitAppRegion: 'drag',
@@ -536,23 +568,42 @@ export default function VoiceOrbPage() {
         </div>
       ) : (
         <>
-          {computerActivity && (
+          {(computerActivity || indicatorStep) && (
             <div
               onClick={() => companionApi('on_companion_click')}
               title="Open Nunba and view this agent run"
               style={{
-                alignSelf: 'stretch', margin: '0 4px 6px', padding: '7px 9px',
-                borderRadius: 10, color: '#fff', fontSize: 12, lineHeight: 1.3,
-                background: computerActivity.phase === 'failed'
-                  ? 'rgba(180,50,50,.82)' : 'rgba(28,27,45,.90)',
-                border: '1px solid rgba(255,255,255,.14)',
+                alignSelf: 'stretch', margin: '0 4px 6px', padding: '8px 10px',
+                borderRadius: 12, color: '#fff', fontSize: 12, lineHeight: 1.35,
+                background: (computerActivity?.phase === 'failed')
+                  ? 'rgba(220, 38, 38, 0.75)'
+                  : 'linear-gradient(135deg, rgba(30, 27, 55, 0.85) 0%, rgba(18, 16, 35, 0.92) 100%)',
+                backdropFilter: 'blur(16px)',
+                WebkitBackdropFilter: 'blur(16px)',
+                border: '1px solid rgba(140, 130, 255, 0.35)',
+                boxShadow: '0 4px 16px rgba(0, 0, 0, 0.35)',
                 WebkitAppRegion: 'no-drag', cursor: 'pointer',
               }}
             >
-              {computerActivity.summary}
-              {computerActivity.phase === 'blocked' ? ' — needs attention' : ''}
-              {computerActivity.phase === 'failed' ? ' — step failed' : ''}
-              {computerActivity.caption && computerActivity.caption !== computerActivity.summary ? (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
+                color: '#9B94FF', textTransform: 'uppercase', marginBottom: 4,
+              }}>
+                <span style={{
+                  width: 7, height: 7, borderRadius: '50%',
+                  background: (computerActivity?.phase === 'failed') ? '#EF4444' : '#10B981',
+                  boxShadow: (computerActivity?.phase === 'failed') ? '0 0 8px #EF4444' : '0 0 8px #10B981',
+                  display: 'inline-block',
+                }} />
+                <span>LIVE COMMENTARY</span>
+              </div>
+              <div style={{fontWeight: 500, color: '#F3F4F6'}}>
+                {indicatorStep || computerActivity?.summary}
+                {computerActivity?.phase === 'blocked' ? ': needs attention' : ''}
+                {computerActivity?.phase === 'failed' ? ': step failed' : ''}
+              </div>
+              {computerActivity?.caption && computerActivity.caption !== (indicatorStep || computerActivity.summary) ? (
                 <div style={{marginTop: 3, color: 'rgba(255,255,255,.72)', fontSize: 11}}>
                   {computerActivity.caption}
                 </div>
@@ -576,7 +627,7 @@ export default function VoiceOrbPage() {
           </div>
         </>
       )}
-      <InputBar computerActivity={computerActivity} />
+      <InputBar liveRun={liveRun} />
     </div>
   );
 }

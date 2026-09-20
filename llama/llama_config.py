@@ -24,7 +24,8 @@ from pathlib import Path
 
 import requests
 
-from llama.llama_installer import MODEL_PRESETS, LlamaInstaller, ModelPreset
+from llama.llama_installer import (
+    MODEL_PRESETS, QWEN35_RUNTIME_FAMILY, LlamaInstaller, ModelPreset)
 
 logger = logging.getLogger('NunbaLlamaConfig')
 
@@ -36,8 +37,7 @@ def _uses_qwen35_runtime(model_preset) -> bool:
     shipped Qwen3.5 presets, so keeping this as a family predicate prevents new
     catalog rows from silently losing their context and sampler configuration.
     """
-    name = model_preset.display_name
-    return 'Qwen3.5' in name or 'Qwen3.6' in name or 'Tiel-Coder' in name
+    return getattr(model_preset, 'runtime_family', None) == QWEN35_RUNTIME_FAMILY
 
 
 # Task #652 — thinking MUST be off for every local llama-server.

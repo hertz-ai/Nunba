@@ -740,7 +740,7 @@ function PanelContent() {
         >
           <Typography variant="caption" sx={{fontWeight: 700}}>
             {computerActivity.summary}
-            {computerActivity.phase === 'blocked' ? ' — needs your help' : ''}
+            {computerActivity.phase === 'blocked' ? ': needs your help' : ''}
           </Typography>
           {computerActivity.caption && computerActivity.caption !== computerActivity.summary && (
             <Typography variant="caption" sx={{display: 'block', mt: 0.25, color: 'text.secondary'}}>

@@ -143,6 +143,24 @@ def test_qwen36_and_tiel_coder_presets_have_their_real_projectors():
         'mmproj-BF16.gguf',
     )
 
+def test_qwen35_architecture_presets_declare_their_runtime_family():
+    """llama_config sizes context and sets sampler flags off the DECLARED
+    family, so every preset that ships the Qwen3.5-MoE architecture must
+    declare it, and the older Qwen3 rows must not."""
+    from llama.llama_installer import QWEN35_RUNTIME_FAMILY
+    from llama.llama_config import _uses_qwen35_runtime
+    by_name = {p.display_name: p for p in MODEL_PRESETS}
+    declared = {n for n, p in by_name.items() if p.runtime_family == QWEN35_RUNTIME_FAMILY}
+    assert declared == {
+        'Qwen3.5-4B VL (Recommended)', 'Qwen3.5-2B VL', 'Qwen3.5-0.8B VL (Caption)',
+        'Qwen3.5-9B UD-Q4_K_XL', 'Qwen3.5-27B UD-Q4_K_XL',
+        'Qwen3.5-35B-A3B MoE UD-Q4_K_XL', 'Qwen3.6-35B-A3B MoE UD-Q4_K_M',
+        'Tiel-Coder-35B-A3B MoE UD-Q4_K_XL',
+    }
+    for name, preset in by_name.items():
+        assert _uses_qwen35_runtime(preset) is (name in declared), name
+
+
 def test_at_least_1_text_only():
     text = [p for p in MODEL_PRESETS if not p.has_vision]
     assert len(text) >= 1

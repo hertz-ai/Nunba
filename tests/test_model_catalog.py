@@ -75,7 +75,7 @@ class TestPopulateTTSEngines:
 class TestPopulateLLMPresets:
     def _make_preset(self, name='Test Model', repo='user/repo', file='model.gguf',
                      size_mb=4000, has_vision=False, mmproj=None, mmproj_source=None,
-                     min_build=None):
+                     min_build=None, runtime_family=None):
         return SimpleNamespace(
             display_name=name,
             repo_id=repo,
@@ -86,7 +86,19 @@ class TestPopulateLLMPresets:
             mmproj_file=mmproj,
             mmproj_source_file=mmproj_source,
             min_build=min_build,
+            runtime_family=runtime_family,
         )
+
+    @staticmethod
+    def _installer_with(presets):
+        """The installer module the populator imports, with the family
+        constant the real module exports (a bare MagicMock attribute would
+        never compare equal to a preset's declared family)."""
+        from llama.llama_installer import QWEN35_RUNTIME_FAMILY
+        mock_installer = MagicMock()
+        mock_installer.MODEL_PRESETS = presets
+        mock_installer.QWEN35_RUNTIME_FAMILY = QWEN35_RUNTIME_FAMILY
+        return mock_installer
 
     def test_registers_presets_into_catalog(self):
         presets = [self._make_preset(name='Model A'), self._make_preset(name='Model B')]
@@ -214,13 +226,12 @@ class TestPopulateLLMPresets:
         assert entry.speed_score >= 0.3
 
     def test_qwen_model_gets_context_length(self):
-        presets = [self._make_preset(name='Qwen3.5 4B Q4')]
+        presets = [self._make_preset(name='Qwen3.5 4B Q4', runtime_family='qwen3.5')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
 
-        mock_installer = MagicMock()
-        mock_installer.MODEL_PRESETS = presets
-        with patch.dict('sys.modules', {'llama': MagicMock(), 'llama.llama_installer': mock_installer}):
+        with patch.dict('sys.modules', {'llama': MagicMock(),
+                                        'llama.llama_installer': self._installer_with(presets)}):
             populate_llm_presets(catalog)
 
         entry = catalog.register.call_args[0][0]
@@ -232,15 +243,27 @@ class TestPopulateLLMPresets:
         'Tiel-Coder-35B-A3B MoE UD-Q4_K_XL',
     ])
     def test_qwen35_family_model_gets_context_length(self, name):
-        presets = [self._make_preset(name=name)]
+        """The family is DECLARED on the preset; the name plays no part."""
+        presets = [self._make_preset(name=name, runtime_family='qwen3.5')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
-        mock_installer = MagicMock()
-        mock_installer.MODEL_PRESETS = presets
-        with patch.dict('sys.modules', {'llama': MagicMock(), 'llama.llama_installer': mock_installer}):
+        with patch.dict('sys.modules', {'llama': MagicMock(),
+                                        'llama.llama_installer': self._installer_with(presets)}):
             populate_llm_presets(catalog)
         entry = catalog.register.call_args[0][0]
         assert entry.capabilities.get('context_length') == 256000
+
+    def test_a_qwen_name_without_a_declared_family_gets_no_family_capabilities(self):
+        """A row that merely LOOKS like Qwen3.5 must not inherit its runtime
+        settings: the capability comes from the declaration, not the name."""
+        presets = [self._make_preset(name='Qwen3.5-lookalike Q4', runtime_family=None)]
+        catalog = MagicMock(spec=ModelCatalog)
+        catalog.get.return_value = None
+        with patch.dict('sys.modules', {'llama': MagicMock(),
+                                        'llama.llama_installer': self._installer_with(presets)}):
+            populate_llm_presets(catalog)
+        entry = catalog.register.call_args[0][0]
+        assert 'context_length' not in entry.capabilities
 
 
 # ===========================================================================

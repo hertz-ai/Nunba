@@ -46,6 +46,13 @@ logger = logging.getLogger('NunbaLlamaInstaller')
 # either way.
 MIN_LLAMACPP_BUILD_QWEN35 = 9180
 
+#: The llama.cpp runtime family a preset runs under.  Qwen3.6 and Tiel-Coder
+#: ship the Qwen3.5-MoE architecture, so they take the same context sizing,
+#: sampler flags and catalog capabilities as the Qwen3.5 presets.  Declared
+#: on the preset, never inferred from its display name: a name-based check
+#: silently drops a new row's runtime configuration.
+QWEN35_RUNTIME_FAMILY = 'qwen3.5'
+
 
 class ModelPreset:
     """Model configuration presets"""
@@ -53,7 +60,8 @@ class ModelPreset:
                  size_mb: int, description: str, has_vision: bool = False,
                  mmproj_file: str | None = None,
                  mmproj_source_file: str | None = None,
-                 min_build: int | None = None):
+                 min_build: int | None = None,
+                 runtime_family: str | None = None):
         self.display_name = display_name
         self.repo_id = repo_id
         self.file_name = file_name
@@ -63,6 +71,7 @@ class ModelPreset:
         self.mmproj_file = mmproj_file          # Local unique name (e.g. mmproj-Qwen3.5-4B-F16.gguf)
         self.mmproj_source_file = mmproj_source_file or mmproj_file  # HF name (usually mmproj-F16.gguf)
         self.min_build = min_build
+        self.runtime_family = runtime_family    # e.g. QWEN35_RUNTIME_FAMILY; None = generic llama.cpp
 
 
 # Model presets from HuggingFace
@@ -79,7 +88,8 @@ MODEL_PRESETS = [
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-4B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
-        min_build=MIN_LLAMACPP_BUILD_QWEN35
+        min_build=MIN_LLAMACPP_BUILD_QWEN35,
+        runtime_family=QWEN35_RUNTIME_FAMILY,
     ),
     ModelPreset(
         "Qwen3.5-2B VL",
@@ -90,7 +100,8 @@ MODEL_PRESETS = [
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-2B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
-        min_build=MIN_LLAMACPP_BUILD_QWEN35
+        min_build=MIN_LLAMACPP_BUILD_QWEN35,
+        runtime_family=QWEN35_RUNTIME_FAMILY,
     ),
     # Older Qwen3-VL models
     ModelPreset(
@@ -113,7 +124,8 @@ MODEL_PRESETS = [
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-0.8B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
-        min_build=MIN_LLAMACPP_BUILD_QWEN35
+        min_build=MIN_LLAMACPP_BUILD_QWEN35,
+        runtime_family=QWEN35_RUNTIME_FAMILY,
     ),
     ModelPreset(
         "Qwen3-2B Text-Only Q4_K_M",
@@ -135,7 +147,8 @@ MODEL_PRESETS = [
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-9B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
-        min_build=MIN_LLAMACPP_BUILD_QWEN35
+        min_build=MIN_LLAMACPP_BUILD_QWEN35,
+        runtime_family=QWEN35_RUNTIME_FAMILY,
     ),
     ModelPreset(
         "Qwen3.5-27B UD-Q4_K_XL",
@@ -146,7 +159,8 @@ MODEL_PRESETS = [
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-27B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
-        min_build=MIN_LLAMACPP_BUILD_QWEN35
+        min_build=MIN_LLAMACPP_BUILD_QWEN35,
+        runtime_family=QWEN35_RUNTIME_FAMILY,
     ),
     ModelPreset(
         "Qwen3.5-35B-A3B MoE UD-Q4_K_XL",
@@ -157,7 +171,8 @@ MODEL_PRESETS = [
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-35B-A3B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
-        min_build=MIN_LLAMACPP_BUILD_QWEN35
+        min_build=MIN_LLAMACPP_BUILD_QWEN35,
+        runtime_family=QWEN35_RUNTIME_FAMILY,
     ),
     ModelPreset(
         "Qwen3.6-35B-A3B MoE UD-Q4_K_M",
@@ -168,7 +183,8 @@ MODEL_PRESETS = [
         has_vision=True,
         mmproj_file="mmproj-Qwen3.6-35B-A3B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
-        min_build=MIN_LLAMACPP_BUILD_QWEN35
+        min_build=MIN_LLAMACPP_BUILD_QWEN35,
+        runtime_family=QWEN35_RUNTIME_FAMILY,
     ),
     ModelPreset(
         "Tiel-Coder-35B-A3B MoE UD-Q4_K_XL",
@@ -179,7 +195,8 @@ MODEL_PRESETS = [
         has_vision=True,
         mmproj_file="mmproj-Tiel-Coder-35B-A3B-BF16.gguf",
         mmproj_source_file="mmproj-BF16.gguf",
-        min_build=MIN_LLAMACPP_BUILD_QWEN35
+        min_build=MIN_LLAMACPP_BUILD_QWEN35,
+        runtime_family=QWEN35_RUNTIME_FAMILY,
     ),
 ]
 

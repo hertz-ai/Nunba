@@ -10,6 +10,7 @@ import {NUNBA_CAMERA_CONSENT} from '../../../../constants/events';
 import {useSocial} from '../../../../contexts/SocialContext';
 import useAuthSession from '../../../../hooks/useAuthSession';
 import useCameraFrameStream from '../../../../hooks/useCameraFrameStream';
+import useComputerActivity from '../../../../hooks/useComputerActivity';
 import {useTTS} from '../../../../hooks/useTTS';
 import realtimeService, {
   subscribeChatNew,
@@ -255,8 +256,11 @@ export default function NunbaChatProvider({children}) {
     }
   });
   const [messages, setMessages] = useState([]);
-  // Compact projection of the durable Task Ledger for every chat variant.
-  const [computerActivity, setComputerActivity] = useState(null);
+  // Compact projection of the durable Task Ledger for every chat variant,
+  // reduced by the ONE hook the companion orb also reads.  `liveRun` is set
+  // only while guidance can still reach the run; the event itself lingers a
+  // few seconds after the run closes so the outcome stays readable.
+  const {activity: computerActivity, liveRun} = useComputerActivity();
   const [isLoading, setIsLoading] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [currentAgent, setCurrentAgent] = useState(null); // { prompt_id, name }
@@ -713,14 +717,6 @@ export default function NunbaChatProvider({children}) {
     );
   }, []);
 
-  useEffect(() => {
-    const onComputerUse = (data) => {
-      if (data?.task_id && data?.summary) setComputerActivity(data);
-    };
-    const unsub = realtimeService.on('computer_use.update', onComputerUse);
-    return () => { if (unsub) unsub(); };
-  }, []);
-
   /** Parse @mentions from input text. Returns { cleanText, mentionedAgents[] } */
   const parseMentions = useCallback(
     (text) => {
@@ -768,11 +764,12 @@ export default function NunbaChatProvider({children}) {
       setIsLoading(true);
       setIsTyping(true);
 
-      // A live computer-use event names a database goal accepted by the
+      // A LIVE computer-use run names a database goal accepted by the
       // existing GroupChat injector. Send guidance there, as the operations
       // drawer and companion already do, so it reaches the running agent
-      // instead of starting a parallel general-chat turn.
-      const activeRun = computerActivity?.agent_id ? computerActivity : null;
+      // instead of starting a parallel general-chat turn.  Once the run has
+      // closed (useComputerActivity), messages are ordinary chat again.
+      const activeRun = liveRun;
       if (activeRun) {
         try {
           const res = await fetch(
@@ -783,8 +780,14 @@ export default function NunbaChatProvider({children}) {
               body: JSON.stringify({instruction: text.trim(), actor_id: 'nunba-chat'}),
             },
           );
-          const data = res.ok ? await res.json() : null;
-          if (!data?.success) throw new Error(data?.error || 'That HART is no longer running');
+          // A refused steer is a 400 WITH a JSON reason (no live GroupChat,
+          // agent not found); read it rather than guessing at the cause.
+          const data = await res.json().catch(() => null);
+          if (!data?.success) {
+            throw new Error(
+              data?.error || data?.data?.error || `Guidance not delivered (HTTP ${res.status})`,
+            );
+          }
           updateMsgById(msgId, {status: 'sent', error: null, retryCount: undefined});
           setMessages((prev) => [...prev, {
             role: 'assistant', text: 'Guidance sent to the active HART.',
@@ -925,7 +928,7 @@ export default function NunbaChatProvider({children}) {
       tts,
       updateMsgById,
       parseMentions,
-      computerActivity,
+      liveRun,
     ]
   );
 
