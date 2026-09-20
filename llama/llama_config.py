@@ -427,8 +427,74 @@ class LlamaConfig:
         self._save_config()
 
     def get_llm_mode(self) -> str:
-        """Return 'local', 'cloud', or 'hybrid'."""
+        """Return 'local', 'cloud', or 'hybrid'.
+
+        LEGACY, backend-only field. The user-facing canonical control is
+        ``intelligence_preference`` (resolve_intelligence_preference). Kept for
+        the wizard/orchestrator that still write it and for migration; new
+        callers should read the resolver, not this.
+        """
         return self.config.get('llm_mode', 'local')
+
+    # ── Canonical inference preference ────────────────────────────────────
+    # ONE field is the source of truth for "where inference runs" AND "does
+    # this node join the central hive relay": intelligence_preference, values
+    #   'local_only'    — never leave the box; do NOT join the relay
+    #   'auto'          — local-first, escalate to an expert when needed (default)
+    #   'hive_preferred'— prefer the hive/hosted expert
+    # It is the value the demopage toggle sets and HARTOS already consumes
+    # per-request as user_pref. The scattered llm_mode / compute_policy /
+    # AICapability.local_only encodings derive from THIS. The relay-join gate
+    # and per-request routing both read it, so the toggle and the gate cannot
+    # disagree again.
+    #
+    # SCOPE NOTE: this decides inference routing and hive-relay participation
+    # ONLY. It is NOT device admission — a phone's device link (HARTOS
+    # 4a06f45e4: kind 'device', per-user delivery, outside node authority) is
+    # admitted regardless of this value. 'local_only' must never be read as
+    # "refuse device links"; the phone dials the desktop's advertised url no
+    # matter where inference runs.
+    _INTELLIGENCE_PREFS = ('local_only', 'auto', 'hive_preferred')
+
+    def resolve_intelligence_preference(self) -> str:
+        """The node's effective inference preference. Grant-preserving precedence:
+
+        1. an explicit persisted ``intelligence_preference`` — the user's own choice
+        2. a DELIBERATE legacy ``llm_mode`` grant, migrated: 'cloud'->'hive_preferred',
+           'hybrid'->'auto' (the setup wizard writes these)
+        3. default 'auto'
+
+        llm_mode 'local'/unset is the auto-setup DEFAULT, not a deliberate privacy
+        grant, so it does NOT pin the node local — a user who wants local sets the
+        toggle, which persists intelligence_preference and lands in (1). This is why
+        a stale or test-written llm_mode='local' never silently keeps a node off the
+        hive.
+        """
+        pref = self.config.get('intelligence_preference')
+        if pref in self._INTELLIGENCE_PREFS:
+            return pref
+        legacy = self.config.get('llm_mode')
+        if legacy == 'cloud':
+            return 'hive_preferred'
+        if legacy == 'hybrid':
+            return 'auto'
+        return 'auto'
+
+    def set_intelligence_preference(self, pref: str) -> None:
+        """Persist the user's inference-preference choice (the demopage toggle).
+
+        Persisting it (not only localStorage) is what lets the boot-time relay
+        gate honor a 'local_only' choice; otherwise a privacy choice is silently
+        ignored at boot and the node joins the relay against the user's consent.
+        """
+        if pref not in self._INTELLIGENCE_PREFS:
+            raise ValueError(f"invalid intelligence_preference: {pref!r}")
+        self.config['intelligence_preference'] = pref
+        self._save_config()
+
+    def joins_hive_relay(self) -> bool:
+        """True unless the user chose local-only. The one relay-participation gate."""
+        return self.resolve_intelligence_preference() != 'local_only'
 
     def is_cloud_configured(self) -> bool:
         """Check if a cloud provider has been configured via the wizard."""

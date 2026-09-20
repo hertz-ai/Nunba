@@ -597,10 +597,16 @@ def _deferred_platform_init():
     _local_router = f'ws://localhost:{_wamp_port}/ws'
     _local_publish = f'http://localhost:{_flask_port}/publish'
 
+    # Read the CANONICAL inference preference, not the legacy llm_mode. The
+    # user's Local/Hybrid/Hive choice lives in intelligence_preference; llm_mode
+    # (default 'local', only the setup wizard writes it) is NOT what the toggle
+    # sets, so gating on it kept a Hybrid/Hive node off the relay. joins_hive_relay
+    # resolves intelligence_preference (migrating a deliberate legacy llm_mode
+    # grant) and is False only for an explicit local-only choice.
     _local_only = True
     try:
         from llama.llama_config import LlamaConfig
-        _local_only = (LlamaConfig().get_llm_mode() == 'local')
+        _local_only = not LlamaConfig().joins_hive_relay()
     except Exception:
         # Config unreadable at boot: stay on the safe, private local router.
         _local_only = True
@@ -1702,12 +1708,83 @@ def execute_command():
     with computer_control_lock:
         global llm_control_active, last_activity_time
 
+        data = request.json or {}
+        # The 'command' key in the JSON request should contain the command to be executed.
+        shell = data.get('shell', False)
+        command = data.get('command', "" if shell else [])
+        hide_window = data.get('hide_window', True) # To hide the cmd pop up
+
+        cmd_text = command if isinstance(command, str) else ' '.join(str(c) for c in command)
+
+        # This route runs `subprocess` itself (below), so it is a real OS
+        # executor and not a delegate: HARTOS's RemoteDesktopExecutor is one
+        # caller, but @require_local_or_token also admits any local process or
+        # token holder that never passed through HARTOS's own gate.  Both
+        # checks therefore have to hold HERE, and both must FAIL CLOSED.
+        #
+        # They call HARTOS's canonical policy rather than reimplementing it
+        # (integrations.vlm.safety, the same function the VLM adapter, local
+        # loop, local executor, Android dispatch and remote transport use).
+        # An unavailable policy is not an allow: the recovery plan's Phase 1
+        # says so outright ("An unavailable semantic agent must not become an
+        # implicit allow"), and `except ImportError: pass` said the opposite --
+        # one bundle that missed integrations/ and /execute would have run
+        # shutdown with no destructive check and no consent check at all.
+        # ModuleNotFoundError subclasses ImportError, so that was reachable
+        # from a single packaging miss.
+
+        # 1. Hard deny for destructive commands (power, reset, erase, format)
+        try:
+            from integrations.vlm.safety import destructive_computer_operation
+            op_refusal = destructive_computer_operation(cmd_text)
+        except Exception as policy_err:
+            # A pure-regex policy that cannot even be reached means this
+            # process cannot judge the command.  Refuse, loudly.
+            logging.error(
+                "/execute REFUSED: destructive-operation policy unavailable (%s)",
+                policy_err, exc_info=True)
+            return jsonify({
+                'status': 'blocked',
+                'exit_reason': 'safety_policy_unavailable',
+                'error': 'Destructive-operation policy unavailable; refusing to execute.'
+            }), 403
+        if op_refusal:
+            logging.warning(f"/execute refused destructive operation: {op_refusal}")
+            return jsonify({
+                'status': 'blocked',
+                'exit_reason': 'destructive_operation',
+                'error': op_refusal
+            }), 403
+
+        # 2. Owner consent check (computer_control)
+        try:
+            from integrations.vlm.safety import computer_control_block
+            owner_prompt_id = data.get('prompt_id') or os.environ.get('HEVOLVE_OWNER_USER_ID')
+            consent_refusal = computer_control_block(owner_prompt_id)
+            if consent_refusal:
+                logging.warning(f"/execute refused consent: {consent_refusal}")
+                return jsonify({
+                    'status': 'blocked',
+                    'exit_reason': 'consent_required',
+                    'error': consent_refusal
+                }), 403
+        except ImportError as import_err:
+            # Same reasoning: no consent module, no consent, no execution.
+            logging.error(
+                "/execute REFUSED: consent gate unavailable (%s)", import_err)
+            return jsonify({
+                'status': 'blocked',
+                'exit_reason': 'consent_gate_unavailable',
+                'error': 'Owner-consent gate unavailable; refusing to execute.'
+            }), 403
+
         # set control as active and update timestamp
         llm_control_active = True
         last_activity_time = time.time()
 
-        # Show the indicator window
-        toggle_indicator(True)
+        # Show the indicator window with command caption
+        cmd_summary = cmd_text[:60]
+        toggle_indicator(True, text=f"Running: {cmd_summary}")
 
         # Start a timeout thread to automatically reset status after inactivity
         def reset_after_timeout():
@@ -1719,12 +1796,6 @@ def execute_command():
 
         timeout_thread = threading.Thread(target=reset_after_timeout, daemon=True)
         timeout_thread.start()
-
-        data = request.json
-        # The 'command' key in the JSON request should contain the command to be executed.
-        shell = data.get('shell', False)
-        command = data.get('command', "" if shell else [])
-        hide_window = data.get('hide_window', True) # To hide the cmd pop up
 
         if isinstance(command, str) and not shell:
             command = shlex.split(command)
@@ -2442,6 +2513,51 @@ def _open_lc_subprocess_log():
     return open(os.path.join(log_dir, 'langchain_subprocess.log'),
                 'a', encoding='utf-8', errors='replace', buffering=1)
 
+
+@app.route('/api/admin/models/storage-path', methods=["GET"])
+def admin_models_storage_path_get():
+    """Get current model storage directory and volume free/total disk space."""
+    try:
+        import shutil
+        from pathlib import Path
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig()
+        models_dir = Path(cfg.get_models_dir())
+        models_dir.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(models_dir)
+        is_default = hasattr(cfg.installer, 'default_models_dir') and (
+            str(models_dir) == str(cfg.installer.default_models_dir)
+        )
+        return jsonify({
+            "models_dir": str(models_dir),
+            "free_gb": round(usage.free / (1024 ** 3), 2),
+            "total_gb": round(usage.total / (1024 ** 3), 2),
+            "is_default": is_default,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/admin/models/storage-path', methods=["POST"])
+def admin_models_storage_path_set():
+    r"""Set and validate a new model storage directory (e.g. D:\AI_Models)."""
+    if not _is_local_request():
+        return jsonify({"error": "local only"}), 403
+    try:
+        data = request.get_json(silent=True) or {}
+        models_dir = (data.get('models_dir') or '').strip()
+        if not models_dir:
+            return jsonify({"error": "models_dir is required"}), 400
+        from llama.llama_config import LlamaConfig
+        cfg = LlamaConfig()
+        res = cfg.set_models_dir(models_dir)
+        return jsonify({"success": True, **res})
+    except PermissionError as pe:
+        return jsonify({"error": str(pe)}), 403
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route('/api/admin/models/<model_id>/download', methods=["POST"])
 def admin_models_download(model_id):
     """Download a model in background. Poll /download/status for progress."""
@@ -2451,8 +2567,17 @@ def admin_models_download(model_id):
         import threading
         import time
 
+        from models.catalog import get_catalog
         from models.orchestrator import get_orchestrator
         orch = get_orchestrator()
+
+        data = request.get_json(silent=True) or {}
+        download_dir = (data.get('download_dir') or request.args.get('download_dir') or '').strip()
+        if download_dir:
+            entry = get_catalog().get(model_id)
+            if entry:
+                entry.files['local_dir'] = download_dir
+                get_catalog().register(entry)
 
         _download_progress[model_id] = {
             'status': 'downloading', 'percent': 0,
@@ -2738,6 +2863,148 @@ _CATEGORY_CAPABILITIES: dict[str, dict[str, bool]] = {
 }
 
 
+def _bounded_hub_call(fn, *args, timeout: float = 5.0, **kwargs):
+    """Run one blocking Hub SDK call without blocking the request past timeout.
+
+    ``ThreadPoolExecutor`` as a context manager waits for its worker during
+    ``__exit__``.  Calling ``future.result(timeout=5)`` inside that context
+    therefore did not bound the request at all when DNS/TCP was stuck.  A
+    daemon worker plus a one-item result queue gives the Admin endpoint the
+    timeout it promises without adding another download path.
+    """
+    import queue
+    import threading
+
+    result = queue.Queue(maxsize=1)
+
+    def _run():
+        try:
+            result.put((True, fn(*args, **kwargs)))
+        except Exception as exc:
+            result.put((False, exc))
+
+    threading.Thread(target=_run, daemon=True,
+                     name='nunba-hub-metadata').start()
+    try:
+        ok, value = result.get(timeout=timeout)
+    except queue.Empty as exc:
+        raise TimeoutError(f'Hub call timed out after {timeout:g}s') from exc
+    if not ok:
+        raise value
+    return value
+
+
+def _gguf_install_files(repo_files, requested_file: str = '',
+                        file_sizes: dict | None = None,
+                        compute_state: dict | None = None,
+                        target_dir: str | None = None) -> dict:
+    """Build the llama.cpp file mapping from a verified Hub manifest.
+
+    The Hub installer already obtains this manifest before it registers a
+    catalog row.  Keeping the GGUF selection here means a model discovered
+    through the Admin UI has exactly the same ``files`` contract as a manually
+    registered model: a weight filename and, when published, its projector.
+    ``requested_file`` is deliberately constrained to the manifest; it is an
+    override for an operator who knows which quant they need, never an
+    unchecked URL or filename.
+    """
+    ggufs = sorted(
+        f for f in repo_files
+        if f.lower().endswith('.gguf')
+    )
+    if not ggufs:
+        return {}
+
+    projectors = [
+        f for f in ggufs
+        if 'mmproj' in f.lower() or 'projector' in f.lower()
+    ]
+    weights = [f for f in ggufs if f not in projectors]
+    if not weights:
+        return {}
+    file_sizes = file_sizes or {}
+    from models.catalog import llama_gguf_compute_requirements
+    # Select the projector once and use that same file for fit accounting and
+    # the loader mapping.  Summing every published projector variant can
+    # falsely reject a model even though only one projector is downloaded.
+    projector = next(
+        (f for f in projectors if 'bf16' in f.lower()),
+        projectors[0] if projectors else None,
+    )
+
+    def _fits_compute(path: str) -> bool:
+        """Use the orchestrator's existing compute snapshot and Nunba's
+        existing storage directory.  Unknown Hub metadata never invents a
+        claim: the loader will still perform its canonical final fit check."""
+        size = float(file_sizes.get(path, 0) or 0)
+        if size <= 0 or not compute_state:
+            return True
+        size_gb = size / (1024 ** 3)
+        projector_bytes = float(file_sizes.get(projector, 0) or 0)
+        required_disk = size + projector_bytes
+        try:
+            from pathlib import Path
+            from llama.llama_installer import LlamaInstaller
+            import shutil
+            target_storage = Path(target_dir).expanduser().resolve() if target_dir else LlamaInstaller().models_dir
+            if shutil.disk_usage(target_storage).free < required_disk:
+                return False
+        except Exception as exc:
+            raise ValueError(
+                'could not inspect the configured Nunba model-storage volume'
+            ) from exc
+        vram, ram = llama_gguf_compute_requirements(size_gb)
+        ram_ok = float(compute_state.get('ram_free_gb', 0) or 0) >= ram
+        free_vram = float(compute_state.get('vram_free_gb', 0) or 0)
+        if compute_state.get('gpu_available') and free_vram >= vram:
+            return True
+        # GGUF is CPU-capable.  A GPU improves placement and throughput, but a
+        # machine with sufficient system RAM must not be rejected merely
+        # because CUDA/Metal is unavailable.
+        return ram_ok
+
+    if requested_file:
+        if requested_file not in weights:
+            raise ValueError(
+                'gguf_file must name a non-projector GGUF published by the repo'
+            )
+        if not _fits_compute(requested_file):
+            raise ValueError(
+                'the selected GGUF does not fit the available VRAM, RAM, or '
+                'configured Nunba model-storage volume'
+            )
+        model = requested_file
+    else:
+        # Prefer the highest-quality practical llama.cpp quant that fits the
+        # canonical compute/storage snapshot.  Bonsai 2 falls through to its
+        # ternary PQ2_0 when larger conventional quants are absent or do not
+        # fit.  An operator can still select a manifest member explicitly.
+        preference = ('q8_0', 'q6_k', 'q5_k_m', 'q5_k_s', 'q5_0',
+                      'q4_k_m', 'q4_k_s', 'q4_0', 'pq2_0', 'q3_k_m',
+                      'q3_k_s', 'q2_k', 'q2_0', 'ptq1_0')
+        lowered = {f: f.lower() for f in weights}
+        candidates = [
+            f for marker in preference for f in weights if marker in lowered[f]
+        ] + [f for f in weights if f not in {
+            f for marker in preference for f in weights if marker in lowered[f]
+        }]
+        model = next((f for f in candidates if _fits_compute(f)), None)
+        if model is None:
+            raise ValueError(
+                'no published GGUF fits the available VRAM, RAM, and '
+                'configured Nunba model-storage volume'
+            )
+
+    files = {'model': model}
+    if projector:
+        # The highest-fidelity projector is still far smaller than the model
+        # and is the safe default; a model without a projector remains a text
+        # model rather than being falsely advertised as vision-capable.
+        files['mmproj'] = projector
+        files['mmproj_source'] = projector
+    return files
+
+
 def _normalize_hf_id(raw: str) -> str:
     """NFKC-normalize + reject non-ASCII hf_ids to defeat Unicode
     homoglyph attacks.  `aí4bharat/indic-parler-tts` (Latin Small I
@@ -2944,31 +3211,47 @@ def admin_models_hub_install():
         # timeout in huggingface_hub (defaults to ~10s connect + TCP
         # stall up to 75s).  Running it directly on the Flask thread
         # can hang an admin worker for up to a minute on a network
-        # blip.  Wrap in a 5s future.result(timeout=5) and fail the
-        # admin request with 504 instead of stalling.
+        # blip.  Use the shared bounded Hub-call wrapper and fail the admin
+        # request with 504 instead of stalling.
         try:
-            from concurrent.futures import ThreadPoolExecutor
-            from concurrent.futures import TimeoutError as _FT
-
             from huggingface_hub import list_repo_files
-            with ThreadPoolExecutor(max_workers=1) as _ex:
-                _fut = _ex.submit(list_repo_files, hf_id)
+            try:
+                _files = set(_bounded_hub_call(
+                    list_repo_files, hf_id, timeout=5.0))
+            except TimeoutError:
+                return jsonify({
+                    "error": "hf_timeout",
+                    "message": "HuggingFace Hub file listing timed out "
+                               "after 5s — retry when network is stable",
+                }), 504
+            _file_sizes = {}
+            if any(f.lower().endswith('.gguf') for f in _files):
+                # The file tree has the byte counts that let the existing
+                # orchestrator snapshot reject a quant that cannot fit before
+                # download.  Keep this bounded just like list_repo_files.
+                from huggingface_hub import HfApi
                 try:
-                    _files = set(_fut.result(timeout=5.0))
-                except _FT:
+                    _info = _bounded_hub_call(
+                        HfApi().model_info, hf_id, files_metadata=True,
+                        timeout=5.0)
+                except TimeoutError:
                     return jsonify({
-                        "error": "hf_timeout",
-                        "message": "HuggingFace Hub file listing timed out "
-                                   "after 5s — retry when network is stable",
+                        'error': 'hf_timeout',
+                        'message': 'HuggingFace file metadata timed out after 5s',
                     }), 504
+                _file_sizes = {
+                    getattr(f, 'rfilename', ''): int(getattr(f, 'size', 0) or 0)
+                    for f in (getattr(_info, 'siblings', None) or [])
+                }
             _has_safetensors = any(
                 f.endswith('.safetensors') for f in _files
             )
+            _has_gguf = any(f.lower().endswith('.gguf') for f in _files)
             _risky = {
                 f for f in _files
                 if f.endswith(('.bin', '.pt', '.pkl', '.pickle', '.ckpt'))
             }
-            if _risky and not _has_safetensors:
+            if _risky and not (_has_safetensors or _has_gguf):
                 return jsonify({
                     "error": "unsafe_weights_format",
                     "message": (
@@ -2987,6 +3270,36 @@ def admin_models_hub_install():
                 "message": f"could not verify repo contents: {_fe}",
             }), 502
 
+        # A GGUF repository needs a concrete model and (when present) a
+        # projector filename.  The manifest above is the authoritative source
+        # for both, so this follows the same files contract as the manual
+        # Admin form instead of registering an unloadable generic Hub row.
+        custom_dl_dir = (data.get('download_dir') or '').strip() or None
+        try:
+            _compute_state = get_orchestrator()._get_compute_state()
+            _llama_files = _gguf_install_files(
+                _files, (data.get('gguf_file') or '').strip(),
+                _file_sizes, _compute_state, target_dir=custom_dl_dir)
+        except ValueError as _file_error:
+            return jsonify({'error': str(_file_error)}), 400
+        _is_llama_gguf = bool(_llama_files)
+        _model_gb = round(
+            float(_file_sizes.get(_llama_files.get('model', ''), 0) or 0)
+            / (1024 ** 3), 2) if _is_llama_gguf else 0.0
+        if _is_llama_gguf and _model_gb <= 0:
+            return jsonify({
+                'error': 'hf_metadata_missing',
+                'message': 'HuggingFace did not provide the selected GGUF size; '
+                           'Nunba cannot verify VRAM, RAM, and storage fit',
+            }), 502
+        from models.catalog import llama_gguf_compute_requirements
+        _vram_gb, _ram_gb = llama_gguf_compute_requirements(_model_gb)
+        _disk_gb = round(sum(
+            float(_file_sizes.get(f, 0) or 0)
+            for f in set(_llama_files.values())
+            if f in _file_sizes
+        ) / (1024 ** 3), 2) if _is_llama_gguf else 0.0
+
         # Category → model_type mapping for catalog registration
         type_map = {
             'llm': 'llm', 'draft': 'llm',
@@ -2997,7 +3310,11 @@ def admin_models_hub_install():
             'music': 'audio-gen', 'image-gen': 'image-gen',
             'video-gen': 'video-gen', 'translate': 'llm',
         }
-        model_type = type_map.get(category, 'llm')
+        model_type = 'llm' if _is_llama_gguf else type_map.get(category, 'llm')
+
+        # Synthesize catalog entry.  Use a safe id: strip org prefix + sanitize.
+        safe_id = f"{category}-" + hf_id.split('/', 1)[1].lower().replace('_', '-').replace('.', '-')
+        catalog = get_catalog()
 
         # Synthesize catalog entry.  Use a safe id: strip org prefix + sanitize.
         safe_id = f"{category}-" + hf_id.split('/', 1)[1].lower().replace('_', '-').replace('.', '-')
@@ -3011,6 +3328,12 @@ def admin_models_hub_install():
         # would register with `capabilities={}` and be invisible to
         # every capability-specific task.
         _seeded_caps = dict(_CATEGORY_CAPABILITIES.get(category, {}))
+        if _is_llama_gguf:
+            _seeded_caps.update({
+                'chat': True,
+                'has_vision': 'mmproj' in _llama_files,
+                'vision': 'mmproj' in _llama_files,
+            })
         # Source-tag marks the entry as "not yet runtime-proven"; the
         # background validate probe will flip `install_validated` to
         # True once `loader.load()` succeeds.  Until then, the
@@ -3021,15 +3344,45 @@ def admin_models_hub_install():
             'id': safe_id,
             'name': data.get('name') or hf_id.rsplit('/', 1)[-1],
             'model_type': model_type,
-            'provider': 'huggingface',
-            'hf_repo': hf_id,
+            # ModelEntry's canonical fields.  The old provider/hf_repo keys
+            # are ignored by ModelEntry.from_dict(), which produced a row that
+            # looked installed but had no repository or loader files.
+            'repo_id': hf_id,
+            'backend': 'llama.cpp' if _is_llama_gguf else 'torch',
+            'files': _llama_files,
+            'disk_gb': _disk_gb,
             'enabled': True,
             'purposes': [p for p in (data.get('purposes') or []) if p in catalog.ALL_PURPOSES],
-            'lang_priority': data.get('languages') or [],
+            'languages': data.get('languages') or [],
+            'language_priority': {
+                language: index
+                for index, language in enumerate(data.get('languages') or [])
+            },
             'capabilities': _seeded_caps,
             'source': 'hub-install',
         }
+        if custom_dl_dir:
+            _llama_files['local_dir'] = custom_dl_dir
+            entry_dict['download_dir'] = custom_dl_dir
+        if _is_llama_gguf:
+            entry_dict.update({
+                'vram_gb': _vram_gb,
+                'ram_gb': _ram_gb,
+                'supports_gpu': True,
+                'supports_cpu': True,
+                # LlamaLoader currently maps cpu_offload to CPU mode; do not
+                # claim hybrid placement until that canonical loader supports
+                # and validates it.
+                'supports_cpu_offload': False,
+                'cpu_offload_method': 'none',
+            })
         entry = ModelEntry.from_dict(entry_dict)
+        problems = entry.validate()
+        if problems:
+            return jsonify({
+                'error': 'invalid model entry',
+                'problems': problems,
+            }), 400
         catalog.register(entry)
 
         # Trigger background download so user sees progress in UI.
