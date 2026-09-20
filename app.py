@@ -8008,6 +8008,20 @@ def main():
             _comp_x, _comp_y = _companion_origin(_screen_w, _screen_h,
                                                  _comp_w, _comp_h)
 
+            # What the PAGE last asked for.  The page owns presence
+            # (on_companion_presence below); the foreground monitor owns
+            # whether that presence is allowed on screen right now.  Two
+            # different questions, so the answer to the first is kept here
+            # rather than inferred from whether the window happens to be
+            # visible -- which is what the monitor is busy changing.
+            _companion_desired = {'state': 'hidden', 'shape': None}
+            # The foreground monitor's lifetime is this window's lifetime.
+            # app.py has no process-wide shutdown signal to hang it on, and
+            # inventing one here would be a second answer to a question
+            # nothing else in this file asks; the window's own closed event
+            # is the real end of the thing being watched.
+            _companion_stop = threading.Event()
+
             class CompanionAPI:
                 """Python bridge for the companion window JS.
 
@@ -8147,7 +8161,26 @@ def main():
                     themselves; the region and topmost calls are Win32.
                     """
                     try:
+                        _companion_desired['state'] = state
+                        _companion_desired['shape'] = shape
                         if state == 'hidden':
+                            _companion_window.hide()
+                            return
+                        from desktop.platform_utils import (
+                            is_main_window_foreground,
+                            main_window_state_readable,
+                        )
+                        # Fail closed.  This surface is for when the owner is
+                        # in ANOTHER application; over Nunba's own window it
+                        # is a second copy of the same conversation.  And
+                        # "could not read the main window" must suppress too:
+                        # the bool alone returns False for unreadable, which
+                        # means "not in front", which SHOWS -- and during
+                        # startup the two windows race, so unreadable is a
+                        # state that really happens (see
+                        # tests/test_companion_presence_fails_closed.py).
+                        if (is_main_window_foreground(_window, _companion_window)
+                                or not main_window_state_readable(_window)):
                             _companion_window.hide()
                             return
                         _comp_hwnd = _resolve_hwnd(_companion_window)
@@ -8234,14 +8267,78 @@ def main():
                 _comp_hwnd = _resolve_hwnd(_companion_window)
                 if _comp_hwnd:
                     from desktop.platform_utils import (
+                        enable_window_acrylic,
+                        set_window_floating_presence,
                         set_window_size,
                         set_window_tool_window,
                     )
                     set_window_tool_window(_comp_hwnd, True)
+                    # Per-pixel alpha + never take focus.  Measured
+                    # 2026-09-20 on the running install, this window carried
+                    # exstyle 0x10088: no WS_EX_LAYERED (so the card rendered
+                    # opaque however translucent the CSS was) and no
+                    # WS_EX_NOACTIVATE (so showing it pulled focus out of
+                    # whatever the owner was typing in).
+                    set_window_floating_presence(_comp_hwnd, True)
+                    # Best-effort: the DWM acrylic material behind that
+                    # alpha, so it reads as glass instead of a hole.  False
+                    # on pre-22H2 Windows or with transparency effects off,
+                    # and the window simply stays as it was.
+                    if not enable_window_acrylic(_comp_hwnd):
+                        logger.debug("[COMPANION] acrylic backdrop refused — "
+                                     "window stays plain")
                     set_window_size(_comp_hwnd, _comp_w, _comp_h)
                 _companion_raise()
             if _companion_window:
                 _companion_window.events.loaded += _on_companion_loaded
+
+            def _companion_fg_monitor():
+                """Follow the owner's foreground window, not just page events.
+
+                on_companion_presence only fires when the PAGE changes its
+                mind.  The owner alt-tabbing to Nunba changes nothing on the
+                page, so without this tick the companion would sit on top of
+                the main window until the agent next spoke.  0.35s is under
+                the ~0.4s an alt-tab takes to settle, so the companion is
+                gone by the time the owner is looking at Nunba.
+
+                Same fail-closed pair as the presence handler: in front OR
+                unreadable means hide.  The gate is written out here rather
+                than shared with the handler because the two answer at
+                different moments -- the handler on a page event, this on a
+                clock -- and a single shared applier was tried and drifts the
+                page's desired state against the clock's view of it.
+                """
+                from desktop.platform_utils import (
+                    is_main_window_foreground,
+                    main_window_state_readable,
+                )
+                _last = None
+                while not _companion_stop.is_set():
+                    try:
+                        if _companion_desired['state'] != 'hidden':
+                            suppress = (
+                                is_main_window_foreground(_window,
+                                                          _companion_window)
+                                or not main_window_state_readable(_window))
+                            if suppress != _last:
+                                if suppress:
+                                    _companion_window.hide()
+                                else:
+                                    _companion_window.show()
+                                    _companion_raise()
+                                _last = suppress
+                        else:
+                            _last = None
+                    except Exception as _fg_err:
+                        logger.debug("[COMPANION] fg monitor tick failed: %s",
+                                     _fg_err)
+                    _companion_stop.wait(0.35)
+
+            if _companion_window:
+                _companion_window.events.closed += _companion_stop.set
+                threading.Thread(target=_companion_fg_monitor, daemon=True,
+                                 name='companion_fg_monitor').start()
 
         except Exception as _comp_err:
             logger.warning("[COMPANION] Companion window not created: %s", _comp_err)

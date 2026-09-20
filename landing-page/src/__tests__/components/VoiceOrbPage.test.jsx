@@ -317,3 +317,53 @@ test('clicking the orb calls the companion bridge (bring app forward)', () => {
     delete window.pywebview;
   }
 });
+
+test('renders live commentary when indicator step updates arrive', () => {
+  render(<VoiceOrbPage />);
+  act(() => {
+    if (window.__onIndicatorStep) {
+      window.__onIndicatorStep('Clicking the checkout button');
+    }
+  });
+  expect(screen.getByText('LIVE COMMENTARY')).toBeInTheDocument();
+  expect(screen.getByText('Clicking the checkout button')).toBeInTheDocument();
+  expect(screen.getByTestId('voice-orb').dataset.active).toBe('1');
+});
+
+test('quick prompt attaches user_priority and priority: high', async () => {
+  const prompt = jest.fn(() => Promise.resolve('Got guidance.'));
+  window.pywebview = { api: { on_companion_prompt: prompt } };
+  try {
+    render(<VoiceOrbPage />);
+    fireEvent.change(screen.getByLabelText('Quick prompt'), { target: { value: 'Prioritize this order' } });
+    fireEvent.submit(screen.getByLabelText('Quick prompt').closest('form'));
+    await waitFor(() => expect(prompt).toHaveBeenCalledWith(
+      'Prioritize this order',
+      expect.objectContaining({ priority: 'high', user_priority: true })
+    ));
+  } finally {
+    delete window.pywebview;
+  }
+});
+
+test('glass shell is scoped to hosted companion only (no regression for embedded/unhosted)', () => {
+  // 1. Not hosted (e.g. embedded in browser/page): no glass shell card styling
+  const { unmount } = render(<VoiceOrbPage />);
+  const unhostedRoot = screen.getByTestId('voice-orb');
+  expect(unhostedRoot.style.boxShadow).toBe('none');
+  expect(unhostedRoot.style.border).toBeFalsy();
+  expect(unhostedRoot.style.borderRadius).toBe('0');
+  unmount();
+
+  // 2. Hosted in standalone desktop companion: renders the frosted glass shell
+  window.pywebview = { api: { on_companion_presence: jest.fn() } };
+  try {
+    render(<VoiceOrbPage />);
+    const hostedRoot = screen.getByTestId('voice-orb');
+    expect(hostedRoot.style.borderRadius).toBe('24px');
+    expect(hostedRoot.style.border).toBeTruthy();
+    expect(hostedRoot.style.boxShadow).toBeTruthy();
+  } finally {
+    delete window.pywebview;
+  }
+});

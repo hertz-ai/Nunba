@@ -174,6 +174,28 @@ def _hwnd(window_handle):
     return ctypes.c_void_p(int(window_handle))
 
 
+def _resolve_handle(window_handle):
+    """An HWND out of whatever the caller has: an int, or a pywebview Window.
+
+    The one resolver for the companion-presence pair below
+    (is_main_window_foreground and main_window_state_readable).  They have to
+    agree on which window they are talking about or the gate and its
+    readability check drift, which is the whole defect the pair exists to
+    close -- so there is one of these, not one each.
+
+    0 means "no window": either nothing was passed, or pywebview has not
+    attached the WinForms form yet and resolve_hwnd said so.
+    """
+    if window_handle is None:
+        return 0
+    if isinstance(window_handle, (int, float)):
+        return int(window_handle)
+    if hasattr(window_handle, 'native'):
+        from desktop.win32_chrome import resolve_hwnd
+        return resolve_hwnd(window_handle) or 0
+    return 0
+
+
 def set_window_always_on_top(window_handle, on_top=True):
     """Set a window to be always on top"""
     if IS_WINDOWS:
@@ -216,6 +238,85 @@ def set_window_tool_window(window_handle, tool=True):
             user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
         except Exception as e:
             logger.error(f"Error setting tool-window style: {e}")
+
+
+def set_window_floating_presence(window_handle, on=True):
+    """Per-pixel alpha, and never steal the owner's focus.
+
+    Two extended styles a floating presence needs and the companion did not
+    have.  Measured live 2026-09-20 on the running install: the companion
+    carried exstyle 0x10088 (TOPMOST|TOOLWINDOW|CONTROLPARENT) while its
+    sibling the AI Control Tab carried 0x80088 -- the same minus/plus one bit,
+    WS_EX_LAYERED.
+
+    WS_EX_LAYERED is what lets the DWM composite per-pixel alpha out of the
+    page.  Without it the window's backdrop is opaque however translucent the
+    CSS is, which is why the card read as plain white instead of glass.
+
+    WS_EX_NOACTIVATE stops the window taking focus when it is shown.  This
+    surface exists to appear while the owner is working in ANOTHER
+    application; pulling their keystrokes out of that application is the one
+    thing it must never do.
+
+    Like set_window_tool_window above, this takes effect on the next show --
+    call it while the window is hidden.
+    """
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_NOACTIVATE = 0x08000000
+
+            user32 = ctypes.windll.user32
+            hwnd = _hwnd(window_handle)
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if on:
+                style |= (WS_EX_LAYERED | WS_EX_NOACTIVATE)
+            else:
+                style &= ~(WS_EX_LAYERED | WS_EX_NOACTIVATE)
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        except Exception as e:
+            logger.error(f"Error setting floating-presence style: {e}")
+
+
+def main_window_state_readable(main_window_handle):
+    """True iff the main window's foreground state could actually be READ.
+
+    ``is_main_window_foreground`` answers a yes/no question with a bool, so it
+    has nowhere to put "I could not tell".  It returns False for that case --
+    and False means "the main window is NOT in front", which is the PERMISSIVE
+    answer for the floating companion: it shows.
+
+    That is not hypothetical.  ``win32_chrome.resolve_hwnd`` returns 0 for a
+    form that is not up yet (its own docstring says so), and pywebview only
+    sets ``Window.native`` once the WinForms form exists.  During startup the
+    two windows come up concurrently, so there is a real window in which the
+    main window object exists, its HWND does not, the gate reads False, and
+    the companion appears beside a foreground Nunba -- exactly the state the
+    owner reported 2026-09-20.
+
+    Callers that must fail CLOSED (show nothing unless we can prove Nunba is
+    backgrounded) pair this with is_main_window_foreground:
+
+        if is_main_window_foreground(w, c) or not main_window_state_readable(w):
+            hide()
+
+    Same resolution order as the gate itself, so the two cannot drift.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+
+        m_hwnd = _resolve_handle(main_window_handle)
+        if not m_hwnd:
+            return False
+        return bool(user32.IsWindow(_hwnd(m_hwnd)))
+    except Exception as e:
+        logger.debug('main_window_state_readable failed: %s', e)
+        return False
 
 
 def _logical_to_physical(width, height, scale):
@@ -284,6 +385,145 @@ def _shape_box(shape, client_w, client_h):
     ew = min(right - left, round(2 * r * sx))
     eh = min(bottom - top, round(2 * r * sy))
     return (left, top, right, bottom, ew, eh)
+
+
+def is_main_window_foreground(main_window_handle, companion_window_handle=None):
+    """True when the Nunba main window is the one the owner is looking at.
+
+    The floating companion exists to be present while the owner is in ANOTHER
+    application.  When Nunba's own window is in front there is already a chat
+    on screen, so a second copy of the same conversation floating over it is
+    noise -- the companion hides.
+
+    The companion's own handle is passed so it can be told apart: clicking the
+    companion makes IT the foreground window, and that must not read as "the
+    main window is in front" and hide the thing the owner just clicked.
+
+    Returns a bool, so "I could not read the state" collapses into False --
+    which here means "not in front", i.e. SHOW.  That is the permissive
+    answer.  Callers that must fail closed pair this with
+    ``main_window_state_readable`` above; the two resolve a handle the same
+    way so they cannot disagree about which window they are talking about.
+    """
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            GA_ROOT = 2
+            GA_ROOTOWNER = 3
+
+            user32 = ctypes.windll.user32
+            fg = user32.GetForegroundWindow()
+            if not fg:
+                return False
+
+            def _root(h):
+                hwnd = _hwnd(h)
+                owner = user32.GetAncestor(hwnd, GA_ROOTOWNER)
+                return owner or user32.GetAncestor(hwnd, GA_ROOT) or int(h)
+
+            fg_root = _root(fg)
+
+            if companion_window_handle:
+                try:
+                    c_hwnd = _resolve_handle(companion_window_handle)
+                    if c_hwnd and _root(c_hwnd) == fg_root:
+                        return False
+                except Exception:
+                    pass
+
+            m_hwnd = _resolve_handle(main_window_handle)
+            if not m_hwnd:
+                return False
+            return _root(m_hwnd) == fg_root
+        except Exception as e:
+            logger.debug('is_main_window_foreground failed on Windows: %s', e)
+            return False
+
+    if sys.platform == 'darwin':
+        try:
+            from AppKit import NSApplication, NSWorkspace
+            front = NSWorkspace.sharedWorkspace().frontmostApplication()
+            if front is None:
+                return False
+            own = NSApplication.sharedApplication()
+            # Per-window resolution needs the Accessibility permission, which
+            # this app does not ask for; app-level frontmost is what we have.
+            return bool(front.processIdentifier() == os.getpid()
+                        and own.isActive())
+        except Exception as e:
+            logger.debug('is_main_window_foreground failed on macOS: %s', e)
+            return False
+
+    try:
+        import subprocess
+        out = subprocess.run(['xdotool', 'getactivewindow'],
+                             capture_output=True, text=True, timeout=2)
+        active = (out.stdout or '').strip()
+        if not active:
+            return False
+        if companion_window_handle and active == str(companion_window_handle):
+            return False
+        return active == str(main_window_handle)
+    except Exception as e:
+        logger.debug('is_main_window_foreground failed on Linux: %s', e)
+        return False
+
+
+def enable_window_acrylic(window_handle):
+    """Ask the DWM for a translucent, blurred backdrop behind the window.
+
+    WS_EX_LAYERED (set_window_floating_presence above) lets the compositor
+    honour per-pixel alpha out of the page; this asks it to put something
+    worth seeing THROUGH that alpha -- the acrylic material, so the card reads
+    as glass over the owner's work rather than a hole.
+
+    Two DWM calls: the system backdrop type (DWMSBT_TRANSIENTWINDOW, the
+    material the OS uses for its own flyouts) and the frame extended over the
+    whole client area, which is what gives the backdrop somewhere to render.
+
+    Best-effort by design.  DWMWA_SYSTEMBACKDROP_TYPE landed in Windows 11
+    22H2; on anything older, or with transparency effects turned off in
+    Settings, the call fails and the window simply stays as it was.  Returns
+    True only when the backdrop was actually accepted, so a caller can tell
+    "glass" from "plain" without guessing at the Windows build.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+        DWMWA_SYSTEMBACKDROP_TYPE = 38
+        DWMSBT_TRANSIENTWINDOW = 3
+
+        class MARGINS(ctypes.Structure):
+            _fields_ = [('cxLeftWidth', ctypes.c_int),
+                        ('cxRightWidth', ctypes.c_int),
+                        ('cyTopHeight', ctypes.c_int),
+                        ('cyBottomHeight', ctypes.c_int)]
+
+        dwm = ctypes.windll.dwmapi
+        hwnd = _hwnd(window_handle)
+
+        dark = wintypes.DWORD(1)
+        dwm.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                  ctypes.byref(dark), ctypes.sizeof(dark))
+
+        backdrop = wintypes.DWORD(DWMSBT_TRANSIENTWINDOW)
+        hr = dwm.DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE,
+                                       ctypes.byref(backdrop),
+                                       ctypes.sizeof(backdrop))
+        if hr != 0:
+            return False
+
+        # -1 on every edge: "sheet of glass", the whole client area.
+        margins = MARGINS(-1, -1, -1, -1)
+        dwm.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+        return True
+    except Exception as e:
+        logger.debug('Acrylic backdrop not available: %s', e)
+        return False
 
 
 def set_window_shape(window_handle, shape):

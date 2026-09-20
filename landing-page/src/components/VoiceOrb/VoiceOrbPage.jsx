@@ -1,4 +1,5 @@
 
+import { CHAT_ACTION_THINKING, CHAT_BUBBLE_PRIORITY } from '../../constants/chatBubble';
 import { CONSENT_ANSWER_TYPES, answerCoversAsk } from '../../constants/consentAsks';
 import useComputerActivity from '../../hooks/useComputerActivity';
 import realtimeService from '../../services/realtimeService';
@@ -62,6 +63,19 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
  */
 const SKIN_KEY = 'hart_orb_skin';
 const IDLE_MS = 6000;
+// The computer-use phases the owner has to SEE.  A run that is finished or
+// idle is not one of them: this window is a live presence, not a run log.
+// 'blocked' and 'failed' stay in because the card renders both (": needs
+// attention" / ": step failed") and silently dropping them would hide a
+// stuck agent.  ONE set, read by every presence decision below -- the two
+// call sites used to disagree (strict `phase === 'executing'` in one, loose
+// `Boolean(activity)` in the other), and the loose one opened the whole card
+// for a run that had already ended.
+const VISIBLE_RUN_PHASES = new Set(['executing', 'blocked', 'failed']);
+// How long a reasoning line stays on the card after it arrives.  Traces come
+// in bursts; without this the last line of a burst would vanish instantly and
+// the card would flicker between text and no-text.
+const TRACE_TTL_MS = 12000;
 const ACCENT = '#6C63FF';
 const CARD_BG = '#0F0E17';
 const GLASS_BG = 'linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(15, 14, 23, 0.68) 100%)';
@@ -389,8 +403,20 @@ export default function VoiceOrbPage() {
   const {activity: computerActivity, liveRun} = useComputerActivity();
   const [indicatorStep, setIndicatorStep] = useState(null);
   const [mainForeground, setMainForeground] = useState(false);
+  // The model's live reasoning, off the SAME chat envelope the main window
+  // renders as Thought-process Steps.  The owner asked for the floating
+  // window to show what the agent is thinking while it works, not only that
+  // it is working; the traces were already on the wire and nothing here read
+  // them.  `{text, at}` so the TTL can expire a stale line.
+  const [trace, setTrace] = useState(null);
 
-  const active = speaking || computerActivity?.phase === 'executing' || Boolean(indicatorStep);
+  // ONE predicate for "a computer-use run the owner should be seeing".  See
+  // VISIBLE_RUN_PHASES: the presence decision below used to test mere
+  // truthiness of the activity object while this line tested the phase, so a
+  // finished run still forced the card open.
+  const computerBusy = VISIBLE_RUN_PHASES.has(computerActivity?.phase);
+
+  const active = speaking || computerBusy || Boolean(indicatorStep);
 
   // Canonical bridge listener for live indicator commentary and main window foreground detection
   useEffect(() => {
@@ -474,6 +500,27 @@ export default function VoiceOrbPage() {
     };
   }, []);
 
+  // Live reasoning.  HARTOS publishes it on the chat envelope
+  // (core.peer_link.crossbar_publish.publish_thinking_trace) with the
+  // reserved priority and action='Thinking'; the main window's renderer keys
+  // on the SAME two constants to build Thought-process Steps, so this reads
+  // the canonical contract rather than sniffing message text.
+  // action='Status' is canned pipeline progress ("analysing…") and is
+  // deliberately NOT shown here -- the owner asked for the agent's thinking,
+  // not the spinner's captions.
+  useEffect(() => {
+    function onChat(data) {
+      if (!data) return;
+      if (Number(data.priority) !== CHAT_BUBBLE_PRIORITY) return;
+      if (data.action !== CHAT_ACTION_THINKING) return;
+      const text = String(data.message || data.text || '').trim();
+      if (!text) return;
+      setTrace({text, at: Date.now()});
+    }
+    const unsub = realtimeService.on('chat.response', onChat);
+    return () => { if (typeof unsub === 'function') unsub(); };
+  }, []);
+
   // Presence: an ask waiting for the owner, or the owner reaching for it,
   // wins ('shown'), then the agent talking ('orb', lingering one idle window
   // past the clip), else idle ('hidden'). Decided on every change of
@@ -486,10 +533,18 @@ export default function VoiceOrbPage() {
         return;
       }
       const now = Date.now();
-      const interacting = asking || Boolean(computerActivity) || Boolean(indicatorStep) || now - lastInteract.current < IDLE_MS;
+      // `computerBusy`, NOT Boolean(computerActivity): a run that has already
+      // finished must not hold the card open.  That mismatch with `active`
+      // (which always tested the phase) is what put the whole card on screen
+      // outside the owner's rule -- show only while an agent is talking or a
+      // computer-use step is live.
+      const interacting = asking || computerBusy || Boolean(indicatorStep) || now - lastInteract.current < IDLE_MS;
       const lingering = now - lastSpoke.current < IDLE_MS;
       const next = interacting ? 'shown' : (active || lingering) ? 'orb' : 'hidden';
       setPresence((prev) => (prev === next ? prev : next));
+      // Expire a reasoning line the window has outlived, so the next time the
+      // card opens it does not replay the last run's thinking.
+      setTrace((prev) => (prev && now - prev.at > TRACE_TTL_MS ? null : prev));
     };
     const wake = () => { lastInteract.current = Date.now(); decide(); };
     const evs = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel'];
@@ -500,7 +555,7 @@ export default function VoiceOrbPage() {
       evs.forEach((ev) => window.removeEventListener(ev, wake, true));
       clearInterval(id);
     };
-  }, [active, asking, computerActivity, indicatorStep, mainForeground]);
+  }, [active, asking, computerBusy, indicatorStep, mainForeground]);
 
   // Hosted: the window follows the page's state and shape.  Sent on every
   // change, again at 'pywebviewready' (`.api` may not exist when the first
@@ -568,7 +623,7 @@ export default function VoiceOrbPage() {
         </div>
       ) : (
         <>
-          {(computerActivity || indicatorStep) && (
+          {(computerBusy || indicatorStep || trace) && (
             <div
               onClick={() => companionApi('on_companion_click')}
               title="Open Nunba and view this agent run"
@@ -599,13 +654,31 @@ export default function VoiceOrbPage() {
                 <span>LIVE COMMENTARY</span>
               </div>
               <div style={{fontWeight: 500, color: '#F3F4F6'}}>
-                {indicatorStep || computerActivity?.summary}
+                {indicatorStep || computerActivity?.summary || trace?.text}
                 {computerActivity?.phase === 'blocked' ? ': needs attention' : ''}
                 {computerActivity?.phase === 'failed' ? ': step failed' : ''}
               </div>
               {computerActivity?.caption && computerActivity.caption !== (indicatorStep || computerActivity.summary) ? (
                 <div style={{marginTop: 3, color: 'rgba(255,255,255,.72)', fontSize: 11}}>
                   {computerActivity.caption}
+                </div>
+              ) : null}
+              {/* The agent's own reasoning, under what it is doing.  Only when
+                  the line above is something else -- a trace shown twice reads
+                  as a rendering bug, not as more information. */}
+              {trace?.text && trace.text !== (indicatorStep || computerActivity?.summary) ? (
+                <div
+                  data-testid="companion-trace"
+                  style={{
+                    marginTop: 5, paddingTop: 5,
+                    borderTop: '1px solid rgba(155, 148, 255, 0.22)',
+                    color: 'rgba(214, 210, 255, .86)', fontSize: 11,
+                    fontStyle: 'italic', lineHeight: 1.3,
+                    display: '-webkit-box', WebkitLineClamp: 3,
+                    WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                  }}
+                >
+                  {trace.text}
                 </div>
               ) : null}
             </div>
