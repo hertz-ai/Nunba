@@ -164,6 +164,18 @@ _hartos_init_lock = _threading.Lock()
 _hartos_initialized = False
 
 
+def is_hartos_initialized() -> bool:
+    """Whether HARTOS (langchain) has finished loading in this process.
+
+    The flag behind chat()'s "still loading" answer, read-only.  The HARTOS
+    distributed worker asks it before claiming a task, because a claim the
+    adapter would answer with a warm-up notice is deferred and re-queued, and
+    each of those is a full coordinator-ledger write (measured 2026-09-20 on
+    the installed build: 18 full writes of a 72 MB ledger per minute).
+    """
+    return bool(_hartos_initialized)
+
+
 # NOTE: `_ensure_hartos` is defined later (after `_background_hartos_init`),
 # where it can lazy-spawn the init thread if `start_hartos_init_background()`
 # wasn't called explicitly.  Historically there was an earlier stub here; it
