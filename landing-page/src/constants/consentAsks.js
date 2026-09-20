@@ -86,6 +86,17 @@ export const CONSENT_ASKS = Object.freeze({
   voice_speech: {
     asks: 'speak aloud and provide voice guidance', privacyCard: true,
   },
+  // A capability this computer does not have yet, offered the moment a task
+  // needs it: a voiced reply found no cloning engine installed, so HARTOS
+  // asks before downloading and installing one (scope 'tts:<engine>', one
+  // capability per grant).  The ask always carries a reason naming the
+  // engine and what it costs, and the card shows that reason; the wording
+  // here is only the fallback.  privacyCard false, so no "Don't allow": a
+  // no would have no card to come back from, and the offer returns on its
+  // own only when a task needs the capability again.
+  capability_setup: {
+    asks: 'set up a capability this computer is missing', privacyCard: false,
+  },
 });
 
 // The camera's consent type, by name, because the SPA has to act on it and
