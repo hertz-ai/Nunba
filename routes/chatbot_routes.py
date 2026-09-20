@@ -2650,9 +2650,32 @@ def _chat_turn(data):
     #                      single cloud expert.
     # Default 'auto' preserves today's behavior for any caller that
     # omits the field.
-    intelligence_preference = data.get('intelligence_preference', 'auto')
+    intelligence_preference = data.get('intelligence_preference')
     if intelligence_preference not in ('local_only', 'auto', 'hive_preferred'):
-        intelligence_preference = 'auto'
+        intelligence_preference = None
+    # Honor the body, then fall back to the canonical persisted reader — the
+    # same shape as preferred_lang below.  The bare 'auto' default overrode a
+    # stored 'local_only' choice on every turn, which is the same defect the
+    # bare 'en' default had for language.
+    #
+    # The SPA's localStorage IS persistence in bundled mode — the point is that
+    # it is WEBVIEW-side, so the Python boot relay gate
+    # (LlamaConfig.joins_hive_relay) cannot read it.  The backend therefore
+    # needs its own copy of a user-changeable setting, and that value already
+    # arrives on THIS wire every turn, so persisting it here is why no new
+    # route or frontend call is needed.  Written only when it changes, and a
+    # settings write must never block a chat.  Caveat: a toggle made and never
+    # followed by a chat syncs on the next turn, not instantly.
+    try:
+        from llama.llama_config import LlamaConfig
+        _lc = LlamaConfig()
+        if intelligence_preference:
+            if _lc.resolve_intelligence_preference() != intelligence_preference:
+                _lc.set_intelligence_preference(intelligence_preference)
+        else:
+            intelligence_preference = _lc.resolve_intelligence_preference()
+    except Exception:
+        intelligence_preference = intelligence_preference or 'auto'
     # preferred_lang: honor the body, then fall back to the canonical
     # persisted reader (hart_language.json via core.user_lang).
     # Bare default 'en' forced English TTS + bypassed the draft-skip
