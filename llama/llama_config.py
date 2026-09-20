@@ -454,7 +454,15 @@ class LlamaConfig:
     # admitted regardless of this value. 'local_only' must never be read as
     # "refuse device links"; the phone dials the desktop's advertised url no
     # matter where inference runs.
-    _INTELLIGENCE_PREFS = ('local_only', 'auto', 'hive_preferred')
+    # The vocabulary itself is defined ONCE, in HARTOS core, and shared with the
+    # VLM tier resolver and the /chat validator — a set of string literals
+    # duplicated per call site is what let the VLM resolver drift to a second
+    # spelling. Fallback keeps standalone Nunba dev (no HARTOS on the path)
+    # working, the same shape _propagate_llm_url above uses.
+    try:
+        from core.intelligence_preference import VALUES as _INTELLIGENCE_PREFS
+    except ImportError:
+        _INTELLIGENCE_PREFS = ('local_only', 'auto', 'hive_preferred')
 
     def resolve_intelligence_preference(self) -> str:
         """The node's effective inference preference. Grant-preserving precedence:
