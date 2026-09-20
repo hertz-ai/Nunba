@@ -8179,8 +8179,21 @@ def main():
                         # startup the two windows race, so unreadable is a
                         # state that really happens (see
                         # tests/test_companion_presence_fails_closed.py).
-                        if (is_main_window_foreground(_window, _companion_window)
-                                or not main_window_state_readable(_window)):
+                        # Kept as ONE BoolOp: tests/test_companion_presence_
+                        # fails_closed.py walks for a condition containing
+                        # both calls, and splitting them into two names made
+                        # that guard fail (measured 2026-09-20) -- the pairing
+                        # is the thing being pinned, so it stays literal.
+                        _suppress = (
+                            is_main_window_foreground(_window, _companion_window)
+                            or not main_window_state_readable(_window))
+                        # The success path logged nothing, which made the gate
+                        # unfalsifiable: an absent line could mean "never ran"
+                        # or "ran and allowed", and a live check could not tell
+                        # those apart.  One line per decision.
+                        logger.info("[COMPANION] presence %s -> %s", state,
+                                    'hide' if _suppress else 'show')
+                        if _suppress:
                             _companion_window.hide()
                             return
                         _comp_hwnd = _resolve_hwnd(_companion_window)
