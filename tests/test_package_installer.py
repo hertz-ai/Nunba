@@ -946,6 +946,12 @@ class TestChatterboxClassRegression:
             'descript-audiotools':  'audiotools',
             'pocket-tts':           'pocket_tts',
             'resemble-perth':       'perth',
+            # XTTS-v2 chain, measured 2026-09-20 (the `coqpit` trap).
+            'coqui-tts':            'TTS',
+            'coqpit-config':        'coqpit',
+            'coqui-tts-trainer':    'trainer',
+            'melotts':              'melo',
+            'pyyaml':               'yaml',
         }
         for pip_name, expected_import in expected.items():
             actual = pi._canonical_import_name(pip_name)
@@ -953,6 +959,49 @@ class TestChatterboxClassRegression:
                 f"Alias drift for {pip_name}: expected '{expected_import}', "
                 f"got '{actual}'.  _PIP_TO_IMPORT lost the entry."
             )
+
+    def test_pip_name_for_import_is_the_inverse_of_the_alias_table(self):
+        """A traceback names the IMPORT; pip needs the DISTRIBUTION.  On the
+        installed build 2026-09-20 the heal ran `pip install coqpit` for a
+        missing `coqpit` and fetched the abandoned original, after which
+        coqui-tts refused to import at all.  One table, read both ways."""
+        assert pi.pip_name_for_import('coqpit') == 'coqpit-config'
+        assert pi.pip_name_for_import('TTS') == 'coqui-tts'
+        assert pi.pip_name_for_import('TTS.api') == 'coqui-tts'
+        assert pi.pip_name_for_import('trainer') == 'coqui-tts-trainer'
+        assert pi.pip_name_for_import('yaml') == 'pyyaml'
+        # Unknown to the table: unchanged (pip reads '_' and '-' alike).
+        assert pi.pip_name_for_import('lazy_loader') == 'lazy_loader'
+        assert pi.pip_name_for_import('') == ''
+        # Round trip over the whole table, so the two directions cannot drift.
+        for pip_name in pi._PIP_TO_IMPORT:
+            assert pi.pip_name_for_import(pi._canonical_import_name(pip_name)) == pip_name
+
+    def test_self_heal_installs_the_distribution_not_the_import_name(self):
+        """Deep probe says `No module named 'coqpit'`; the heal must run
+        `pip install -U coqpit-config`, never `coqpit`."""
+        from io import StringIO
+
+        def missing_coqpit(*args, **kwargs):
+            return StringIO(
+                "Traceback...\n"
+                "ModuleNotFoundError: No module named 'coqpit'\n"
+            )
+
+        with patch.object(pi, 'is_package_installed', return_value=True), \
+             patch.object(pi, 'is_cuda_torch', return_value=True), \
+             patch.object(pi, '_run_pip', return_value=(True, 'ok')) as mock_pip, \
+             patch('tts._torch_probe.check_backend_runnable', return_value=False), \
+             patch('tts._torch_probe._resolve_paths', return_value=True), \
+             patch('os.path.isfile', return_value=True), \
+             patch('builtins.open', side_effect=missing_coqpit):
+            pi.install_backend_packages('chatterbox_turbo')
+
+        installs = [c.args[0] for c in mock_pip.call_args_list
+                    if c.args and 'install' in c.args[0]]
+        assert ['install', '-U', 'coqpit-config'] in installs, installs
+        assert all('coqpit' not in a for a in installs), (
+            f"the heal must never fetch the abandoned `coqpit`: {installs}")
 
     # ── Bug classes the chatterbox cycle didn't hit but the same code
     #    path could on a different engine.  Each pins a behaviour
@@ -1216,10 +1265,14 @@ class TestChatterboxClassRegression:
         installed = [
             item for c in mock_pip.call_args_list for item in c.args[0]
         ]
-        assert 'librosa' in installed and 'perth' in installed, (
-            f"Self-heal must install both librosa AND perth. "
+        # `import perth` is shipped by the PyPI distribution resemble-perth
+        # (_PIP_TO_IMPORT); the heal must ask pip for the distribution, not
+        # echo the import name (the `coqpit` trap, 2026-09-20).
+        assert 'librosa' in installed and 'resemble-perth' in installed, (
+            f"Self-heal must install both librosa AND resemble-perth. "
             f"Installed: {installed}"
         )
+        assert 'perth' not in installed, installed
 
 
 # ========================== install_backend_full ==========================

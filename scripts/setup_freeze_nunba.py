@@ -2308,12 +2308,16 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # imports MyShell forgot to declare in install_requires
             # (witnessed for chatterbox-tts; same self-heal applies here).
             ("melotts", "melotts", "melo", []),
-            # XTTS-v2 (Coqui idiap fork) — 17 langs incl. hi, voice
-            # cloning, ~2.5 GB VRAM.  PyPI: `coqui-tts` (the maintained
-            # 2026 fork; the older `TTS` package is unmaintained).
-            # Both ship `from TTS.api import TTS` so the import name
-            # is stable.
-            ("coqui-tts", "coqui-tts", "TTS", []),
+            # XTTS-v2 (coqui-tts) is NOT bundled here.  The HARTOS registry
+            # runs it in its own venv (tts_router: install_target='venv'),
+            # and a python-embed copy can never work: coqui-tts 0.27.5 (the
+            # newest release) imports transformers.pytorch_utils
+            # .isin_mps_friendly, gone in the bundled transformers 5.1, and
+            # --no-deps left 12 of its 21 declared requirements out anyway.
+            # Measured 2026-09-20 on the installed build: the bundled copy
+            # made `TTS` importable-looking, so every voiced turn spent 27 s
+            # on an xtts worker that died at import before falling back to
+            # Piper.  The prune below removes the copy older bundles carry.
             # MMS-TTS (Meta's 1100+ language VITS) — uses `transformers`
             # (already bundled) + `soundfile` (already a transitive of
             # the bigger TTS engines).  No NEW pip install line is
@@ -2338,6 +2342,19 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                 print(f"python-embed: {_pkg_label} installed OK")
             else:
                 print(f"python-embed: {_pkg_label} install FAILED (non-fatal): {_r.stderr[:150]}")
+
+        # Prune the python-embed copy of coqui-tts that earlier builds carried
+        # (see the XTTS-v2 note in _tts_deps above): the registry runs XTTS in
+        # its own venv, and this copy can only make the engine look installed
+        # and fail at import.  The build box's python-embed persists between
+        # builds, so a removed _tts_deps entry alone never removes the files.
+        for _stale_name in ('TTS',) + tuple(
+                _d for _d in os.listdir(_embed_sp)
+                if _d.startswith('coqui_tts-') and _d.endswith('.dist-info')):
+            _stale_path = os.path.join(_embed_sp, _stale_name)
+            if os.path.isdir(_stale_path):
+                shutil.rmtree(_stale_path, ignore_errors=True)
+                print(f"python-embed: pruned {_stale_name} (XTTS runs from its venv)")
 
 def _abi_tag_of_embedded_python(embed_dir):
     """'cp312' for the interpreter that SHIPS, read from its own pythonXY.dll.

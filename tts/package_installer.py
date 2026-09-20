@@ -311,6 +311,19 @@ _PIP_TO_IMPORT = {
                                           # but `import perth` (no
                                           # `resemble_` prefix in the
                                           # source layout)
+    # XTTS-v2 (idiap coqui-tts fork) and what it imports.  Measured
+    # 2026-09-20 on the installed build: the worker said "No module named
+    # 'coqpit'", the self-heal pip-installed the PyPI package `coqpit` (the
+    # abandoned original), and coqui-tts then refused to import at all
+    # ("switched to a forked version of Coqpit ... pip install
+    # coqpit-config").  The table is read in BOTH directions:
+    # `_canonical_import_name` (verify an install) and
+    # `pip_name_for_import` (heal a missing import).
+    'coqui-tts':             'TTS',
+    'coqpit-config':         'coqpit',
+    'coqui-tts-trainer':     'trainer',
+    'melotts':               'melo',
+    'pyyaml':                'yaml',
 }
 
 # Human-readable names for progress messages.  Must cover the full
@@ -484,6 +497,24 @@ def _canonical_import_name(pkg_spec: str) -> str:
     """
     bare = re.split(r'[<>=!~]', pkg_spec, maxsplit=1)[0].strip()
     return _PIP_TO_IMPORT.get(bare, bare.replace('-', '_'))
+
+
+def pip_name_for_import(import_name: str) -> str:
+    """The distribution to pip-install for a missing top-level import.
+
+    The inverse of ``_canonical_import_name`` over the same table, so the
+    two directions cannot drift: ``coqpit`` -> ``coqpit-config``,
+    ``TTS`` -> ``coqui-tts``.  A name the table does not know is returned
+    unchanged; pip reads ``lazy_loader`` and ``lazy-loader`` as the same
+    project, so that is the right default.  Both self-heal paths (this
+    module's ``_self_heal_missing_transitives`` and HARTOS's
+    ``gpu_worker._maybe_self_heal_from_line``) resolve through here.
+    """
+    top = (import_name or '').split('.')[0]
+    for pip_name, module in _PIP_TO_IMPORT.items():
+        if module == top:
+            return pip_name
+    return top
 
 
 def is_package_installed(import_name: str) -> bool:
@@ -1808,7 +1839,11 @@ def _self_heal_missing_transitives(
             # Windows installs that had ever started a previous install.
             # The version-mismatch branch below already used -U for
             # exactly this reason; the two branches now match.
-            pip_args = ['install', '-U', missing]
+            #
+            # The traceback names the IMPORT; pip needs the distribution.
+            # `pip install coqpit` for a missing `coqpit` fetched the
+            # abandoned original and broke coqui-tts outright (2026-09-20).
+            pip_args = ['install', '-U', pip_name_for_import(missing)]
             heal_key = missing
             kind = 'missing'
         else:
