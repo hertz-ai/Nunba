@@ -18,6 +18,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -309,6 +310,14 @@ def scan_openai_compatible_ports(ports: list[int] = None) -> dict | None:
     return None
 
 
+#: Process-local cache of the resolved inference preference, read via
+#: LlamaConfig.cached_intelligence_preference() and invalidated by
+#: set_intelligence_preference (the only writer). Exists so /chat does not pay a
+#: mkdir + LlamaInstaller + JSON read on every single turn. ONE cache: callers
+#: must not keep their own, or the field stops having a single answer again.
+_PREF_CACHE = None
+
+
 class LlamaConfig:
     """Manages Llama.cpp configuration and server lifecycle"""
 
@@ -373,12 +382,32 @@ class LlamaConfig:
         }
 
     def _save_config(self):
-        """Save configuration to file"""
+        """Save configuration to file ATOMICALLY.
+
+        A plain ``open(..., 'w')`` truncates before it writes, so a crash or a
+        second writer mid-write leaves a HALF-WRITTEN llama_config.json — the
+        node's core config, which then fails to parse at boot. That window
+        widened once /chat began persisting the user's inference preference on a
+        concurrent request path. Write a sibling temp file and ``os.replace``,
+        which is atomic on Windows and POSIX, so a reader sees either the old
+        file or the new one and never a truncated one.
+        """
+        tmp = None
         try:
-            with open(self.config_file, 'w') as f:
+            fd, tmp = tempfile.mkstemp(dir=str(self.config_dir),
+                                       prefix='.llama_config.', suffix='.tmp')
+            with os.fdopen(fd, 'w') as f:
                 json.dump(self.config, f, indent=2)
+            os.replace(tmp, self.config_file)
+            tmp = None
         except Exception as e:
             logger.error(f"Failed to save config: {e}")
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
     @staticmethod
     def _propagate_llm_url(url: str):
@@ -495,10 +524,27 @@ class LlamaConfig:
         gate honor a 'local_only' choice; otherwise a privacy choice is silently
         ignored at boot and the node joins the relay against the user's consent.
         """
+        global _PREF_CACHE
         if pref not in self._INTELLIGENCE_PREFS:
             raise ValueError(f"invalid intelligence_preference: {pref!r}")
         self.config['intelligence_preference'] = pref
         self._save_config()
+        _PREF_CACHE = pref  # the only writer, so the only invalidator
+
+    @staticmethod
+    def cached_intelligence_preference() -> str:
+        """The resolved preference, read from disk at most once per process.
+
+        /chat consults the preference on EVERY turn, and constructing
+        LlamaConfig costs a mkdir, a LlamaInstaller and a JSON read — real I/O
+        on the hottest path. One cache, owned here beside the field rather than
+        in the route, invalidated by set_intelligence_preference (the only
+        writer). The boot relay gate reads the file directly and is unaffected.
+        """
+        global _PREF_CACHE
+        if _PREF_CACHE is None:
+            _PREF_CACHE = LlamaConfig().resolve_intelligence_preference()
+        return _PREF_CACHE
 
     def joins_hive_relay(self) -> bool:
         """True unless the user chose local-only. The one relay-participation gate."""

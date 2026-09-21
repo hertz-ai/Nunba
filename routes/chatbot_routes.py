@@ -2666,14 +2666,18 @@ def _chat_turn(data):
     # route or frontend call is needed.  Written only when it changes, and a
     # settings write must never block a chat.  Caveat: a toggle made and never
     # followed by a chat syncs on the next turn, not instantly.
+    # Reads the process-local cache, NOT a fresh LlamaConfig: constructing one
+    # costs a mkdir + a LlamaInstaller + a JSON read, and this runs on every
+    # turn. A LlamaConfig is built only when the choice actually changed and
+    # must be written.
     try:
         from llama.llama_config import LlamaConfig
-        _lc = LlamaConfig()
+        _stored = LlamaConfig.cached_intelligence_preference()
         if intelligence_preference:
-            if _lc.resolve_intelligence_preference() != intelligence_preference:
-                _lc.set_intelligence_preference(intelligence_preference)
+            if _stored != intelligence_preference:
+                LlamaConfig().set_intelligence_preference(intelligence_preference)
         else:
-            intelligence_preference = _lc.resolve_intelligence_preference()
+            intelligence_preference = _stored
     except Exception:
         intelligence_preference = intelligence_preference or 'auto'
     # preferred_lang: honor the body, then fall back to the canonical
