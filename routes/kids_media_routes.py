@@ -12,6 +12,7 @@ Routes:
   GET  /api/media/asset/status/<id>  — Poll async generation jobs
 """
 
+import json
 import logging
 import os
 import re
@@ -53,6 +54,12 @@ _MAX_JOBS = 500  # Cap in-memory jobs
 # Input validation constants
 _MAX_PROMPT_LEN = 500
 _VALID_MEDIA_TYPES = ('image', 'tts', 'music', 'video')
+
+# A game's background music: long enough to loop without being obvious.
+_MUSIC_SECONDS = 60
+# The capability's own engines take minutes on a busy GPU; past this the
+# job is reported failed rather than held open (the caller polls).
+_GENERATION_TIMEOUT_SECONDS = 300
 _VALID_STYLES = ('cartoon', 'realistic', 'watercolor')
 _VALID_CLASSIFICATIONS = (
     'public_educational', 'public_community', 'user_private',
@@ -363,73 +370,65 @@ def media_asset():
 
 
 def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classification, user_id, ext):
-    """Background thread for async media generation (music/video)."""
+    """Background thread for async media generation (music/video).
+
+    Generation goes through the ONE media capability the agents already
+    hold: integrations.service_tools.media_agent.generate_media, the tool
+    registered for CREATE (hartos/create_recipe.py) and REUSE
+    (hartos/reuse_recipe.py) agents.  This route used to call AceStep,
+    wan2gp and LTX-2 over HTTP itself, which was a second copy of that
+    selection, its endpoints and its polling: a game composed here and a
+    game composed by its agent could not come out the same, and the tool
+    ladder had to be maintained twice.  This function now only caches and
+    registers what the capability returns.
+    """
     _, _, register, _, _ = _get_classifier()
     try:
-        # Try using the service tool registry for direct access
         try:
-            from integrations.service_tools.registry import service_tool_registry
-            registry = service_tool_registry
-        except ImportError:
-            registry = None
+            from integrations.service_tools.media_agent import (
+                check_media_status,
+                generate_media,
+            )
+        except ImportError as e:
+            logger.error(f"media capability unavailable for {job_id}: {e}")
+            with _jobs_lock:
+                _async_jobs[job_id]['status'] = 'failed'
+                _async_jobs[job_id]['error'] = 'media_capability_unavailable'
+            return
+
+        modality = 'audio_music' if media_type == 'music' else 'video'
+        started = json.loads(generate_media(
+            context=prompt,
+            output_modality=modality,
+            input_text=prompt,
+            duration=_MUSIC_SECONDS if media_type == 'music' else None,
+            style=style or None,
+        ))
 
         result_url = None
-
-        if media_type == 'music' and registry:
-            # AceStep music generation
-            tool = registry.get_tool('acestep_generate')
-            if tool and tool.get('is_healthy'):
-                import requests as req
-                resp = req.post(
-                    f"{tool['base_url']}/release_task",
-                    json={'prompt': prompt, 'genre': style, 'tempo': 120, 'duration': 60},
-                    timeout=10
-                )
-                task_data = resp.json()
-                task_id = task_data.get('task_id')
-                if task_id:
-                    # Poll for completion
-                    for _ in range(120):  # 4 minutes max
-                        time.sleep(2)
-                        poll = req.post(
-                            f"{tool['base_url']}/query_result",
-                            json={'task_id': task_id}, timeout=10
-                        )
-                        poll_data = poll.json()
-                        if poll_data.get('status') in ('done', 'completed', 'complete'):
-                            result_url = poll_data.get('url') or poll_data.get('result_url')
-                            break
-                        if poll_data.get('status') in ('failed', 'error'):
-                            break
-
-        elif media_type == 'video' and registry:
-            # Wan2GP or LTX-2 video generation
-            for tool_name in ('wan2gp_generate', 'ltx2_generate'):
-                tool = registry.get_tool(tool_name)
-                if tool and tool.get('is_healthy'):
-                    import requests as req
-                    resp = req.post(
-                        f"{tool['base_url']}/generate",
-                        json={'prompt': prompt, 'num_frames': 49, 'width': 512, 'height': 320},
-                        timeout=10
-                    )
-                    task_data = resp.json()
-                    task_id = task_data.get('task_id')
-                    if task_id:
-                        for _ in range(150):  # 5 minutes max
-                            time.sleep(2)
-                            poll = req.post(
-                                f"{tool['base_url']}/check_result",
-                                json={'task_id': task_id}, timeout=10
-                            )
-                            poll_data = poll.json()
-                            if poll_data.get('status') in ('done', 'completed', 'complete'):
-                                result_url = poll_data.get('url') or poll_data.get('result_url')
-                                break
-                            if poll_data.get('status') in ('failed', 'error'):
-                                break
-                    if result_url:
-                        break
+        status = started.get('status')
+        if status == 'completed':
+            results = started.get('results') or []
+            result_url = results[0].get('url') if results else None
+        elif status == 'pending':
+            task_id = started.get('task_id', '')
+            deadline = time.time() + _GENERATION_TIMEOUT_SECONDS
+            while time.time() < deadline:
+                time.sleep(2)
+                progress = json.loads(check_media_status(task_id))
+                if progress.get('status') in ('complete', 'completed', 'done'):
+                    results = progress.get('results') or []
+                    result_url = (progress.get('url')
+                                  or (results[0].get('url') if results else None))
+                    break
+                if progress.get('status') in ('failed', 'error'):
+                    logger.warning(
+                        f"{modality} generation failed for {job_id}: "
+                        f"{progress.get('error')}")
+                    break
+        else:
+            logger.warning(f"{modality} generation refused for {job_id}: "
+                           f"{started.get('error')}")
 
         if result_url:
             size = _download_and_cache(result_url, cache_path)

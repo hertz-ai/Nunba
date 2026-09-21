@@ -968,3 +968,92 @@ class TestRegisterRoutes:
         rules = [r.rule for r in app.url_map.iter_rules()]
         assert "/api/media/asset" in rules
         assert "/api/media/asset/status/<job_id>" in rules
+
+
+class TestAsyncGenerateUsesTheCapability:
+    """A game's music comes from the ONE media capability the CREATE and
+    REUSE agents hold (media_agent.generate_media), so a game composed
+    here and a game composed by its agent are the same thing.  This route
+    used to call AceStep, wan2gp and LTX-2 over HTTP itself."""
+
+    def _media_agent(self, started, progress=None):
+        """A stand-in for the capability module the worker imports."""
+        module = MagicMock()
+        module.generate_media.return_value = json.dumps(started)
+        module.check_media_status.return_value = json.dumps(progress or {})
+        return module
+
+    def _run(self, module, media_type="music", cached_bytes=1234):
+        from routes import kids_media_routes as r
+        job_id = f"{media_type}_" + "a" * 12
+        with r._jobs_lock:
+            r._async_jobs[job_id] = {"status": "pending", "media_type": media_type}
+        with patch.dict("sys.modules",
+                        {"integrations.service_tools.media_agent": module}), \
+                patch.object(r, "_download_and_cache", return_value=cached_bytes), \
+                patch.object(r, "_get_classifier",
+                             return_value=(None, None, MagicMock(), None, None)), \
+                patch.object(r, "time", MagicMock(sleep=lambda *_: None,
+                                                  time=time.time)):
+            r._async_generate(job_id, media_type, "happy counting game", "playful",
+                              "cache.mp3", "sha", "public", "user1", "mp3")
+        with r._jobs_lock:
+            return dict(r._async_jobs.pop(job_id))
+
+    def test_music_is_asked_of_the_capability_as_audio_music(self):
+        module = self._media_agent({
+            "status": "completed",
+            "results": [{"type": "audio", "url": "https://node/music.mp3"}],
+        })
+        job = self._run(module)
+        assert job["status"] == "complete"
+        kwargs = module.generate_media.call_args.kwargs
+        assert kwargs["output_modality"] == "audio_music"
+        assert kwargs["context"] == "happy counting game"
+        assert kwargs["style"] == "playful"
+        assert kwargs["duration"] > 0
+
+    def test_a_pending_task_is_polled_through_the_capability(self):
+        module = self._media_agent(
+            {"status": "pending", "task_id": "acestep_x1"},
+            {"status": "complete", "url": "https://node/late.mp3"},
+        )
+        job = self._run(module)
+        assert job["status"] == "complete"
+        module.check_media_status.assert_called_with("acestep_x1")
+
+    def test_a_refused_generation_fails_the_job_instead_of_hanging(self):
+        module = self._media_agent({"status": "error", "error": "no engine"})
+        job = self._run(module)
+        assert job["status"] == "failed"
+        assert job["error"] == "generation_failed"
+
+    def test_video_asks_the_same_capability_for_video(self):
+        module = self._media_agent({
+            "status": "completed",
+            "results": [{"type": "video", "url": "https://node/clip.mp4"}],
+        })
+        job = self._run(module, media_type="video")
+        assert job["status"] == "complete"
+        assert module.generate_media.call_args.kwargs["output_modality"] == "video"
+
+    def test_without_the_capability_the_job_says_so(self):
+        from routes import kids_media_routes as r
+        job_id = "music_" + "b" * 12
+        with r._jobs_lock:
+            r._async_jobs[job_id] = {"status": "pending", "media_type": "music"}
+
+        class _Missing:
+            def __getattr__(self, name):
+                raise ImportError("media_agent not bundled")
+
+        with patch.object(r, "_get_classifier",
+                          return_value=(None, None, MagicMock(), None, None)), \
+                patch.dict("sys.modules",
+                           {"integrations.service_tools.media_agent": None}):
+            r._async_generate(job_id, "music", "p", "s", "c.mp3", "sha",
+                              "public", "user1", "mp3")
+        with r._jobs_lock:
+            job = dict(r._async_jobs.pop(job_id))
+        assert job["status"] == "failed"
+        assert job["error"] == "media_capability_unavailable"
