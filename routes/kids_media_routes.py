@@ -278,10 +278,20 @@ def media_asset():
     # reviewer approved -- not a fresh composition that merely sounds
     # similar.  When the app asks on an agent's behalf it names the agent
     # and the game, and the binding answers.
-    bound = _bound_game_media(request.args.get('prompt_id'),
-                              request.args.get('game_id'), media_type)
+    bound, matched = _bound_game_media(
+        request.args.get('prompt_id'),
+        request.args.get('game_id'),
+        media_type,
+        state=(request.args.get('state') or 'bgm').strip(),
+        level=(request.args.get('level') or '').strip() or None,
+        user_id=_get_user_id_from_request(),
+    )
     if bound:
-        return jsonify({'url': bound, 'bound': True}), 200
+        return jsonify({'url': bound, 'bound': True, 'matched': matched}), 200
+    if matched == 'composing':
+        # the memo already holds a composition for this exact key, so the
+        # caller waits for that one rather than starting a second
+        return jsonify({'status': 'composing', 'matched': matched}), 202
 
     # --- Auth: extract user_id from JWT (not from query param) ---
     user_id = _get_user_id_from_request()
@@ -381,28 +391,36 @@ def media_asset():
     return jsonify({'error': 'unsupported_type'}), 400
 
 
-def _bound_game_media(prompt_id, game_id, media_type):
-    """The asset an agent bound to a game, or None.
+def _bound_game_media(prompt_id, game_id, media_type, state='bgm',
+                     level=None, user_id=None):
+    """The sound memoized for a game's state, and what matched.
 
-    The binding lives in the agent's own saved data, where
-    save_data_in_memory writes it and get_data_by_key reads it
-    (core/agent_tools.py bind_game_sound), so a reused agent plays the
-    music its reviewer approved instead of composing a new one.  Only
-    music is bound today; anything else falls through to composition.
+    The memo lives in the agent's own saved data and the matching ladder
+    is HARTOS's one matcher (core/game_sound_memo.py), imported rather
+    than copied: this route must agree with the agent's own tools about
+    what a hit is, to the key (spec §4).
+
+    Returns (url, matched) where matched is 'mine', 'level', 'game',
+    'composing' or 'miss'.  Only music is memoized today; anything else
+    falls through to composition.
     """
     if media_type != 'music' or not prompt_id or not game_id:
-        return None
+        return None, 'miss'
     try:
         from core.cache_loaders import load_agent_data
+        from core.game_sound_memo import game_state_sound
         data = load_agent_data(prompt_id) or {}
-        music = (data.get('games', {}).get(str(game_id), {}).get('music') or {})
-        url = music.get('url')
+        record, matched = game_state_sound(
+            data.get('games', {}), game_id, state, level, user_id)
+        url = record.get('url')
         if url:
-            logger.info(f"game {game_id} plays the music agent {prompt_id} bound to it")
-        return url or None
+            logger.info(
+                f"game {game_id} state {state} plays what agent {prompt_id} "
+                f"memoized (matched {matched})")
+        return url or None, matched
     except Exception as e:
-        logger.warning(f"could not read the binding for game {game_id}: {e}")
-        return None
+        logger.warning(f"could not read the memo for game {game_id}: {e}")
+        return None, 'miss'
 
 
 def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classification, user_id, ext):
