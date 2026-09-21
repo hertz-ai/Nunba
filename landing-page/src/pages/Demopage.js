@@ -55,7 +55,7 @@ import CreditSystem from './Credits';
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/legacy/build/pdf.worker.min.mjs`;
 
 // ── Use existing Nunba API services for local/global integration ──
-import {chatApi, usersApi, agentApi} from '../services/socialApi';
+import {chatApi, usersApi, agentApi, consentApi} from '../services/socialApi';
 import { initGameRealtime } from '../services/gameRealtimeService';
 import realtimeService from '../services/realtimeService';
 
@@ -83,6 +83,7 @@ import PdfViewer from './chat/PdfViewer';
 import ChatInputBar from './chat/ChatInputBar';
 import ChatMessageList from './chat/ChatMessageList';
 import LlmUpgradeCard from './chat/LlmUpgradeCard';
+import ProactiveConciergeCard from '../components/chat/ProactiveConciergeCard';
 
 const HOSTED_URL = 'https://hevolve.hertzai.com';
 
@@ -734,10 +735,26 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   const [showNotification, setShowNotification] = useState(false);
 
-  // ── TTS (Text-to-Speech) state and hook ──
+  // ── Proactive Servicing & Speech Consent (Privacy by Design) ──
+  const [speechConsent, setSpeechConsent] = useState(() => {
+    try {
+      const stored = localStorage.getItem('nunba_speech_consent');
+      if (stored) return stored; // 'granted' | 'text_only'
+      const legacyTts = localStorage.getItem('tts_enabled');
+      if (legacyTts === 'false') return 'text_only';
+      return null; // Not yet asked -> show ProactiveConciergeCard on arrival
+    } catch (e) {
+      return null;
+    }
+  });
+
+  // TTS enabled is true ONLY if speechConsent is explicitly 'granted'
   const [ttsEnabled, setTtsEnabled] = useState(() => {
-    const stored = localStorage.getItem('tts_enabled');
-    return stored !== 'false'; // Default to enabled unless explicitly disabled
+    try {
+      return localStorage.getItem('nunba_speech_consent') === 'granted';
+    } catch (e) {
+      return false;
+    }
   });
   const [ttsVoice, setTtsVoice] = useState(() => {
     return localStorage.getItem('tts_voice') || 'en_US-amy-medium';
@@ -753,6 +770,76 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     speed: ttsSpeed,
     onError: (error) => console.error('TTS Error:', error),
   });
+
+  const handleSpeechConsentDecision = useCallback(async (allowSpeak) => {
+    const nextVal = allowSpeak ? 'granted' : 'text_only';
+    setSpeechConsent(nextVal);
+    setTtsEnabled(allowSpeak);
+    try {
+      localStorage.setItem('nunba_speech_consent', nextVal);
+      localStorage.setItem('tts_enabled', allowSpeak ? 'true' : 'false');
+    } catch (e) {}
+
+    // Sync with canonical HARTOS consent API
+    try {
+      if (allowSpeak) {
+        await consentApi.grant({ consent_type: 'voice_speech', scope: '*' });
+      } else {
+        await consentApi.revoke({ consent_type: 'voice_speech', scope: '*' });
+      }
+    } catch (err) {
+      console.warn('[Consent] speech sync error:', err?.message || err);
+    }
+
+    const welcomeText = allowSpeak
+      ? "Hello and welcome to Nunba! I am your personal intelligent companion. Everything here runs private by design on your terms. You can explore local AI models, connect custom agents, or contribute idle compute to earn better intelligence. How can I assist you today?"
+      : "Welcome to Nunba! I have enabled quiet text mode. Everything here runs private by design on your terms. You can explore local AI models, connect custom agents, or contribute idle compute to earn better intelligence. How can I assist you today?";
+
+    const starterMessage = {
+      type: 'assistant',
+      text: welcomeText,
+      content: welcomeText,
+      timestamp: new Date().toISOString(),
+      messageId: `welcome-${Date.now()}`,
+      isProactiveWelcome: true,
+    };
+
+    setMessages([starterMessage]);
+
+    if (allowSpeak && tts && typeof tts.speak === 'function') {
+      try {
+        await tts.speak(welcomeText);
+      } catch (ttsErr) {
+        logger.warn('[TTS] Proactive welcome speak failed:', ttsErr?.message || ttsErr);
+        if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+          try {
+            const u = new SpeechSynthesisUtterance(welcomeText);
+            window.speechSynthesis.speak(u);
+          } catch (_) {}
+        }
+      }
+    }
+  }, [tts]);
+
+  const toggleVoiceSpeechConsent = useCallback(async () => {
+    const nextVal = speechConsent === 'granted' ? 'text_only' : 'granted';
+    const allowSpeak = nextVal === 'granted';
+    setSpeechConsent(nextVal);
+    setTtsEnabled(allowSpeak);
+    try {
+      localStorage.setItem('nunba_speech_consent', nextVal);
+      localStorage.setItem('tts_enabled', allowSpeak ? 'true' : 'false');
+    } catch (e) {}
+    try {
+      if (allowSpeak) {
+        await consentApi.grant({ consent_type: 'voice_speech', scope: '*' });
+      } else {
+        await consentApi.revoke({ consent_type: 'voice_speech', scope: '*' });
+      }
+    } catch (err) {
+      console.warn('[Consent] speech toggle error:', err?.message || err);
+    }
+  }, [speechConsent]);
 
   // ── Client-side TTS -> the voice orb ──────────────────────────────────
   //
@@ -5639,6 +5726,25 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   style global top-right placement. Same component the AdminLayout uses
                   (commit 8ffa635e); reads /api/social/notifications. */}
               <div className="flex justify-end items-center gap-2 px-3 pt-2">
+                <button
+                  type="button"
+                  onClick={toggleVoiceSpeechConsent}
+                  data-testid="voice-privacy-pill"
+                  title={speechConsent === 'granted' ? 'Voice Guidance Active — click to mute' : 'Quiet Mode Active — click to enable voice'}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all duration-200"
+                  style={{
+                    background: speechConsent === 'granted'
+                      ? 'rgba(108, 99, 255, 0.2)'
+                      : 'rgba(255, 255, 255, 0.08)',
+                    border: `1px solid ${speechConsent === 'granted' ? 'rgba(108, 99, 255, 0.45)' : 'rgba(255, 255, 255, 0.15)'}`,
+                    color: speechConsent === 'granted' ? '#c4c0ff' : 'rgba(255, 255, 255, 0.65)',
+                    boxShadow: speechConsent === 'granted' ? '0 0 12px rgba(108, 99, 255, 0.25)' : 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span>{speechConsent === 'granted' ? '🔊' : '🔇'}</span>
+                  <span>{speechConsent === 'granted' ? 'Voice Active' : 'Quiet Mode'}</span>
+                </button>
                 <NotificationBell />
                 <GpuTierBadge />
               </div>
@@ -5718,7 +5824,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   )}
                   <div className="fixed inset-0 flex items-center justify-center pointer-events-none" style={{zIndex: 1}}>
                    <div className="pointer-events-auto">
-                    {agentsLoading ? (
+                    {speechConsent === null ? (
+                      <ProactiveConciergeCard
+                        onConsent={handleSpeechConsentDecision}
+                        agentName={currentAgent?.name || 'Nunba'}
+                        guestName={guestName}
+                      />
+                    ) : agentsLoading ? (
                       /* ── Loading skeleton while agents are being fetched ── */
                       <div className="text-center space-y-4 mb-1 w-full max-w-lg px-4">
                         {/* Agent name skeleton */}

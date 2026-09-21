@@ -95,6 +95,217 @@ const HUB_CATEGORIES = [
   {key: 'translate', label: 'Translation'},
 ];
 
+function StorageLocationBar({storageInfo, onUpdateStorage}) {
+  const [editing, setEditing] = useState(false);
+  const [newPath, setNewPath] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  if (!storageInfo) return null;
+
+  const isCdrive = (storageInfo.models_dir || '').toUpperCase().startsWith('C:');
+  const usedGb = (storageInfo.total_gb || 0) - (storageInfo.free_gb || 0);
+  const pct =
+    storageInfo.total_gb > 0
+      ? Math.round((usedGb / storageInfo.total_gb) * 100)
+      : 0;
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!newPath.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/admin/models/storage-path', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({models_dir: newPath.trim()}),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        throw new Error(d.error || 'Failed to update storage path');
+      }
+      onUpdateStorage(d);
+      setEditing(false);
+    } catch (err) {
+      setError(err.message);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div
+      style={{
+        background: '#13121f',
+        border: '1px solid rgba(108, 99, 255, 0.2)',
+        borderRadius: 8,
+        padding: '12px 16px',
+        marginBottom: 16,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 10,
+        }}
+      >
+        <div style={{display: 'flex', alignItems: 'center', gap: 10}}>
+          <span style={{fontSize: 18}}>💾</span>
+          <div>
+            <div style={{fontSize: 11, color: '#8899aa', fontWeight: 600, letterSpacing: '0.05em'}}>
+              MODEL STORAGE LOCATION
+            </div>
+            <div
+              style={{
+                fontFamily: 'monospace',
+                fontSize: 13,
+                color: '#fff',
+                marginTop: 2,
+              }}
+            >
+              {storageInfo.models_dir}
+            </div>
+          </div>
+        </div>
+
+        <div style={{display: 'flex', alignItems: 'center', gap: 14}}>
+          <div style={{textAlign: 'right'}}>
+            <div style={{fontSize: 11, color: '#8899aa'}}>
+              Disk: {usedGb.toFixed(1)} / {(storageInfo.total_gb || 0).toFixed(1)} GB ({pct}%)
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                color: storageInfo.free_gb < 15 ? '#FF6B6B' : '#4CAF50',
+                fontWeight: 600,
+              }}
+            >
+              {(storageInfo.free_gb || 0).toFixed(1)} GB free
+            </div>
+          </div>
+
+          {!editing && (
+            <button
+              onClick={() => {
+                setNewPath(storageInfo.models_dir);
+                setEditing(true);
+                setError(null);
+              }}
+              style={{
+                background: 'rgba(108, 99, 255, 0.15)',
+                color: '#9B94FF',
+                border: '1px solid rgba(108, 99, 255, 0.35)',
+                borderRadius: 6,
+                padding: '5px 12px',
+                fontSize: 12,
+                cursor: 'pointer',
+                fontWeight: 600,
+              }}
+            >
+              Change Location
+            </button>
+          )}
+        </div>
+      </div>
+
+      {isCdrive && !editing && (
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 11,
+            color: '#FFAB00',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <span>⚠️</span>
+          <span>
+            Models currently download to your system C: drive. You can redirect this to a secondary or external drive (e.g. <code>D:\AI_Models</code>, <code>/Volumes/...</code>, or <code>/mnt/...</code>) so large weights do not fill your primary drive.
+          </span>
+        </div>
+      )}
+
+      {editing && (
+        <form
+          onSubmit={handleSave}
+          style={{
+            marginTop: 12,
+            borderTop: '1px solid #232238',
+            paddingTop: 10,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+            }}
+          >
+            <input
+              type="text"
+              value={newPath}
+              onChange={(e) => setNewPath(e.target.value)}
+              placeholder="e.g. D:\AI_Models or /Volumes/External/AI_Models"
+              style={{
+                flex: 1,
+                minWidth: 260,
+                background: '#090812',
+                border: '1px solid #3c3866',
+                color: '#fff',
+                padding: '6px 10px',
+                borderRadius: 6,
+                fontSize: 13,
+                fontFamily: 'monospace',
+              }}
+            />
+            <button
+              type="submit"
+              disabled={saving}
+              style={{
+                background: '#6C63FF',
+                color: '#fff',
+                border: 'none',
+                padding: '6px 14px',
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              {saving ? 'Validating...' : 'Set Storage Directory'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              style={{
+                background: 'transparent',
+                color: '#8899aa',
+                border: '1px solid #444',
+                padding: '6px 12px',
+                borderRadius: 6,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+          {error && (
+            <div style={{color: '#FF6B6B', fontSize: 12, marginTop: 6}}>
+              {error}
+            </div>
+          )}
+        </form>
+      )}
+    </div>
+  );
+}
+
 function VRAMBar({compute}) {
   if (!compute || !compute.vram_total_gb) return null;
   const used = compute.vram_total_gb - compute.vram_free_gb;
@@ -445,6 +656,20 @@ function ModelCard({model, onLoad, onUnload, onDownload, onSetPurpose}) {
         {model.ram_gb > 0 && <span>RAM: {model.ram_gb}GB</span>}
         {model.disk_gb > 0 && <span>Disk: {model.disk_gb}GB</span>}
         <span>Backend: {model.backend}</span>
+        {(model.local_path || model.files?.local_dir) && (
+          <span
+            title={model.local_path || model.files?.local_dir}
+            style={{
+              color: '#9B94FF',
+              maxWidth: 220,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            📁 {model.local_path || model.files?.local_dir}
+          </span>
+        )}
         {model.cost_per_1k > 0 && (
           <span style={{color: '#FF9800'}}>
             ${model.cost_per_1k.toFixed(4)}/1K tok
@@ -651,14 +876,19 @@ function AddModelDialog({onClose, onSave}) {
     priority: 50,
     languages: '',
     tags: '',
+    local_dir: '',
   });
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const files = form.model_file ? {model: form.model_file} : {};
+    const files = {};
+    if (form.model_file) files.model = form.model_file;
     if (form.has_vision && form.mmproj_file) {
       files.mmproj = form.mmproj_file;
       files.mmproj_source = form.mmproj_source_file || form.mmproj_file;
+    }
+    if (form.local_dir && form.local_dir.trim()) {
+      files.local_dir = form.local_dir.trim();
     }
     const capabilities = {chat: form.model_type === 'llm'};
     if (form.has_vision) capabilities.vision = true;
@@ -972,6 +1202,19 @@ function AddModelDialog({onClose, onSave}) {
               value={form.tags}
               onChange={(e) => setForm((f) => ({...f, tags: e.target.value}))}
               placeholder="local, recommended, vision, cpu-friendly"
+            />
+          </div>
+          <div style={{gridColumn: '1 / -1'}}>
+            <label style={labelStyle}>
+              Custom Download Directory (optional, overrides global default)
+            </label>
+            <input
+              style={inputStyle}
+              value={form.local_dir}
+              onChange={(e) =>
+                setForm((f) => ({...f, local_dir: e.target.value}))
+              }
+              placeholder="e.g. D:\AI_Models\custom or leave blank for global storage"
             />
           </div>
         </div>
@@ -1333,6 +1576,7 @@ export default function ModelManagementPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [actionInProgress, setActionInProgress] = useState(null);
   const [providerCaps, setProviderCaps] = useState(null);
+  const [storageInfo, setStorageInfo] = useState(null);
 
   const fetchModels = useCallback(async () => {
     setLoadError(null);
@@ -1358,7 +1602,7 @@ export default function ModelManagementPage() {
         }
         return res.json();
       };
-      const [modelsRes, capsRes] = await Promise.all([
+      const [modelsRes, capsRes, storageRes] = await Promise.all([
         fetchOne('/api/admin/models'),
         fetchOne('/api/admin/providers/capabilities').catch((e) => {
           // capabilities is non-critical — log but don't block render.
@@ -1366,9 +1610,16 @@ export default function ModelManagementPage() {
           console.warn('providers/capabilities failed:', e);
           return null;
         }),
+        fetchOne('/api/admin/models/storage-path').catch((e) => {
+          // storage-path is non-critical — log but don't block render.
+          // eslint-disable-next-line no-console
+          console.warn('models/storage-path failed:', e);
+          return null;
+        }),
       ]);
       if (modelsRes) setData(modelsRes);
       if (capsRes) setProviderCaps(capsRes.capabilities);
+      if (storageRes) setStorageInfo(storageRes);
     } catch (e) {
       const msg =
         e.name === 'AbortError'
@@ -1515,6 +1766,12 @@ export default function ModelManagementPage() {
           </button>
         </div>
       </div>
+
+      {/* Model storage location info and configuration */}
+      <StorageLocationBar
+        storageInfo={storageInfo}
+        onUpdateStorage={setStorageInfo}
+      />
 
       {/* Mode toggle: Installed catalog vs Browse HuggingFace Hub */}
       <div

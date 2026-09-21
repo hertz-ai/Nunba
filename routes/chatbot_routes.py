@@ -4239,6 +4239,18 @@ def vault_has():
 # Any agent can reach out to any user. Non-owned agents require consent.
 # UX: owned agent = direct message; non-owned = "AgentX wants to talk" (accept/deny)
 
+# Per-process cache of an in-flight contact ask's PAYLOAD — the agent's message,
+# its reason and display name, which have no durable home yet (Notification has a
+# single `message` column and no payload/metadata field, UserConsent has no
+# `reason` column). It is NOT the record of the decision: that is written to
+# UserConsent when the user answers, so it survives a restart, appears on the
+# privacy page and can be revoked.
+#
+# Known loss window, deliberately left rather than papered over: a restart
+# between ask and answer drops the payload, so a card still on the user's screen
+# answers 404. Closing it needs a durable home for the payload (a v57
+# notifications.payload_json, or a table of its own) — tracked as F9's remaining
+# half, not silently ignored.
 _pending_contacts = {}  # {request_id: {agent_id, user_id, message, reason, timestamp, status}}
 
 def agent_contact_request():
@@ -4303,6 +4315,29 @@ def agent_contact_request():
         })
     else:
         # Non-owned agent: send consent request (like Instagram DM request)
+        #
+        # FILE THE ASK ON THE CONSENT RECORD.  The dict below is a per-process
+        # cache of the ask's PAYLOAD (message, reason, agent_name) — it is not
+        # the record of the decision, and must not be read as one.  The decision
+        # is written to UserConsent when the user answers, so it survives a
+        # restart, appears on the privacy page and can be revoked.
+        #
+        # Deliberately still asks even when a grant already exists: the live e2e
+        # (landing-page/cypress/e2e/agent-consent-e2e-live.cy.js) re-runs the
+        # same agent+user and then answers the request_id it got back, so
+        # short-circuiting to a direct delivery would 404 its respond call.
+        # Suppressing the re-ask is a contract change and is tracked separately.
+        try:
+            from integrations.social.consent_service import ConsentService
+            from integrations.social.models import db_session as _consent_db
+            with _consent_db(commit=True) as _db:
+                ConsentService.request_consent(
+                    _db, str(target_user_id), 'agent_contact', scope='*',
+                    agent_id=agent_id, reason=reason,
+                    requester_name=agent_name)
+        except Exception as _ce:
+            logger.warning(f"agent_contact ask not recorded: {_ce}")
+
         _pending_contacts[request_id] = {
             'agent_id': agent_id,
             'agent_name': agent_name,
@@ -4352,6 +4387,39 @@ def agent_contact_respond():
 
     contact = _pending_contacts[request_id]
     contact['status'] = action
+
+    # RECORD THE ANSWER, not just this process's memory of it.
+    #
+    # `contact['status']` above is a field on a dict that dies with the process.
+    # Before this, that WAS the whole record: an accept was forgotten on restart
+    # so the same agent asked again forever, a deny was equally unrecorded so a
+    # refused agent could re-ask immediately, and neither appeared on the privacy
+    # page or could be revoked. A deny is recorded as a revoke of the pending
+    # ask, which is how ConsentService.declined() detects a no (and the same
+    # thing record_capability_decision does for a capability denial).
+    #
+    # Best-effort and AFTER the status write, so the response below is
+    # byte-identical whether or not the record could be written — the live e2e
+    # asserts that shape, and a bookkeeping failure must not cost the user their
+    # answer.
+    try:
+        from integrations.social.consent_service import ConsentService
+        from integrations.social.models import db_session as _consent_db
+        with _consent_db(commit=True) as _db:
+            _uid, _aid = str(contact['user_id']), contact['agent_id']
+            if action == 'accept':
+                if ConsentService.active_grant(
+                        _db, _uid, 'agent_contact', agent_id=_aid) is None:
+                    ConsentService.grant_consent(
+                        _db, _uid, 'agent_contact', agent_id=_aid)
+            elif ConsentService.revoke_consent(
+                    _db, _uid, 'agent_contact', agent_id=_aid) is None:
+                # Nothing on file to revoke (answered without a recorded ask):
+                # the other surfaces still have to drop their copy of the card.
+                ConsentService.announce_revocation(
+                    _uid, 'agent_contact', agent_id=_aid)
+    except Exception as _ce:
+        logger.warning(f"agent_contact decision not recorded: {_ce}")
 
     if action == 'accept':
         # Deliver the pending message

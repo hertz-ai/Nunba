@@ -13,6 +13,7 @@ that matters, a tk window that takes the call and ignores the value.
     python -m pytest tests/test_glass.py -q
 """
 import ast
+import ctypes
 import logging
 import re
 from pathlib import Path
@@ -23,8 +24,18 @@ import pytest
 from desktop import glass, platform_utils
 
 WS_EX_LAYERED = 0x00080000
+WS_EX_NOREDIRECTIONBITMAP = 0x00200000
 LWA_COLORKEY = 0x00000001
 LWA_ALPHA = 0x00000002
+
+
+@pytest.fixture(autouse=True)
+def no_composition_hosts_left_over():
+    """The module OWNS its composition hosts, so they outlive a call by
+    design.  A test that built one must not hand it to the next."""
+    glass._WINDOWS_HOSTS.clear()
+    yield
+    glass._WINDOWS_HOSTS.clear()
 
 _DESKTOP = Path(__file__).resolve().parent.parent / 'desktop'
 
@@ -69,6 +80,33 @@ def layered_user32(style=WS_EX_LAYERED, accepts=True):
     user32.SetLayeredWindowAttributes.return_value = 1 if accepts else 0
     user32.GetLastError.return_value = 87  # ERROR_INVALID_PARAMETER
     return user32
+
+
+def composable_user32(exstyle=WS_EX_NOREDIRECTIONBITMAP, child=0):
+    """A window BORN able to show a composed page, and hosting nothing yet.
+
+    The opposite of `layered_user32` in the one way that matters: it carries
+    WS_EX_NOREDIRECTIONBITMAP, which is a creation style, and GetWindow says
+    it has no child, so nothing is already hosted inside it.
+    """
+    user32 = MagicMock()
+    user32.GetWindowLongW.return_value = exstyle
+    user32.GetWindow.return_value = child
+    user32.SetWindowCompositionAttribute.return_value = 1
+    user32.SetLayeredWindowAttributes.return_value = 0
+    user32.GetLastError.return_value = 0
+    return user32
+
+
+def fake_com():
+    """Three non-null interface pointers, as DirectComposition hands back.
+
+    Real `c_void_p`s, not mocks, because `_com_release` reads `.value` to
+    decide whether there is anything to release -- the exact behaviour the
+    leak tests are about.
+    """
+    return (ctypes.c_void_p(0x1000), ctypes.c_void_p(0x2000),
+            ctypes.c_void_p(0x3000))
 
 
 def accepting_dwm():
@@ -228,15 +266,23 @@ class TestWindowsBackend:
         user32.SetLayeredWindowAttributes.assert_not_called()
         assert 'not up yet' in result.note
 
-    def test_it_never_claims_native_glass(self):
-        """Windows' ceiling.  The DWM backdrops ARE the OS's GPU glass, but
-        GL1 measured them painting WHITE behind a WebView2 page: the page's
-        alpha never reaches the DWM under pywebview's WinForms hosting.
-        Climbing higher is a hosting change, and it will be proven with
-        pixels."""
+    def test_a_window_that_cannot_be_composed_never_claims_native_glass(self):
+        """The rung Windows reaches is now NATIVE_GLASS -- but only for a
+        window BORN able to show a composed page.
+
+        `layered_user32` is the window the app actually has: it already
+        hosts a browser of its own and was created without
+        WS_EX_NOREDIRECTIONBITMAP.  Neither can be fixed afterwards, so the
+        honest answer for it is still the blend, and every OS call here is
+        made to succeed so the backend is given every chance to over-claim.
+        """
         with on_windows(), patch('ctypes.windll.user32', layered_user32()), \
                 patch('ctypes.windll.dwmapi', accepting_dwm()):
-            assert not glass.apply_glass(1234, INTENT).is_native
+            result = glass.apply_glass(1234, INTENT)
+
+        assert not result.is_native
+        assert result.rung == glass.LAYERED_ALPHA
+        assert 'dcomp_visual' not in result.steps
 
     def test_the_callers_material_choice_reaches_the_dwm(self):
         """A surface that wants the light material must get it, or the OS
@@ -264,6 +310,212 @@ class TestWindowsBackend:
 
         assert result.rung == glass.LAYERED_ALPHA
         assert 'dwm_backdrop' not in result.steps
+
+
+class TestWindowsCompositionRung:
+    """The NATIVE_GLASS rung: the page on a DirectComposition visual, under
+    the OS's own blur.
+
+    PROVEN IN PIXELS by tests/glass_native_demo.py -- transmittance 0.831,
+    detail 0.047 -- which is what a rung claim rests on.  What is pinned
+    HERE is everything the pixels cannot police: that the module refuses the
+    rung on a window that cannot take it, asks for the material the
+    measurement supports, and gives every COM object back.
+    """
+
+    def test_a_composable_window_reaches_native_glass(self):
+        vcall = MagicMock()
+        with on_windows(), patch('ctypes.windll.user32', composable_user32()), \
+                patch('ctypes.windll.dwmapi', accepting_dwm()), \
+                patch.object(glass, '_vcall', vcall), \
+                patch.object(glass, '_windows_composition_visual',
+                             return_value=fake_com()), \
+                patch.object(glass, '_windows_composition_controller',
+                             return_value=MagicMock()):
+            result = glass.apply_glass(1234, INTENT)
+
+        assert result.rung == glass.NATIVE_GLASS
+        assert result.is_native
+        assert 'dcomp_visual' in result.steps
+        assert 'webview2_composition' in result.steps
+        assert 'dwm_backdrop' in result.steps
+
+    def test_the_visual_tree_is_committed_or_nothing_is_on_screen(self):
+        """DirectComposition batches: a tree that is never committed is a
+        tree the compositor has not been told about."""
+        vcall = MagicMock()
+        with on_windows(), patch('ctypes.windll.user32', composable_user32()), \
+                patch('ctypes.windll.dwmapi', accepting_dwm()), \
+                patch.object(glass, '_vcall', vcall), \
+                patch.object(glass, '_windows_composition_visual',
+                             return_value=fake_com()), \
+                patch.object(glass, '_windows_composition_controller',
+                             return_value=MagicMock()):
+            glass.apply_glass(1234, INTENT)
+
+        slots = [call[0][1] for call in vcall.call_args_list]
+        assert glass._SLOT_DEVICE_COMMIT in slots, 'the tree was never committed'
+
+    def test_a_composed_window_gets_the_material_that_was_measured(self):
+        """The two materials are NOT interchangeable and the wrong one is
+        indistinguishable from failure.
+
+        MEASURED 2026-09-21: DWMWA_SYSTEMBACKDROP_TYPE paints a flat opaque
+        solid over a composed page (transmittance 0.000, every type); the
+        accent policy's blur-behind passes 0.831 of the light and destroys
+        the detail.  So a composed window must get the accent policy and
+        must NOT get the system backdrop.
+        """
+        DWMWA_SYSTEMBACKDROP_TYPE = 38
+        user32 = composable_user32()
+        dwm = accepting_dwm()
+        with on_windows(), patch('ctypes.windll.user32', user32), \
+                patch('ctypes.windll.dwmapi', dwm), \
+                patch.object(glass, '_vcall', MagicMock()), \
+                patch.object(glass, '_windows_composition_visual',
+                             return_value=fake_com()), \
+                patch.object(glass, '_windows_composition_controller',
+                             return_value=MagicMock()):
+            glass.apply_glass(1234, INTENT)
+
+        user32.SetWindowCompositionAttribute.assert_called_once()
+        assert not [c for c in dwm.DwmSetWindowAttribute.call_args_list
+                    if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE], (
+            'the system backdrop paints a composed page opaque')
+
+    def test_an_uncomposable_window_still_gets_the_system_backdrop(self):
+        """The other half of the same decision: the window the app actually
+        has keeps exactly what it had before this rung existed."""
+        DWMWA_SYSTEMBACKDROP_TYPE = 38
+        user32 = layered_user32()
+        dwm = accepting_dwm()
+        with on_windows(), patch('ctypes.windll.user32', user32), \
+                patch('ctypes.windll.dwmapi', dwm):
+            result = glass.apply_glass(1234, INTENT)
+
+        assert result.rung == glass.LAYERED_ALPHA
+        assert [c for c in dwm.DwmSetWindowAttribute.call_args_list
+                if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE]
+        user32.SetWindowCompositionAttribute.assert_not_called()
+
+    def test_a_window_born_without_the_creation_flag_is_never_composed(self):
+        """WS_EX_NOREDIRECTIONBITMAP cannot be added afterwards, and without
+        it the window's own GDI surface sits opaque behind the page.
+        MEASURED: 0.075 and sharp without the flag, 0.831 and blurred with
+        it.  So the module must not even try."""
+        visual = MagicMock()
+        with on_windows(), \
+                patch('ctypes.windll.user32', composable_user32(exstyle=0)), \
+                patch('ctypes.windll.dwmapi', accepting_dwm()), \
+                patch.object(glass, '_windows_composition_visual', visual):
+            result = glass.apply_glass(1234, INTENT)
+
+        visual.assert_not_called()
+        assert not result.is_native
+
+    def test_a_window_that_already_hosts_a_browser_is_never_composed(self):
+        """pywebview's form holds its WebView2 as a child HWND; composing
+        over it would stack a second, blank browser on the owner's page."""
+        visual = MagicMock()
+        with on_windows(), \
+                patch('ctypes.windll.user32', composable_user32(child=99)), \
+                patch('ctypes.windll.dwmapi', accepting_dwm()), \
+                patch.object(glass, '_windows_composition_visual', visual):
+            result = glass.apply_glass(1234, INTENT)
+
+        visual.assert_not_called()
+        assert not result.is_native
+
+    def test_a_browser_that_will_not_start_leaks_nothing(self):
+        """The failure path is the one that leaks a GPU device for the life
+        of the process, so it is the one that is pinned."""
+        vcall = MagicMock()
+        with on_windows(), patch('ctypes.windll.user32', composable_user32()), \
+                patch('ctypes.windll.dwmapi', accepting_dwm()), \
+                patch.object(glass, '_vcall', vcall), \
+                patch.object(glass, '_windows_composition_visual',
+                             return_value=fake_com()), \
+                patch.object(glass, '_windows_composition_controller',
+                             side_effect=RuntimeError('no runtime')):
+            result = glass.apply_glass(1234, INTENT)
+
+        released = [c[0][0].value for c in vcall.call_args_list
+                    if c[0][1] == glass._SLOT_RELEASE]
+        assert sorted(released) == [0x1000, 0x2000, 0x3000], (
+            'the visual, the target and the device must all go back')
+        assert not result.is_native
+        assert glass.hosted_page(1234) is None
+
+    def test_the_failure_is_logged_with_what_failed(self, caplog):
+        with on_windows(), patch('ctypes.windll.user32', composable_user32()), \
+                patch('ctypes.windll.dwmapi', accepting_dwm()), \
+                patch.object(glass, '_vcall', MagicMock()), \
+                patch.object(glass, '_windows_composition_visual',
+                             return_value=fake_com()), \
+                patch.object(glass, '_windows_composition_controller',
+                             side_effect=RuntimeError('no runtime')), \
+                caplog.at_level(logging.ERROR, logger='NunbaGlass'):
+            glass.apply_glass(1234, INTENT)
+
+        assert 'no runtime' in caplog.text and '1234' in caplog.text
+
+    def test_the_caller_is_handed_the_page_to_navigate_not_the_hosting(self):
+        """The module hosts; the caller navigates.  The same boundary this
+        file draws around the look."""
+        controller = MagicMock()
+        with on_windows(), patch('ctypes.windll.user32', composable_user32()), \
+                patch('ctypes.windll.dwmapi', accepting_dwm()), \
+                patch.object(glass, '_vcall', MagicMock()), \
+                patch.object(glass, '_windows_composition_visual',
+                             return_value=fake_com()), \
+                patch.object(glass, '_windows_composition_controller',
+                             return_value=controller):
+            glass.apply_glass(1234, INTENT)
+
+        assert glass.hosted_page(1234) is controller.CoreWebView2
+
+    def test_applying_twice_does_not_stack_a_second_browser(self):
+        """apply_glass runs again whenever a window is re-shown or moved."""
+        builder = MagicMock(return_value=fake_com())
+        with on_windows(), patch('ctypes.windll.user32', composable_user32()), \
+                patch('ctypes.windll.dwmapi', accepting_dwm()), \
+                patch.object(glass, '_vcall', MagicMock()), \
+                patch.object(glass, '_windows_composition_visual', builder), \
+                patch.object(glass, '_windows_composition_controller',
+                             return_value=MagicMock()):
+            first = glass.apply_glass(1234, INTENT)
+            second = glass.apply_glass(1234, INTENT)
+
+        assert builder.call_count == 1
+        assert first.rung == second.rung == glass.NATIVE_GLASS
+
+    def test_releasing_closes_the_browser_and_gives_the_com_objects_back(self):
+        controller = MagicMock()
+        vcall = MagicMock()
+        with on_windows(), patch('ctypes.windll.user32', composable_user32()), \
+                patch('ctypes.windll.dwmapi', accepting_dwm()), \
+                patch.object(glass, '_vcall', vcall), \
+                patch.object(glass, '_windows_composition_visual',
+                             return_value=fake_com()), \
+                patch.object(glass, '_windows_composition_controller',
+                             return_value=controller):
+            glass.apply_glass(1234, INTENT)
+            vcall.reset_mock()
+            released = glass.release_glass(1234)
+
+        assert released is True
+        controller.Close.assert_called_once()
+        assert sorted(c[0][0].value for c in vcall.call_args_list
+                      if c[0][1] == glass._SLOT_RELEASE) == [
+            0x1000, 0x2000, 0x3000]
+        assert glass.release_glass(1234) is False, 'nothing left to release'
+        assert glass.hosted_page(1234) is None
+
+    def test_a_window_that_never_reached_the_rung_can_still_be_released(self):
+        """A caller must be able to call it on every window without first
+        asking which rung it got."""
+        assert glass.release_glass(4321) is False
+        assert glass.hosted_page(4321) is None
 
 
 # ── macOS ──────────────────────────────────────────────────────────────
@@ -418,8 +670,13 @@ class TestItNeverReturnsARungItDidNotReach:
             assert backend.ceiling in glass.LADDER
 
     def test_the_declared_ceilings_are_the_measured_per_platform_truth(self):
+        """Windows' ceiling moved on 2026-09-21, and it moved because it was
+        MEASURED, not because the code grew a claim: tests/glass_native_demo
+        .py puts a composed page on a DirectComposition visual under the
+        OS's blur and tests/glass_probe.py reads transmittance 0.831 with
+        detail 0.047 off the screen -- light through, detail gone."""
         assert glass._MACOS_BACKEND.ceiling == glass.NATIVE_GLASS
-        assert glass._WINDOWS_BACKEND.ceiling == glass.LAYERED_ALPHA
+        assert glass._WINDOWS_BACKEND.ceiling == glass.NATIVE_GLASS
         assert glass._LINUX_BACKEND.ceiling == glass.SOLID
 
     @pytest.mark.parametrize('platform,backend', [

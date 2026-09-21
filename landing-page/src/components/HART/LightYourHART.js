@@ -20,6 +20,7 @@
 
 import { API_BASE_URL } from '../../config/apiBase';
 import { applyHartSeal } from '../../hooks/useAuthSession';
+import { consentApi } from '../../services/socialApi';
 import { logger } from '../../utils/logger';
 import VoiceVisualizer from '../VoiceVisualizer';
 
@@ -33,6 +34,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 const PHASES = [
   'darkness',       // Initial black screen, ambient starts
   'language',       // "What language feels like home?"
+  'speech_consent', // Asking permission before speaking loudly on screen
   'greeting',       // PA introduces itself
   'passion',        // Question 1
   'ack_passion',    // PA acknowledges
@@ -910,9 +912,30 @@ export default function LightYourHART({ userId, onComplete }) {
     // Warm up TTS engine for this language (triggers model loading in background)
     warmUp(sel.code);
 
-    // Transition to greeting
-    setPhase('greeting');
+    // If user has not yet decided speech consent, go to 'speech_consent' phase
+    // before speaking anything loudly on screen!
+    const existingConsent = localStorage.getItem('nunba_speech_consent');
+    if (existingConsent) {
+      setPhase('greeting');
+    } else {
+      setPhase('speech_consent');
+    }
   }, [advance, warmUp]);
+
+  // ── Handle onboarding speech consent ──
+  const handleOnboardingSpeechConsent = useCallback(async (allowSpeak) => {
+    const consentVal = allowSpeak ? 'granted' : 'text_only';
+    try {
+      localStorage.setItem('nunba_speech_consent', consentVal);
+      localStorage.setItem('tts_enabled', allowSpeak ? 'true' : 'false');
+      if (allowSpeak) {
+        consentApi.grant({ consent_type: 'voice_speech', scope: '*' }).catch(() => {});
+      } else {
+        consentApi.revoke({ consent_type: 'voice_speech', scope: '*' }).catch(() => {});
+      }
+    } catch (e) {}
+    setPhase('greeting');
+  }, []);
 
   // ── Handle greeting → passion (auto-timed with voice) ──
   useEffect(() => {
@@ -923,7 +946,12 @@ export default function LightYourHART({ userId, onComplete }) {
       // PA speaks the greeting
       const greetingText = _getLine('greeting', language);
       setPaText(greetingText);
-      await speak('greeting', greetingText);
+      const isQuiet = localStorage.getItem('nunba_speech_consent') === 'text_only';
+      if (!isQuiet) {
+        await speak('greeting', greetingText);
+      } else {
+        await _sleep(2500);
+      }
       if (cancelled) return;
 
       // Pause, let it breathe
@@ -1311,6 +1339,121 @@ export default function LightYourHART({ userId, onComplete }) {
                       {lang.label}
                     </ButtonBase>
                   ))}
+                </Box>
+              </Box>
+            </Fade>
+          )}
+
+          {/* ── SPEECH CONSENT: Asking permission before speaking loudly ── */}
+          {phase === 'speech_consent' && (
+            <Fade in timeout={1000}>
+              <Box sx={{
+                textAlign: 'center',
+                maxWidth: 540,
+                mx: 'auto',
+                px: { xs: 2.5, sm: 4 },
+                py: { xs: 3.5, sm: 4.5 },
+                borderRadius: '24px',
+                background: 'linear-gradient(135deg, rgba(20, 18, 35, 0.94) 0%, rgba(12, 10, 22, 0.98) 100%)',
+                border: '1px solid rgba(108, 99, 255, 0.45)',
+                boxShadow: '0 20px 50px rgba(0, 0, 0, 0.7), 0 0 35px rgba(108, 99, 255, 0.25)',
+                backdropFilter: 'blur(24px)',
+                WebkitBackdropFilter: 'blur(24px)',
+              }}>
+                <Box sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  px: 2,
+                  py: 0.6,
+                  borderRadius: '20px',
+                  background: 'rgba(108, 99, 255, 0.15)',
+                  border: '1px solid rgba(108, 99, 255, 0.35)',
+                  color: '#c4c0ff',
+                  fontSize: '0.72rem',
+                  fontFamily: '"SF Mono", monospace',
+                  fontWeight: 600,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  mb: 2.5,
+                }}>
+                  <Box sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: '#2ECC71', boxShadow: '0 0 8px #2ECC71' }} />
+                  Human-AI Trust Bond &middot; Privacy by Design
+                </Box>
+
+                <Typography sx={{
+                  fontFamily: '"Playfair Display", Georgia, serif',
+                  fontSize: { xs: '1.85rem', md: '2.3rem' },
+                  fontWeight: 400,
+                  color: '#fff',
+                  mb: 2,
+                  lineHeight: 1.25,
+                }}>
+                  May I speak aloud with you?
+                </Typography>
+
+                <Typography sx={{
+                  color: 'rgba(255, 255, 255, 0.85)',
+                  fontSize: '0.96rem',
+                  lineHeight: 1.55,
+                  mb: 2,
+                  fontFamily: '"Inter", sans-serif',
+                }}>
+                  Hey, I'm getting permission before I speak anything loudly on the screen.
+                  As a true friend and helper, I respect your presence and your acoustic space.
+                </Typography>
+
+                <Typography sx={{
+                  color: 'rgba(196, 192, 255, 0.9)',
+                  fontSize: '0.82rem',
+                  lineHeight: 1.5,
+                  mb: 3.5,
+                  fontFamily: '"SF Mono", monospace',
+                  background: 'rgba(108, 99, 255, 0.12)',
+                  p: 1.75,
+                  borderRadius: '12px',
+                  border: '1px solid rgba(108, 99, 255, 0.28)',
+                }}>
+                  ⚡ Earning Potential: Contribute idle compute to our decentralized hive to earn compute revenue ($15–$45/mo) or unlock Tier-1 frontier intelligence for your companion.
+                </Typography>
+
+                <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 2, justifyContent: 'center' }}>
+                  <ButtonBase
+                    onClick={() => handleOnboardingSpeechConsent(true)}
+                    sx={{
+                      ...styles.optionChip,
+                      background: 'linear-gradient(135deg, #6C63FF 0%, #9B94FF 100%)',
+                      color: '#fff',
+                      fontWeight: 600,
+                      px: 3.5,
+                      py: 1.6,
+                      boxShadow: '0 4px 20px rgba(108, 99, 255, 0.45)',
+                      '&:hover': {
+                        transform: 'translateY(-2px) scale(1.02)',
+                        boxShadow: '0 8px 28px rgba(108, 99, 255, 0.65)',
+                      },
+                    }}
+                  >
+                    🔊 Yes, Speak Aloud
+                  </ButtonBase>
+
+                  <ButtonBase
+                    onClick={() => handleOnboardingSpeechConsent(false)}
+                    sx={{
+                      ...styles.optionChip,
+                      background: 'rgba(255, 255, 255, 0.06)',
+                      border: '1px solid rgba(255, 255, 255, 0.2)',
+                      color: 'rgba(255, 255, 255, 0.82)',
+                      px: 3,
+                      py: 1.6,
+                      '&:hover': {
+                        background: 'rgba(255, 255, 255, 0.12)',
+                        transform: 'translateY(-2px)',
+                      },
+                    }}
+                  >
+                    💬 Keep Quiet (Text Only)
+                  </ButtonBase>
                 </Box>
               </Box>
             </Fade>

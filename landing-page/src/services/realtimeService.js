@@ -233,6 +233,11 @@ class RealtimeService {
     // and not just a missing message.
     [
       'notification',
+      // Computer-use commentary/ribbon updates are emitted on the existing
+      // chat.social channel.  EventSource drops named events unless the
+      // channel is explicitly registered here; route it through the same
+      // transport-neutral dispatcher as every other realtime event.
+      'chat.social',
       'setup_progress',
       'chat.response',
       'agent.ui.update',

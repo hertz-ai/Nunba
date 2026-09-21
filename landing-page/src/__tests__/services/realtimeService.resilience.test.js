@@ -177,3 +177,16 @@ describe('#211 SSE resilience — disconnect() still works', () => {
     expect(FakeEventSource.instances[0].closed).toBe(true);
   });
 });
+
+describe('computer-use commentary SSE channel', () => {
+  test('registers the existing chat.social named event on the one SSE source', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.init(null, {userId: 'local-user'});
+    const source = FakeEventSource.instances[0];
+
+    expect(source._listeners['chat.social']).toHaveLength(1);
+    expect(source._listeners.notification).toHaveLength(1);
+    // No second EventSource or parallel subscription is created.
+    expect(FakeEventSource.instances).toHaveLength(1);
+  });
+});

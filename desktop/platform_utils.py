@@ -735,6 +735,37 @@ def get_app_data_dir():
         return os.path.expanduser('~/.nunba')
 
 
+def webview_user_data_dir():
+    """Where WebView2 keeps this app's browser profile.
+
+    ONE home for it, because there are now two things that create a
+    WebView2 in this process: pywebview, which app.py hands this folder at
+    startup, and the composition host in ``desktop/glass.py``, which creates
+    its own environment to reach the GPU compositor.  Two folders would mean
+    two browser profiles -- the glass-hosted page would not see the
+    localStorage, cookies or session the rest of the app does.
+
+    The folder must be writable: WebView2's own default is beside the
+    executable, which is ``C:\\Program Files\\...`` for the installed build
+    and read-only, so everything stored there is lost on restart.
+
+    ``WEBVIEW2_USER_DATA_FOLDER`` wins, because WebView2 reads that variable
+    itself: a SECOND process on this machine -- a test rig, a probe -- must
+    not fight the running app for the profile.  Measured 2026-09-21: with
+    Nunba live on the canonical folder, another process asking for a
+    composition controller on it is refused with ERROR_INVALID_STATE.
+    """
+    override = os.environ.get('WEBVIEW2_USER_DATA_FOLDER')
+    if override:
+        return override
+    try:
+        from core.platform_paths import get_data_dir
+        base = get_data_dir()
+    except ImportError:
+        base = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba')
+    return os.path.join(base, 'webview_data')
+
+
 def get_log_dir():
     """Get the appropriate log directory for the current platform"""
     try:

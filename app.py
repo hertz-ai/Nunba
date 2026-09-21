@@ -9368,12 +9368,8 @@ window.addEventListener('unhandledrejection', function(e) {
         # Persistent storage path for WebView2 (localStorage, cookies, cache).
         # Without this, the frozen exe's install dir (C:\Program Files\...) is
         # used and is read-only — all localStorage data is lost on restart.
-        try:
-            from core.platform_paths import get_data_dir as _get_wv_data
-            _webview_data_dir = os.path.join(_get_wv_data(), 'webview_data')
-        except ImportError:
-            _webview_data_dir = os.path.join(
-                os.path.expanduser('~'), 'Documents', 'Nunba', 'webview_data')
+        from desktop.platform_utils import webview_user_data_dir
+        _webview_data_dir = webview_user_data_dir()
         os.makedirs(_webview_data_dir, exist_ok=True)
 
         if sys.platform == "win32":
