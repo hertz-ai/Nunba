@@ -8252,27 +8252,55 @@ def main():
             logger.info("[COMPANION] Nanba companion window created at (%d, %d)",
                         _comp_x, _comp_y)
 
-            # Wire ResourceGovernor mode changes to companion
-            def _update_companion_mode():
+            def _companion_js(method, value):
+                """The ONE way this file calls into the companion page.
+
+                Was two hand-rolled f-strings (setMode, setLanguage), each
+                repeating the `window.companionAPI && ...` guard and each
+                interpolating the value straight into single quotes.  That
+                quoting is a real bug, not just duplication: any value holding
+                an apostrophe closes the JS string early and the call is
+                dropped.  json.dumps emits a correctly escaped JS literal, so
+                apostrophes, quotes, backslashes and newlines all survive.
+
+                This carries only values this process OWNS (the resource mode,
+                the UI language).  Anything HARTOS produces reaches the page
+                over its own topic -- see the note below the mode wiring.
+                """
                 if not _companion_window:
                     return
                 try:
-                    from core.resource_governor import get_governor
-                    mode = get_governor().get_mode()
+                    payload = json.dumps('' if value is None else str(value))
                     _companion_window.evaluate_js(
-                        f"window.companionAPI && window.companionAPI.setMode('{mode}')")
+                        f"window.companionAPI && "
+                        f"window.companionAPI.{method}({payload})")
                 except Exception:
                     pass
 
-            # Wire TTS events to companion (speaking animation)
-            def _on_companion_loaded():
+            # Wire ResourceGovernor mode changes to companion
+            def _update_companion_mode():
                 try:
-                    # Set language from user preference
-                    lang = os.environ.get('HARTOS_LANG', 'en')[:2]
-                    _companion_window.evaluate_js(
-                        f"window.companionAPI && window.companionAPI.setLanguage('{lang}')")
+                    from core.resource_governor import get_governor
+                    _companion_js('setMode', get_governor().get_mode())
                 except Exception:
                     pass
+
+            # NOTE: what the AI is doing now already reaches this window, and
+            # must not be fed from here.  HARTOS's VLM loop builds ONE caption
+            # per step (integrations/vlm/local_loop._step_caption) and sends
+            # it two places: record_activity -> the computer_use.update topic,
+            # and _notify_desktop_indicator -> the ribbon.  The page subscribes
+            # to that topic through useComputerActivity and renders it on the
+            # commentary card.  A second push from this process would shadow
+            # that feed (the card reads indicatorStep first) while carrying
+            # none of its run lifecycle -- no run_done, no task_id reduction,
+            # no linger timer -- so the card would never clear.
+
+            # Wire TTS events to companion (speaking animation)
+            def _on_companion_loaded():
+                # Set language from user preference
+                _companion_js('setLanguage',
+                              os.environ.get('HARTOS_LANG', 'en')[:2])
                 # A floating presence is a tool window: no taskbar entry, no
                 # Alt-Tab.  Sized back to the page's 220x310 (pywebview set
                 # the OUTER size before dropping the frame: 198x254 measured

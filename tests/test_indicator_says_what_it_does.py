@@ -46,7 +46,15 @@ def test_hide_sends_no_text(iw):
 
 def test_caption_is_one_line_and_bounded(iw):
     assert iw._one_line('  two\n words   here ') == 'two words here'
-    assert len(iw._one_line('x' * 500)) == 160
+    cut = iw._one_line('x' * 500)
+    # Read from the module, not a second copy of the number here.  The bound
+    # is what the label can draw (measured against the 520 px panel), so it
+    # moves when the panel does.
+    assert len(cut) == iw.RIBBON_LINE_CHARS
+    # The cut is marked, so a clipped caption reads as clipped rather than as
+    # a sentence that just stops.  The unclipped text goes to the companion
+    # window instead -- test_the_step_reaches_every_surface below.
+    assert cut.endswith('…')
 
 
 def test_status_reports_the_step(iw):

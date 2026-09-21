@@ -962,8 +962,31 @@ def initialize_indicator(server_port=5000):
         logger.error(f"Error initializing ribbon indicator: {str(e)}")
         return False
 
-def _one_line(text, limit=160):
-    """A step caption fit for one panel line."""
+# How much of a step caption the ribbon's own label can actually draw.
+# Derived in _one_line below; named here so the ribbon and its guard test
+# read the same number instead of each carrying a copy.
+RIBBON_LINE_CHARS = 72
+
+
+def _one_line(text, limit=RIBBON_LINE_CHARS):
+    """A step caption fit for one panel line.
+
+    72, not 160.  The panel is capped at 520 px (self.panel_width) and the
+    toolbar spends most of it on the timer, the separator and the Stop button,
+    leaving the step label roughly 280 px -- about 72 characters at Segoe UI
+    10.  At 160 the label was handed ~3x more text than could ever be drawn
+    and tk clipped it mid-word with no ellipsis, because a tk.Label without
+    wraplength never wraps.  Measured 2026-09-21.  The ellipsis is now
+    honest: it marks where the caption was cut, instead of the text just
+    stopping at the edge.
+
+    Cutting here costs the owner nothing they cannot read elsewhere: HARTOS
+    builds ONE caption per step and sends it both here and to the
+    computer_use.update topic (integrations/vlm/local_loop, beside its
+    record_activity call), and the floating companion window renders that
+    topic on a card with room for the whole line.  This is the glance
+    surface; that one is the reading surface.
+    """
     words = str(text or '').split()
     line = ' '.join(words)
     return line if len(line) <= limit else line[:limit - 1].rstrip() + '…'
