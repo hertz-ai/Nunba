@@ -19,35 +19,44 @@ return code cannot:
     GLASS     the window blends what is behind and BLURS it -- the backdrop
               is present but its detail is gone.
 
-The distinction is the whole point of GL2, so the probe is built around it.
-
 HOW IT DECIDES
 --------------
-A backdrop of hard black/white stripes is drawn behind the region under
-test.  Stripes are chosen because they are pure high-frequency signal: a
-blur destroys them and nothing else does.
+Two quantities, from three captures of the same region with three different
+backdrops behind the same surface:
 
-    presence  = how much of the backdrop's mean brightness survives.
-                0 means opaque, 1 means a clear window.
-    contrast  = the surviving stripe amplitude, as a fraction of the
-                backdrop's own.  ALPHA keeps it (scaled by opacity).
-                GLASS collapses it while KEEPING presence -- that gap is
-                the signature no API return can fake.
+    transmittance   black backdrop vs white backdrop.  How much the surface
+                    CHANGES when what is behind it changes.  0 means opaque.
+                    Measured as a DIFFERENCE, never as absolute brightness,
+                    because a dark opaque panel is dark -- not see-through.
+                    (The first version divided brightness by the backdrop's
+                    and duly called a #1E1E1E slab 23% transparent.)
 
-    OPAQUE  presence < PRESENCE_FLOOR
-    ALPHA   presence OK and contrast >= CONTRAST_SHARP
-    GLASS   presence OK and contrast <= CONTRAST_BLURRED
+    detail          stripe backdrop.  The surviving stripe amplitude as a
+                    fraction of the stripes' own.  Stripes are pure
+                    high-frequency signal: a blur destroys them and nothing
+                    else does.
 
-Anything between the two contrast thresholds is reported UNCERTAIN rather
+The discriminator is the RATIO of the two.  A plain blend passes light and
+detail in the same proportion, so detail/transmittance is near 1.  A blur
+passes the light and keeps none of the detail, so the ratio collapses.  That
+gap is the signature no API return can fake, and it needs no absolute
+threshold on either quantity alone.
+
+    OPAQUE  transmittance < TRANSMITTANCE_FLOOR
+    ALPHA   detail_retention >= RETENTION_SHARP
+    GLASS   detail_retention <= RETENTION_BLURRED
+
+Anything between the two retention thresholds is reported UNCERTAIN rather
 than rounded to the answer the caller wanted.
 
 USE
 ---
-    python tests/glass_probe.py --region 100,100,320,410
+    python tests/glass_probe.py --region 100,100,320,410 [--hwnd 12345]
 
-with the surface under test already on screen at that rectangle.  Returns
-exit code 0 for GLASS, 1 for anything else, so a build step can gate on it.
-Pass --save out.png to keep the captured pixels as evidence.
+with the surface under test already on screen at that rectangle.  --hwnd is
+needed for a surface this probe did not create, so it can be raised back
+above the backdrops.  Returns exit code 0 for GLASS, 1 for anything else,
+so a build step can gate on it.  --save keeps the captured pixels.
 
 This module measures only.  It never creates, styles or touches the window
 under test, so it cannot flatter an implementation by accident.
@@ -60,15 +69,15 @@ import sys
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
-#: Below this, the backdrop did not survive: the window is painting itself.
-PRESENCE_FLOOR = 0.12
+#: Below this, changing what is behind the surface changes nothing: opaque.
+TRANSMITTANCE_FLOOR = 0.05
 
-#: At or above this, the backdrop's edges came through intact -- a blend,
-#: not a blur.
-CONTRAST_SHARP = 0.35
+#: At or above this, detail came through in proportion to the light -- a
+#: blend, not a blur.
+RETENTION_SHARP = 0.50
 
-#: At or below this, the backdrop is present but its detail is gone.
-CONTRAST_BLURRED = 0.15
+#: At or below this, the light came through and the detail did not.
+RETENTION_BLURRED = 0.25
 
 #: Stripe period in PHYSICAL pixels.  Wide enough to survive display
 #: scaling, narrow enough that a real compositor blur radius erases it.
@@ -82,76 +91,133 @@ OPAQUE, ALPHA, GLASS, UNCERTAIN, NO_SIGNAL = (
 class Verdict:
     """What the pixels say, and the numbers that say it."""
     kind: str
-    presence: float
-    contrast: float
+    transmittance: float
+    detail: float
     note: str = ''
+
+    @property
+    def detail_retention(self) -> float:
+        if self.transmittance <= 0:
+            return 0.0
+        return self.detail / self.transmittance
 
     @property
     def is_glass(self) -> bool:
         return self.kind == GLASS
 
     def __str__(self) -> str:
-        return (f'{self.kind}  presence={self.presence:.3f} '
-                f'contrast={self.contrast:.3f}'
+        return (f'{self.kind}  transmittance={self.transmittance:.3f} '
+                f'detail={self.detail:.3f} '
+                f'retention={self.detail_retention:.3f}'
                 + (f'  ({self.note})' if self.note else ''))
 
 
-def classify(rows_under_test: Sequence[Sequence[float]],
-             backdrop_amplitude: float,
-             backdrop_mean: float) -> Verdict:
+def classify(mean_over_black: Optional[float],
+             mean_over_white: Optional[float],
+             backdrop_black_mean: float,
+             backdrop_white_mean: float,
+             stripe_amplitude_seen: Optional[float],
+             backdrop_stripe_amplitude: float) -> Verdict:
     """The decision, separated from every bit of screen and GUI plumbing.
 
-    Pure: takes greyscale rows and the backdrop's own numbers, returns the
-    verdict.  Kept pure so the thresholds can be tested without a display,
-    which is also what lets this run in CI on a headless box.
+    Pure: takes six numbers, returns the verdict.  Kept pure so the
+    thresholds can be tested without a display, which is also what lets the
+    guard run headless.
     """
-    if not rows_under_test or not rows_under_test[0]:
+    backdrop_swing = backdrop_white_mean - backdrop_black_mean
+    if backdrop_swing <= 0 or backdrop_stripe_amplitude <= 0:
+        return Verdict(NO_SIGNAL, 0.0, 0.0,
+                       'the backdrops did not draw; every later number '
+                       'would be meaningless')
+    if mean_over_black is None or mean_over_white is None:
         return Verdict(NO_SIGNAL, 0.0, 0.0, 'empty capture')
-    if backdrop_amplitude <= 0:
-        return Verdict(NO_SIGNAL, 0.0, 0.0, 'backdrop had no stripe signal')
 
-    # Presence: how much of the backdrop's brightness reaches the eye.
-    observed_mean = statistics.fmean(
-        v for row in rows_under_test for v in row)
-    presence = observed_mean / backdrop_mean if backdrop_mean else 0.0
+    transmittance = (mean_over_white - mean_over_black) / backdrop_swing
+    transmittance = max(0.0, transmittance)
 
-    # Contrast: the surviving stripe amplitude.  Measured per ROW and then
-    # taken as the median, so one bright UI element crossing the region
-    # (an icon, a text run) cannot masquerade as surviving stripes.
-    amplitudes: List[float] = []
-    for row in rows_under_test:
-        if len(row) < STRIPE_PX * 2:
-            continue
-        lo, hi = min(row), max(row)
-        amplitudes.append(hi - lo)
-    if not amplitudes:
-        return Verdict(NO_SIGNAL, presence, 0.0, 'region too narrow')
-    contrast = statistics.median(amplitudes) / backdrop_amplitude
+    if stripe_amplitude_seen is None:
+        return Verdict(NO_SIGNAL, transmittance, 0.0, 'empty stripe capture')
+    detail = stripe_amplitude_seen / backdrop_stripe_amplitude
 
-    if presence < PRESENCE_FLOOR:
-        return Verdict(OPAQUE, presence, contrast,
-                       'the backdrop did not survive')
-    if contrast >= CONTRAST_SHARP:
-        return Verdict(ALPHA, presence, contrast,
-                       'backdrop came through with its edges intact')
-    if contrast <= CONTRAST_BLURRED:
-        return Verdict(GLASS, presence, contrast,
-                       'backdrop present, detail gone')
-    return Verdict(UNCERTAIN, presence, contrast,
-                   f'contrast sits between {CONTRAST_BLURRED} and '
-                   f'{CONTRAST_SHARP}; neither a blend nor a blur')
+    if transmittance < TRANSMITTANCE_FLOOR:
+        return Verdict(OPAQUE, transmittance, detail,
+                       'changing what is behind it changed nothing')
+
+    retention = detail / transmittance
+    if retention >= RETENTION_SHARP:
+        return Verdict(ALPHA, transmittance, detail,
+                       'detail came through in proportion to the light')
+    if retention <= RETENTION_BLURRED:
+        return Verdict(GLASS, transmittance, detail,
+                       'light came through, detail did not')
+    return Verdict(UNCERTAIN, transmittance, detail,
+                   f'retention sits between {RETENTION_BLURRED} and '
+                   f'{RETENTION_SHARP}; neither a blend nor a blur')
 
 
-def _grey_rows(image, box: Tuple[int, int, int, int]) -> List[List[float]]:
-    """Greyscale rows for a box, as plain floats -- no numpy dependency."""
-    left, top, right, bottom = box
+# ── screen plumbing ─────────────────────────────────────────────────────
+
+_dpi_ready = False
+
+
+def ensure_dpi_aware() -> bool:
+    """Make this process speak the same pixels the screen does.
+
+    MEASURED on a 150% display (LOGPIXELSX=144): without this, a window
+    placed at logical (140,140) and a capture of physical (140,140) are
+    different parts of the screen, because Windows virtualises coordinates
+    for a DPI-unaware process.  The first run of this rig read the same
+    region three times over for three different screen states.  With
+    per-monitor awareness set, tk's geometry and ImageGrab's bbox agree to
+    within two pixels over a 320x280 rectangle, which is the basis of every
+    number above.
+
+    Idempotent and best-effort: a platform without the call keeps working,
+    and says so rather than going quiet.
+    """
+    global _dpi_ready
+    if _dpi_ready or sys.platform != 'win32':
+        return _dpi_ready
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()       # older fallback
+        _dpi_ready = True
+    except Exception as e:
+        print('glass_probe: could not set DPI awareness (%s); coordinates '
+              'and captured pixels may disagree on a scaled display' % e,
+              file=sys.stderr)
+    return _dpi_ready
+
+
+def _grey_rows(image) -> List[List[float]]:
+    """Greyscale rows, as plain floats -- no numpy dependency."""
     px = image.convert('L').load()
-    return [[float(px[x, y]) for x in range(left, right)]
-            for y in range(top, bottom)]
+    return [[float(px[x, y]) for x in range(image.width)]
+            for y in range(image.height)]
+
+
+def _mean(rows: Sequence[Sequence[float]]) -> Optional[float]:
+    flat = [v for row in rows for v in row]
+    return statistics.fmean(flat) if flat else None
+
+
+def _stripe_amplitude(rows: Sequence[Sequence[float]]) -> Optional[float]:
+    """Median row amplitude.
+
+    MEDIAN, not max: a blurred surface with an icon or a text run crossing
+    it has a few high-amplitude rows, and taking the max would let those
+    read as surviving backdrop.
+    """
+    amps = [max(r) - min(r) for r in rows if len(r) >= STRIPE_PX * 2]
+    return statistics.median(amps) if amps else None
 
 
 def capture(region: Tuple[int, int, int, int], save: Optional[str] = None):
     """Grab the screen region.  Separated so classify() stays testable."""
+    ensure_dpi_aware()
     from PIL import ImageGrab
     shot = ImageGrab.grab(bbox=region, all_screens=True)
     if save:
@@ -159,53 +225,146 @@ def capture(region: Tuple[int, int, int, int], save: Optional[str] = None):
     return shot
 
 
-def _stripe_backdrop(region: Tuple[int, int, int, int]):
-    """A hard black/white stripe window behind the region under test.
+def _backdrop(region: Tuple[int, int, int, int], kind: str):
+    """A backdrop window behind the region under test: black, white, stripes.
 
-    tkinter only: no extra dependency, and it is already how the ribbon
-    draws.  Returns the window so the caller can destroy it.
+    TOPMOST, never lowered.  An earlier version called ``lower()``, which
+    sent it behind the entire desktop, so every reading was of whatever
+    happened to be on screen.  The surface under test is put back above it
+    by ``raise_above_backdrop``.
+
+    Uses a Toplevel when a tk root already exists: a second ``Tk()`` in one
+    process is its own source of silent misbehaviour.
     """
     import tkinter as tk
+    ensure_dpi_aware()
     left, top, right, bottom = region
     w, h = right - left, bottom - top
-    win = tk.Tk()
+    win = tk.Toplevel() if tk._default_root is not None else tk.Tk()
     win.overrideredirect(True)
     win.geometry(f'{w}x{h}+{left}+{top}')
-    win.lower()
-    canvas = tk.Canvas(win, width=w, height=h, highlightthickness=0, bg='black')
+    win.attributes('-topmost', True)
+    bg = 'black' if kind == 'black' else 'white'
+    canvas = tk.Canvas(win, width=w, height=h, highlightthickness=0,
+                       bg='black' if kind != 'white' else 'white')
     canvas.pack()
-    for x in range(0, w, STRIPE_PX * 2):
-        canvas.create_rectangle(x, 0, x + STRIPE_PX, h,
-                                fill='white', outline='')
+    if kind == 'stripes':
+        for x in range(0, w, STRIPE_PX * 2):
+            canvas.create_rectangle(x, 0, x + STRIPE_PX, h,
+                                    fill='white', outline='')
+    else:
+        canvas.configure(bg=bg)
     win.update()
     return win
 
 
+def raise_above_backdrop(hwnd: int) -> bool:
+    """Put an EXISTING window back on top of the backdrop.
+
+    Needed when probing a surface this module did not create -- the ribbon,
+    the companion -- because the backdrop is topmost and would otherwise
+    cover the very thing being measured.
+    """
+    ensure_dpi_aware()
+    if sys.platform != 'win32' or not hwnd:
+        return False
+    try:
+        import ctypes
+        HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE = -1, 2, 1, 16
+        return bool(ctypes.windll.user32.SetWindowPos(
+            int(hwnd), HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE))
+    except Exception as e:
+        print('glass_probe: could not raise %s above the backdrop (%s)'
+              % (hwnd, e), file=sys.stderr)
+        return False
+
+
+#: How far the backdrop extends beyond the surface on every side.  The ring
+#: it leaves visible is the backdrop's own reading.
+MARGIN_PX = 40
+
+
+def _place_below(backdrop_win, hwnd: int) -> bool:
+    """Put the backdrop DIRECTLY BELOW the surface under test.
+
+    Both windows are topmost, so ordering them by raising one above the
+    other is a fight: an earlier version raised the surface and measured
+    transmittance 1.000 for an opaque panel, i.e. the surface was never in
+    front at all.  ``SetWindowPos(backdrop, hWndInsertAfter=target)`` says
+    exactly where the backdrop goes and is not a race.
+    """
+    ensure_dpi_aware()
+    if sys.platform != 'win32' or not hwnd:
+        return False
+    try:
+        import ctypes
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE = 2, 1, 16
+        back_hwnd = ctypes.windll.user32.GetAncestor(
+            backdrop_win.winfo_id(), 2)  # GA_ROOT
+        return bool(ctypes.windll.user32.SetWindowPos(
+            back_hwnd, int(hwnd), 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE))
+    except Exception as e:
+        print('glass_probe: could not place the backdrop below %s (%s)'
+              % (hwnd, e), file=sys.stderr)
+        return False
+
+
+def _ring_and_centre(rows: List[List[float]], margin: int):
+    """Split a capture into the backdrop's own ring and the surface's area.
+
+    One capture, two readings.  This is what removes the timing and z-order
+    guesswork: the backdrop is wider than the surface, so its untouched
+    margin is visible in the SAME frame as the part behind the surface.
+    """
+    h, w = len(rows), len(rows[0]) if rows else 0
+    if h <= margin * 2 or w <= margin * 2:
+        return None, None
+    ring = ([r[:] for r in rows[:margin]] +
+            [r[:] for r in rows[h - margin:]] +
+            [r[:margin] + r[w - margin:] for r in rows[margin:h - margin]])
+    centre = [r[margin:w - margin] for r in rows[margin:h - margin]]
+    return ring, centre
+
+
+def _read(region, kind, hwnd, save=None):
+    """One backdrop, one capture, both readings out of it."""
+    import time
+    left, top, right, bottom = region
+    wide = (left - MARGIN_PX, top - MARGIN_PX,
+            right + MARGIN_PX, bottom + MARGIN_PX)
+    back = _backdrop(wide, kind)
+    try:
+        if hwnd:
+            _place_below(back, hwnd)
+        time.sleep(0.4)
+        rows = _grey_rows(capture(wide, save))
+        return _ring_and_centre(rows, MARGIN_PX)
+    finally:
+        back.destroy()
+
+
 def probe(region: Tuple[int, int, int, int],
-          save: Optional[str] = None) -> Verdict:
+          save: Optional[str] = None,
+          hwnd: Optional[int] = None) -> Verdict:
     """Measure the surface currently occupying `region`.
 
-    The backdrop is drawn, measured on its own, then the region under the
-    surface is measured.  Measuring the backdrop live rather than assuming
-    255/0 is deliberate: display scaling, colour management and night-light
-    all move the numbers, and a probe that assumed them would be reporting
-    on a display it had not looked at.
+    Three backdrops, because transmittance needs a black/white pair and
+    detail needs stripes.  Each backdrop is measured on its own as well as
+    through the surface, so the numbers are relative to what this display
+    actually showed rather than to an assumed 255/0 -- scaling, colour
+    management and night-light all move them.
     """
-    backdrop = None
-    try:
-        backdrop = _stripe_backdrop(region)
-        shot = capture(region, None)
-        rows = _grey_rows(shot, (0, 0, shot.width, shot.height))
-        amps = [max(r) - min(r) for r in rows if r]
-        backdrop_amplitude = statistics.median(amps) if amps else 0.0
-        backdrop_mean = statistics.fmean(v for r in rows for v in r) if rows else 0.0
-    finally:
-        if backdrop is not None:
-            backdrop.destroy()
+    black_alone, black_through = _read(region, 'black', hwnd)
+    white_alone, white_through = _read(region, 'white', hwnd)
+    stripe_alone, stripe_through = _read(region, 'stripes', hwnd, save)
 
-    shot = capture(region, save)
-    rows = _grey_rows(shot, (0, 0, shot.width, shot.height))
-    return classify(rows, backdrop_amplitude, backdrop_mean)
+    return classify(
+        _mean(black_through), _mean(white_through),
+        _mean(black_alone) or 0.0, _mean(white_alone) or 0.0,
+        _stripe_amplitude(stripe_through),
+        _stripe_amplitude(stripe_alone) or 0.0)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -213,6 +372,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument('--region', required=True,
                     help='left,top,right,bottom in screen pixels')
     ap.add_argument('--save', help='write the captured pixels here')
+    ap.add_argument('--hwnd', type=int, default=None,
+                    help='window to raise above the backdrop (needed for a '
+                         'surface this probe did not create)')
     ns = ap.parse_args(argv)
     try:
         region = tuple(int(v) for v in ns.region.split(','))
@@ -222,7 +384,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print('--region needs four integers: left,top,right,bottom')
         return 2
 
-    verdict = probe(region, ns.save)  # type: ignore[arg-type]
+    verdict = probe(region, ns.save, ns.hwnd)  # type: ignore[arg-type]
     print(verdict)
     return 0 if verdict.is_glass else 1
 

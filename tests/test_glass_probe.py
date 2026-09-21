@@ -4,14 +4,23 @@ An instrument that has never been shown the positive case is not evidence.
 GL1 exists because a compositor claim was believed from an API return code;
 a probe believed from its own output would be the same mistake one level up.
 
-So these feed the classifier synthetic captures whose true nature is known
-by construction -- an opaque slab, a sharp alpha blend, a real blur -- and
+So these feed the classifier numbers whose true nature is known by
+construction -- an opaque slab, a sharp alpha blend, a real blur -- and
 require it to name each one. No screen, no GUI, no display needed, because
 classify() was kept pure for exactly this.
 
+Two defects this suite now pins, both found by running the rig against
+surfaces of known nature rather than by reading it:
+
+  1. presence-by-brightness called a #1E1E1E opaque panel 23% see-through,
+     because a dark panel is dark. Transmittance is now measured as the
+     CHANGE between a black and a white backdrop, which a surface's own
+     colour cannot fake.
+  2. the discriminator is the RATIO of detail to transmittance, so neither
+     quantity needs an absolute threshold and a dim blur is still a blur.
+
     python -m pytest tests/test_glass_probe.py -q
 """
-import math
 import os
 import sys
 
@@ -20,66 +29,63 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.glass_probe import (  # noqa: E402
-    ALPHA, CONTRAST_BLURRED, CONTRAST_SHARP, GLASS, NO_SIGNAL, OPAQUE,
-    PRESENCE_FLOOR, STRIPE_PX, UNCERTAIN, classify)
+    ALPHA, GLASS, NO_SIGNAL, OPAQUE, RETENTION_BLURRED, RETENTION_SHARP,
+    STRIPE_PX, TRANSMITTANCE_FLOOR, UNCERTAIN, classify)
 
-WIDTH = STRIPE_PX * 8
-HEIGHT = 12
-
-#: What a hard black/white stripe backdrop measures as on its own.
-BACKDROP_AMPLITUDE = 255.0
-BACKDROP_MEAN = 127.5
+#: What the backdrops measure as on their own.
+BLACK, WHITE, STRIPE_AMP = 0.0, 255.0, 255.0
 
 
-def stripes(amplitude, mean):
-    """Rows carrying the backdrop's stripe pattern at a given amplitude."""
-    rows = []
-    for _ in range(HEIGHT):
-        row = []
-        for x in range(WIDTH):
-            high = (x // STRIPE_PX) % 2 == 0
-            row.append(mean + (amplitude / 2 if high else -amplitude / 2))
-        rows.append(row)
-    return rows
+def seen(transmittance, retention, own_tint=0.0):
+    """The six numbers a surface of a given nature would produce.
 
-
-def flat(level):
-    """Rows with no stripe signal at all."""
-    return [[float(level)] * WIDTH for _ in range(HEIGHT)]
+    own_tint is the surface's OWN brightness, added to both the black and
+    white readings. A correct transmittance is blind to it; the first
+    version of this probe was not.
+    """
+    over_black = own_tint + BLACK * transmittance
+    over_white = own_tint + WHITE * transmittance
+    stripe_seen = STRIPE_AMP * transmittance * retention
+    return (over_black, over_white, BLACK, WHITE, stripe_seen, STRIPE_AMP)
 
 
 class TestItNamesEachKindCorrectly:
     def test_an_opaque_slab_is_opaque(self):
-        """The window paints itself; the backdrop is gone. Presence near
-        zero is the signature, whatever the contrast happens to be."""
-        v = classify(flat(8), BACKDROP_AMPLITUDE, BACKDROP_MEAN)
+        """The window paints itself; changing what is behind it changes
+        nothing."""
+        v = classify(*seen(transmittance=0.0, retention=0.0, own_tint=30.0))
         assert v.kind == OPAQUE
         assert not v.is_glass
+
+    def test_a_dark_opaque_panel_is_not_mistaken_for_glass(self):
+        """THE regression. The ribbon's #1E1E1E panel is grey 30, which an
+        absolute-brightness metric read as 23% of a mid-grey backdrop and
+        called GLASS. It is a slab."""
+        v = classify(*seen(transmittance=0.0, retention=0.0, own_tint=30.0))
+        assert v.kind == OPAQUE, (
+            'a dark panel is dark, not see-through; transmittance must be '
+            'measured as the CHANGE between backdrops')
 
     def test_a_sharp_blend_is_alpha_not_glass(self):
         """The case that matters most: a layered window at 80% looks
         see-through to a person and to a naive metric, but it is a MIRROR
         of the backdrop, edges intact. GL2 asks for blur, so this must not
-        be allowed to pass as glass -- it is what the ribbon already
-        ships."""
-        v = classify(stripes(BACKDROP_AMPLITUDE * 0.8, BACKDROP_MEAN * 0.85),
-                     BACKDROP_AMPLITUDE, BACKDROP_MEAN)
+        pass as glass -- it is what the ribbon already ships."""
+        v = classify(*seen(transmittance=0.2, retention=1.0, own_tint=24.0))
         assert v.kind == ALPHA
         assert not v.is_glass
 
     def test_real_blurred_glass_is_glass(self):
-        """Presence kept, detail destroyed. Only a compositor blur does
+        """Light through, detail destroyed. Only a compositor blur does
         both at once, which is why the pair is the test."""
-        v = classify(flat(BACKDROP_MEAN * 0.9), BACKDROP_AMPLITUDE,
-                     BACKDROP_MEAN)
+        v = classify(*seen(transmittance=0.5, retention=0.02, own_tint=20.0))
         assert v.kind == GLASS
         assert v.is_glass
 
-    def test_a_clear_window_with_no_blur_is_alpha(self):
-        """Nothing in front at all: full presence, full contrast. Clear is
-        not glass."""
-        v = classify(stripes(BACKDROP_AMPLITUDE, BACKDROP_MEAN),
-                     BACKDROP_AMPLITUDE, BACKDROP_MEAN)
+    def test_a_clear_window_is_alpha_not_glass(self):
+        """Nothing in front at all: full transmittance, full detail. Clear
+        is not glass."""
+        v = classify(*seen(transmittance=1.0, retention=1.0))
         assert v.kind == ALPHA
 
 
@@ -87,59 +93,68 @@ class TestItRefusesToGuess:
     def test_the_middle_ground_is_uncertain_not_rounded(self):
         """A partial blur is reported as what it is. Rounding it to GLASS
         would let a half-built backend claim the goal."""
-        mid = (CONTRAST_SHARP + CONTRAST_BLURRED) / 2
-        v = classify(stripes(BACKDROP_AMPLITUDE * mid, BACKDROP_MEAN * 0.9),
-                     BACKDROP_AMPLITUDE, BACKDROP_MEAN)
+        mid = (RETENTION_SHARP + RETENTION_BLURRED) / 2
+        v = classify(*seen(transmittance=0.4, retention=mid))
         assert v.kind == UNCERTAIN
         assert not v.is_glass
 
-    def test_an_empty_capture_is_no_signal(self):
-        assert classify([], BACKDROP_AMPLITUDE, BACKDROP_MEAN).kind == NO_SIGNAL
-        assert classify([[]], BACKDROP_AMPLITUDE, BACKDROP_MEAN).kind == NO_SIGNAL
-
     def test_a_backdrop_that_never_drew_is_no_signal(self):
-        """If the stripe window failed to show, every later number is
-        meaningless. Say so instead of dividing by it."""
-        v = classify(flat(100), 0.0, BACKDROP_MEAN)
-        assert v.kind == NO_SIGNAL
-        assert not v.is_glass
+        """If the backdrops failed to show, every later number is
+        meaningless. Say so instead of dividing by them."""
+        assert classify(10.0, 10.0, 50.0, 50.0, 1.0, 255.0).kind == NO_SIGNAL
+        assert classify(10.0, 20.0, 0.0, 255.0, 1.0, 0.0).kind == NO_SIGNAL
+
+    def test_an_empty_capture_is_no_signal(self):
+        assert classify(None, 20.0, BLACK, WHITE, 1.0,
+                        STRIPE_AMP).kind == NO_SIGNAL
+        assert classify(10.0, 20.0, BLACK, WHITE, None,
+                        STRIPE_AMP).kind == NO_SIGNAL
 
     def test_no_kind_but_glass_ever_passes(self):
-        for kind in (OPAQUE, ALPHA, UNCERTAIN, NO_SIGNAL):
-            v = classify(flat(8), BACKDROP_AMPLITUDE, BACKDROP_MEAN)
+        v = classify(*seen(transmittance=0.5, retention=0.02))
+        for kind in (OPAQUE, ALPHA, UNCERTAIN, NO_SIGNAL, GLASS):
             v.kind = kind
             assert v.is_glass is (kind == GLASS)
 
 
-class TestOneBrightElementCannotFakeIt:
-    def test_a_bright_run_across_a_few_rows_does_not_read_as_stripes(self):
-        """A blurred surface with an icon or a text run crossing it has a
-        few high-amplitude rows. Taking the MEDIAN row amplitude rather
-        than the max keeps those from reading as surviving backdrop."""
-        rows = flat(BACKDROP_MEAN * 0.9)
-        for i in (0, 1, HEIGHT - 1):
-            rows[i] = stripes(BACKDROP_AMPLITUDE, BACKDROP_MEAN)[0]
-        v = classify(rows, BACKDROP_AMPLITUDE, BACKDROP_MEAN)
+class TestTransmittanceIsBlindToTheSurfacesOwnColour:
+    @pytest.mark.parametrize('tint', [0.0, 30.0, 120.0, 200.0])
+    def test_a_blur_reads_the_same_under_any_tint(self, tint):
+        """Glass is usually tinted. How much light passes and how dark the
+        pane is are different questions, and conflating them is what broke
+        the first version."""
+        v = classify(*seen(transmittance=0.5, retention=0.02, own_tint=tint))
         assert v.kind == GLASS
+        assert v.transmittance == pytest.approx(0.5, abs=0.01)
+
+    @pytest.mark.parametrize('tint', [0.0, 30.0, 200.0])
+    def test_an_opaque_slab_reads_opaque_under_any_tint(self, tint):
+        v = classify(*seen(transmittance=0.0, retention=0.0, own_tint=tint))
+        assert v.kind == OPAQUE
+
+
+class TestADimBlurIsStillABlur:
+    @pytest.mark.parametrize('t', [0.08, 0.2, 0.6, 0.95])
+    def test_glass_at_any_transmittance(self, t):
+        """The ratio is the discriminator, so a heavily tinted pane that
+        passes little light is still glass if it keeps no detail."""
+        v = classify(*seen(transmittance=t, retention=0.05))
+        assert v.kind == GLASS
+
+    @pytest.mark.parametrize('t', [0.08, 0.2, 0.6, 0.95])
+    def test_alpha_at_any_transmittance(self, t):
+        v = classify(*seen(transmittance=t, retention=1.0))
+        assert v.kind == ALPHA
 
 
 class TestTheThresholdsAreOrdered:
     def test_blurred_is_below_sharp(self):
         """Inverting these would make every surface glass."""
-        assert 0 < CONTRAST_BLURRED < CONTRAST_SHARP < 1
+        assert 0 < RETENTION_BLURRED < RETENTION_SHARP <= 1
 
-    def test_presence_floor_leaves_room_for_a_dark_tint(self):
-        """Glass is usually tinted dark; the floor must not call a legibly
-        tinted pane opaque."""
-        assert 0 < PRESENCE_FLOOR < 0.5
+    def test_the_transmittance_floor_is_small(self):
+        """It only has to reject 'changed nothing', not judge tint depth."""
+        assert 0 < TRANSMITTANCE_FLOOR < 0.2
 
-
-class TestPresenceAndContrastAreIndependent:
-    @pytest.mark.parametrize('presence_scale', [0.3, 0.6, 0.9])
-    def test_a_blur_is_glass_at_any_tint_depth(self, presence_scale):
-        """Darkening the tint must not flip the verdict: how much light
-        passes and whether detail survives are different questions."""
-        v = classify(flat(BACKDROP_MEAN * presence_scale),
-                     BACKDROP_AMPLITUDE, BACKDROP_MEAN)
-        assert v.kind == GLASS
-        assert math.isclose(v.presence, presence_scale, rel_tol=0.02)
+    def test_the_stripe_period_survives_scaling(self):
+        assert STRIPE_PX >= 4
