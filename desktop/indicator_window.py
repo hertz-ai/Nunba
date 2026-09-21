@@ -13,6 +13,13 @@ import tkinter as tk
 
 import requests
 
+# The ONE module that asks whether this OS will let the desktop show through
+# a floating window.  The panel used to write tk's `-alpha` here while the
+# companion window asked the DWM for a backdrop in app.py -- two mechanisms
+# for one capability, free to drift.  Both now ask this.  The panel's LOOK
+# (PANEL_BG, PANEL_ALPHA below) stays here: that module holds no colours.
+from desktop.glass import GlassIntent, apply_glass
+
 # Try to import pyautogui for screen detection
 try:
     import pyautogui
@@ -53,18 +60,25 @@ logger = logging.getLogger('LLM_Control_Indicator_TK')
 
 #: The panel's one colour: every widget background in the panel.  One source,
 #: so a stray shade cannot creep in as a solid block against the rest.
+#:
+#: This surface is the app's ONE floating window with no page behind it, so
+#: its look lives here rather than in CSS.  Every other floating surface is
+#: a webview and styles itself; desktop/glass.py holds no colours at all,
+#: because a look forked per platform is the bug, not the feature.
 PANEL_BG = '#1E1E1E'
 
-#: How much of what is behind the panel shows through (tk -alpha, a layered
-#: window: whole-window translucency, full hit-testing).  Owner 2026-09-15:
-#: "the floatinf window shd have transparent glass like bg".  Translucency is
-#: what this desktop can give a tk window: blurred glass is not reachable
-#: here, measured by screen pixels on Windows 11 25H2 (build 26200) on
-#: 2026-09-15: the legacy accent policy (SetWindowCompositionAttribute
-#: ACRYLICBLURBEHIND) paints its tint solid, and the Win11 system backdrop
-#: turns the panel flat grey with its text faded; -alpha is the one
-#: mechanism whose blend the pixels confirmed (a white window behind the
-#: panel reads 30/30/30 opaque, 75/75/75 at 0.8).
+#: How much of what is behind the panel shows through.  The ribbon's own
+#: look value, for the same reason as PANEL_BG, handed to desktop/glass.py
+#: as an intent -- that module answers only whether the OS will let the
+#: desktop through, never how the result should look.
+#:
+#: Owner 2026-09-15: "the floatinf window shd have transparent glass like
+#: bg".  MEASURED by screen pixels on Windows 11 25H2 (build 26200) on
+#: 2026-09-15: a white window behind the panel reads 30/30/30 opaque and
+#: 75/75/75 at 0.8.  Below 0.6 the white text loses contrast over a bright
+#: window; above 0.85 nothing of the desktop shows through.  Why blurred
+#: glass is not reachable for a tk window here, and what would make it so,
+#: is recorded once in desktop/glass.py rather than at every surface.
 PANEL_ALPHA = 0.8
 
 # Global variables
@@ -150,7 +164,14 @@ class RibbonIndicator:
             self.ribbon_window.overrideredirect(True)
             self.ribbon_window.attributes('-topmost', True)
             
-            # Semi-transparent
+            # The tab's alpha is MOTION, not glass: this is only the first
+            # frame of the pulse below, which rewrites `-alpha` every 100ms
+            # between 0.6 and 0.85 and snaps it to 1.0 on hover.  Routing an
+            # animated value through desktop/glass.py would ask that module
+            # a question it does not answer (it applies a resting
+            # appearance), so the pulse keeps its own writes.  The PANEL --
+            # the surface with a resting look to get right -- goes through
+            # glass in create_panel.
             try:
                 self.ribbon_window.attributes('-alpha', 0.85)
             except Exception:
@@ -336,12 +357,18 @@ class RibbonIndicator:
             self.panel_window.geometry(f"{self.panel_width}x0+{self.panel_x}+{self.panel_y}")  # Start with 0 height
             self.panel_window.overrideredirect(True)
             self.panel_window.attributes('-topmost', True)
-            
-            try:
-                self.panel_window.attributes('-alpha', PANEL_ALPHA)
-            except Exception:
-                pass
-            
+
+            # Let the desktop show through, through the ONE module that asks
+            # each OS whether it will.  The `-alpha` call itself lives in
+            # desktop/glass.py, so the ribbon and the companion window reach
+            # for the same mechanism and can never again be translucent two
+            # different ways.  PANEL_ALPHA is this surface's own look value
+            # (it has no page to style it); glass.py decides nothing about
+            # appearance, only what the window manager will grant.  It logs
+            # the rung it got and degrades to a solid panel rather than
+            # failing -- so the old `except Exception: pass` goes with it.
+            apply_glass(self.panel_window, GlassIntent(opacity=PANEL_ALPHA))
+
             # Set up the panel content
             self.setup_modern_panel_content()
             

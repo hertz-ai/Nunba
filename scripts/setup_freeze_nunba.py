@@ -527,6 +527,14 @@ build_exe_options = {
         "desktop.indicator_window",  # LLM control indicator
         "desktop.tray_handler",  # System tray handler
         "desktop.platform_utils",  # Platform utilities
+        "desktop.glass",  # The ONE floating-window glass module (ribbon
+                          # panel + companion both ask it).  Imported at
+                          # module level by desktop.indicator_window AND
+                          # function-local inside app.py's
+                          # _on_companion_loaded — the tracer misses the
+                          # second the same way it misses chat_sync, and a
+                          # miss here is a ModuleNotFoundError on the first
+                          # boot of the installed .exe.
         "desktop.splash_effects",  # Splash screen effects
         "desktop.media_classification",  # Media classification
         "desktop.guest_identity",  # Hardware-derived stable guest_id (J201)

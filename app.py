@@ -8245,6 +8245,18 @@ def main():
                 # pywebview only accepts a 3- or 6-digit hex here: the
                 # '#00000000' this shipped with made create_window raise on
                 # every boot, so the companion never existed.
+                #
+                # NEXT STEP, deliberately not taken in this change:
+                # transparent=True is exactly what
+                # desktop.glass.glass_window_kwargs() returns here, and on
+                # macOS that call ALSO returns vibrancy=True -- the one kwarg
+                # that makes pywebview build the NSVisualEffectView, i.e.
+                # real compositor glass.  It is a creation-time flag and
+                # cannot be added to a live window, so the wiring is
+                # `**glass_window_kwargs()` here.  Left unwired until it can
+                # be pixel-proven on a Mac with tests/glass_probe.py.
+                # background_color stays OURS: it is a look value, and
+                # glass.py holds none.
                 transparent=True,
                 background_color='#000000',
                 js_api=_companion_api,
@@ -8307,8 +8319,8 @@ def main():
                 # 2026-09-15).  Then on top, for the reason in _companion_raise.
                 _comp_hwnd = _resolve_hwnd(_companion_window)
                 if _comp_hwnd:
+                    from desktop.glass import GlassIntent, apply_glass
                     from desktop.platform_utils import (
-                        enable_window_acrylic,
                         set_window_floating_presence,
                         set_window_size,
                         set_window_tool_window,
@@ -8321,13 +8333,33 @@ def main():
                     # WS_EX_NOACTIVATE (so showing it pulled focus out of
                     # whatever the owner was typing in).
                     set_window_floating_presence(_comp_hwnd, True)
-                    # Best-effort: the DWM acrylic material behind that
-                    # alpha, so it reads as glass instead of a hole.  False
-                    # on pre-22H2 Windows or with transparency effects off,
-                    # and the window simply stays as it was.
-                    if not enable_window_acrylic(_comp_hwnd):
-                        logger.debug("[COMPANION] acrylic backdrop refused — "
-                                     "window stays plain")
+                    # Ask the OS to put the DESKTOP behind this window, so
+                    # the page's blur has something to blur -- through the
+                    # ONE module that asks that question (desktop/glass.py),
+                    # the same one the AI-control ribbon's panel asks.
+                    # WS_EX_LAYERED was set just above and, until now,
+                    # bought nothing: nothing in this repo ever called
+                    # SetLayeredWindowAttributes, so the bit was set and no
+                    # alpha was ever applied through it.  That is the
+                    # missing half apply_glass supplies here.
+                    #
+                    # It reports the rung it ACHIEVED, never the one hoped
+                    # for: on Windows that is LAYERED_ALPHA (the desktop
+                    # shows through, unblurred), because the DWM's own glass
+                    # cannot reach a WebView2 page under pywebview's
+                    # WinForms hosting -- measured in screen pixels as GL1.
+                    # A rung is never claimed from an API return code; that
+                    # mistake shipped once and was reverted.
+                    #
+                    # The opacity is a LOOK value, so it lives here with the
+                    # surface, not in glass.py -- which holds no colours and
+                    # no opacities of its own.  0.8 is what GL1 measured as
+                    # still readable over a bright window.  It applies only
+                    # on the layered degrade; a platform that can do real
+                    # compositor glass ignores it and lets the page's CSS
+                    # decide.
+                    _glass = apply_glass(_comp_hwnd, GlassIntent(opacity=0.8))
+                    logger.info("[COMPANION] glass: %s", _glass)
                     set_window_size(_comp_hwnd, _comp_w, _comp_h)
                 _companion_raise()
             if _companion_window:

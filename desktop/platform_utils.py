@@ -469,61 +469,15 @@ def is_main_window_foreground(main_window_handle, companion_window_handle=None):
         return False
 
 
-def enable_window_acrylic(window_handle):
-    """Ask the DWM for a translucent, blurred backdrop behind the window.
-
-    WS_EX_LAYERED (set_window_floating_presence above) lets the compositor
-    honour per-pixel alpha out of the page; this asks it to put something
-    worth seeing THROUGH that alpha -- the acrylic material, so the card reads
-    as glass over the owner's work rather than a hole.
-
-    Two DWM calls: the system backdrop type (DWMSBT_TRANSIENTWINDOW, the
-    material the OS uses for its own flyouts) and the frame extended over the
-    whole client area, which is what gives the backdrop somewhere to render.
-
-    Best-effort by design.  DWMWA_SYSTEMBACKDROP_TYPE landed in Windows 11
-    22H2; on anything older, or with transparency effects turned off in
-    Settings, the call fails and the window simply stays as it was.  Returns
-    True only when the backdrop was actually accepted, so a caller can tell
-    "glass" from "plain" without guessing at the Windows build.
-    """
-    if not IS_WINDOWS:
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-        DWMWA_SYSTEMBACKDROP_TYPE = 38
-        DWMSBT_TRANSIENTWINDOW = 3
-
-        class MARGINS(ctypes.Structure):
-            _fields_ = [('cxLeftWidth', ctypes.c_int),
-                        ('cxRightWidth', ctypes.c_int),
-                        ('cyTopHeight', ctypes.c_int),
-                        ('cyBottomHeight', ctypes.c_int)]
-
-        dwm = ctypes.windll.dwmapi
-        hwnd = _hwnd(window_handle)
-
-        dark = wintypes.DWORD(1)
-        dwm.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
-                                  ctypes.byref(dark), ctypes.sizeof(dark))
-
-        backdrop = wintypes.DWORD(DWMSBT_TRANSIENTWINDOW)
-        hr = dwm.DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE,
-                                       ctypes.byref(backdrop),
-                                       ctypes.sizeof(backdrop))
-        if hr != 0:
-            return False
-
-        # -1 on every edge: "sheet of glass", the whole client area.
-        margins = MARGINS(-1, -1, -1, -1)
-        dwm.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
-        return True
-    except Exception as e:
-        logger.debug('Acrylic backdrop not available: %s', e)
-        return False
+# NOTE: `enable_window_acrylic` used to live here.  It is GONE, not moved
+# aside: making a floating window see-through now has exactly one home,
+# `desktop/glass.py`, which both floating surfaces ask.  Its DWM logic
+# survives there as `_windows_dwm_material`, private and demoted to one
+# best-effort STEP of the Windows backend -- because GL1 measured that the
+# DWM accepting that backdrop does not put glass on the screen under this
+# app's window hosting, so its `True` was never the thing its name promised.
+# A window handle is made glass with `desktop.glass.apply_glass(handle)`; a
+# window is BORN glass with `**desktop.glass.glass_window_kwargs()`.
 
 
 def set_window_shape(window_handle, shape):
