@@ -271,6 +271,18 @@ def media_asset():
     if classification not in _VALID_CLASSIFICATIONS:
         classification = 'public_educational'  # don't let client escalate
 
+    # --- A game's bound sound comes before composing anything ---
+    #
+    # An agent binds a game's music once, in CREATE (core/agent_tools.py
+    # bind_game_sound), and REUSE must play that same music -- the one the
+    # reviewer approved -- not a fresh composition that merely sounds
+    # similar.  When the app asks on an agent's behalf it names the agent
+    # and the game, and the binding answers.
+    bound = _bound_game_media(request.args.get('prompt_id'),
+                              request.args.get('game_id'), media_type)
+    if bound:
+        return jsonify({'url': bound, 'bound': True}), 200
+
     # --- Auth: extract user_id from JWT (not from query param) ---
     user_id = _get_user_id_from_request()
 
@@ -367,6 +379,30 @@ def media_asset():
         }), 202
 
     return jsonify({'error': 'unsupported_type'}), 400
+
+
+def _bound_game_media(prompt_id, game_id, media_type):
+    """The asset an agent bound to a game, or None.
+
+    The binding lives in the agent's own saved data, where
+    save_data_in_memory writes it and get_data_by_key reads it
+    (core/agent_tools.py bind_game_sound), so a reused agent plays the
+    music its reviewer approved instead of composing a new one.  Only
+    music is bound today; anything else falls through to composition.
+    """
+    if media_type != 'music' or not prompt_id or not game_id:
+        return None
+    try:
+        from core.cache_loaders import load_agent_data
+        data = load_agent_data(prompt_id) or {}
+        music = (data.get('games', {}).get(str(game_id), {}).get('music') or {})
+        url = music.get('url')
+        if url:
+            logger.info(f"game {game_id} plays the music agent {prompt_id} bound to it")
+        return url or None
+    except Exception as e:
+        logger.warning(f"could not read the binding for game {game_id}: {e}")
+        return None
 
 
 def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classification, user_id, ext):

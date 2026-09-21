@@ -1057,3 +1057,36 @@ class TestAsyncGenerateUsesTheCapability:
             job = dict(r._async_jobs.pop(job_id))
         assert job["status"] == "failed"
         assert job["error"] == "media_capability_unavailable"
+
+
+class TestBoundGameMusic:
+    """A game plays the music its agent bound to it in CREATE, so REUSE
+    gives the same music the reviewer approved rather than composing a new
+    one (core/agent_tools.py bind_game_sound)."""
+
+    def test_a_bound_game_is_answered_from_the_binding(self):
+        from routes.kids_media_routes import _bound_game_media
+        agent_data = {"games": {"eng-01": {"music": {"url": "https://node/bound.mp3"}}}}
+        with patch("core.cache_loaders.load_agent_data", return_value=agent_data):
+            assert _bound_game_media("123", "eng-01", "music") == "https://node/bound.mp3"
+
+    def test_an_unbound_game_falls_through_to_composing(self):
+        from routes.kids_media_routes import _bound_game_media
+        with patch("core.cache_loaders.load_agent_data", return_value={"games": {}}):
+            assert _bound_game_media("123", "eng-02", "music") is None
+
+    def test_only_music_is_bound_today(self):
+        from routes.kids_media_routes import _bound_game_media
+        agent_data = {"games": {"eng-01": {"music": {"url": "https://node/bound.mp3"}}}}
+        with patch("core.cache_loaders.load_agent_data", return_value=agent_data):
+            assert _bound_game_media("123", "eng-01", "image") is None
+
+    def test_a_request_that_names_no_agent_composes_as_before(self):
+        from routes.kids_media_routes import _bound_game_media
+        assert _bound_game_media(None, "eng-01", "music") is None
+        assert _bound_game_media("123", None, "music") is None
+
+    def test_an_unreadable_binding_never_breaks_the_request(self):
+        from routes.kids_media_routes import _bound_game_media
+        with patch("core.cache_loaders.load_agent_data", side_effect=Exception("gone")):
+            assert _bound_game_media("123", "eng-01", "music") is None
