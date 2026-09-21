@@ -89,8 +89,14 @@ function readSkin() {
   }
 }
 
-// True inside the pywebview companion window.  pywebview puts `window.pywebview`
-// on the document at creation; `.api` fills in at 'pywebviewready'.
+// True inside the pywebview companion window RIGHT NOW.
+//
+// The comment here used to claim pywebview puts `window.pywebview` on the
+// document "at creation".  It does not, and believing it is what made the
+// companion a black rectangle: the object is injected asynchronously and
+// announced with 'pywebviewready', so this returns false for any render that
+// happens first.  Treat it as a sample of a value that CHANGES, never as a
+// constant to latch at mount -- see the `hosted` state below.
 function inCompanion() {
   try {
     return !!window.pywebview;
@@ -383,14 +389,41 @@ function InputBar({liveRun}) {
 export default function VoiceOrbPage() {
   const [skin, setSkin] = useState(readSkin);
   const [speaking, setSpeaking] = useState(false);
-  const hosted = useRef(inCompanion());
+  // STATE, not a first-render ref.  pywebview injects `window.pywebview`
+  // asynchronously and announces it with 'pywebviewready' -- this file already
+  // listened for that event to re-send presence, so the late arrival was known.
+  // A ref read once at mount is false forever whenever React wins that race,
+  // and three things then break off the one value: the glass shell falls back
+  // to transparent (so the window's own black background is the whole card),
+  // `shellPeek` turns the BROWSER corner-peek transform on inside the
+  // companion (which clips the quick-prompt pill off the right edge), and the
+  // presence effect early-returns so on_companion_presence is never called.
+  // Measured on the install 2026-09-21; pinned by
+  // src/__tests__/components/VoiceOrbLateHost.test.jsx.
+  const [hosted, setHosted] = useState(inCompanion);
   // Hosted: born away (no window) until an agent speaks or the owner acts.
-  const [presence, setPresence] = useState(hosted.current ? 'hidden' : 'shown');
+  const [presence, setPresence] = useState(inCompanion() ? 'hidden' : 'shown');
   const speakTimer = useRef(null);
-  const lastInteract = useRef(hosted.current ? 0 : Date.now());
+  const lastInteract = useRef(inCompanion() ? 0 : Date.now());
   // When the agent last stopped speaking: the orb lingers one idle window
   // after a clip so consecutive sentences do not blink the window.
   const lastSpoke = useRef(0);
+  // Adopt the companion the moment pywebview shows up.  One writer for
+  // `hosted`: this effect, whether the bridge was already there at mount, or
+  // landed between first render and this effect, or announces itself later.
+  useEffect(() => {
+    if (hosted) return undefined;
+    const adopt = () => {
+      setHosted(true);
+      // In the companion the window is born idle-hidden.  The browser seed
+      // above (Date.now()) would otherwise read as "just interacted" and hold
+      // the card open for one IDLE_MS after adoption.
+      lastInteract.current = 0;
+    };
+    if (inCompanion()) { adopt(); return undefined; }
+    window.addEventListener('pywebviewready', adopt);
+    return () => window.removeEventListener('pywebviewready', adopt);
+  }, [hosted]);
   const orbBox = useRef(null);
   // HARTOS consent asks waiting for the owner, oldest first; one card at a
   // time.  Keyed by msg_id while on screen, the way AgentOverlay does it: a
@@ -562,7 +595,7 @@ export default function VoiceOrbPage() {
   // state is decided), and on resize (app.py sizes the window once loaded;
   // a shape mapped against the old size would be stale).
   useEffect(() => {
-    if (!hosted.current) return undefined;
+    if (!hosted) return undefined;
     const send = () => companionApi('on_companion_presence', presence, shapeFor(presence, orbBox));
     send();
     window.addEventListener('pywebviewready', send);
@@ -571,13 +604,18 @@ export default function VoiceOrbPage() {
       window.removeEventListener('pywebviewready', send);
       window.removeEventListener('resize', send);
     };
-  }, [presence]);
+    // `hosted` belongs here.  It is the gate on the first line, and it starts
+    // false whenever React mounts before pywebview injects.  Without it in the
+    // deps the effect never re-runs on adoption -- `presence` has not changed
+    // at that moment -- so the very first send is skipped and the window is
+    // never told what to be.  Measured: presence calls 0 -> 1 on adoption.
+  }, [presence, hosted]);
 
   // Idle = away.  The shell keeps the corner peek; the companion window
   // hides instead (see the module docstring for why a scaled peek cannot
   // live there).
   const peeked = presence === 'hidden';
-  const shellPeek = peeked && !hosted.current;
+  const shellPeek = peeked && !hosted;
 
   return (
     <div
@@ -592,12 +630,12 @@ export default function VoiceOrbPage() {
         alignItems: 'center', justifyContent: 'flex-end',
         padding: '0 10px 14px',
         // Translucent frosted futuristic glass shell with GPU blur
-        background: hosted.current ? GLASS_BG : 'transparent',
-        backdropFilter: hosted.current ? 'blur(24px) saturate(180%)' : undefined,
-        WebkitBackdropFilter: hosted.current ? 'blur(24px) saturate(180%)' : undefined,
-        border: hosted.current ? '1px solid rgba(255, 255, 255, 0.16)' : 'none',
-        borderRadius: hosted.current ? CARD_RADIUS : 0,
-        boxShadow: hosted.current ? '0 12px 40px 0 rgba(0, 0, 0, 0.45), inset 0 1px 1px 0 rgba(255, 255, 255, 0.22)' : 'none',
+        background: hosted ? GLASS_BG : 'transparent',
+        backdropFilter: hosted ? 'blur(24px) saturate(180%)' : undefined,
+        WebkitBackdropFilter: hosted ? 'blur(24px) saturate(180%)' : undefined,
+        border: hosted ? '1px solid rgba(255, 255, 255, 0.16)' : 'none',
+        borderRadius: hosted ? CARD_RADIUS : 0,
+        boxShadow: hosted ? '0 12px 40px 0 rgba(0, 0, 0, 0.45), inset 0 1px 1px 0 rgba(255, 255, 255, 0.22)' : 'none',
         // Drag the frameless companion window by the orb body; the input bar
         // opts out (no-drag, in InputBar) so it stays interactive.
         WebkitAppRegion: 'drag',
