@@ -7994,6 +7994,11 @@ def main():
         # listens via STT, and gamifies the conversation experience.
         _companion_window = None
         try:
+            # The ONE module that decides what a floating window can be.
+            # Imported here, beside the window it serves, because the
+            # creation kwargs are needed before create_window and the
+            # apply-to-handle call comes later in the same block.
+            from desktop.glass import glass_window_kwargs
             # 220x310: character + status bar + input bar + platform hint.
             # Must match the html/body size in landing-page/public/nanba-companion.html
             # (DRY Gate 2 — window size and HTML size are the same contract).
@@ -8246,18 +8251,25 @@ def main():
                 # '#00000000' this shipped with made create_window raise on
                 # every boot, so the companion never existed.
                 #
-                # NEXT STEP, deliberately not taken in this change:
-                # transparent=True is exactly what
-                # desktop.glass.glass_window_kwargs() returns here, and on
-                # macOS that call ALSO returns vibrancy=True -- the one kwarg
-                # that makes pywebview build the NSVisualEffectView, i.e.
-                # real compositor glass.  It is a creation-time flag and
-                # cannot be added to a live window, so the wiring is
-                # `**glass_window_kwargs()` here.  Left unwired until it can
-                # be pixel-proven on a Mac with tests/glass_probe.py.
+                # WHAT a floating window must be BORN with comes from
+                # desktop.glass, not from a literal here.  On Windows that is
+                # transparent=True, exactly what this line used to say.  On
+                # macOS it ALSO carries vibrancy=True -- the one kwarg that
+                # makes pywebview build the NSVisualEffectView behind the
+                # page, i.e. real compositor glass.  It is consumed at
+                # CREATION and cannot be added to a live window, which is why
+                # it has to be here and not beside the apply_glass() call
+                # below.
+                #
+                # Wired rather than left as a documented seam: a module whose
+                # best rung has no caller is a half-built feature, and this
+                # codebase has already shipped one of those.  It claims
+                # nothing -- the macOS rung still reports that it is owed a
+                # pixel proof from tests/glass_probe.py on a Mac, which
+                # cannot be run from the Windows box this was written on.
+                **glass_window_kwargs(),
                 # background_color stays OURS: it is a look value, and
                 # glass.py holds none.
-                transparent=True,
                 background_color='#000000',
                 js_api=_companion_api,
             )
