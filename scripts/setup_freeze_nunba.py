@@ -535,6 +535,15 @@ build_exe_options = {
                           # second the same way it misses chat_sync, and a
                           # miss here is a ModuleNotFoundError on the first
                           # boot of the installed .exe.
+        "desktop.boot_record",  # One durable line per boot decision.  Every
+                          # import of it is function-local (inside app.py's
+                          # companion block, on BOTH the success and the
+                          # failure path), so the tracer misses it exactly as
+                          # it misses desktop.glass above.  A miss here is
+                          # worse than usual: this module exists BECAUSE the
+                          # companion's failure reason was unreadable, so a
+                          # ModuleNotFoundError would silently restore the
+                          # very blindness it was written to end.
         "desktop.splash_effects",  # Splash screen effects
         "desktop.media_classification",  # Media classification
         "desktop.guest_identity",  # Hardware-derived stable guest_id (J201)

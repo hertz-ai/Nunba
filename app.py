@@ -8275,6 +8275,21 @@ def main():
             )
             logger.info("[COMPANION] Nanba companion window created at (%d, %d)",
                         _comp_x, _comp_y)
+            # SUCCESS is recorded durably too, not only failure.  "created"
+            # versus "never created" is exactly the distinction that was
+            # impossible to make on 2026-09-21: the window was absent from a
+            # running process and no record survived to say whether it had
+            # ever existed, which left "created then destroyed" and "never
+            # created" equally consistent with the evidence.  One line per
+            # boot settles that in a glance.
+            try:
+                from desktop.boot_record import record as _boot_record
+                _boot_record('companion_window', True,
+                             detail='created at (%d, %d)' % (_comp_x, _comp_y),
+                             size=[_comp_w, _comp_h],
+                             screen=[_screen_w, _screen_h])
+            except Exception as _rec_err:
+                logger.debug("[COMPANION] boot_record skipped: %s", _rec_err)
 
             def _companion_js(method, value):
                 """The ONE way this file calls into the companion page.
@@ -8427,6 +8442,20 @@ def main():
 
         except Exception as _comp_err:
             logger.warning("[COMPANION] Companion window not created: %s", _comp_err)
+            # ...and DURABLY, because the warning above is the single line
+            # that explains a missing companion and it goes to
+            # frozen_debug.log, which rotates in 15-80 minutes under load.
+            # Measured 2026-09-21: the companion was absent from a nine-hour-
+            # old process and this reason was already gone from both
+            # generations, so every other cause had to be eliminated one at a
+            # time instead of just being read.  boot_record does not rotate.
+            try:
+                from desktop.boot_record import record as _boot_record
+                _boot_record('companion_window', False,
+                             detail='%s: %s' % (type(_comp_err).__name__,
+                                                _comp_err))
+            except Exception as _rec_err:
+                logger.debug("[COMPANION] boot_record skipped: %s", _rec_err)
 
         # Apply positioning after window creation
         if position_info:
