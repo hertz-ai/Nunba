@@ -97,6 +97,26 @@ export const CONSENT_ASKS = Object.freeze({
   capability_setup: {
     asks: 'set up a capability this computer is missing', privacyCard: false,
   },
+  // A computer on the network asking to link with this one after signing
+  // NOTHING (scope 'peer:<host>', agent_id null).  The sibling of
+  // device_access and deliberately weaker-looking: that ask names a phone's
+  // verified key, this one can only name an address, because an unsigned
+  // peer has no identity to show.  It exists because enforcement mode is a
+  // flag that used to decide alone -- unset it admitted the stranger in
+  // silence, and fixing the default to 'hard' would have refused in the
+  // same silence ("do not gulp, the consent shd be shown when a flag gates
+  // a useful logic", owner 2026-09-21).  The ask always carries a reason
+  // naming the address and saying plainly that nothing was proved, and the
+  // card shows that reason; the wording here is only the fallback.
+  // perRequester is false: there is no name and no key fingerprint to show,
+  // and borrowing the phone card's furniture would dress an anonymous peer
+  // as an identified one.  privacyCard false, so no "Don't allow" -- there
+  // is no page to come back from a no on, and the ask returns by itself
+  // whenever that peer tries again.
+  peer_admission: {
+    asks: 'link with this computer without proving who it is',
+    privacyCard: false,
+  },
 });
 
 // The camera's consent type, by name, because the SPA has to act on it and
