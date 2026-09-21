@@ -7,6 +7,7 @@ import {
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
 import { consentApi, notificationsApi } from '../../services/socialApi';
+import { HART_GLASS_SURFACE } from '../../theme/hartGlass';
 import { QRCodeSVG } from 'qrcode.react';
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -33,13 +34,13 @@ const AUTO_DISMISS_MS = 15000;
 // answered instead of vanishing at AUTO_DISMISS_MS.
 const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request']);
 
+// The card's frosted surface is the ONE HART glass (src/theme/hartGlass,
+// mirroring HARTOS theme_service.py's emitted shell values), so an overlay
+// card, the floating companion window and the HART OS shell are the same
+// design rather than three that drift.  Only `color` is this surface's own:
+// these cards are always dark-on-glass.
 const GLASS = {
-  background: 'rgba(20, 20, 30, 0.92)',
-  backdropFilter: 'blur(20px)',
-  WebkitBackdropFilter: 'blur(20px)',
-  border: '1px solid rgba(255,255,255,0.08)',
-  borderRadius: '16px',
-  boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+  ...HART_GLASS_SURFACE,
   color: '#fff',
 };
 

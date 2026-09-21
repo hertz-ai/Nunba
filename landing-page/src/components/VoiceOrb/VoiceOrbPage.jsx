@@ -3,6 +3,7 @@ import { CHAT_ACTION_THINKING, CHAT_BUBBLE_PRIORITY } from '../../constants/chat
 import { CONSENT_ANSWER_TYPES, answerCoversAsk } from '../../constants/consentAsks';
 import useComputerActivity from '../../hooks/useComputerActivity';
 import realtimeService from '../../services/realtimeService';
+import { COMPANION_CARD_RADIUS, COMPANION_GLASS_SURFACE } from '../../theme/hartGlass';
 import { ConsentPromptOverlay } from '../AgentOverlay/AgentOverlay';
 import VoiceVisualizer from '../VoiceVisualizer';
 
@@ -77,9 +78,13 @@ const VISIBLE_RUN_PHASES = new Set(['executing', 'blocked', 'failed']);
 // the card would flicker between text and no-text.
 const TRACE_TTL_MS = 12000;
 const ACCENT = '#6C63FF';
-const CARD_BG = '#0F0E17';
-const GLASS_BG = 'linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(15, 14, 23, 0.68) 100%)';
-const CARD_RADIUS = 24;
+// The frosted card's look is NOT this file's to decide: blur, saturation,
+// tint, border and shadow all come from src/theme/hartGlass, which mirrors
+// HARTOS theme_service.py's emitted shell values, so the companion window,
+// the agent overlay and the HART OS shell are one design rather than three
+// that drift.  The corner radius is the ONE exception and is documented
+// there: it is the rect the OS clips this window to (see shapeFor below),
+// not just a CSS corner.
 
 function readSkin() {
   try {
@@ -125,7 +130,7 @@ function companionApi(method, ...args) {
 function shapeFor(state, orbBox) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const card = { x: 0, y: 0, w: vw, h: vh, r: CARD_RADIUS, vw, vh };
+  const card = { x: 0, y: 0, w: vw, h: vh, r: COMPANION_CARD_RADIUS, vw, vh };
   if (state === 'shown') return card;
   if (state !== 'orb') return null;
   const box = orbBox && orbBox.current;
@@ -629,13 +634,16 @@ export default function VoiceOrbPage() {
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'flex-end',
         padding: '0 10px 14px',
-        // Translucent frosted futuristic glass shell with GPU blur
-        background: hosted ? GLASS_BG : 'transparent',
-        backdropFilter: hosted ? 'blur(24px) saturate(180%)' : undefined,
-        WebkitBackdropFilter: hosted ? 'blur(24px) saturate(180%)' : undefined,
-        border: hosted ? '1px solid rgba(255, 255, 255, 0.16)' : 'none',
-        borderRadius: hosted ? CARD_RADIUS : 0,
-        boxShadow: hosted ? '0 12px 40px 0 rgba(0, 0, 0, 0.45), inset 0 1px 1px 0 rgba(255, 255, 255, 0.22)' : 'none',
+        // Translucent frosted glass shell with GPU blur — the ONE HART glass
+        // (src/theme/hartGlass), so this window, the overlay cards and the
+        // HART OS shell are the same surface.  Only when hosted: embedded in
+        // a page the orb must stay a bare transparent presence.
+        background: hosted ? COMPANION_GLASS_SURFACE.background : 'transparent',
+        backdropFilter: hosted ? COMPANION_GLASS_SURFACE.backdropFilter : undefined,
+        WebkitBackdropFilter: hosted ? COMPANION_GLASS_SURFACE.WebkitBackdropFilter : undefined,
+        border: hosted ? COMPANION_GLASS_SURFACE.border : 'none',
+        borderRadius: hosted ? COMPANION_GLASS_SURFACE.borderRadius : 0,
+        boxShadow: hosted ? COMPANION_GLASS_SURFACE.boxShadow : 'none',
         // Drag the frameless companion window by the orb body; the input bar
         // opts out (no-drag, in InputBar) so it stays interactive.
         WebkitAppRegion: 'drag',

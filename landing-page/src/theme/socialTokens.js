@@ -10,6 +10,8 @@
  *   sx={{ background: GRADIENTS.primary }}
  */
 
+import {HART_GLASS} from './hartGlass';
+
 import {alpha} from '@mui/material/styles';
 
 // ── Intent Category Colors ────────────────────────────────────────────────────
@@ -130,6 +132,12 @@ export const DURATIONS = {
 };
 
 // ── Glassmorphism Mixins (theme-dependent) ────────────────────────────────────
+//
+// These are the SOCIAL surfaces' glass: derived at runtime from the MUI
+// palette and the user's theme (`theme.custom.glass`), with their own
+// surface/elevated/subtle opacity ladder.  Only the base blur is shared with
+// the rest of HART, and it is taken from ./hartGlass — the canonical HARTOS
+// value — rather than restated here.  The +4 / -8 steps are this ladder's own.
 
 export const socialTokens = {
   glass: {
@@ -138,7 +146,7 @@ export const socialTokens = {
       const g = theme.custom?.glass || {};
       const glassEnabled =
         theme.custom?.animations?.glassmorphism?.enabled !== false;
-      const blur = g.blur_radius ?? 20;
+      const blur = g.blur_radius ?? HART_GLASS.blur;
       const opacity = g.surface_opacity ?? 0.85;
       return {
         background: alpha(
@@ -155,7 +163,7 @@ export const socialTokens = {
       const g = theme.custom?.glass || {};
       const glassEnabled =
         theme.custom?.animations?.glassmorphism?.enabled !== false;
-      const blur = g.blur_radius ? g.blur_radius + 4 : 24;
+      const blur = (g.blur_radius || HART_GLASS.blur) + 4;
       const opacity = g.elevated_opacity ?? 0.92;
       return {
         background: alpha(
@@ -173,7 +181,7 @@ export const socialTokens = {
       const g = theme.custom?.glass || {};
       const glassEnabled =
         theme.custom?.animations?.glassmorphism?.enabled !== false;
-      const blur = g.blur_radius ? Math.max(0, g.blur_radius - 8) : 12;
+      const blur = Math.max(0, (g.blur_radius || HART_GLASS.blur) - 8);
       return {
         background: alpha(
           theme.palette.common.white,

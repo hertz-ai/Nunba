@@ -3,7 +3,15 @@
  *
  * 8 curated dark-mode presets. The first ("hart-default") exactly matches
  * the current static theme so existing users see zero visual change.
+ *
+ * The default preset's glass/shell numbers are NOT typed out here: they are
+ * the canonical HART glass (./hartGlass, mirroring HARTOS theme_service.py),
+ * so "HART Default" cannot drift away from the shell, the companion window
+ * and the overlay cards.  The other presets below deliberately vary from it
+ * — that is what makes them presets — so they keep their own values.
  */
+
+import {HART_GLASS} from './hartGlass';
 
 // ── Default Theme Config (matches current theme.js exactly) ─────────────────
 
@@ -33,7 +41,7 @@ export const DEFAULT_THEME_CONFIG = {
     info: '#00B8D9',
   },
   glass: {
-    blur_radius: 20,
+    blur_radius: HART_GLASS.blur,
     surface_opacity: 0.85,
     elevated_opacity: 0.92,
     border_opacity: 0.08,
@@ -44,7 +52,11 @@ export const DEFAULT_THEME_CONFIG = {
     liquid_motion: {enabled: true, intensity: 60},
   },
   font: {family: 'Inter', size: 13},
-  shell: {panel_opacity: 0.65, blur_radius: 20, border_radius: 16},
+  shell: {
+    panel_opacity: HART_GLASS.panelOpacity,
+    blur_radius: HART_GLASS.blur,
+    border_radius: HART_GLASS.radius,
+  },
   metadata: {is_preset: true, is_ai_generated: false},
 };
 
