@@ -338,7 +338,10 @@ class TestWindowsCompositionRung:
         assert result.is_native
         assert 'dcomp_visual' in result.steps
         assert 'webview2_composition' in result.steps
-        assert 'dwm_backdrop' in result.steps
+        assert 'os_blur' in result.steps
+        assert 'dwm_backdrop' not in result.steps, (
+            'a composed window does not get the system backdrop, and the '
+            'step trail must not say it did')
 
     def test_the_visual_tree_is_committed_or_nothing_is_on_screen(self):
         """DirectComposition batches: a tree that is never committed is a

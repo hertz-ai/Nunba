@@ -375,25 +375,29 @@ def _apply_windows(surface, hwnd, intent: GlassIntent) -> GlassResult:
     backdrop = _windows_dwm_material(hwnd, intent,
                                      composited=host is not None)
     if backdrop:
-        steps.append('dwm_backdrop')
+        # Named for the material that was actually asked for.  A composed
+        # window does NOT get the DWM system backdrop -- measured, it paints
+        # such a window opaque -- so calling its step 'dwm_backdrop' would
+        # put a thing that did not happen in the diagnostic trail.
+        steps.append('os_blur' if host is not None else 'dwm_backdrop')
 
     if host is not None:
         if backdrop:
             return GlassResult(
                 NATIVE_GLASS, WINDOWS, steps=tuple(steps),
                 note='the page is hosted on a DirectComposition visual, so '
-                     "its alpha reaches the DWM's own material - GPU-"
-                     'composited glass; proven in pixels by '
+                     "its alpha reaches the OS's own blur - GPU-composited "
+                     'glass; proven in pixels by '
                      'tests/glass_native_demo.py')
         logger.warning(
-            'glass: hwnd %s is hosted on a composition visual but the DWM '
-            'refused its backdrop, so there is nothing behind the page to '
-            'blur; the window is a hole, not glass', hwnd)
+            'glass: hwnd %s is hosted on a composition visual but the OS '
+            'refused its blur, so there is nothing behind the page to blur; '
+            'the window is a hole, not glass', hwnd)
         return GlassResult(
             LAYERED_ALPHA, WINDOWS, steps=tuple(steps),
-            note='hosted on a composition visual, but the DWM refused its '
-                 'backdrop (pre-22H2, or transparency effects are off), so '
-                 'what shows through is sharp')
+            note='hosted on a composition visual, but the OS refused its '
+                 'blur (transparency effects are off), so what shows '
+                 'through is sharp')
 
     if _windows_layered_alpha(hwnd, intent):
         steps.append('layered_alpha')
