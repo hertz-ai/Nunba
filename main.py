@@ -3028,6 +3028,45 @@ def _normalize_hf_id(raw: str) -> str:
     return cleaned
 
 
+@app.route('/api/admin/models/peer-offers', methods=['GET'])
+def admin_models_peer_offers():
+    """Models an admitted hive peer has installed that this node does not.
+
+    The fleet half of the Model Management page: someone on another
+    machine installed a model, their node announced it, and it shows up
+    here so the same work is not repeated per machine. Each row carries
+    the peer's URL plus the facts its node MEASURED from the artifact --
+    moe / experts_used / mtp come from read_gguf_facts() on the real
+    file, so the decision to spend 21 GB is made on measurements rather
+    than a description.
+
+    Read-only. An offer is a pointer: installing one goes through
+    /hub/install like any other model, which re-derives every compute
+    number locally rather than trusting what a peer said.
+
+    Query params:
+      type:     (optional) model_type filter — 'llm', 'tts', ...
+      all:      '1' to include models already in the local catalog
+    """
+    if not _is_local_request():
+        return jsonify({"error": "local only"}), 403
+    try:
+        from integrations.service_tools.model_mesh import peer_offers
+    except ImportError as e:
+        return jsonify({'success': False, 'error': f'mesh unavailable: {e}',
+                        'offers': []}), 503
+    try:
+        offers = peer_offers(
+            model_type=(request.args.get('type') or '').strip() or None,
+            exclude_local=request.args.get('all') != '1')
+        return jsonify({'success': True, 'offers': offers,
+                        'count': len(offers)})
+    except Exception as e:
+        logging.info(f"[peer-offers] listing failed: {e}")
+        return jsonify({'success': False, 'error': str(e),
+                        'offers': []}), 500
+
+
 @app.route('/api/admin/models/hub/search', methods=['GET'])
 def admin_models_hub_search():
     """Search HuggingFace Hub by Nunba task category.
@@ -3448,6 +3487,24 @@ def admin_models_hub_install():
                             except Exception as _ce:
                                 logging.debug(
                                     f"[hub-install] capability flip skipped: {_ce}")
+                            # ── Tell the hive ───────────────────────
+                            # A model one person installed is a fact the
+                            # other nodes can use, so the fleet stops
+                            # rediscovering the same models one machine
+                            # at a time.  Announced only HERE, after the
+                            # load + capability probe passed: an advert
+                            # is a claim this node can serve the model,
+                            # and an unproven install cannot honour it.
+                            # Peers cache the offer and surface it on
+                            # their own Model Management page; nothing
+                            # downloads without someone asking for it.
+                            try:
+                                from integrations.service_tools.model_mesh import (
+                                    announce_model_available)
+                                announce_model_available(safe_id)
+                            except Exception as _me:
+                                logging.debug(
+                                    f"[hub-install] mesh announce skipped: {_me}")
                         else:
                             validate_reason = f'capability probe failed: {_cap_reason}'
                             logging.info(
