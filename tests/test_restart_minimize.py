@@ -508,7 +508,7 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertIn("apply_floating_presence(_comp_hwnd", loaded)
 
         surface = (REPO_ROOT / "desktop" / "companion_surface.py").read_text(encoding="utf-8")
-        self.assertIn("def apply_floating_presence(hwnd, opacity: float):", surface)
+        self.assertIn("def apply_floating_presence(hwnd, opacity: float, native=None):", surface)
         self.assertIn("set_window_tool_window(hwnd, True)", surface)
 
         page = (REPO_ROOT / "landing-page" / "src" / "components" / "VoiceOrb"

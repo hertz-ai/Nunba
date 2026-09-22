@@ -8424,7 +8424,14 @@ def main():
                     # surface rather than in a capability module that holds no
                     # colours and no opacities of its own.  0.8 is what GL1
                     # measured as still readable over a bright window.
-                    _glass = apply_floating_presence(_comp_hwnd, 0.8)
+                    #
+                    # `native` is pywebview's WinForms form (None off
+                    # Windows): the surface paints it black under the page,
+                    # because its default Control grey is what the owner saw
+                    # as a light grey card (companion_surface.
+                    # _host_paints_nothing has the two measured runs).
+                    _comp_native = getattr(_companion_window, 'native', None)
+                    _glass = apply_floating_presence(_comp_hwnd, 0.8, native=_comp_native)
                     logger.info("[COMPANION] glass: %s", _glass)
                     set_window_size(_comp_hwnd, _comp_w, _comp_h)
                 _companion_raise()

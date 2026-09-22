@@ -160,17 +160,79 @@ def companion_window_kwargs() -> dict:
     return kwargs
 
 
-def apply_floating_presence(hwnd, opacity: float):
+def _host_paints_nothing(native) -> bool:
+    """The host form declines to paint a colour under the page (WinForms).
+
+    pywebview's transparent window is a transparent WebView2 over an opaque
+    WinForms form, and MEASURED 2026-09-15 what shows under the page is not
+    stable between runs: on one the form's own Control grey (#F0F0F0), on
+    another WebView2's dark canvas.  Both runs were seen again on
+    2026-09-22, on the same build:
+
+        the owner's 14:31 screenshot   card median (89,102,115) over a
+                                       (70,125,160) wallpaper -- the page's
+                                       65% tint composed over Control grey
+                                       is 96, so this is the grey run
+        the rig, same page, same day   card (63,63,72) over WHITE -- the
+                                       dark run
+
+    That is the "white text on a light grey sheet" the owner reported: not
+    the page's look, the toolkit's default colour showing through it on the
+    runs that take the grey path.  With the form painting BLACK, both runs
+    put the same thing under the page and the page's own tint is what shows.
+
+    Black is not a look value here; it is the toolkit contributing nothing,
+    the same shape as ``DefaultBackgroundColor = Transparent`` on the
+    browser and ``_ACCENT_NO_TINT`` in ``desktop/glass.py``.  The look
+    stays where it is, in ``src/theme/hartGlass.js``.
+
+    ``native`` is pywebview's ``Window.native`` -- the ``BrowserForm`` -- on
+    Windows, and None or something else everywhere else, in which case this
+    is a no-op.  The property is set on the form's own thread when the form
+    asks for that (``InvokeRequired``): pywebview's ``loaded`` handlers run
+    on a thread of their own.  Returns whether the colour was applied.
+    """
+    if native is None or not hasattr(native, 'BackColor'):
+        return False
+    try:
+        import clr  # pythonnet, present wherever pywebview's WinForms backend runs
+        clr.AddReference('System.Drawing')
+        from System.Drawing import Color
+    except Exception as e:
+        logger.debug('companion: no WinForms host to paint black (%s)', e)
+        return False
+
+    def _paint():
+        native.BackColor = Color.Black
+
+    try:
+        if getattr(native, 'InvokeRequired', False):
+            from System import Action
+            native.Invoke(Action(_paint))
+        else:
+            _paint()
+        return True
+    except Exception as e:
+        logger.warning('companion: the host form refused BackColor black: %s', e)
+        return False
+
+
+def apply_floating_presence(hwnd, opacity: float, native=None):
     """Everything that must be done to the window once its handle exists.
 
     Ordered, and the order is load-bearing:
 
-    1. ``set_window_tool_window`` -- no taskbar entry, no Alt-Tab.
+    1. ``set_window_tool_window`` -- no taskbar entry, no Alt-Tab, and the
+       tab the shell already holds from pywebview's first show dropped.
     2. ``set_window_floating_presence`` -- ``WS_EX_LAYERED`` (without which
        nothing below can make the desktop show through) and
        ``WS_EX_NOACTIVATE`` (so appearing never steals the owner's
        keystrokes).
-    3. ``apply_glass`` -- the half that was missing until 2026-09-21: the
+    3. ``_host_paints_nothing`` -- the WinForms form under the page paints
+       black instead of its default Control grey, so the page's own tint is
+       what shows (see its docstring for the two runs that were measured).
+       Needs ``native``; skipped without it.
+    4. ``apply_glass`` -- the half that was missing until 2026-09-21: the
        layered bit had been set since 2026-09-20 and nothing ever gave the
        window an alpha through it, so the bit bought nothing.  The Win32
        call that does is named in ``desktop/glass.py`` and nowhere else, on
@@ -180,7 +242,8 @@ def apply_floating_presence(hwnd, opacity: float):
 
     ``opacity`` is a LOOK value and stays the caller's, which is why it is a
     parameter and not a constant here -- the same reason ``glass.py`` has no
-    default for it.
+    default for it.  ``native`` is pywebview's ``Window.native``, the host
+    form, when the caller has one.
 
     Returns the ``GlassResult``: the rung ACHIEVED, never the rung hoped
     for.  Callers log it; nobody promotes it to a claim.
@@ -193,4 +256,5 @@ def apply_floating_presence(hwnd, opacity: float):
 
     set_window_tool_window(hwnd, True)
     set_window_floating_presence(hwnd, True)
+    _host_paints_nothing(native)
     return apply_glass(hwnd, GlassIntent(opacity=opacity))

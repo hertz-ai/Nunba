@@ -194,6 +194,101 @@ def test_app_py_builds_the_companion_url_through_the_helper():
         'marker will be missing')
 
 
+# ── the host form under the page ────────────────────────────────────────
+
+class _FakeForm:
+    """pywebview's BrowserForm as far as the surface looks at it."""
+
+    def __init__(self, invoke_required=False):
+        self.BackColor = 'Control'
+        self.InvokeRequired = invoke_required
+        self.invoked = []
+
+    def Invoke(self, action):
+        self.invoked.append(action)
+        action()
+
+
+@pytest.fixture
+def winforms(monkeypatch):
+    """A pythonnet that is present: `clr`, `System` and `System.Drawing`
+    with the one colour the surface names."""
+    import sys
+    import types
+
+    clr = types.ModuleType('clr')
+    clr.AddReference = lambda name: None
+    system = types.ModuleType('System')
+    system.Action = lambda fn: fn
+    drawing = types.ModuleType('System.Drawing')
+    drawing.Color = types.SimpleNamespace(Black='BLACK')
+    system.Drawing = drawing
+    monkeypatch.setitem(sys.modules, 'clr', clr)
+    monkeypatch.setitem(sys.modules, 'System', system)
+    monkeypatch.setitem(sys.modules, 'System.Drawing', drawing)
+    return drawing.Color
+
+
+@pytest.fixture
+def quiet_win32(monkeypatch):
+    """The three Win32 steps stubbed, so only the host-form step is under
+    test and the test runs on every platform."""
+    from desktop import glass, platform_utils
+
+    monkeypatch.setattr(platform_utils, 'set_window_tool_window', lambda *a: None)
+    monkeypatch.setattr(platform_utils, 'set_window_floating_presence', lambda *a: None)
+    monkeypatch.setattr(glass, 'apply_glass',
+                        lambda hwnd, intent: glass.GlassResult(glass.SOLID, 'test'))
+
+
+def test_the_host_form_is_painted_black_under_the_page(winforms, quiet_win32):
+    """MEASURED 2026-09-22: the same page read (89,102,115) in the owner's
+    screenshot and (63,63,72) in the rig -- WebView2 showing the form's
+    Control grey under the page on one run and not on the other.  Black
+    under the page makes both runs the same."""
+    from desktop.companion_surface import apply_floating_presence
+
+    form = _FakeForm()
+    apply_floating_presence(1234, 0.8, native=form)
+
+    assert form.BackColor == winforms.Black
+    assert form.invoked == [], 'no marshalling needed on the form\'s own thread'
+
+
+def test_the_form_is_painted_on_its_own_thread_when_it_asks(winforms, quiet_win32):
+    """pywebview's `loaded` handlers run on a thread of their own; a form
+    that reports InvokeRequired gets the write through Invoke."""
+    from desktop.companion_surface import apply_floating_presence
+
+    form = _FakeForm(invoke_required=True)
+    apply_floating_presence(1234, 0.8, native=form)
+
+    assert form.BackColor == winforms.Black
+    assert len(form.invoked) == 1
+
+
+def test_without_a_host_form_the_presence_still_applies(quiet_win32):
+    """macOS, Linux, and any caller that has only a handle."""
+    from desktop.companion_surface import apply_floating_presence
+
+    result = apply_floating_presence(1234, 0.8)
+    assert result.rung == 'SOLID'
+    assert apply_floating_presence(1234, 0.8, native=object()).rung == 'SOLID'
+
+
+def test_a_form_without_pythonnet_is_left_alone(monkeypatch, quiet_win32):
+    """No `clr` -- not a WinForms host -- means no colour to write and no
+    exception to leak into the presence."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, 'clr', None)   # import raises
+    from desktop.companion_surface import _host_paints_nothing
+
+    form = _FakeForm()
+    assert _host_paints_nothing(form) is False
+    assert form.BackColor == 'Control'
+
+
 def test_the_companion_window_is_not_given_an_inert_background_color():
     """background_color is dead on the transparent branch -- keep it gone.
 

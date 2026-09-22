@@ -485,10 +485,10 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
     that same policy painting an opaque white sheet behind a WinForms-hosted
     WebView2, and that is exactly the ``composited=False`` case.
 
-    That case now gets NEITHER material: only the immersive dark mode.  The
-    system backdrop was withdrawn from it on 2026-09-22 because it is
-    rendered for the window FRAME and so escapes ``SetWindowRgn`` -- the
-    reasoning and the A/B numbers are at the branch itself, below.
+    That case gets NO material: the immersive dark mode, and the system
+    backdrop explicitly set to NONE.  Not merely "not asked for" -- the host
+    toolkit asks for one behind this module's back, and the reasoning and
+    the A/B numbers are at the branch itself, below.
 
     Returns whether the OS ACCEPTED the material.  That is all it means: the
     bool feeds a diagnostic step name, never a rung.  Promoting it to a rung
@@ -501,13 +501,7 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
 
         DWMWA_USE_IMMERSIVE_DARK_MODE = 20
         DWMWA_SYSTEMBACKDROP_TYPE = 38
-        DWMSBT_TRANSIENTWINDOW = 3
-
-        class MARGINS(ctypes.Structure):
-            _fields_ = [('cxLeftWidth', ctypes.c_int),
-                        ('cxRightWidth', ctypes.c_int),
-                        ('cyTopHeight', ctypes.c_int),
-                        ('cyBottomHeight', ctypes.c_int)]
+        DWMSBT_NONE = 1
 
         dwm = ctypes.windll.dwmapi
         h = platform_utils._hwnd(hwnd)
@@ -519,10 +513,11 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
         if composited:
             return _windows_accent_blur(hwnd)
 
-        # A NON-COMPOSITED window gets the immersive dark mode above and
-        # nothing else.  It used to get DWMWA_SYSTEMBACKDROP_TYPE plus a
-        # frame extension over the whole client area, and that is now
-        # withdrawn on measurement.
+        # A NON-COMPOSITED window gets the immersive dark mode above and the
+        # system backdrop set to NONE.  It used to get
+        # DWMWA_SYSTEMBACKDROP_TYPE plus a frame extension over the whole
+        # client area; that was withdrawn on measurement, and then "withdrawn"
+        # turned out not to be enough.
         #
         # WHY, MEASURED 2026-09-22 on the live companion and then A/B'd on a
         # window built with companion_window_kwargs():
@@ -543,6 +538,24 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
         #   sharp".  A material that escapes the window's own shape is not a
         #   look decision; it defeats the shape.
         #
+        # THE RESIDUAL, attributed later the same day: pywebview itself asks
+        # for Mica.  ``webview/platforms/winforms.py`` ``update_title_bar_
+        # theme`` writes ``DwmSetWindowAttribute(hwnd, 38, 2)`` on every form
+        # whose system theme is dark, from ``BrowserForm.__init__`` and again
+        # on every ``SystemEvents.UserPreferenceChanged``.  Read back live off
+        # the companion: backdrop type 2 while this module had written
+        # nothing.  A/B on the real window, cut to the rounded card, over a
+        # white backdrop, the four corner squares OUTSIDE the region:
+        #
+        #       as pywebview left it (Mica)   77/255 grey in all four corners
+        #       set to NONE                   255 (the backdrop, untouched)
+        #       Mica put back                 77 again
+        #
+        # That is the grey the owner saw at the card's corners.  So this
+        # branch WRITES the type rather than leaving it alone: "not asking"
+        # left the toolkit's answer in place.  Not a look value -- NONE is
+        # the absence of one, the same shape as _ACCENT_NO_TINT above.
+        #
         # The trap this walked into, recorded because it cost two wrong
         # conclusions: an earlier control measured TRANSMITTANCE with the
         # backdrop suppressed and saw it FALL (0.469 -> 0.200), so the
@@ -551,14 +564,16 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
         # those are different properties and only the second is the defect.
         # Measure the tint, not just the transmittance.
         #
-        # The residual +25.7 is NOT attributed here.  Something else still
-        # paints outside the region and this comment does not pretend to
-        # know what.
+        # Known gap: pywebview re-writes Mica on a system theme change, and
+        # nothing re-applies this until the next apply_glass.
+        none = wintypes.DWORD(DWMSBT_NONE)
+        dwm.DwmSetWindowAttribute(h, DWMWA_SYSTEMBACKDROP_TYPE,
+                                  ctypes.byref(none), ctypes.sizeof(none))
         logger.debug(
-            'glass: not asking the DWM for its system backdrop on hwnd %s - '
-            'it is rendered for the window FRAME, which SetWindowRgn does '
-            'not clip, so a shaped window gets a rectangle of grey around '
-            'it (measured +57.1/255 vs +25.7/255 without)', hwnd)
+            'glass: system backdrop set to NONE on hwnd %s - the DWM renders '
+            'it for the window FRAME, which SetWindowRgn does not clip, and '
+            'pywebview had asked for Mica (measured 77/255 grey outside the '
+            'rounded region, 255 with NONE)', hwnd)
         return False
     except Exception as e:
         logger.debug('glass: DWM backdrop unavailable for hwnd %s: %s',

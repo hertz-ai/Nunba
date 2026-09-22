@@ -410,28 +410,33 @@ class TestWindowsCompositionRung:
                 assert not glass._windows_dwm_material(12345, INTENT)
             dwm.DwmSetWindowAttribute.assert_not_called()
 
-    def test_an_uncomposable_window_is_never_given_the_system_backdrop(self):
-        """The material DWM draws for a FRAME is not clipped by SetWindowRgn.
+    def test_an_uncomposable_window_has_its_system_backdrop_set_to_none(self):
+        """The material DWM draws for a FRAME is not clipped by SetWindowRgn,
+        and the host toolkit asks for one behind this module's back.
 
-        This assertion is the REVERSE of what it used to be, and the reason
-        is pixels rather than preference.  It used to require the backdrop on
-        the grounds that an uncomposable window "keeps exactly what it had
-        before this rung existed" -- a justification about history, not about
-        what the owner sees.
-
-        MEASURED 2026-09-22.  The live companion is cut to a 209x209 disc
-        while it speaks (GetWindowRgn: COMPLEX, box 209x209 in a 330x465
-        window), and the whole 330x465 rectangle was tinted grey anyway.
-        A/B on a window built with companion_window_kwargs(), same region,
-        one variable:
+        This assertion has moved twice, each time on pixels.  It first
+        required the backdrop ("keeps what it had before this rung existed"
+        -- history, not what the owner sees).  Then, MEASURED 2026-09-22, it
+        required the backdrop NOT be asked for: the live companion is cut to
+        a 209x209 disc while it speaks and the whole 330x465 rectangle was
+        tinted grey anyway; A/B, same window, same region, one variable:
 
             backdrop as before   grey outside the disc  +57.1/255
             backdrop suppressed                         +25.7/255
 
-        A window the OS has been told is a circle must not be surrounded by
-        a rectangle of grey.  So the app's own window -- the uncomposable
-        one -- must NOT get the system backdrop, and this test fails if it
-        is ever put back.
+        The residual +25.7 was attributed later that day: pywebview's
+        ``update_title_bar_theme`` writes Mica (type 2) on every form in a
+        dark system theme, from ``BrowserForm.__init__`` and again on every
+        theme change.  Read back live off the companion: type 2 while glass
+        had written nothing.  A/B on the real window cut to the rounded
+        card, over white, the four corner squares OUTSIDE the region:
+
+            as pywebview left it (Mica)   77/255 in every corner
+            set to NONE                   255, the backdrop untouched
+            Mica put back                 77 again
+
+        So "not asking" is not enough: the type must be WRITTEN as NONE, and
+        this test fails if the write goes missing or asks for any material.
 
         Note for anyone re-measuring: transmittance alone does NOT show this.
         Suppressing the backdrop LOWERS transmittance (0.469 -> 0.200)
@@ -439,6 +444,7 @@ class TestWindowsCompositionRung:
         grey is the defect.  Measure the tint.
         """
         DWMWA_SYSTEMBACKDROP_TYPE = 38
+        DWMSBT_NONE = 1
         user32 = layered_user32()
         dwm = accepting_dwm()
         with on_windows(), patch('ctypes.windll.user32', user32), \
@@ -446,18 +452,22 @@ class TestWindowsCompositionRung:
             result = glass.apply_glass(1234, INTENT)
 
         assert result.rung == glass.LAYERED_ALPHA
-        assert not [c for c in dwm.DwmSetWindowAttribute.call_args_list
-                    if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE], (
-            'the system backdrop is rendered for the window FRAME and escapes '
-            'SetWindowRgn, so a shaped window gets a grey rectangle')
+        backdrop = [c for c in dwm.DwmSetWindowAttribute.call_args_list
+                    if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE]
+        assert len(backdrop) == 1, (
+            'the system backdrop type must be written exactly once, to '
+            'undo the Mica pywebview asks for')
+        assert backdrop[0][0][2]._obj.value == DWMSBT_NONE, (
+            'any material here is rendered for the window FRAME, escapes '
+            'SetWindowRgn, and paints grey around a shaped window')
         assert not dwm.DwmExtendFrameIntoClientArea.called, (
             'extending the frame into the client area is the other half of '
             'the same escape')
         user32.SetWindowCompositionAttribute.assert_not_called()
 
-        # The rung must NOT be claimed from the absence of the backdrop:
-        # layered alpha is what makes this window see-through, and it still
-        # has to have been applied.
+        # The rung must NOT be claimed from the backdrop being NONE: layered
+        # alpha is what makes this window see-through, and it still has to
+        # have been applied.
         user32.SetLayeredWindowAttributes.assert_called()
         assert 'dwm_backdrop' not in result.steps
 
@@ -800,16 +810,6 @@ class TestThereIsOnlyOneOfThese:
         assert owners == ['glass.py'], (
             f'the DWM backdrop grew a second home in {owners}')
 
-    def test_source_guard_glass_owns_the_platform_question_by_reusing_it(self):
-        """No second "is this platform X": the flags are read off
-        platform_utils at call time, never redefined here."""
-        src = (_DESKTOP / 'glass.py').read_text(encoding='utf-8')
-        tree = ast.parse(src)
-        assigned = {t.id for n in ast.walk(tree)
-                    if isinstance(n, ast.Assign) for t in n.targets
-                    if isinstance(t, ast.Name)}
-        assert not {'IS_WINDOWS', 'IS_MACOS', 'IS_LINUX'} & assigned
-        assert 'platform_utils.IS_WINDOWS' in src
     def test_source_guard_one_com_vtable_helper_in_the_package(self):
         """The vtable dereference lives in desktop/win32_com.py and nowhere
         else.  glass.py used to carry it; when the taskbar-list call in
@@ -826,6 +826,16 @@ class TestThereIsOnlyOneOfThese:
             'desktop.win32_com', fromlist=['vcall']).vcall, (
             'glass must call the shared helper, not a copy')
 
+    def test_source_guard_glass_owns_the_platform_question_by_reusing_it(self):
+        """No second "is this platform X": the flags are read off
+        platform_utils at call time, never redefined here."""
+        src = (_DESKTOP / 'glass.py').read_text(encoding='utf-8')
+        tree = ast.parse(src)
+        assigned = {t.id for n in ast.walk(tree)
+                    if isinstance(n, ast.Assign) for t in n.targets
+                    if isinstance(t, ast.Name)}
+        assert not {'IS_WINDOWS', 'IS_MACOS', 'IS_LINUX'} & assigned
+        assert 'platform_utils.IS_WINDOWS' in src
 
     def test_source_guard_the_module_holds_no_look_values(self):
         """The boundary the owner drew: the LOOK is CSS, one code path for

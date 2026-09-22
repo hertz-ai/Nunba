@@ -252,7 +252,11 @@ def measure(window, save: str | None, settle: float) -> str:
     # say whether the styling caused it or the re-assert failed to fix it.
     print(f'z-order at birth        -> {topmost_report(hwnd)}')
 
-    result = apply_floating_presence(hwnd, COMPANION_OPACITY)
+    # `native` as app.py passes it, so the rig measures the form painted the
+    # way the app paints it -- the grey-vs-dark run in
+    # companion_surface._host_paints_nothing is decided by exactly this.
+    result = apply_floating_presence(hwnd, COMPANION_OPACITY,
+                                     native=getattr(window, 'native', None))
     print(f'apply_floating_presence -> {result}')
     print(f'hwnd                    -> {hwnd}')
     print(f'z-order after styling   -> {topmost_report(hwnd)}')
