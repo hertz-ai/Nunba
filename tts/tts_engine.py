@@ -2961,7 +2961,8 @@ class TTSEngine:
             pass
 
         try:
-            from integrations.service_tools.media_agent import check_media_status, generate_media
+            from integrations.service_tools.media_agent import (
+                MEDIA_FAILED_STATUSES, check_media_status, generate_media)
             raw = generate_media(
                 context=text, output_modality=modality,
                 input_text=text, duration=duration, style=genre)
@@ -3025,7 +3026,11 @@ class TTSEngine:
                                         _of.write(_chunk)
                             return out_path
                         return None
-                    elif poll.get('status') == 'failed':
+                    # check_media_status reports an AceStep failure as
+                    # 'error' and a video sidecar's as 'failed'; testing
+                    # only 'failed' polled every failed composition to the
+                    # 120 s deadline (N1). The one definition, not a literal.
+                    elif poll.get('status') in MEDIA_FAILED_STATUSES:
                         logger.warning(f"Media task failed: {poll.get('error')}")
                         return None
         except Exception as e:

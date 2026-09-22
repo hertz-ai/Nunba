@@ -454,6 +454,7 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
     try:
         try:
             from integrations.service_tools.media_agent import (
+                MEDIA_FAILED_STATUSES,
                 check_media_status,
                 generate_media,
             )
@@ -489,7 +490,7 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
                     result_url = (progress.get('url')
                                   or (results[0].get('url') if results else None))
                     break
-                if progress.get('status') in ('failed', 'error'):
+                if progress.get('status') in MEDIA_FAILED_STATUSES:
                     logger.warning(
                         f"{modality} generation failed for {job_id}: "
                         f"{progress.get('error')}")
