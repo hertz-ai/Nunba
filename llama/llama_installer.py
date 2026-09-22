@@ -1564,7 +1564,14 @@ class LlamaInstaller:
             # the legacy filename walk was silently doing all the work.
             entries = catalog.list_by_type(ModelType.LLM)
             for entry in entries:
-                if entry.display_name != preset.display_name:
+                # `entry.name`, not `entry.display_name`. ModelEntry has
+                # never had display_name, so this comparison raised
+                # AttributeError on the FIRST entry and the debug-level
+                # swallow below ate it -- leaving this "canonical catalog
+                # lookup first" branch dead for a second time. The comment
+                # above records the first time (a get_models call that did
+                # not exist); fixing that one left this one.
+                if entry.name != preset.display_name:
                     continue
                 local_path = getattr(entry, 'local_path', '') or ''
                 if not local_path:

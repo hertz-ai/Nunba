@@ -136,7 +136,28 @@ class LlamaLoader(ModelLoader):
             if not preset:
                 logger.error(f"LLM download: no preset for {entry.id}")
                 return False
-            return installer.download_model(preset)
+            if not installer.download_model(preset):
+                return False
+            # Record WHERE the weights landed. The loader that fetched them
+            # is the only thing that knows without guessing, and the catalog
+            # is where everything else looks: mark_downloaded reads the
+            # artifact from here (architecture, MoE split, MTP head), and
+            # installer.get_model_path's own "canonical catalog lookup
+            # first" branch reads entry.local_path -- a field that until now
+            # did not exist, so that lookup always fell through to a
+            # filename walk across ~/.nunba, ~/.trueflow, ~/.ollama and the
+            # HF cache on every call.
+            #
+            # Best-effort: a path we cannot resolve leaves the row exactly
+            # as it is today.
+            try:
+                resolved = installer.get_model_path(preset)
+                if resolved:
+                    entry.local_path = str(resolved)
+            except Exception as pe:
+                logger.info(f"LLM download: path not recorded for "
+                            f"{entry.id}: {pe}")
+            return True
         except Exception as e:
             logger.error(f"LLM download failed: {e}")
             return False
