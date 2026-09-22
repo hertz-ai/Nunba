@@ -369,6 +369,32 @@ MODEL_PRESETS = [
         min_build=MIN_LLAMACPP_BUILD_QWEN35,
         runtime_family=QWEN35_RUNTIME_FAMILY,
     ),
+    # APPENDED, never inserted. `selected_model_index` is a POSITION into
+    # this list (llama_config.py:3134 indexes MODEL_PRESETS directly), so
+    # inserting anywhere but the end silently repoints every existing
+    # install's saved choice at a different model.
+    #
+    # Without a row here the model is simply NOT SELECTABLE: main.py:2164
+    # validates a user's pick as 0 <= index < len(MODEL_PRESETS), and the
+    # picker's model_count comes from the same list. A HARTOS catalogue
+    # entry alone does not reach this UI -- Nunba reads its own
+    # models.catalog, not HARTOS's model_catalog.
+    ModelPreset(
+        "Tiel-Coder-35B-A3B MoE MTP UD-Q4_K_XL",
+        "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP",
+        "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+        # size: MEASURED 22749880160 bytes (HF Content-Length == on-disk
+        # getsize after the fetch, 2026-09-22) -- unlike the row above,
+        # whose comment says "NOT CHECKED" and whose estimate is 1.58 GB
+        # high.
+        description="Same 35B MoE coder, built with the multi-token-prediction head "
+                    "(needs --spec-type draft-mtp and a build that has it)",
+        has_vision=True,
+        mmproj_file="mmproj-Tiel-Coder-35B-A3B-MTP-BF16.gguf",
+        mmproj_source_file="mmproj-BF16.gguf",
+        min_build=MIN_LLAMACPP_BUILD_QWEN35,
+        runtime_family=QWEN35_RUNTIME_FAMILY,
+    ),
 ]
 
 

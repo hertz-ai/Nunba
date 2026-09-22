@@ -2358,16 +2358,30 @@ class LlamaConfig:
                     "no extra VRAM cost."
                 )
 
-            # ── Multi-Token Prediction (MTP) — needs newer binary ──
-            # MTP support landed in llama.cpp PR #22673 (am17an).  Local
-            # binary at C:\Users\sathi\.trueflow\llama.cpp\build\bin\
-            # Release\ predates that PR — verified 2026-05-23 against
-            # --help (--spec-type choices do NOT include `mtp`).  When
-            # the binary is upgraded, set this env var to enable real
-            # MTP:
+            # ── Multi-Token Prediction (MTP) ──────────────────────
+            # MTP support landed in llama.cpp PR #22673 (am17an) and the
+            # SERVING binary now has it. Opt in with:
             #   $env:HEVOLVE_LLAMA_MTP_N = "3"
             # which appends:
-            #   --spec-type mtp --spec-draft-n-max 3
+            #   --spec-type draft-mtp --spec-draft-n-max 3
+            #
+            # `draft-mtp`, NOT `mtp`. Upstream renamed the choice after the
+            # PR, and this block kept emitting the original spelling, so the
+            # feature could never have worked. MEASURED 2026-09-22 against
+            # the binary that actually serves:
+            #   --spec-type mtp        -> error: unknown speculative type: mtp
+            #   --spec-type draft-mtp  -> accepted
+            # The old comment blamed a too-old binary for exactly this
+            # symptom, which would have sent the next person chasing a
+            # version problem that does not exist.
+            #
+            # It also named the wrong binary. There are THREE llama-server
+            # .exe on this box and the one that serves is
+            #   .nunba\llama.cpp\build\bin\Release\  -> build 10330
+            # while .trueflow\...\Release\ is 8200 and the top-level
+            # .nunba\llama.cpp\llama-server.exe is 7909 -- below the 9180
+            # floor and the FIRST hit of any naive path walk. Check the
+            # serving process, not the first binary found.
             # Qwen3.5-4B-UD-Q4_K_XL (the current model) ships with the
             # MTP head exposed in checkpoint config — confirmed by the
             # llama.cpp + Qwen3.5 / Qwen3.6 community guides.
@@ -2377,16 +2391,18 @@ class LlamaConfig:
                 _mtp_n = 0
             if _mtp_n >= 1:
                 cmd.extend([
-                    "--spec-type", "mtp",
+                    "--spec-type", "draft-mtp",
                     "--spec-draft-n-max", str(_mtp_n),
                 ])
                 logger.info(
                     "[MTP] Enabling Multi-Token Prediction (--spec-type "
-                    "mtp --spec-draft-n-max %d) — opt-in via "
-                    "HEVOLVE_LLAMA_MTP_N.  Requires llama.cpp built "
-                    "after PR #22673.  If llama-server rejects the "
-                    "flag, the local binary is too old; rebuild it "
-                    "or unset the env var.",
+                    "draft-mtp --spec-draft-n-max %d) — opt-in via "
+                    "HEVOLVE_LLAMA_MTP_N.  Needs BOTH a build carrying "
+                    "draft-mtp (10330 has it; 7909 and 8200 on this box do "
+                    "not) AND a model whose GGUF carries an MTP head — "
+                    "Tiel-Coder-35B-A3B-MTP does, verified by its "
+                    "blk.40.nextn.* tensors. With a plain GGUF the flag is "
+                    "accepted and buys nothing.",
                     _mtp_n,
                 )
 
