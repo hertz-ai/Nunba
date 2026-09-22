@@ -27,7 +27,7 @@ import {
 import { BOOK_PARSING_URL, UPLOAD_FILE_URL, UPLOAD_NATIVE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { rememberServerPromptId } from '../utils/promptId';
-import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS } from '../constants/chatBubble';
+import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isBackgroundRequest } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -2109,7 +2109,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (Number(parsed.priority) === CHAT_BUBBLE_PRIORITY && parsed.action === CHAT_ACTION_STATUS) {
         const statusReqId = parsed.request_id || 'unknown';
         const curReqId = requestIdRef.current;
-        if (curReqId && statusReqId !== 'unknown' && statusReqId !== curReqId) {
+        if (isBackgroundRequest(statusReqId)
+            || (curReqId && statusReqId !== 'unknown' && statusReqId !== curReqId)) {
           return; // daemon/background status — not this user's turn
         }
         try {
@@ -2131,8 +2132,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // Only show thinking traces that belong to the current user chat request.
         // Daemon/background agent tasks use different request_ids — drop them
         // so they don't leak into the user's conversation UI.
+        // A daemon turn's id is dropped even before this window has a turn of
+        // its own: requestIdRef starts null, and the comparison below lets
+        // everything through then.  Those traces now reach this topic
+        // (HARTOS trace_audience) and belong on the floating window only.
         const currentReqId = requestIdRef.current;
-        if (currentReqId && traceRequestId !== 'unknown' && traceRequestId !== currentReqId) {
+        if (isBackgroundRequest(traceRequestId)
+            || (currentReqId && traceRequestId !== 'unknown' && traceRequestId !== currentReqId)) {
           logger.log(`Dropping daemon thinking trace (req=${traceRequestId}, current=${currentReqId})`);
           return;
         }

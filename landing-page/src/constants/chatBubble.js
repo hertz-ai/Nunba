@@ -22,3 +22,15 @@ export const CHAT_ACTION_THINKING = 'Thinking';
 // Canned pipeline PROGRESS (stages / routing status) → drives the
 // "analysing…" spinner ONLY, never a Step.
 export const CHAT_ACTION_STATUS = 'Status';
+
+// A background (daemon) turn's request_id: `daemon_<goal_id>`.  Mirror of
+// HARTOS core.chat_client.DAEMON_PREFIX / daemon_request_id.  HARTOS delivers
+// a daemon agent's traces to the person who owns the goal
+// (crossbar_publish.trace_audience), so the envelope reaches the same topic as
+// the owner's own turns; this id is what tells the two apart.
+export const DAEMON_REQUEST_PREFIX = 'daemon_';
+
+// True for an envelope from a background agent turn, never the user's own.
+export function isBackgroundRequest(requestId) {
+  return typeof requestId === 'string' && requestId.startsWith(DAEMON_REQUEST_PREFIX);
+}
