@@ -584,6 +584,29 @@ class LlamaConfig:
         except ImportError:
             return None
 
+    def _moe_args(self, model_path) -> list:
+        """llama.cpp flags placing a mixture of experts' experts in RAM.
+
+        Delegates the decision to model_catalog.moe_offload_args, which is
+        the one answer to "should this model's experts go to CPU" and reads
+        it from the GGUF itself. Deciding it here would make a second
+        answer, and the three spawn paths in this stack each already carry
+        their own copy of `-ngl 99`.
+
+        Best-effort by design: a model that cannot be probed launches
+        exactly as it does today, which is the pre-existing behaviour.
+        """
+        try:
+            from integrations.service_tools.model_catalog import (
+                moe_offload_args)
+            vram = self._get_vram_manager()
+            free = float(vram.get_free_vram()) if vram else 0.0
+            return moe_offload_args(str(model_path), free)
+        except Exception as e:
+            logger.info("MoE placement probe skipped (%s); launching with "
+                        "unchanged flags", e)
+            return []
+
     # ── Cohort-aware draft gate ──────────────────────────────────────────
     # Data-scientist rework (2026-04 ship-gate, commit 2acf21a): the plain
     # 10 GB threshold silently regressed English-only users who had room
@@ -2445,6 +2468,14 @@ class LlamaConfig:
                 if self.installer.gpu_available == "cuda":
                     cmd.extend(["-ngl", "99"])
                     cmd.extend(["--flash-attn", "on"])
+                    # A mixture of experts keeps attention on the GPU and
+                    # its experts in system RAM, which is what lets an 8 GB
+                    # card serve a 35B: measured, 2.87 GiB of VRAM for a
+                    # 21.19 GiB model. Without this the catalog admits the
+                    # model (it is sized for that placement) and the spawn
+                    # then tries to put every byte on the card. Dense
+                    # models get nothing back from here.
+                    cmd.extend(self._moe_args(model_path))
                     logger.info("GPU acceleration enabled (CUDA + flash-attn)")
                 elif self.installer.gpu_available == "metal":
                     logger.info("GPU acceleration enabled (Metal)")
@@ -2741,6 +2772,8 @@ class LlamaConfig:
         if can_use_gpu:
             if self.installer.gpu_available == "cuda":
                 cmd.extend(["-ngl", "99", "--flash-attn", "on"])
+                # Same placement question as the main spawn, same answer.
+                cmd.extend(self._moe_args(model_path))
             if mmproj_path and not can_use_gpu:
                 cmd.append("--no-mmproj-offload")
 
