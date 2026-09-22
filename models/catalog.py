@@ -24,6 +24,7 @@ from integrations.service_tools.model_catalog import (  # noqa: F401
     ModelCatalog,
     ModelEntry,
     ModelType,
+    llama_gguf_compute_requirements,
 )
 
 logger = logging.getLogger('NunbaModelCatalog')

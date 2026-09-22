@@ -2905,7 +2905,8 @@ def _bounded_hub_call(fn, *args, timeout: float = 5.0, **kwargs):
 def _gguf_install_files(repo_files, requested_file: str = '',
                         file_sizes: dict | None = None,
                         compute_state: dict | None = None,
-                        target_dir: str | None = None) -> dict:
+                        target_dir: str | None = None,
+                        is_moe: bool = False) -> dict:
     """Build the llama.cpp file mapping from a verified Hub manifest.
 
     The Hub installer already obtains this manifest before it registers a
@@ -2962,10 +2963,26 @@ def _gguf_install_files(repo_files, requested_file: str = '',
                 'could not inspect the configured Nunba model-storage volume'
             ) from exc
         vram, ram = llama_gguf_compute_requirements(size_gb)
-        ram_ok = float(compute_state.get('ram_free_gb', 0) or 0) >= ram
+        free_ram = float(compute_state.get('ram_free_gb', 0) or 0)
+        ram_ok = free_ram >= ram
         free_vram = float(compute_state.get('vram_free_gb', 0) or 0)
         if compute_state.get('gpu_available') and free_vram >= vram:
             return True
+        # A mixture of experts runs with its expert tensors in system RAM
+        # (llama.cpp --cpu-moe) and attention on the GPU, so what has to
+        # hold is the COMBINED budget, not either side alone.  This is the
+        # "fits" figure a GGUF publisher quotes.  Measured:
+        # Tiel-Coder-35B-A3B is 21.19 GiB of which only 2.53 GiB is
+        # non-expert, and it served from 2.87 GiB of VRAM.  Judged on VRAM
+        # alone every 35B is rejected by a machine that can run it.
+        #
+        # ONLY for a MoE, and only with a GPU to keep attention on.
+        # Overflowing a DENSE model means a PCIe round trip on every token,
+        # because every parameter is touched every token -- so the dense
+        # arms below are untouched.
+        if is_moe and compute_state.get('gpu_available'):
+            if (free_vram + free_ram) >= vram:
+                return True
         # GGUF is CPU-capable.  A GPU improves placement and throughput, but a
         # machine with sufficient system RAM must not be rejected merely
         # because CUDA/Metal is unavailable.
@@ -2987,9 +3004,29 @@ def _gguf_install_files(repo_files, requested_file: str = '',
         # canonical compute/storage snapshot.  Bonsai 2 falls through to its
         # ternary PQ2_0 when larger conventional quants are absent or do not
         # fit.  An operator can still select a manifest member explicitly.
-        preference = ('q8_0', 'q6_k', 'q5_k_m', 'q5_k_s', 'q5_0',
-                      'q4_k_m', 'q4_k_s', 'q4_0', 'pq2_0', 'q3_k_m',
-                      'q3_k_s', 'q2_k', 'q2_0', 'ptq1_0')
+        # Ordered by bit width first, then by variant within a width --
+        # _XL (unsloth dynamic) > _M > _S > _0 -- which is the ordering the
+        # publishers' own guidance uses.
+        #
+        # The list used to stop at the older spellings (q8_0, q6_k, q5_k_m,
+        # q4_k_m, q4_k_s, q3_k_m, q3_k_s, q2_k). Against a modern repo that
+        # publishes Q4_K_XL / IQ4_XS / Q8_K_XL, the ONLY marker that matched
+        # anything was `q2_k`, via Q2_K_XL -- so the picker chose the tier
+        # that repo's own card calls "THE LAST RESORT ... struggles with
+        # agentic coding", on a machine with room for the 4-bit tiers.
+        # Every IQ and _XL quant was invisible to it.
+        preference = (
+            'q8_k_xl', 'q8_0',
+            'q6_k_xl', 'q6_k',
+            'q5_k_xl', 'q5_k_m', 'q5_k_s', 'q5_0',
+            'q4_k_xl', 'q4_k_m', 'q4_k_s', 'q4_0',
+            'iq4_xs', 'iq4_nl',
+            'q3_k_xl', 'q3_k_m', 'q3_k_s',
+            'iq3_m', 'iq3_xxs',
+            'pq2_0', 'q2_k_xl', 'q2_k',
+            'iq2_m', 'iq2_xxs',
+            'q2_0', 'ptq1_0', 'iq1_m', 'iq1_s',
+        )
         lowered = {f: f.lower() for f in weights}
         candidates = [
             f for marker in preference for f in weights if marker in lowered[f]
@@ -3272,6 +3309,11 @@ def admin_models_hub_install():
                                "after 5s — retry when network is stable",
                 }), 504
             _file_sizes = {}
+            # Bound here, not only inside the GGUF branch below: the tag
+            # read further down runs for every repo, and a non-GGUF one
+            # (a safetensors TTS model, say) would otherwise hit a
+            # NameError on a path that works today.
+            _info = None
             if any(f.lower().endswith('.gguf') for f in _files):
                 # The file tree has the byte counts that let the existing
                 # orchestrator snapshot reject a quant that cannot fit before
@@ -3324,9 +3366,21 @@ def admin_models_hub_install():
         custom_dl_dir = (data.get('download_dir') or '').strip() or None
         try:
             _compute_state = get_orchestrator()._get_compute_state()
+            # Whether this is a mixture of experts decides whether the
+            # experts may live in system RAM, and so which quants fit.
+            # Before download the artifact cannot be read, so the Hub tags
+            # are the only signal there is -- publishers tag these
+            # ('moe', 'qwen35moe'). It is a HINT and is treated as one: it
+            # only ever WIDENS what is offered, the download still has to
+            # fit the storage volume, and read_gguf_facts measures the
+            # truth from the file afterwards and corrects the row.
+            _tags = {str(t).lower() for t in (getattr(_info, 'tags', None)
+                                              or [])}
+            _is_moe = any('moe' in t for t in _tags)
             _llama_files = _gguf_install_files(
                 _files, (data.get('gguf_file') or '').strip(),
-                _file_sizes, _compute_state, target_dir=custom_dl_dir)
+                _file_sizes, _compute_state, target_dir=custom_dl_dir,
+                is_moe=_is_moe)
         except ValueError as _file_error:
             return jsonify({'error': str(_file_error)}), 400
         _is_llama_gguf = bool(_llama_files)
