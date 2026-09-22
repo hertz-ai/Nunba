@@ -179,3 +179,73 @@ class TestAnOperatorOverrideStillWins:
     def test_an_explicit_quant_that_cannot_fit_is_refused(self, pick):
         with pytest.raises(ValueError):
             pick(0.0, 1.0, moe=False, requested=_STEM % 'Q8_K_XL')
+
+
+class TestBonsai2KeepsItsTernaryFallback:
+    """A ternary quant is not judged by bit width.
+
+    main.py carries the intent verbatim: "Bonsai 2 falls through to its
+    ternary PQ2_0 when larger conventional quants are absent or do not
+    fit." So pq2_0 sits ABOVE the 3-bit quants in the preference ladder.
+
+    An earlier pass of mine rewrote that ladder to add the IQ and UD *_XL
+    quants -- a real fix, it was handing 2-bit weights to a 24 GB card --
+    and sorted purely by bit width, which moved pq2_0 from index 8 to
+    index 19. That flipped this repo's pick. The comment was three lines
+    above the list and was kept verbatim by the same commit.
+
+    Input and verdict are the audit's, reproduced here so the ordering
+    has a test and not only a comment."""
+
+    @pytest.fixture
+    def bonsai(self, pick):
+        return ['Bonsai-2-PQ2_0.gguf', 'Bonsai-2-Q3_K_M.gguf']
+
+    def test_pq2_0_beats_q3_k_m_when_both_fit(self, pick, bonsai, monkeypatch):
+        import ast
+        src = open(os.path.join(_NUNBA, 'main.py'), encoding='utf-8').read()
+        fn = next(n for n in ast.parse(src).body
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == '_gguf_install_files')
+        ns = {}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), 'main.py',
+                     'exec'), ns)
+
+        class _Unlimited:
+            free = 1 << 60
+        import shutil
+        orig = shutil.disk_usage
+        shutil.disk_usage = lambda _p: _Unlimited()
+        try:
+            sizes = {bonsai[0]: int(1.2 * GIB), bonsai[1]: int(1.8 * GIB)}
+            got = ns['_gguf_install_files'](
+                bonsai, '', sizes,
+                {'gpu_available': True, 'vram_free_gb': 48,
+                 'ram_free_gb': 64})['model']
+        finally:
+            shutil.disk_usage = orig
+        assert got == 'Bonsai-2-PQ2_0.gguf', (
+            'the ternary fallback lost its place in the ladder; bit-width '
+            'ordering buries PQ2_0 below Q3_K_M and the Bonsai 2 comment '
+            'says it must not')
+
+    def test_the_ladder_still_ranks_pq2_0_above_every_3_bit_quant(self):
+        """Guards the ORDER directly, so a future reshuffle that happens
+        not to have a Bonsai repo to hand still fails here."""
+        import ast
+        src = open(os.path.join(_NUNBA, 'main.py'), encoding='utf-8').read()
+        fn = next(n for n in ast.parse(src).body
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == '_gguf_install_files')
+        ns = {}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), 'main.py',
+                     'exec'), ns)
+        # Re-derive the ladder by asking the picker to rank a synthetic repo
+        # that publishes one file per marker.
+        ladder = [c.value for c in ast.walk(fn)
+                  if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+        order = [m for m in ladder if m in (
+            'pq2_0', 'q3_k_xl', 'q3_k_m', 'q3_k_s', 'iq3_m', 'iq3_xxs',
+            'q2_k_xl', 'q2_k')]
+        assert order.index('pq2_0') < order.index('q3_k_m'), order
+        assert order.index('pq2_0') < order.index('iq3_xxs'), order

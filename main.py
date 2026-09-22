@@ -3027,9 +3027,17 @@ def _gguf_install_files(repo_files, requested_file: str = '',
             'q5_k_xl', 'q5_k_m', 'q5_k_s', 'q5_0',
             'q4_k_xl', 'q4_k_m', 'q4_k_s', 'q4_0',
             'iq4_xs', 'iq4_nl',
+            # pq2_0 sits ABOVE the 3-bit quants on purpose -- see the Bonsai 2
+            # note above.  It is ternary, so bit width alone would bury it down
+            # with q2_k, and an earlier pass of mine did exactly that: it was
+            # moved from index 8 to index 19, which flipped a Bonsai 2 repo
+            # publishing both PQ2_0 and Q3_K_M from PQ2_0 to Q3_K_M.  The 4-bit
+            # additions above it are a genuine improvement on it; everything
+            # below is not.
+            'pq2_0',
             'q3_k_xl', 'q3_k_m', 'q3_k_s',
             'iq3_m', 'iq3_xxs',
-            'pq2_0', 'q2_k_xl', 'q2_k',
+            'q2_k_xl', 'q2_k',
             'iq2_m', 'iq2_xxs',
             'q2_0', 'ptq1_0', 'iq1_m', 'iq1_s',
         )
