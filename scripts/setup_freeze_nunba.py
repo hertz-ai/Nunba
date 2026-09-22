@@ -1037,18 +1037,24 @@ _hartos_packages = [
 # Windows runner the `ln -sf ... ../HARTOS || true` step reports success while
 # creating nothing, `hartos_backend_src/` is not in the repo, so every CI
 # Windows build since the sibling layout was introduced printed four "not
-# found" warnings and shipped an installer WITHOUT these packages -- while
-# hart_intelligence_entry, which imports from all four at module top, WAS
-# bundled via _deps. Measured 2026-09-22 on run 35688418793: build-linux
-# "Including core package <- .../HARTOS/core" x4, build-windows "WARNING: core
-# package not found" x4, both jobs green, both smoke tests green. That
-# installer was promoted to /releases/latest. Windows is ~69% of downloads.
+# found" warnings and shipped without this root copy, while Linux and macOS
+# shipped it. Measured 2026-09-22 on run 35688418793: build-linux "Including
+# core package <- .../HARTOS/core" x4, build-windows "WARNING: core package
+# not found" x4, both green.
 #
-# Missing is therefore FATAL, not a warning. There is no build of this app
-# without these packages that is worth shipping, and a red build here is the
-# only honest signal: the health-endpoint smoke test returns 200 with zero
-# HARTOS blueprints loaded (see Nunba #46), so nothing downstream would catch
-# it. Same treatment agent_ledger already gets above.
+# What that did NOT mean: an installer without its backend. The same four
+# packages reach the frozen exe a second way, the pip install of _deps/HARTOS
+# into the bundled python-embed, and that build's own --validate passed 62/0
+# with the in-process backend available. The real losses were (1) the root
+# copy is the fallback for any module cx_Freeze's tracing misses, and (2) the
+# lib/hartos shadowing gate further down only runs when the root copy exists,
+# so it silently skipped on every CI Windows build and the bug it exists to
+# catch could recur there unseen.
+#
+# Missing is therefore FATAL, not a warning: a Windows build that bundles less
+# than Linux and macOS, with its shadowing gate disarmed, is not worth
+# shipping, and a red build is the only signal anyone reads. Same treatment
+# agent_ledger already gets above.
 for _pkg_dir, _pkg_name in _hartos_packages:
     _pkg_candidates = [
         os.path.join(_hartos_dir, _pkg_dir),
