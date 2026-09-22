@@ -21,12 +21,23 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 import types
 import unittest
 from pathlib import Path
 
-from desktop import native_api_window as naw
-from desktop import win32_chrome as wc
+import pytest
+
+# desktop.win32_chrome builds a ctypes.WINFUNCTYPE at import time (Windows
+# only); importing it on the ubuntu/macos CI legs is a collection error that
+# aborts the entire pytest run.  Same module-level skip as test_splash_ui.py;
+# the Windows leg still runs every check in this file.
+if sys.platform != 'win32':
+    pytest.skip('Windows-only: desktop.win32_chrome needs ctypes.WINFUNCTYPE',
+                allow_module_level=True)
+
+from desktop import native_api_window as naw  # noqa: E402
+from desktop import win32_chrome as wc  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 APP_PY = REPO_ROOT / "app.py"

@@ -15,9 +15,20 @@ hit-testing; `_classify_hit` only *refines* a DefWindowProc result:
 Pure logic — `native_hit` is passed in, no live HWND.  Runs on the Windows
 dev/CI box where desktop.win32_chrome imports cleanly.
 """
+import sys
 import types
 
-from desktop import win32_chrome as wc
+import pytest
+
+# desktop.win32_chrome builds a ctypes.WINFUNCTYPE at import time, which exists
+# only on Windows; importing it elsewhere is a COLLECTION error that aborts the
+# whole pytest run (the ubuntu/macos CI legs, first run since 09-17).  Same
+# module-level skip as tests/test_splash_ui.py; the Windows leg still runs it.
+if sys.platform != 'win32':
+    pytest.skip('Windows-only: desktop.win32_chrome needs ctypes.WINFUNCTYPE',
+                allow_module_level=True)
+
+from desktop import win32_chrome as wc  # noqa: E402
 
 
 def _rc(left=0, top=0, right=1000, bottom=800):
