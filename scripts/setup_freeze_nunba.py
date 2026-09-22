@@ -1031,17 +1031,43 @@ _hartos_packages = [
 # Always include from sibling HARTOS — these are namespace packages when
 # pip-installed, so cx_Freeze can't trace them via `packages`. The
 # include_files copy is the only reliable way to bundle them.
+#
+# The `_deps/HARTOS` candidate is the same CI fallback the pyproject lookup and
+# the agent_ledger lookup above already have, and it was missing HERE. On the
+# Windows runner the `ln -sf ... ../HARTOS || true` step reports success while
+# creating nothing, `hartos_backend_src/` is not in the repo, so every CI
+# Windows build since the sibling layout was introduced printed four "not
+# found" warnings and shipped an installer WITHOUT these packages -- while
+# hart_intelligence_entry, which imports from all four at module top, WAS
+# bundled via _deps. Measured 2026-09-22 on run 35688418793: build-linux
+# "Including core package <- .../HARTOS/core" x4, build-windows "WARNING: core
+# package not found" x4, both jobs green, both smoke tests green. That
+# installer was promoted to /releases/latest. Windows is ~69% of downloads.
+#
+# Missing is therefore FATAL, not a warning. There is no build of this app
+# without these packages that is worth shipping, and a red build here is the
+# only honest signal: the health-endpoint smoke test returns 200 with zero
+# HARTOS blueprints loaded (see Nunba #46), so nothing downstream would catch
+# it. Same treatment agent_ledger already gets above.
 for _pkg_dir, _pkg_name in _hartos_packages:
-    for _candidate in [
+    _pkg_candidates = [
         os.path.join(_hartos_dir, _pkg_dir),
+        os.path.join('_deps', 'HARTOS', _pkg_dir),
         os.path.join('hartos_backend_src', _pkg_dir),
-    ]:
+    ]
+    for _candidate in _pkg_candidates:
         if os.path.isdir(_candidate) and os.path.isfile(os.path.join(_candidate, '__init__.py')):
             build_exe_options["include_files"].append((os.path.normpath(_candidate), _pkg_name))
             print(f"Including {_pkg_name} package <- {os.path.normpath(_candidate)}")
             break
     else:
-        print(f"WARNING: {_pkg_name} package not found — related features will be unavailable")
+        raise RuntimeError(
+            f"HARTOS package '{_pkg_name}' not found; refusing to build an installer "
+            f"without it (hart_intelligence_entry imports it at module top).  Searched:\n  - "
+            + "\n  - ".join(_pkg_candidates)
+            + "\nClone HARTOS as a sibling directory, or make sure the CI sibling "
+            "checkout landed in _deps/HARTOS."
+        )
 
 # Verify sql package is pip-installed (from hevolve-database canonical repo).
 # cx_Freeze traces it automatically when listed in packages above.

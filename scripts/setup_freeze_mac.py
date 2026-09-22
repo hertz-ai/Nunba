@@ -330,7 +330,14 @@ for _pkg_dir, _pkg_name in _hartos_packages:
             print(f"Including HARTOS package {_pkg_name} <- {os.path.normpath(_candidate)}")
             break
     else:
-        print(f"WARNING: HARTOS package {_pkg_name} not found in any of {_hartos_roots}")
+        # Fatal, matching the Windows and Linux scripts: an .app without these
+        # packages dies at --validate anyway (see the comment above), and a red
+        # build is the only signal that reaches anyone.
+        raise RuntimeError(
+            f"HARTOS package '{_pkg_name}' not found in any of {_hartos_roots}; "
+            "refusing to build an installer without it. Clone HARTOS as a sibling "
+            "directory, or make sure the CI sibling checkout landed in _deps/HARTOS."
+        )
 
 # ── Conditionally include optional packages ──
 import importlib.util as _ilu
