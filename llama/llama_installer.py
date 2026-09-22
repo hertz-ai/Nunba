@@ -55,17 +55,33 @@ QWEN35_RUNTIME_FAMILY = 'qwen3.5'
 
 
 class ModelPreset:
-    """Model configuration presets"""
+    """Model configuration presets.
+
+    The weights are stored as ``size_bytes`` — the one reading that needs no
+    divisor and can carry no ambiguity.  ``size_mb`` survives as a read-only
+    MiB VIEW of it, because MiB is what every consumer in this codebase has
+    always meant by the name (see ``model_size_bytes`` below for the audit).
+    Making it a view rather than a field is the point: there is now no way to
+    write a size in one unit and read it in another.
+    """
+
     def __init__(self, display_name: str, repo_id: str, file_name: str,
-                 size_mb: int, description: str, has_vision: bool = False,
+                 size_mb: int | None = None, description: str = '',
+                 has_vision: bool = False,
                  mmproj_file: str | None = None,
                  mmproj_source_file: str | None = None,
                  min_build: int | None = None,
-                 runtime_family: str | None = None):
+                 runtime_family: str | None = None,
+                 size_bytes: int | None = None):
         self.display_name = display_name
         self.repo_id = repo_id
         self.file_name = file_name
-        self.size_mb = size_mb
+        #: Resolved weight size in BYTES, or None until first asked for.
+        #: The built-in presets pass neither size and are answered from the
+        #: canonical table by file name; the catalog round trip passes
+        #: ``size_bytes``; legacy/duck-typed callers pass ``size_mb``.
+        self._size_bytes = int(size_bytes) if size_bytes is not None else None
+        self._size_mb_hint = size_mb
         self.description = description
         self.has_vision = has_vision
         self.mmproj_file = mmproj_file          # Local unique name (e.g. mmproj-Qwen3.5-4B-F16.gguf)
@@ -73,9 +89,169 @@ class ModelPreset:
         self.min_build = min_build
         self.runtime_family = runtime_family    # e.g. QWEN35_RUNTIME_FAMILY; None = generic llama.cpp
 
+    @property
+    def size_bytes(self) -> int:
+        """The weights in BYTES — looked up once, from the one canonical table.
+
+        Resolved lazily rather than at import.  The table lives in HARTOS, and
+        reaching it means importing ``integrations``, whose package __init__
+        pulls in transformers — MEASURED 114 s cold on the author's box.
+        ``llama_installer`` is on Nunba's boot path and is imported by tools
+        that never touch a size, so it stays HARTOS-free until something
+        actually asks how big a model is.  Every caller that does ask has
+        already paid for HARTOS by then.
+        """
+        if self._size_bytes is None:
+            self._size_bytes = self._resolve_size_bytes()
+        return self._size_bytes
+
+    def _resolve_size_bytes(self) -> int:
+        """Ask the canonical table, then fall back to an explicit MiB hint."""
+        try:
+            from integrations.service_tools.model_catalog import (
+                model_weight_bytes,
+            )
+            nbytes = model_weight_bytes(self.file_name)
+            if nbytes:
+                return int(nbytes)
+        except Exception as e:
+            logger.debug(f"weight table unavailable for {self.file_name}: {e}")
+        if self._size_mb_hint:
+            # Caller supplied MiB (catalog reconstruction, admin-registered
+            # model, test stub).  Read it as MiB — see model_size_bytes for
+            # why that is what every consumer has always meant.
+            return int(round(self._size_mb_hint * BYTES_PER_MIB))
+        # Nothing known.  Say so loudly: 0 satisfies every
+        # `size_mb <= budget_mb` check in the app, so a silent zero would
+        # read as "fits anywhere" and could commit VRAM that isn't there.
+        logger.error(
+            "No weight size for %s — it is in neither MODEL_WEIGHT_BYTES nor "
+            "the preset's own fields, so every budget check involving it will "
+            "read 0 and pass. Add it to MODEL_WEIGHT_BYTES.", self.file_name)
+        return 0
+
+    @property
+    def size_mb(self) -> int:
+        """The weights in MiB — a view of ``size_bytes``, never a second field.
+
+        Read-only on purpose.  A writable ``size_mb`` is how the table ended
+        up holding decimal MB in some rows and MiB in others; with one stored
+        unit and a derived view, that divergence has nowhere to live.
+        """
+        return int(round(self.size_bytes / BYTES_PER_MIB))
+
+
+# ── How big is a model? ONE conversion, and bytes underneath it ──────────
+#
+# The sizes themselves are NOT here any more.  They live in ONE table,
+# ``integrations.service_tools.model_catalog.MODEL_WEIGHT_BYTES`` (HARTOS),
+# which documents their provenance row by row: measured where a file exists,
+# and a preserved literal with its unit named where one does not.  Nunba
+# imports HARTOS; HARTOS cannot import Nunba, so a table both sides read can
+# only live there.  Until 2026-09-22 each repo kept its own copy of the same
+# nine numbers and they had already been drifting for four months.
+#
+# WHAT EVERY CONSUMER MEANS BY A SIZE — audited call site by call site
+# across both repos, and the answer is unanimous, MiB:
+#
+#   llama_config   preset.size_mb <= diag['compute_budget_mb']
+#                  where budget_mb = int(free_vram * 1024)            -> MiB
+#   ai_installer   p.size_mb <= budget_mb
+#                  where budget_mb = (vram - 1.5) * 1024              -> MiB
+#   main/catalog   size_mb / 1024.0, compared against a free_gb that is
+#                  nvidia-smi MiB / 1024, i.e. GiB                    -> MiB
+#   get_model_path size_mb * 1024 * 1024 for expected bytes           -> MiB
+#
+# The readers were right; the stored literal was wrong.  So ModelPreset now
+# stores BYTES and exposes ``size_mb`` as the exact MiB view, which makes
+# every one of those sites correct without touching its arithmetic, and this
+# function is the single place a size is ever converted.
+#
+# WHAT THE OLD AMBIGUITY COST (live 2026-09-22 08:15:49): _derive_ctx_size
+# subtracted 2910/1024 = 2.841797 from a free-VRAM reading that is genuinely
+# GiB.  The weights were overstated by 0.1297 GiB (133 MB), remaining came to
+# 1.998203 against a `>= 2.0` gate, and n_ctx was pinned at 4096 for the life
+# of the process — under the measured 8026-token tool schema, so every
+# agentic turn 400'd.  The decision missed by 1.8 MB, and `.1f` printed it as
+# "remaining=2.0GB" right next to the branch that rejected it.
+BYTES_PER_MIB = 1024 ** 2
+BYTES_PER_GIB = 1024 ** 3
+
+
+def model_size_bytes(preset, model_path=None, installer=None) -> int:
+    """Size of a preset's weights in BYTES — measured from the file when possible.
+
+    THE conversion.  Everything that needs a model's size — VRAM ledgers,
+    context-window tiers, download-completeness floors, catalog rows — comes
+    through here, so the unit a size is expressed in stops depending on which
+    call site you happen to be reading.
+
+    Bytes, because bytes is the only reading that needs no divisor.  Callers
+    wanting GiB use :func:`model_size_gib`; callers wanting MiB read
+    ``preset.size_mb``, which is the same number viewed differently.
+
+    Args:
+        preset: a :class:`ModelPreset`, or anything carrying ``size_bytes``
+            or ``size_mb`` (the catalog reconstructs duck-typed presets).
+        model_path: the resolved .gguf path, when the caller already has it.
+            Both llama-server spawn sites do — they resolve it before
+            building the command — so the common case costs one ``stat``.
+        installer: a :class:`LlamaInstaller` to resolve the path with when
+            ``model_path`` was not supplied.  Optional: passing neither is
+            valid and simply takes the registered size.
+
+    Returns:
+        Bytes.  The file's true size when one is on disk; otherwise the
+        registered size, which for four of the ten presets was itself
+        measured and for the rest is a literal whose unit the table names.
+    """
+    path = model_path
+    if not path and installer is not None:
+        try:
+            path = installer.get_model_path(preset)
+        except Exception as e:                       # resolution is best-effort
+            logger.debug(f"model_size_bytes: path resolution failed: {e}")
+            path = None
+    if path:
+        try:
+            if os.path.exists(path):
+                return os.path.getsize(path)
+        except OSError as e:
+            logger.debug(f"model_size_bytes: could not stat {path}: {e}")
+
+    declared = getattr(preset, 'size_bytes', None)
+    if isinstance(declared, (int, float)) and declared > 0:
+        return int(declared)
+    # Duck-typed presets (catalog reconstructions, test stubs) carry only
+    # size_mb.  Read it as the MiB it has always been meant to be — the same
+    # constant ModelPreset itself uses, so there is still one conversion.
+    legacy_mib = getattr(preset, 'size_mb', 0)
+    if isinstance(legacy_mib, (int, float)) and legacy_mib > 0:
+        return int(round(legacy_mib * BYTES_PER_MIB))
+    return 0
+
+
+def model_size_gib(preset, model_path=None, installer=None) -> float:
+    """The same size as :func:`model_size_bytes`, in GiB.
+
+    A VIEW, not a second conversion — it divides what that function returned.
+    GiB is the unit every VRAM figure in the app is already in
+    (``vram_manager`` reports nvidia-smi's MiB / 1024), so this is what the
+    ledger writes and the context tiers compare.
+    """
+    return model_size_bytes(preset, model_path=model_path,
+                            installer=installer) / BYTES_PER_GIB
+
 
 # Model presets from HuggingFace
 # Qwen3.5 VL models are the default — 256K context, unified VLM (vision+text)
+#
+# Sizes are NOT written here.  Each row names its .gguf, and ModelPreset looks
+# the size up by that name in the single canonical table
+# (integrations.service_tools.model_catalog.MODEL_WEIGHT_BYTES) the first time
+# anything asks.  A size literal in this file would be the second copy that
+# this change exists to remove; tests/test_model_weight_bytes_one_table.py
+# fails if one comes back.
 MODEL_PRESETS = [
     # Qwen3.5 models - default choice, 256K context, unified VLM (vision+text)
     # Requires llama.cpp build b8148+, NOT compatible with Ollama
@@ -83,8 +259,7 @@ MODEL_PRESETS = [
         "Qwen3.5-4B VL (Recommended)",
         "unsloth/Qwen3.5-4B-GGUF",
         "Qwen3.5-4B-UD-Q4_K_XL.gguf",
-        2910,
-        "256K context, vision+text, best quality (GPU ≥4GB VRAM)",
+        description="256K context, vision+text, best quality (GPU ≥4GB VRAM)",
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-4B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
@@ -95,8 +270,7 @@ MODEL_PRESETS = [
         "Qwen3.5-2B VL",
         "unsloth/Qwen3.5-2B-GGUF",
         "Qwen3.5-2B-UD-Q4_K_XL.gguf",
-        1340,
-        "256K context, vision+text, lightweight (low VRAM / CPU)",
+        description="256K context, vision+text, lightweight (low VRAM / CPU)",
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-2B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
@@ -108,8 +282,7 @@ MODEL_PRESETS = [
         "Qwen3-VL-2B Instruct Q4_K_XL",
         "unsloth/Qwen3-VL-2B-Instruct-GGUF",
         "Qwen3-VL-2B-Instruct-UD-Q4_K_XL.gguf",
-        1500,
-        "Vision+text, good for code analysis with diagrams",
+        description="Vision+text, good for code analysis with diagrams",
         has_vision=True,
         mmproj_file="mmproj-Qwen3-VL-2B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf"
@@ -119,8 +292,7 @@ MODEL_PRESETS = [
         "Qwen3.5-0.8B VL (Caption)",
         "unsloth/Qwen3.5-0.8B-GGUF",
         "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
-        550,
-        "Smallest VLM, ~750MB with mmproj, ~1.9 FPS captioning, runs on anything",
+        description="Smallest VLM, ~750MB with mmproj, ~1.9 FPS captioning, runs on anything",
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-0.8B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
@@ -131,8 +303,7 @@ MODEL_PRESETS = [
         "Qwen3-2B Text-Only Q4_K_M",
         "unsloth/Qwen3-2B-Instruct-GGUF",
         "Qwen3-2B-Instruct-Q4_K_M.gguf",
-        1100,
-        "Text-only, fastest, no vision support",
+        description="Text-only, fastest, no vision support",
         has_vision=False
     ),
     # Larger Qwen3.5 models — dynamically selected based on available VRAM
@@ -142,8 +313,8 @@ MODEL_PRESETS = [
         "Qwen3.5-9B UD-Q4_K_XL",
         "unsloth/Qwen3.5-9B-GGUF",
         "Qwen3.5-9B-UD-Q4_K_XL.gguf",
-        6113,  # 5.97 GB
-        "256K context, 9B params, vision+text, strong reasoning (llama.cpp only)",
+        # size: NOT CHECKED — no file on the box; estimate in MODEL_WEIGHT_BYTES
+        description="256K context, 9B params, vision+text, strong reasoning (llama.cpp only)",
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-9B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
@@ -154,8 +325,8 @@ MODEL_PRESETS = [
         "Qwen3.5-27B UD-Q4_K_XL",
         "unsloth/Qwen3.5-27B-GGUF",
         "Qwen3.5-27B-UD-Q4_K_XL.gguf",
-        18022,  # 17.6 GB
-        "256K context, 27B params, vision+text, near-frontier quality (llama.cpp only)",
+        # size: NOT CHECKED — no file on the box; estimate in MODEL_WEIGHT_BYTES
+        description="256K context, 27B params, vision+text, near-frontier quality (llama.cpp only)",
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-27B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
@@ -166,8 +337,8 @@ MODEL_PRESETS = [
         "Qwen3.5-35B-A3B MoE UD-Q4_K_XL",
         "unsloth/Qwen3.5-35B-A3B-GGUF",
         "Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf",
-        22733,  # 22.2 GB
-        "256K context, 35B MoE (active 3B), vision+text, fast inference (llama.cpp only)",
+        # size: NOT CHECKED — no file on the box; estimate in MODEL_WEIGHT_BYTES
+        description="256K context, 35B MoE (active 3B), vision+text, fast inference (llama.cpp only)",
         has_vision=True,
         mmproj_file="mmproj-Qwen3.5-35B-A3B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
@@ -178,8 +349,8 @@ MODEL_PRESETS = [
         "Qwen3.6-35B-A3B MoE UD-Q4_K_M",
         "unsloth/Qwen3.6-35B-A3B-GGUF",
         "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-        22630,
-        "256K context, 35B MoE (active 3B), vision+text, improved agentic coding",
+        # size: NOT CHECKED — no file on the box; estimate in MODEL_WEIGHT_BYTES
+        description="256K context, 35B MoE (active 3B), vision+text, improved agentic coding",
         has_vision=True,
         mmproj_file="mmproj-Qwen3.6-35B-A3B-F16.gguf",
         mmproj_source_file="mmproj-F16.gguf",
@@ -190,8 +361,8 @@ MODEL_PRESETS = [
         "Tiel-Coder-35B-A3B MoE UD-Q4_K_XL",
         "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF",
         "Tiel-Coder-35B-A3B-UD-Q4_K_XL.gguf",
-        22938,
-        "256K context, 35B MoE (active 3B), vision+text, tuned for agentic coding",
+        # size: NOT CHECKED — no file on the box; estimate in MODEL_WEIGHT_BYTES
+        description="256K context, 35B MoE (active 3B), vision+text, tuned for agentic coding",
         has_vision=True,
         mmproj_file="mmproj-Tiel-Coder-35B-A3B-BF16.gguf",
         mmproj_source_file="mmproj-BF16.gguf",
@@ -1327,23 +1498,28 @@ class LlamaInstaller:
              those dirs itself.
 
         Completeness validation (applied to BOTH lookup paths):
-          - Size ≥ 90% of ``preset.size_mb`` — catches partial
+          - Size ≥ 90% of the registered weight size — catches partial
             downloads of large models that the legacy 100 MB floor
             silently accepted (e.g. 4B model at 1.5 GB out of 2.91 GB).
-            10% tolerance allows for preset.size_mb estimate drift —
-            actual GGUF size vs the registered preset-size sometimes
-            varies by 4-7% across quant revisions (live measurement
-            2026-05-01: 2776 MB actual vs 2910 MB preset = 95.4%).
           - GGUF magic header (``b'GGUF'`` at offset 0) — catches
             truncated/corrupt files at any size.
+
+        The 10% tolerance used to be justified as "preset estimate drift
+        — actual GGUF size vs registered preset-size varies by 4-7%
+        across quant revisions (2026-05-01: 2776 MB actual vs 2910 MB
+        preset = 95.4%)".  That was never drift.  This line read the
+        preset as MiB (``* 1024 * 1024``) while the literal had been
+        written as decimal MB, and 2910/2776.6 = 1.0480 is exactly the
+        MB-to-MiB ratio.  The size now comes from ``model_size_bytes``,
+        which is byte-exact for every preset whose file has been
+        measured, so the tolerance covers only genuine re-quantisation.
 
         Returns the absolute path string, or None if the model is
         genuinely not on disk anywhere OR is on disk but incomplete.
         """
-        # Compute completeness threshold from the preset's expected
-        # size, with a 10% tolerance for preset estimate drift and a
-        # 100 MB floor for legacy presets that didn't set size_mb.
-        expected_bytes = int((preset.size_mb or 100) * 1024 * 1024)
+        # ONE conversion — no path/installer passed, because measuring the
+        # file here is exactly the question being asked.
+        expected_bytes = model_size_bytes(preset) or 100 * BYTES_PER_MIB
         min_bytes = max(100_000_000, int(expected_bytes * 0.90))
 
         # 1. Canonical catalog lookup first — single source of truth
@@ -1355,7 +1531,12 @@ class LlamaInstaller:
         try:
             from models.catalog import ModelType, get_catalog
             catalog = get_catalog()
-            entries = catalog.get_models(model_type=ModelType.LLM)
+            # list_by_type, not get_models: ModelCatalog has never had a
+            # get_models method, so this whole branch raised AttributeError
+            # into the debug-level swallow below on EVERY call and the
+            # "canonical catalog lookup first" it documents never once ran —
+            # the legacy filename walk was silently doing all the work.
+            entries = catalog.list_by_type(ModelType.LLM)
             for entry in entries:
                 if entry.display_name != preset.display_name:
                     continue

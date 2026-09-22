@@ -474,8 +474,12 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
     The accent policy is asked for ONLY where it can be seen -- on a window
     whose page is composited, so the page's alpha reaches it.  GL1 measured
     that same policy painting an opaque white sheet behind a WinForms-hosted
-    WebView2, and that is exactly the ``composited=False`` case, which keeps
-    the system backdrop it has always had.
+    WebView2, and that is exactly the ``composited=False`` case.
+
+    That case now gets NEITHER material: only the immersive dark mode.  The
+    system backdrop was withdrawn from it on 2026-09-22 because it is
+    rendered for the window FRAME and so escapes ``SetWindowRgn`` -- the
+    reasoning and the A/B numbers are at the branch itself, below.
 
     Returns whether the OS ACCEPTED the material.  That is all it means: the
     bool feeds a diagnostic step name, never a rung.  Promoting it to a rung
@@ -506,21 +510,47 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
         if composited:
             return _windows_accent_blur(hwnd)
 
-        backdrop = wintypes.DWORD(DWMSBT_TRANSIENTWINDOW)
-        hr = dwm.DwmSetWindowAttribute(h, DWMWA_SYSTEMBACKDROP_TYPE,
-                                       ctypes.byref(backdrop),
-                                       ctypes.sizeof(backdrop))
-        if hr != 0:
-            logger.debug('glass: the DWM refused its backdrop for hwnd %s '
-                         '(hr %s) - pre-22H2, or transparency effects are '
-                         'off', hwnd, hr)
-            return False
-
-        # -1 on every edge: the whole client area, so the backdrop is not
-        # clipped to a title bar that a frameless window does not have.
-        margins = MARGINS(-1, -1, -1, -1)
-        dwm.DwmExtendFrameIntoClientArea(h, ctypes.byref(margins))
-        return True
+        # A NON-COMPOSITED window gets the immersive dark mode above and
+        # nothing else.  It used to get DWMWA_SYSTEMBACKDROP_TYPE plus a
+        # frame extension over the whole client area, and that is now
+        # withdrawn on measurement.
+        #
+        # WHY, MEASURED 2026-09-22 on the live companion and then A/B'd on a
+        # window built with companion_window_kwargs():
+        #
+        #   The material DWM renders for a window's FRAME is not clipped by
+        #   SetWindowRgn.  The companion is cut to a 209x209 disc while it
+        #   speaks (GetWindowRgn, live: COMPLEX, box 209x209 inside a 330x465
+        #   window), yet the whole 330x465 rectangle was tinted -- the owner's
+        #   own terminal text visible through it but washed out.  A/B, same
+        #   window, same region, one variable:
+        #
+        #       backdrop as before   grey outside the disc  +57.1/255
+        #       backdrop suppressed                         +25.7/255
+        #
+        #   So it painted a grey RECTANGLE around a window the OS had been
+        #   told was a circle -- which the owner saw as "grey around the orb"
+        #   and "the corner radius clipped still is grey forming a corner
+        #   sharp".  A material that escapes the window's own shape is not a
+        #   look decision; it defeats the shape.
+        #
+        # The trap this walked into, recorded because it cost two wrong
+        # conclusions: an earlier control measured TRANSMITTANCE with the
+        # backdrop suppressed and saw it FALL (0.469 -> 0.200), so the
+        # backdrop was called harmless.  Transmittance is light passing
+        # through.  A translucent grey material passes light AND adds grey;
+        # those are different properties and only the second is the defect.
+        # Measure the tint, not just the transmittance.
+        #
+        # The residual +25.7 is NOT attributed here.  Something else still
+        # paints outside the region and this comment does not pretend to
+        # know what.
+        logger.debug(
+            'glass: not asking the DWM for its system backdrop on hwnd %s - '
+            'it is rendered for the window FRAME, which SetWindowRgn does '
+            'not clip, so a shaped window gets a rectangle of grey around '
+            'it (measured +57.1/255 vs +25.7/255 without)', hwnd)
+        return False
     except Exception as e:
         logger.debug('glass: DWM backdrop unavailable for hwnd %s: %s',
                      hwnd, e)

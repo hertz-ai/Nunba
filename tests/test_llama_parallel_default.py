@@ -44,10 +44,26 @@ class LlamaParallelDefault(unittest.TestCase):
         self.assertNotRegex(block, r"n_parallel = 2\b")
 
     def test_slot_count_is_exported_for_the_wire_trimmer(self):
+        """The chosen slot count must still reach the wire trimmer.
+
+        Updated 2026-09-22: this used to assert the literal
+        ``os.environ['HEVOLVE_LLAMA_SLOTS'] = str(n_parallel)``.  The write
+        moved into ``core.llama_geometry.publish_geometry``, which is now the
+        ONE writer of both geometry variables — spelling the env names at each
+        spawn site is exactly what hid a second name
+        (``HEVOLVE_LLM_CTX_SIZE``, read by HARTOS ``model_lifecycle``) for
+        months.  The CONTRACT this guard protects is unchanged and is if
+        anything stronger: the value handed to ``--parallel`` is the value
+        published, because one call now does both.
+        """
         with open(_SRC, encoding='utf-8') as fh:
             src = fh.read()
-        self.assertIn("os.environ['HEVOLVE_LLAMA_SLOTS'] = str(n_parallel)", src)
+        self.assertIn('publish_geometry(ctx_size, n_parallel)', src)
         self.assertTrue(re.search(r'"--parallel",\s*str\(n_parallel\)', src))
+        self.assertNotIn(
+            "os.environ['HEVOLVE_LLAMA_SLOTS'] =", src,
+            'the slot count is published in two places again — '
+            'core.llama_geometry.publish_geometry is the only writer')
 
 
 if __name__ == '__main__':

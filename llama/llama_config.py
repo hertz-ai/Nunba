@@ -26,9 +26,24 @@ from pathlib import Path
 import requests
 
 from llama.llama_installer import (
-    MODEL_PRESETS, QWEN35_RUNTIME_FAMILY, LlamaInstaller, ModelPreset)
+    MODEL_PRESETS, QWEN35_RUNTIME_FAMILY, LlamaInstaller, ModelPreset,
+    model_size_gib)
 
 logger = logging.getLogger('NunbaLlamaConfig')
+
+# The one publisher of the llama geometry env pair (HEVOLVE_LLAMA_CTX_SIZE /
+# HEVOLVE_LLAMA_SLOTS).  See core/llama_geometry.py.
+#
+# Guarded because standalone Nunba dev checkouts run without HARTOS on the
+# path.  Skipping the publish there is correct rather than merely tolerable:
+# the ONLY consumer of those variables is HARTOS's wire trimmer
+# (core.llm_outbound_logger._get_budget_per_slot), so with HARTOS absent the
+# publish has no reader.  Deliberately NOT given a fallback that re-spells the
+# variable names — two spellings of one name is the defect this removes.
+try:
+    from core.llama_geometry import publish_geometry
+except ImportError:
+    publish_geometry = None
 
 
 def _uses_qwen35_runtime(model_preset) -> bool:
@@ -1292,9 +1307,13 @@ class LlamaConfig:
         if started and diag['run_mode'] == 'gpu':
             vm = self._get_vram_manager()
             if vm:
-                model_gb = preset.size_mb / 1024.0
+                # Same unit as every other VRAM figure (GiB, measured from the
+                # file) — this row is what TTS/STT/vision subtract when they
+                # decide whether they fit, so a 133 MB overstatement here
+                # propagates into their decisions too.
+                model_gb = model_size_gib(preset, installer=self.installer)
                 vm._allocations['llm'] = model_gb
-                logger.info(f"Registered VRAM allocation: llm = {model_gb:.1f}GB")
+                logger.info(f"Registered VRAM allocation: llm = {model_gb:.3f}GiB")
 
         mode_label = 'GPU' if diag['run_mode'] == 'gpu' else 'CPU'
         if started:
@@ -1693,7 +1712,7 @@ class LlamaConfig:
             except Exception:
                 pass
 
-    def _derive_ctx_size(self, model_preset):
+    def _derive_ctx_size(self, model_preset, model_path=None):
         """Context size for a llama-server spawn, derived from the box.
 
         ONE authority for every spawn site.  The caption/draft server used to
@@ -1702,16 +1721,32 @@ class LlamaConfig:
         needs — and 2048 was too small for the draft-first dispatcher and the
         recipe pipeline that share :8081 (measured overflows at 2066, 3223
         and 4386 tokens, all reporting n_ctx 2048).
+
+        ``model_path``: the resolved .gguf, when the caller has it.  Both
+        spawn sites do.  It lets the weights be MEASURED rather than taken
+        from ``preset.size_mb``, whose unit is not consistent across the
+        preset table — see ``llama_installer.model_size_gib``.
+
+        WHAT IS OWNED HERE vs IN HARTOS (2026-09-22 unification).  This method
+        owns the MEASURING — forcing a fresh VRAM probe, sizing the weights off
+        the file, writing the decision log.  The DECISION — which tier a given
+        headroom earns, and the cap — moved to
+        ``core.llama_geometry.derive_ctx_size`` so the HARTOS-side spawners
+        (``model_lifecycle``'s standalone fallback, ``llamacpp_manager``'s
+        onboarding path) consult the same table instead of each carrying its
+        own ladder.  HARTOS cannot import Nunba, so shared policy can only live
+        downstream; the tier rule is model-agnostic arithmetic on two GiB
+        readings, so nothing Nunba-specific went with it.
         """
         # Context size is VRAM-aware for the Qwen3.5-MoE model family.
         is_qwen35 = _uses_qwen35_runtime(model_preset)
         if is_qwen35:
-            # Scale context with available VRAM:
-            #   ≥3GB remaining → 16384 (full multi-turn agent conversations)
-            #   ≥2GB remaining → 8192  (standard conversations)
-            #   <2GB remaining → 4096  (compact, preserves VRAM for TTS/STT)
-            # KV cache cost: ~1GB per 8K context for 4B Q4 model
+            # The tier table itself (≥3 GiB remaining → 16384, ≥2 → 8192,
+            # else 4096, capped) is core.llama_geometry.CTX_TIERS — see the
+            # ownership note in this method's docstring.  What stays here is
+            # the measurement the table is fed.
             try:
+                from core.llama_geometry import derive_ctx_size, describe_tiers
                 from integrations.service_tools.vram_manager import vram_manager
                 # force=True: detect_gpu() is a plain memo with no TTL of its
                 # own, and refresh_gpu_info()'s bundled TTL is 120 s -- a spawn
@@ -1730,19 +1765,64 @@ class LlamaConfig:
                 # 28160128202 produced 0 action files in 3 CREATE turns.
                 free_gb = vram_manager.refresh_gpu_info(
                     force=True).get('free_gb', 0)
-                model_gb = model_preset.size_mb / 1024.0
+                # MEASURE the weights.  `preset.size_mb / 1024.0` mixed units:
+                # size_mb is decimal MB on the rows whose files were measured
+                # (2B, 4B), so dividing by the binary 1024 overstated the 4B
+                # by 133 MB against a free_gb that really is GiB.  Live
+                # 2026-09-22 08:15:49 that was the whole decision:
+                #   free 4.84 - 2910/1024  = 1.998203 -> `>= 2.0` FALSE -> 4096
+                #   free 4.84 - true 2.7121 = 2.127886 -> `>= 2.0` TRUE  -> 8192
+                # and 4096 cannot hold the measured 8026-token tool schema, so
+                # every agentic turn 400'd for the life of the process.
+                model_gb = model_size_gib(
+                    model_preset, model_path=model_path,
+                    installer=getattr(self, 'installer', None))
                 remaining = free_gb - model_gb  # VRAM after model loads
-                if remaining >= 3:
-                    ctx_size = 16384
-                elif remaining >= 2.0:
-                    ctx_size = 8192
-                else:
-                    ctx_size = 4096
-                logger.info(f"Dynamic context size: {ctx_size} "
-                            f"(VRAM free={free_gb:.1f}GB, model={model_gb:.1f}GB, "
-                            f"remaining={remaining:.1f}GB)")
+                # Compared EXACTLY, no tolerance (owner 2026-09-22): the unit
+                # fix above is the whole fix, and a margin here would be a
+                # second mechanism for one decision -- the kind that lets
+                # the first one silently rot.  The comparison now happens once,
+                # in core.llama_geometry, for every spawner in both repos.
+                ctx_size = derive_ctx_size(free_gb, model_gb)
+                # Precision is not cosmetic here.  The `.1f` this replaces
+                # printed remaining=1.998203 as "remaining=2.0GB" next to a
+                # `>= 2.0` test, so the log showed a number that SATISFIES the
+                # condition beside the branch that rejected it — every prior
+                # investigation read the line as a pass.  Print the raw inputs
+                # at a precision the comparison actually uses, name the
+                # threshold, and say where the model size came from.
+                # Never let building the LOG LINE change the DECISION: this
+                # whole block is inside an `except Exception -> ctx_size =
+                # 8192`, so an unguarded stat here could discard a correctly
+                # computed 12288 if the file moved between the two calls.
+                try:
+                    _basis = (f"{os.path.getsize(str(model_path))}B measured"
+                              if model_path and os.path.exists(str(model_path))
+                              else f"size_mb="
+                                   f"{getattr(model_preset, 'size_mb', 0)} estimate")
+                except OSError:
+                    _basis = "size unavailable"
+                # The thresholds are rendered FROM the table, not retyped, so
+                # the log can never advertise a gate the code does not use.
+                logger.info(
+                    f"Dynamic context size: {ctx_size} "
+                    f"(VRAM free={free_gb:.3f}GiB, model={model_gb:.3f}GiB "
+                    f"[{_basis}], remaining={remaining:.3f}GiB, "
+                    f"tiers {describe_tiers()} GiB)")
             except Exception:
-                ctx_size = 8192  # safe default
+                # Unmeasurable box (no GPU probe, or no HARTOS at all) ->
+                # core.llama_geometry.CTX_FALLBACK, the SAME mid-table default
+                # every other spawner falls back to.  ctx_for_role('main')
+                # with nothing to measure IS that default; asking for it keeps
+                # this branch from becoming a fourth place the number is
+                # written.  The bare literal survives only for a standalone
+                # Nunba checkout with no HARTOS on the path — there is no
+                # shared vocabulary to read in that case, by definition.
+                try:
+                    from core.llama_geometry import ctx_for_role
+                    ctx_size = ctx_for_role('main')
+                except ImportError:
+                    ctx_size = 8192
         else:
             ctx_size = self.config.get("context_size", 8192)
 
@@ -1757,7 +1837,25 @@ class LlamaConfig:
         # plus system prompt (~1.5K) on top of trimmed history.
         # Net KV cost at 12K: ~1.5GB for 4B Q4 — still leaves ~2GB for
         # F5-TTS / Indic Parler coexistence on the 8GB-VRAM laptop tier.
-        return min(ctx_size, 12288)
+        #
+        # The number itself is core.constants.LLAMA_CTX_SIZE_DEFAULT, read
+        # through core.llama_geometry.ctx_cap().  It was a literal 12288 here
+        # AND a literal 12288 in constants.py AND in hart-llm.nix AND in
+        # hart-llm.service — four declarations of one ceiling, three of which
+        # already have a guard pinning them together
+        # (HARTOS tests/unit/test_source_guard_llama_ctx_size_agrees.py).
+        # This was the fourth, and it was the one nothing checked.
+        #
+        # Without HARTOS on the path there is no cap to apply — and there is
+        # also no vram_manager, so the tiers above never ran and ctx_size is
+        # whatever the operator's own llama_config.json says.  Capping a
+        # hand-written value against a number we cannot read would mean
+        # re-stating 12288 here, which is the duplication being removed.
+        try:
+            from core.llama_geometry import ctx_cap
+        except ImportError:
+            return ctx_size
+        return min(ctx_size, ctx_cap())
 
     def _do_start_server(self, model_preset=None, force_new_port=False):
         """Internal server start — called by start_server() with lock protection."""
@@ -2078,8 +2176,10 @@ class LlamaConfig:
         self.installer.note_serving_binary(llama_server)
 
         # Build command — context size comes from the one derivation shared
-        # with the caption/draft spawn (see _derive_ctx_size).
-        ctx_size = self._derive_ctx_size(model_preset)
+        # with the caption/draft spawn (see _derive_ctx_size).  model_path is
+        # already resolved above, so the weights are measured rather than
+        # estimated from the preset literal.
+        ctx_size = self._derive_ctx_size(model_preset, model_path=model_path)
 
         # Cap threads to 75% of cores — leave headroom for OS + TTS
         max_threads = max(1, int((os.cpu_count() or 4) * 0.75))
@@ -2131,8 +2231,14 @@ class LlamaConfig:
             # request in between passed untrimmed and died at the server
             # ("Context size has been exceeded" — 31x measured 2026-08-30
             # 18:11-18:12, source autogen.reuse).
-            os.environ['HEVOLVE_LLAMA_CTX_SIZE'] = str(ctx_size)
-            os.environ['HEVOLVE_LLAMA_SLOTS'] = str(n_parallel)
+            #
+            # Through core.llama_geometry.publish_geometry, which OWNS both
+            # variable names.  Spelling them inline here is what let a second
+            # name (HEVOLVE_LLM_CTX_SIZE, read by HARTOS model_lifecycle) go
+            # unnoticed: with the names written out at each site, nothing could
+            # tell you the set of them.  One writer, one place to grep.
+            if publish_geometry is not None:
+                publish_geometry(ctx_size, n_parallel)
             cmd = [
                 llama_server,
                 "--model", model_path,
@@ -2459,9 +2565,13 @@ class LlamaConfig:
                     if can_use_gpu:
                         vm = self._get_vram_manager()
                         if vm:
-                            model_gb = model_preset.size_mb / 1024.0
+                            # GiB, measured from the file just spawned — see
+                            # the sibling registration in auto_setup.
+                            model_gb = model_size_gib(
+                                model_preset, model_path=model_path,
+                                installer=self.installer)
                             vm._allocations['llm'] = model_gb
-                            logger.info(f"VRAM allocation registered: llm = {model_gb:.1f}GB")
+                            logger.info(f"VRAM allocation registered: llm = {model_gb:.3f}GiB")
                     # Quick benchmark — warm up the KV cache and measure t/s
                     try:
                         import urllib.request
@@ -2604,7 +2714,7 @@ class LlamaConfig:
         # agent's own declared tools.  Growing n_ctx to swallow that would
         # hide the real fix: give each agent the tools its persona and goal
         # actually need.
-        ctx_size = self._derive_ctx_size(preset)
+        ctx_size = self._derive_ctx_size(preset, model_path=model_path)
         cmd = [str(binary_path), "--model", str(model_path),
                "--port", str(port), "--ctx-size", str(ctx_size),
                "--threads", "4"]

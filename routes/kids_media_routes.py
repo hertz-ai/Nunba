@@ -278,11 +278,14 @@ def media_asset():
     # reviewer approved -- not a fresh composition that merely sounds
     # similar.  When the app asks on an agent's behalf it names the agent
     # and the game, and the binding answers.
+    prompt_id = request.args.get('prompt_id')
+    game_id = request.args.get('game_id')
+    state = (request.args.get('state') or 'bgm').strip()
     bound, matched = _bound_game_media(
-        request.args.get('prompt_id'),
-        request.args.get('game_id'),
+        prompt_id,
+        game_id,
         media_type,
-        state=(request.args.get('state') or 'bgm').strip(),
+        state=state,
         level=(request.args.get('level') or '').strip() or None,
         user_id=_get_user_id_from_request(),
     )
@@ -292,6 +295,17 @@ def media_asset():
         # the memo already holds a composition for this exact key, so the
         # caller waits for that one rather than starting a second
         return jsonify({'status': 'composing', 'matched': matched}), 202
+    if media_type == 'music' and prompt_id and game_id and state != 'bgm':
+        # A cue -- a chime for a correct answer, a flourish for a streak --
+        # exists ONLY through a binding: the agent composes it once and a
+        # reviewer hears it.  Falling through here composed and served the
+        # game's BACKGROUND MUSIC instead: the app's prompt for a cue is the
+        # same string as for bgm, so the cache below answered with the bgm
+        # file, and the phone kept it under the cue's key for good.
+        # MEASURED 2026-09-22 against the live route.  A missing cue is
+        # silence (the game's built-in sound), never the wrong sound.
+        return jsonify({'status': 'unbound', 'state': state,
+                        'matched': matched}), 404
 
     # --- Auth: extract user_id from JWT (not from query param) ---
     user_id = _get_user_id_from_request()

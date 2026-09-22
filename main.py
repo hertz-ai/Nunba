@@ -2085,6 +2085,7 @@ def llm_auto_setup():
         # Sync catalog state so dashboard reflects the loaded model
         if result.get('success'):
             try:
+                from llama.llama_installer import model_size_gib
                 from models.catalog import ModelType
                 from models.orchestrator import get_orchestrator
                 orch = get_orchestrator()
@@ -2092,8 +2093,11 @@ def llm_auto_setup():
                 preset = MODEL_PRESETS[idx] if idx < len(MODEL_PRESETS) else None
                 if preset:
                     device = 'gpu' if config.config.get('use_gpu') else 'cpu'
-                    orch.notify_loaded(ModelType.LLM, preset.display_name, device=device,
-                                       vram_gb=preset.size_mb / 1024.0)
+                    # The model just loaded, so its file is on disk and the
+                    # ledger gets the MEASURED size rather than an estimate.
+                    orch.notify_loaded(
+                        ModelType.LLM, preset.display_name, device=device,
+                        vram_gb=model_size_gib(preset, installer=config.installer))
             except Exception:
                 pass
         return jsonify(result)
@@ -2166,6 +2170,7 @@ def llm_switch_model():
         preset = MODEL_PRESETS[model_index]
         # Sync catalog: unload old, load new
         try:
+            from llama.llama_installer import model_size_gib
             from models.catalog import ModelType
             from models.orchestrator import get_orchestrator
             orch = get_orchestrator()
@@ -2173,8 +2178,11 @@ def llm_switch_model():
                 orch.notify_unloaded(ModelType.LLM, old_preset.display_name)
             if success:
                 device = 'gpu' if config.config.get('use_gpu') else 'cpu'
-                orch.notify_loaded(ModelType.LLM, preset.display_name, device=device,
-                                   vram_gb=preset.size_mb / 1024.0)
+                # Same ledger, same unit, same measurement as every other
+                # VRAM figure — see llama_installer.model_size_bytes.
+                orch.notify_loaded(
+                    ModelType.LLM, preset.display_name, device=device,
+                    vram_gb=model_size_gib(preset, installer=config.installer))
         except Exception:
             pass
         return jsonify({

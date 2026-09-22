@@ -35,13 +35,38 @@ def get_screen_dimensions():
         return _get_screen_dimensions_fallback()
 
 
-def _get_win32_dpi_scale():
-    """Detect Windows DPI scale factor.
+def _get_win32_dpi_scale(window_handle=None):
+    """The factor that turns logical pixels into physical ones on Windows.
 
-    Returns >1.0 when the process is DPI-aware and the display uses scaling
-    (e.g. 1.5 for 150%).  Returns 1.0 when DPI-unaware (virtualised to 96 dpi)
-    or when no scaling is active.
+    >1.0 when the process is DPI-aware and the display scales (1.5 at 150%).
+    1.0 when DPI-unaware (everything is virtualised to 96 dpi) or unscaled.
+
+    WITH a window handle this is the scale of the monitor THAT WINDOW is on
+    (GetDpiForWindow, through the one per-window reader,
+    ``win32_chrome.dpi_scale``).  WITHOUT one it is the SYSTEM DPI -- the
+    primary monitor's, via GetDC(0).
+
+    The distinction is not cosmetic.  GetDC(0) answers for the primary
+    display whatever monitor the window is on, so sizing a window by it puts
+    the primary's factor on a window living on a differently scaled second
+    display: 200% window sized by a 150% system reads 25% small.  Every
+    caller that HAS a handle passes it; the one caller that legitimately has
+    none is ``_get_screen_dimensions_windows`` below, because
+    SPI_GETWORKAREA reports the PRIMARY work area too -- there the system
+    DPI is the matching divisor, not a fallback.
+
+    The window's DPI being unreadable (pre-Win10 1607 has no
+    GetDpiForWindow) falls through to the system DPI rather than to 1.0:
+    "I could not ask" must not be answered with "unscaled".
     """
+    if window_handle:
+        try:
+            from desktop.win32_chrome import dpi_scale
+            scale = dpi_scale(int(window_handle))
+            if scale:
+                return scale
+        except Exception:
+            pass
     try:
         import ctypes
         hdc = ctypes.windll.user32.GetDC(0)
@@ -325,15 +350,27 @@ def _logical_to_physical(width, height, scale):
 
 
 def set_window_size(window_handle, width, height):
-    """Size a frameless window to width x height LOGICAL px.
+    """Size a window to width x height LOGICAL px.  The ONE conversion.
 
-    pywebview sizes a window by Form.Size while the form still wears its
-    caption and frame, then drops the frame and keeps the smaller client
-    (measured 2026-09-15: 220x310 asked, 198x254 on screen).  A frameless
-    window's outer size is its client size, so SetWindowPos with the
-    designed size, scaled by the same DPI factor get_screen_dimensions()
-    normalises with, restores what the page was laid out for.  Returns
-    True when the window took the size; a refusal is logged, not silent.
+    Two separate reasons this exists rather than the backend's own resize:
+
+    1. pywebview sizes a window by Form.Size while the form still wears its
+       caption and frame, then drops the frame and keeps the smaller client
+       (measured 2026-09-15: 220x310 asked, 198x254 on screen).  A frameless
+       window's outer size IS its client size, so SetWindowPos with the
+       designed size restores what the page was laid out for.
+    2. pywebview 6.1's WinForms backend is not unit-consistent:
+       ``BrowserForm.move()`` multiplies x/y by ``self.scale_factor``
+       (winforms.py:571-596) while ``BrowserForm.resize()`` hands width and
+       height straight to SetWindowPos unscaled (winforms.py:559-569).  The
+       same logical pair is therefore right through move() and 1/scale too
+       small through resize().
+
+    So logical->physical happens HERE, exactly once, by the DPI of the
+    monitor the window is on -- the same factor get_screen_dimensions()
+    divides the work area by, read for this window rather than for the
+    primary display.  Returns True when the window took the size; a refusal
+    is logged, not silent.
     """
     if not IS_WINDOWS:
         return False
@@ -344,7 +381,8 @@ def set_window_size(window_handle, width, height):
         SWP_NOACTIVATE = 0x0010
 
         user32 = ctypes.windll.user32
-        phys_w, phys_h = _logical_to_physical(width, height, _get_win32_dpi_scale())
+        phys_w, phys_h = _logical_to_physical(
+            width, height, _get_win32_dpi_scale(window_handle))
         if not user32.SetWindowPos(
             _hwnd(window_handle), 0, 0, 0, phys_w, phys_h,
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,

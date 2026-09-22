@@ -264,22 +264,54 @@ def _resize_border_px() -> int:
             + user32.GetSystemMetrics(SM_CXPADDEDBORDER))
 
 
-def _dpi_scale(hwnd: int) -> float:
-    """Per-monitor DPI scale for `hwnd` (1.0 at 96 DPI).  Falls back to
-    1.0 when GetDpiForWindow is unavailable (pre-Win10 1607) or returns 0.
+def dpi_scale(hwnd):
+    """Per-monitor DPI scale for `hwnd` (1.0 at 96 DPI), or None when it
+    cannot be read.
 
-    WM_NCHITTEST coordinates are physical pixels, but NunbaTitleBar.js
-    lays out its button cluster in CSS pixels.  We multiply the CSS width
-    by this scale to get the physical exclusion zone."""
-    if not _HAS_GETDPIFORWINDOW:
-        return 1.0
+    The ONE per-window DPI reader.  Anything converting between logical /
+    CSS pixels and physical pixels for a particular window asks here --
+    WM_NCHITTEST (physical) against NunbaTitleBar.js's CSS button cluster,
+    and desktop.platform_utils.set_window_size, which sizes a window the
+    page was laid out for.
+
+    None, not 1.0, when GetDpiForWindow is unavailable (pre-Win10 1607),
+    the handle is 0, or the call fails: "this window is unscaled" and "I
+    could not ask" are different answers, and a caller with a system-DPI
+    fallback (platform_utils._get_win32_dpi_scale) must be able to tell
+    them apart.  Callers that have no fallback spell out their default.
+    """
+    if not _HAS_GETDPIFORWINDOW or not hwnd:
+        return None
     try:
         dpi = user32.GetDpiForWindow(hwnd)
-        if dpi:
-            return dpi / 96.0
     except Exception:
-        pass
-    return 1.0
+        return None
+    return (dpi / 96.0) if dpi else None
+
+
+def window_rect(hwnd):
+    """(x, y, width, height) of `hwnd` in PHYSICAL px, or None.
+
+    The ONE "where is this window" reader.  Three places ask it -- the snap
+    below (what rect the window actually took), the restore read-back in
+    app.py (_force_remount_and_paint) and /debug/position -- and three
+    hand-rolled GetWindowRect blocks would be three chances for them to
+    report the window differently.
+
+    Physical px, deliberately: this is what the window IS, not what anyone
+    asked it to be, so it is comparable with the work area and with
+    SetWindowPos's own arguments without a conversion in between.
+    """
+    if sys.platform != 'win32' or not hwnd:
+        return None
+    try:
+        rc = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rc)):
+            return None
+    except Exception:
+        logger.exception('window_rect failed for hwnd=%s', hwnd)
+        return None
+    return (rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top)
 
 
 def _work_area(hwnd: int) -> 'RECT | None':
@@ -469,7 +501,7 @@ def _make_wndproc(orig_wndproc_addr: int, titlebar_h_css: int,
                 rc = RECT()
                 if not user32.GetWindowRect(hwnd, ctypes.byref(rc)):
                     return HTCLIENT
-                scale = _dpi_scale(hwnd)
+                scale = dpi_scale(hwnd) or 1.0
                 return _classify_hit(
                     x, y, rc, native,
                     titlebar_h=int(round(titlebar_h_css * scale)),
@@ -760,8 +792,16 @@ def snap_to_work_area(hwnd, width_frac=None, edge='right'):
     except Exception:
         logger.exception('snap_to_work_area failed for hwnd=%s', hwnd)
         return False
-    logger.info('snap_to_work_area: hwnd=%s -> %sx%s at (%s,%s) edge=%s',
-                hwnd, w, wa_h, x, wa.top, edge)
+    # The one line that records the window's geometry, at the one place the
+    # app decides it.  It logs what the window TOOK (read back), not only
+    # what was asked for: the owner's window drifted from 709x1368 at
+    # (1851,0) to 740x1313 at (1710,0) and no log said when, because this
+    # snap is one-shot (app.py hooks it on events.loaded and it unhooks
+    # itself) and nothing else reads the rect.  A re-assertion loop is NOT
+    # the answer -- it would fight the owner's own drags; the answer is that
+    # the starting rect is on the record, so the next drift has a baseline.
+    logger.info('snap_to_work_area: hwnd=%s asked %sx%s at (%s,%s) edge=%s, '
+                'took %s', hwnd, w, wa_h, x, wa.top, edge, window_rect(hwnd))
     return True
 
 

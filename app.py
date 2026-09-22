@@ -5728,6 +5728,8 @@ def start_flask():
         # a read and takes the plain rule.  A LAN peer is refused by both.
         from routes.auth import (
             require_local_or_token as _local_or_token,
+        )
+        from routes.auth import (
             require_local_or_token_csrf_safe as _local_or_token_csrf_safe,
         )
 
@@ -6096,7 +6098,7 @@ def start_flask():
                 if args.sidebar and args.sidebar_side == requested_side:
                     # Already in the requested sidebar mode - turn off sidebar
                     args.sidebar = False
-                    _window.resize(args.width, args.height)
+                    _apply_window_size(_window, args.width, args.height)
                     _window.move(100, 100)  # Move to a normal position
                     logger.info(f"Turned off {requested_side} sidebar mode")
                 else:
@@ -6121,7 +6123,8 @@ def start_flask():
                         logger.info(f"Direct values: x={perfect_calc['x']}, y={perfect_calc['y']}, size={perfect_calc['width']}x{perfect_calc['height']}")
 
                         # Apply positioning with exact values
-                        _window.resize(perfect_calc['width'], perfect_calc['height'])
+                        _apply_window_size(_window, perfect_calc['width'],
+                                           perfect_calc['height'])
                         time.sleep(0.3)
                         _window.move(perfect_calc['x'], perfect_calc['y'])
                         time.sleep(0.2)
@@ -6134,7 +6137,7 @@ def start_flask():
                         # Simple fallback to your exact values
                         try:
                             _fb = calculate_perfect_right_dock()
-                            _window.resize(_fb['width'], _fb['height'])
+                            _apply_window_size(_window, _fb['width'], _fb['height'])
                             time.sleep(0.2)
                             _window.move(_fb['x'], _fb['y'])
                             time.sleep(0.2)
@@ -6181,7 +6184,9 @@ def start_flask():
                     logger.info(f"Moved window to {x}, {y}")
 
                 if width is not None and height is not None:
-                    _window.resize(width, height)
+                    # The caller's numbers are logical px — the same space
+                    # window.screenX / outerWidth report to the page.
+                    _apply_window_size(_window, width, height)
                     logger.info(f"Resized window to {width}x{height}")
 
                 return jsonify({"success": True, "x": x, "y": y, "width": width, "height": height})
@@ -6309,20 +6314,23 @@ def start_flask():
                 windows_api_info = {}
                 if sys.platform == "win32":
                     try:
-                        from ctypes import byref, windll
-                        from ctypes.wintypes import RECT
+                        # The one rect reader — the same one the snap and the
+                        # restore read-back use, so this endpoint cannot
+                        # report a different window than the logs do.
+                        from desktop.win32_chrome import window_rect
 
                         hwnd = _resolve_hwnd(_window)
                         if hwnd:
-                            rect = RECT()
-                            if windll.user32.GetWindowRect(hwnd, byref(rect)):
+                            _rect = window_rect(hwnd)
+                            if _rect:
+                                _rx, _ry, _rw, _rh = _rect
                                 windows_api_info = {
-                                    "x": rect.left,
-                                    "y": rect.top,
-                                    "width": rect.right - rect.left,
-                                    "height": rect.bottom - rect.top,
-                                    "rightEdge": rect.right,
-                                    "bottomEdge": rect.bottom,
+                                    "x": _rx,
+                                    "y": _ry,
+                                    "width": _rw,
+                                    "height": _rh,
+                                    "rightEdge": _rx + _rw,
+                                    "bottomEdge": _ry + _rh,
                                     "source": "Windows API"
                                 }
                             else:
@@ -6454,7 +6462,7 @@ def start_flask():
                 logger.info(f"Manual positioning request: x={x}, y={y}, size={width}x{height}")
 
                 # Apply the manual positioning
-                _window.resize(width, height)
+                _apply_window_size(_window, width, height)
                 time.sleep(0.1)
                 _window.move(x, y)
 
@@ -6501,7 +6509,7 @@ def start_flask():
                 logger.info(f"This will leave {margin_from_edge}px margin from right edge")
 
                 # Apply positioning
-                _window.resize(width, safe_height)
+                _apply_window_size(_window, width, safe_height)
                 time.sleep(0.15)
                 _window.move(safe_x, safe_y)
 
@@ -6549,7 +6557,8 @@ def start_flask():
                         logger.info(f"Applying direct perfect {side} dock: {perfect_calc}")
 
                         # Apply the direct values
-                        _window.resize(perfect_calc['width'], perfect_calc['height'])
+                        _apply_window_size(_window, perfect_calc['width'],
+                                           perfect_calc['height'])
                         time.sleep(0.3)
                         _window.move(perfect_calc['x'], perfect_calc['y'])
                         time.sleep(0.2)
@@ -6597,7 +6606,7 @@ def start_flask():
                     logger.info(f"Moving to EXACT position: x={x}, y={y}, size={width}x{height}")
 
                     # First resize
-                    _window.resize(width, height)
+                    _apply_window_size(_window, width, height)
                     time.sleep(0.3)
 
                     # Then move to exact position
@@ -6645,7 +6654,7 @@ def start_flask():
                 logger.info(f"Requesting height: {target_requested_height}px")
 
                 # Apply the height
-                _window.resize(480, target_requested_height)
+                _apply_window_size(_window, 480, target_requested_height)
                 time.sleep(0.5)  # Give time for resize
 
                 return jsonify({
@@ -6689,7 +6698,8 @@ def start_flask():
                 if _window:
                     try:
                         # Force the positioning
-                        _window.resize(position_info['width'], position_info['height'])
+                        _apply_window_size(_window, position_info['width'],
+                                           position_info['height'])
                         time.sleep(0.3)
                         _window.move(position_info['x'], position_info['y'])
                         time.sleep(0.2)
@@ -6950,6 +6960,54 @@ def _clamped_maximize(window_instance):
         window_instance.maximize()
     except Exception as _e:
         logger.error("_clamped_maximize failed: %s", _e)
+
+def _apply_window_size(window_instance, width, height):
+    """Size the window to width x height LOGICAL px.  The ONE resize path.
+
+    Every sizing caller in this file computes LOGICAL pixels:
+    calculate_perfect_right_dock / calculate_perfect_left_dock /
+    calculate_sidebar_position all derive from get_screen_dimensions(),
+    which DIVIDES the physical work area by the DPI scale
+    (desktop/platform_utils.py:79), and --width/--height are the user's own
+    DPI-independent numbers.  Those numbers are correct through pywebview's
+    move(), which multiplies by self.scale_factor (winforms.py:571-596), and
+    WRONG through its resize(), which hands them to SetWindowPos unscaled
+    (winforms.py:559-569).  At this box's 144 DPI that is a window 1/1.5 the
+    size asked for -- the same pair of numbers, right one way and wrong the
+    other, which is exactly why there is one path here instead of ten.
+
+    Same shape as _clamped_maximize above and for the same reason: Win32
+    first, the backend's own call only where it is the correct one.  The
+    logical->physical conversion lives in ONE function,
+    desktop.platform_utils.set_window_size, which scales by the DPI of the
+    monitor THIS window is on.  No second conversion belongs here.
+
+    On Windows without an HWND (the form is not up yet) this reports False
+    rather than falling back to window.resize(): that fallback would apply
+    the known-wrong size, which is the defect, not a degradation of it.
+
+    Returns True when the window took the size.
+    """
+    if window_instance is None:
+        return False
+    try:
+        if sys.platform.startswith('win'):
+            hwnd = _resolve_hwnd(window_instance)
+            if not hwnd:
+                logger.warning(
+                    "_apply_window_size: no HWND yet — %sx%s not applied "
+                    "(pywebview's own resize would size it by 1/dpi)",
+                    width, height)
+                return False
+            from desktop.platform_utils import set_window_size
+            return set_window_size(hwnd, width, height)
+        # macOS / Linux: those backends take logical px and scale them
+        # themselves, so the backend call IS the correct path here.
+        window_instance.resize(width, height)
+        return True
+    except Exception as _e:
+        logger.error("_apply_window_size(%s, %s) failed: %s", width, height, _e)
+        return False
 
 def toggle_fullscreen(window_instance):
     """Toggle between fullscreen and normal window"""
@@ -7994,11 +8052,20 @@ def main():
         # listens via STT, and gamifies the conversation experience.
         _companion_window = None
         try:
-            # The ONE module that decides what a floating window can be.
-            # Imported here, beside the window it serves, because the
-            # creation kwargs are needed before create_window and the
-            # apply-to-handle call comes later in the same block.
-            from desktop.glass import glass_window_kwargs
+            # The ONE module that says what this floating window IS: its URL
+            # (with the marker index.html needs at first paint), the kwargs it
+            # must be created with, and the calls that must be made to it once
+            # its handle exists.  It delegates the OS capability question to
+            # desktop.glass, which is where that question lives.
+            #
+            # Imported here, beside the window it serves, because the creation
+            # kwargs are needed before create_window and the apply-to-handle
+            # call comes later in the same block.
+            from desktop.companion_surface import (
+                apply_floating_presence,
+                companion_url,
+                companion_window_kwargs,
+            )
             # 220x310: character + status bar + input bar + platform hint.
             # Must match the html/body size in landing-page/public/nanba-companion.html
             # (DRY Gate 2 — window size and HTML size are the same contract).
@@ -8232,7 +8299,17 @@ def main():
             # route (SPA fallback -> index.html) is the unified floating presence
             # (visualiser + eye-tracking character + quick-prompt), replacing the
             # static nanba-companion.html so there is ONE source for the orb.
-            _comp_url = f"http://localhost:{args.port}/voice-orb"
+            #
+            # The URL carries the FLOATING MARKER (desktop.companion_surface),
+            # and that is not decoration: index.html's splash paints before any
+            # script runs and before pywebview injects its bridge, so the only
+            # way the page can know it is the floating presence at first paint
+            # is to be told in the navigation itself.  Without it the splash
+            # paints black over the whole window -- MEASURED 2026-09-22 by
+            # tests/glass_companion_demo.py at transmittance 0.200, which is
+            # exactly 1 - 204/255, i.e. every bit of see-through coming from
+            # apply_glass's uniform alpha and none from the page.
+            _comp_url = companion_url(args.port)
 
             _companion_window = webview.create_window(
                 title='Nanba',
@@ -8241,36 +8318,21 @@ def main():
                 height=_comp_h,
                 x=_comp_x,
                 y=_comp_y,
-                resizable=False,
-                frameless=True,
-                easy_drag=True,
-                on_top=True,
-                # transparent=True is what makes the window see-through
-                # (WinForms paints Color.Transparent and ignores the colour).
-                # pywebview only accepts a 3- or 6-digit hex here: the
-                # '#00000000' this shipped with made create_window raise on
-                # every boot, so the companion never existed.
+                # What a floating presence IS -- frameless, drag-anywhere, on
+                # top, fixed size -- plus the OS capability flags that have to
+                # be granted at birth (macOS's vibrancy cannot be added to a
+                # live window; on Windows transparent=True is what stops the
+                # host painting over the page's alpha).  One function, shared
+                # with tests/glass_companion_demo.py, so the gate that measures
+                # this window in screen pixels cannot measure a different one.
                 #
-                # WHAT a floating window must be BORN with comes from
-                # desktop.glass, not from a literal here.  On Windows that is
-                # transparent=True, exactly what this line used to say.  On
-                # macOS it ALSO carries vibrancy=True -- the one kwarg that
-                # makes pywebview build the NSVisualEffectView behind the
-                # page, i.e. real compositor glass.  It is consumed at
-                # CREATION and cannot be added to a live window, which is why
-                # it has to be here and not beside the apply_glass() call
-                # below.
-                #
-                # Wired rather than left as a documented seam: a module whose
-                # best rung has no caller is a half-built feature, and this
-                # codebase has already shipped one of those.  It claims
-                # nothing -- the macOS rung still reports that it is owed a
-                # pixel proof from tests/glass_probe.py on a Mac, which
-                # cannot be run from the Windows box this was written on.
-                **glass_window_kwargs(),
-                # background_color stays OURS: it is a look value, and
-                # glass.py holds none.
-                background_color='#000000',
+                # No background_color: MEASURED in the bundled pywebview 6.1
+                # (winforms.py:268-274) that kwarg is read ONLY on the else of
+                # `if window.transparent and self.browser`, so with
+                # transparent=True it never reached the form.  The '#000000'
+                # that used to sit here did nothing at all while reading like a
+                # deliberate choice to paint the floating window black.
+                **companion_window_kwargs(),
                 js_api=_companion_api,
             )
             logger.info("[COMPANION] Nanba companion window created at (%d, %d)",
@@ -8346,46 +8408,23 @@ def main():
                 # 2026-09-15).  Then on top, for the reason in _companion_raise.
                 _comp_hwnd = _resolve_hwnd(_companion_window)
                 if _comp_hwnd:
-                    from desktop.glass import GlassIntent, apply_glass
-                    from desktop.platform_utils import (
-                        set_window_floating_presence,
-                        set_window_size,
-                        set_window_tool_window,
-                    )
-                    set_window_tool_window(_comp_hwnd, True)
-                    # Per-pixel alpha + never take focus.  Measured
-                    # 2026-09-20 on the running install, this window carried
-                    # exstyle 0x10088: no WS_EX_LAYERED (so the card rendered
-                    # opaque however translucent the CSS was) and no
-                    # WS_EX_NOACTIVATE (so showing it pulled focus out of
-                    # whatever the owner was typing in).
-                    set_window_floating_presence(_comp_hwnd, True)
-                    # Ask the OS to put the DESKTOP behind this window, so
-                    # the page's blur has something to blur -- through the
-                    # ONE module that asks that question (desktop/glass.py),
-                    # the same one the AI-control ribbon's panel asks.
-                    # WS_EX_LAYERED was set just above and, until now,
-                    # bought nothing: nothing in this repo ever called
-                    # SetLayeredWindowAttributes, so the bit was set and no
-                    # alpha was ever applied through it.  That is the
-                    # missing half apply_glass supplies here.
+                    from desktop.platform_utils import set_window_size
+                    # Tool window, never-take-focus, WS_EX_LAYERED, and the
+                    # SetLayeredWindowAttributes that bit was always missing
+                    # -- all three in the order they have to happen, from the
+                    # one function tests/glass_companion_demo.py also calls.
+                    # It reports the rung ACHIEVED, never the one hoped for:
+                    # on Windows that is LAYERED_ALPHA (the desktop shows
+                    # through, unblurred), because the DWM's own glass cannot
+                    # reach a WebView2 page under pywebview's WinForms
+                    # hosting.  A rung is never claimed from an API return
+                    # code; that mistake shipped once and was reverted.
                     #
-                    # It reports the rung it ACHIEVED, never the one hoped
-                    # for: on Windows that is LAYERED_ALPHA (the desktop
-                    # shows through, unblurred), because the DWM's own glass
-                    # cannot reach a WebView2 page under pywebview's
-                    # WinForms hosting -- measured in screen pixels as GL1.
-                    # A rung is never claimed from an API return code; that
-                    # mistake shipped once and was reverted.
-                    #
-                    # The opacity is a LOOK value, so it lives here with the
-                    # surface, not in glass.py -- which holds no colours and
-                    # no opacities of its own.  0.8 is what GL1 measured as
-                    # still readable over a bright window.  It applies only
-                    # on the layered degrade; a platform that can do real
-                    # compositor glass ignores it and lets the page's CSS
-                    # decide.
-                    _glass = apply_glass(_comp_hwnd, GlassIntent(opacity=0.8))
+                    # The opacity is a LOOK value, so it stays here with the
+                    # surface rather than in a capability module that holds no
+                    # colours and no opacities of its own.  0.8 is what GL1
+                    # measured as still readable over a bright window.
+                    _glass = apply_floating_presence(_comp_hwnd, 0.8)
                     logger.info("[COMPANION] glass: %s", _glass)
                     set_window_size(_comp_hwnd, _comp_w, _comp_h)
                 _companion_raise()
@@ -8452,8 +8491,7 @@ def main():
             try:
                 from desktop.boot_record import record as _boot_record
                 _boot_record('companion_window', False,
-                             detail='%s: %s' % (type(_comp_err).__name__,
-                                                _comp_err))
+                             detail=f'{type(_comp_err).__name__}: {_comp_err}')
             except Exception as _rec_err:
                 logger.debug("[COMPANION] boot_record skipped: %s", _rec_err)
 
@@ -8709,6 +8747,10 @@ def main():
                 # IsZoomed-gated keeps restore() everywhere except the
                 # one destructive state.
                 _is_maximized = False
+                _was_iconic = False
+                _rect_before = None
+                _hwnd = 0
+                _win_rect = None
                 if sys.platform == 'win32':
                     import ctypes as _wc
                     _hwnd = _resolve_hwnd(_window)
@@ -8716,6 +8758,28 @@ def main():
                         # IsZoomed: TRUE iff window is in maximized state.
                         # FALSE for: normal, minimized, hidden.
                         _is_maximized = bool(_wc.windll.user32.IsZoomed(_hwnd))
+                        # Read, not acted on.  The guard below covers the
+                        # MAXIMIZED case because that one is proven
+                        # destructive (2026-05-15 owner report).  Whether a
+                        # restore from MINIMIZED also changes the rect is
+                        # NOT proven — so it is recorded here rather than
+                        # guarded on a guess: if the rect shrinks on a
+                        # restore where iconic=True, the log says so and the
+                        # guard can be widened on evidence.
+                        _was_iconic = bool(_wc.windll.user32.IsIconic(_hwnd))
+                        # Its own try: this is OBSERVATION, and observation
+                        # must never be able to skip the restore() below.
+                        # That restore is the compositor wake — losing it is
+                        # the black-window regression this whole handler
+                        # exists to prevent.
+                        try:
+                            from desktop.win32_chrome import (
+                                window_rect as _win_rect,
+                            )
+                            _rect_before = _win_rect(_hwnd)
+                        except Exception as _gr_err:
+                            logger.debug(
+                                f"[GEOMETRY:{origin}] rect unreadable: {_gr_err}")
                 # Non-Windows OR HWND-resolve failed: _is_maximized stays
                 # False → restore() runs unconditionally (preserves OLD
                 # behavior on macOS/Linux + the rare HWND-resolve failure).
@@ -8725,6 +8789,19 @@ def main():
                     logger.debug(
                         f"[REMOUNT:{origin}] window is maximized — skipping "
                         "restore() to preserve maximize state")
+                # Cheap read-back (one GetWindowRect), so the NEXT drift is
+                # attributable to a path instead of inferred afterwards.  The
+                # owner's window went 709x1368@(1851,0) -> 740x1313@(1710,0)
+                # with nothing recording when: the snap that sets the initial
+                # rect is one-shot and unhooks itself, and this restore is the
+                # only thing the app itself does to the window afterwards.
+                # It records; it does not re-assert — re-asserting would undo
+                # the owner's own drags.
+                if _hwnd and _win_rect is not None:
+                    logger.info(
+                        "[GEOMETRY:%s] restore(): iconic=%s maximized=%s "
+                        "rect %s -> %s", origin, _was_iconic, _is_maximized,
+                        _rect_before, _win_rect(_hwnd))
             except Exception as _wr_err:
                 logger.debug(
                     f"[REMOUNT:{origin}] window.restore() guard raised: {_wr_err}")

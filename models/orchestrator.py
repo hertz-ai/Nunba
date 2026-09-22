@@ -53,12 +53,22 @@ def _entry_to_preset(entry: ModelEntry):
     has_vision = entry.capabilities.get('has_vision', False)
     mmproj_file = entry.files.get('mmproj') if has_vision else None
     mmproj_source = entry.files.get('mmproj_source') if has_vision else None
-    size_mb = int(round((entry.disk_gb or 0) * 1024))
+    # Size, in ONE unit, preferring the exact count the populator recorded.
+    # ``disk_gb`` is rounded to one decimal place for display, so rebuilding a
+    # size from it alone loses up to ~51 MiB — the 4B went out as 2910 and came
+    # back as 2867.  capabilities['weight_bytes'] carries the byte-exact value
+    # (written by BOTH populators: Nunba's models/catalog.py and HARTOS's
+    # _populate_llm_models), so the round trip is lossless whenever the entry
+    # came from one of them.  Entries registered by hand through the admin UI
+    # have only disk_gb, and keep the documented GiB -> MiB derivation.
+    weight_bytes = (entry.capabilities or {}).get('weight_bytes')
+    if not isinstance(weight_bytes, (int, float)) or weight_bytes <= 0:
+        weight_bytes = int(round((entry.disk_gb or 0) * 1024)) * (1024 ** 2)
     return ModelPreset(
         display_name=entry.name,
         repo_id=repo_id,
         file_name=file_name,
-        size_mb=size_mb,
+        size_bytes=int(weight_bytes),
         description='',          # not needed for load/download operations
         has_vision=has_vision,
         mmproj_file=mmproj_file,

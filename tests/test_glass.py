@@ -386,9 +386,58 @@ class TestWindowsCompositionRung:
                     if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE], (
             'the system backdrop paints a composed page opaque')
 
-    def test_an_uncomposable_window_still_gets_the_system_backdrop(self):
-        """The other half of the same decision: the window the app actually
-        has keeps exactly what it had before this rung existed."""
+    def test_the_dwm_is_not_touched_off_windows(self):
+        """The platform guard on the DWM step itself, not on its caller.
+
+        `apply_glass` already routes macOS and Linux to their own backends,
+        so this can only be reached by a direct call -- which is exactly
+        what a future caller would do.  It moved here from
+        tests/test_companion_ux.py on 2026-09-22: that file kept a partial
+        mirror of these backdrop assertions, two of which had gone stale
+        against the measurement below.  One home for them now.
+
+        It asserts the DWM is never TOUCHED, not that the return is False.
+        The return is the trap: since the system backdrop was withdrawn,
+        this function returns False for a non-composited window on EVERY
+        platform, so `assert not ...` would pass with the platform guard
+        deleted -- a guard that cannot fail is not a guard.  The immersive
+        dark-mode call is the first thing past the guard, so its absence is
+        what actually proves the guard ran.
+        """
+        for platform in (on_macos, on_linux):
+            dwm = accepting_dwm()
+            with platform(), patch('ctypes.windll.dwmapi', dwm):
+                assert not glass._windows_dwm_material(12345, INTENT)
+            dwm.DwmSetWindowAttribute.assert_not_called()
+
+    def test_an_uncomposable_window_is_never_given_the_system_backdrop(self):
+        """The material DWM draws for a FRAME is not clipped by SetWindowRgn.
+
+        This assertion is the REVERSE of what it used to be, and the reason
+        is pixels rather than preference.  It used to require the backdrop on
+        the grounds that an uncomposable window "keeps exactly what it had
+        before this rung existed" -- a justification about history, not about
+        what the owner sees.
+
+        MEASURED 2026-09-22.  The live companion is cut to a 209x209 disc
+        while it speaks (GetWindowRgn: COMPLEX, box 209x209 in a 330x465
+        window), and the whole 330x465 rectangle was tinted grey anyway.
+        A/B on a window built with companion_window_kwargs(), same region,
+        one variable:
+
+            backdrop as before   grey outside the disc  +57.1/255
+            backdrop suppressed                         +25.7/255
+
+        A window the OS has been told is a circle must not be surrounded by
+        a rectangle of grey.  So the app's own window -- the uncomposable
+        one -- must NOT get the system backdrop, and this test fails if it
+        is ever put back.
+
+        Note for anyone re-measuring: transmittance alone does NOT show this.
+        Suppressing the backdrop LOWERS transmittance (0.469 -> 0.200)
+        because the material passes light; it also adds grey, and only the
+        grey is the defect.  Measure the tint.
+        """
         DWMWA_SYSTEMBACKDROP_TYPE = 38
         user32 = layered_user32()
         dwm = accepting_dwm()
@@ -397,9 +446,20 @@ class TestWindowsCompositionRung:
             result = glass.apply_glass(1234, INTENT)
 
         assert result.rung == glass.LAYERED_ALPHA
-        assert [c for c in dwm.DwmSetWindowAttribute.call_args_list
-                if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE]
+        assert not [c for c in dwm.DwmSetWindowAttribute.call_args_list
+                    if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE], (
+            'the system backdrop is rendered for the window FRAME and escapes '
+            'SetWindowRgn, so a shaped window gets a grey rectangle')
+        assert not dwm.DwmExtendFrameIntoClientArea.called, (
+            'extending the frame into the client area is the other half of '
+            'the same escape')
         user32.SetWindowCompositionAttribute.assert_not_called()
+
+        # The rung must NOT be claimed from the absence of the backdrop:
+        # layered alpha is what makes this window see-through, and it still
+        # has to have been applied.
+        user32.SetLayeredWindowAttributes.assert_called()
+        assert 'dwm_backdrop' not in result.steps
 
     def test_a_window_born_without_the_creation_flag_is_never_composed(self):
         """WS_EX_NOREDIRECTIONBITMAP cannot be added afterwards, and without
@@ -799,7 +859,48 @@ class TestThereIsOnlyOneOfThese:
             if isinstance(node, ast.ImportFrom) and node.module == 'desktop.glass'
             for alias in node.names
         }
-        assert 'apply_glass' in imported, (
-            'the companion must reach the capability through the one module')
+        surface = (_DESKTOP / 'companion_surface.py').read_text(
+            encoding='utf-8')
+        hop = {
+            alias.name
+            for node in ast.walk(ast.parse(app))
+            if isinstance(node, ast.ImportFrom)
+            and node.module == 'desktop.companion_surface'
+            for alias in node.names
+        }
+        # ONE HOP, followed rather than relaxed.  app.py used to import
+        # apply_glass directly; it now goes through
+        # companion_surface.apply_floating_presence, which owns the ORDER of
+        # the three post-handle calls so app.py and
+        # tests/glass_companion_demo.py cannot drift about it.  Both legs of
+        # the hop are asserted, so the capability still has exactly one home.
+        assert 'apply_glass' in imported or 'apply_floating_presence' in hop, (
+            'the companion must reach the capability through the one module, '
+            'directly or through companion_surface')
+        if 'apply_glass' not in imported:
+            assert 'from desktop.glass import' in surface, (
+                'companion_surface must reach the capability through '
+                'desktop.glass, not reimplement it')
+            assert 'apply_glass' in surface, (
+                'companion_surface names the hop but does not take it')
         assert 'enable_window_acrylic' not in app, (
             'the second implementation must not survive anywhere')
+
+    def test_apply_glass_has_exactly_the_importers_we_named(self):
+        """A THIRD route to the capability is the parallel path, not a hop.
+
+        The companion_surface hop above is legitimate and deliberate.  This
+        pins the set so the next one is noticed: an unexpected importer means
+        someone found a second way to make a window see-through, which is the
+        thing glass.py exists to prevent.
+        """
+        allowed = {'companion_surface.py', 'indicator_window.py'}
+        importers = {
+            p.name for p in _DESKTOP.glob('*.py')
+            if p.name != 'glass.py'
+            and 'from desktop.glass import' in p.read_text(encoding='utf-8')
+        }
+        unexpected = importers - allowed
+        assert not unexpected, (
+            f'a new route to the capability appeared in {sorted(unexpected)}; '
+            'if that is deliberate, name it in `allowed` and say why')

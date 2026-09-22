@@ -37,13 +37,22 @@ def populate_llm_presets(catalog: ModelCatalog) -> int:
     """Import MODEL_PRESETS from llama_installer into the catalog."""
     added = 0
     try:
-        from llama.llama_installer import MODEL_PRESETS, QWEN35_RUNTIME_FAMILY
+        from llama.llama_installer import (
+            MODEL_PRESETS,
+            QWEN35_RUNTIME_FAMILY,
+            model_size_bytes,
+            model_size_gib,
+        )
         for i, preset in enumerate(MODEL_PRESETS):
             slug = preset.display_name.lower().replace(" ", "-").replace("(", "").replace(")", "")
             entry_id = f'llm-{slug}'
             if catalog.get(entry_id):
                 continue
-            vram_est = preset.size_mb / 1024.0
+            # ONE conversion (llama_installer.model_size_bytes) rather than a
+            # local `/ 1024.0`, which is how six sites each ended up asserting
+            # a unit the preset table did not actually guarantee.
+            weight_bytes = model_size_bytes(preset)
+            vram_est = model_size_gib(preset)
             files = {'model': preset.file_name, 'repo': preset.repo_id}
             if preset.has_vision and preset.mmproj_file:
                 files['mmproj'] = preset.mmproj_file
@@ -52,7 +61,12 @@ def populate_llm_presets(catalog: ModelCatalog) -> int:
                 # Storing both lets downstream code (LlamaLoader, etc.) work
                 # purely from the catalog without re-importing MODEL_PRESETS.
                 files['mmproj_source'] = preset.mmproj_source_file or preset.mmproj_file
-            caps = {'has_vision': preset.has_vision}
+            # weight_bytes rides along so the entry -> preset -> entry round
+            # trip is lossless.  disk_gb is rounded to one decimal for
+            # display, so reconstructing a size from it alone dropped ~43 MiB
+            # on the 4B (2910 out, 2867 back) — every catalog-driven load.
+            caps = {'has_vision': preset.has_vision,
+                    'weight_bytes': weight_bytes}
             # The preset declares its runtime family; llama_config keys its
             # context sizing and sampler flags off the same attribute.
             if getattr(preset, 'runtime_family', None) == QWEN35_RUNTIME_FAMILY:
@@ -74,7 +88,7 @@ def populate_llm_presets(catalog: ModelCatalog) -> int:
                 files=files,
                 vram_gb=round(vram_est, 1),
                 ram_gb=round(vram_est * 1.2, 1),
-                disk_gb=round(preset.size_mb / 1024.0, 1),
+                disk_gb=round(vram_est, 1),
                 backend='llama.cpp',
                 supports_gpu=True,
                 supports_cpu=True,
