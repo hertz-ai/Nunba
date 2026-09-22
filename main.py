@@ -2932,7 +2932,8 @@ def _gguf_install_files(repo_files, requested_file: str = '',
     if not weights:
         return {}
     file_sizes = file_sizes or {}
-    from models.catalog import llama_gguf_compute_requirements
+    from models.catalog import (
+        gguf_fits_gpu, llama_gguf_compute_requirements)
     # Select the projector once and use that same file for fit accounting and
     # the loader mapping.  Summing every published projector variant can
     # falsely reject a model even though only one projector is downloaded.
@@ -2966,23 +2967,28 @@ def _gguf_install_files(repo_files, requested_file: str = '',
         free_ram = float(compute_state.get('ram_free_gb', 0) or 0)
         ram_ok = free_ram >= ram
         free_vram = float(compute_state.get('vram_free_gb', 0) or 0)
-        if compute_state.get('gpu_available') and free_vram >= vram:
-            return True
-        # A mixture of experts runs with its expert tensors in system RAM
-        # (llama.cpp --cpu-moe) and attention on the GPU, so what has to
-        # hold is the COMBINED budget, not either side alone.  This is the
-        # "fits" figure a GGUF publisher quotes.  Measured:
-        # Tiel-Coder-35B-A3B is 21.19 GiB of which only 2.53 GiB is
-        # non-expert, and it served from 2.87 GiB of VRAM.  Judged on VRAM
-        # alone every 35B is rejected by a machine that can run it.
+        # THE SAME function the SELECTOR asks
+        # (model_catalog.gguf_fits_gpu), so install and selection cannot
+        # drift apart.  They used to be two hand-written rules and they
+        # disagreed: Tiel-Coder-35B-A3B at 4.7 GB free VRAM / 21.4 GB free
+        # RAM was refused here while the selector answered 'gpu' -- this
+        # path declining to fetch the model that path would pick.
         #
-        # ONLY for a MoE, and only with a GPU to keep attention on.
-        # Overflowing a DENSE model means a PCIe round trip on every token,
-        # because every parameter is touched every token -- so the dense
-        # arms below are untouched.
-        if is_moe and compute_state.get('gpu_available'):
-            if (free_vram + free_ram) >= vram:
-                return True
+        # Only `whole_need_gb` is passed because the model is NOT
+        # downloaded: its expert/non-expert split is unknowable until the
+        # file exists, so a MoE is judged on the COMBINED budget, which is
+        # the "fits" figure a GGUF publisher quotes.  That is deliberately
+        # more conservative than the measured rule the selector uses later
+        # (28.6 GB demanded against a true 3.4 + 18.6) and erring this way
+        # picks a smaller quant rather than a model that will not run.
+        #
+        # A DENSE model gets no combined arm at all -- it touches every
+        # parameter on every token, so spilling it to RAM costs a PCIe
+        # round trip per token.
+        if gguf_fits_gpu(free_vram, free_ram,
+                         gpu_available=bool(compute_state.get('gpu_available')),
+                         moe=is_moe, whole_need_gb=vram):
+            return True
         # GGUF is CPU-capable.  A GPU improves placement and throughput, but a
         # machine with sufficient system RAM must not be rejected merely
         # because CUDA/Metal is unavailable.

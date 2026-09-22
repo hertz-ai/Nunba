@@ -24,6 +24,7 @@ from integrations.service_tools.model_catalog import (  # noqa: F401
     ModelCatalog,
     ModelEntry,
     ModelType,
+    gguf_fits_gpu,
     llama_gguf_compute_requirements,
 )
 
