@@ -1,4 +1,5 @@
 import AgentContactRequest from './components/Agent/AgentContactRequest';
+import AgentMessageToast from './components/Agent/AgentMessageToast';
 import ApiErrorBanner from './components/shared/ApiErrorBanner';
 import PageSkeleton from './components/shared/PageSkeleton';
 import {ToastProvider} from './components/shared/ToastProvider';
@@ -52,12 +53,14 @@ function App() {
         setContactRequest(data);
       }
     });
-    // Owned agent direct messages — show as toast or navigate to chat
+    // An owned agent's message also selects that agent, which the chat UI reads
+    // back from `active_agent_id`. It used to write the payload itself to
+    // `agent_proactive_message` "so Agent component picks it up"; nothing in this
+    // repo ever read that key, so the message stopped here. <AgentMessageToast />
+    // below now shows it, and has to live inside ToastProvider to do so.
     const unsubDirect = realtimeService.on('agent_message', (data) => {
       if (data?.agent_id) {
-        // Store in localStorage so Agent component picks it up
         localStorage.setItem('active_agent_id', data.agent_id);
-        localStorage.setItem('agent_proactive_message', JSON.stringify(data));
       }
     });
     return () => {
@@ -105,6 +108,10 @@ function App() {
     <NunbaThemeProvider>
       <RealtimeProvider>
         <ToastProvider>
+          {/* An owned agent's direct message, shown to the person it was sent
+              to. Must sit inside ToastProvider: App renders the provider, so it
+              cannot call useToast itself. Renders nothing. */}
+          <AgentMessageToast />
           <SocialProvider>
             {/* Global server-error toast — subscribes to
                 'hevolve:api-error' CustomEvents from axiosFactory's
