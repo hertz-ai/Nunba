@@ -810,6 +810,22 @@ class TestThereIsOnlyOneOfThese:
                     if isinstance(t, ast.Name)}
         assert not {'IS_WINDOWS', 'IS_MACOS', 'IS_LINUX'} & assigned
         assert 'platform_utils.IS_WINDOWS' in src
+    def test_source_guard_one_com_vtable_helper_in_the_package(self):
+        """The vtable dereference lives in desktop/win32_com.py and nowhere
+        else.  glass.py used to carry it; when the taskbar-list call in
+        platform_utils needed the same thing, it moved out rather than
+        being copied -- a second hand-rolled vtable helper is the parallel
+        path that drifts."""
+        marker = 'POINTER(ctypes.POINTER(ctypes.c_void_p))'
+        owners = sorted(
+            p.name for p in _DESKTOP.glob('*.py')
+            if marker in p.read_text(encoding='utf-8'))
+        assert owners == ['win32_com.py'], (
+            f'a COM vtable dereference appeared in {owners}')
+        assert glass._vcall is __import__(
+            'desktop.win32_com', fromlist=['vcall']).vcall, (
+            'glass must call the shared helper, not a copy')
+
 
     def test_source_guard_the_module_holds_no_look_values(self):
         """The boundary the owner drew: the LOOK is CSS, one code path for

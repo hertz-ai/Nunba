@@ -137,9 +137,19 @@ def companion_window_kwargs() -> dict:
         # which shows at opacity 0 and hides immediately, and skips the
         # Navigating-show hack entirely.  The page still loads (WebView2
         # navigates regardless of visibility), so `events.loaded` still fires
-        # and the styles still land -- now while the window is hidden, which
-        # is exactly what both docstrings ask for.  The first REAL show is
-        # the presence handler's, by which time the window is a tool window.
+        # and the styles still land -- now while the window is hidden.
+        #
+        # What this does NOT do, measured the same day once the build with it
+        # was live: it does not keep the window off the taskbar.  That
+        # opacity-0 show is still a show of a window WITHOUT the tool-window
+        # bit (WinForms rewrites the extended style on each Opacity change,
+        # so nothing set before it survives), the shell registers a tab at
+        # that moment, and hiding the window does not take the tab back --
+        # the shell's own button read "Nunba - 2 running windows" for hours
+        # while the companion was hidden and carrying WS_EX_TOOLWINDOW.
+        # `platform_utils.set_window_tool_window` now asks the shell to drop
+        # the tab as well; `hidden=True` stays for what it does do: no
+        # companion on screen at boot.
         #
         # It also matches what the page already believes: VoiceOrbPage starts
         # at presence 'hidden' inside the companion ("born away: no window

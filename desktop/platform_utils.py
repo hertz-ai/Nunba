@@ -243,8 +243,29 @@ def set_window_tool_window(window_handle, tool=True):
     """Keep a window out of the taskbar and Alt-Tab (WS_EX_TOOLWINDOW).
 
     For a floating presence that comes and goes: the owner saw two Nunba
-    entries on the taskbar (2026-09-15).  Takes effect on the next show,
-    so call it while the window is hidden or before it is shown.
+    entries on the taskbar (2026-09-15, and again 2026-09-22).
+
+    The style bit alone is NOT enough, and the reason is measured rather
+    than suspected.  pywebview shows a ``hidden=True`` window once at birth
+    (``winforms.py``: ``Opacity = 0; Show(); Hide(); Opacity = 1``) before
+    any caller can touch it, and WinForms rewrites the WHOLE extended style
+    from its own CreateParams on each Opacity change -- measured on a
+    never-shown form: TOOLWINDOW|NOACTIVATE set by hand, then ``Opacity=0``
+    -> gone, APPWINDOW back.  So the shell sees an ordinary window at that
+    first show and registers a taskbar tab for it.  Hiding it does not take
+    the tab away: with the companion HIDDEN and carrying this bit, the
+    shell's own button read "Nunba - 2 running windows" for hours.
+
+    ``ShowInTaskbar=False`` is not a way out either: set after the handle
+    exists it recreates the handle (measured, handle changes), which is the
+    WebView2 child gone.
+
+    What does work is asking the shell directly: ``ITaskbarList::DeleteTab``
+    on the hidden companion took that button to "1 running window" live,
+    the same afternoon.  So ``tool=True`` sets the bit for every future show
+    AND drops whatever tab the shell already holds.  Both halves are needed:
+    the bit stops the next show creating a tab, the call removes the one
+    the first show created.
     """
     if IS_WINDOWS:
         try:
@@ -261,8 +282,43 @@ def set_window_tool_window(window_handle, tool=True):
             else:
                 style = (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
             user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+            if tool:
+                _drop_taskbar_tab(hwnd)
         except Exception as e:
             logger.error(f"Error setting tool-window style: {e}")
+
+
+def _drop_taskbar_tab(hwnd) -> bool:
+    """Tell the shell to forget ``hwnd``'s taskbar tab (``ITaskbarList``).
+
+    ``hwnd`` is the pointer-sized handle ``_hwnd`` makes.  The vtable slots
+    are counted from ``ITaskbarList``'s declaration in ShObjIdl: after the
+    three of IUnknown come HrInit (3), AddTab (4), DeleteTab (5).  Returns
+    whether the shell took the call; a refusal is logged, never raised, so
+    the style change it rides on stands either way.
+    """
+    import ctypes
+
+    from desktop import win32_com
+
+    CLSID_TASKBAR_LIST = win32_com.guid(
+        0x56FDF344, 0xFD6D, 0x11D0,
+        0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90)
+    IID_ITASKBAR_LIST = win32_com.guid(
+        0x56FDF342, 0xFD6D, 0x11D0,
+        0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90)
+    SLOT_HR_INIT, SLOT_DELETE_TAB = 3, 5
+    try:
+        with win32_com.com_instance(CLSID_TASKBAR_LIST,
+                                    IID_ITASKBAR_LIST) as taskbar:
+            win32_com.vcall(taskbar, SLOT_HR_INIT, ctypes.HRESULT, [])
+            win32_com.vcall(taskbar, SLOT_DELETE_TAB, ctypes.HRESULT,
+                            [ctypes.c_void_p], hwnd)
+        return True
+    except Exception as e:
+        logger.warning('the shell refused to drop the taskbar tab for hwnd '
+                       '%s: %s', hwnd, e)
+        return False
 
 
 def set_window_floating_presence(window_handle, on=True):

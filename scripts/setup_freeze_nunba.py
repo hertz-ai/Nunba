@@ -535,6 +535,18 @@ build_exe_options = {
                           # second the same way it misses chat_sync, and a
                           # miss here is a ModuleNotFoundError on the first
                           # boot of the installed .exe.
+        "desktop.win32_com",  # The one COM vtable helper (DirectComposition
+                          # in desktop.glass, ITaskbarList in
+                          # desktop.platform_utils).  desktop.glass imports
+                          # it at module level, so the tracer reaches it
+                          # through the entry above; listed on its own so
+                          # that path is not the only thing keeping it in.
+        "desktop.companion_surface",  # What the floating companion IS.
+                          # MEASURED 2026-09-22: the 11:39 install carried
+                          # lib/desktop/companion_surface.pyc with no entry
+                          # here, i.e. the tracer followed app.py's
+                          # function-local import of it.  Listed anyway, the
+                          # same belt-and-braces as desktop.glass above.
         "desktop.boot_record",  # One durable line per boot decision.  Every
                           # import of it is function-local (inside app.py's
                           # companion block, on BOTH the success and the

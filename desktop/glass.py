@@ -102,6 +102,15 @@ from typing import Callable, Optional
 # parallel path this module exists to prevent.
 from desktop import platform_utils
 
+# The one hand-rolled COM vtable helper in the package.  Bound under this
+# module's own names so the composition code below reads as it did when the
+# helper lived here, and so a test that patches ``glass._vcall`` still sees
+# every call this module makes.
+from desktop.win32_com import GUID as _GUID
+from desktop.win32_com import SLOT_RELEASE as _SLOT_RELEASE
+from desktop.win32_com import guid as _guid
+from desktop.win32_com import vcall as _vcall
+
 logger = logging.getLogger('NunbaGlass')
 
 # ── the ladder ─────────────────────────────────────────────────────────
@@ -637,28 +646,12 @@ def _windows_layered_alpha(hwnd, intent: GlassIntent) -> bool:
 # ── Windows: the COM the compositor is reached through ─────────────────
 #
 # DirectComposition is Windows' own GPU compositor and it has no .NET
-# projection, so reaching it means calling COM vtable slots by index.  Every
-# vtable call in this module goes through ``_vcall`` and every release
-# through ``_com_release``: a second hand-rolled vtable helper is exactly the
-# parallel path that drifts, and a missed Release is a leaked GPU device.
-
-
-class _GUID(ctypes.Structure):
-    """A COM interface id, laid out as the Windows headers declare one."""
-
-    _fields_ = [('Data1', ctypes.c_uint32),
-                ('Data2', ctypes.c_uint16),
-                ('Data3', ctypes.c_uint16),
-                ('Data4', ctypes.c_ubyte * 8)]
-
-
-def _guid(data1: int, data2: int, data3: int, *tail: int) -> _GUID:
-    """A ``_GUID`` from the groups a GUID is written in, left to right."""
-    value = _GUID()
-    value.Data1, value.Data2, value.Data3 = data1, data2, data3
-    for index, byte in enumerate(tail):
-        value.Data4[index] = byte
-    return value
+# projection, so reaching it means calling COM vtable slots by index.  The
+# vtable helper is ``desktop/win32_com.py`` (bound above as ``_vcall``),
+# shared with the taskbar-list call in ``platform_utils``: a second
+# hand-rolled helper is exactly the parallel path that drifts.  Every
+# release in this module goes through ``_com_release`` below, because a
+# missed Release is a leaked GPU device.
 
 
 #: ``IDCompositionDevice`` {C37EA93A-E7AA-450D-B16F-9746CB0407F3}, the root
@@ -668,9 +661,7 @@ _IID_IDCOMPOSITION_DEVICE = _guid(
     0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3)
 
 #: Vtable slots, counted from each interface's declaration order in dcomp.h.
-#: ``IUnknown`` occupies 0-2 on EVERY COM interface, so slot 2 is Release
-#: whatever the object turns out to be.
-_SLOT_RELEASE = 2
+#: Release is ``win32_com.SLOT_RELEASE``, the same on every interface.
 _SLOT_DEVICE_COMMIT = 3
 _SLOT_DEVICE_CREATE_TARGET_FOR_HWND = 6
 _SLOT_DEVICE_CREATE_VISUAL = 7
@@ -688,25 +679,6 @@ _WEBVIEW2_TIMEOUT_SECONDS = 30
 #: ``release_glass`` is how a caller hands one back.  One registry, so a
 #: window can never end up with two hosts fighting over it.
 _WINDOWS_HOSTS = {}
-
-
-def _vcall(interface, slot: int, restype, argtypes, *args):
-    """Call slot ``slot`` of ``interface``'s COM vtable.
-
-    ``interface`` is a ``c_void_p`` holding the interface pointer, which is
-    also a pointer to its vtable pointer -- two dereferences to the function.
-
-    ``restype`` is the caller's because ``Release`` returns a ULONG while
-    every other method here returns an HRESULT, and an HRESULT restype makes
-    ctypes RAISE on failure.  That is deliberate: a COM call that quietly
-    returns E_FAIL and is never checked is how a "working" compositor host
-    turns out to have composited nothing.
-    """
-    table = ctypes.cast(
-        interface, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
-    method = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(
-        table[slot])
-    return method(interface, *args)
 
 
 def _com_release(interface, what: str) -> None:
