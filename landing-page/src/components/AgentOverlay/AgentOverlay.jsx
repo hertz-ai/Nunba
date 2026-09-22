@@ -292,14 +292,25 @@ function ApprovalOverlay({ data, onDismiss }) {
 
     onDismiss();
   };
+
+  // `options` labels the three decisions POSITIONALLY: [approve, deny, defer].
+  // A missing or non-string entry keeps that button's default label, so the
+  // button SET never shrinks and the POSTed vocabulary stays approve|deny|later
+  // (the only three /api/agent/approval accepts).  Producers use it to say what
+  // the choice MEANS: the game-sound card offers 'Keep it' / 'Compose another'.
+  const label = (i, dflt) => {
+    const o = Array.isArray(data.options) ? data.options[i] : null;
+    return (typeof o === 'string' && o) ? o : dflt;
+  };
+
   return (
     <Box>
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>{data.title || 'Approval Required'}</Typography>
       <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)', mb: 1.5 }}>{data.description}</Typography>
       <Box sx={{ display: 'flex', gap: 1 }}>
-        <Button variant="contained" size="small" sx={{ background: SUCCESS, flex: 1, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>Approve</Button>
-        <Button variant="outlined" size="small" sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1 }} onClick={() => postDecision('deny')}>Deny</Button>
-        <Button variant="outlined" size="small" sx={{ color: 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)' }} onClick={() => postDecision('later')}>Later</Button>
+        <Button variant="contained" size="small" sx={{ background: SUCCESS, flex: 1, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>{label(0, 'Approve')}</Button>
+        <Button variant="outlined" size="small" sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1 }} onClick={() => postDecision('deny')}>{label(1, 'Deny')}</Button>
+        <Button variant="outlined" size="small" sx={{ color: 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)' }} onClick={() => postDecision('later')}>{label(2, 'Later')}</Button>
       </Box>
     </Box>
   );
