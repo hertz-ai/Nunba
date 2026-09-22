@@ -146,10 +146,25 @@ class TestCombinedMemoryOnlyForAMixtureOfExperts:
         assert quant_of(pick(0, 32, moe=True)) == quant_of(pick(0, 32,
                                                                 moe=False))
 
-    def test_dense_selection_is_unchanged_by_the_moe_flag(self, pick):
-        for v, r in [(8, 32), (24, 32), (48, 64)]:
-            assert quant_of(pick(v, r, moe=False)) == quant_of(
-                pick(v, r, moe=False)), (v, r)
+    def test_dense_is_judged_only_on_one_pool_at_a_time(self, pick):
+        """Replaces a tautology. The original compared pick(moe=False) to
+        pick(moe=False) -- the same call twice -- so it could never fail.
+
+        The real property: a dense model's answer is reproducible from the
+        single-pool rule alone. If the combined arm ever leaked into the
+        dense path, some budget here would admit a quant that neither pool
+        can hold on its own."""
+        from models.catalog import llama_gguf_compute_requirements
+        for v, r in [(8, 32), (24, 32), (48, 64), (4.7, 21.4)]:
+            try:
+                chosen = QUANTS[quant_of(pick(v, r, moe=False))]
+            except ValueError:
+                continue                      # nothing fit; nothing to check
+            need_vram, need_ram = llama_gguf_compute_requirements(chosen)
+            assert v >= need_vram or r >= need_ram, (
+                f'{v}/{r} admitted a {chosen} GB dense quant that needs '
+                f'{need_vram} VRAM or {need_ram} RAM -- neither pool holds '
+                f'it, so the combined MoE arm leaked into the dense path')
 
 
 class TestAnOperatorOverrideStillWins:
