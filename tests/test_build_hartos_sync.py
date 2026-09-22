@@ -45,8 +45,8 @@ class TestHartosSyncListDrift(unittest.TestCase):
         # The three load-bearing packages every install needs.
         for pkg in ('core', 'security', 'integrations', 'hartos'):
             self.assertIn(pkg, self.sync_list,
-                          '%s absent from HARTOS_SYNC_PACKAGES — fixes '
-                          'inside it will never reach an install' % pkg)
+                          f'{pkg} absent from HARTOS_SYNC_PACKAGES — fixes '
+                          'inside it will never reach an install')
 
     @unittest.skipUnless(os.path.isdir(_HARTOS), 'HARTOS sibling clone absent')
     def test_every_shipped_hartos_package_is_in_the_sync_list(self):
@@ -72,7 +72,7 @@ class TestHartosSyncListDrift(unittest.TestCase):
         self.assertEqual(
             missing, [],
             'HARTOS package dirs missing from build.py HARTOS_SYNC_PACKAGES '
-            '(fixes inside them silently never ship): %s' % missing)
+            f'(fixes inside them silently never ship): {missing}')
 
     @unittest.skipUnless(os.path.isdir(_HARTOS), 'HARTOS sibling clone absent')
     def test_sync_list_names_exist_in_hartos(self):
@@ -85,7 +85,7 @@ class TestHartosSyncListDrift(unittest.TestCase):
                       os.path.join(_HARTOS, overrides.get(p, p)))]
         self.assertEqual(ghosts, [],
                          'HARTOS_SYNC_PACKAGES entries with no matching '
-                         'HARTOS dir: %s' % ghosts)
+                         f'HARTOS dir: {ghosts}')
 
 
 class TestRootModuleSync(unittest.TestCase):
@@ -116,7 +116,7 @@ class TestRootModuleSync(unittest.TestCase):
                      if '/' not in p and p.startswith('_') and not self.ships(p)]
         self.assertEqual(held_back, [],
                          'tracked HARTOS root modules the probe-script filter '
-                         'would leave out of the install: %s' % held_back)
+                         f'would leave out of the install: {held_back}')
 
 
 if __name__ == '__main__':

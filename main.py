@@ -2528,6 +2528,7 @@ def admin_models_storage_path_get():
     try:
         import shutil
         from pathlib import Path
+
         from llama.llama_config import LlamaConfig
         cfg = LlamaConfig()
         models_dir = Path(cfg.get_models_dir())
@@ -2932,8 +2933,7 @@ def _gguf_install_files(repo_files, requested_file: str = '',
     if not weights:
         return {}
     file_sizes = file_sizes or {}
-    from models.catalog import (
-        gguf_fits_gpu, llama_gguf_compute_requirements)
+    from models.catalog import gguf_fits_gpu, llama_gguf_compute_requirements
     # Select the projector once and use that same file for fit accounting and
     # the loader mapping.  Summing every published projector variant can
     # falsely reject a model even though only one projector is downloaded.
@@ -2953,9 +2953,10 @@ def _gguf_install_files(repo_files, requested_file: str = '',
         projector_bytes = float(file_sizes.get(projector, 0) or 0)
         required_disk = size + projector_bytes
         try:
-            from pathlib import Path
-            from llama.llama_installer import LlamaInstaller
             import shutil
+            from pathlib import Path
+
+            from llama.llama_installer import LlamaInstaller
             target_storage = Path(target_dir).expanduser().resolve() if target_dir else LlamaInstaller().models_dir
             if shutil.disk_usage(target_storage).free < required_disk:
                 return False
@@ -3567,8 +3568,7 @@ def admin_models_hub_install():
                             # their own Model Management page; nothing
                             # downloads without someone asking for it.
                             try:
-                                from integrations.service_tools.model_mesh import (
-                                    announce_model_available)
+                                from integrations.service_tools.model_mesh import announce_model_available
                                 announce_model_available(safe_id)
                             except Exception as _me:
                                 logging.debug(
@@ -5561,8 +5561,8 @@ def admin_mcp_token_get():
         # Use the PUBLIC HARTOS API — was reaching into the private
         # underscore-prefix `_ensure_mcp_token` which coupled Nunba's
         # release cadence to HARTOS internal naming.
-        from integrations.mcp import get_mcp_token
         from integrations.coding_agent.claude_code_backend import copilot_enabled
+        from integrations.mcp import get_mcp_token
         token = get_mcp_token()
         return jsonify({
             'token': token,

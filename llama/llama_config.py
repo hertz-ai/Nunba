@@ -25,9 +25,7 @@ from pathlib import Path
 
 import requests
 
-from llama.llama_installer import (
-    MODEL_PRESETS, QWEN35_RUNTIME_FAMILY, LlamaInstaller, ModelPreset,
-    model_size_gib)
+from llama.llama_installer import MODEL_PRESETS, QWEN35_RUNTIME_FAMILY, LlamaInstaller, ModelPreset, model_size_gib
 
 logger = logging.getLogger('NunbaLlamaConfig')
 
@@ -597,8 +595,7 @@ class LlamaConfig:
         exactly as it does today, which is the pre-existing behaviour.
         """
         try:
-            from integrations.service_tools.model_catalog import (
-                moe_offload_args)
+            from integrations.service_tools.model_catalog import moe_offload_args
             vram = self._get_vram_manager()
             free = float(vram.get_free_vram()) if vram else 0.0
             return moe_offload_args(str(model_path), free)

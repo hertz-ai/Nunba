@@ -8347,7 +8347,7 @@ def main():
             try:
                 from desktop.boot_record import record as _boot_record
                 _boot_record('companion_window', True,
-                             detail='created at (%d, %d)' % (_comp_x, _comp_y),
+                             detail=f'created at ({_comp_x:d}, {_comp_y:d})',
                              size=[_comp_w, _comp_h],
                              screen=[_screen_w, _screen_h])
             except Exception as _rec_err:

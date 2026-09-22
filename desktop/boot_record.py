@@ -60,7 +60,7 @@ def record_path() -> Path:
             / _FILENAME)
 
 
-def record(event: str, ok: bool, detail: Optional[str] = None,
+def record(event: str, ok: bool, detail: str | None = None,
            **fields: Any) -> bool:
     """Append one durable line.  Returns whether it was written.
 
@@ -104,7 +104,7 @@ def record(event: str, ok: bool, detail: Optional[str] = None,
 def _trim(path: Path) -> None:
     """Keep the most recent MAX_LINES.  Best-effort, never fatal."""
     try:
-        with open(path, 'r', encoding='utf-8') as fh:
+        with open(path, encoding='utf-8') as fh:
             lines = fh.readlines()
         if len(lines) <= MAX_LINES:
             return
@@ -116,7 +116,7 @@ def _trim(path: Path) -> None:
         logger.debug('boot_record trim skipped: %s', e)
 
 
-def read_recent(event: Optional[str] = None, limit: int = 20) -> list:
+def read_recent(event: str | None = None, limit: int = 20) -> list:
     """The last `limit` records, newest first, optionally one event only.
 
     For a person or a later session asking "what happened at the last few
@@ -127,7 +127,7 @@ def read_recent(event: Optional[str] = None, limit: int = 20) -> list:
         if not path.exists():
             return []
         out = []
-        with open(path, 'r', encoding='utf-8') as fh:
+        with open(path, encoding='utf-8') as fh:
             for line in fh:
                 line = line.strip()
                 if not line:

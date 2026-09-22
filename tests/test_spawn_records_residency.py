@@ -114,8 +114,7 @@ class TestTheRecordIsKeyedByFile:
     def test_the_lookup_resolves_a_spawn_path(self):
         import threading
 
-        from integrations.service_tools.model_catalog import (
-            ModelCatalog, ModelEntry, ModelType)
+        from integrations.service_tools.model_catalog import ModelCatalog, ModelEntry, ModelType
         c = ModelCatalog.__new__(ModelCatalog)
         c._entries, c._populators = {}, {}
         c._lock = threading.RLock()
@@ -137,8 +136,7 @@ class TestTheRecordIsKeyedByFile:
         """Two rows claiming one file (#107) -> unknown, not a guess."""
         import threading
 
-        from integrations.service_tools.model_catalog import (
-            ModelCatalog, ModelEntry, ModelType)
+        from integrations.service_tools.model_catalog import ModelCatalog, ModelEntry, ModelType
         c = ModelCatalog.__new__(ModelCatalog)
         c._entries, c._populators = {}, {}
         c._lock = threading.RLock()
