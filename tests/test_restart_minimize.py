@@ -170,9 +170,13 @@ class RestartMinimizeStaticTests(unittest.TestCase):
     def test_companion_api_has_on_companion_prompt(self):
         src = APP_PY.read_text(encoding="utf-8")
         # Method signature must exist on the CompanionAPI class.
-        self.assertIn(
-            "def on_companion_prompt(self, text):",
+        # `text` must be the FIRST argument; later keyword arguments are the
+        # bridge's own business.  5bd57b078 (2026-09-17) added `context=None`
+        # and this exact literal read that as the bridge having vanished --
+        # red on every box for five days.  Pin the contract, not the arity.
+        self.assertRegex(
             src,
+            r"def on_companion_prompt\(self, text\b[^)]*\):",
             "CompanionAPI.on_companion_prompt is the Python bridge the "
             "floating input bar calls via pywebview.api.  It must "
             "exist and accept a text argument.",
@@ -416,22 +420,59 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         import re
 
         src = APP_PY.read_text(encoding="utf-8")
-        m = re.search(r"def on_companion_prompt\(self, text\):(.*?)\n                def |"
-                      r"def on_companion_prompt\(self, text\):(.*?)\n            _companion_api",
+        m = re.search(r"def on_companion_prompt\(self, text\b[^)]*\):(.*?)\n                def |"
+                      r"def on_companion_prompt\(self, text\b[^)]*\):(.*?)\n            _companion_api",
                       src, re.S)
         self.assertIsNotNone(m, "on_companion_prompt not found")
         bridge = m.group(1) or m.group(2)
         body = re.search(r"json=\{(.*?)\}", bridge, re.S)
+        # 5bd57b078 builds the payload into ONE local, assigned per branch:
+        # `_body = {"instruction": ...}` when an agent is in context (posted
+        # to .../inject) and `_body = {"text": ...}` otherwise (posted to
+        # /chat), then a single `requests.post(_url, json=_body)`.  So the
+        # /chat body is the assignment that FOLLOWS the /chat url, not the
+        # first `json=` or the first assignment in the bridge.
+        name = re.search(r"json=([A-Za-z_][A-Za-z0-9_]*)", bridge)
+        payload = name.group(1) if name else "_body"
+        if body is None:
+            chat_at = bridge.find('/chat"')
+            tail = bridge[chat_at:] if chat_at >= 0 else bridge
+            body = re.search(r"\b" + re.escape(payload) + r"\s*=\s*\{(.*?)\}", tail, re.S)
         self.assertIsNotNone(body, "the bridge's /chat body not found")
         self.assertIn('"text": prompt', body.group(1))
+        # The /inject sender is a second contract with its own reader:
+        # HARTOS integrations/social/api_dashboard.py inject_into_groupchat
+        # reads body["instruction"] and body["actor_id"] and answers 400
+        # without them.  Guard it the same way, so a key drift on THIS
+        # branch cannot repeat the 2026-09-15 "Error 400" on the other.
+        inject_at = bridge.find('/inject"')
+        if inject_at >= 0:
+            inject = re.search(r"\b" + re.escape(payload) + r"\s*=\s*\{(.*?)\}", bridge[inject_at:], re.S)
+            self.assertIsNotNone(inject, "the bridge's /inject body not found")
+            self.assertIn('"instruction": prompt', inject.group(1))
+            self.assertIn('"actor_id"', inject.group(1))
         self.assertNotIn('"message"', body.group(1))
 
         page = (REPO_ROOT / "landing-page" / "src" / "components" / "VoiceOrb"
                 / "VoiceOrbPage.jsx").read_text(encoding="utf-8")
+        # Same 5bd57b078 refactor as the Python bridge: url and body are
+        # per-branch ternaries (.../inject when an agent is in context,
+        # /chat otherwise) feeding one fetch(url, ...).  Accept the older
+        # inline shape too, and read the /chat body from the ternary's
+        # else branch.
         fetch = re.search(r"fetch\('/chat',(.*?)\}\);", page, re.S)
-        self.assertIsNotNone(fetch, "VoiceOrbPage /chat fallback not found")
-        self.assertIn("text: t", fetch.group(1))
-        self.assertNotIn("message: t", fetch.group(1))
+        if fetch is not None:
+            chat_body, inject_body = fetch.group(1), None
+        else:
+            tern = re.search(r":\s*'/chat';.*?\?\s*\{([^}]*)\}\s*:\s*\{([^}]*)\}", page, re.S)
+            self.assertIsNotNone(tern, "VoiceOrbPage /chat fallback not found")
+            inject_body, chat_body = tern.group(1), tern.group(2)
+        self.assertIn("text: t", chat_body)
+        self.assertNotIn("message: t", chat_body)
+        if inject_body is not None:
+            # the orb's inject sender posts what inject_into_groupchat reads
+            self.assertIn("instruction: t", inject_body)
+            self.assertIn("actor_id", inject_body)
 
     # ── Invariant J: the window follows the page's presence ───────────
     def test_companion_window_follows_the_pages_presence(self):
