@@ -58,7 +58,7 @@ def _surface(alpha=None):
     w = tk.Toplevel()
     w.overrideredirect(True)
     left, top, right, bottom = REGION
-    w.geometry('%dx%d+%d+%d' % (right - left, bottom - top, left, top))
+    w.geometry(f'{right - left:d}x{bottom - top:d}+{left:d}+{top:d}')
     w.configure(bg=PANEL_BG)
     w.attributes('-topmost', True)
     if alpha is not None:
@@ -77,7 +77,7 @@ def run() -> int:
         try:
             v = probe(REGION, hwnd=_root_hwnd(s))
             ok = 'OK' if v.kind == expect else 'MISREAD'
-            print('%-10s expected %-6s -> %s   [%s]' % (label, expect, v, ok))
+            print(f'{label:<10s} expected {expect:<6s} -> {v}   [{ok}]')
             results[label] = (v.kind == expect)
         finally:
             s.destroy()

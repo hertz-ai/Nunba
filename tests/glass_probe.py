@@ -66,8 +66,8 @@ from __future__ import annotations
 import argparse
 import statistics
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
 
 #: Below this, changing what is behind the surface changes nothing: opaque.
 TRANSMITTANCE_FLOOR = 0.05
@@ -112,11 +112,11 @@ class Verdict:
                 + (f'  ({self.note})' if self.note else ''))
 
 
-def classify(mean_over_black: Optional[float],
-             mean_over_white: Optional[float],
+def classify(mean_over_black: float | None,
+             mean_over_white: float | None,
              backdrop_black_mean: float,
              backdrop_white_mean: float,
-             stripe_amplitude_seen: Optional[float],
+             stripe_amplitude_seen: float | None,
              backdrop_stripe_amplitude: float) -> Verdict:
     """The decision, separated from every bit of screen and GUI plumbing.
 
@@ -186,25 +186,25 @@ def ensure_dpi_aware() -> bool:
             ctypes.windll.user32.SetProcessDPIAware()       # older fallback
         _dpi_ready = True
     except Exception as e:
-        print('glass_probe: could not set DPI awareness (%s); coordinates '
-              'and captured pixels may disagree on a scaled display' % e,
+        print(f'glass_probe: could not set DPI awareness ({e}); coordinates '
+              'and captured pixels may disagree on a scaled display',
               file=sys.stderr)
     return _dpi_ready
 
 
-def _grey_rows(image) -> List[List[float]]:
+def _grey_rows(image) -> list[list[float]]:
     """Greyscale rows, as plain floats -- no numpy dependency."""
     px = image.convert('L').load()
     return [[float(px[x, y]) for x in range(image.width)]
             for y in range(image.height)]
 
 
-def _mean(rows: Sequence[Sequence[float]]) -> Optional[float]:
+def _mean(rows: Sequence[Sequence[float]]) -> float | None:
     flat = [v for row in rows for v in row]
     return statistics.fmean(flat) if flat else None
 
 
-def _stripe_amplitude(rows: Sequence[Sequence[float]]) -> Optional[float]:
+def _stripe_amplitude(rows: Sequence[Sequence[float]]) -> float | None:
     """Median row amplitude.
 
     MEDIAN, not max: a blurred surface with an icon or a text run crossing
@@ -215,7 +215,7 @@ def _stripe_amplitude(rows: Sequence[Sequence[float]]) -> Optional[float]:
     return statistics.median(amps) if amps else None
 
 
-def capture(region: Tuple[int, int, int, int], save: Optional[str] = None):
+def capture(region: tuple[int, int, int, int], save: str | None = None):
     """Grab the screen region.  Separated so classify() stays testable."""
     ensure_dpi_aware()
     from PIL import ImageGrab
@@ -225,7 +225,7 @@ def capture(region: Tuple[int, int, int, int], save: Optional[str] = None):
     return shot
 
 
-def _backdrop(region: Tuple[int, int, int, int], kind: str):
+def _backdrop(region: tuple[int, int, int, int], kind: str):
     """A backdrop window behind the region under test: black, white, stripes.
 
     TOPMOST, never lowered.  An earlier version called ``lower()``, which
@@ -275,8 +275,8 @@ def raise_above_backdrop(hwnd: int) -> bool:
             int(hwnd), HWND_TOPMOST, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE))
     except Exception as e:
-        print('glass_probe: could not raise %s above the backdrop (%s)'
-              % (hwnd, e), file=sys.stderr)
+        print(f'glass_probe: could not raise {hwnd} above the backdrop ({e})',
+              file=sys.stderr)
         return False
 
 
@@ -306,12 +306,12 @@ def _place_below(backdrop_win, hwnd: int) -> bool:
             back_hwnd, int(hwnd), 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE))
     except Exception as e:
-        print('glass_probe: could not place the backdrop below %s (%s)'
-              % (hwnd, e), file=sys.stderr)
+        print(f'glass_probe: could not place the backdrop below {hwnd} ({e})',
+              file=sys.stderr)
         return False
 
 
-def _ring_and_centre(rows: List[List[float]], margin: int):
+def _ring_and_centre(rows: list[list[float]], margin: int):
     """Split a capture into the backdrop's own ring and the surface's area.
 
     One capture, two readings.  This is what removes the timing and z-order
@@ -345,9 +345,9 @@ def _read(region, kind, hwnd, save=None):
         back.destroy()
 
 
-def probe(region: Tuple[int, int, int, int],
-          save: Optional[str] = None,
-          hwnd: Optional[int] = None) -> Verdict:
+def probe(region: tuple[int, int, int, int],
+          save: str | None = None,
+          hwnd: int | None = None) -> Verdict:
     """Measure the surface currently occupying `region`.
 
     Three backdrops, because transmittance needs a black/white pair and
@@ -367,7 +367,7 @@ def probe(region: Tuple[int, int, int, int],
         _stripe_amplitude(stripe_alone) or 0.0)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--region', required=True,
                     help='left,top,right,bottom in screen pixels')

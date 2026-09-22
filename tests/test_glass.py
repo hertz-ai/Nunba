@@ -30,6 +30,16 @@ LWA_ALPHA = 0x00000002
 
 
 @pytest.fixture(autouse=True)
+def windll_exists_off_windows(monkeypatch):
+    """`patch('ctypes.windll.user32')` needs `ctypes.windll` to exist, and
+    it only exists on Windows.  CI runs this file on ubuntu and macOS too,
+    where every such patch raised AttributeError before the test body ran.
+    On Windows the real one is left alone."""
+    if not hasattr(ctypes, 'windll'):
+        monkeypatch.setattr(ctypes, 'windll', MagicMock(), raising=False)
+
+
+@pytest.fixture(autouse=True)
 def no_composition_hosts_left_over():
     """The module OWNS its composition hosts, so they outlive a call by
     design.  A test that built one must not hand it to the next."""
@@ -312,6 +322,10 @@ class TestWindowsBackend:
         assert 'dwm_backdrop' not in result.steps
 
 
+@pytest.mark.skipif(
+    not hasattr(ctypes, 'HRESULT'),
+    reason='drives Win32 COM vtables; ctypes.HRESULT and WINFUNCTYPE exist '
+           'only on Windows')
 class TestWindowsCompositionRung:
     """The NATIVE_GLASS rung: the page on a DirectComposition visual, under
     the OS's own blur.

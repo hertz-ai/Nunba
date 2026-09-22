@@ -92,8 +92,9 @@ from __future__ import annotations
 # that call Win32.
 import ctypes
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 # The canonical home of platform detection and handle resolution.  Imported
 # as a MODULE, not as names, on purpose: the flags are read at call time, so
@@ -216,7 +217,7 @@ class _Backend:
     name: str
     ceiling: str
     creation_kwargs: Callable[[], dict]
-    apply: Callable[[object, int, 'GlassIntent'], 'GlassResult']
+    apply: Callable[[object, int, GlassIntent], GlassResult]
 
 
 # ── the two public entry points ────────────────────────────────────────
@@ -959,9 +960,8 @@ def _windows_composition_controller(hwnd, visual):
     if apartment != ApartmentState.STA:
         raise RuntimeError(
             'WebView2 can only be created on a single-threaded apartment; '
-            'this thread is %s. Initialise COM as STA before the CLR first '
-            'touches it (pywebview does this for its own UI thread).'
-            % apartment)
+            f'this thread is {apartment}. Initialise COM as STA before the '
+            'CLR first touches it (pywebview does this for its own UI thread).')
 
     environment_task = CoreWebView2Environment.CreateAsync(
         None, platform_utils.webview_user_data_dir(), None)
@@ -990,7 +990,7 @@ def _windows_composition_controller(hwnd, visual):
     return controller
 
 
-def _windows_composition_host(hwnd) -> Optional[_CompositionHost]:
+def _windows_composition_host(hwnd) -> _CompositionHost | None:
     """Host this window's page on the GPU compositor, or say why not.
 
     Returns the host on success and None on every failure, having released

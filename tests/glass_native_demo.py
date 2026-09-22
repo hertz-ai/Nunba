@@ -151,9 +151,9 @@ def create_window(redirection: bool):
     cls.lpfnWndProc = _WNDPROC_REF
     cls.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
     cls.hbrBackground = None
-    cls.lpszClassName = 'NunbaGlassDemo%d_%d' % (os.getpid(), _CLASS_SERIAL)
+    cls.lpszClassName = f'NunbaGlassDemo{os.getpid():d}_{_CLASS_SERIAL:d}'
     if not user32.RegisterClassExW(ctypes.byref(cls)):
-        raise OSError('RegisterClassExW failed: %s' % ctypes.get_last_error())
+        raise OSError(f'RegisterClassExW failed: {ctypes.get_last_error()}')
 
     ex_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
     if not redirection:
@@ -165,7 +165,7 @@ def create_window(redirection: bool):
         left, top, right - left, bottom - top,
         None, None, cls.hInstance, None)
     if not hwnd:
-        raise OSError('CreateWindowExW failed: %s' % ctypes.get_last_error())
+        raise OSError(f'CreateWindowExW failed: {ctypes.get_last_error()}')
 
     user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
     return user32, int(hwnd)
@@ -210,10 +210,10 @@ def navigate_and_wait(page, html, seconds: float) -> bool:
         try:
             page.NavigationCompleted -= handler
         except Exception as e:
-            print('could not unhook NavigationCompleted: %s' % e)
+            print(f'could not unhook NavigationCompleted: {e}')
     if not done:
-        print('WARNING: the page never reported navigation complete in %ss; '
-              'what follows may be measuring an unrendered window' % seconds)
+        print(f'WARNING: the page never reported navigation complete in '
+              f'{seconds}s; what follows may be measuring an unrendered window')
     return bool(done)
 
 
@@ -268,7 +268,7 @@ def main(argv=None) -> int:
         pump(0.3)
         result = glass.apply_glass(hwnd, glass.GlassIntent(
             opacity=FALLBACK_OPACITY))
-        print('glass.apply_glass -> %s' % result)
+        print(f'glass.apply_glass -> {result}')
 
         page = glass.hosted_page(hwnd)
         if page is None:
@@ -282,11 +282,11 @@ def main(argv=None) -> int:
             pump(1.0)
 
         verdict = probe(REGION, ns.save, hwnd)
-        print('glass_probe -> %s' % verdict)
+        print(f'glass_probe -> {verdict}')
         print()
-        print('rung returned : %s' % result.rung)
+        print(f'rung returned : {result.rung}')
         print('steps         : %s' % ('+'.join(result.steps) or 'none'))
-        print('pixels say    : %s' % verdict.kind)
+        print(f'pixels say    : {verdict.kind}')
         agreed = (result.rung == glass.NATIVE_GLASS) == verdict.is_glass
         print('agreement     : %s' % (
             'the rung and the pixels say the same thing' if agreed else

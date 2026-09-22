@@ -225,9 +225,9 @@ def topmost_report(hwnd) -> str:
 
     in_band = mine < theirs
     verdict = 'agree' if bit == in_band else 'DISAGREE'
-    return ('exstyle TOPMOST=%s, actually above the taskbar=%s -> %s '
-            '(z index %d vs taskbar %d of %d)'
-            % (bit, in_band, verdict, mine, theirs, len(order)))
+    return (f'exstyle TOPMOST={bit}, actually above the taskbar={in_band} '
+            f'-> {verdict} (z index {mine:d} vs taskbar {theirs:d} of '
+            f'{len(order):d})')
 
 
 def measure(window, save: str | None, settle: float) -> str:
@@ -316,7 +316,7 @@ def main(argv=None) -> int:
             print(f'nothing to serve at {root}')
             return 2
         port, shutdown = serve(root)
-        url = 'http://127.0.0.1:%d/index.html' % port
+        url = f'http://127.0.0.1:{port:d}/index.html'
         if not ns.no_marker:
             url += '?' + FLOATING_QUERY
 
