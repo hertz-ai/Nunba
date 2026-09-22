@@ -3076,7 +3076,68 @@ class LlamaConfig:
         self.config["selected_model_index"] = model_index
         self._save_config()
 
-        return self.start_server(model_preset=preset)
+        started = self.start_server(model_preset=preset)
+
+        # VERIFY THE USER-VISIBLE OUTCOME, not the furthest step reached.
+        #
+        # Until 2026-09-22 this returned start_server()'s bare True, and on
+        # the desktop that was a LIE in the common case.  POST /api/llm/switch
+        # builds a FRESH LlamaConfig per request, so `self.server_process` is
+        # None and stop_server() above silently does nothing; the incumbent is
+        # still up when start_server() runs, so _do_start_server's port scan
+        # finds it, ADOPTS it, and returns True -- and its catalog-sync block
+        # rewrites selected_model_index straight back to whatever is actually
+        # loaded.  The endpoint answered {"success": true, "model_name": <the
+        # NEW model>}, main.py told the orchestrator the new model was loaded
+        # and booked its VRAM, and the server went on serving the OLD one.
+        #
+        # So ASK THE SERVER.  A switch succeeded only if the model now being
+        # served is the one that was asked for.  This is deliberately a check
+        # on the outcome rather than a change to the adopt branch: adopting
+        # whatever main LLM is already up is CORRECT for the boot and warm-up
+        # callers (it is what stops a second server taking :8080 -- the
+        # 2026-09-13 incident), and those callers pass no preset.  Only a
+        # caller that named a model can be disappointed by the answer.
+        if started:
+            serving = self.serving_model_file()
+            wanted = os.path.basename(preset.file_name or '')
+            if serving and wanted and serving != wanted:
+                logger.error(
+                    "switch to %s did NOT take effect: %s is still the model "
+                    "being served.  The running server was adopted, not "
+                    "replaced -- this instance holds no handle on it, so it "
+                    "was never stopped.  Reporting failure rather than a "
+                    "success that changed nothing.",
+                    wanted, serving)
+                return False
+
+        return started
+
+    def serving_model_file(self, port: int | None = None) -> str | None:
+        """Basename of the GGUF the live main server is actually serving.
+
+        The ONE reader of "what is loaded right now".  Asks /v1/models on
+        the live port, because the config's selected_model_index records
+        what was REQUESTED and the two drift apart the moment an adopt
+        happens -- which is exactly the case this exists to detect.
+
+        Returns None when nothing answers or the body carries no model, so
+        a caller can tell "a different model" from "could not tell".
+        """
+        port = port or _find_live_llama_port() or self.config.get(
+            "server_port", 8080)
+        try:
+            resp = requests.get(f"http://127.0.0.1:{port}/v1/models",
+                                timeout=3)
+            if resp.status_code != 200:
+                return None
+            body = resp.json()
+            ident = ((body.get('data') or [{}])[0].get('id', '')
+                     or (body.get('models') or [{}])[0].get('name', ''))
+            return os.path.basename(ident) if ident else None
+        except Exception as exc:
+            logger.debug("serving_model_file: no answer on %s (%r)", port, exc)
+            return None
 
     def get_current_model_name(self) -> str:
         """Get the display name of the currently selected model."""
