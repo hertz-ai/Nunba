@@ -104,6 +104,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name='Model A'), self._make_preset(name='Model B')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None  # not yet registered
+        catalog.already_registered.return_value = False
 
         with patch('models.catalog.MODEL_PRESETS', presets, create=True):
             with patch.dict('sys.modules', {}):
@@ -119,6 +120,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name='Model A')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = MagicMock()  # already registered
+        catalog.already_registered.return_value = True
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -140,6 +142,7 @@ class TestPopulateLLMPresets:
             mmproj='mmproj.gguf', mmproj_source='mmproj-F16.gguf')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -157,6 +160,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name='First'), self._make_preset(name='Second')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -172,6 +176,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name='First'), self._make_preset(name='Second')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -187,6 +192,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name='Qwen 3.5 (4B)')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -203,6 +209,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name='Huge Model', size_mb=100000)]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -216,6 +223,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name='Huge Model', size_mb=100000)]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -229,6 +237,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name='Qwen3.5 4B Q4', runtime_family='qwen3.5')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         with patch.dict('sys.modules', {'llama': MagicMock(),
                                         'llama.llama_installer': self._installer_with(presets)}):
@@ -247,6 +256,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name=name, runtime_family='qwen3.5')]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
         with patch.dict('sys.modules', {'llama': MagicMock(),
                                         'llama.llama_installer': self._installer_with(presets)}):
             populate_llm_presets(catalog)
@@ -259,6 +269,7 @@ class TestPopulateLLMPresets:
         presets = [self._make_preset(name='Qwen3.5-lookalike Q4', runtime_family=None)]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
         with patch.dict('sys.modules', {'llama': MagicMock(),
                                         'llama.llama_installer': self._installer_with(presets)}):
             populate_llm_presets(catalog)
@@ -274,6 +285,7 @@ class TestPopulateMediaGen:
     def test_registers_ace_step_and_ltx(self):
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None  # not registered
+        catalog.already_registered.return_value = False
         result = populate_media_gen(catalog)
         assert result == 2
         assert catalog.register.call_count == 2
@@ -281,12 +293,14 @@ class TestPopulateMediaGen:
     def test_skips_already_registered(self):
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = MagicMock()  # already registered
+        catalog.already_registered.return_value = True
         result = populate_media_gen(catalog)
         assert result == 0
 
     def test_ace_step_entry_fields(self):
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
         populate_media_gen(catalog)
 
         # Find the ACE Step entry
@@ -300,6 +314,7 @@ class TestPopulateMediaGen:
     def test_ltx_entry_fields(self):
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
         populate_media_gen(catalog)
 
         entries = [c[0][0] for c in catalog.register.call_args_list]
@@ -319,6 +334,7 @@ class TestPopulateMediaGen:
             return None
 
         catalog.get.side_effect = get_side_effect
+        catalog.already_registered.side_effect = lambda eid: get_side_effect(eid) is not None
         result = populate_media_gen(catalog)
         assert result == 1  # only LTX registered
 
@@ -364,6 +380,7 @@ class TestEntryRegistrationDetails:
         )]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -382,6 +399,7 @@ class TestEntryRegistrationDetails:
         )]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -399,6 +417,7 @@ class TestEntryRegistrationDetails:
         )]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets
@@ -416,6 +435,7 @@ class TestEntryRegistrationDetails:
         )]
         catalog = MagicMock(spec=ModelCatalog)
         catalog.get.return_value = None
+        catalog.already_registered.return_value = False
 
         mock_installer = MagicMock()
         mock_installer.MODEL_PRESETS = presets

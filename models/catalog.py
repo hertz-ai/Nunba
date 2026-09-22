@@ -48,7 +48,7 @@ def populate_llm_presets(catalog: ModelCatalog) -> int:
         for i, preset in enumerate(MODEL_PRESETS):
             slug = preset.display_name.lower().replace(" ", "-").replace("(", "").replace(")", "")
             entry_id = f'llm-{slug}'
-            if catalog.get(entry_id):
+            if catalog.already_registered(entry_id):
                 continue
             # ONE conversion (llama_installer.model_size_bytes) rather than a
             # local `/ 1024.0`, which is how six sites each ended up asserting
@@ -130,7 +130,11 @@ def populate_media_gen(catalog: ModelCatalog) -> int:
 
     # Use canonical ID 'audio_gen-acestep' matching HARTOS service_tool_map +
     # fallback populator.  Avoids duplicate catalog entry (task #278).
-    _existing = catalog.get('audio_gen-acestep')
+    # already_registered, not get(): during a populate it CLAIMS the entry,
+    # so the stale sweep never reads "exists, skipped" as "abandoned"
+    # (HARTOS 0091a0500; the one question every populator asks).
+    _existing = (catalog.get('audio_gen-acestep')
+                 if catalog.already_registered('audio_gen-acestep') else None)
     if not _existing:
         catalog.register(ModelEntry(
             id='audio_gen-acestep',
@@ -186,7 +190,7 @@ def populate_media_gen(catalog: ModelCatalog) -> int:
             idle_timeout_s=300,
         )
 
-    if not catalog.get('video_gen-ltx2'):
+    if not catalog.already_registered('video_gen-ltx2'):
         catalog.register(ModelEntry(
             id='video_gen-ltx2',
             name='LTX Video 2 (via wan2gp)',
@@ -277,14 +281,22 @@ def get_catalog() -> ModelCatalog:
         if _hartos_mod._catalog_instance is None:
             inst = ModelCatalog()
             _register_nunba_populators(inst)
-            if not inst.list_all():
-                inst.populate_from_subsystems()
-            else:
-                for name, fn in inst._populators:
-                    try:
-                        fn(inst)
-                    except Exception:
-                        pass
+            # Populate EVERY time, through the one populate, exactly as
+            # HARTOS's get_catalog does since 20cf5ad1c.  This used to keep
+            # its own copy of the guard that change removed -- populate only
+            # when empty, else loop the app populators by hand -- so a
+            # catalogue opened here first never learned about a model a
+            # built-in populator shipped after the file was written
+            # (measured: tts-piper dropped from a copy of the owner's live
+            # catalogue came back through HARTOS's get_catalog, not this
+            # one).  The refresh costs nothing already there: Nunba's
+            # populators ask already_registered, which claims what they
+            # skip, so the stale sweep keeps it.  (Measured without those
+            # claims too: still nothing lost, because llm-* is not an
+            # auto-prefix and the two media ids are claimed by HARTOS's own
+            # populators -- the claims remove that dependency.)
+            # tests/test_nunba_get_catalog_refreshes.py.
+            inst.populate_from_subsystems()
             _enforce_nunba_business_rules(inst)
             _hartos_mod._catalog_instance = inst
         else:
