@@ -2548,6 +2548,20 @@ class LlamaConfig:
                 _llama_log_fh = subprocess.DEVNULL
                 _llama_log_path = None
 
+            # Free VRAM the instant BEFORE the spawn.  Paired with the read
+            # taken once the server answers /health, the difference is what
+            # this model actually costs on this card -- the only way to get
+            # it: `nvidia-smi --query-compute-apps=pid,used_memory` returns
+            # [N/A] on Windows WDDM, so per-process VRAM is not obtainable
+            # from the driver at all.
+            _vram_before = None
+            try:
+                _vm_pre = self._get_vram_manager()
+                if _vm_pre and can_use_gpu:
+                    _vram_before = float(_vm_pre.get_free_vram())
+            except Exception as _pre_err:
+                logger.debug(f"pre-spawn VRAM read skipped: {_pre_err}")
+
             self.server_process = subprocess.Popen(
                 cmd,
                 stdout=_llama_log_fh,
@@ -2617,8 +2631,65 @@ class LlamaConfig:
                             model_gb = model_size_gib(
                                 model_preset, model_path=model_path,
                                 installer=self.installer)
-                            vm._allocations['llm'] = model_gb
-                            logger.info(f"VRAM allocation registered: llm = {model_gb:.3f}GiB")
+                            # What the model ACTUALLY took, from the delta
+                            # around the spawn.  The file size is a decent
+                            # stand-in while llama.cpp puts every weight in
+                            # VRAM, but --cpu-moe breaks that: a mixture of
+                            # experts runs its experts from system RAM, so
+                            # Tiel-Coder-35B-A3B costs 2.87 GiB of card for a
+                            # 21.19 GiB file.  Booking the file size there
+                            # overstates the reservation by ~7x.
+                            #
+                            # Only replaces the figure when the delta is
+                            # sane.  Another process moving during the spawn
+                            # window can produce a negative or absurd number,
+                            # and with no measurement the behaviour is
+                            # byte-for-byte what it was before.
+                            _measured_gb = None
+                            try:
+                                if _vram_before is not None:
+                                    _delta = _vram_before - float(
+                                        vm.get_free_vram())
+                                    if 0.05 < _delta < 512:
+                                        _measured_gb = round(_delta, 3)
+                            except Exception as _post_err:
+                                logger.debug(
+                                    f"post-spawn VRAM read skipped: {_post_err}")
+
+                            _booked = _measured_gb if _measured_gb else model_gb
+                            vm._allocations['llm'] = _booked
+                            logger.info(
+                                "VRAM allocation registered: llm = %.3fGiB "
+                                "(%s; file is %.3fGiB)", _booked,
+                                'measured' if _measured_gb else 'from file',
+                                model_gb)
+
+                            # Durable, per-MODEL record so a later swap can
+                            # plan against what this model costs rather than
+                            # re-deriving it.  Keyed by the weight FILE --
+                            # four places match a preset to a row using three
+                            # different rules (#112) and this needs none of
+                            # them.  Best-effort throughout: a model that
+                            # cannot be resolved simply has no record, which
+                            # reads as "unknown", never as "free".
+                            if _measured_gb:
+                                try:
+                                    from models.catalog import get_catalog
+                                    _entry = get_catalog().get_by_weight_file(
+                                        model_path)
+                                    if _entry is not None:
+                                        get_catalog().record_residency(
+                                            _entry.id, vram_gb=_measured_gb,
+                                            weight_file=os.path.basename(
+                                                str(model_path)))
+                                    else:
+                                        logger.info(
+                                            "residency not recorded: no single "
+                                            "catalog row owns %s",
+                                            os.path.basename(str(model_path)))
+                                except Exception as _res_err:
+                                    logger.info(
+                                        f"residency not recorded: {_res_err}")
                     # Quick benchmark — warm up the KV cache and measure t/s
                     try:
                         import urllib.request
