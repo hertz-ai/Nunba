@@ -2961,8 +2961,7 @@ class TTSEngine:
             pass
 
         try:
-            from integrations.service_tools.media_agent import (
-                MEDIA_FAILED_STATUSES, check_media_status, generate_media)
+            from integrations.service_tools.media_agent import MEDIA_FAILED_STATUSES, check_media_status, generate_media
             raw = generate_media(
                 context=text, output_modality=modality,
                 input_text=text, duration=duration, style=genre)

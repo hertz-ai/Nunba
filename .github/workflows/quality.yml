@@ -58,7 +58,13 @@ jobs:
 
       # Ruff: lint + security (bandit S rules = OSS Veracode SAST)
       - name: Install ruff
-        run: python -m pip install ruff
+        # PINNED.  Unpinned, CI took whatever ruff was newest (0.16.8 on
+        # 2026-09-22) while contributors checked with another (0.15.5), and
+        # the two disagree on import formatting -- so "ruff clean" locally
+        # was not clean here, and because this is the HARD GATE, pytest
+        # never ran on CI from 09-17 until this pin.  Bump deliberately,
+        # with the repo re-checked against the new version in the same PR.
+        run: python -m pip install ruff==0.16.8
 
       - name: Ruff lint (includes bandit security scan)
         run: python -m ruff check .
