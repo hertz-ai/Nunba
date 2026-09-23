@@ -475,10 +475,12 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
         ))
 
         result_url = None
+        result_path = None
         status = started.get('status')
         if status == 'completed':
             results = started.get('results') or []
             result_url = results[0].get('url') if results else None
+            result_path = results[0].get('path') if results else None
         elif status == 'pending':
             task_id = started.get('task_id', '')
             deadline = time.time() + _GENERATION_TIMEOUT_SECONDS
@@ -489,6 +491,7 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
                     results = progress.get('results') or []
                     result_url = (progress.get('url')
                                   or (results[0].get('url') if results else None))
+                    result_path = results[0].get('path') if results else None
                     break
                 if progress.get('status') in MEDIA_FAILED_STATUSES:
                     logger.warning(
@@ -500,7 +503,17 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
                            f"{started.get('error')}")
 
         if result_url:
-            size = _download_and_cache(result_url, cache_path)
+            # The capability keeps a composition on this node and reports
+            # its path beside a node-relative url (HARTOS 6759fbfa6); a
+            # relative url is nothing requests.get can fetch, so the file
+            # itself is taken when it is here.
+            if result_path and os.path.isfile(result_path):
+                import shutil
+                os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+                shutil.copyfile(result_path, cache_path)
+                size = os.path.getsize(cache_path)
+            else:
+                size = _download_and_cache(result_url, cache_path)
             if size > 0:
                 register(sha, media_type, classification, prompt, size, user_id, ext)
                 with _jobs_lock:
