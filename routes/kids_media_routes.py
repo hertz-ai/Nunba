@@ -55,8 +55,6 @@ _MAX_JOBS = 500  # Cap in-memory jobs
 _MAX_PROMPT_LEN = 500
 _VALID_MEDIA_TYPES = ('image', 'tts', 'music', 'video')
 
-# A game's background music: long enough to loop without being obvious.
-_MUSIC_SECONDS = 60
 # The capability's own engines take minutes on a busy GPU; past this the
 # job is reported failed rather than held open (the caller polls).
 _GENERATION_TIMEOUT_SECONDS = 300
@@ -458,6 +456,9 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
                 check_media_status,
                 generate_media,
             )
+            # one length for a game's music: the memo's table, which the
+            # agent's own tool composes by (hartos-3a F8: 60 here, 30 there)
+            from core.game_sound_memo import GAME_STATE_DURATIONS
         except ImportError as e:
             logger.error(f"media capability unavailable for {job_id}: {e}")
             with _jobs_lock:
@@ -470,7 +471,7 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
             context=prompt,
             output_modality=modality,
             input_text=prompt,
-            duration=_MUSIC_SECONDS if media_type == 'music' else None,
+            duration=GAME_STATE_DURATIONS['bgm'] if media_type == 'music' else None,
             style=style or None,
         ))
 
