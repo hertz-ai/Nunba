@@ -221,7 +221,17 @@ class TTSLoader(ModelLoader):
     """
 
     def _backend_name(self, entry: ModelEntry) -> str:
-        return entry.id.replace('tts-', '')
+        # Catalog IDs are 'tts-<engine>' with the engine key hyphenated
+        # ('tts-neutts-air', 'tts-f5-tts', 'tts-xtts-v2'); ENGINE_REGISTRY
+        # keys use underscores ('neutts_air', 'f5_tts', 'xtts_v2').
+        #
+        # Strip ONLY the leading 'tts-' prefix (removeprefix, never a plain
+        # str.replace): a global replace also eats the 'tts-' *inside* the
+        # engine name — 'tts-neutts-air' -> 'neuair', 'tts-xtts-v2' -> 'xv2'
+        # — yielding a key ENGINE_REGISTRY has no entry for, so the backend
+        # resolves to None and the auto-install/probe path crash-reports on
+        # a phantom engine. Then map the id-hyphens to registry underscores.
+        return entry.id.removeprefix('tts-').replace('-', '_')
 
     def _get_tool_worker(self, entry: ModelEntry):
         """Return the ToolWorker instance for this entry, or None if
