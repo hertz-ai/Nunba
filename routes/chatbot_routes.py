@@ -1806,10 +1806,6 @@ def tts_kids_quick():
         # Map kids voice names to engine-specific voices
         mapped_voice = KIDS_VOICE_MAP.get(voice, voice)
 
-        # A path to a 0-byte or header-only WAV is not audio: answering it
-        # as success sent the kids games an empty clip they could not play.
-        from tts.piper_tts import wav_has_audio
-
         # J60 kids-path latency budget: at most ~8s end-to-end.  The
         # primary engine may trigger auto-install, model download,
         # or a 180s handshake probe — none of that belongs on the
@@ -1817,6 +1813,10 @@ def tts_kids_quick():
         # synth in a worker thread; if it hasn't returned in
         # KIDS_TTS_BUDGET_S, bail and return a deferred envelope.
         import threading as _kids_threading
+
+        # A path to a 0-byte or header-only WAV is not audio: answering it
+        # as success sent the kids games an empty clip they could not play.
+        from tts.piper_tts import wav_has_audio
         _kids_box = {'path': None, 'err': None, 'done': False}
 
         def _kids_worker():

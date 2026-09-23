@@ -533,6 +533,13 @@ class TestPiperTTSSynthesize:
         mock_piper_module = MagicMock()
         with patch.dict("sys.modules", {"piper": mock_piper_module}):
             from tts.piper_tts import PiperTTS
+            # The import breaker lives on the CLASS. A fixture elsewhere that
+            # builds PiperTTS with piper blocked (TestPiperTTSDownloadVoice)
+            # trips it, and these tests then skipped the module path for the
+            # cooldown, failing or passing by test order.  Start cold.
+            for attr in ("_piper_cb", "_piper_cb_unavailable"):
+                if hasattr(PiperTTS, attr):
+                    delattr(PiperTTS, attr)
             p = PiperTTS(
                 voices_dir=str(tmp_path / "voices"),
                 cache_dir=str(tmp_path / "cache"),

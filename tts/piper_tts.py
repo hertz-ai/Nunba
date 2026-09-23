@@ -338,9 +338,13 @@ _WAV_HEADER_BYTES = 44
 
 
 def wav_has_audio(path) -> bool:
+    """True if ``path`` names a WAV bigger than its header.  ``None`` (an
+    engine that produced nothing) is simply not audio, never an error."""
+    if not path:
+        return False
     try:
         return os.path.getsize(path) > _WAV_HEADER_BYTES
-    except OSError:
+    except (OSError, TypeError, ValueError):
         return False
 
 

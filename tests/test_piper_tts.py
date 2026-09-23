@@ -369,6 +369,14 @@ class TestCacheHoldsOnlyWholeAudio:
             assert tts.synthesize('Well done!') == tts.synthesize('Well done!')
             assert len(calls) == 1
 
+    def test_no_path_is_not_audio_and_not_an_error(self):
+        # Both kids-route engines can hand back None; that must read as "no
+        # audio" (deferred reply), not raise and turn into a 500.
+        from tts.piper_tts import wav_has_audio
+        assert wav_has_audio(None) is False
+        assert wav_has_audio('') is False
+        assert wav_has_audio(os.path.join(tempfile.gettempdir(), 'no-such.wav')) is False
+
     def test_failed_synthesis_leaves_nothing_in_the_cache(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tts = self._tts(tmpdir)
