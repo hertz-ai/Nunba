@@ -58,6 +58,44 @@ from pathlib import Path
 
 logger = logging.getLogger("NunbaBackendVenv")
 
+
+def _kill_proc_tree(proc: "subprocess.Popen") -> None:
+    """Kill a subprocess AND all of its descendants.
+
+    pip can spawn grandchildren (wheel builds, vendored downloaders) that
+    inherit the stdout/stderr pipes.  Killing only the direct child leaves
+    those pipes open, so the reader threads never see EOF and
+    ``communicate()`` hangs forever *despite* a timeout — the exact deadlock
+    py-spy caught wedging auto-setup on a TTS backend install.  Reap the whole
+    tree instead.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        if sys.platform == "win32":
+            si_k = cf_k = None
+            try:
+                from tts._subprocess import hidden_startupinfo
+                si_k, cf_k = hidden_startupinfo()
+            except Exception:
+                si_k = cf_k = None
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, timeout=30,
+                startupinfo=si_k, creationflags=cf_k or 0,
+            )
+        else:
+            import signal as _signal
+            try:
+                os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+            except Exception:
+                proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
 # Import-validate timeout for `python -c "import <pkg>"` probes.  Default
 # is 90s (was 30s — too short for backends that initialize CUDA on import,
 # notably chatterbox_turbo which observed a hard rc=124 timeout in
@@ -444,16 +482,29 @@ def install_into_venv(
             log_f.flush()
             r = None
             for attempt in range(1, _MAX_PIP_ATTEMPTS + 1):
+                proc = subprocess.Popen(
+                    [str(pyexe), "-m", "pip", "install", pkg],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    startupinfo=si,
+                    creationflags=cf or 0,
+                    # POSIX: own session so the whole tree can be signalled.
+                    start_new_session=(sys.platform != "win32"),
+                )
                 try:
-                    r = subprocess.run(
-                        [str(pyexe), "-m", "pip", "install", pkg],
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout_per_package,
-                        startupinfo=si,
-                        creationflags=cf or 0,
-                    )
+                    out, err = proc.communicate(timeout=timeout_per_package)
+                    r = subprocess.CompletedProcess(
+                        proc.args, proc.returncode, out, err)
                 except subprocess.TimeoutExpired:
+                    # Reap the WHOLE tree. A plain kill would leave a grandchild
+                    # (wheel build) holding the pipes, and communicate() would
+                    # hang here forever — the freeze that broke auto-setup.
+                    _kill_proc_tree(proc)
+                    try:
+                        proc.communicate(timeout=15)
+                    except Exception:
+                        pass
                     msg = f"pip install {pkg!r} timed out after {timeout_per_package}s"
                     log_f.write(msg + "\n")
                     return False, msg

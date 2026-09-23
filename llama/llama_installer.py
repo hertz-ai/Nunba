@@ -1114,31 +1114,51 @@ class LlamaInstaller:
         try:
             logger.info("Checking for prebuilt binaries...")
 
-            # Fetch latest release info
-            release_url = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
-            req = urllib.request.Request(release_url)
+            # Find a release that actually ships a binary asset for this
+            # OS + GPU backend.
+            #
+            # ggml-org/llama.cpp's "latest" release is now a semver tag
+            # (e.g. v0.4.1) whose assets do NOT follow the per-build
+            # `llama-b<NNNNN>-bin-<os>-<accel>` naming _select_release_assets
+            # expects.  Keying off /releases/latest therefore matched NO asset
+            # and silently fell through to build_from_source(), which fails on
+            # any machine without a C/C++ toolchain — so auto-setup never
+            # produced a llama-server.  Scan recent releases and take the first
+            # that carries a compatible binary asset (the per-build `bNNNNN`
+            # tags, which are not flagged "latest").
+            releases_url = ("https://api.github.com/repos/ggml-org/llama.cpp"
+                            "/releases?per_page=20")
+            req = urllib.request.Request(releases_url)
             req.add_header('User-Agent', 'Nunba/1.0')
 
             with urllib.request.urlopen(req, timeout=10) as response:
-                release_data = json.loads(response.read().decode())
+                releases = json.loads(response.read().decode())
+            if isinstance(releases, dict):  # defensive: single-object response
+                releases = [releases]
 
-            tag_name = release_data.get('tag_name')
-            if not tag_name:
-                return False
+            tag_name = None
+            asset_map = {}
+            assets = []
+            accel = None
+            for release_data in releases:
+                cand_tag = release_data.get('tag_name')
+                if not cand_tag:
+                    continue
+                cand_map = {a['name']: a for a in release_data.get('assets', [])}
+                # Pick the archives for this OS + GPU backend (correct extension,
+                # Vulkan-universal GPU fallback, dynamic CUDA version, cudart runtime).
+                cand_assets, cand_accel = self._select_release_assets(cand_map, cand_tag)
+                if cand_assets:
+                    tag_name, asset_map, assets, accel = (
+                        cand_tag, cand_map, cand_assets, cand_accel)
+                    break
 
-            logger.info(f"Latest release: {tag_name}")
-
-            asset_map = {a['name']: a for a in release_data.get('assets', [])}
-
-            # Pick the archives for this OS + GPU backend (correct extension,
-            # Vulkan-universal GPU fallback, dynamic CUDA version, cudart runtime).
-            assets, accel = self._select_release_assets(asset_map, tag_name)
             if not assets:
                 logger.warning(
                     f"No compatible {self.os_name}/{self.gpu_available} asset in "
-                    f"release {tag_name}")
+                    f"the 20 most recent llama.cpp releases")
                 return False
-            logger.info(f"Selected {accel} build: {', '.join(assets)}")
+            logger.info(f"Selected {accel} build from {tag_name}: {', '.join(assets)}")
 
             # Create install directory and bin dir
             self.install_dir.mkdir(parents=True, exist_ok=True)
