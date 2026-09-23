@@ -1987,7 +1987,24 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
         # KEPT so setuptools_scm still stamps the version from the git tag.
         import shutil as _shutil
         import tempfile as _tempfile
+        # Windows device names (CON PRN AUX NUL COM1-9 LPT1-9) cannot be
+        # opened as files in any case, with or without an extension.  A POSIX
+        # shell's `> nul` on Windows writes a REAL file by that name, and
+        # copytree then dies on it.  Measured 2026-09-23: HARTOS/nul (a
+        # 1,906-byte stray diff, gitignored so git never showed it) stopped
+        # the build with "[WinError 87] The parameter is incorrect".  None of
+        # these can be package content.  Each letter is a [xX] class because
+        # fnmatch is case-sensitive off Windows and the test runs on all OSes.
+        _WIN_RESERVED_PATTERNS = [
+            _p for _n in ('con', 'prn', 'aux', 'nul',
+                          *(f'com{_i}' for _i in range(1, 10)),
+                          *(f'lpt{_i}' for _i in range(1, 10)))
+            for _cls in [''.join(f'[{_c}{_c.upper()}]' if _c.isalpha() else _c
+                                 for _c in _n)]
+            for _p in (_cls, _cls + '.*')
+        ]
         _IGNORE_HEAVY = _shutil.ignore_patterns(
+            *_WIN_RESERVED_PATTERNS,
             # Rust sub-projects + their build output (compositor 576M;
             # claw_native 1.6G).  'target' catches any cargo build dir anywhere.
             # None is a Python package (packages.find = core*/integrations*/
