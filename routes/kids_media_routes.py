@@ -316,7 +316,9 @@ def media_asset():
 
     # Build cache key
     sha = ck(prompt, media_type, style)
-    ext_map = {'image': 'png', 'tts': 'wav', 'music': 'mp3', 'video': 'mp4'}
+    # music is WAV: the composer writes wav since HARTOS 41cd45501, and
+    # naming or typing those bytes as MP3 was wrong (hartos-3a F10)
+    ext_map = {'image': 'png', 'tts': 'wav', 'music': 'wav', 'video': 'mp4'}
     ext = ext_map.get(media_type, 'bin')
 
     # Check access control on existing asset
@@ -331,7 +333,7 @@ def media_asset():
 
     # --- CACHE HIT ---
     if os.path.isfile(cache_path):
-        mime_map = {'image': 'image/png', 'tts': 'audio/wav', 'music': 'audio/mpeg', 'video': 'video/mp4'}
+        mime_map = {'image': 'image/png', 'tts': 'audio/wav', 'music': 'audio/wav', 'video': 'video/mp4'}
         return _safe_send_file(cache_path,
                                mime_map.get(media_type, 'application/octet-stream'),
                                cache_root)
@@ -558,7 +560,7 @@ def media_asset_status(job_id):
         cache_path = job.get('result_path')
         if cache_path and os.path.isfile(cache_path):
             _, _, _, _, cache_root = _get_classifier()
-            mime_map = {'music': 'audio/mpeg', 'video': 'video/mp4'}
+            mime_map = {'music': 'audio/wav', 'video': 'video/mp4'}
             mt = job.get('media_type', 'video')
             return _safe_send_file(cache_path,
                                    mime_map.get(mt, 'application/octet-stream'),

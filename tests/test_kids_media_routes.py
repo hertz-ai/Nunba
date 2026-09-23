@@ -1163,3 +1163,26 @@ class TestBoundGameMusic:
         from routes.kids_media_routes import _bound_game_media
         with patch("core.cache_loaders.load_agent_data", side_effect=Exception("gone")):
             assert _bound_game_media("123", "eng-01", "music") == (None, "miss")
+
+
+def test_music_is_named_and_served_as_the_wav_it_is(tmp_path):
+    """hartos-3a F10: the composer writes WAV (HARTOS 41cd45501), but the
+    node named its cached music .mp3 and served it as MPEG audio."""
+    from unittest.mock import MagicMock, patch
+    from flask import Flask
+    from routes import kids_media_routes as r
+    app = Flask(__name__)
+    r.register_routes(app)
+    classifier = MagicMock()
+    classifier.classify.return_value = 'public_educational'
+    kept = tmp_path / 'song.wav'
+    kept.write_bytes(b'RIFF' + b'\x00' * 40 + b'WAVE')
+    classifier.get_cache_path.return_value = str(kept)
+    with patch.object(r, '_get_classifier',
+                      return_value=(classifier, lambda *a, **k: None, lambda *a, **k: None,
+                                    lambda *a, **k: None, str(tmp_path))):
+        resp = app.test_client().get('/api/media/asset?type=music&prompt=calm')
+    assert classifier.get_cache_path.call_args.kwargs.get('ext') == 'wav'
+    if resp.status_code == 200:
+        assert resp.mimetype == 'audio/wav', resp.mimetype
+
