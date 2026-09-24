@@ -1669,6 +1669,27 @@ class LlamaConfig:
         server_type, _ = self.check_server_type(port)
         return server_type in [ServerType.NUNBA_MANAGED, ServerType.EXTERNAL_LLAMA]
 
+    def _wait_until_serving(self, port: int, timeout: float) -> bool:
+        """True once the server on ``port`` has its model LOADED.
+
+        check_server_running counts a 503 "Loading model" as running, on
+        purpose (it stops the watchdog restarting a server that is warming
+        up). Anything that needs the weights in place -- the residency
+        measurement -- must wait past that. Measured 2026-09-24: reading
+        free VRAM at "running" booked 0.130 GiB for a dense 2.712 GiB model.
+        False when the deadline passes or the server is gone.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            server_type, info = self.check_server_type(port)
+            if server_type not in (ServerType.NUNBA_MANAGED,
+                                   ServerType.EXTERNAL_LLAMA):
+                return False
+            if (info or {}).get('status') != 'loading':
+                return True
+            time.sleep(1.0)
+        return False
+
     def _write_server_status(self, running: bool, pid: int | None = None,
                              model: str | None = None, port: int | None = None):
         """Write server status to SHARED file for cross-app coordination.
@@ -2642,9 +2663,19 @@ class LlamaConfig:
                             # byte-for-byte what it was before.
                             _measured_gb = None
                             try:
+                                # "Started" includes a 503 still loading
+                                # the weights; measure once they are in.
                                 if _vram_before is not None:
-                                    _measured_gb = spawn_vram_delta_gb(
-                                        _vram_before, fresh_free_vram_gb(vm))
+                                    if self._wait_until_serving(
+                                            desired_port, timeout=90):
+                                        _measured_gb = spawn_vram_delta_gb(
+                                            _vram_before,
+                                            fresh_free_vram_gb(vm))
+                                    else:
+                                        logger.info(
+                                            "VRAM not measured: the model "
+                                            "was still loading at the "
+                                            "deadline; booking the file size")
                             except Exception as _post_err:
                                 logger.debug(
                                     f"post-spawn VRAM read skipped: {_post_err}")

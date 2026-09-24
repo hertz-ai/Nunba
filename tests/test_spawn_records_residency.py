@@ -183,3 +183,63 @@ class TestTheRecordIsKeyedByFile:
                                          model_type=ModelType.LLM,
                                          files={'model': 'same.gguf'})
         assert c.get_by_weight_file('same.gguf') is None
+
+
+class TestTheAfterReadWaitsForTheWeights:
+    """MEASURED 2026-09-24 16:50:12 on the installed 8e151d10: the spawn
+    logged "alive but loading model (HTTP 503) ... Server started
+    successfully (took 0.5s)" -- check_server_running counts a loading
+    server as started (on purpose, for the watchdog) -- and the post-spawn
+    read 0.1 s later booked "llm = 0.130GiB (measured; file is 2.712GiB)"
+    for a dense 4B. The after-read must wait until the weights are in."""
+
+    def _cfg(self, statuses):
+        from llama.llama_config import LlamaConfig, ServerType
+        cfg = LlamaConfig.__new__(LlamaConfig)
+        seq = list(statuses)
+
+        def fake_type(port):
+            s = seq.pop(0) if len(seq) > 1 else seq[0]
+            if s is None:
+                return ServerType.NOT_RUNNING, None
+            return ServerType.EXTERNAL_LLAMA, {'status': s}
+        cfg.check_server_type = fake_type
+        return cfg
+
+    def test_waits_through_loading_until_the_model_serves(self, monkeypatch):
+        import llama.llama_config as lc
+        monkeypatch.setattr(lc.time, 'sleep', lambda s: None)
+        cfg = self._cfg(['loading', 'loading', 'ok'])
+        assert cfg._wait_until_serving(8080, timeout=10) is True
+
+    def test_a_model_still_loading_at_the_deadline_is_not_measured(self, monkeypatch):
+        import llama.llama_config as lc
+        clock = iter(range(0, 1000))
+        monkeypatch.setattr(lc.time, 'sleep', lambda s: None)
+        monkeypatch.setattr(lc.time, 'time', lambda: float(next(clock)))
+        cfg = self._cfg(['loading'])
+        assert cfg._wait_until_serving(8080, timeout=5) is False
+
+    def test_a_dead_server_is_not_measured(self, monkeypatch):
+        import llama.llama_config as lc
+        clock = iter(range(0, 1000))
+        monkeypatch.setattr(lc.time, 'sleep', lambda s: None)
+        monkeypatch.setattr(lc.time, 'time', lambda: float(next(clock)))
+        cfg = self._cfg([None])
+        assert cfg._wait_until_serving(8080, timeout=5) is False
+
+    def test_the_spawn_gates_the_after_read_on_serving(self):
+        """test_source_guard_*: the after-read in _do_start_server must be
+        preceded by the serving wait; the spawn itself can't be driven here."""
+        import ast
+        src = open(os.path.join(_NUNBA, 'llama', 'llama_config.py'),
+                   encoding='utf-8').read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == '_do_start_server')
+        calls = [(n.lineno, n.func.attr if isinstance(n.func, ast.Attribute)
+                  else getattr(n.func, 'id', ''))
+                 for n in ast.walk(fn) if isinstance(n, ast.Call)]
+        waits = [ln for ln, name in calls if name == '_wait_until_serving']
+        deltas = [ln for ln, name in calls if name == 'spawn_vram_delta_gb']
+        assert waits and deltas and min(waits) < min(deltas), calls
