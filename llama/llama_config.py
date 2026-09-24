@@ -2379,52 +2379,21 @@ class LlamaConfig:
                 )
 
             # ── Multi-Token Prediction (MTP) ──────────────────────
-            # MTP support landed in llama.cpp PR #22673 (am17an) and the
-            # SERVING binary now has it. Opt in with:
-            #   $env:HEVOLVE_LLAMA_MTP_N = "3"
-            # which appends:
-            #   --spec-type draft-mtp --spec-draft-n-max 3
-            #
-            # `draft-mtp`, NOT `mtp`. Upstream renamed the choice after the
-            # PR, and this block kept emitting the original spelling, so the
-            # feature could never have worked. MEASURED 2026-09-22 against
-            # the binary that actually serves:
-            #   --spec-type mtp        -> error: unknown speculative type: mtp
-            #   --spec-type draft-mtp  -> accepted
-            # The old comment blamed a too-old binary for exactly this
-            # symptom, which would have sent the next person chasing a
-            # version problem that does not exist.
-            #
-            # It also named the wrong binary. There are THREE llama-server
-            # .exe on this box and the one that serves is
-            #   .nunba\llama.cpp\build\bin\Release\  -> build 10330
-            # while .trueflow\...\Release\ is 8200 and the top-level
-            # .nunba\llama.cpp\llama-server.exe is 7909 -- below the 9180
-            # floor and the FIRST hit of any naive path walk. Check the
-            # serving process, not the first binary found.
-            # Qwen3.5-4B-UD-Q4_K_XL (the current model) ships with the
-            # MTP head exposed in checkpoint config — confirmed by the
-            # llama.cpp + Qwen3.5 / Qwen3.6 community guides.
+            # Switched on by the MODEL, not an env flag (owner, 2026-09-24:
+            # "automatic from model").  This block used to append
+            # --spec-type draft-mtp only when HEVOLVE_LLAMA_MTP_N >= 1,
+            # which was set nowhere, so the Tiel-Coder MTP preset loaded as
+            # a plain MoE.  model_catalog.mtp_spec_args decides from the
+            # GGUF's own MTP head AND from whether THIS binary accepts the
+            # flag (an unknown --spec-type makes llama-server exit at start;
+            # builds 7909/8200 on this box lack it).  HEVOLVE_LLAMA_MTP_N is
+            # still honoured as an override: 0 = off, N = draft depth.  The
+            # same call every spawn path makes.
             try:
-                _mtp_n = int(os.environ.get('HEVOLVE_LLAMA_MTP_N', '0') or '0')
-            except (TypeError, ValueError):
-                _mtp_n = 0
-            if _mtp_n >= 1:
-                cmd.extend([
-                    "--spec-type", "draft-mtp",
-                    "--spec-draft-n-max", str(_mtp_n),
-                ])
-                logger.info(
-                    "[MTP] Enabling Multi-Token Prediction (--spec-type "
-                    "draft-mtp --spec-draft-n-max %d) — opt-in via "
-                    "HEVOLVE_LLAMA_MTP_N.  Needs BOTH a build carrying "
-                    "draft-mtp (10330 has it; 7909 and 8200 on this box do "
-                    "not) AND a model whose GGUF carries an MTP head — "
-                    "Tiel-Coder-35B-A3B-MTP does, verified by its "
-                    "blk.40.nextn.* tensors. With a plain GGUF the flag is "
-                    "accepted and buys nothing.",
-                    _mtp_n,
-                )
+                from integrations.service_tools.model_catalog import mtp_spec_args
+                cmd.extend(mtp_spec_args(str(model_path), str(llama_server)))
+            except Exception as e:
+                logger.info("MTP probe skipped (%s); launching without it", e)
 
             # Qwen3.5-MoE family models need additional flags.  Test the
             # shared family predicate directly: the `is_qwen35` local moved
