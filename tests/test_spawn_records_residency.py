@@ -34,19 +34,15 @@ for _p in (_NUNBA, os.path.join(os.path.dirname(_NUNBA), 'HARTOS')):
 
 
 def book(vram_before, vram_after, file_gb):
-    """The spawn's booking decision, as written in llama_config.
+    """The spawn's booking decision, through the REAL rule.
 
-    Reproduced here rather than imported because it lives inside a 700-line
-    method that spawns a subprocess; what is under test is the RULE, and
-    the rule is four lines. If those four lines change in the source and
-    not here, the source is no longer what this file claims to pin -- the
-    guard against that is test_the_rule_matches_the_source below.
+    This used to be a four-line copy of the rule, pinned to the source by a
+    string match; the copy passed while the spawn measured nothing (#110).
+    It now calls llama_config.spawn_vram_delta_gb, the function the spawn
+    itself calls.
     """
-    measured = None
-    if vram_before is not None and vram_after is not None:
-        delta = vram_before - vram_after
-        if 0.05 < delta < 512:
-            measured = round(delta, 3)
+    from llama.llama_config import spawn_vram_delta_gb
+    measured = spawn_vram_delta_gb(vram_before, vram_after)
     return (measured if measured else file_gb), measured
 
 
@@ -90,20 +86,62 @@ class TestAPollutedDeltaChangesNothing:
         assert measured is None and booked == 21.19
 
 
-class TestTheRuleMatchesTheSource:
-    """A behavioural test of a reproduced rule is only worth what its
-    correspondence to the source is worth. This asserts the source still
-    contains the bounds and the fallback this file pins -- if someone
-    changes the floor, the ceiling or the `or model_gb` fallback, this
-    fails and points at the drift."""
+class TestTheReadsAreFresh:
+    """#110, MEASURED: both reads went through get_free_vram(), which returns
+    detect_gpu()'s memoized sample, so before and after were the SAME number
+    and the delta was always 0.0 -- no residency was ever recorded. Each read
+    must force a new sample, the way _get_ctx_size already does
+    (refresh_gpu_info(force=True), with the 117-second-stale measurement
+    recorded there)."""
 
-    def test_source_still_has_the_bounds_and_fallback(self):
+    class _MemoVM:
+        """A vram manager whose plain read is a memo: only a forced
+        refresh takes a new sample."""
+
+        def __init__(self, samples):
+            self._samples = list(samples)
+            self._memo = self._samples.pop(0)
+            self.forced = 0
+
+        def refresh_gpu_info(self, force=False):
+            if force:
+                self.forced += 1
+                self._memo = self._samples.pop(0)
+            return {'free_gb': self._memo}
+
+        def get_free_vram(self):
+            return self._memo
+
+    def test_each_read_takes_a_new_sample(self):
+        from llama.llama_config import fresh_free_vram_gb
+        vm = self._MemoVM([7.9, 7.60, 4.73])      # memo is stale 7.9
+        before = fresh_free_vram_gb(vm)
+        after = fresh_free_vram_gb(vm)
+        assert (before, after) == (7.60, 4.73)
+        assert vm.forced == 2
+
+    def test_the_spawn_delta_is_real_through_fresh_reads(self):
+        from llama.llama_config import fresh_free_vram_gb
+        vm = self._MemoVM([7.60, 7.60, 4.73])
+        booked, measured = book(fresh_free_vram_gb(vm),
+                                fresh_free_vram_gb(vm), file_gb=21.19)
+        assert measured == 2.87 and booked == 2.87
+
+    def test_the_spawn_calls_the_fresh_read_not_the_memo(self):
+        """test_source_guard_*: the two spawn reads are the regression
+        this file exists for; a behavioural test of _do_start_server would
+        have to spawn llama-server."""
+        import ast
         src = open(os.path.join(_NUNBA, 'llama', 'llama_config.py'),
                    encoding='utf-8').read()
-        assert '0.05 < _delta < 512' in src, 'delta bounds changed'
-        assert '_measured_gb if _measured_gb else model_gb' in src, \
-            'the fall-back-to-file-size rule changed'
-        assert '_vram_before = None' in src, 'pre-spawn read removed'
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == '_do_start_server')
+        calls = [n.func.attr if isinstance(n.func, ast.Attribute)
+                 else getattr(n.func, 'id', '')
+                 for n in ast.walk(fn) if isinstance(n, ast.Call)]
+        assert calls.count('fresh_free_vram_gb') >= 2, calls
+        assert 'spawn_vram_delta_gb' in calls
 
 
 class TestTheRecordIsKeyedByFile:

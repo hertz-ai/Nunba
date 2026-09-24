@@ -54,6 +54,35 @@ def _uses_qwen35_runtime(model_preset) -> bool:
     return getattr(model_preset, 'runtime_family', None) == QWEN35_RUNTIME_FAMILY
 
 
+def fresh_free_vram_gb(vm) -> float:
+    """Free VRAM NOW, in GB -- a new sample, not the memoized one.
+
+    get_free_vram() reads detect_gpu()'s memo, so two reads around a spawn
+    returned the same number and the residency delta was always 0.0 (#110):
+    no model's cost was ever recorded. Forcing the refresh is the answer
+    _get_ctx_size already uses, for the same reason (117-second-stale
+    sample, measured 2026-09-10). get_free_vram() then keeps its
+    CUDA/Metal rule for what "free" means.
+    """
+    vm.refresh_gpu_info(force=True)
+    return float(vm.get_free_vram())
+
+
+def spawn_vram_delta_gb(before, after):
+    """What a spawn cost on the card, or None when the delta can't be trusted.
+
+    Another process can allocate or release during the spawn window, so a
+    negative, tiny (< 0.05) or absurd (>= 512) delta is dropped rather than
+    booked or recorded; the next spawn measures again.
+    """
+    if before is None or after is None:
+        return None
+    delta = before - after
+    if 0.05 < delta < 512:
+        return round(delta, 3)
+    return None
+
+
 # Task #652 — thinking MUST be off for every local llama-server.
 #
 # ``--reasoning-budget 0`` below already DECLARES that intent, but on
@@ -2524,7 +2553,7 @@ class LlamaConfig:
             try:
                 _vm_pre = self._get_vram_manager()
                 if _vm_pre and can_use_gpu:
-                    _vram_before = float(_vm_pre.get_free_vram())
+                    _vram_before = fresh_free_vram_gb(_vm_pre)
             except Exception as _pre_err:
                 logger.debug(f"pre-spawn VRAM read skipped: {_pre_err}")
 
@@ -2614,10 +2643,8 @@ class LlamaConfig:
                             _measured_gb = None
                             try:
                                 if _vram_before is not None:
-                                    _delta = _vram_before - float(
-                                        vm.get_free_vram())
-                                    if 0.05 < _delta < 512:
-                                        _measured_gb = round(_delta, 3)
+                                    _measured_gb = spawn_vram_delta_gb(
+                                        _vram_before, fresh_free_vram_gb(vm))
                             except Exception as _post_err:
                                 logger.debug(
                                     f"post-spawn VRAM read skipped: {_post_err}")
