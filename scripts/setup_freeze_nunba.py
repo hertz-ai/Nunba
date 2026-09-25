@@ -326,6 +326,20 @@ build_exe_options = {
         # fresh lib/ ships without it and the frozen exe lands on Tier-3
         # (measured 2026-08-21; see the excludes note further down).
         "unittest",
+        # onnxruntime — REQUIRED by the bundled Piper TTS (the last-resort
+        # CPU voice engine): piper.PiperVoice runs inference through
+        # onnxruntime, importing it lazily, so the static tracer never sees
+        # the dependency.  It MUST be force-included here for the frozen
+        # app interpreter.  Without it the app has no matching onnxruntime
+        # and falls through to the 3.12 copy under python-embed/ (bundled
+        # for the TTS subprocess workers), whose onnxruntime_pybind11_state
+        # .pyd is a different ABI — so the import dies with "DLL load failed
+        # ... The specified module could not be found", every Piper synth
+        # returns no audio, and voice is dead in the shipped build even
+        # though standalone `python-embed\python.exe -c "import onnxruntime"`
+        # works.  Keep it OUT of excludes[] and IN zip_exclude_packages[]
+        # (its .pyd + capi/*.dll cannot run from inside library.zip).
+        "onnxruntime",
         "tkinter",  # Full package tree — ensures messagebox, filedialog etc. are included
         "flask_cors",
         "pyautogui",
@@ -668,7 +682,10 @@ build_exe_options = {
         # Heavy transitive deps not used at runtime (~200MB total):
         # pandas: 37M (only chromadb.utils.results optional formatting)
         # sklearn: 30M (only HevolveAI latent_transfer, excluded above)
-        # onnxruntime: 36M (transitive via langchain)
+        # NOTE: onnxruntime was excluded here as "36M transitive via
+        # langchain" — but it is NOT unused: the bundled Piper TTS needs it
+        # for inference, so it is force-included in packages[] above (see
+        # that note for the full failure mode). Do NOT re-add it here.
         # faiss: 24M + faiss_cpu: 50M libs (transitive, chromadb optional)
         # kubernetes: 18M (chromadb distributed mode, not enabled)
         # grpc: 12M (chromadb/OpenTelemetry optional)
@@ -680,7 +697,6 @@ build_exe_options = {
         # python-embed (EMBED_DEPS) and packages[] above.
         "pandas", "pandas.tests",
         "sklearn", "sklearn.tests",
-        "onnxruntime",
         "faiss", "faiss_cpu",
         "kubernetes",
         "grpc", "grpcio",
@@ -719,6 +735,12 @@ build_exe_options = {
     # Extract pythonnet packages from zip to avoid import issues
     "zip_exclude_packages": [
         "pythonnet", "clr_loader", "cffi",
+        # onnxruntime ships a C-extension (onnxruntime_pybind11_state.pyd)
+        # plus capi/*.dll — Windows cannot load a .pyd or its dependent
+        # DLLs from inside library.zip, so the package must stay unzipped
+        # in lib/onnxruntime/.  Pairs with the packages[] force-include
+        # above; without both, Piper TTS synth fails at import time.
+        "onnxruntime",
         # NOTE: langchain_core was briefly listed here as a workaround
         # for the frozen-binary LanguageModelOutput import failure (run
         # 707bc75f).  Reverted in favour of the real fix: lazy-import
