@@ -20,6 +20,7 @@ import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import TrendingFlatIcon from '@mui/icons-material/TrendingFlat';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
+import LoadingButton from '@mui/lab/LoadingButton';
 import {
   Box, Typography, Button, IconButton, LinearProgress, TextField,
   Fade, Grow, Chip, Rating,
@@ -48,6 +49,28 @@ const ACCENT = '#6C63FF';
 const INFO_BLUE = '#64C8FF';
 const SUCCESS = '#2ECC71';
 const ERROR_RED = '#FF6B6B';
+
+// The answer buttons on a card (consent, post preview).  They were bare
+// <button>s with no hover, press, focus or busy state, so an owner could not
+// tell a click had landed and pressed Allow four times (four grants, live
+// 2026-09-25).  MUI Button/LoadingButton give the hover, ripple and focus
+// ring; these add the press and keep each button's colour.
+const CARD_BUTTON = {
+  textTransform: 'none', borderRadius: '8px', px: 1.75, py: 0.5,
+  fontSize: '0.85rem', minWidth: 0, transition: 'transform 80ms, background-color 150ms',
+  '&:active': {transform: 'scale(0.96)'},
+  '&.Mui-focusVisible': {outline: '2px solid #fff', outlineOffset: '2px'},
+  '&.Mui-disabled': {opacity: 0.5},
+};
+const cardButton = (color, filled) => (filled ? {
+  ...CARD_BUTTON, fontWeight: 600, color: '#fff', bgcolor: color,
+  '&:hover': {bgcolor: color, filter: 'brightness(1.15)'},
+  '&.Mui-disabled': {...CARD_BUTTON['&.Mui-disabled'], color: '#fff', bgcolor: color},
+} : {
+  ...CARD_BUTTON, color, borderColor: color,
+  '&:hover': {borderColor: color, bgcolor: 'rgba(255,255,255,0.08)'},
+  '&.Mui-disabled': {...CARD_BUTTON['&.Mui-disabled'], color, borderColor: color},
+});
 
 let _overlayIdCounter = 0;
 
@@ -862,6 +885,9 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
   const card = consentCardFor(data || {});
   const [secret, setSecret] = useState('');
   const [secretError, setSecretError] = useState(null);
+  // Which answer is on its way ('grant' | 'decline'): that button spins, the
+  // others wait, and a second click sends nothing.
+  const [busy, setBusy] = useState(null);
   // A camera answer has to act HERE.  Every other consent is actuated
   // server-side (HARTOS grant_consent drives the embodied feed, and the
   // screen capture loop polls its own consent), but the camera frames come
@@ -877,6 +903,8 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
     } catch { /* CustomEvent unavailable (older WebView) */ }
   };
   const grant = async () => {
+    if (busy) return;
+    setBusy('grant');
     // A credential goes into the vault first; if it cannot be stored the ask
     // stays open, since a grant with nothing stored gives the agent nothing.
     if (card.secretKey) {
@@ -889,6 +917,7 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
       }
       if (!stored?.success) {
         setSecretError(stored?.error || 'Could not store it on this computer');
+        setBusy(null);
         return;
       }
       setSecret('');
@@ -899,11 +928,14 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
     } catch (e) {
       console.error('[consent_prompt] grant failed', e);
     } finally {
+      setBusy(null);
       if (onDismiss) onDismiss();
     }
   };
   // The ask's own agent: a no to one agent's ask leaves the others open.
   const decline = async () => {
+    if (busy) return;
+    setBusy('decline');
     try {
       await consentApi.decline({
         consent_type: card.consentType, scope: card.scope, agent_id: card.agentId,
@@ -912,6 +944,7 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
     } catch (e) {
       console.error('[consent_prompt] decline failed', e);
     } finally {
+      setBusy(null);
       if (onDismiss) onDismiss();
     }
   };
@@ -956,20 +989,23 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
         </Typography>
       )}
       <Box sx={{display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'flex-end'}}>
-        <button onClick={onDismiss} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
+        <Button variant="outlined" size="small" onClick={onDismiss} disabled={Boolean(busy)}
+          sx={cardButton('#ccc', false)}>
           Not now
-        </button>
+        </Button>
         {card.declineLabel && (
-          <button onClick={decline} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #FF6B6B', background: 'transparent', color: '#FF6B6B', cursor: 'pointer'}}>
+          <LoadingButton variant="outlined" size="small" onClick={decline}
+            loading={busy === 'decline'} disabled={busy === 'grant'}
+            aria-busy={busy === 'decline'} sx={cardButton(ERROR_RED, false)}>
             {card.declineLabel}
-          </button>
+          </LoadingButton>
         )}
-        <button data-testid="liquid-consent-grant" onClick={grant}
-          disabled={Boolean(card.secretKey) && !secret}
-          style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer',
-            opacity: card.secretKey && !secret ? 0.5 : 1}}>
+        <LoadingButton data-testid="liquid-consent-grant" variant="contained" size="small"
+          onClick={grant} loading={busy === 'grant'}
+          disabled={busy === 'decline' || (Boolean(card.secretKey) && !secret)}
+          aria-busy={busy === 'grant'} sx={cardButton('#10b981', true)}>
           {card.grantLabel}
-        </button>
+        </LoadingButton>
       </Box>
     </Box>
   );
@@ -978,7 +1014,10 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
 function PostPreviewOverlay({ data, onDismiss }) {
   const platform = data?.platform || 'platform';
   const content = data?.content || '';
+  const [posting, setPosting] = useState(false);
   const confirm = async () => {
+    if (posting) return;
+    setPosting(true);
     try {
       // Re-invoke the originating tool with dry_run=False.  We hit /chat with
       // a synthetic tool-call message; HARTOS dispatches to Post_As_User.
@@ -994,6 +1033,7 @@ function PostPreviewOverlay({ data, onDismiss }) {
     } catch (e) {
       console.error('[post_preview] confirm failed', e);
     } finally {
+      setPosting(false);
       if (onDismiss) onDismiss();
     }
   };
@@ -1011,12 +1051,15 @@ function PostPreviewOverlay({ data, onDismiss }) {
         Posting as {data?.handle || 'your saved session'}
       </Typography>
       <Box sx={{display: 'flex', gap: 1, justifyContent: 'flex-end'}}>
-        <button onClick={onDismiss} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
+        <Button variant="outlined" size="small" onClick={onDismiss} disabled={posting}
+          sx={cardButton('#ccc', false)}>
           {data?.cancel_label || 'Cancel'}
-        </button>
-        <button data-testid="liquid-post-confirm" onClick={confirm} style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#6C63FF', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
+        </Button>
+        <LoadingButton data-testid="liquid-post-confirm" variant="contained" size="small"
+          onClick={confirm} loading={posting} aria-busy={posting}
+          sx={cardButton(ACCENT, true)}>
           {data?.confirm_label || `Post to ${platform}`}
-        </button>
+        </LoadingButton>
       </Box>
     </Box>
   );

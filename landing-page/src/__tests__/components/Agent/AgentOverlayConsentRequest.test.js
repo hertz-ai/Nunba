@@ -484,6 +484,48 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
   });
 });
 
+describe('AgentOverlay consent.request — the buttons answer the click', () => {
+  // Owner 2026-09-26: "the consent buttons do not have realtime feedback and
+  // user has no idea whether the button is hovered pressed etc".  Live the
+  // same day: four clicks on Allow sent four grants, because nothing showed
+  // the first was on its way.
+  test('while the grant is on its way the button says so and a second click sends nothing', async () => {
+    let finish;
+    consentApi.grant.mockImplementation(() => new Promise((r) => { finish = r; }));
+    const send = mountOverlay();
+    send(ASK);
+    const allow = await screen.findByRole('button', {name: ALLOW_ALL});
+
+    fireEvent.click(allow);
+    await waitFor(() => expect(allow).toBeDisabled());
+    expect(allow).toHaveAttribute('aria-busy', 'true');
+    fireEvent.click(allow);
+    fireEvent.click(screen.getByRole('button', {name: "Don't allow this agent"}));
+    expect(consentApi.grant).toHaveBeenCalledTimes(1);
+    expect(consentApi.decline).not.toHaveBeenCalled();
+
+    await act(async () => { finish({}); });
+    await waitFor(() => {
+      expect(screen.queryByText(ASK.reason)).not.toBeInTheDocument();
+    });
+  });
+
+  test('a failed grant gives the buttons back', async () => {
+    consentApi.grant.mockImplementation(() => Promise.reject(new Error('down')));
+    const send = mountOverlay();
+    send(ASK);
+    const allow = await screen.findByRole('button', {name: ALLOW_ALL});
+    fireEvent.click(allow);
+    await waitFor(() => expect(consentApi.grant).toHaveBeenCalledTimes(1));
+    // The card closes on failure today (onDismiss in finally); what must
+    // never happen is a card left with every button dead.
+    await waitFor(() => {
+      const still = screen.queryByRole('button', {name: ALLOW_ALL});
+      expect(still === null || !still.disabled).toBe(true);
+    });
+  });
+});
+
 describe('AgentOverlay consent.request — a credential ask', () => {
   // HARTOS hartos.ai_key_vault.request_credential files this when an agent
   // needs a password or key (Request_Resource): consent_type 'credential',
