@@ -1223,7 +1223,7 @@ _SPLASH_PAGE_RGB = (10, 9, 20)          # '#0A0914'
 #: takes the rung glass.py already gives a tk surface: one alpha for the whole
 #: window -- the option the steward named for it (GL4).  High enough that the
 #: wordmark and greetings stay crisp over a busy wallpaper.
-_ANIMATED_SPLASH_OPACITY = 0.88
+_ANIMATED_SPLASH_OPACITY = 0.90
 
 
 def _open_static_splash(parent, splash_path, status_text='Starting up...'):

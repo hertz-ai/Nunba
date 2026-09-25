@@ -31,7 +31,7 @@
   <!-- The dark background, see-through (GL4, HOME_DESKTOP_DESIGN_CHECKLIST):
        the desktop shows through this group at (1 - opacity); everything
        drawn after it (glows, loops, bars, the wordmark) keeps its own. -->
-  <g id="backdrop" opacity="0.62">
+  <g id="backdrop" opacity="0.90">
     <rect width="960" height="640" fill="url(#bg)"/>
 
     <!-- Kolam dot grid -->
