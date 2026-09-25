@@ -61,8 +61,12 @@ _EXPECTED = {
     'tts-f5-tts': _te.BACKEND_F5,
     'tts-kokoro': _te.BACKEND_KOKORO,
     'tts-piper': _te.BACKEND_PIPER,
-    # No Nunba constant: the registry key itself, never a stand-in
-    # engine (a fallback to Piper would probe/validate the wrong one).
+    # CPU-fallback ids (tts_engine._CPU_FALLBACK_CATALOG_IDS): Nunba
+    # cannot create these backends, Piper speaks for them, so Piper is
+    # what load/validate must check.
+    'tts-pocket-tts': _te.BACKEND_PIPER,
+    'tts-espeak': _te.BACKEND_PIPER,
+    # No Nunba constant and not a CPU fallback: the registry key itself.
     'tts-omnivoice': 'omnivoice',
     'tts-makeittalk': 'makeittalk',
 }
@@ -178,3 +182,55 @@ def test_load_neutts_air_spawns_its_worker():
     assert entry.loaded is True
     assert entry.device == 'cuda'
     engine._try_auto_install_backend.assert_not_called()
+
+
+# ENGINE_REGISTRY ids that tts_engine routes to Piper.
+_CPU_FALLBACK = [('tts-pocket-tts', 'pocket_tts'), ('tts-espeak', 'espeak')]
+
+
+@pytest.mark.parametrize('entry_id,key', _CPU_FALLBACK)
+def test_cpu_fallback_engine_cannot_run_under_its_own_name(entry_id, key):
+    """Why these ids resolve to Piper: the engine builds no backend for
+    the registry key, so loading or probing it by that name checks an
+    engine that can never speak."""
+    assert key in ENGINE_REGISTRY
+    engine = _te.TTSEngine(prefer_gpu=False, auto_init=False)
+    assert engine._create_backend(key) is None
+    assert engine._create_backend(_te.BACKEND_PIPER) is not None
+
+
+@pytest.mark.parametrize('entry_id,key', _CPU_FALLBACK)
+def test_cpu_fallback_loads_and_validates_piper(entry_id, key):
+    engine = MagicMock()
+    engine._can_run_backend.return_value = True
+    entry = _entry(entry_id)
+    with patch('tts.tts_engine.TTSEngine', return_value=engine):
+        assert TTSLoader().load(entry, 'cpu') is True
+    engine._can_run_backend.assert_called_once_with(_te.BACKEND_PIPER)
+    assert entry.loaded is True
+
+    result = SimpleNamespace(ok=True, n_bytes=1, duration_s=1.0, err='')
+    with patch('tts.tts_engine.get_tts_engine', return_value=engine),             patch('tts.tts_handshake.run_handshake',
+                  return_value=result) as hs,             patch('tts.tts_handshake.invalidate') as inv:
+        ok, _ = TTSLoader().validate(entry)
+    assert ok is True
+    inv.assert_called_once_with(_te.BACKEND_PIPER)
+    assert hs.call_args.args[1] == _te.BACKEND_PIPER
+
+
+@pytest.mark.parametrize('entry_id,key,backend', _KEY_DIFFERS)
+def test_unload_log_names_the_nunba_backend(entry_id, key, backend, caplog):
+    """The 'worker stopped' line is what log RCA reads; it names the
+    Nunba constant, the same name load/validate/download use."""
+    spec = ENGINE_REGISTRY[key]
+    worker = MagicMock()
+    fake_mod = SimpleNamespace(**{spec.tool_worker_attr: worker})
+    entry = _entry(entry_id)
+    entry.loaded = True
+    with patch('importlib.import_module', return_value=fake_mod),             caplog.at_level('INFO', logger='NunbaModelOrchestrator'):
+        TTSLoader().unload(entry)
+    worker.stop.assert_called_once()
+    assert entry.loaded is False
+    msgs = [r.getMessage() for r in caplog.records
+            if r.name == 'NunbaModelOrchestrator']
+    assert f'TTS backend {backend} worker stopped' in msgs, msgs

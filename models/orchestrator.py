@@ -236,7 +236,11 @@ class TTSLoader(ModelLoader):
     def _backend_name(self, entry: ModelEntry) -> str:
         """Nunba backend constant the TTS engine, installer and handshake
         take: 'tts-f5-tts' -> 'f5', 'tts-neutts-air' -> 'neutts_air'.
-        Engines Nunba has no constant for keep their registry key."""
+        CPU-fallback ids (tts_engine._CPU_FALLBACK_CATALOG_IDS:
+        pocket_tts, espeak, luxtts) resolve to Piper, the engine that
+        speaks for them in Nunba (it cannot create those backends), so
+        load/validate check the voice that actually runs.  Other engines
+        Nunba has no constant for keep their registry key."""
         key = self._registry_key(entry)
         return _CATALOG_TO_BACKEND.get(key, key)
 
