@@ -61,7 +61,50 @@ _EXPECTED = {
     'tts-f5-tts': _te.BACKEND_F5,
     'tts-kokoro': _te.BACKEND_KOKORO,
     'tts-piper': _te.BACKEND_PIPER,
+    # No Nunba constant: the registry key itself, never a stand-in
+    # engine (a fallback to Piper would probe/validate the wrong one).
+    'tts-omnivoice': 'omnivoice',
+    'tts-makeittalk': 'makeittalk',
 }
+
+# Ids whose ENGINE_REGISTRY key and Nunba backend constant are
+# DIFFERENT strings.  Only these can tell the two names apart, so every
+# path that takes the Nunba constant is pinned with them.
+_KEY_DIFFERS = [
+    ('tts-f5-tts', 'f5_tts', _te.BACKEND_F5),
+    ('tts-chatterbox-ml', 'chatterbox_ml', _te.BACKEND_CHATTERBOX_ML),
+]
+
+
+def test_key_differs_cases_really_differ():
+    for entry_id, key, backend in _KEY_DIFFERS:
+        assert key in ENGINE_REGISTRY, key
+        assert key != backend, entry_id
+
+
+@pytest.mark.parametrize('entry_id,key,backend', _KEY_DIFFERS)
+def test_download_installs_the_nunba_backend_name(entry_id, key, backend):
+    """download hands install_backend_full the same name the engine's
+    own auto-install does (TTSEngine._try_auto_install_backend), the
+    Nunba constant -- not the registry key."""
+    with patch('tts.package_installer.install_backend_full',
+               return_value=(True, 'ok')) as inst:
+        assert TTSLoader().download(_entry(entry_id)) is True
+    inst.assert_called_once_with(backend)
+
+
+@pytest.mark.parametrize('entry_id,key,backend', _KEY_DIFFERS)
+def test_validate_probes_the_nunba_backend_name(entry_id, key, backend):
+    engine = MagicMock()
+    result = SimpleNamespace(ok=True, n_bytes=1, duration_s=1.0, err='')
+    with patch('tts.tts_engine.get_tts_engine', return_value=engine), \
+            patch('tts.tts_handshake.run_handshake',
+                  return_value=result) as hs, \
+            patch('tts.tts_handshake.invalidate') as inv:
+        ok, _ = TTSLoader().validate(_entry(entry_id))
+    assert ok is True
+    inv.assert_called_once_with(backend)
+    assert hs.call_args.args[1] == backend
 
 
 @pytest.mark.parametrize('entry_id,backend', sorted(_EXPECTED.items()))
