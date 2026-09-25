@@ -1,12 +1,12 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import {
   CAMERA_CONSENT_TYPE, CONSENT_ANSWER_TYPES, FINGERPRINT_CAPTION, answerCoversAsk,
-  askTitle, askerName, canDecline, consentAskText, declineLabel, deviceFingerprint,
-  grantLabel, isPerRequester,
+  askTitle, askerName, asksForSecret, canDecline, consentAskText, declineLabel,
+  deviceFingerprint, grantLabel, isPerRequester, secretName,
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
-import { consentApi, notificationsApi } from '../../services/socialApi';
+import { chatApi, consentApi, notificationsApi } from '../../services/socialApi';
 import { HART_GLASS_SURFACE } from '../../theme/hartGlass';
 import { QRCodeSVG } from 'qrcode.react';
 
@@ -828,6 +828,9 @@ function consentCardFor(data) {
       consentType: type,
       scope: data.scope || '*',
       agentId: data.agent_id || null,
+      // A credential ask: the value is typed here and stored in this
+      // computer's vault under this name before the grant.
+      secretKey: asksForSecret(type) ? secretName(data.scope) : null,
       title: askTitle(type),
       text: data.reason ||
         `${askerName(data.agent_name)} asks to ${consentAskText(type)}.`,
@@ -857,6 +860,8 @@ function consentCardFor(data) {
 // the main window is behind other windows.  One card, one consent API.
 export function ConsentPromptOverlay({ data, onDismiss }) {
   const card = consentCardFor(data || {});
+  const [secret, setSecret] = useState('');
+  const [secretError, setSecretError] = useState(null);
   // A camera answer has to act HERE.  Every other consent is actuated
   // server-side (HARTOS grant_consent drives the embodied feed, and the
   // screen capture loop polls its own consent), but the camera frames come
@@ -872,6 +877,22 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
     } catch { /* CustomEvent unavailable (older WebView) */ }
   };
   const grant = async () => {
+    // A credential goes into the vault first; if it cannot be stored the ask
+    // stays open, since a grant with nothing stored gives the agent nothing.
+    if (card.secretKey) {
+      let stored = null;
+      try {
+        stored = await chatApi.vaultStore({
+          key_type: 'tool_key', key_name: card.secretKey, value: secret});
+      } catch (e) {
+        stored = {success: false, error: e?.message};
+      }
+      if (!stored?.success) {
+        setSecretError(stored?.error || 'Could not store it on this computer');
+        return;
+      }
+      setSecret('');
+    }
     try {
       await consentApi.grant({consent_type: card.consentType, scope: card.scope});
       applyCamera(true);
@@ -916,6 +937,19 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
           </Typography>
         </Box>
       )}
+      {card.secretKey && (
+        <Box sx={{mb: 1.5}}>
+          <TextField type="password" size="small" fullWidth autoComplete="off"
+            value={secret} onChange={(e) => { setSecret(e.target.value); setSecretError(null); }}
+            inputProps={{'data-testid': 'liquid-consent-secret', 'aria-label': 'Password or key'}}
+            sx={{'& .MuiInputBase-root': {color: '#fff', background: 'rgba(255,255,255,0.05)'}}} />
+          {secretError && (
+            <Typography variant="caption" role="alert" sx={{display: 'block', color: ERROR_RED, mt: 0.5}}>
+              {secretError}
+            </Typography>
+          )}
+        </Box>
+      )}
       {card.declineLabel && (
         <Typography variant="caption" sx={{display: 'block', opacity: 0.6, mb: 1}}>
           {`"${card.declineLabel}" lasts until you allow it again in Privacy settings; "Not now" leaves the ask open.`}
@@ -930,7 +964,10 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
             {card.declineLabel}
           </button>
         )}
-        <button data-testid="liquid-consent-grant" onClick={grant} style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
+        <button data-testid="liquid-consent-grant" onClick={grant}
+          disabled={Boolean(card.secretKey) && !secret}
+          style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer',
+            opacity: card.secretKey && !secret ? 0.5 : 1}}>
           {card.grantLabel}
         </button>
       </Box>

@@ -117,7 +117,26 @@ export const CONSENT_ASKS = Object.freeze({
     asks: 'link with this computer without proving who it is',
     privacyCard: false,
   },
+  // An agent needs a password, key or token only the owner can give
+  // (HARTOS hartos.ai_key_vault.request_credential, behind Request_Resource).
+  // secret: the card takes the value in a password field, and Accept stores
+  // it in this computer's vault before it grants.  The scope names the one
+  // credential (secretName); the agent only ever sees {{secret:NAME}}.
+  credential: {asks: 'use a password or key you enter here', privacyCard: false, secret: true},
 });
+
+// A credential ask's scope is 'secret:<NAME>' (HARTOS consent_service
+// CREDENTIAL_SCOPE_PREFIX); NAME is the vault key the value is stored under.
+const SECRET_SCOPE_PREFIX = 'secret:';
+
+export function asksForSecret(consentType) {
+  return Boolean(CONSENT_ASKS[consentType] && CONSENT_ASKS[consentType].secret);
+}
+
+export function secretName(scope) {
+  const s = String(scope || '');
+  return s.startsWith(SECRET_SCOPE_PREFIX) ? s.slice(SECRET_SCOPE_PREFIX.length) : null;
+}
 
 // The camera's consent type, by name, because the SPA has to act on it and
 // not just describe it: the frames come from THIS browser (getUserMedia ->

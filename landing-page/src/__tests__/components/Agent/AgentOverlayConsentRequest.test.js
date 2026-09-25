@@ -46,10 +46,11 @@ jest.mock('../../../services/socialApi', () => ({
     decline: jest.fn(() => Promise.resolve({})),
   },
   notificationsApi: {markRead: jest.fn(() => Promise.resolve({}))},
+  chatApi: {vaultStore: jest.fn(() => Promise.resolve({success: true}))},
 }));
 
 const {default: AgentOverlay} = require('../../../components/AgentOverlay/AgentOverlay');
-const {consentApi} = require('../../../services/socialApi');
+const {consentApi, chatApi} = require('../../../services/socialApi');
 
 // The ask integrations/vlm/safety.computer_control_block files for a
 // known agent: its reason carries COMPUTER_CONTROL_COVERS.
@@ -480,6 +481,82 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
       expect(screen.queryByText(TITLE_B)).not.toBeInTheDocument();
     });
     expect(screen.getByText(TITLE)).toBeInTheDocument();
+  });
+});
+
+describe('AgentOverlay consent.request — a credential ask', () => {
+  // HARTOS hartos.ai_key_vault.request_credential files this when an agent
+  // needs a password or key (Request_Resource): consent_type 'credential',
+  // scope 'secret:<NAME>'.  The agent only ever gets {{secret:NAME}}; the
+  // owner types the value here.  Accept stores it in this computer's vault
+  // (/api/vault/store, the store SecureInputModal used) and then grants the
+  // ask.  The value goes to the vault call and nowhere else.
+  const SECRET = 'Tr0ub4dor&3-horse';
+  const CRED_ASK = {
+    type: 'consent.request',
+    msg_id: 'consent.request:row-20',
+    consent_type: 'credential',
+    scope: 'secret:SITE_PASSWORD',
+    agent_id: '42',
+    reason: 'Site password is needed for the login step.',
+  };
+  const ACCEPT = /Allow ALL agents to use/;
+
+  beforeEach(() => {
+    // CRA's resetMocks clears the factory's implementation before each test.
+    chatApi.vaultStore.mockResolvedValue({success: true});
+  });
+
+  test('has a password field, and Accept stays off until something is typed', async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+
+    const field = screen.getByTestId('liquid-consent-secret');
+    expect(field).toHaveAttribute('type', 'password');
+    expect(screen.getByRole('button', {name: ACCEPT})).toBeDisabled();
+  });
+
+  test('Accept stores the value in the vault, then grants that one credential', async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    fireEvent.change(await screen.findByTestId('liquid-consent-secret'),
+      {target: {value: SECRET}});
+    fireEvent.click(screen.getByRole('button', {name: ACCEPT}));
+
+    await waitFor(() => {
+      expect(consentApi.grant).toHaveBeenCalledWith({
+        consent_type: 'credential', scope: 'secret:SITE_PASSWORD'});
+    });
+    expect(chatApi.vaultStore).toHaveBeenCalledWith({
+      key_type: 'tool_key', key_name: 'SITE_PASSWORD', value: SECRET});
+    expect(chatApi.vaultStore.mock.invocationCallOrder[0])
+      .toBeLessThan(consentApi.grant.mock.invocationCallOrder[0]);
+    expect(JSON.stringify(consentApi.grant.mock.calls)).not.toContain(SECRET);
+    await waitFor(() => {
+      expect(screen.queryByText(CRED_ASK.reason)).not.toBeInTheDocument();
+    });
+  });
+
+  test('when the vault refuses, nothing is granted and the card stays up', async () => {
+    chatApi.vaultStore.mockImplementationOnce(
+      () => Promise.resolve({success: false, error: 'vault unavailable'}));
+    const send = mountOverlay();
+    send(CRED_ASK);
+    fireEvent.change(await screen.findByTestId('liquid-consent-secret'),
+      {target: {value: SECRET}});
+    fireEvent.click(screen.getByRole('button', {name: ACCEPT}));
+
+    expect(await screen.findByText('vault unavailable')).toBeInTheDocument();
+    expect(consentApi.grant).not.toHaveBeenCalled();
+    expect(screen.getByText(CRED_ASK.reason)).toBeInTheDocument();
+  });
+
+  test('a card for any other ask has no password field', async () => {
+    const send = mountOverlay();
+    send(ASK);
+    await screen.findByText(ASK.reason);
+    expect(screen.queryByTestId('liquid-consent-secret')).toBeNull();
   });
 });
 
