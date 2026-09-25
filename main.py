@@ -1331,15 +1331,15 @@ def _chat_sync_resolve_uid():
         # Fail-closed: if we can't confirm the toggle is on, don't sync
         return None, (jsonify({'error': 'sync_probe_failed'}), 500)
 
-    # Gate 2: JWT → user_id
+    # Gate 2: token → user_id, through HARTOS's resolver (a cloud login's
+    # opaque token is the user's api_token; a JWT-only decode 401'd it).
     auth = request.headers.get('Authorization', '')
     if not auth.startswith('Bearer '):
         return None, (jsonify({'error': 'unauthorized'}), 401)
     token = auth[7:].strip()
     try:
-        from integrations.social.auth import decode_jwt
-        payload = decode_jwt(token)
-        uid = payload.get('user_id') if isinstance(payload, dict) else None
+        from integrations.social.auth import user_id_for_token
+        uid = user_id_for_token(token)
     except Exception:
         return None, (jsonify({'error': 'unauthorized'}), 401)
     if not uid:
@@ -4821,7 +4821,9 @@ def sse_event_stream():
     Frontend connects here only when the Crossbar worker reports disconnected.
     Requires a valid JWT token as ``?token=`` query parameter.
     """
-    logging.info(f"SSE: client connecting (args={dict(request.args)})")
+    # Arg NAMES only: ?token= is a bearer credential, and logging the dict
+    # wrote it in plaintext (seen 2026-09-25 in the Nunba logs).
+    logging.info(f"SSE: client connecting (args={sorted(request.args.keys())})")
     from flask import Response
     from flask import jsonify as _jsonify
     from flask import request as flask_request
@@ -4835,10 +4837,13 @@ def sse_event_stream():
 
     uid = None
     if token:
+        # HARTOS's resolver, not a JWT-only decode: a cloud login's opaque
+        # token is the user's api_token, and the JWT decode fell through to
+        # 'guest' (live 2026-09-25), so pushes to the signed-in user were
+        # delivered to nobody.
         try:
-            from integrations.social.auth import decode_jwt
-            payload = decode_jwt(token)
-            uid = payload.get('user_id')
+            from integrations.social.auth import user_id_for_token
+            uid = user_id_for_token(token)
         except Exception:
             if not _is_local:
                 return _jsonify({"error": "Invalid or expired token"}), 401

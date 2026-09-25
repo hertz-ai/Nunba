@@ -277,10 +277,6 @@ class TestInternalHelpers:
         from routes.chatbot_routes import _get_prompts_dir
         assert callable(_get_prompts_dir)
 
-    def test_load_jwt_secret_key_callable(self):
-        from routes.chatbot_routes import _load_jwt_secret_key
-        assert callable(_load_jwt_secret_key)
-
     def test_get_user_id_from_auth_callable(self):
         from routes.chatbot_routes import _get_user_id_from_auth
         assert callable(_get_user_id_from_auth)

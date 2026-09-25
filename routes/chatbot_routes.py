@@ -3841,51 +3841,21 @@ def network_status_route():
 
 # ── Agent sync endpoints ──
 
-def _load_jwt_secret_key():
-    """Load the JWT secret key from the same file used by social auth."""
-    # Check SOCIAL_SECRET_KEY env var first
-    env_key = os.environ.get('SOCIAL_SECRET_KEY', '')
-    if env_key and len(env_key) >= 32:
-        return env_key
-    # Load from persisted key file (same path as integrations/social/auth.py)
-    db_path = os.environ.get('HEVOLVE_DB_PATH', '')
-    if db_path and db_path != ':memory:' and os.path.isabs(db_path):
-        key_file = os.path.join(os.path.dirname(db_path), '.social_secret_key')
-    else:
-        try:
-            from core.platform_paths import get_db_dir
-            key_file = os.path.join(get_db_dir(), '.social_secret_key')
-        except ImportError:
-            key_file = os.path.join(
-                os.path.expanduser('~'), 'Documents', 'Nunba', 'data', '.social_secret_key'
-            )
-    try:
-        if os.path.exists(key_file):
-            with open(key_file) as f:
-                key = f.read().strip()
-            if len(key) >= 32:
-                return key
-    except (PermissionError, OSError) as e:
-        logger.warning(f"Cannot read JWT secret key from {key_file}: {e}")
-    return None
-
-
 def _get_user_id_from_auth():
-    """Extract user_id from JWT Bearer token or query param (local only)."""
+    """User id from the Bearer token (HARTOS's resolver), or the query
+    param for local requests."""
     auth = request.headers.get('Authorization', '')
     if auth.startswith('Bearer '):
+        # The canonical resolver, not a JWT-only decode: a cloud login's
+        # token is an opaque Kong token stored as the user's api_token, and
+        # decoding it as a JWT 401'd every cloud user (live 2026-09-25:
+        # "JWT decode failed: Not enough segments" -> "Session expired").
+        token = auth.split(' ', 1)[1].strip()
         try:
-            import jwt as pyjwt
-            token = auth.split(' ', 1)[1]
-            secret_key = _load_jwt_secret_key()
-            if secret_key:
-                payload = pyjwt.decode(token, secret_key, algorithms=["HS256"])
-            else:
-                logger.warning("JWT secret key unavailable — cannot verify token signature")
-                return None
-            return payload.get('user_id') or payload.get('sub')
+            from integrations.social.auth import user_id_for_token
+            return user_id_for_token(token)
         except Exception as e:
-            logger.warning(f"JWT decode failed: {e}")
+            logger.warning(f"Token resolution failed: {e}")
             return None
     # Fallback: allow user_id query param ONLY for local requests
     if request.remote_addr in ('127.0.0.1', '::1', 'localhost'):
