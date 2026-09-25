@@ -2537,8 +2537,18 @@ def _is_same_agent(a, b):
     for it, so an absent key is never evidence of sameness.  Comparing the
     raw ``.get()`` values made every HARTOS row after the first a "duplicate"
     on None == None and the user saw one HARTOS agent.
+
+    When BOTH rows carry a prompt_id, it is the identity and nothing else is
+    consulted: two HARTOS agents with the same name are still two agents with
+    two recipes (review of 3bfe4c18, measured: 26 owner rows listed 20; 'IPL
+    Score Tracker', 'Spider-Man', 'Superman' and others vanished).  id and
+    name only decide for a row without a prompt_id (LOCAL_AGENTS /
+    CLOUD_AGENTS), which keeps a HARTOS row from shadowing a local agent.
     """
-    for key in ('id', 'prompt_id', 'name'):
+    pa, pb = a.get('prompt_id'), b.get('prompt_id')
+    if pa not in (None, '') and pb not in (None, ''):
+        return str(pa) == str(pb)
+    for key in ('id', 'name'):
         va, vb = a.get(key), b.get(key)
         if va in (None, '') or vb in (None, ''):
             continue

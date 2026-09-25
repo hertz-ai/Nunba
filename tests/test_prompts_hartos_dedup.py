@@ -95,3 +95,16 @@ def test_cloud_agents_survive_nameless_hartos_rows(routes_mod, monkeypatch):
     for cloud in routes_mod.CLOUD_AGENTS:
         assert cloud['id'] in listed
     assert _hartos_ids(prompts) == ['12345', '6']
+
+
+def test_two_hartos_agents_sharing_a_name_are_both_listed(routes_mod, monkeypatch):
+    """Review of 3bfe4c18, measured on the owner's rows (26 expected, 20
+    listed): distinct prompt_ids are distinct agents with distinct recipes,
+    whatever their names.  Name decides only for a row with no prompt_id."""
+    rows = [
+        {'prompt_id': '78570931871', 'name': 'livetest_IPL Score Tracker'},
+        {'prompt_id': '78570931872', 'name': 'livetest_IPL Score Tracker'},
+        {'prompt_id': '9101', 'name': 'livetest_Spider-Man'},
+    ]
+    prompts = _call_route(routes_mod, monkeypatch, rows)
+    assert _hartos_ids(prompts) == ['78570931871', '78570931872', '9101']
