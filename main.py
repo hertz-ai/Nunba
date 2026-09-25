@@ -4432,21 +4432,16 @@ def debug_routes():
 def test_api():
     return jsonify({'status': 'API routes working', 'message': 'This is a test endpoint'})
 
-# API endpoints that should NOT be caught by the landing page handler
-API_ENDPOINTS = {
-    'api', 'probe', 'execute', 'screenshot', 'indicator', 'llm_control_status',
-    'status', 'logs', 'custom_gpt', 'tts', 'crash-report', 'llama',
-    'ai', 'health', 'prompts', 'agents', 'chat', 'backend', 'media'
-}
-
-# Companion rule to API_ENDPOINTS: paths that must 404 instead of falling back
-# to the SPA shell.  Lives in routes/spa_fallback.py rather than here so it can
-# be unit-tested without importing main (which pulls in torch/sympy/transformers).
+# Which unmatched paths must 404 instead of falling back to the SPA shell
+# (API namespaces incl. API_ENDPOINTS, and missing assets).  Lives in
+# routes/spa_fallback.py rather than here so it can be unit-tested without
+# importing main (which pulls in torch/sympy/transformers).  API_ENDPOINTS is
+# re-exported here for existing `from main import API_ENDPOINTS` callers.
 from routes.spa_fallback import (  # noqa: E402
+    API_ENDPOINTS,  # noqa: F401
     SPA_SHELL_CACHE_CONTROL,
-    first_path_segment,
+    is_api_miss,
     is_asset_path,
-    is_spa_page,
 )
 
 
@@ -4983,15 +4978,13 @@ def handle_404(e):
     """Handle 404 errors by serving static files or React app for client-side routing"""
     from flask import send_from_directory
     path = request.path
-    first_segment = first_path_segment(path)
 
     # Return 404 for API routes — UNLESS the exact path is an SPA page that
     # merely shares its first segment with an API namespace.  `/agents` is the
     # Agents Hub page while /agents/sync etc. are real APIs; classifying the
     # bare page path as API served raw JSON on deep link / F5 (task #628,
     # found live by route-smoke.cy.js 2026-08-07).
-    if first_segment in API_ENDPOINTS and not is_spa_page(
-            path, request.headers.get('Accept')):
+    if is_api_miss(path, request.headers.get('Accept')):
         return jsonify({'error': 'API endpoint not found', 'path': path}), 404
 
     # A missing asset is a missing FILE, not a client-side route.  Answering it
