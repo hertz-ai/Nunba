@@ -83,6 +83,27 @@ def spawn_vram_delta_gb(before, after):
     return None
 
 
+def embeddings_args(spec_args) -> list:
+    """``--embeddings`` for the main server, unless the spawn runs MTP.
+
+    The one writer of that flag.  Measured 2026-09-24 (Tiel-Coder 35B-A3B
+    MTP, llama.cpp b9180+): with ``--embeddings`` beside ``--spec-type
+    draft-mtp`` llama-server dies at load with GGML_ASSERT "missing
+    result_norm/result_embd tensor"; the identical command without it loads
+    and serves.  The watchdog respawns from config, so the MTP preset left the
+    desktop with no LLM at all.  MTP is what the preset exists for, and
+    hevolveai already treats a server without the route as "no native
+    embedding" (_probe_native_embedding -> None), so the route steps aside.
+    """
+    args = list(spec_args or [])
+    if 'draft-mtp' in args:
+        logger.warning(
+            "MTP spawn: leaving out --embeddings (llama.cpp asserts with both); "
+            "hevolveai's native /embedding route is off while this model serves")
+        return []
+    return ['--embeddings']
+
+
 # Task #652 — thinking MUST be off for every local llama-server.
 #
 # ``--reasoning-budget 0`` below already DECLARES that intent, but on
@@ -2360,7 +2381,9 @@ class LlamaConfig:
                 # yields per-token vectors. The OAI /v1/embeddings route
                 # rejects pooling none as "not OAI compatible", so consumers
                 # must use the native /embedding endpoint.
-                "--embeddings",
+                #
+                # Added after the MTP decision below, through embeddings_args:
+                # an MTP spawn cannot carry it (measured 2026-09-24).
             ]
 
             # ── N-gram speculative decoding (no draft model needed) ──
@@ -2439,11 +2462,14 @@ class LlamaConfig:
             # builds 7909/8200 on this box lack it).  HEVOLVE_LLAMA_MTP_N is
             # still honoured as an override: 0 = off, N = draft depth.  The
             # same call every spawn path makes.
+            _mtp_args = []
             try:
                 from integrations.service_tools.model_catalog import mtp_spec_args
-                cmd.extend(mtp_spec_args(str(model_path), str(llama_server)))
+                _mtp_args = mtp_spec_args(str(model_path), str(llama_server))
+                cmd.extend(_mtp_args)
             except Exception as e:
                 logger.info("MTP probe skipped (%s); launching without it", e)
+            cmd.extend(embeddings_args(_mtp_args))
 
             # Qwen3.5-MoE family models need additional flags.  Test the
             # shared family predicate directly: the `is_qwen35` local moved
