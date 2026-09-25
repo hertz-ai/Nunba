@@ -117,7 +117,7 @@ const DeleteUserPage = () => {
             onChange={handleMobileChange}
           />
         </div>
-        <button type="submit" className="btn btn-primary">
+        <button type="submit" className="btn-feedback btn btn-primary">
           Delete User
         </button>
       </form>
@@ -136,7 +136,7 @@ const DeleteUserPage = () => {
                 <h5 className="modal-title">OTP Verification</h5>
                 <button
                   type="button"
-                  className="close"
+                  className="btn-feedback close"
                   onClick={handleModalClose}
                 >
                   <span aria-hidden="true">&times;</span>
@@ -154,12 +154,12 @@ const DeleteUserPage = () => {
                       onChange={handleOtpChange}
                     />
                   </div>
-                  <button type="submit" className="btn btn-primary">
+                  <button type="submit" className="btn-feedback btn btn-primary">
                     Verify OTP
                   </button>
                   <button
                     type="button"
-                    className="btn btn-secondary"
+                    className="btn-feedback btn btn-secondary"
                     onClick={handleModalClose}
                   >
                     Cancel

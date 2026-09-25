@@ -3176,7 +3176,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const TextModeToggle = () => (
     <button
       onClick={toggleTextMode}
-      className={`flex items-center gap-2 px-3 py-1 rounded-lg transition-colors ${
+      className={`btn-feedback flex items-center gap-2 px-3 py-1 rounded-lg transition-colors ${
         mediaMode === 'text'
           ? 'bg-blue-600 text-white'
           : mediaMode === 'video'
@@ -5657,7 +5657,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                           <div className="w-full">
                             <div className="flex items-center space-x-4 justify-center mt-5 px-4 py-4">
                               <div className="w-16 h-16 rounded-full bg-gray-200 flex items-center justify-center">
-                                <button className="text-gray-700 text-xl">
+                                <button className="btn-feedback text-gray-700 text-xl">
                                   ▶️
                                 </button>
                               </div>
@@ -5708,7 +5708,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   </pre>
                   <button
                     onClick={() => setCodeContent(null)}
-                    className="mt-2 bg-red-500 text-white px-3 py-1 rounded-md"
+                    className="btn-feedback mt-2 bg-red-500 text-white px-3 py-1 rounded-md"
                   >
                     Close Code
                   </button>
@@ -5737,7 +5737,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   onClick={toggleVoiceSpeechConsent}
                   data-testid="voice-privacy-pill"
                   title={speechConsent === 'granted' ? 'Voice Guidance Active — click to mute' : 'Quiet Mode Active — click to enable voice'}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all duration-200"
+                  className="btn-feedback flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all duration-200"
                   style={{
                     background: speechConsent === 'granted'
                       ? 'rgba(108, 99, 255, 0.2)'
@@ -5796,7 +5796,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                           <button
                             key={name}
                             onClick={() => handleGuestNameChange(name)}
-                            className="transition-all duration-200"
+                            className="btn-feedback transition-all duration-200"
                             style={{
                               background: 'rgba(108,99,255,0.12)',
                               border: '1px solid rgba(108,99,255,0.3)',
@@ -5915,7 +5915,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                           <button
                             key={prompt}
                             onClick={() => setInputMessage(prompt)}
-                            className="px-4 py-2 text-sm rounded-full border transition-all duration-200 hover:scale-105 active:scale-95"
+                            className="btn-feedback px-4 py-2 text-sm rounded-full border transition-all duration-200 hover:scale-105 active:scale-95"
                             style={{
                               borderColor: 'rgba(108,99,255,0.3)',
                               background: 'rgba(108,99,255,0.08)',
@@ -6154,7 +6154,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   setIntelligencePreference(mode);
                   localStorage.setItem('intelligence_preference', mode);
                 }}
-                className={`px-2 py-0.5 text-[10px] rounded-full transition-all duration-200 whitespace-nowrap ${
+                className={`btn-feedback px-2 py-0.5 text-[10px] rounded-full transition-all duration-200 whitespace-nowrap ${
                   intelligencePreference === mode
                     ? 'bg-gray-600 text-white'
                     : 'text-gray-400 hover:text-gray-200'

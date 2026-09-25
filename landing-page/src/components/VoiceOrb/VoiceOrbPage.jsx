@@ -365,7 +365,7 @@ function InputBar({liveRun}) {
             padding: '4px 0',
           }}
         />
-        <button
+        <button className="btn-feedback"
           type="submit"
           disabled={busy}
           aria-label="Send prompt"

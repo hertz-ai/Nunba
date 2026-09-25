@@ -174,7 +174,7 @@ export default function Contact() {
             <Box sx={styles.fieldGroup}>
               <div style={{padding: 12}}>
                 <div>
-                  <button type="submit" className="btn blue">
+                  <button type="submit" className="btn-feedback btn blue">
                     {status === 'progress' ? (
                       <Progress color="#fff" size={25} />
                     ) : (

@@ -20,7 +20,6 @@ import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import TrendingFlatIcon from '@mui/icons-material/TrendingFlat';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
-import LoadingButton from '@mui/lab/LoadingButton';
 import {
   Box, Typography, Button, IconButton, LinearProgress, TextField,
   Fade, Grow, Chip, Rating,
@@ -49,28 +48,6 @@ const ACCENT = '#6C63FF';
 const INFO_BLUE = '#64C8FF';
 const SUCCESS = '#2ECC71';
 const ERROR_RED = '#FF6B6B';
-
-// The answer buttons on a card (consent, post preview).  They were bare
-// <button>s with no hover, press, focus or busy state, so an owner could not
-// tell a click had landed and pressed Allow four times (four grants, live
-// 2026-09-25).  MUI Button/LoadingButton give the hover, ripple and focus
-// ring; these add the press and keep each button's colour.
-const CARD_BUTTON = {
-  textTransform: 'none', borderRadius: '8px', px: 1.75, py: 0.5,
-  fontSize: '0.85rem', minWidth: 0, transition: 'transform 80ms, background-color 150ms',
-  '&:active': {transform: 'scale(0.96)'},
-  '&.Mui-focusVisible': {outline: '2px solid #fff', outlineOffset: '2px'},
-  '&.Mui-disabled': {opacity: 0.5},
-};
-const cardButton = (color, filled) => (filled ? {
-  ...CARD_BUTTON, fontWeight: 600, color: '#fff', bgcolor: color,
-  '&:hover': {bgcolor: color, filter: 'brightness(1.15)'},
-  '&.Mui-disabled': {...CARD_BUTTON['&.Mui-disabled'], color: '#fff', bgcolor: color},
-} : {
-  ...CARD_BUTTON, color, borderColor: color,
-  '&:hover': {borderColor: color, bgcolor: 'rgba(255,255,255,0.08)'},
-  '&.Mui-disabled': {...CARD_BUTTON['&.Mui-disabled'], color, borderColor: color},
-});
 
 let _overlayIdCounter = 0;
 
@@ -989,23 +966,23 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
         </Typography>
       )}
       <Box sx={{display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'flex-end'}}>
-        <Button variant="outlined" size="small" onClick={onDismiss} disabled={Boolean(busy)}
-          sx={cardButton('#ccc', false)}>
+        <button className="btn-feedback" onClick={onDismiss} disabled={Boolean(busy)}
+          style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
           Not now
-        </Button>
+        </button>
         {card.declineLabel && (
-          <LoadingButton variant="outlined" size="small" onClick={decline}
-            loading={busy === 'decline'} disabled={busy === 'grant'}
-            aria-busy={busy === 'decline'} sx={cardButton(ERROR_RED, false)}>
+          <button className="btn-feedback" onClick={decline} disabled={Boolean(busy)}
+            aria-busy={busy === 'decline'}
+            style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #FF6B6B', background: 'transparent', color: '#FF6B6B', cursor: 'pointer'}}>
             {card.declineLabel}
-          </LoadingButton>
+          </button>
         )}
-        <LoadingButton data-testid="liquid-consent-grant" variant="contained" size="small"
-          onClick={grant} loading={busy === 'grant'}
-          disabled={busy === 'decline' || (Boolean(card.secretKey) && !secret)}
-          aria-busy={busy === 'grant'} sx={cardButton('#10b981', true)}>
+        <button className="btn-feedback" data-testid="liquid-consent-grant" onClick={grant}
+          disabled={Boolean(busy) || (Boolean(card.secretKey) && !secret)}
+          aria-busy={busy === 'grant'}
+          style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
           {card.grantLabel}
-        </LoadingButton>
+        </button>
       </Box>
     </Box>
   );
@@ -1051,15 +1028,15 @@ function PostPreviewOverlay({ data, onDismiss }) {
         Posting as {data?.handle || 'your saved session'}
       </Typography>
       <Box sx={{display: 'flex', gap: 1, justifyContent: 'flex-end'}}>
-        <Button variant="outlined" size="small" onClick={onDismiss} disabled={posting}
-          sx={cardButton('#ccc', false)}>
+        <button className="btn-feedback" onClick={onDismiss} disabled={posting}
+          style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
           {data?.cancel_label || 'Cancel'}
-        </Button>
-        <LoadingButton data-testid="liquid-post-confirm" variant="contained" size="small"
-          onClick={confirm} loading={posting} aria-busy={posting}
-          sx={cardButton(ACCENT, true)}>
+        </button>
+        <button className="btn-feedback" data-testid="liquid-post-confirm" onClick={confirm}
+          disabled={posting} aria-busy={posting}
+          style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#6C63FF', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
           {data?.confirm_label || `Post to ${platform}`}
-        </LoadingButton>
+        </button>
       </Box>
     </Box>
   );

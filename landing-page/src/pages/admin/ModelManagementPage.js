@@ -188,7 +188,7 @@ function StorageLocationBar({storageInfo, onUpdateStorage}) {
           </div>
 
           {!editing && (
-            <button
+            <button className="btn-feedback"
               onClick={() => {
                 setNewPath(storageInfo.models_dir);
                 setEditing(true);
@@ -263,7 +263,7 @@ function StorageLocationBar({storageInfo, onUpdateStorage}) {
                 fontFamily: 'monospace',
               }}
             />
-            <button
+            <button className="btn-feedback"
               type="submit"
               disabled={saving}
               style={{
@@ -279,7 +279,7 @@ function StorageLocationBar({storageInfo, onUpdateStorage}) {
             >
               {saving ? 'Validating...' : 'Set Storage Directory'}
             </button>
-            <button
+            <button className="btn-feedback"
               type="button"
               onClick={() => setEditing(false)}
               style={{
@@ -511,7 +511,7 @@ function ModelCard({model, onLoad, onUnload, onDownload, onSetPurpose}) {
         <div style={{display: 'flex', gap: 6, alignItems: 'center'}}>
           {model.stale && (
             <>
-              <button
+              <button className="btn-feedback"
                 type="button"
                 aria-describedby={staleReasonId}
                 aria-expanded={staleOpen}
@@ -626,7 +626,7 @@ function ModelCard({model, onLoad, onUnload, onDownload, onSetPurpose}) {
         {validPurposes.map((p) => {
           const isOn = activePurposes.includes(p);
           return (
-            <button
+            <button className="btn-feedback"
               key={p}
               onClick={() => onSetPurpose(model.id, p, !isOn)}
               style={{
@@ -807,7 +807,7 @@ function ModelCard({model, onLoad, onUnload, onDownload, onSetPurpose}) {
       {/* Actions */}
       <div style={{display: 'flex', gap: 8}}>
         {!isDownloaded && model.source !== 'api' && model.source !== 'pip' && (
-          <button
+          <button className="btn-feedback"
             onClick={handleDownload}
             disabled={dlStatus?.status === 'downloading'}
             style={btnStyle(
@@ -821,7 +821,7 @@ function ModelCard({model, onLoad, onUnload, onDownload, onSetPurpose}) {
           (isDownloaded ||
             model.source === 'api' ||
             model.source === 'pip') && (
-            <button
+            <button className="btn-feedback"
               onClick={() => onLoad(model.id)}
               style={btnStyle('#4CAF50')}
             >
@@ -829,7 +829,7 @@ function ModelCard({model, onLoad, onUnload, onDownload, onSetPurpose}) {
             </button>
           )}
         {isLoaded && (
-          <button
+          <button className="btn-feedback"
             onClick={() => onUnload(model.id)}
             style={btnStyle('#f44336')}
           >
@@ -1226,7 +1226,7 @@ function AddModelDialog({onClose, onSave}) {
             justifyContent: 'flex-end',
           }}
         >
-          <button
+          <button className="btn-feedback"
             type="button"
             onClick={onClose}
             style={{
@@ -1236,7 +1236,7 @@ function AddModelDialog({onClose, onSave}) {
           >
             Cancel
           </button>
-          <button
+          <button className="btn-feedback"
             type="submit"
             style={{
               ...btnStyle('#6C63FF'),
@@ -1460,7 +1460,7 @@ function BrowseHuggingFaceTab({onInstalled}) {
           <option value="trending-score">Trending</option>
           <option value="likes">Most liked</option>
         </select>
-        <button
+        <button className="btn-feedback"
           onClick={runSearch}
           style={{...btnStyle('#6C63FF'), padding: '6px 14px'}}
         >
@@ -1511,7 +1511,7 @@ function BrowseHuggingFaceTab({onInstalled}) {
                   {m.pipeline_tag && ` · ${m.pipeline_tag}`}
                 </div>
               </div>
-              <button
+              <button className="btn-feedback"
                 onClick={() => install(m)}
                 disabled={installing === m.id}
                 aria-label={
@@ -1705,7 +1705,7 @@ export default function ModelManagementPage() {
             {loadError}
           </div>
         )}
-        <button
+        <button className="btn-feedback"
           type="button"
           onClick={() => {
             setLoading(true);
@@ -1758,7 +1758,7 @@ export default function ModelManagementPage() {
               </span>
             )}
           </span>
-          <button
+          <button className="btn-feedback"
             onClick={() => setShowAdd(true)}
             style={{...btnStyle('#6C63FF'), padding: '6px 14px'}}
           >
@@ -1782,7 +1782,7 @@ export default function ModelManagementPage() {
           borderBottom: '1px solid #1e2a38',
         }}
       >
-        <button
+        <button className="btn-feedback"
           onClick={() => setMode('installed')}
           style={{
             padding: '8px 16px',
@@ -1799,7 +1799,7 @@ export default function ModelManagementPage() {
         >
           Installed ({data.total_models})
         </button>
-        <button
+        <button className="btn-feedback"
           onClick={() => setMode('browse')}
           style={{
             padding: '8px 16px',
@@ -1841,7 +1841,7 @@ export default function ModelManagementPage() {
               flexWrap: 'wrap',
             }}
           >
-            <button
+            <button className="btn-feedback"
               onClick={() => setFilter('all')}
               style={{
                 ...btnStyle(filter === 'all' ? '#6C63FF' : '#2a3a4a'),
@@ -1851,7 +1851,7 @@ export default function ModelManagementPage() {
               All ({data.total_models})
             </button>
             {types.map((t) => (
-              <button
+              <button className="btn-feedback"
                 key={t}
                 onClick={() => setFilter(t)}
                 style={{

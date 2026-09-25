@@ -111,7 +111,7 @@ const PupitCard = ({image, title, video, audio}) => {
         <div className="video-modal">
           <video className="videoTag" src={video} controls />
           <button
-            className="close-button"
+            className="btn-feedback close-button"
             onClick={() => setShowVideo(!showVideo)}
           >
             X
@@ -122,13 +122,13 @@ const PupitCard = ({image, title, video, audio}) => {
       <AppContext.Provider value={{isPupidDroid}}>
         {!isPupidDroid ? (
           <div>
-            <button className="createButton" onClick={handleClick}>
+            <button className="btn-feedback createButton" onClick={handleClick}>
               Create Your Video
             </button>
             {isModalOpen && (
               <div className="modal">
                 <div className="modal-content">
-                  <button className="closeButtonModal" onClick={handleClose}>
+                  <button className="btn-feedback closeButtonModal" onClick={handleClose}>
                     X
                   </button>
                   <input
@@ -141,7 +141,7 @@ const PupitCard = ({image, title, video, audio}) => {
                   />
                   <p style={{color: 'red'}}>{errorMesssage}</p>
                   {showSubmitButton && (
-                    <button onClick={handleFormSubmit} className="submitButton">
+                    <button onClick={handleFormSubmit} className="btn-feedback submitButton">
                       Submit
                     </button>
                   )}
@@ -157,13 +157,13 @@ const PupitCard = ({image, title, video, audio}) => {
                     <>
                       <div className="download_reset">
                         <button
-                          className="downLoad"
+                          className="btn-feedback downLoad"
                           onClick={handleDownloadClick}
                         >
                           Download Video
                         </button>
                         <button
-                          className=" reset downLoad"
+                          className="btn-feedback  reset downLoad"
                           onClick={handleReset}
                         >
                           Reset

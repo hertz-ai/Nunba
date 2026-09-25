@@ -233,7 +233,7 @@ const ThinkingProcessContainer = ({
     <div className="border border-gray-300 rounded-lg mb-4 overflow-hidden bg-gray-50 animate-fade-in-up">
       <button
         onClick={onToggleMain}
-        className="w-full p-4 bg-gray-50 hover:bg-gray-100 text-left flex items-center justify-between transition-colors group"
+        className="btn-feedback w-full p-4 bg-gray-50 hover:bg-gray-100 text-left flex items-center justify-between transition-colors group"
       >
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <div className="flex gap-1 flex-shrink-0">
@@ -373,7 +373,7 @@ const ThinkingProcessContainer = ({
               >
                 <button
                   onClick={() => handleManualToggle(message.id)}
-                  className="w-full p-3 bg-gray-50 hover:bg-gray-100 text-left flex items-center justify-between transition-colors text-sm"
+                  className="btn-feedback w-full p-3 bg-gray-50 hover:bg-gray-100 text-left flex items-center justify-between transition-colors text-sm"
                 >
                   <div className="flex items-center gap-2 min-w-0 flex-1">
                     <div className="flex gap-1 flex-shrink-0">

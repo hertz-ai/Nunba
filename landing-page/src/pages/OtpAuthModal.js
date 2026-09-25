@@ -605,7 +605,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
         <p>{message || 'Please log in again.'}</p>
         <button
           onClick={onClose}
-          className="absolute right-4 top-4 text-gray-500 hover:text-gray-700 btn-press"
+          className="btn-feedback absolute right-4 top-4 text-gray-500 hover:text-gray-700 btn-press"
         >
           <X size={20} />
         </button>
@@ -663,7 +663,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                 onClose();
                 navigate('/agents/Hevolve');
               }}
-              className="btn-gradient"
+              className="btn-feedback btn-gradient"
               style={{
                 background: 'linear-gradient(to right, #00e89d, #0078ff)',
               }}
@@ -692,7 +692,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
             <button
               onClick={handleGuestRecover}
               disabled={isProcessing}
-              className="btn-gradient disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="btn-feedback btn-gradient disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               style={{
                 background: 'linear-gradient(to right, #00e89d, #0078ff)',
               }}
@@ -708,7 +708,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
             </button>
             <button
               onClick={() => setShowRecoverMode(false)}
-              className="w-full text-sm text-gray-500 hover:text-gray-700 btn-press"
+              className="btn-feedback w-full text-sm text-gray-500 hover:text-gray-700 btn-press"
             >
               Back to Guest Login
             </button>
@@ -732,7 +732,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
               <button
                 onClick={handleReturningGuestLogin}
                 disabled={isProcessing}
-                className="w-full btn-gradient disabled:opacity-50 flex items-center justify-center gap-2"
+                className="btn-feedback w-full btn-gradient disabled:opacity-50 flex items-center justify-center gap-2"
                 style={{
                   background: 'linear-gradient(to right, #00e89d, #0078ff)',
                 }}
@@ -754,7 +754,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                   localStorage.removeItem('guest_name_verified');
                   window.location.reload();
                 }}
-                className="w-full text-sm text-gray-400 hover:text-gray-600 transition-colors"
+                className="btn-feedback w-full text-sm text-gray-400 hover:text-gray-600 transition-colors"
               >
                 Use a different name
               </button>
@@ -812,7 +812,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                   <button
                     type="button"
                     onClick={regeneratePrefix}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-gray-400 hover:text-blue-500 transition-colors btn-press"
+                    className="btn-feedback absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-gray-400 hover:text-blue-500 transition-colors btn-press"
                     title="Generate new prefix"
                   >
                     <RefreshCw size={18} />
@@ -842,7 +842,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                     !forceGuestMode &&
                     (isCheckingName || nameAvailable === false))
                 }
-                className="btn-gradient disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="btn-feedback btn-gradient disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 style={{
                   background: 'linear-gradient(to right, #00e89d, #0078ff)',
                 }}
@@ -859,7 +859,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
               {!isOffline && (
                 <button
                   onClick={() => setShowRecoverMode(true)}
-                  className="w-full text-sm text-blue-500 hover:text-blue-700 btn-press"
+                  className="btn-feedback w-full text-sm text-blue-500 hover:text-blue-700 btn-press"
                 >
                   Have a recovery code? Recover Guest Session
                 </button>
@@ -867,7 +867,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
               {!isOffline && (
                 <button
                   onClick={() => setManualLoginOverride(true)}
-                  className="w-full text-sm text-gray-500 hover:text-blue-700 btn-press"
+                  className="btn-feedback w-full text-sm text-gray-500 hover:text-blue-700 btn-press"
                 >
                   Or sign in with email / phone
                 </button>
@@ -882,7 +882,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                   setLoginMethod('phone');
                   resetForm();
                 }}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-full btn-tab ${
+                className={`btn-feedback flex items-center space-x-2 px-4 py-2 rounded-full btn-tab ${
                   loginMethod === 'phone'
                     ? 'bg-blue-500 text-white shadow-md'
                     : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
@@ -896,7 +896,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                   setLoginMethod('email');
                   resetForm();
                 }}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-full btn-tab ${
+                className={`btn-feedback flex items-center space-x-2 px-4 py-2 rounded-full btn-tab ${
                   loginMethod === 'email'
                     ? 'bg-blue-500 text-white shadow-md'
                     : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
@@ -914,7 +914,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                     <div className="relative">
                       <button
                         type="button"
-                        className="flex items-center justify-between w-20 px-3 py-2 text-gray-700 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="btn-feedback flex items-center justify-between w-20 px-3 py-2 text-gray-700 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         onClick={() => setIsDropdownOpen(!isDropdownOpen)}
                       >
                         {countries.find((c) => c.code === countryCode)
@@ -941,7 +941,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                             {filteredCountries.map((country) => (
                               <button
                                 key={country.code}
-                                className="block w-full px-4 py-2 text-left text-sm text-black-700 hover:bg-gray-100"
+                                className="btn-feedback block w-full px-4 py-2 text-left text-sm text-black-700 hover:bg-gray-100"
                                 onClick={() => handleCountrySelect(country)}
                               >
                                 <span className="mr-2">{country.name}</span>
@@ -977,7 +977,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                 <button
                   onClick={handleSendOtp}
                   disabled={isProcessing}
-                  className="btn-gradient disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="btn-feedback btn-gradient disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   style={{
                     background: 'linear-gradient(to right, #00e89d, #0078ff)',
                   }}
@@ -1018,7 +1018,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
                 <button
                   onClick={handleVerifyOtp}
                   disabled={isProcessing}
-                  className="btn-gradient disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="btn-feedback btn-gradient disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   style={{
                     background: 'linear-gradient(to right, #00e89d, #0078ff)',
                   }}
@@ -1038,7 +1038,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
             <div className="mt-4 text-center text-sm text-gray-600">
               Don&apos;t have an account?
               <button
-                className="text-blue-500 hover:text-blue-700 ml-1"
+                className="btn-feedback text-blue-500 hover:text-blue-700 ml-1"
                 onClick={() => {
                   onClose();
                   const element = document.getElementById('signup-section');
@@ -1051,7 +1051,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
             {forceGuestMode && manualLoginOverride && (
               <div className="mt-2 text-center text-sm text-gray-500">
                 <button
-                  className="hover:text-blue-700"
+                  className="btn-feedback hover:text-blue-700"
                   onClick={() => setManualLoginOverride(false)}
                 >
                   ← Continue as guest instead

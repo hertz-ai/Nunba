@@ -88,13 +88,13 @@ function ProviderCard({ provider, onTest, onToggle, onSetKey, testing }) {
           {provider.api_key_set ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 12, color: '#4CAF50' }}>✓ API key configured</span>
-              <button onClick={() => setShowKeyInput(!showKeyInput)}
+              <button className="btn-feedback" onClick={() => setShowKeyInput(!showKeyInput)}
                 style={{ ...btnStyle('#2a3a4a'), padding: '3px 8px', fontSize: 11 }}>
                 Update
               </button>
             </div>
           ) : (
-            <button onClick={() => setShowKeyInput(!showKeyInput)}
+            <button className="btn-feedback" onClick={() => setShowKeyInput(!showKeyInput)}
               style={{ ...btnStyle('#FF9800'), padding: '4px 10px', fontSize: 12 }}>
               Set API Key
             </button>
@@ -111,8 +111,8 @@ function ProviderCard({ provider, onTest, onToggle, onSetKey, testing }) {
                   outline: 'none',
                 }}
               />
-              <button onClick={handleSaveKey} style={btnStyle('#4CAF50')}>Save</button>
-              <button onClick={() => setShowKeyInput(false)} style={btnStyle('#666')}>×</button>
+              <button className="btn-feedback" onClick={handleSaveKey} style={btnStyle('#4CAF50')}>Save</button>
+              <button className="btn-feedback" onClick={() => setShowKeyInput(false)} style={btnStyle('#666')}>×</button>
             </div>
           )}
         </div>
@@ -121,7 +121,7 @@ function ProviderCard({ provider, onTest, onToggle, onSetKey, testing }) {
       {/* Actions */}
       <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
         {provider.provider_type === 'api' && provider.api_key_set && (
-          <button
+          <button className="btn-feedback"
             onClick={() => onTest(provider.id)}
             disabled={testing === provider.id}
             style={btnStyle(testing === provider.id ? '#444' : '#6C63FF')}
@@ -129,7 +129,7 @@ function ProviderCard({ provider, onTest, onToggle, onSetKey, testing }) {
             {testing === provider.id ? 'Testing...' : 'Test Connection'}
           </button>
         )}
-        <button
+        <button className="btn-feedback"
           onClick={() => onToggle(provider.id, !provider.enabled)}
           style={btnStyle(provider.enabled ? '#f44336' : '#4CAF50')}
         >
@@ -331,7 +331,7 @@ export default function ProviderManagementPage() {
             </span>
           )}
           {testResult.error && <span style={{ color: '#f44336', marginLeft: 12 }}>{testResult.error}</span>}
-          <button onClick={() => setTestResult(null)}
+          <button className="btn-feedback" onClick={() => setTestResult(null)}
             style={{ float: 'right', ...btnStyle('#333'), padding: '2px 8px' }}>×</button>
         </div>
       )}
@@ -339,7 +339,7 @@ export default function ProviderManagementPage() {
       {/* Type filter tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
         {typeFilters.map(t => (
-          <button key={t} onClick={() => setFilter(t)} style={{
+          <button className="btn-feedback" key={t} onClick={() => setFilter(t)} style={{
             ...btnStyle(filter === t ? '#6C63FF' : '#2a3a4a'),
             padding: '4px 12px',
           }}>

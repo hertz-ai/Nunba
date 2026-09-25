@@ -862,7 +862,7 @@ var HertzAI = createReactClass({
                           placeholder="Enter your Email"
                         />
                         <div className="input-group-append">
-                          <button className="btn btn-secondary" type="submit">
+                          <button className="btn-feedback btn btn-secondary" type="submit">
                             Subscribe Now
                           </button>
                         </div>
@@ -943,7 +943,7 @@ var HertzAI = createReactClass({
                           placeholder="Enter your Email"
                         />
                         <div className="input-group-append">
-                          <button className="btn btn-success" type="submit">
+                          <button className="btn-feedback btn btn-success" type="submit">
                             Subscribe
                           </button>
                         </div>

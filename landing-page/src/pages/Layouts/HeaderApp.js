@@ -125,7 +125,7 @@ class HeaderApp extends Component {
                 <img src={logo_dark} alt="" className="logo-dark" height="14" />
               </Link>
               <button
-                className="navbar-toggler"
+                className="btn-feedback navbar-toggler"
                 type="button"
                 onClick={this.toggleHeader}
               >
@@ -207,7 +207,7 @@ class HeaderApp extends Component {
                       </Link>
                     </li>
                   </ul>
-                  <button className="btn btn-sm navbar-btn float-left">
+                  <button className="btn-feedback btn btn-sm navbar-btn float-left">
                     Sign up
                   </button>
                 </ScrollspyNav>

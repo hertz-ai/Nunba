@@ -136,7 +136,7 @@ const Agents = ({
             <button
               onClick={onClose}
               aria-label="Close"
-              className="text-gray-400 hover:text-white rounded-full p-1.5 transition-colors"
+              className="btn-feedback text-gray-400 hover:text-white rounded-full p-1.5 transition-colors"
             >
               <X className="w-6 h-6" />
             </button>
@@ -281,7 +281,7 @@ const LoadErrorState = ({onRetry}) => (
       The local backend didn&apos;t respond. Your agents are still there — this is
       a connection problem, not an empty list.
     </p>
-    <button type="button" className="agents-empty__retry" onClick={onRetry}>
+    <button type="button" className="btn-feedback agents-empty__retry" onClick={onRetry}>
       Retry
     </button>
   </div>
@@ -401,7 +401,7 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
             e.stopPropagation();
             handleButtonClick();
           }}
-          className="agent-card__cta"
+          className="btn-feedback agent-card__cta"
         >
           <span>Talk to agent</span>
           <ArrowRight />
