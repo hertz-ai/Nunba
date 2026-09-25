@@ -2528,6 +2528,25 @@ def check_internet_connection():
     return _internet_cache['online']
 
 
+def _is_same_agent(a, b):
+    """True when two /prompts rows are the same agent.
+
+    Rows come from three sources with different key sets: LOCAL_AGENTS and
+    CLOUD_AGENTS carry ``id``; HARTOS rows carry ``prompt_id`` and often an
+    empty ``name``.  A key counts only when BOTH rows have a non-empty value
+    for it, so an absent key is never evidence of sameness.  Comparing the
+    raw ``.get()`` values made every HARTOS row after the first a "duplicate"
+    on None == None and the user saw one HARTOS agent.
+    """
+    for key in ('id', 'prompt_id', 'name'):
+        va, vb = a.get(key), b.get(key)
+        if va in (None, '') or vb in (None, ''):
+            continue
+        if str(va) == str(vb):
+            return True
+    return False
+
+
 def get_prompts_route():
     """
     GET /prompts - Get all agents (local first, then HARTOS, then cloud)
@@ -2567,7 +2586,7 @@ def get_prompts_route():
                     hartos_available = True
                     for agent in hartos_agents:
                         # Skip duplicates already in LOCAL_AGENTS
-                        if any(a.get('id') == agent.get('id') or a.get('name') == agent.get('name') for a in agents):
+                        if any(_is_same_agent(a, agent) for a in agents):
                             continue
                         agent['available'] = True
                         if not agent.get('type'):
@@ -2586,7 +2605,7 @@ def get_prompts_route():
     has_auth = bool(request.headers.get('Authorization') or os.environ.get('HEVOLVE_LLM_API_KEY'))
     if agent_type in ['all', 'cloud'] and is_online:
         for agent in CLOUD_AGENTS:
-            if not any(a.get('id') == agent.get('id') or a.get('name') == agent.get('name') for a in agents):
+            if not any(_is_same_agent(a, agent) for a in agents):
                 agent_copy = agent.copy()
                 agent_copy['available'] = has_auth  # guests can see but not use
                 agent_copy['origin'] = ORIGIN_HIVE
