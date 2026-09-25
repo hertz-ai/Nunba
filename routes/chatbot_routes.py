@@ -3086,9 +3086,27 @@ def _chat_turn(data):
                 # channel-connect both get handled by the draft flags
                 # the adapter surfaces on the /chat response.
                 # Default to casual (0.8B draft) unless an agentic flow needs tools.
+                #
+                # Pragmatic override (2026-09-25): the 0.8B draft classifier
+                # was not escalating plainly actionable/memory-carrying
+                # requests ("remember that...", "open my Downloads folder")
+                # out of casual_conv — they got a friendly-sounding LLM
+                # reply with zero tool access (remember()/open_file_gui()
+                # never called), which is silently wrong, not just slow.
+                # This keyword check is a stopgap, not a replacement for a
+                # real classifier — it only widens the set of requests that
+                # get real tool access; it never narrows it.
+                _text_lower = (text or '').lower()
+                _looks_actionable = any(kw in _text_lower for kw in (
+                    'remember that', 'remember this', 'remember my',
+                    "don't forget", 'forget that', 'forget my', 'forget about',
+                    'open my', 'open the', 'find my', 'find the',
+                    'summarize the pdf', 'summarize this pdf',
+                    'summarize the document', 'summarize this document',
+                ))
                 _needs_tools = bool(langchain_prompt_id or create_agent
                                     or agentic_execute or agentic_plan
-                                    or autonomous_creation)
+                                    or autonomous_creation or _looks_actionable)
                 logger.info(
                     f"hevolve_chat dispatch: media_mode={media_mode} "
                     f"text[:160]={text[:160]!r} "
