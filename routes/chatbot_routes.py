@@ -4168,6 +4168,10 @@ def vault_store():
             vault.set_channel_secret(channel_type, key_name, value)
         else:
             vault.set_tool_key(key_name, value)
+            # The owner just typed this value, so it replaces whatever the
+            # process holds: export_to_env only setdefault()s, which kept a
+            # value a site had rejected in use until the next restart.
+            os.environ[key_name] = value
 
         # Export to env so LangChain tools can use it immediately
         vault.export_to_env()
