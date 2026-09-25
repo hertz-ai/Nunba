@@ -27,6 +27,11 @@ from integrations.service_tools.model_orchestrator import (  # noqa: F401
 # Ensure Nunba's get_catalog() (with populators) is used
 from models.catalog import ModelCatalog, ModelType, get_catalog  # noqa: F401
 
+# Catalog/registry id -> Nunba TTS backend constant (single map, owned by
+# tts_engine).  Bound at import so a test that swaps tts.tts_engine in
+# sys.modules for a mock engine still resolves names through the real map.
+from tts.tts_engine import _CATALOG_TO_BACKEND
+
 logger = logging.getLogger('NunbaModelOrchestrator')
 
 
@@ -220,8 +225,20 @@ class TTSLoader(ModelLoader):
     those fields — no duplicate table here.
     """
 
+    @staticmethod
+    def _registry_key(entry: ModelEntry) -> str:
+        """HARTOS ENGINE_REGISTRY key for a catalog entry:
+        'tts-neutts-air' -> 'neutts_air'.  Uses the canonical inverse
+        in tts_router (strips only a LEADING 'tts-', then '-' -> '_')."""
+        from integrations.channels.media.tts_router import _catalog_id_to_engine_id
+        return _catalog_id_to_engine_id(entry.id)
+
     def _backend_name(self, entry: ModelEntry) -> str:
-        return entry.id.replace('tts-', '')
+        """Nunba backend constant the TTS engine, installer and handshake
+        take: 'tts-f5-tts' -> 'f5', 'tts-neutts-air' -> 'neutts_air'.
+        Engines Nunba has no constant for keep their registry key."""
+        key = self._registry_key(entry)
+        return _CATALOG_TO_BACKEND.get(key, key)
 
     def _get_tool_worker(self, entry: ModelEntry):
         """Return the ToolWorker instance for this entry, or None if
@@ -234,7 +251,7 @@ class TTSLoader(ModelLoader):
             from integrations.channels.media.tts_router import ENGINE_REGISTRY
         except ImportError:
             return None
-        spec = ENGINE_REGISTRY.get(self._backend_name(entry))
+        spec = ENGINE_REGISTRY.get(self._registry_key(entry))
         if spec is None or not spec.tool_module or not spec.tool_worker_attr:
             return None
         try:
