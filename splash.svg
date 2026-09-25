@@ -28,14 +28,19 @@
     <radialGradient id="bv" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#9C27B0" stop-opacity="0.07"/><stop offset="100%" stop-color="#9C27B0" stop-opacity="0"/></radialGradient>
   </defs>
 
-  <rect width="960" height="640" fill="url(#bg)"/>
+  <!-- The dark background, see-through (GL4, HOME_DESKTOP_DESIGN_CHECKLIST):
+       the desktop shows through this group at (1 - opacity); everything
+       drawn after it (glows, loops, bars, the wordmark) keeps its own. -->
+  <g id="backdrop" opacity="0.62">
+    <rect width="960" height="640" fill="url(#bg)"/>
 
-  <!-- Kolam dot grid -->
-  <g fill="#1A1730" opacity="0.7">
-    <pattern id="dots" x="0" y="0" width="32" height="32" patternUnits="userSpaceOnUse">
-      <circle cx="16" cy="16" r="1.8"/>
-    </pattern>
-    <rect width="960" height="640" fill="url(#dots)"/>
+    <!-- Kolam dot grid -->
+    <g fill="#1A1730" opacity="0.7">
+      <pattern id="dots" x="0" y="0" width="32" height="32" patternUnits="userSpaceOnUse">
+        <circle cx="16" cy="16" r="1.8"/>
+      </pattern>
+      <rect width="960" height="640" fill="url(#dots)"/>
+    </g>
   </g>
 
   <!-- Holi bloom glows -->

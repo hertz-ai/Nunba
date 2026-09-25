@@ -1213,6 +1213,147 @@ def _proportional_splash(screen_w, screen_h, art_w, art_h, width_frac=0.34):
     y = max(0, (screen_h - h) // 2)
     return w, h, x, y
 
+#: The static splash's page colour: under the art where nothing can show
+#: through, and the colour the see-through background is flattened onto on a
+#: platform that cannot let the desktop through (GL4).
+_SPLASH_PAGE_RGB = (10, 9, 20)          # '#0A0914'
+
+#: How opaque the ANIMATED splash is as a whole.  Its elements are tk canvas
+#: items over a flat fill, which tk cannot make translucent per pixel, so it
+#: takes the rung glass.py already gives a tk surface: one alpha for the whole
+#: window -- the option the steward named for it (GL4).  High enough that the
+#: wordmark and greetings stay crisp over a busy wallpaper.
+_ANIMATED_SPLASH_OPACITY = 0.88
+
+
+def _open_static_splash(parent, splash_path, status_text='Starting up...'):
+    """The static splash (splash.png) on a tk Toplevel of ``parent``.
+
+    ONE builder for both places that show it: the early splash at process
+    start and the ``--setup-ai`` fallback when there is no early splash.  They
+    were two copies and had drifted (the fallback ignored the screen-
+    proportional size and drew its status with a Label).
+
+    GL4 (HOME_DESKTOP_DESIGN_CHECKLIST in HARTOS): splash.png carries alpha,
+    its dark background see-through and its artwork solid.  Where
+    ``desktop.glass.apply_image_alpha`` reaches per-pixel alpha, every frame
+    -- art, status line, progress bar -- is composed with PIL and handed to
+    it, because a window driven that way ignores tk's painting.  Anywhere
+    else the art is flattened onto ``_SPLASH_PAGE_RGB`` and drawn on the
+    canvas exactly as before, so the splash degrades and never disappears.
+
+    Returns ``(toplevel, canvas, status_var, keepalive)``; raises when the
+    image cannot be read, which both callers already handle.
+    """
+    import tkinter as _tk
+
+    from PIL import Image as _Img
+    from PIL import ImageDraw as _Draw
+    from PIL import ImageTk as _ImgTk
+
+    art = _Img.open(splash_path).convert('RGBA')
+    W, H, x, y = _proportional_splash(
+        parent.winfo_screenwidth(), parent.winfo_screenheight(),
+        art.width, art.height)
+    scale = W / 900.0      # the bar and text were tuned on a 900px design
+    art = art.resize((W, H), _Img.LANCZOS)
+
+    top = _tk.Toplevel(parent)
+    top.withdraw()         # shown once its first frame is ready (no flash)
+    top.overrideredirect(True)
+    top.attributes('-topmost', True)
+    top.geometry(f"{W}x{H}+{x}+{y}")
+    canvas = _tk.Canvas(top, width=W, height=H, highlightthickness=0, bd=0,
+                        bg='#%02X%02X%02X' % _SPLASH_PAGE_RGB)
+    canvas.pack(fill='both', expand=True)
+    status = _tk.StringVar(value=status_text)
+
+    bar_h = max(2, int(3 * scale))
+    bar_ind = max(24, int(40 * scale))
+    bar_step = max(2, int(4 * scale))
+    bar_y = H - int(14 * scale)
+    bar_w = int(220 * scale)
+    bar_x = (W - bar_w) // 2
+    text_y = H - int(32 * scale)
+    text_pt = max(8, int(10 * scale))
+    anim = {'pos': 0, 'dir': 1, 'layered': False}
+    keep = []
+
+    def _compose():
+        frame = art.copy()
+        draw = _Draw.Draw(frame)
+        draw.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h - 1],
+                       fill=(0x1A, 0x19, 0x29, 255))
+        px = bar_x + anim['pos']
+        draw.rectangle([px, bar_y, px + bar_ind, bar_y + bar_h - 1],
+                       fill=(0x6C, 0x63, 0xFF, 255))
+        try:
+            from desktop.splash_effects import _pil_font
+            font = _pil_font('bahnschrift',
+                             max(8, round(text_pt * top.winfo_fpixels('1p'))))
+            draw.text((W // 2, text_y), status.get(), font=font,
+                      fill=(0x72, 0x75, 0x7E, 255), anchor='mm')
+        except Exception:
+            pass   # the art still shows; only the status line is lost
+        return frame
+
+    def _push():
+        from desktop.glass import LAYERED_ALPHA, apply_image_alpha
+        return apply_image_alpha(top, _compose()).rung == LAYERED_ALPHA
+
+    try:
+        top.update_idletasks()
+        anim['layered'] = _push()
+    except Exception:
+        anim['layered'] = False
+
+    if not anim['layered']:
+        flat = _Img.new('RGBA', (W, H), _SPLASH_PAGE_RGB + (255,))
+        flat.alpha_composite(art)
+        photo = _ImgTk.PhotoImage(flat)
+        keep.append(photo)
+        canvas.create_image(0, 0, image=photo, anchor='nw')
+        text_id = canvas.create_text(
+            W // 2, text_y, text=status.get(),
+            font=('Bahnschrift Light', text_pt), fill='#72757E',
+            anchor='center')
+        canvas.create_rectangle(bar_x, bar_y, bar_x + bar_w, bar_y + bar_h,
+                                fill='#1A1929', outline='')
+        bar_id = canvas.create_rectangle(bar_x, bar_y, bar_x + bar_ind,
+                                         bar_y + bar_h, fill='#6C63FF',
+                                         outline='')
+
+    def _on_status(*_a):
+        try:
+            if anim['layered']:
+                _push()
+            else:
+                canvas.itemconfig(text_id, text=status.get())
+        except Exception:
+            pass
+    status.trace_add('write', _on_status)
+
+    def _animate():
+        try:
+            anim['pos'] += anim['dir'] * bar_step
+            if anim['pos'] >= bar_w - bar_ind:
+                anim['dir'] = -1
+            elif anim['pos'] <= 0:
+                anim['dir'] = 1
+            if anim['layered']:
+                _push()
+            else:
+                px = bar_x + anim['pos']
+                canvas.coords(bar_id, px, bar_y, px + bar_ind, bar_y + bar_h)
+            top.after(30, _animate)
+        except Exception:
+            pass   # window already destroyed
+
+    top.deiconify()
+    _animate()
+    return top, canvas, status, keep
+
+
 _early_splash = None
 _eroot = None
 
@@ -1239,66 +1380,10 @@ if getattr(sys, 'frozen', False) and '--validate' not in sys.argv and '--accepta
         _app_base = os.path.dirname(os.path.abspath(sys.executable))
         _esp_path = os.path.join(_app_base, 'splash.png')
         if os.path.isfile(_esp_path):
-            from PIL import Image as _ESImg
-            from PIL import ImageTk as _ESTk
-            _es_img = _ESImg.open(_esp_path)
-            _es_ow, _es_oh = _es_img.size
-            # Proportional to the screen (resolution + DPI aware) instead of a
-            # fixed 900x560 box, which looked huge on low-res panels and tiny on
-            # high-DPI displays.  _es_scale (relative to the 900px design the
-            # bar/text below were tuned for) scales those overlays to match.
-            _ESW, _ESH, _esx, _esy = _proportional_splash(
-                _eroot.winfo_screenwidth(), _eroot.winfo_screenheight(),
-                _es_ow, _es_oh)
-            _es_scale = _ESW / 900.0
-            _es_img = _es_img.resize((_ESW, _ESH), _ESImg.LANCZOS)
-            _es_top = _estk.Toplevel(_eroot)
-            _es_top.overrideredirect(True)
-            _es_top.attributes('-topmost', True)
-            _es_top.geometry(f"{_ESW}x{_ESH}+{_esx}+{_esy}")
-            _es_photo = _ESTk.PhotoImage(_es_img)
-            _es_canvas = _estk.Canvas(_es_top, width=_ESW, height=_ESH,
-                                       highlightthickness=0, bd=0)
-            _es_canvas.pack(fill='both', expand=True)
-            _es_canvas.create_image(0, 0, image=_es_photo, anchor='nw')
-            _es_canvas._ref = _es_photo
-            _es_status = _estk.StringVar(value='Starting up...')
-            _es_status_id = _es_canvas.create_text(
-                _ESW // 2, _ESH - int(32 * _es_scale), text='Starting up...',
-                font=('Bahnschrift Light', max(8, int(10 * _es_scale))),
-                fill='#72757E', anchor='center')
-            def _es_on_status(*_a):
-                try:
-                    _es_canvas.itemconfig(_es_status_id, text=_es_status.get())
-                except Exception:
-                    pass
-            _es_status.trace_add('write', _es_on_status)
-            _es_bh = max(2, int(3 * _es_scale))       # bar thickness
-            _es_ind = max(24, int(40 * _es_scale))    # moving indicator width
-            _es_step = max(2, int(4 * _es_scale))     # animation step
-            _es_bar_y = _ESH - int(14 * _es_scale)
-            _es_bar_w = int(220 * _es_scale)
-            _es_bar_x = (_ESW - _es_bar_w) // 2
-            _es_canvas.create_rectangle(_es_bar_x, _es_bar_y,
-                                         _es_bar_x + _es_bar_w, _es_bar_y + _es_bh,
-                                         fill='#1A1929', outline='')
-            _es_bar_rect = _es_canvas.create_rectangle(
-                _es_bar_x, _es_bar_y, _es_bar_x + _es_ind, _es_bar_y + _es_bh,
-                fill='#6C63FF', outline='')
-            _es_anim = {'pos': 0, 'dir': 1}
-            def _es_animate():
-                try:
-                    _es_anim['pos'] += _es_anim['dir'] * _es_step
-                    if _es_anim['pos'] >= _es_bar_w - _es_ind:
-                        _es_anim['dir'] = -1
-                    elif _es_anim['pos'] <= 0:
-                        _es_anim['dir'] = 1
-                    px = _es_bar_x + _es_anim['pos']
-                    _es_canvas.coords(_es_bar_rect, px, _es_bar_y, px + _es_ind, _es_bar_y + _es_bh)
-                    _es_top.after(30, _es_animate)
-                except Exception:
-                    pass
-            _es_animate()
+            # Proportional to the screen (resolution + DPI aware), see-through
+            # background where the OS allows it (GL4) -- all in the one builder.
+            _es_top, _es_canvas, _es_status, _es_photo = _open_static_splash(
+                _eroot, _esp_path)
             _safe_tk_update_early(_eroot)
             # Fallback auto-destroy cut 5min -> 45s: if the normal
             # close-on-webview-ready path does not fire, the splash self-clears
@@ -3219,9 +3304,6 @@ if getattr(args, 'setup_ai', False):
         try:
             import tkinter as _stk
 
-            from PIL import Image as _PILImg
-            from PIL import ImageTk as _PILTk
-
             _shared_root = _stk.Tk()
             _shared_root.withdraw()
 
@@ -3231,51 +3313,10 @@ if getattr(args, 'setup_ai', False):
             if not os.path.isfile(_splash_path):
                 raise FileNotFoundError(f"splash.png not found at {_splash_path}")
 
-            _pil_img = _PILImg.open(_splash_path)
-            _SW, _SH = _pil_img.size
-
-            _setup_splash = _stk.Toplevel(_shared_root)
-            _setup_splash.overrideredirect(True)
-            _setup_splash.attributes('-topmost', True)
-            _sx = (_setup_splash.winfo_screenwidth() - _SW) // 2
-            _sy = (_setup_splash.winfo_screenheight() - _SH) // 2
-            _setup_splash.geometry(f"{_SW}x{_SH}+{_sx}+{_sy}")
-
-            _splash_photo = _PILTk.PhotoImage(_pil_img)
-            _canvas = _stk.Canvas(_setup_splash, width=_SW, height=_SH,
-                                   highlightthickness=0, bd=0)
-            _canvas.pack(fill='both', expand=True)
-            _canvas.create_image(0, 0, image=_splash_photo, anchor='nw')
-            _canvas._ref = _splash_photo
-
-            _setup_splash_status = _stk.StringVar(value='Scanning for AI services...')
-            _stk.Label(_setup_splash, textvariable=_setup_splash_status,
-                       font=('Bahnschrift Light', 10), bg='#0A0914',
-                       fg='#72757E').place(x=_SW // 2, y=_SH - 50, anchor='center')
-
-            _bar_y = _SH - 22
-            _bar_w = 220
-            _bar_x = (_SW - _bar_w) // 2
-            _canvas.create_rectangle(_bar_x, _bar_y, _bar_x + _bar_w, _bar_y + 3,
-                                     fill='#1A1929', outline='')
-            _bar_rect = _canvas.create_rectangle(
-                _bar_x, _bar_y, _bar_x + 40, _bar_y + 3, fill='#6C63FF', outline='')
-            _bar_state = {'pos': 0, 'dir': 1}
-
-            def _bar_anim():
-                try:
-                    _bar_state['pos'] += _bar_state['dir'] * 4
-                    if _bar_state['pos'] >= _bar_w - 40:
-                        _bar_state['dir'] = -1
-                    elif _bar_state['pos'] <= 0:
-                        _bar_state['dir'] = 1
-                    px = _bar_x + _bar_state['pos']
-                    _canvas.coords(_bar_rect, px, _bar_y, px + 40, _bar_y + 3)
-                    _setup_splash.after(30, _bar_anim)
-                except Exception:
-                    pass
-
-            _bar_anim()
+            # The same builder as the early splash, so the two cannot drift.
+            _setup_splash, _canvas, _setup_splash_status, _splash_keep = (
+                _open_static_splash(_shared_root, _splash_path,
+                                    'Scanning for AI services...'))
             _setup_splash.update_idletasks()
             _setup_logger.info("--setup-ai: splash.png shown")
         except Exception as _sp_err:
@@ -9785,6 +9826,14 @@ def _show_splash():
                            highlightthickness=0, bd=0)
         canvas.pack(fill='both', expand=True)
         logger.info(f"[SPLASH] Window created: {W}x{H} at ({x},{y})")
+
+        # GL4: the desktop shows through the animated splash, through the ONE
+        # capability module (glass.py logs the rung it actually reached).
+        try:
+            from desktop.glass import GlassIntent, apply_glass
+            apply_glass(root, GlassIntent(opacity=_ANIMATED_SPLASH_OPACITY))
+        except Exception as _glass_err:
+            logger.info(f"[SPLASH] see-through skipped: {_glass_err}")
 
         # ── Background: PIL-rendered base (anti-aliased) ──
         try:
