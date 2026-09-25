@@ -283,6 +283,49 @@ class TestTTSLoader(unittest.TestCase):
             self.loader.download(self._tts_entry(id='tts-kokoro'))
         m.assert_called_once_with('kokoro')
 
+    def test_backend_name_only_strips_leading_prefix(self):
+        # Regression: a plain str.replace('tts-', '') also eats the 'tts-'
+        # *inside* the engine key — 'tts-neutts-air' -> 'neuair',
+        # 'tts-xtts-v2' -> 'xv2' — producing a phantom backend that is not
+        # in ENGINE_REGISTRY, so _create_backend returns None and the
+        # auto-install/probe path crash-reports. _backend_name must strip
+        # only the leading prefix and normalise hyphens to underscores so
+        # the result matches the ENGINE_REGISTRY key exactly.
+        cases = {
+            'tts-neutts-air': 'neutts_air',
+            'tts-xtts-v2': 'xtts_v2',
+            'tts-f5-tts': 'f5_tts',
+            'tts-chatterbox-turbo': 'chatterbox_turbo',
+            'tts-kokoro': 'kokoro',
+        }
+        for catalog_id, expected in cases.items():
+            self.assertEqual(
+                self.loader._backend_name(self._tts_entry(id=catalog_id)),
+                expected,
+                f"{catalog_id} must map to registry key {expected!r}",
+            )
+
+    def test_backend_name_matches_engine_registry_keys(self):
+        # Every derived backend name for a subprocess engine must be a real
+        # ENGINE_REGISTRY key, otherwise _get_tool_worker silently treats a
+        # GPU engine as CPU-only and the auto-install name is bogus.
+        from integrations.channels.media.tts_router import ENGINE_REGISTRY
+        for catalog_id in ('tts-neutts-air', 'tts-xtts-v2', 'tts-f5-tts',
+                           'tts-chatterbox-turbo'):
+            name = self.loader._backend_name(self._tts_entry(id=catalog_id))
+            self.assertIn(name, ENGINE_REGISTRY,
+                          f"{catalog_id} -> {name!r} is not an ENGINE_REGISTRY key")
+
+    def test_load_neutts_auto_install_uses_registry_name(self):
+        # The mangled 'neuair' name is what reached _try_auto_install_backend
+        # in the field and produced the '_create_backend returned None'
+        # crash-report. Guard the exact call.
+        mock_engine = MagicMock()
+        mock_engine._can_run_backend.return_value = False
+        with patch('tts.tts_engine.TTSEngine', return_value=mock_engine):
+            self.loader.load(self._tts_entry(id='tts-neutts-air'), 'cpu')
+        mock_engine._try_auto_install_backend.assert_called_once_with('neutts_air')
+
     def test_download_install_failure(self):
         with patch('tts.package_installer.install_backend_full', return_value=(False, 'err')):
             self.assertFalse(self.loader.download(self._tts_entry()))
