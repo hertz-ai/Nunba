@@ -2,16 +2,17 @@
 Tests for custom model storage path resolution, configuration, download routing,
 and cross-platform foreground window detection.
 """
-import os
-import sys
 import json
+import os
 import shutil
+import sys
 import tempfile
-import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from models.catalog import ModelType, ModelEntry
+import pytest
+
+from models.catalog import ModelEntry, ModelType
 
 
 def test_llama_installer_models_dir_priority(tmp_path):
@@ -91,7 +92,7 @@ def test_llama_config_get_set_models_dir(tmp_path):
     assert target_dir.exists()
 
     # Re-read config from disk to confirm persistence
-    with open(tmp_path / "llama_config.json", "r", encoding="utf-8") as f:
+    with open(tmp_path / "llama_config.json", encoding="utf-8") as f:
         data = json.load(f)
     assert os.path.abspath(data["models_dir"]) == os.path.abspath(str(target_dir))
 

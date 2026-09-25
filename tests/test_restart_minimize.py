@@ -170,9 +170,13 @@ class RestartMinimizeStaticTests(unittest.TestCase):
     def test_companion_api_has_on_companion_prompt(self):
         src = APP_PY.read_text(encoding="utf-8")
         # Method signature must exist on the CompanionAPI class.
-        self.assertIn(
-            "def on_companion_prompt(self, text):",
+        # `text` must be the FIRST argument; later keyword arguments are the
+        # bridge's own business.  5bd57b078 (2026-09-17) added `context=None`
+        # and this exact literal read that as the bridge having vanished --
+        # red on every box for five days.  Pin the contract, not the arity.
+        self.assertRegex(
             src,
+            r"def on_companion_prompt\(self, text\b[^)]*\):",
             "CompanionAPI.on_companion_prompt is the Python bridge the "
             "floating input bar calls via pywebview.api.  It must "
             "exist and accept a text argument.",
@@ -264,14 +268,24 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         '[COMPANION] ... created' line exists in any log.  transparent=True
         is what makes it see-through (WinForms paints Color.Transparent and
         ignores background_color).
+
+        The kwarg is now ABSENT (2026-09-22), so this checks what actually
+        prevents that outage rather than requiring the kwarg to exist: IF a
+        colour is passed, from either source, it must be one pywebview
+        accepts.  The earlier shape demanded the kwarg be present, which is
+        a different claim and not the one the outage taught -- and it is
+        also not this file's to make.  Whether the companion should carry a
+        background_color at all is decided, with the measurement, in
+        desktop/companion_surface.py and guarded by
+        tests/test_companion_surface.py::
+        test_the_companion_window_is_not_given_an_inert_background_color.
         """
         import inspect
         import re
 
         src = APP_PY.read_text(encoding="utf-8")
-        m = re.search(r"title='Nanba'.*?background_color='([^']*)'", src, re.S)
-        self.assertIsNotNone(m, "companion create_window() call not found")
-        colour = m.group(1)
+        call = re.search(r"title='Nanba'.*?\n\s*\)", src, re.S)
+        self.assertIsNotNone(call, "companion create_window() call not found")
 
         # pywebview's own rule when it is importable, so this cannot drift
         # from the library; its current literal otherwise.
@@ -284,11 +298,22 @@ class RestartMinimizeStaticTests(unittest.TestCase):
                 pattern = found.group(1)
         except Exception:
             pass
-        self.assertRegex(
-            colour, pattern,
-            f"companion background_color {colour!r} is rejected by "
-            "pywebview.create_window, so the floating companion is never "
-            "created.")
+
+        # Both places a colour could reach create_window: written at the
+        # call site, or carried in the shared kwargs.
+        colours = re.findall(r"background_color=['\"]([^'\"]*)['\"]",
+                             call.group(0))
+        from desktop.companion_surface import companion_window_kwargs
+        shared = companion_window_kwargs().get('background_color')
+        if shared is not None:
+            colours.append(shared)
+
+        for colour in colours:
+            self.assertRegex(
+                colour, pattern,
+                f"companion background_color {colour!r} is rejected by "
+                "pywebview.create_window, so the floating companion is "
+                "never created.")
 
     def test_companion_creation_failure_is_logged_where_it_can_be_seen(self):
         """The failure above was logged with logger.debug under an INFO root
@@ -395,22 +420,59 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         import re
 
         src = APP_PY.read_text(encoding="utf-8")
-        m = re.search(r"def on_companion_prompt\(self, text\):(.*?)\n                def |"
-                      r"def on_companion_prompt\(self, text\):(.*?)\n            _companion_api",
+        m = re.search(r"def on_companion_prompt\(self, text\b[^)]*\):(.*?)\n                def |"
+                      r"def on_companion_prompt\(self, text\b[^)]*\):(.*?)\n            _companion_api",
                       src, re.S)
         self.assertIsNotNone(m, "on_companion_prompt not found")
         bridge = m.group(1) or m.group(2)
         body = re.search(r"json=\{(.*?)\}", bridge, re.S)
+        # 5bd57b078 builds the payload into ONE local, assigned per branch:
+        # `_body = {"instruction": ...}` when an agent is in context (posted
+        # to .../inject) and `_body = {"text": ...}` otherwise (posted to
+        # /chat), then a single `requests.post(_url, json=_body)`.  So the
+        # /chat body is the assignment that FOLLOWS the /chat url, not the
+        # first `json=` or the first assignment in the bridge.
+        name = re.search(r"json=([A-Za-z_][A-Za-z0-9_]*)", bridge)
+        payload = name.group(1) if name else "_body"
+        if body is None:
+            chat_at = bridge.find('/chat"')
+            tail = bridge[chat_at:] if chat_at >= 0 else bridge
+            body = re.search(r"\b" + re.escape(payload) + r"\s*=\s*\{(.*?)\}", tail, re.S)
         self.assertIsNotNone(body, "the bridge's /chat body not found")
         self.assertIn('"text": prompt', body.group(1))
+        # The /inject sender is a second contract with its own reader:
+        # HARTOS integrations/social/api_dashboard.py inject_into_groupchat
+        # reads body["instruction"] and body["actor_id"] and answers 400
+        # without them.  Guard it the same way, so a key drift on THIS
+        # branch cannot repeat the 2026-09-15 "Error 400" on the other.
+        inject_at = bridge.find('/inject"')
+        if inject_at >= 0:
+            inject = re.search(r"\b" + re.escape(payload) + r"\s*=\s*\{(.*?)\}", bridge[inject_at:], re.S)
+            self.assertIsNotNone(inject, "the bridge's /inject body not found")
+            self.assertIn('"instruction": prompt', inject.group(1))
+            self.assertIn('"actor_id"', inject.group(1))
         self.assertNotIn('"message"', body.group(1))
 
         page = (REPO_ROOT / "landing-page" / "src" / "components" / "VoiceOrb"
                 / "VoiceOrbPage.jsx").read_text(encoding="utf-8")
+        # Same 5bd57b078 refactor as the Python bridge: url and body are
+        # per-branch ternaries (.../inject when an agent is in context,
+        # /chat otherwise) feeding one fetch(url, ...).  Accept the older
+        # inline shape too, and read the /chat body from the ternary's
+        # else branch.
         fetch = re.search(r"fetch\('/chat',(.*?)\}\);", page, re.S)
-        self.assertIsNotNone(fetch, "VoiceOrbPage /chat fallback not found")
-        self.assertIn("text: t", fetch.group(1))
-        self.assertNotIn("message: t", fetch.group(1))
+        if fetch is not None:
+            chat_body, inject_body = fetch.group(1), None
+        else:
+            tern = re.search(r":\s*'/chat';.*?\?\s*\{([^}]*)\}\s*:\s*\{([^}]*)\}", page, re.S)
+            self.assertIsNotNone(tern, "VoiceOrbPage /chat fallback not found")
+            inject_body, chat_body = tern.group(1), tern.group(2)
+        self.assertIn("text: t", chat_body)
+        self.assertNotIn("message: t", chat_body)
+        if inject_body is not None:
+            # the orb's inject sender posts what inject_into_groupchat reads
+            self.assertIn("instruction: t", inject_body)
+            self.assertIn("actor_id", inject_body)
 
     # ── Invariant J: the window follows the page's presence ───────────
     def test_companion_window_follows_the_pages_presence(self):
@@ -432,9 +494,22 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertIn("_companion_raise()", body)
         self.assertNotIn(".on_top = ", body)
 
+        # The tool-window style is still applied once the handle exists --
+        # it just moved one hop.  On 2026-09-22 the three calls that make a
+        # window a floating presence (tool window, layered + no-activate,
+        # glass) were collapsed into desktop/companion_surface.py, because
+        # their ORDER is load-bearing and app.py was the only thing keeping
+        # it.  This follows the hop rather than pinning the old inline call:
+        # demanding the literal here would either forbid the collapse or
+        # force a second copy of it, which is the drift this file exists to
+        # prevent.
         loaded = re.search(r"def _on_companion_loaded\(\):(.*?)\n            if _companion_window:",
                            src, re.S).group(1)
-        self.assertIn("set_window_tool_window(_comp_hwnd, True)", loaded)
+        self.assertIn("apply_floating_presence(_comp_hwnd", loaded)
+
+        surface = (REPO_ROOT / "desktop" / "companion_surface.py").read_text(encoding="utf-8")
+        self.assertIn("def apply_floating_presence(hwnd, opacity: float, native=None):", surface)
+        self.assertIn("set_window_tool_window(hwnd, True)", surface)
 
         page = (REPO_ROOT / "landing-page" / "src" / "components" / "VoiceOrb"
                 / "VoiceOrbPage.jsx").read_text(encoding="utf-8")
@@ -605,7 +680,12 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertIn("set_window_size(_comp_hwnd, _comp_w, _comp_h)", loaded)
         helper = (REPO_ROOT / "desktop" / "platform_utils.py").read_text(encoding="utf-8")
         self.assertIn("def set_window_size(window_handle, width, height):", helper)
-        self.assertIn("_get_win32_dpi_scale()", helper.split("def set_window_size(")[1])
+        # 2026-09-22: the scale is read for THIS window (GetDpiForWindow), not
+        # for the desktop (GetDC(0)).  The companion is placed bottom-right of
+        # the work area, so on a second monitor scaled differently from the
+        # primary the desktop's factor would size it for the wrong display.
+        self.assertIn("_get_win32_dpi_scale(window_handle)",
+                      helper.split("def set_window_size(")[1])
 
 
 class RestartMinimizeBehaviouralTests(unittest.TestCase):
@@ -727,7 +807,10 @@ class CompanionWin32ContractTests(unittest.TestCase):
 
         return (mock.patch.object(ctypes, "windll", fake, create=True),
                 mock.patch.object(platform_utils, "IS_WINDOWS", True),
-                mock.patch.object(platform_utils, "_get_win32_dpi_scale", lambda: 1.5))
+                # Takes the window handle since 2026-09-22 (window DPI, not
+                # system DPI) — *_a so this stands in for either arity.
+                mock.patch.object(platform_utils, "_get_win32_dpi_scale",
+                                  lambda *_a: 1.5))
 
     def test_refused_region_is_deleted_and_reported(self):
         from desktop import platform_utils

@@ -92,8 +92,9 @@ from __future__ import annotations
 # that call Win32.
 import ctypes
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 # The canonical home of platform detection and handle resolution.  Imported
 # as a MODULE, not as names, on purpose: the flags are read at call time, so
@@ -101,6 +102,15 @@ from typing import Callable, Optional
 # it patches it for everybody.  A second copy of "is this platform X" is the
 # parallel path this module exists to prevent.
 from desktop import platform_utils
+
+# The one hand-rolled COM vtable helper in the package.  Bound under this
+# module's own names so the composition code below reads as it did when the
+# helper lived here, and so a test that patches ``glass._vcall`` still sees
+# every call this module makes.
+from desktop.win32_com import GUID as _GUID
+from desktop.win32_com import SLOT_RELEASE as _SLOT_RELEASE
+from desktop.win32_com import guid as _guid
+from desktop.win32_com import vcall as _vcall
 
 logger = logging.getLogger('NunbaGlass')
 
@@ -207,7 +217,7 @@ class _Backend:
     name: str
     ceiling: str
     creation_kwargs: Callable[[], dict]
-    apply: Callable[[object, int, 'GlassIntent'], 'GlassResult']
+    apply: Callable[[object, int, GlassIntent], GlassResult]
 
 
 # ── the two public entry points ────────────────────────────────────────
@@ -474,8 +484,12 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
     The accent policy is asked for ONLY where it can be seen -- on a window
     whose page is composited, so the page's alpha reaches it.  GL1 measured
     that same policy painting an opaque white sheet behind a WinForms-hosted
-    WebView2, and that is exactly the ``composited=False`` case, which keeps
-    the system backdrop it has always had.
+    WebView2, and that is exactly the ``composited=False`` case.
+
+    That case gets NO material: the immersive dark mode, and the system
+    backdrop explicitly set to NONE.  Not merely "not asked for" -- the host
+    toolkit asks for one behind this module's back, and the reasoning and
+    the A/B numbers are at the branch itself, below.
 
     Returns whether the OS ACCEPTED the material.  That is all it means: the
     bool feeds a diagnostic step name, never a rung.  Promoting it to a rung
@@ -488,13 +502,7 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
 
         DWMWA_USE_IMMERSIVE_DARK_MODE = 20
         DWMWA_SYSTEMBACKDROP_TYPE = 38
-        DWMSBT_TRANSIENTWINDOW = 3
-
-        class MARGINS(ctypes.Structure):
-            _fields_ = [('cxLeftWidth', ctypes.c_int),
-                        ('cxRightWidth', ctypes.c_int),
-                        ('cyTopHeight', ctypes.c_int),
-                        ('cyBottomHeight', ctypes.c_int)]
+        DWMSBT_NONE = 1
 
         dwm = ctypes.windll.dwmapi
         h = platform_utils._hwnd(hwnd)
@@ -506,21 +514,68 @@ def _windows_dwm_material(hwnd, intent: GlassIntent,
         if composited:
             return _windows_accent_blur(hwnd)
 
-        backdrop = wintypes.DWORD(DWMSBT_TRANSIENTWINDOW)
-        hr = dwm.DwmSetWindowAttribute(h, DWMWA_SYSTEMBACKDROP_TYPE,
-                                       ctypes.byref(backdrop),
-                                       ctypes.sizeof(backdrop))
-        if hr != 0:
-            logger.debug('glass: the DWM refused its backdrop for hwnd %s '
-                         '(hr %s) - pre-22H2, or transparency effects are '
-                         'off', hwnd, hr)
-            return False
-
-        # -1 on every edge: the whole client area, so the backdrop is not
-        # clipped to a title bar that a frameless window does not have.
-        margins = MARGINS(-1, -1, -1, -1)
-        dwm.DwmExtendFrameIntoClientArea(h, ctypes.byref(margins))
-        return True
+        # A NON-COMPOSITED window gets the immersive dark mode above and the
+        # system backdrop set to NONE.  It used to get
+        # DWMWA_SYSTEMBACKDROP_TYPE plus a frame extension over the whole
+        # client area; that was withdrawn on measurement, and then "withdrawn"
+        # turned out not to be enough.
+        #
+        # WHY, MEASURED 2026-09-22 on the live companion and then A/B'd on a
+        # window built with companion_window_kwargs():
+        #
+        #   The material DWM renders for a window's FRAME is not clipped by
+        #   SetWindowRgn.  The companion is cut to a 209x209 disc while it
+        #   speaks (GetWindowRgn, live: COMPLEX, box 209x209 inside a 330x465
+        #   window), yet the whole 330x465 rectangle was tinted -- the owner's
+        #   own terminal text visible through it but washed out.  A/B, same
+        #   window, same region, one variable:
+        #
+        #       backdrop as before   grey outside the disc  +57.1/255
+        #       backdrop suppressed                         +25.7/255
+        #
+        #   So it painted a grey RECTANGLE around a window the OS had been
+        #   told was a circle -- which the owner saw as "grey around the orb"
+        #   and "the corner radius clipped still is grey forming a corner
+        #   sharp".  A material that escapes the window's own shape is not a
+        #   look decision; it defeats the shape.
+        #
+        # THE RESIDUAL, attributed later the same day: pywebview itself asks
+        # for Mica.  ``webview/platforms/winforms.py`` ``update_title_bar_
+        # theme`` writes ``DwmSetWindowAttribute(hwnd, 38, 2)`` on every form
+        # whose system theme is dark, from ``BrowserForm.__init__`` and again
+        # on every ``SystemEvents.UserPreferenceChanged``.  Read back live off
+        # the companion: backdrop type 2 while this module had written
+        # nothing.  A/B on the real window, cut to the rounded card, over a
+        # white backdrop, the four corner squares OUTSIDE the region:
+        #
+        #       as pywebview left it (Mica)   77/255 grey in all four corners
+        #       set to NONE                   255 (the backdrop, untouched)
+        #       Mica put back                 77 again
+        #
+        # That is the grey the owner saw at the card's corners.  So this
+        # branch WRITES the type rather than leaving it alone: "not asking"
+        # left the toolkit's answer in place.  Not a look value -- NONE is
+        # the absence of one, the same shape as _ACCENT_NO_TINT above.
+        #
+        # The trap this walked into, recorded because it cost two wrong
+        # conclusions: an earlier control measured TRANSMITTANCE with the
+        # backdrop suppressed and saw it FALL (0.469 -> 0.200), so the
+        # backdrop was called harmless.  Transmittance is light passing
+        # through.  A translucent grey material passes light AND adds grey;
+        # those are different properties and only the second is the defect.
+        # Measure the tint, not just the transmittance.
+        #
+        # Known gap: pywebview re-writes Mica on a system theme change, and
+        # nothing re-applies this until the next apply_glass.
+        none = wintypes.DWORD(DWMSBT_NONE)
+        dwm.DwmSetWindowAttribute(h, DWMWA_SYSTEMBACKDROP_TYPE,
+                                  ctypes.byref(none), ctypes.sizeof(none))
+        logger.debug(
+            'glass: system backdrop set to NONE on hwnd %s - the DWM renders '
+            'it for the window FRAME, which SetWindowRgn does not clip, and '
+            'pywebview had asked for Mica (measured 77/255 grey outside the '
+            'rounded region, 255 with NONE)', hwnd)
+        return False
     except Exception as e:
         logger.debug('glass: DWM backdrop unavailable for hwnd %s: %s',
                      hwnd, e)
@@ -607,28 +662,12 @@ def _windows_layered_alpha(hwnd, intent: GlassIntent) -> bool:
 # ── Windows: the COM the compositor is reached through ─────────────────
 #
 # DirectComposition is Windows' own GPU compositor and it has no .NET
-# projection, so reaching it means calling COM vtable slots by index.  Every
-# vtable call in this module goes through ``_vcall`` and every release
-# through ``_com_release``: a second hand-rolled vtable helper is exactly the
-# parallel path that drifts, and a missed Release is a leaked GPU device.
-
-
-class _GUID(ctypes.Structure):
-    """A COM interface id, laid out as the Windows headers declare one."""
-
-    _fields_ = [('Data1', ctypes.c_uint32),
-                ('Data2', ctypes.c_uint16),
-                ('Data3', ctypes.c_uint16),
-                ('Data4', ctypes.c_ubyte * 8)]
-
-
-def _guid(data1: int, data2: int, data3: int, *tail: int) -> _GUID:
-    """A ``_GUID`` from the groups a GUID is written in, left to right."""
-    value = _GUID()
-    value.Data1, value.Data2, value.Data3 = data1, data2, data3
-    for index, byte in enumerate(tail):
-        value.Data4[index] = byte
-    return value
+# projection, so reaching it means calling COM vtable slots by index.  The
+# vtable helper is ``desktop/win32_com.py`` (bound above as ``_vcall``),
+# shared with the taskbar-list call in ``platform_utils``: a second
+# hand-rolled helper is exactly the parallel path that drifts.  Every
+# release in this module goes through ``_com_release`` below, because a
+# missed Release is a leaked GPU device.
 
 
 #: ``IDCompositionDevice`` {C37EA93A-E7AA-450D-B16F-9746CB0407F3}, the root
@@ -638,9 +677,7 @@ _IID_IDCOMPOSITION_DEVICE = _guid(
     0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3)
 
 #: Vtable slots, counted from each interface's declaration order in dcomp.h.
-#: ``IUnknown`` occupies 0-2 on EVERY COM interface, so slot 2 is Release
-#: whatever the object turns out to be.
-_SLOT_RELEASE = 2
+#: Release is ``win32_com.SLOT_RELEASE``, the same on every interface.
 _SLOT_DEVICE_COMMIT = 3
 _SLOT_DEVICE_CREATE_TARGET_FOR_HWND = 6
 _SLOT_DEVICE_CREATE_VISUAL = 7
@@ -658,25 +695,6 @@ _WEBVIEW2_TIMEOUT_SECONDS = 30
 #: ``release_glass`` is how a caller hands one back.  One registry, so a
 #: window can never end up with two hosts fighting over it.
 _WINDOWS_HOSTS = {}
-
-
-def _vcall(interface, slot: int, restype, argtypes, *args):
-    """Call slot ``slot`` of ``interface``'s COM vtable.
-
-    ``interface`` is a ``c_void_p`` holding the interface pointer, which is
-    also a pointer to its vtable pointer -- two dereferences to the function.
-
-    ``restype`` is the caller's because ``Release`` returns a ULONG while
-    every other method here returns an HRESULT, and an HRESULT restype makes
-    ctypes RAISE on failure.  That is deliberate: a COM call that quietly
-    returns E_FAIL and is never checked is how a "working" compositor host
-    turns out to have composited nothing.
-    """
-    table = ctypes.cast(
-        interface, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
-    method = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(
-        table[slot])
-    return method(interface, *args)
 
 
 def _com_release(interface, what: str) -> None:
@@ -942,9 +960,8 @@ def _windows_composition_controller(hwnd, visual):
     if apartment != ApartmentState.STA:
         raise RuntimeError(
             'WebView2 can only be created on a single-threaded apartment; '
-            'this thread is %s. Initialise COM as STA before the CLR first '
-            'touches it (pywebview does this for its own UI thread).'
-            % apartment)
+            f'this thread is {apartment}. Initialise COM as STA before the '
+            'CLR first touches it (pywebview does this for its own UI thread).')
 
     environment_task = CoreWebView2Environment.CreateAsync(
         None, platform_utils.webview_user_data_dir(), None)
@@ -973,7 +990,7 @@ def _windows_composition_controller(hwnd, visual):
     return controller
 
 
-def _windows_composition_host(hwnd) -> Optional[_CompositionHost]:
+def _windows_composition_host(hwnd) -> _CompositionHost | None:
     """Host this window's page on the GPU compositor, or say why not.
 
     Returns the host on success and None on every failure, having released

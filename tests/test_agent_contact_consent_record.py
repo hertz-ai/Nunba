@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault('HEVOLVE_DB_PATH', ':memory:')
 
-from flask import Flask                                            # noqa: E402
+from flask import Flask  # noqa: E402
 
 AGENT = 'claude_orchestrator'
 USER = '10202'
@@ -41,10 +41,15 @@ MESSAGE = 'Authorize WhatsApp onboarding outreach via the hive.'
 @pytest.fixture
 def api(monkeypatch):
     """The two real view functions, over a real consent DB."""
-    from routes import chatbot_routes as cr
     from integrations.social.models import (
-        Base, Notification, UserConsent, db_session, get_engine,
+        Base,
+        Notification,
+        UserConsent,
+        db_session,
+        get_engine,
     )
+
+    from routes import chatbot_routes as cr
 
     Base.metadata.create_all(get_engine())
     cr._pending_contacts.clear()
@@ -302,6 +307,7 @@ def test_the_dict_is_documented_as_a_payload_cache_not_a_decision_store():
     write, so removing the ConsentService call fails here too.
     """
     import inspect
+
     from routes import chatbot_routes as cr
     src = inspect.getsource(cr)
     decl = src.split('_pending_contacts = {}')[0][-1400:]

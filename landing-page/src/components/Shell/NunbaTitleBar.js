@@ -27,6 +27,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { TitleBarSlotProvider } from './TitleBarSlotContext';
+import {
+  armWindowDragGesture,
+  isPortraitLayout,
+  ownsPointer,
+  pressIsOnScrollbar,
+} from './windowDrag';
 
 // Routes whose layout OWNS the viewport: fixed-height surfaces that manage
 // their own internal scrolling, where a document-level scrollbar is wrong.
@@ -98,10 +104,6 @@ const RESIZE_GRIP_PX = 6;
 const TITLEBAR_Z = 10000;
 const RESIZE_GRIPS_Z = TITLEBAR_Z + 1;
 const RESIZE_CORNER_PX = 12;
-
-// Pointer travel (in CSS px, summed |dx|+|dy|) past which a mouse-down on the
-// titlebar right slot is treated as a window-drag instead of a chip click.
-const DRAG_THRESHOLD_PX = 5;
 const RESIZE_GRIPS = [
   { edge: 'top', cursor: 'ns-resize', s: { top: 0, left: RESIZE_CORNER_PX, right: RESIZE_CORNER_PX, height: RESIZE_GRIP_PX } },
   { edge: 'bottom', cursor: 'ns-resize', s: { bottom: 0, left: RESIZE_CORNER_PX, right: RESIZE_CORNER_PX, height: RESIZE_GRIP_PX } },
@@ -374,86 +376,54 @@ export default function NunbaTitleBar({ children }) {
     callApi('window_start_drag');
   }, [callApi]);
 
-  // ── Right-slot drag-vs-click ─────────────────────────────────────────
-  // The intelligence-preference chip (Local / Hybrid / Hive) is portaled
-  // into this slot.  On Windows frameless, the chip's pixels are carved to
-  // HTCLIENT (desktop/win32_chrome.py slot_width) so the WebView receives
-  // the click — but that means the OS no longer auto-drags the window from
-  // there.  We restore titlebar-like behaviour with JS drag-vs-click:
-  //   • a plain click (movement under DRAG_THRESHOLD_PX) falls through to
-  //     the chip button's own onClick → toggles the preference;
-  //   • a real drag (movement past the threshold) calls window_start_drag()
-  //     → begin_window_drag() runs the native move loop, and the pending
-  //     click is suppressed so the chip doesn't toggle on drop.
-  // Only active in pywebview (isPywebview()); browser mode is untouched.
-  // `dragging` tracks an in-flight gesture; `cleanup` holds the teardown for
-  // the active document listeners so we can also remove them on unmount (no
-  // leaked listeners across route changes / re-renders).
-  const slotDragRef = useRef({ startX: 0, startY: 0, dragging: false, cleanup: null });
+  // ── Drag-vs-click (right slot + portrait body) ──────────────────────
+  // One gesture (windowDrag.armWindowDragGesture) for both places a press
+  // may move the window without being a titlebar press:
+  //   • the right slot — the intelligence chip is portaled there and its
+  //     pixels are HTCLIENT on Windows (desktop/win32_chrome.py slot_width),
+  //     so the OS never auto-drags from it;
+  //   • the body, in portrait — any press that no component owns (see
+  //     windowDrag.ownsPointer) moves the window.
+  // A plain click (under the threshold) falls through untouched; a real drag
+  // hands off to window_start_drag and swallows the click that follows.
+  // Only one gesture is armed at a time; its teardown runs on unmount.
+  const dragCleanupRef = useRef(null);
+  const armDrag = useCallback((e, clickTarget) => {
+    if (typeof dragCleanupRef.current === 'function') dragCleanupRef.current();
+    dragCleanupRef.current = armWindowDragGesture(e, clickTarget);
+  }, []);
 
-  // Tear down any in-flight drag listeners when the titlebar unmounts.
   useEffect(() => () => {
-    const st = slotDragRef.current;
-    if (st && typeof st.cleanup === 'function') st.cleanup();
+    if (typeof dragCleanupRef.current === 'function') dragCleanupRef.current();
   }, []);
 
   const handleSlotMouseDown = useCallback((e) => {
     // Left button only; ignore if pywebview bridge is absent (browser mode).
     if (e.button !== 0) return;
     if (!isPywebview()) return;
-    const state = slotDragRef.current;
-    // A previous gesture's listeners must be gone before we arm a new one,
-    // else two onMove handlers would each fire window_start_drag.
-    if (typeof state.cleanup === 'function') state.cleanup();
-    state.startX = e.clientX;
-    state.startY = e.clientY;
-    state.dragging = false;
+    // Do NOT preventDefault: a plain click must still reach the chip.
+    armDrag(e, slotRef.current);
+  }, [armDrag]);
 
-    const cleanup = () => {
-      document.removeEventListener('mousemove', onMove, true);
-      document.removeEventListener('mouseup', onUp, true);
-      state.cleanup = null;
+  // Portrait body drag.  Bubble phase, so a component that handles its own
+  // press and calls preventDefault keeps it.  The titlebar and the resize
+  // grips have their own handlers and are skipped.  Landscape is decided per
+  // press, so a window resized between portrait and landscape needs no
+  // re-subscription.
+  useEffect(() => {
+    if (!visible || typeof document === 'undefined') return undefined;
+    const onBodyMouseDown = (e) => {
+      if (e.button !== 0 || e.defaultPrevented) return;
+      if (!isPywebview() || !isPortraitLayout()) return;
+      const t = e.target;
+      if (!t || typeof t.closest !== 'function') return;
+      if (t.closest('[data-testid="nunba-titlebar"], [data-testid="nunba-resize-grips"]')) return;
+      if (ownsPointer(t) || pressIsOnScrollbar(e)) return;
+      armDrag(e, document);
     };
-    const onMove = (mv) => {
-      if (state.dragging) return;
-      const dx = Math.abs(mv.clientX - state.startX);
-      const dy = Math.abs(mv.clientY - state.startY);
-      if (dx + dy > DRAG_THRESHOLD_PX) {
-        state.dragging = true;
-        // Hand off to the OS native move loop.  After this the WebView stops
-        // receiving mousemove (the OS modal move loop owns the pointer), so
-        // we can tear down our listeners immediately.
-        callApi('window_start_drag');
-        cleanup();
-      }
-    };
-    const onUp = () => {
-      cleanup();
-      if (state.dragging) {
-        // A drag just ended on top of the chip — block the synthetic click
-        // so the button's onClick doesn't toggle the preference on drop.
-        // One-shot, capture-phase, on the slot container.
-        const slotEl = slotRef.current;
-        if (slotEl) {
-          const suppress = (clk) => {
-            clk.stopPropagation();
-            clk.preventDefault();
-            slotEl.removeEventListener('click', suppress, true);
-          };
-          slotEl.addEventListener('click', suppress, true);
-          // Safety net: if no click event arrives (e.g. pointer left the
-          // element during the OS move), drop the suppressor next tick.
-          setTimeout(() => slotEl.removeEventListener('click', suppress, true), 0);
-        }
-        state.dragging = false;
-      }
-    };
-    state.cleanup = cleanup;
-    document.addEventListener('mousemove', onMove, true);
-    document.addEventListener('mouseup', onUp, true);
-    // Do NOT preventDefault here: a plain click must still reach the chip
-    // button's onClick.  We only intercept the click if a drag happened.
-  }, [callApi]);
+    document.addEventListener('mousedown', onBodyMouseDown);
+    return () => document.removeEventListener('mousedown', onBodyMouseDown);
+  }, [visible, armDrag]);
 
   // Edge/corner grip mousedown → ask GTK to begin a native resize (Linux).
   // Only wired when grips are rendered (isLinux), so it never fires on

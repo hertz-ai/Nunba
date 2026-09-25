@@ -576,7 +576,16 @@ export default function VoiceOrbPage() {
       // (which always tested the phase) is what put the whole card on screen
       // outside the owner's rule -- show only while an agent is talking or a
       // computer-use step is live.
-      const interacting = asking || computerBusy || Boolean(indicatorStep) || now - lastInteract.current < IDLE_MS;
+      // A fresh reasoning line is an agent talking, and the owner asked to
+      // SEE it here: a trace that only set state while presence stayed
+      // 'hidden' (or 'orb', which clips the card away) was a card nobody
+      // could see.  Measured 2026-09-23 on the install: 182 chat.response
+      // broadcasts in a day, ONE presence decision.  The card stays while
+      // traces keep arriving and lets go TRACE_TTL_MS after the last one,
+      // the same clock that clears the line itself below.
+      const tracing = Boolean(trace) && now - trace.at < TRACE_TTL_MS;
+      const interacting = asking || computerBusy || Boolean(indicatorStep) || tracing
+        || now - lastInteract.current < IDLE_MS;
       const lingering = now - lastSpoke.current < IDLE_MS;
       const next = interacting ? 'shown' : (active || lingering) ? 'orb' : 'hidden';
       setPresence((prev) => (prev === next ? prev : next));
@@ -593,7 +602,10 @@ export default function VoiceOrbPage() {
       evs.forEach((ev) => window.removeEventListener(ev, wake, true));
       clearInterval(id);
     };
-  }, [active, asking, computerBusy, indicatorStep, mainForeground]);
+    // `trace` belongs here: each line re-decides at once (so the window is
+    // up for the FIRST line, not the next tick), and its expiry -- written
+    // by decide() itself -- re-runs the decision that lets the window go.
+  }, [active, asking, computerBusy, indicatorStep, mainForeground, trace]);
 
   // Hosted: the window follows the page's state and shape.  Sent on every
   // change, again at 'pywebviewready' (`.api` may not exist when the first

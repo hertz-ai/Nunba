@@ -1013,6 +1013,37 @@ class TestAsyncGenerateUsesTheCapability:
         assert kwargs["style"] == "playful"
         assert kwargs["duration"] > 0
 
+    def test_a_kept_composition_is_taken_by_its_path(self, tmp_path):
+        """HARTOS 6759fbfa6 reports a node-relative url plus the kept path.
+
+        requests.get cannot fetch '/api/voice/audio/x.wav'; before this the
+        job downloaded 0 bytes and failed while the music sat on disk.
+        """
+        from routes import kids_media_routes as r
+        kept = tmp_path / 'kept.wav'
+        kept.write_bytes(b'RIFF' + b'\x00' * 40)
+        cache = tmp_path / 'cache' / 'c.wav'
+        module = self._media_agent({
+            "status": "completed",
+            "results": [{"type": "audio", "url": "/api/voice/audio/kept.wav",
+                         "path": str(kept)}],
+        })
+        job_id = "music_" + "c" * 12
+        with r._jobs_lock:
+            r._async_jobs[job_id] = {"status": "pending", "media_type": "music"}
+        with patch.dict("sys.modules",
+                        {"integrations.service_tools.media_agent": module}), \
+                patch.object(r, "_download_and_cache") as download, \
+                patch.object(r, "_get_classifier",
+                             return_value=(None, None, MagicMock(), None, None)):
+            r._async_generate(job_id, "music", "p", "s", str(cache), "sha",
+                              "public", "user1", "wav")
+        with r._jobs_lock:
+            job = dict(r._async_jobs.pop(job_id))
+        assert job["status"] == "complete", job
+        assert cache.read_bytes()[:4] == b'RIFF'
+        assert not download.called, 'fetched a node-relative url over HTTP'
+
     def test_a_pending_task_is_polled_through_the_capability(self):
         module = self._media_agent(
             {"status": "pending", "task_id": "acestep_x1"},
@@ -1132,3 +1163,26 @@ class TestBoundGameMusic:
         from routes.kids_media_routes import _bound_game_media
         with patch("core.cache_loaders.load_agent_data", side_effect=Exception("gone")):
             assert _bound_game_media("123", "eng-01", "music") == (None, "miss")
+
+
+def test_music_is_named_and_served_as_the_wav_it_is(tmp_path):
+    """hartos-3a F10: the composer writes WAV (HARTOS 41cd45501), but the
+    node named its cached music .mp3 and served it as MPEG audio."""
+    from unittest.mock import MagicMock, patch
+    from flask import Flask
+    from routes import kids_media_routes as r
+    app = Flask(__name__)
+    r.register_routes(app)
+    classifier = MagicMock()
+    classifier.classify.return_value = 'public_educational'
+    kept = tmp_path / 'song.wav'
+    kept.write_bytes(b'RIFF' + b'\x00' * 40 + b'WAVE')
+    classifier.get_cache_path.return_value = str(kept)
+    with patch.object(r, '_get_classifier',
+                      return_value=(classifier, lambda *a, **k: None, lambda *a, **k: None,
+                                    lambda *a, **k: None, str(tmp_path))):
+        resp = app.test_client().get('/api/media/asset?type=music&prompt=calm')
+    assert classifier.get_cache_path.call_args.kwargs.get('ext') == 'wav'
+    if resp.status_code == 200:
+        assert resp.mimetype == 'audio/wav', resp.mimetype
+

@@ -147,8 +147,8 @@ def test_qwen35_architecture_presets_declare_their_runtime_family():
     """llama_config sizes context and sets sampler flags off the DECLARED
     family, so every preset that ships the Qwen3.5-MoE architecture must
     declare it, and the older Qwen3 rows must not."""
-    from llama.llama_installer import QWEN35_RUNTIME_FAMILY
     from llama.llama_config import _uses_qwen35_runtime
+    from llama.llama_installer import QWEN35_RUNTIME_FAMILY
     by_name = {p.display_name: p for p in MODEL_PRESETS}
     declared = {n for n, p in by_name.items() if p.runtime_family == QWEN35_RUNTIME_FAMILY}
     assert declared == {
@@ -156,6 +156,9 @@ def test_qwen35_architecture_presets_declare_their_runtime_family():
         'Qwen3.5-9B UD-Q4_K_XL', 'Qwen3.5-27B UD-Q4_K_XL',
         'Qwen3.5-35B-A3B MoE UD-Q4_K_XL', 'Qwen3.6-35B-A3B MoE UD-Q4_K_M',
         'Tiel-Coder-35B-A3B MoE UD-Q4_K_XL',
+        # d8fc8bc9: the MTP build is the same qwen35moe architecture (read
+        # from its GGUF header), so it takes the same runtime family.
+        'Tiel-Coder-35B-A3B MoE MTP UD-Q4_K_XL',
     }
     for name, preset in by_name.items():
         assert _uses_qwen35_runtime(preset) is (name in declared), name

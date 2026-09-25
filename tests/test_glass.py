@@ -30,6 +30,16 @@ LWA_ALPHA = 0x00000002
 
 
 @pytest.fixture(autouse=True)
+def windll_exists_off_windows(monkeypatch):
+    """`patch('ctypes.windll.user32')` needs `ctypes.windll` to exist, and
+    it only exists on Windows.  CI runs this file on ubuntu and macOS too,
+    where every such patch raised AttributeError before the test body ran.
+    On Windows the real one is left alone."""
+    if not hasattr(ctypes, 'windll'):
+        monkeypatch.setattr(ctypes, 'windll', MagicMock(), raising=False)
+
+
+@pytest.fixture(autouse=True)
 def no_composition_hosts_left_over():
     """The module OWNS its composition hosts, so they outlive a call by
     design.  A test that built one must not hand it to the next."""
@@ -312,6 +322,10 @@ class TestWindowsBackend:
         assert 'dwm_backdrop' not in result.steps
 
 
+@pytest.mark.skipif(
+    not hasattr(ctypes, 'HRESULT'),
+    reason='drives Win32 COM vtables; ctypes.HRESULT and WINFUNCTYPE exist '
+           'only on Windows')
 class TestWindowsCompositionRung:
     """The NATIVE_GLASS rung: the page on a DirectComposition visual, under
     the OS's own blur.
@@ -386,10 +400,65 @@ class TestWindowsCompositionRung:
                     if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE], (
             'the system backdrop paints a composed page opaque')
 
-    def test_an_uncomposable_window_still_gets_the_system_backdrop(self):
-        """The other half of the same decision: the window the app actually
-        has keeps exactly what it had before this rung existed."""
+    def test_the_dwm_is_not_touched_off_windows(self):
+        """The platform guard on the DWM step itself, not on its caller.
+
+        `apply_glass` already routes macOS and Linux to their own backends,
+        so this can only be reached by a direct call -- which is exactly
+        what a future caller would do.  It moved here from
+        tests/test_companion_ux.py on 2026-09-22: that file kept a partial
+        mirror of these backdrop assertions, two of which had gone stale
+        against the measurement below.  One home for them now.
+
+        It asserts the DWM is never TOUCHED, not that the return is False.
+        The return is the trap: since the system backdrop was withdrawn,
+        this function returns False for a non-composited window on EVERY
+        platform, so `assert not ...` would pass with the platform guard
+        deleted -- a guard that cannot fail is not a guard.  The immersive
+        dark-mode call is the first thing past the guard, so its absence is
+        what actually proves the guard ran.
+        """
+        for platform in (on_macos, on_linux):
+            dwm = accepting_dwm()
+            with platform(), patch('ctypes.windll.dwmapi', dwm):
+                assert not glass._windows_dwm_material(12345, INTENT)
+            dwm.DwmSetWindowAttribute.assert_not_called()
+
+    def test_an_uncomposable_window_has_its_system_backdrop_set_to_none(self):
+        """The material DWM draws for a FRAME is not clipped by SetWindowRgn,
+        and the host toolkit asks for one behind this module's back.
+
+        This assertion has moved twice, each time on pixels.  It first
+        required the backdrop ("keeps what it had before this rung existed"
+        -- history, not what the owner sees).  Then, MEASURED 2026-09-22, it
+        required the backdrop NOT be asked for: the live companion is cut to
+        a 209x209 disc while it speaks and the whole 330x465 rectangle was
+        tinted grey anyway; A/B, same window, same region, one variable:
+
+            backdrop as before   grey outside the disc  +57.1/255
+            backdrop suppressed                         +25.7/255
+
+        The residual +25.7 was attributed later that day: pywebview's
+        ``update_title_bar_theme`` writes Mica (type 2) on every form in a
+        dark system theme, from ``BrowserForm.__init__`` and again on every
+        theme change.  Read back live off the companion: type 2 while glass
+        had written nothing.  A/B on the real window cut to the rounded
+        card, over white, the four corner squares OUTSIDE the region:
+
+            as pywebview left it (Mica)   77/255 in every corner
+            set to NONE                   255, the backdrop untouched
+            Mica put back                 77 again
+
+        So "not asking" is not enough: the type must be WRITTEN as NONE, and
+        this test fails if the write goes missing or asks for any material.
+
+        Note for anyone re-measuring: transmittance alone does NOT show this.
+        Suppressing the backdrop LOWERS transmittance (0.469 -> 0.200)
+        because the material passes light; it also adds grey, and only the
+        grey is the defect.  Measure the tint.
+        """
         DWMWA_SYSTEMBACKDROP_TYPE = 38
+        DWMSBT_NONE = 1
         user32 = layered_user32()
         dwm = accepting_dwm()
         with on_windows(), patch('ctypes.windll.user32', user32), \
@@ -397,9 +466,24 @@ class TestWindowsCompositionRung:
             result = glass.apply_glass(1234, INTENT)
 
         assert result.rung == glass.LAYERED_ALPHA
-        assert [c for c in dwm.DwmSetWindowAttribute.call_args_list
-                if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE]
+        backdrop = [c for c in dwm.DwmSetWindowAttribute.call_args_list
+                    if c[0][1] == DWMWA_SYSTEMBACKDROP_TYPE]
+        assert len(backdrop) == 1, (
+            'the system backdrop type must be written exactly once, to '
+            'undo the Mica pywebview asks for')
+        assert backdrop[0][0][2]._obj.value == DWMSBT_NONE, (
+            'any material here is rendered for the window FRAME, escapes '
+            'SetWindowRgn, and paints grey around a shaped window')
+        assert not dwm.DwmExtendFrameIntoClientArea.called, (
+            'extending the frame into the client area is the other half of '
+            'the same escape')
         user32.SetWindowCompositionAttribute.assert_not_called()
+
+        # The rung must NOT be claimed from the backdrop being NONE: layered
+        # alpha is what makes this window see-through, and it still has to
+        # have been applied.
+        user32.SetLayeredWindowAttributes.assert_called()
+        assert 'dwm_backdrop' not in result.steps
 
     def test_a_window_born_without_the_creation_flag_is_never_composed(self):
         """WS_EX_NOREDIRECTIONBITMAP cannot be added afterwards, and without
@@ -740,6 +824,22 @@ class TestThereIsOnlyOneOfThese:
         assert owners == ['glass.py'], (
             f'the DWM backdrop grew a second home in {owners}')
 
+    def test_source_guard_one_com_vtable_helper_in_the_package(self):
+        """The vtable dereference lives in desktop/win32_com.py and nowhere
+        else.  glass.py used to carry it; when the taskbar-list call in
+        platform_utils needed the same thing, it moved out rather than
+        being copied -- a second hand-rolled vtable helper is the parallel
+        path that drifts."""
+        marker = 'POINTER(ctypes.POINTER(ctypes.c_void_p))'
+        owners = sorted(
+            p.name for p in _DESKTOP.glob('*.py')
+            if marker in p.read_text(encoding='utf-8'))
+        assert owners == ['win32_com.py'], (
+            f'a COM vtable dereference appeared in {owners}')
+        assert glass._vcall is __import__(
+            'desktop.win32_com', fromlist=['vcall']).vcall, (
+            'glass must call the shared helper, not a copy')
+
     def test_source_guard_glass_owns_the_platform_question_by_reusing_it(self):
         """No second "is this platform X": the flags are read off
         platform_utils at call time, never redefined here."""
@@ -799,7 +899,48 @@ class TestThereIsOnlyOneOfThese:
             if isinstance(node, ast.ImportFrom) and node.module == 'desktop.glass'
             for alias in node.names
         }
-        assert 'apply_glass' in imported, (
-            'the companion must reach the capability through the one module')
+        surface = (_DESKTOP / 'companion_surface.py').read_text(
+            encoding='utf-8')
+        hop = {
+            alias.name
+            for node in ast.walk(ast.parse(app))
+            if isinstance(node, ast.ImportFrom)
+            and node.module == 'desktop.companion_surface'
+            for alias in node.names
+        }
+        # ONE HOP, followed rather than relaxed.  app.py used to import
+        # apply_glass directly; it now goes through
+        # companion_surface.apply_floating_presence, which owns the ORDER of
+        # the three post-handle calls so app.py and
+        # tests/glass_companion_demo.py cannot drift about it.  Both legs of
+        # the hop are asserted, so the capability still has exactly one home.
+        assert 'apply_glass' in imported or 'apply_floating_presence' in hop, (
+            'the companion must reach the capability through the one module, '
+            'directly or through companion_surface')
+        if 'apply_glass' not in imported:
+            assert 'from desktop.glass import' in surface, (
+                'companion_surface must reach the capability through '
+                'desktop.glass, not reimplement it')
+            assert 'apply_glass' in surface, (
+                'companion_surface names the hop but does not take it')
         assert 'enable_window_acrylic' not in app, (
             'the second implementation must not survive anywhere')
+
+    def test_apply_glass_has_exactly_the_importers_we_named(self):
+        """A THIRD route to the capability is the parallel path, not a hop.
+
+        The companion_surface hop above is legitimate and deliberate.  This
+        pins the set so the next one is noticed: an unexpected importer means
+        someone found a second way to make a window see-through, which is the
+        thing glass.py exists to prevent.
+        """
+        allowed = {'companion_surface.py', 'indicator_window.py'}
+        importers = {
+            p.name for p in _DESKTOP.glob('*.py')
+            if p.name != 'glass.py'
+            and 'from desktop.glass import' in p.read_text(encoding='utf-8')
+        }
+        unexpected = importers - allowed
+        assert not unexpected, (
+            f'a new route to the capability appeared in {sorted(unexpected)}; '
+            'if that is deliberate, name it in `allowed` and say why')

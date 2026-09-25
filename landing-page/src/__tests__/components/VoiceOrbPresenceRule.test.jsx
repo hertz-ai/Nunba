@@ -171,3 +171,72 @@ test('a trace is not echoed twice when it equals the step line', () => {
   expect(screen.queryByTestId('companion-trace')).toBeNull();
   expect(screen.getByText(/Clicking the checkout button/)).toBeInTheDocument();
 });
+
+// ── 3. a trace brings the floating WINDOW up, not just the card ────
+//
+// Owner 2026-09-22: "still the live updates are not visible on screen in
+// floating window".  Measured that night on the install: 182 chat.response
+// broadcasts in the day and ONE presence decision -- the trace set state on
+// a page whose window stayed 'hidden', and even 'orb' clips the card away
+// (app.py cuts the window to the orb's disc), so a rendered card was never
+// on screen.  A fresh trace is an agent talking: it opens the card and lets
+// it go TRACE_TTL_MS after the last line.
+describe('hosted in the desktop companion window', () => {
+  let presence;
+  beforeEach(() => {
+    jest.useFakeTimers('modern');
+    presence = jest.fn();
+    window.pywebview = {api: {on_companion_presence: presence}};
+  });
+  afterEach(() => {
+    delete window.pywebview;
+    jest.useRealTimers();
+  });
+
+  test('a Thinking trace alone raises the window to the card', () => {
+    // RED pre-fix: the presence decision read asking / computerBusy /
+    // indicatorStep / the owner's pointer -- never `trace`.
+    render(<VoiceOrbPage />);
+    act(() => { jest.advanceTimersByTime(1500); });
+    expect(presence).toHaveBeenCalledWith('hidden', null);
+    expect(presence).not.toHaveBeenCalledWith('shown', expect.anything());
+
+    pushTrace('Reading the invoice total from the second page');
+    act(() => { jest.advanceTimersByTime(50); });
+    expect(presence).toHaveBeenCalledWith('shown', expect.objectContaining({x: 0, y: 0}));
+    expect(screen.getByTestId('voice-orb').dataset.presence).toBe('shown');
+    expect(screen.getByText(CARD)).toBeInTheDocument();
+  });
+
+  test('the window lets go once the last trace has aged out', () => {
+    render(<VoiceOrbPage />);
+    pushTrace('Reading the invoice total from the second page');
+    act(() => { jest.advanceTimersByTime(50); });
+    expect(screen.getByTestId('voice-orb').dataset.presence).toBe('shown');
+    presence.mockClear();
+
+    // A second line inside the window keeps it up (the clock restarts).
+    act(() => { jest.advanceTimersByTime(8000); });
+    pushTrace('The total is on the second page after all');
+    act(() => { jest.advanceTimersByTime(8000); });
+    expect(screen.getByTestId('voice-orb').dataset.presence).toBe('shown');
+    expect(presence).not.toHaveBeenCalledWith('hidden', null);
+
+    // Stepped a second at a time like the real clock: past TRACE_TTL_MS
+    // (12 s) from the LAST line the card clears and the window goes.
+    for (let i = 0; i < 6; i++) act(() => { jest.advanceTimersByTime(1000); });
+    expect(screen.queryByText(CARD)).toBeNull();
+    expect(screen.getByTestId('voice-orb').dataset.presence).toBe('hidden');
+    expect(presence).toHaveBeenCalledWith('hidden', null);
+  });
+
+  test('a Status envelope does not raise the window', () => {
+    render(<VoiceOrbPage />);
+    act(() => { jest.advanceTimersByTime(1500); });
+    presence.mockClear();
+    pushTrace('Analysing your request', CHAT_ACTION_STATUS);
+    act(() => { jest.advanceTimersByTime(1100); });
+    expect(presence).not.toHaveBeenCalledWith('shown', expect.anything());
+    expect(screen.getByTestId('voice-orb').dataset.presence).toBe('hidden');
+  });
+});

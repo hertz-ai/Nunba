@@ -363,3 +363,35 @@ class TestCleanBuildSpareTrackedFiles:
         assert not offenders, (
             f'clean_build() deletes git-tracked source file(s): {offenders}. '
             'Only generated artifacts belong in files_to_remove.')
+
+
+# ============================================================
+# A CI build must not ship without the HARTOS source it syncs from
+# ============================================================
+
+class TestCiRequiresHartosSource:
+    """Measured 2026-09-23 on nightly df5536d: the Windows runner's
+    ../HARTOS junction silently failed, so build_windows skipped the whole
+    HARTOS sync -- the LICENSE origin attestation requires included -- and
+    printed nothing. Every fresh CI install then failed attestation
+    ("Missing required file: LICENSE") and could not be verified by
+    central. In CI, no source must stop the build; locally, a missing
+    sibling stays the old soft skip."""
+
+    def test_ci_without_a_source_stops_the_build(self, monkeypatch):
+        import pytest
+
+        from scripts.build import _require_hartos_source_for_ci
+        monkeypatch.setenv('NUNBA_CI', '1')
+        with pytest.raises(SystemExit):
+            _require_hartos_source_for_ci(None)
+
+    def test_ci_with_a_source_goes_on(self, monkeypatch, tmp_path):
+        from scripts.build import _require_hartos_source_for_ci
+        monkeypatch.setenv('NUNBA_CI', '1')
+        assert _require_hartos_source_for_ci(str(tmp_path)) is None
+
+    def test_a_local_build_without_a_sibling_keeps_the_soft_skip(self, monkeypatch):
+        from scripts.build import _require_hartos_source_for_ci
+        monkeypatch.delenv('NUNBA_CI', raising=False)
+        assert _require_hartos_source_for_ci(None) is None

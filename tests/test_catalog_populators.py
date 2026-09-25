@@ -44,9 +44,15 @@ def _fresh_catalog():
 def _make_preset(display_name='Test Model', repo_id='org/repo',
                  file_name='model.gguf', size_mb=2000, description='test',
                  has_vision=False, mmproj_file=None, mmproj_source_file=None,
-                 min_build=None):
+                 min_build=None, runtime_family=None):
     """Create a duck-typed ModelPreset without importing llama_installer."""
     p = MagicMock()
+    # Explicit, because MagicMock auto-creates any attribute that is merely
+    # READ: `getattr(p, 'runtime_family', None)` returns a fresh MagicMock,
+    # never None and never equal to QWEN35_RUNTIME_FAMILY.  The populator
+    # keys its 256K-context capability off exactly that comparison, so a stub
+    # that leaves it implicit can never reach the branch under test.
+    p.runtime_family = runtime_family
     p.display_name = display_name
     p.repo_id = repo_id
     p.file_name = file_name
@@ -160,7 +166,9 @@ class TestPopulateLlmPresets(unittest.TestCase):
 
     def test_qwen35_context_length(self):
         """Qwen3.5 models get 256K context_length capability."""
-        presets = [_make_preset('Qwen3.5-4B VL')]
+        from llama.llama_installer import QWEN35_RUNTIME_FAMILY
+        presets = [_make_preset('Qwen3.5-4B VL',
+                                runtime_family=QWEN35_RUNTIME_FAMILY)]
         with patch('llama.llama_installer.MODEL_PRESETS', presets, create=True):
             populate_llm_presets(self.catalog)
         caps = self.catalog.get('llm-qwen3.5-4b-vl').capabilities

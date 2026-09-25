@@ -53,12 +53,22 @@ def _entry_to_preset(entry: ModelEntry):
     has_vision = entry.capabilities.get('has_vision', False)
     mmproj_file = entry.files.get('mmproj') if has_vision else None
     mmproj_source = entry.files.get('mmproj_source') if has_vision else None
-    size_mb = int(round((entry.disk_gb or 0) * 1024))
+    # Size, in ONE unit, preferring the exact count the populator recorded.
+    # ``disk_gb`` is rounded to one decimal place for display, so rebuilding a
+    # size from it alone loses up to ~51 MiB — the 4B went out as 2910 and came
+    # back as 2867.  capabilities['weight_bytes'] carries the byte-exact value
+    # (written by BOTH populators: Nunba's models/catalog.py and HARTOS's
+    # _populate_llm_models), so the round trip is lossless whenever the entry
+    # came from one of them.  Entries registered by hand through the admin UI
+    # have only disk_gb, and keep the documented GiB -> MiB derivation.
+    weight_bytes = (entry.capabilities or {}).get('weight_bytes')
+    if not isinstance(weight_bytes, (int, float)) or weight_bytes <= 0:
+        weight_bytes = int(round((entry.disk_gb or 0) * 1024)) * (1024 ** 2)
     return ModelPreset(
         display_name=entry.name,
         repo_id=repo_id,
         file_name=file_name,
-        size_mb=size_mb,
+        size_bytes=int(weight_bytes),
         description='',          # not needed for load/download operations
         has_vision=has_vision,
         mmproj_file=mmproj_file,
@@ -126,7 +136,28 @@ class LlamaLoader(ModelLoader):
             if not preset:
                 logger.error(f"LLM download: no preset for {entry.id}")
                 return False
-            return installer.download_model(preset)
+            if not installer.download_model(preset):
+                return False
+            # Record WHERE the weights landed. The loader that fetched them
+            # is the only thing that knows without guessing, and the catalog
+            # is where everything else looks: mark_downloaded reads the
+            # artifact from here (architecture, MoE split, MTP head), and
+            # installer.get_model_path's own "canonical catalog lookup
+            # first" branch reads entry.local_path -- a field that until now
+            # did not exist, so that lookup always fell through to a
+            # filename walk across ~/.nunba, ~/.trueflow, ~/.ollama and the
+            # HF cache on every call.
+            #
+            # Best-effort: a path we cannot resolve leaves the row exactly
+            # as it is today.
+            try:
+                resolved = installer.get_model_path(preset)
+                if resolved:
+                    entry.local_path = str(resolved)
+            except Exception as pe:
+                logger.info(f"LLM download: path not recorded for "
+                            f"{entry.id}: {pe}")
+            return True
         except Exception as e:
             logger.error(f"LLM download failed: {e}")
             return False

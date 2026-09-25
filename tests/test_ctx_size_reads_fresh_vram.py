@@ -39,14 +39,28 @@ if PROJECT_ROOT not in sys.path:
 # INSTANCE, so the submodule is only reachable through sys.modules.
 import integrations.service_tools.vram_manager  # noqa: F401,E402  (ensure cached)
 
+from llama.llama_installer import QWEN35_RUNTIME_FAMILY  # noqa: E402
+
 _VM_MOD = sys.modules['integrations.service_tools.vram_manager']
 
 
 class _Preset:
-    """The live preset: Qwen3.5-4B-UD-Q4_K_XL, 2.8 GB of weights."""
+    """The live preset: Qwen3.5-4B-UD-Q4_K_XL, 2.8 GB of weights.
+
+    ``runtime_family`` is load-bearing, not decoration.  ``_derive_ctx_size``
+    gates the whole VRAM branch on ``_uses_qwen35_runtime(preset)``, which is
+    ``getattr(preset, 'runtime_family', None) == QWEN35_RUNTIME_FAMILY``.
+    Without it this preset took the ``else`` branch and returned
+    ``config['context_size']`` (8192) no matter what the GPU reported, so all
+    three tests below have been FAILING since they were written — the guard
+    for the 2026-09-10 stale-reading fix never actually exercised it.
+    MEASURED 2026-09-22 on main: 3 failed (8192 != 12288, forced 0 != 1,
+    8192 != 4096).
+    """
     display_name = 'Qwen3.5 4B'
     size_mb = 2867.2
     min_build = None
+    runtime_family = QWEN35_RUNTIME_FAMILY
 
 
 class _StaleThenFresh:

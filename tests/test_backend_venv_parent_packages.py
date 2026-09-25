@@ -17,8 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from core import venv_paths
+
 from tts import backend_venv
 
 BACKEND = "pth_backend"

@@ -812,6 +812,26 @@ def _install_hartos_backend(python_exe):
     fetch_hartos_backend_source()
 
 
+def _require_hartos_source_for_ci(hartos_src):
+    """Stop a CI build that has no HARTOS source to sync from.
+
+    build_windows syncs HARTOS into python-embed, LICENSE included, only
+    when _find_local_hartos_backend finds the sibling checkout, and skips
+    the whole block silently otherwise.  Measured on nightly df5536d
+    (2026-09-23): the Windows runner's ../HARTOS junction had failed, the
+    sync never ran, and every fresh install failed origin attestation
+    ("Missing required file: LICENSE"), so central could not verify it.
+    A local build without a sibling keeps the soft skip it always had.
+    """
+    if hartos_src or os.environ.get('NUNBA_CI') != '1':
+        return
+    print_error(
+        "NUNBA_CI build without a HARTOS source: ../HARTOS is missing, so "
+        "the HARTOS sync and the LICENSE origin attestation needs would "
+        "be skipped. Fix the 'Link sibling repos' step.")
+    sys.exit(1)
+
+
 def _ship_hartos_license(site_packages_dir):
     """Copy the HARTOS repo-root LICENSE to a site-packages root.
 
@@ -1467,6 +1487,7 @@ def build_windows(python_exe, app_only=False, installer_only=False):
     # This step ensures both the source python-embed/ AND the build output
     # always have the latest HARTOS files from the sibling source directory.
     _hartos_src = _find_local_hartos_backend()
+    _require_hartos_source_for_ci(_hartos_src)
     if _hartos_src:
         _embed_sp = os.path.join(embed_src, 'Lib', 'site-packages')
         _build_sp = os.path.join('build', 'Nunba', 'python-embed', 'Lib', 'site-packages')

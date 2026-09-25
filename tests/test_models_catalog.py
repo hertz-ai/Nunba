@@ -14,6 +14,7 @@ Tests cover:
 import logging
 import os
 import sys
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -35,7 +36,13 @@ from integrations.service_tools.model_catalog import (
 # ---------------------------------------------------------------------------
 def _make_preset(name='Test Model 4B', repo='test/repo', size_mb=4000,
                  has_vision=False, mmproj_file=None, mmproj_source_file=None,
-                 min_build='b1234', file_name='model.gguf'):
+                 min_build='b1234', file_name='model.gguf',
+                 runtime_family=None):
+    # runtime_family must be settable: the populator keys the 256K-context
+    # capability off THIS attribute, never off the display name (a name-based
+    # check silently drops a new row's runtime configuration).  A stub that
+    # omitted it could never reach that branch, so the Qwen context tests were
+    # asserting against a preset that does not declare itself a Qwen3.5 row.
     return SimpleNamespace(
         display_name=name,
         repo_id=repo,
@@ -45,12 +52,43 @@ def _make_preset(name='Test Model 4B', repo='test/repo', size_mb=4000,
         mmproj_source_file=mmproj_source_file,
         min_build=min_build,
         file_name=file_name,
+        runtime_family=runtime_family,
+    )
+
+
+def _installer_mock(presets):
+    """A stand-in ``llama_installer`` module carrying all of what the
+    populator reads from it.
+
+    ``populate_llm_presets`` imports MODEL_PRESETS, QWEN35_RUNTIME_FAMILY and
+    the canonical size conversions (``model_size_bytes`` / ``model_size_gib``)
+    from this module.  A bare ``MagicMock`` answers the conversions with more
+    MagicMocks, which then flow straight into ``ModelEntry.vram_gb`` — so the
+    assertion compares a mock to a float and the test proves nothing.  Carry
+    the REAL helpers; only the preset list is stubbed.
+    """
+    import llama.llama_installer as _real
+    return MagicMock(
+        MODEL_PRESETS=presets,
+        QWEN35_RUNTIME_FAMILY=_real.QWEN35_RUNTIME_FAMILY,
+        model_size_bytes=_real.model_size_bytes,
+        model_size_gib=_real.model_size_gib,
     )
 
 
 def _fresh_catalog():
-    """Create a fresh ModelCatalog with no entries."""
-    return ModelCatalog()
+    """Create a fresh ModelCatalog with no entries.
+
+    Backed by a disposable temp file.  Plain ``ModelCatalog()`` resolves to
+    the real data dir (~/Documents/Nunba/data/model_catalog.json), so these
+    tests read whatever the developer's own machine had already persisted —
+    and the ids they assert on (``llm-qwen3.5-4b``) are ids the HARTOS
+    populator seeds, so ``populate_llm_presets`` skipped them as
+    already-registered and ``added`` came back 0.  "Fresh" has to mean empty.
+    """
+    tmp = tempfile.NamedTemporaryFile(suffix='.json', delete=False)
+    tmp.close()
+    return ModelCatalog(catalog_path=tmp.name)
 
 
 # ==========================================================================
@@ -95,7 +133,7 @@ class TestPopulateLLMPresets:
         cat = _fresh_catalog()
         presets = [_make_preset('Qwen3.5 4B', 'qwen/4b', 4000)]
         with patch('models.catalog.MODEL_PRESETS', presets, create=True):
-            with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+            with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
                 # Re-import to pick up the mock
                 import importlib
 
@@ -108,7 +146,7 @@ class TestPopulateLLMPresets:
         from models.catalog import populate_llm_presets
         cat = _fresh_catalog()
         presets = [_make_preset('My Cool Model (7B)', 'test/cool', 7000)]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -120,7 +158,7 @@ class TestPopulateLLMPresets:
     def test_entry_has_correct_model_type(self):
         cat = _fresh_catalog()
         presets = [_make_preset()]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -132,7 +170,7 @@ class TestPopulateLLMPresets:
     def test_first_preset_gets_recommended_tag(self):
         cat = _fresh_catalog()
         presets = [_make_preset('First', 'a/b', 2000), _make_preset('Second', 'c/d', 3000)]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -145,7 +183,7 @@ class TestPopulateLLMPresets:
     def test_second_preset_no_recommended_tag(self):
         cat = _fresh_catalog()
         presets = [_make_preset('First', 'a/b', 2000), _make_preset('Second', 'c/d', 3000)]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -159,7 +197,7 @@ class TestPopulateLLMPresets:
         cat = _fresh_catalog()
         presets = [_make_preset('Vision 4B', 'v/4b', 4000, has_vision=True,
                                 mmproj_file='mmproj.gguf', mmproj_source_file='mmproj-F16.gguf')]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -175,7 +213,7 @@ class TestPopulateLLMPresets:
         presets = [_make_preset('VLM', 'v/vlm', 5000, has_vision=True,
                                 mmproj_file='mmproj-local.gguf',
                                 mmproj_source_file='mmproj-F16.gguf')]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -188,7 +226,7 @@ class TestPopulateLLMPresets:
     def test_vram_calculated_from_size_mb(self):
         cat = _fresh_catalog()
         presets = [_make_preset('Small', 's/s', 2048)]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -200,7 +238,7 @@ class TestPopulateLLMPresets:
     def test_quality_score_bounded(self):
         cat = _fresh_catalog()
         presets = [_make_preset('Huge', 'h/h', 50000)]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -212,7 +250,7 @@ class TestPopulateLLMPresets:
     def test_speed_score_bounded(self):
         cat = _fresh_catalog()
         presets = [_make_preset('Huge', 'h/h', 50000)]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -233,7 +271,7 @@ class TestPopulateLLMPresets:
     def test_idempotent_no_duplicates(self):
         cat = _fresh_catalog()
         presets = [_make_preset('Dupe', 'd/d', 3000)]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc
@@ -244,8 +282,10 @@ class TestPopulateLLMPresets:
 
     def test_qwen_gets_large_context(self):
         cat = _fresh_catalog()
-        presets = [_make_preset('Qwen3.5 4B Instruct', 'q/4b', 4000)]
-        with patch.dict('sys.modules', {'llama.llama_installer': MagicMock(MODEL_PRESETS=presets)}):
+        from llama.llama_installer import QWEN35_RUNTIME_FAMILY
+        presets = [_make_preset('Qwen3.5 4B Instruct', 'q/4b', 4000,
+                                runtime_family=QWEN35_RUNTIME_FAMILY)]
+        with patch.dict('sys.modules', {'llama.llama_installer': _installer_mock(presets)}):
             import importlib
 
             import models.catalog as mc

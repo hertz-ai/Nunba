@@ -1813,6 +1813,10 @@ def tts_kids_quick():
         # synth in a worker thread; if it hasn't returned in
         # KIDS_TTS_BUDGET_S, bail and return a deferred envelope.
         import threading as _kids_threading
+
+        # A path to a 0-byte or header-only WAV is not audio: answering it
+        # as success sent the kids games an empty clip they could not play.
+        from tts.piper_tts import wav_has_audio
         _kids_box = {'path': None, 'err': None, 'done': False}
 
         def _kids_worker():
@@ -1836,7 +1840,7 @@ def tts_kids_quick():
         # bundled + CPU-only so it's usually fast — but we still cap
         # it at a short budget to keep the response under 20s which
         # is the kids journey contract.
-        if not (audio_path and os.path.exists(audio_path)):
+        if not (wav_has_audio(audio_path)):
             _kids_box2 = {'path': None, 'err': None, 'done': False}
 
             def _piper_worker():
@@ -1860,7 +1864,7 @@ def tts_kids_quick():
             elif not _kids_box2['done']:
                 logger.warning("Kids TTS Piper fallback timed out (>8s)")
 
-        if audio_path and os.path.exists(audio_path):
+        if wav_has_audio(audio_path):
             import base64
             with open(audio_path, 'rb') as f:
                 b64 = base64.b64encode(f.read()).decode('ascii')

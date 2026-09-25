@@ -213,18 +213,38 @@ class TestVersionAwareBinaryResolution:
 # 2. LLM Auto-Setup
 # ==========================================================================
 class TestLLMAutoSetup:
-    def test_auto_setup_post(self, client):
-        resp = client.post('/api/llm/auto-setup',
-                          json={},
-                          content_type='application/json')
-        assert resp.status_code in (200, 400, 500, 503)
+    """The route is driven for real; LlamaConfig.auto_setup is the boundary
+    and is stubbed.  Unstubbed, these tests downloaded a multi-GB GGUF over
+    the network inside the request, which is what hung the first CI pytest
+    run since 09-17 until pytest-timeout killed the whole job.  (The route's
+    own docstring says "Non-blocking" while it calls auto_setup inline -- a
+    product defect recorded separately, not fixed here.)"""
 
-    def test_auto_setup_returns_json(self, client):
+    @pytest.fixture
+    def stub_auto_setup(self, monkeypatch):
+        from llama.llama_config import LlamaConfig
+        calls = []
+
+        def _fake(self, model_index=None):
+            calls.append(model_index)
+            return {'success': False, 'message': 'stubbed: no download in tests'}
+        monkeypatch.setattr(LlamaConfig, 'auto_setup', _fake)
+        return calls
+
+    def test_auto_setup_post(self, client, stub_auto_setup):
+        resp = client.post('/api/llm/auto-setup',
+                          json={'model_index': 2},
+                          content_type='application/json')
+        assert resp.status_code == 200
+        assert stub_auto_setup == [2], 'the route did not pass model_index through'
+
+    def test_auto_setup_returns_json(self, client, stub_auto_setup):
         resp = client.post('/api/llm/auto-setup',
                           json={},
                           content_type='application/json')
         data = resp.get_json()
-        assert data is not None
+        assert data == {'success': False,
+                        'message': 'stubbed: no download in tests'}
 
 
 # ==========================================================================

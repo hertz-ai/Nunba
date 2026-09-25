@@ -537,17 +537,31 @@ _hartos_packages = [
     ("security", "security"),
     ("hartos", "hartos"),   # implementation package (root modules moved 2026-08-30)
 ]
+# `_deps/HARTOS` is the CI checkout path (build.yml). The Linux runner's
+# ../HARTOS symlink happens to work, which is the only reason this script never
+# tripped the way the Windows one did (four "not found" warnings, installer
+# shipped without its backend, run 35688418793). Same candidates and the same
+# fatal treatment as the Windows and macOS scripts, so one runner quirk cannot
+# gut one platform's installer while the others stay whole.
 for _pkg_dir, _pkg_name in _hartos_packages:
-    for _candidate in [
+    _pkg_candidates = [
         os.path.join(_hartos_dir, _pkg_dir),
+        os.path.join('_deps', 'HARTOS', _pkg_dir),
         os.path.join('hartos_backend_src', _pkg_dir),
-    ]:
+    ]
+    for _candidate in _pkg_candidates:
         if os.path.isdir(_candidate) and os.path.isfile(os.path.join(_candidate, '__init__.py')):
             build_exe_options["include_files"].append((os.path.normpath(_candidate), _pkg_name))
             print(f"Including {_pkg_name} package <- {os.path.normpath(_candidate)}")
             break
     else:
-        print(f"WARNING: {_pkg_name} package not found -- related features unavailable")
+        raise RuntimeError(
+            f"HARTOS package '{_pkg_name}' not found; refusing to build an installer "
+            f"without it (hart_intelligence_entry imports it at module top).  Searched:\n  - "
+            + "\n  - ".join(_pkg_candidates)
+            + "\nClone HARTOS as a sibling directory, or make sure the CI sibling "
+            "checkout landed in _deps/HARTOS."
+        )
 
 # Verify sql package is pip-installed
 try:

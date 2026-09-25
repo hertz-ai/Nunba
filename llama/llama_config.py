@@ -25,10 +25,23 @@ from pathlib import Path
 
 import requests
 
-from llama.llama_installer import (
-    MODEL_PRESETS, QWEN35_RUNTIME_FAMILY, LlamaInstaller, ModelPreset)
+from llama.llama_installer import MODEL_PRESETS, QWEN35_RUNTIME_FAMILY, LlamaInstaller, ModelPreset, model_size_gib
 
 logger = logging.getLogger('NunbaLlamaConfig')
+
+# The one publisher of the llama geometry env pair (HEVOLVE_LLAMA_CTX_SIZE /
+# HEVOLVE_LLAMA_SLOTS).  See core/llama_geometry.py.
+#
+# Guarded because standalone Nunba dev checkouts run without HARTOS on the
+# path.  Skipping the publish there is correct rather than merely tolerable:
+# the ONLY consumer of those variables is HARTOS's wire trimmer
+# (core.llm_outbound_logger._get_budget_per_slot), so with HARTOS absent the
+# publish has no reader.  Deliberately NOT given a fallback that re-spells the
+# variable names — two spellings of one name is the defect this removes.
+try:
+    from core.llama_geometry import publish_geometry
+except ImportError:
+    publish_geometry = None
 
 
 def _uses_qwen35_runtime(model_preset) -> bool:
@@ -39,6 +52,56 @@ def _uses_qwen35_runtime(model_preset) -> bool:
     catalog rows from silently losing their context and sampler configuration.
     """
     return getattr(model_preset, 'runtime_family', None) == QWEN35_RUNTIME_FAMILY
+
+
+def fresh_free_vram_gb(vm) -> float:
+    """Free VRAM NOW, in GB -- a new sample, not the memoized one.
+
+    get_free_vram() reads detect_gpu()'s memo, so two reads around a spawn
+    returned the same number and the residency delta was always 0.0 (#110):
+    no model's cost was ever recorded. Forcing the refresh is the answer
+    _get_ctx_size already uses, for the same reason (117-second-stale
+    sample, measured 2026-09-10). get_free_vram() then keeps its
+    CUDA/Metal rule for what "free" means.
+    """
+    vm.refresh_gpu_info(force=True)
+    return float(vm.get_free_vram())
+
+
+def spawn_vram_delta_gb(before, after):
+    """What a spawn cost on the card, or None when the delta can't be trusted.
+
+    Another process can allocate or release during the spawn window, so a
+    negative, tiny (< 0.05) or absurd (>= 512) delta is dropped rather than
+    booked or recorded; the next spawn measures again.
+    """
+    if before is None or after is None:
+        return None
+    delta = before - after
+    if 0.05 < delta < 512:
+        return round(delta, 3)
+    return None
+
+
+def embeddings_args(spec_args) -> list:
+    """``--embeddings`` for the main server, unless the spawn runs MTP.
+
+    The one writer of that flag.  Measured 2026-09-24 (Tiel-Coder 35B-A3B
+    MTP, llama.cpp b9180+): with ``--embeddings`` beside ``--spec-type
+    draft-mtp`` llama-server dies at load with GGML_ASSERT "missing
+    result_norm/result_embd tensor"; the identical command without it loads
+    and serves.  The watchdog respawns from config, so the MTP preset left the
+    desktop with no LLM at all.  MTP is what the preset exists for, and
+    hevolveai already treats a server without the route as "no native
+    embedding" (_probe_native_embedding -> None), so the route steps aside.
+    """
+    args = list(spec_args or [])
+    if 'draft-mtp' in args:
+        logger.warning(
+            "MTP spawn: leaving out --embeddings (llama.cpp asserts with both); "
+            "hevolveai's native /embedding route is off while this model serves")
+        return []
+    return ['--embeddings']
 
 
 # Task #652 — thinking MUST be off for every local llama-server.
@@ -568,6 +631,28 @@ class LlamaConfig:
             return vram_manager
         except ImportError:
             return None
+
+    def _moe_args(self, model_path) -> list:
+        """llama.cpp flags placing a mixture of experts' experts in RAM.
+
+        Delegates the decision to model_catalog.moe_offload_args, which is
+        the one answer to "should this model's experts go to CPU" and reads
+        it from the GGUF itself. Deciding it here would make a second
+        answer, and the three spawn paths in this stack each already carry
+        their own copy of `-ngl 99`.
+
+        Best-effort by design: a model that cannot be probed launches
+        exactly as it does today, which is the pre-existing behaviour.
+        """
+        try:
+            from integrations.service_tools.model_catalog import moe_offload_args
+            vram = self._get_vram_manager()
+            free = float(vram.get_free_vram()) if vram else 0.0
+            return moe_offload_args(str(model_path), free)
+        except Exception as e:
+            logger.info("MoE placement probe skipped (%s); launching with "
+                        "unchanged flags", e)
+            return []
 
     # ── Cohort-aware draft gate ──────────────────────────────────────────
     # Data-scientist rework (2026-04 ship-gate, commit 2acf21a): the plain
@@ -1292,9 +1377,13 @@ class LlamaConfig:
         if started and diag['run_mode'] == 'gpu':
             vm = self._get_vram_manager()
             if vm:
-                model_gb = preset.size_mb / 1024.0
+                # Same unit as every other VRAM figure (GiB, measured from the
+                # file) — this row is what TTS/STT/vision subtract when they
+                # decide whether they fit, so a 133 MB overstatement here
+                # propagates into their decisions too.
+                model_gb = model_size_gib(preset, installer=self.installer)
                 vm._allocations['llm'] = model_gb
-                logger.info(f"Registered VRAM allocation: llm = {model_gb:.1f}GB")
+                logger.info(f"Registered VRAM allocation: llm = {model_gb:.3f}GiB")
 
         mode_label = 'GPU' if diag['run_mode'] == 'gpu' else 'CPU'
         if started:
@@ -1601,6 +1690,27 @@ class LlamaConfig:
         server_type, _ = self.check_server_type(port)
         return server_type in [ServerType.NUNBA_MANAGED, ServerType.EXTERNAL_LLAMA]
 
+    def _wait_until_serving(self, port: int, timeout: float) -> bool:
+        """True once the server on ``port`` has its model LOADED.
+
+        check_server_running counts a 503 "Loading model" as running, on
+        purpose (it stops the watchdog restarting a server that is warming
+        up). Anything that needs the weights in place -- the residency
+        measurement -- must wait past that. Measured 2026-09-24: reading
+        free VRAM at "running" booked 0.130 GiB for a dense 2.712 GiB model.
+        False when the deadline passes or the server is gone.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            server_type, info = self.check_server_type(port)
+            if server_type not in (ServerType.NUNBA_MANAGED,
+                                   ServerType.EXTERNAL_LLAMA):
+                return False
+            if (info or {}).get('status') != 'loading':
+                return True
+            time.sleep(1.0)
+        return False
+
     def _write_server_status(self, running: bool, pid: int | None = None,
                              model: str | None = None, port: int | None = None):
         """Write server status to SHARED file for cross-app coordination.
@@ -1693,7 +1803,7 @@ class LlamaConfig:
             except Exception:
                 pass
 
-    def _derive_ctx_size(self, model_preset):
+    def _derive_ctx_size(self, model_preset, model_path=None):
         """Context size for a llama-server spawn, derived from the box.
 
         ONE authority for every spawn site.  The caption/draft server used to
@@ -1702,16 +1812,32 @@ class LlamaConfig:
         needs — and 2048 was too small for the draft-first dispatcher and the
         recipe pipeline that share :8081 (measured overflows at 2066, 3223
         and 4386 tokens, all reporting n_ctx 2048).
+
+        ``model_path``: the resolved .gguf, when the caller has it.  Both
+        spawn sites do.  It lets the weights be MEASURED rather than taken
+        from ``preset.size_mb``, whose unit is not consistent across the
+        preset table — see ``llama_installer.model_size_gib``.
+
+        WHAT IS OWNED HERE vs IN HARTOS (2026-09-22 unification).  This method
+        owns the MEASURING — forcing a fresh VRAM probe, sizing the weights off
+        the file, writing the decision log.  The DECISION — which tier a given
+        headroom earns, and the cap — moved to
+        ``core.llama_geometry.derive_ctx_size`` so the HARTOS-side spawners
+        (``model_lifecycle``'s standalone fallback, ``llamacpp_manager``'s
+        onboarding path) consult the same table instead of each carrying its
+        own ladder.  HARTOS cannot import Nunba, so shared policy can only live
+        downstream; the tier rule is model-agnostic arithmetic on two GiB
+        readings, so nothing Nunba-specific went with it.
         """
         # Context size is VRAM-aware for the Qwen3.5-MoE model family.
         is_qwen35 = _uses_qwen35_runtime(model_preset)
         if is_qwen35:
-            # Scale context with available VRAM:
-            #   ≥3GB remaining → 16384 (full multi-turn agent conversations)
-            #   ≥2GB remaining → 8192  (standard conversations)
-            #   <2GB remaining → 4096  (compact, preserves VRAM for TTS/STT)
-            # KV cache cost: ~1GB per 8K context for 4B Q4 model
+            # The tier table itself (≥3 GiB remaining → 16384, ≥2 → 8192,
+            # else 4096, capped) is core.llama_geometry.CTX_TIERS — see the
+            # ownership note in this method's docstring.  What stays here is
+            # the measurement the table is fed.
             try:
+                from core.llama_geometry import derive_ctx_size, describe_tiers
                 from integrations.service_tools.vram_manager import vram_manager
                 # force=True: detect_gpu() is a plain memo with no TTL of its
                 # own, and refresh_gpu_info()'s bundled TTL is 120 s -- a spawn
@@ -1730,19 +1856,64 @@ class LlamaConfig:
                 # 28160128202 produced 0 action files in 3 CREATE turns.
                 free_gb = vram_manager.refresh_gpu_info(
                     force=True).get('free_gb', 0)
-                model_gb = model_preset.size_mb / 1024.0
+                # MEASURE the weights.  `preset.size_mb / 1024.0` mixed units:
+                # size_mb is decimal MB on the rows whose files were measured
+                # (2B, 4B), so dividing by the binary 1024 overstated the 4B
+                # by 133 MB against a free_gb that really is GiB.  Live
+                # 2026-09-22 08:15:49 that was the whole decision:
+                #   free 4.84 - 2910/1024  = 1.998203 -> `>= 2.0` FALSE -> 4096
+                #   free 4.84 - true 2.7121 = 2.127886 -> `>= 2.0` TRUE  -> 8192
+                # and 4096 cannot hold the measured 8026-token tool schema, so
+                # every agentic turn 400'd for the life of the process.
+                model_gb = model_size_gib(
+                    model_preset, model_path=model_path,
+                    installer=getattr(self, 'installer', None))
                 remaining = free_gb - model_gb  # VRAM after model loads
-                if remaining >= 3:
-                    ctx_size = 16384
-                elif remaining >= 2.0:
-                    ctx_size = 8192
-                else:
-                    ctx_size = 4096
-                logger.info(f"Dynamic context size: {ctx_size} "
-                            f"(VRAM free={free_gb:.1f}GB, model={model_gb:.1f}GB, "
-                            f"remaining={remaining:.1f}GB)")
+                # Compared EXACTLY, no tolerance (owner 2026-09-22): the unit
+                # fix above is the whole fix, and a margin here would be a
+                # second mechanism for one decision -- the kind that lets
+                # the first one silently rot.  The comparison now happens once,
+                # in core.llama_geometry, for every spawner in both repos.
+                ctx_size = derive_ctx_size(free_gb, model_gb)
+                # Precision is not cosmetic here.  The `.1f` this replaces
+                # printed remaining=1.998203 as "remaining=2.0GB" next to a
+                # `>= 2.0` test, so the log showed a number that SATISFIES the
+                # condition beside the branch that rejected it — every prior
+                # investigation read the line as a pass.  Print the raw inputs
+                # at a precision the comparison actually uses, name the
+                # threshold, and say where the model size came from.
+                # Never let building the LOG LINE change the DECISION: this
+                # whole block is inside an `except Exception -> ctx_size =
+                # 8192`, so an unguarded stat here could discard a correctly
+                # computed 12288 if the file moved between the two calls.
+                try:
+                    _basis = (f"{os.path.getsize(str(model_path))}B measured"
+                              if model_path and os.path.exists(str(model_path))
+                              else f"size_mb="
+                                   f"{getattr(model_preset, 'size_mb', 0)} estimate")
+                except OSError:
+                    _basis = "size unavailable"
+                # The thresholds are rendered FROM the table, not retyped, so
+                # the log can never advertise a gate the code does not use.
+                logger.info(
+                    f"Dynamic context size: {ctx_size} "
+                    f"(VRAM free={free_gb:.3f}GiB, model={model_gb:.3f}GiB "
+                    f"[{_basis}], remaining={remaining:.3f}GiB, "
+                    f"tiers {describe_tiers()} GiB)")
             except Exception:
-                ctx_size = 8192  # safe default
+                # Unmeasurable box (no GPU probe, or no HARTOS at all) ->
+                # core.llama_geometry.CTX_FALLBACK, the SAME mid-table default
+                # every other spawner falls back to.  ctx_for_role('main')
+                # with nothing to measure IS that default; asking for it keeps
+                # this branch from becoming a fourth place the number is
+                # written.  The bare literal survives only for a standalone
+                # Nunba checkout with no HARTOS on the path — there is no
+                # shared vocabulary to read in that case, by definition.
+                try:
+                    from core.llama_geometry import ctx_for_role
+                    ctx_size = ctx_for_role('main')
+                except ImportError:
+                    ctx_size = 8192
         else:
             ctx_size = self.config.get("context_size", 8192)
 
@@ -1757,7 +1928,25 @@ class LlamaConfig:
         # plus system prompt (~1.5K) on top of trimmed history.
         # Net KV cost at 12K: ~1.5GB for 4B Q4 — still leaves ~2GB for
         # F5-TTS / Indic Parler coexistence on the 8GB-VRAM laptop tier.
-        return min(ctx_size, 12288)
+        #
+        # The number itself is core.constants.LLAMA_CTX_SIZE_DEFAULT, read
+        # through core.llama_geometry.ctx_cap().  It was a literal 12288 here
+        # AND a literal 12288 in constants.py AND in hart-llm.nix AND in
+        # hart-llm.service — four declarations of one ceiling, three of which
+        # already have a guard pinning them together
+        # (HARTOS tests/unit/test_source_guard_llama_ctx_size_agrees.py).
+        # This was the fourth, and it was the one nothing checked.
+        #
+        # Without HARTOS on the path there is no cap to apply — and there is
+        # also no vram_manager, so the tiers above never ran and ctx_size is
+        # whatever the operator's own llama_config.json says.  Capping a
+        # hand-written value against a number we cannot read would mean
+        # re-stating 12288 here, which is the duplication being removed.
+        try:
+            from core.llama_geometry import ctx_cap
+        except ImportError:
+            return ctx_size
+        return min(ctx_size, ctx_cap())
 
     def _do_start_server(self, model_preset=None, force_new_port=False):
         """Internal server start — called by start_server() with lock protection."""
@@ -2078,8 +2267,10 @@ class LlamaConfig:
         self.installer.note_serving_binary(llama_server)
 
         # Build command — context size comes from the one derivation shared
-        # with the caption/draft spawn (see _derive_ctx_size).
-        ctx_size = self._derive_ctx_size(model_preset)
+        # with the caption/draft spawn (see _derive_ctx_size).  model_path is
+        # already resolved above, so the weights are measured rather than
+        # estimated from the preset literal.
+        ctx_size = self._derive_ctx_size(model_preset, model_path=model_path)
 
         # Cap threads to 75% of cores — leave headroom for OS + TTS
         max_threads = max(1, int((os.cpu_count() or 4) * 0.75))
@@ -2131,8 +2322,14 @@ class LlamaConfig:
             # request in between passed untrimmed and died at the server
             # ("Context size has been exceeded" — 31x measured 2026-08-30
             # 18:11-18:12, source autogen.reuse).
-            os.environ['HEVOLVE_LLAMA_CTX_SIZE'] = str(ctx_size)
-            os.environ['HEVOLVE_LLAMA_SLOTS'] = str(n_parallel)
+            #
+            # Through core.llama_geometry.publish_geometry, which OWNS both
+            # variable names.  Spelling them inline here is what let a second
+            # name (HEVOLVE_LLM_CTX_SIZE, read by HARTOS model_lifecycle) go
+            # unnoticed: with the names written out at each site, nothing could
+            # tell you the set of them.  One writer, one place to grep.
+            if publish_geometry is not None:
+                publish_geometry(ctx_size, n_parallel)
             cmd = [
                 llama_server,
                 "--model", model_path,
@@ -2184,7 +2381,9 @@ class LlamaConfig:
                 # yields per-token vectors. The OAI /v1/embeddings route
                 # rejects pooling none as "not OAI compatible", so consumers
                 # must use the native /embedding endpoint.
-                "--embeddings",
+                #
+                # Added after the MTP decision below, through embeddings_args:
+                # an MTP spawn cannot carry it (measured 2026-09-24).
             ]
 
             # ── N-gram speculative decoding (no draft model needed) ──
@@ -2252,37 +2451,25 @@ class LlamaConfig:
                     "no extra VRAM cost."
                 )
 
-            # ── Multi-Token Prediction (MTP) — needs newer binary ──
-            # MTP support landed in llama.cpp PR #22673 (am17an).  Local
-            # binary at C:\Users\sathi\.trueflow\llama.cpp\build\bin\
-            # Release\ predates that PR — verified 2026-05-23 against
-            # --help (--spec-type choices do NOT include `mtp`).  When
-            # the binary is upgraded, set this env var to enable real
-            # MTP:
-            #   $env:HEVOLVE_LLAMA_MTP_N = "3"
-            # which appends:
-            #   --spec-type mtp --spec-draft-n-max 3
-            # Qwen3.5-4B-UD-Q4_K_XL (the current model) ships with the
-            # MTP head exposed in checkpoint config — confirmed by the
-            # llama.cpp + Qwen3.5 / Qwen3.6 community guides.
+            # ── Multi-Token Prediction (MTP) ──────────────────────
+            # Switched on by the MODEL, not an env flag (owner, 2026-09-24:
+            # "automatic from model").  This block used to append
+            # --spec-type draft-mtp only when HEVOLVE_LLAMA_MTP_N >= 1,
+            # which was set nowhere, so the Tiel-Coder MTP preset loaded as
+            # a plain MoE.  model_catalog.mtp_spec_args decides from the
+            # GGUF's own MTP head AND from whether THIS binary accepts the
+            # flag (an unknown --spec-type makes llama-server exit at start;
+            # builds 7909/8200 on this box lack it).  HEVOLVE_LLAMA_MTP_N is
+            # still honoured as an override: 0 = off, N = draft depth.  The
+            # same call every spawn path makes.
+            _mtp_args = []
             try:
-                _mtp_n = int(os.environ.get('HEVOLVE_LLAMA_MTP_N', '0') or '0')
-            except (TypeError, ValueError):
-                _mtp_n = 0
-            if _mtp_n >= 1:
-                cmd.extend([
-                    "--spec-type", "mtp",
-                    "--spec-draft-n-max", str(_mtp_n),
-                ])
-                logger.info(
-                    "[MTP] Enabling Multi-Token Prediction (--spec-type "
-                    "mtp --spec-draft-n-max %d) — opt-in via "
-                    "HEVOLVE_LLAMA_MTP_N.  Requires llama.cpp built "
-                    "after PR #22673.  If llama-server rejects the "
-                    "flag, the local binary is too old; rebuild it "
-                    "or unset the env var.",
-                    _mtp_n,
-                )
+                from integrations.service_tools.model_catalog import mtp_spec_args
+                _mtp_args = mtp_spec_args(str(model_path), str(llama_server))
+                cmd.extend(_mtp_args)
+            except Exception as e:
+                logger.info("MTP probe skipped (%s); launching without it", e)
+            cmd.extend(embeddings_args(_mtp_args))
 
             # Qwen3.5-MoE family models need additional flags.  Test the
             # shared family predicate directly: the `is_qwen35` local moved
@@ -2323,6 +2510,14 @@ class LlamaConfig:
                 if self.installer.gpu_available == "cuda":
                     cmd.extend(["-ngl", "99"])
                     cmd.extend(["--flash-attn", "on"])
+                    # A mixture of experts keeps attention on the GPU and
+                    # its experts in system RAM, which is what lets an 8 GB
+                    # card serve a 35B: measured, 2.87 GiB of VRAM for a
+                    # 21.19 GiB model. Without this the catalog admits the
+                    # model (it is sized for that placement) and the spawn
+                    # then tries to put every byte on the card. Dense
+                    # models get nothing back from here.
+                    cmd.extend(self._moe_args(model_path))
                     logger.info("GPU acceleration enabled (CUDA + flash-attn)")
                 elif self.installer.gpu_available == "metal":
                     logger.info("GPU acceleration enabled (Metal)")
@@ -2395,6 +2590,20 @@ class LlamaConfig:
                 _llama_log_fh = subprocess.DEVNULL
                 _llama_log_path = None
 
+            # Free VRAM the instant BEFORE the spawn.  Paired with the read
+            # taken once the server answers /health, the difference is what
+            # this model actually costs on this card -- the only way to get
+            # it: `nvidia-smi --query-compute-apps=pid,used_memory` returns
+            # [N/A] on Windows WDDM, so per-process VRAM is not obtainable
+            # from the driver at all.
+            _vram_before = None
+            try:
+                _vm_pre = self._get_vram_manager()
+                if _vm_pre and can_use_gpu:
+                    _vram_before = fresh_free_vram_gb(_vm_pre)
+            except Exception as _pre_err:
+                logger.debug(f"pre-spawn VRAM read skipped: {_pre_err}")
+
             self.server_process = subprocess.Popen(
                 cmd,
                 stdout=_llama_log_fh,
@@ -2459,9 +2668,78 @@ class LlamaConfig:
                     if can_use_gpu:
                         vm = self._get_vram_manager()
                         if vm:
-                            model_gb = model_preset.size_mb / 1024.0
-                            vm._allocations['llm'] = model_gb
-                            logger.info(f"VRAM allocation registered: llm = {model_gb:.1f}GB")
+                            # GiB, measured from the file just spawned — see
+                            # the sibling registration in auto_setup.
+                            model_gb = model_size_gib(
+                                model_preset, model_path=model_path,
+                                installer=self.installer)
+                            # What the model ACTUALLY took, from the delta
+                            # around the spawn.  The file size is a decent
+                            # stand-in while llama.cpp puts every weight in
+                            # VRAM, but --cpu-moe breaks that: a mixture of
+                            # experts runs its experts from system RAM, so
+                            # Tiel-Coder-35B-A3B costs 2.87 GiB of card for a
+                            # 21.19 GiB file.  Booking the file size there
+                            # overstates the reservation by ~7x.
+                            #
+                            # Only replaces the figure when the delta is
+                            # sane.  Another process moving during the spawn
+                            # window can produce a negative or absurd number,
+                            # and with no measurement the behaviour is
+                            # byte-for-byte what it was before.
+                            _measured_gb = None
+                            try:
+                                # "Started" includes a 503 still loading
+                                # the weights; measure once they are in.
+                                if _vram_before is not None:
+                                    if self._wait_until_serving(
+                                            desired_port, timeout=90):
+                                        _measured_gb = spawn_vram_delta_gb(
+                                            _vram_before,
+                                            fresh_free_vram_gb(vm))
+                                    else:
+                                        logger.info(
+                                            "VRAM not measured: the model "
+                                            "was still loading at the "
+                                            "deadline; booking the file size")
+                            except Exception as _post_err:
+                                logger.debug(
+                                    f"post-spawn VRAM read skipped: {_post_err}")
+
+                            _booked = _measured_gb if _measured_gb else model_gb
+                            vm._allocations['llm'] = _booked
+                            logger.info(
+                                "VRAM allocation registered: llm = %.3fGiB "
+                                "(%s; file is %.3fGiB)", _booked,
+                                'measured' if _measured_gb else 'from file',
+                                model_gb)
+
+                            # Durable, per-MODEL record so a later swap can
+                            # plan against what this model costs rather than
+                            # re-deriving it.  Keyed by the weight FILE --
+                            # four places match a preset to a row using three
+                            # different rules (#112) and this needs none of
+                            # them.  Best-effort throughout: a model that
+                            # cannot be resolved simply has no record, which
+                            # reads as "unknown", never as "free".
+                            if _measured_gb:
+                                try:
+                                    from models.catalog import get_catalog
+                                    _entry = get_catalog().get_by_weight_file(
+                                        model_path)
+                                    if _entry is not None:
+                                        get_catalog().record_residency(
+                                            _entry.id, vram_gb=_measured_gb,
+                                            weight_file=os.path.basename(
+                                                str(model_path)))
+                                    else:
+                                        logger.info(
+                                            "residency not recorded: no single "
+                                            "catalog row owns %s",
+                                            os.path.basename(str(model_path)))
+                                except Exception as _res_err:
+                                    logger.info(
+                                        f"residency not recorded: {_res_err}")
                     # Quick benchmark — warm up the KV cache and measure t/s
                     try:
                         import urllib.request
@@ -2604,7 +2882,7 @@ class LlamaConfig:
         # agent's own declared tools.  Growing n_ctx to swallow that would
         # hide the real fix: give each agent the tools its persona and goal
         # actually need.
-        ctx_size = self._derive_ctx_size(preset)
+        ctx_size = self._derive_ctx_size(preset, model_path=model_path)
         cmd = [str(binary_path), "--model", str(model_path),
                "--port", str(port), "--ctx-size", str(ctx_size),
                "--threads", "4"]
@@ -2615,6 +2893,8 @@ class LlamaConfig:
         if can_use_gpu:
             if self.installer.gpu_available == "cuda":
                 cmd.extend(["-ngl", "99", "--flash-attn", "on"])
+                # Same placement question as the main spawn, same answer.
+                cmd.extend(self._moe_args(model_path))
             if mmproj_path and not can_use_gpu:
                 cmd.append("--no-mmproj-offload")
 
@@ -2846,7 +3126,68 @@ class LlamaConfig:
         self.config["selected_model_index"] = model_index
         self._save_config()
 
-        return self.start_server(model_preset=preset)
+        started = self.start_server(model_preset=preset)
+
+        # VERIFY THE USER-VISIBLE OUTCOME, not the furthest step reached.
+        #
+        # Until 2026-09-22 this returned start_server()'s bare True, and on
+        # the desktop that was a LIE in the common case.  POST /api/llm/switch
+        # builds a FRESH LlamaConfig per request, so `self.server_process` is
+        # None and stop_server() above silently does nothing; the incumbent is
+        # still up when start_server() runs, so _do_start_server's port scan
+        # finds it, ADOPTS it, and returns True -- and its catalog-sync block
+        # rewrites selected_model_index straight back to whatever is actually
+        # loaded.  The endpoint answered {"success": true, "model_name": <the
+        # NEW model>}, main.py told the orchestrator the new model was loaded
+        # and booked its VRAM, and the server went on serving the OLD one.
+        #
+        # So ASK THE SERVER.  A switch succeeded only if the model now being
+        # served is the one that was asked for.  This is deliberately a check
+        # on the outcome rather than a change to the adopt branch: adopting
+        # whatever main LLM is already up is CORRECT for the boot and warm-up
+        # callers (it is what stops a second server taking :8080 -- the
+        # 2026-09-13 incident), and those callers pass no preset.  Only a
+        # caller that named a model can be disappointed by the answer.
+        if started:
+            serving = self.serving_model_file()
+            wanted = os.path.basename(preset.file_name or '')
+            if serving and wanted and serving != wanted:
+                logger.error(
+                    "switch to %s did NOT take effect: %s is still the model "
+                    "being served.  The running server was adopted, not "
+                    "replaced -- this instance holds no handle on it, so it "
+                    "was never stopped.  Reporting failure rather than a "
+                    "success that changed nothing.",
+                    wanted, serving)
+                return False
+
+        return started
+
+    def serving_model_file(self, port: int | None = None) -> str | None:
+        """Basename of the GGUF the live main server is actually serving.
+
+        The ONE reader of "what is loaded right now".  Asks /v1/models on
+        the live port, because the config's selected_model_index records
+        what was REQUESTED and the two drift apart the moment an adopt
+        happens -- which is exactly the case this exists to detect.
+
+        Returns None when nothing answers or the body carries no model, so
+        a caller can tell "a different model" from "could not tell".
+        """
+        port = port or _find_live_llama_port() or self.config.get(
+            "server_port", 8080)
+        try:
+            resp = requests.get(f"http://127.0.0.1:{port}/v1/models",
+                                timeout=3)
+            if resp.status_code != 200:
+                return None
+            body = resp.json()
+            ident = ((body.get('data') or [{}])[0].get('id', '')
+                     or (body.get('models') or [{}])[0].get('name', ''))
+            return os.path.basename(ident) if ident else None
+        except Exception as exc:
+            logger.debug("serving_model_file: no answer on %s (%r)", port, exc)
+            return None
 
     def get_current_model_name(self) -> str:
         """Get the display name of the currently selected model."""

@@ -535,6 +535,18 @@ build_exe_options = {
                           # second the same way it misses chat_sync, and a
                           # miss here is a ModuleNotFoundError on the first
                           # boot of the installed .exe.
+        "desktop.win32_com",  # The one COM vtable helper (DirectComposition
+                          # in desktop.glass, ITaskbarList in
+                          # desktop.platform_utils).  desktop.glass imports
+                          # it at module level, so the tracer reaches it
+                          # through the entry above; listed on its own so
+                          # that path is not the only thing keeping it in.
+        "desktop.companion_surface",  # What the floating companion IS.
+                          # MEASURED 2026-09-22: the 11:39 install carried
+                          # lib/desktop/companion_surface.pyc with no entry
+                          # here, i.e. the tracer followed app.py's
+                          # function-local import of it.  Listed anyway, the
+                          # same belt-and-braces as desktop.glass above.
         "desktop.boot_record",  # One durable line per boot decision.  Every
                           # import of it is function-local (inside app.py's
                           # companion block, on BOTH the success and the
@@ -1031,17 +1043,49 @@ _hartos_packages = [
 # Always include from sibling HARTOS — these are namespace packages when
 # pip-installed, so cx_Freeze can't trace them via `packages`. The
 # include_files copy is the only reliable way to bundle them.
+#
+# The `_deps/HARTOS` candidate is the same CI fallback the pyproject lookup and
+# the agent_ledger lookup above already have, and it was missing HERE. On the
+# Windows runner the `ln -sf ... ../HARTOS || true` step reports success while
+# creating nothing, `hartos_backend_src/` is not in the repo, so every CI
+# Windows build since the sibling layout was introduced printed four "not
+# found" warnings and shipped without this root copy, while Linux and macOS
+# shipped it. Measured 2026-09-22 on run 35688418793: build-linux "Including
+# core package <- .../HARTOS/core" x4, build-windows "WARNING: core package
+# not found" x4, both green.
+#
+# What that did NOT mean: an installer without its backend. The same four
+# packages reach the frozen exe a second way, the pip install of _deps/HARTOS
+# into the bundled python-embed, and that build's own --validate passed 62/0
+# with the in-process backend available. The real losses were (1) the root
+# copy is the fallback for any module cx_Freeze's tracing misses, and (2) the
+# lib/hartos shadowing gate further down only runs when the root copy exists,
+# so it silently skipped on every CI Windows build and the bug it exists to
+# catch could recur there unseen.
+#
+# Missing is therefore FATAL, not a warning: a Windows build that bundles less
+# than Linux and macOS, with its shadowing gate disarmed, is not worth
+# shipping, and a red build is the only signal anyone reads. Same treatment
+# agent_ledger already gets above.
 for _pkg_dir, _pkg_name in _hartos_packages:
-    for _candidate in [
+    _pkg_candidates = [
         os.path.join(_hartos_dir, _pkg_dir),
+        os.path.join('_deps', 'HARTOS', _pkg_dir),
         os.path.join('hartos_backend_src', _pkg_dir),
-    ]:
+    ]
+    for _candidate in _pkg_candidates:
         if os.path.isdir(_candidate) and os.path.isfile(os.path.join(_candidate, '__init__.py')):
             build_exe_options["include_files"].append((os.path.normpath(_candidate), _pkg_name))
             print(f"Including {_pkg_name} package <- {os.path.normpath(_candidate)}")
             break
     else:
-        print(f"WARNING: {_pkg_name} package not found — related features will be unavailable")
+        raise RuntimeError(
+            f"HARTOS package '{_pkg_name}' not found; refusing to build an installer "
+            f"without it (hart_intelligence_entry imports it at module top).  Searched:\n  - "
+            + "\n  - ".join(_pkg_candidates)
+            + "\nClone HARTOS as a sibling directory, or make sure the CI sibling "
+            "checkout landed in _deps/HARTOS."
+        )
 
 # Verify sql package is pip-installed (from hevolve-database canonical repo).
 # cx_Freeze traces it automatically when listed in packages above.
@@ -1943,7 +1987,24 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
         # KEPT so setuptools_scm still stamps the version from the git tag.
         import shutil as _shutil
         import tempfile as _tempfile
+        # Windows device names (CON PRN AUX NUL COM1-9 LPT1-9) cannot be
+        # opened as files in any case, with or without an extension.  A POSIX
+        # shell's `> nul` on Windows writes a REAL file by that name, and
+        # copytree then dies on it.  Measured 2026-09-23: HARTOS/nul (a
+        # 1,906-byte stray diff, gitignored so git never showed it) stopped
+        # the build with "[WinError 87] The parameter is incorrect".  None of
+        # these can be package content.  Each letter is a [xX] class because
+        # fnmatch is case-sensitive off Windows and the test runs on all OSes.
+        _WIN_RESERVED_PATTERNS = [
+            _p for _n in ('con', 'prn', 'aux', 'nul',
+                          *(f'com{_i}' for _i in range(1, 10)),
+                          *(f'lpt{_i}' for _i in range(1, 10)))
+            for _cls in [''.join(f'[{_c}{_c.upper()}]' if _c.isalpha() else _c
+                                 for _c in _n)]
+            for _p in (_cls, _cls + '.*')
+        ]
         _IGNORE_HEAVY = _shutil.ignore_patterns(
+            *_WIN_RESERVED_PATTERNS,
             # Rust sub-projects + their build output (compositor 576M;
             # claw_native 1.6G).  'target' catches any cargo build dir anywhere.
             # None is a Python package (packages.find = core*/integrations*/

@@ -533,6 +533,13 @@ class TestPiperTTSSynthesize:
         mock_piper_module = MagicMock()
         with patch.dict("sys.modules", {"piper": mock_piper_module}):
             from tts.piper_tts import PiperTTS
+            # The import breaker lives on the CLASS. A fixture elsewhere that
+            # builds PiperTTS with piper blocked (TestPiperTTSDownloadVoice)
+            # trips it, and these tests then skipped the module path for the
+            # cooldown, failing or passing by test order.  Start cold.
+            for attr in ("_piper_cb", "_piper_cb_unavailable"):
+                if hasattr(PiperTTS, attr):
+                    delattr(PiperTTS, attr)
             p = PiperTTS(
                 voices_dir=str(tmp_path / "voices"),
                 cache_dir=str(tmp_path / "cache"),
@@ -543,18 +550,30 @@ class TestPiperTTSSynthesize:
             (voices_dir / "en_US-amy-medium.onnx.json").write_bytes(b"{}")
             return p
 
+    @staticmethod
+    def _writes_audio(*args):
+        # The writers take (text, output_path, ...) and return output_path.
+        # synthesize() hands them a private .part path and publishes it only
+        # when it holds audio, so a stand-in must really write some.
+        out = args[1]
+        with open(out, "wb") as f:
+            f.write(b"RIFF" + b"\0" * 2000)
+        return out
+
     def test_synthesize_uses_module_when_available(self, piper, tmp_path):
-        with patch.object(piper, "_synthesize_with_module", return_value="/out.wav") as mock_mod:
-            result = piper.synthesize("Hello world", output_path=str(tmp_path / "out.wav"))
-            assert result == "/out.wav"
+        out = str(tmp_path / "out.wav")
+        with patch.object(piper, "_synthesize_with_module", side_effect=self._writes_audio) as mock_mod:
+            result = piper.synthesize("Hello world", output_path=out)
+            assert result == out
             mock_mod.assert_called_once()
 
     def test_synthesize_falls_back_to_executable(self, piper, tmp_path):
         piper._piper_module = None  # no module
+        out = str(tmp_path / "out.wav")
         with patch.object(piper, "_find_piper_executable", return_value="/usr/bin/piper"):
-            with patch.object(piper, "_synthesize_with_executable", return_value="/out.wav") as mock_exe:
-                result = piper.synthesize("Hello", output_path=str(tmp_path / "out.wav"))
-                assert result == "/out.wav"
+            with patch.object(piper, "_synthesize_with_executable", side_effect=self._writes_audio) as mock_exe:
+                result = piper.synthesize("Hello", output_path=out)
+                assert result == out
                 mock_exe.assert_called_once()
 
     def test_synthesize_no_method_returns_none(self, piper, tmp_path):
@@ -567,7 +586,7 @@ class TestPiperTTSSynthesize:
         # Remove voice files so it's not installed
         (tmp_path / "voices" / "en_US-lessac-medium.onnx").unlink(missing_ok=True)
         with patch.object(piper, "download_voice", return_value=True) as mock_dl:
-            with patch.object(piper, "_synthesize_with_module", return_value="/out.wav"):
+            with patch.object(piper, "_synthesize_with_module", side_effect=self._writes_audio):
                 # Need to make is_voice_installed return True after download
                 orig = piper.is_voice_installed
                 call_count = [0]
@@ -604,7 +623,9 @@ class TestPiperTTSSynthesize:
         voice_id = piper.current_voice
         text_hash = hashlib.md5(f"{text}:{voice_id}:{1.0}".encode()).hexdigest()[:16]
         cached = piper.cache_dir / f"tts_{text_hash}.wav"
-        cached.write_bytes(b"fake audio")
+        # Bigger than a bare 44-byte WAV header: a header-only file is not
+        # a hit (see test_piper_tts.TestCacheHoldsOnlyWholeAudio).
+        cached.write_bytes(b"RIFF" + b"fake audio" * 100)
 
         with patch.object(piper, "_synthesize_with_module") as mock_mod:
             result = piper.synthesize(text)

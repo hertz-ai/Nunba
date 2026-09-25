@@ -2085,6 +2085,7 @@ def llm_auto_setup():
         # Sync catalog state so dashboard reflects the loaded model
         if result.get('success'):
             try:
+                from llama.llama_installer import model_size_gib
                 from models.catalog import ModelType
                 from models.orchestrator import get_orchestrator
                 orch = get_orchestrator()
@@ -2092,8 +2093,11 @@ def llm_auto_setup():
                 preset = MODEL_PRESETS[idx] if idx < len(MODEL_PRESETS) else None
                 if preset:
                     device = 'gpu' if config.config.get('use_gpu') else 'cpu'
-                    orch.notify_loaded(ModelType.LLM, preset.display_name, device=device,
-                                       vram_gb=preset.size_mb / 1024.0)
+                    # The model just loaded, so its file is on disk and the
+                    # ledger gets the MEASURED size rather than an estimate.
+                    orch.notify_loaded(
+                        ModelType.LLM, preset.display_name, device=device,
+                        vram_gb=model_size_gib(preset, installer=config.installer))
             except Exception:
                 pass
         return jsonify(result)
@@ -2166,6 +2170,7 @@ def llm_switch_model():
         preset = MODEL_PRESETS[model_index]
         # Sync catalog: unload old, load new
         try:
+            from llama.llama_installer import model_size_gib
             from models.catalog import ModelType
             from models.orchestrator import get_orchestrator
             orch = get_orchestrator()
@@ -2173,8 +2178,11 @@ def llm_switch_model():
                 orch.notify_unloaded(ModelType.LLM, old_preset.display_name)
             if success:
                 device = 'gpu' if config.config.get('use_gpu') else 'cpu'
-                orch.notify_loaded(ModelType.LLM, preset.display_name, device=device,
-                                   vram_gb=preset.size_mb / 1024.0)
+                # Same ledger, same unit, same measurement as every other
+                # VRAM figure — see llama_installer.model_size_bytes.
+                orch.notify_loaded(
+                    ModelType.LLM, preset.display_name, device=device,
+                    vram_gb=model_size_gib(preset, installer=config.installer))
         except Exception:
             pass
         return jsonify({
@@ -2520,6 +2528,7 @@ def admin_models_storage_path_get():
     try:
         import shutil
         from pathlib import Path
+
         from llama.llama_config import LlamaConfig
         cfg = LlamaConfig()
         models_dir = Path(cfg.get_models_dir())
@@ -2897,7 +2906,8 @@ def _bounded_hub_call(fn, *args, timeout: float = 5.0, **kwargs):
 def _gguf_install_files(repo_files, requested_file: str = '',
                         file_sizes: dict | None = None,
                         compute_state: dict | None = None,
-                        target_dir: str | None = None) -> dict:
+                        target_dir: str | None = None,
+                        is_moe: bool = False) -> dict:
     """Build the llama.cpp file mapping from a verified Hub manifest.
 
     The Hub installer already obtains this manifest before it registers a
@@ -2923,7 +2933,7 @@ def _gguf_install_files(repo_files, requested_file: str = '',
     if not weights:
         return {}
     file_sizes = file_sizes or {}
-    from models.catalog import llama_gguf_compute_requirements
+    from models.catalog import gguf_fits_gpu, llama_gguf_compute_requirements
     # Select the projector once and use that same file for fit accounting and
     # the loader mapping.  Summing every published projector variant can
     # falsely reject a model even though only one projector is downloaded.
@@ -2943,9 +2953,10 @@ def _gguf_install_files(repo_files, requested_file: str = '',
         projector_bytes = float(file_sizes.get(projector, 0) or 0)
         required_disk = size + projector_bytes
         try:
-            from pathlib import Path
-            from llama.llama_installer import LlamaInstaller
             import shutil
+            from pathlib import Path
+
+            from llama.llama_installer import LlamaInstaller
             target_storage = Path(target_dir).expanduser().resolve() if target_dir else LlamaInstaller().models_dir
             if shutil.disk_usage(target_storage).free < required_disk:
                 return False
@@ -2954,9 +2965,30 @@ def _gguf_install_files(repo_files, requested_file: str = '',
                 'could not inspect the configured Nunba model-storage volume'
             ) from exc
         vram, ram = llama_gguf_compute_requirements(size_gb)
-        ram_ok = float(compute_state.get('ram_free_gb', 0) or 0) >= ram
+        free_ram = float(compute_state.get('ram_free_gb', 0) or 0)
+        ram_ok = free_ram >= ram
         free_vram = float(compute_state.get('vram_free_gb', 0) or 0)
-        if compute_state.get('gpu_available') and free_vram >= vram:
+        # THE SAME function the SELECTOR asks
+        # (model_catalog.gguf_fits_gpu), so install and selection cannot
+        # drift apart.  They used to be two hand-written rules and they
+        # disagreed: Tiel-Coder-35B-A3B at 4.7 GB free VRAM / 21.4 GB free
+        # RAM was refused here while the selector answered 'gpu' -- this
+        # path declining to fetch the model that path would pick.
+        #
+        # Only `whole_need_gb` is passed because the model is NOT
+        # downloaded: its expert/non-expert split is unknowable until the
+        # file exists, so a MoE is judged on the COMBINED budget, which is
+        # the "fits" figure a GGUF publisher quotes.  That is deliberately
+        # more conservative than the measured rule the selector uses later
+        # (28.6 GB demanded against a true 3.4 + 18.6) and erring this way
+        # picks a smaller quant rather than a model that will not run.
+        #
+        # A DENSE model gets no combined arm at all -- it touches every
+        # parameter on every token, so spilling it to RAM costs a PCIe
+        # round trip per token.
+        if gguf_fits_gpu(free_vram, free_ram,
+                         gpu_available=bool(compute_state.get('gpu_available')),
+                         moe=is_moe, whole_need_gb=vram):
             return True
         # GGUF is CPU-capable.  A GPU improves placement and throughput, but a
         # machine with sufficient system RAM must not be rejected merely
@@ -2979,9 +3011,37 @@ def _gguf_install_files(repo_files, requested_file: str = '',
         # canonical compute/storage snapshot.  Bonsai 2 falls through to its
         # ternary PQ2_0 when larger conventional quants are absent or do not
         # fit.  An operator can still select a manifest member explicitly.
-        preference = ('q8_0', 'q6_k', 'q5_k_m', 'q5_k_s', 'q5_0',
-                      'q4_k_m', 'q4_k_s', 'q4_0', 'pq2_0', 'q3_k_m',
-                      'q3_k_s', 'q2_k', 'q2_0', 'ptq1_0')
+        # Ordered by bit width first, then by variant within a width --
+        # _XL (unsloth dynamic) > _M > _S > _0 -- which is the ordering the
+        # publishers' own guidance uses.
+        #
+        # The list used to stop at the older spellings (q8_0, q6_k, q5_k_m,
+        # q4_k_m, q4_k_s, q3_k_m, q3_k_s, q2_k). Against a modern repo that
+        # publishes Q4_K_XL / IQ4_XS / Q8_K_XL, the ONLY marker that matched
+        # anything was `q2_k`, via Q2_K_XL -- so the picker chose the tier
+        # that repo's own card calls "THE LAST RESORT ... struggles with
+        # agentic coding", on a machine with room for the 4-bit tiers.
+        # Every IQ and _XL quant was invisible to it.
+        preference = (
+            'q8_k_xl', 'q8_0',
+            'q6_k_xl', 'q6_k',
+            'q5_k_xl', 'q5_k_m', 'q5_k_s', 'q5_0',
+            'q4_k_xl', 'q4_k_m', 'q4_k_s', 'q4_0',
+            'iq4_xs', 'iq4_nl',
+            # pq2_0 sits ABOVE the 3-bit quants on purpose -- see the Bonsai 2
+            # note above.  It is ternary, so bit width alone would bury it down
+            # with q2_k, and an earlier pass of mine did exactly that: it was
+            # moved from index 8 to index 19, which flipped a Bonsai 2 repo
+            # publishing both PQ2_0 and Q3_K_M from PQ2_0 to Q3_K_M.  The 4-bit
+            # additions above it are a genuine improvement on it; everything
+            # below is not.
+            'pq2_0',
+            'q3_k_xl', 'q3_k_m', 'q3_k_s',
+            'iq3_m', 'iq3_xxs',
+            'q2_k_xl', 'q2_k',
+            'iq2_m', 'iq2_xxs',
+            'q2_0', 'ptq1_0', 'iq1_m', 'iq1_s',
+        )
         lowered = {f: f.lower() for f in weights}
         candidates = [
             f for marker in preference for f in weights if marker in lowered[f]
@@ -3018,6 +3078,45 @@ def _normalize_hf_id(raw: str) -> str:
             f"possible homoglyph attack): {cleaned!r}",
         )
     return cleaned
+
+
+@app.route('/api/admin/models/peer-offers', methods=['GET'])
+def admin_models_peer_offers():
+    """Models an admitted hive peer has installed that this node does not.
+
+    The fleet half of the Model Management page: someone on another
+    machine installed a model, their node announced it, and it shows up
+    here so the same work is not repeated per machine. Each row carries
+    the peer's URL plus the facts its node MEASURED from the artifact --
+    moe / experts_used / mtp come from read_gguf_facts() on the real
+    file, so the decision to spend 21 GB is made on measurements rather
+    than a description.
+
+    Read-only. An offer is a pointer: installing one goes through
+    /hub/install like any other model, which re-derives every compute
+    number locally rather than trusting what a peer said.
+
+    Query params:
+      type:     (optional) model_type filter — 'llm', 'tts', ...
+      all:      '1' to include models already in the local catalog
+    """
+    if not _is_local_request():
+        return jsonify({"error": "local only"}), 403
+    try:
+        from integrations.service_tools.model_mesh import peer_offers
+    except ImportError as e:
+        return jsonify({'success': False, 'error': f'mesh unavailable: {e}',
+                        'offers': []}), 503
+    try:
+        offers = peer_offers(
+            model_type=(request.args.get('type') or '').strip() or None,
+            exclude_local=request.args.get('all') != '1')
+        return jsonify({'success': True, 'offers': offers,
+                        'count': len(offers)})
+    except Exception as e:
+        logging.info(f"[peer-offers] listing failed: {e}")
+        return jsonify({'success': False, 'error': str(e),
+                        'offers': []}), 500
 
 
 @app.route('/api/admin/models/hub/search', methods=['GET'])
@@ -3225,6 +3324,11 @@ def admin_models_hub_install():
                                "after 5s — retry when network is stable",
                 }), 504
             _file_sizes = {}
+            # Bound here, not only inside the GGUF branch below: the tag
+            # read further down runs for every repo, and a non-GGUF one
+            # (a safetensors TTS model, say) would otherwise hit a
+            # NameError on a path that works today.
+            _info = None
             if any(f.lower().endswith('.gguf') for f in _files):
                 # The file tree has the byte counts that let the existing
                 # orchestrator snapshot reject a quant that cannot fit before
@@ -3277,9 +3381,21 @@ def admin_models_hub_install():
         custom_dl_dir = (data.get('download_dir') or '').strip() or None
         try:
             _compute_state = get_orchestrator()._get_compute_state()
+            # Whether this is a mixture of experts decides whether the
+            # experts may live in system RAM, and so which quants fit.
+            # Before download the artifact cannot be read, so the Hub tags
+            # are the only signal there is -- publishers tag these
+            # ('moe', 'qwen35moe'). It is a HINT and is treated as one: it
+            # only ever WIDENS what is offered, the download still has to
+            # fit the storage volume, and read_gguf_facts measures the
+            # truth from the file afterwards and corrects the row.
+            _tags = {str(t).lower() for t in (getattr(_info, 'tags', None)
+                                              or [])}
+            _is_moe = any('moe' in t for t in _tags)
             _llama_files = _gguf_install_files(
                 _files, (data.get('gguf_file') or '').strip(),
-                _file_sizes, _compute_state, target_dir=custom_dl_dir)
+                _file_sizes, _compute_state, target_dir=custom_dl_dir,
+                is_moe=_is_moe)
         except ValueError as _file_error:
             return jsonify({'error': str(_file_error)}), 400
         _is_llama_gguf = bool(_llama_files)
@@ -3440,6 +3556,23 @@ def admin_models_hub_install():
                             except Exception as _ce:
                                 logging.debug(
                                     f"[hub-install] capability flip skipped: {_ce}")
+                            # ── Tell the hive ───────────────────────
+                            # A model one person installed is a fact the
+                            # other nodes can use, so the fleet stops
+                            # rediscovering the same models one machine
+                            # at a time.  Announced only HERE, after the
+                            # load + capability probe passed: an advert
+                            # is a claim this node can serve the model,
+                            # and an unproven install cannot honour it.
+                            # Peers cache the offer and surface it on
+                            # their own Model Management page; nothing
+                            # downloads without someone asking for it.
+                            try:
+                                from integrations.service_tools.model_mesh import announce_model_available
+                                announce_model_available(safe_id)
+                            except Exception as _me:
+                                logging.debug(
+                                    f"[hub-install] mesh announce skipped: {_me}")
                         else:
                             validate_reason = f'capability probe failed: {_cap_reason}'
                             logging.info(
@@ -5428,8 +5561,8 @@ def admin_mcp_token_get():
         # Use the PUBLIC HARTOS API — was reaching into the private
         # underscore-prefix `_ensure_mcp_token` which coupled Nunba's
         # release cadence to HARTOS internal naming.
-        from integrations.mcp import get_mcp_token
         from integrations.coding_agent.claude_code_backend import copilot_enabled
+        from integrations.mcp import get_mcp_token
         token = get_mcp_token()
         return jsonify({
             'token': token,

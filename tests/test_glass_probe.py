@@ -29,8 +29,17 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.glass_probe import (  # noqa: E402
-    ALPHA, GLASS, NO_SIGNAL, OPAQUE, RETENTION_BLURRED, RETENTION_SHARP,
-    STRIPE_PX, TRANSMITTANCE_FLOOR, UNCERTAIN, classify)
+    ALPHA,
+    GLASS,
+    NO_SIGNAL,
+    OPAQUE,
+    RETENTION_BLURRED,
+    RETENTION_SHARP,
+    STRIPE_PX,
+    TRANSMITTANCE_FLOOR,
+    UNCERTAIN,
+    classify,
+)
 
 #: What the backdrops measure as on their own.
 BLACK, WHITE, STRIPE_AMP = 0.0, 255.0, 255.0

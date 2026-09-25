@@ -288,3 +288,104 @@ class TestExecutableDiscovery:
                     tts._get_piper_module()
             assert len(calls) == 1, (
                 f"expected 1 import attempt inside the cooldown, got {len(calls)}")
+
+
+class TestCacheHoldsOnlyWholeAudio:
+    """The cache path is published only once the audio is complete.
+
+    Live 2026-09-23: /api/social/tts/quick answered success with an empty
+    clip.  Synthesis wrote straight to the final cache path, so a concurrent
+    call for the same line saw the half-written file as a hit; a synthesis
+    that died mid-write left a 0-byte or header-only WAV served forever.
+    """
+
+    def _tts(self, tmpdir):
+        from tts.piper_tts import PiperTTS
+        with patch.object(PiperTTS, '_init_piper'):
+            tts = PiperTTS(voices_dir=os.path.join(tmpdir, 'v'),
+                           cache_dir=os.path.join(tmpdir, 'c'))
+        tts.is_voice_installed = lambda v: True
+        tts.get_voice_path = lambda v: (Path(tmpdir) / 'm.onnx', Path(tmpdir) / 'm.json')
+        tts._get_piper_module = lambda: object()
+        tts._find_piper_executable = lambda: None
+        return tts
+
+    def _cache_files(self, tts):
+        return sorted(os.listdir(tts.cache_dir))
+
+    def test_final_path_is_absent_while_audio_is_being_written(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tts = self._tts(tmpdir)
+            seen = {}
+
+            def _write(text, out, model, speed):
+                seen['out'] = out
+                seen['final_visible_mid_write'] = any(
+                    f.endswith('.wav') and '.part' not in f for f in os.listdir(tts.cache_dir))
+                with open(out, 'wb') as f:
+                    f.write(b'RIFF' + b'\0' * 2000)
+                return out
+
+            tts._synthesize_with_module = _write
+            path = tts.synthesize('How many stars can you count?')
+            assert seen['final_visible_mid_write'] is False
+            assert seen['out'] != path
+            assert os.path.getsize(path) > 44
+            assert self._cache_files(tts) == [os.path.basename(path)], \
+                'no .part file may be left behind'
+
+    def test_header_only_cache_entry_is_resynthesized_not_served(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tts = self._tts(tmpdir)
+            calls = []
+
+            def _write(text, out, model, speed):
+                calls.append(out)
+                with open(out, 'wb') as f:
+                    f.write(b'RIFF' + b'\0' * 2000)
+                return out
+
+            tts._synthesize_with_module = _write
+            first = tts.synthesize('Tap the seven.')
+            with open(first, 'wb') as f:          # poison: a header-only WAV
+                f.write(b'\0' * 44)
+            again = tts.synthesize('Tap the seven.')
+            assert again == first
+            assert len(calls) == 2, 'a header-only entry must not count as a hit'
+            assert os.path.getsize(again) > 44
+
+    def test_whole_cache_entry_is_still_a_hit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tts = self._tts(tmpdir)
+            calls = []
+
+            def _write(text, out, model, speed):
+                calls.append(out)
+                with open(out, 'wb') as f:
+                    f.write(b'RIFF' + b'\0' * 2000)
+                return out
+
+            tts._synthesize_with_module = _write
+            assert tts.synthesize('Well done!') == tts.synthesize('Well done!')
+            assert len(calls) == 1
+
+    def test_no_path_is_not_audio_and_not_an_error(self):
+        # Both kids-route engines can hand back None; that must read as "no
+        # audio" (deferred reply), not raise and turn into a 500.
+        from tts.piper_tts import wav_has_audio
+        assert wav_has_audio(None) is False
+        assert wav_has_audio('') is False
+        assert wav_has_audio(os.path.join(tempfile.gettempdir(), 'no-such.wav')) is False
+
+    def test_failed_synthesis_leaves_nothing_in_the_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tts = self._tts(tmpdir)
+
+            def _die_mid_write(text, out, model, speed):
+                with open(out, 'wb') as f:
+                    f.write(b'\0' * 44)
+                raise RuntimeError('killed mid-write')
+
+            tts._synthesize_with_module = _die_mid_write
+            assert tts.synthesize('Count the apples.') is None
+            assert self._cache_files(tts) == []

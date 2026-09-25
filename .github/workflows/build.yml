@@ -195,15 +195,27 @@ jobs:
           # Windows: use directory junction (mklink /J, no admin needed).
           # Linux/macOS: use symlink.
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            cmd //c "mklink /J \"$(cygpath -w ../HARTOS)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/HARTOS)\"" 2>/dev/null || true
-            cmd //c "mklink /J \"$(cygpath -w ../hevolveai)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/hevolveai)\"" 2>/dev/null || true
-            cmd //c "mklink /J \"$(cygpath -w ../Hevolve_Database)\" \"$(cygpath -w $GITHUB_WORKSPACE/_deps/Hevolve_Database)\"" 2>/dev/null || true
+            # PowerShell, not `cmd //c mklink`: the cmd quoting silently
+            # failed on every run (log: "Some sibling repos not available"),
+            # so build.py never saw ../HARTOS and every CI installer shipped
+            # without LICENSE (origin attestation failed) and HARTOS_SHA=unknown.
+            parent_win=$(cygpath -w "$(cd .. && pwd)")
+            for repo in HARTOS hevolveai Hevolve_Database; do
+              [ -d "_deps/$repo" ] || continue
+              powershell -NoProfile -Command "New-Item -ItemType Junction -Path '$parent_win\\$repo' -Target '$(cygpath -w "$GITHUB_WORKSPACE/_deps/$repo")' | Out-Null"
+            done
           else
             ln -sf "$GITHUB_WORKSPACE/_deps/HARTOS" ../HARTOS || true
             ln -sf "$GITHUB_WORKSPACE/_deps/hevolveai" ../hevolveai || true
             ln -sf "$GITHUB_WORKSPACE/_deps/Hevolve_Database" ../Hevolve_Database || true
           fi
           ls -la ../HARTOS/pyproject.toml ../hevolveai/ 2>/dev/null || echo "Some sibling repos not available"
+          # A cloned HARTOS that did not link is a broken build, not a
+          # fork build (those have no _deps/HARTOS at all).
+          if [ -d _deps/HARTOS ] && [ ! -f ../HARTOS/pyproject.toml ]; then
+            echo "::error::_deps/HARTOS was cloned but ../HARTOS did not link"
+            exit 1
+          fi
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
@@ -390,11 +402,12 @@ jobs:
           "::warning title=Installer is UNSIGNED::No Azure signing secrets in this repo, so $($exe.Name) is $($sig.Status). Windows SmartScreen will warn users on download."
           "- installer **UNSIGNED** (``$($sig.Status)``) - no Azure signing secrets configured" >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Smoke test (validate frozen exe)
-        run: |
-          build\Nunba\Nunba.exe --validate
-        timeout-minutes: 5
-        continue-on-error: true
+      # No bare `Nunba.exe --validate` step here: the exe is a Win32GUI
+      # binary, so pwsh returns the moment it launches and the step went green
+      # having printed nothing but its own header (run 35697057172). The real
+      # gate is inside scripts/setup_freeze_nunba.py, which runs --validate
+      # under subprocess.run, reads validate.log fail-closed and fails the
+      # "Build Nunba app" step above on any missing module.
 
       - name: E2E smoke test (start server, hit health endpoint)
         shell: bash

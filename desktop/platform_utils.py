@@ -35,13 +35,38 @@ def get_screen_dimensions():
         return _get_screen_dimensions_fallback()
 
 
-def _get_win32_dpi_scale():
-    """Detect Windows DPI scale factor.
+def _get_win32_dpi_scale(window_handle=None):
+    """The factor that turns logical pixels into physical ones on Windows.
 
-    Returns >1.0 when the process is DPI-aware and the display uses scaling
-    (e.g. 1.5 for 150%).  Returns 1.0 when DPI-unaware (virtualised to 96 dpi)
-    or when no scaling is active.
+    >1.0 when the process is DPI-aware and the display scales (1.5 at 150%).
+    1.0 when DPI-unaware (everything is virtualised to 96 dpi) or unscaled.
+
+    WITH a window handle this is the scale of the monitor THAT WINDOW is on
+    (GetDpiForWindow, through the one per-window reader,
+    ``win32_chrome.dpi_scale``).  WITHOUT one it is the SYSTEM DPI -- the
+    primary monitor's, via GetDC(0).
+
+    The distinction is not cosmetic.  GetDC(0) answers for the primary
+    display whatever monitor the window is on, so sizing a window by it puts
+    the primary's factor on a window living on a differently scaled second
+    display: 200% window sized by a 150% system reads 25% small.  Every
+    caller that HAS a handle passes it; the one caller that legitimately has
+    none is ``_get_screen_dimensions_windows`` below, because
+    SPI_GETWORKAREA reports the PRIMARY work area too -- there the system
+    DPI is the matching divisor, not a fallback.
+
+    The window's DPI being unreadable (pre-Win10 1607 has no
+    GetDpiForWindow) falls through to the system DPI rather than to 1.0:
+    "I could not ask" must not be answered with "unscaled".
     """
+    if window_handle:
+        try:
+            from desktop.win32_chrome import dpi_scale
+            scale = dpi_scale(int(window_handle))
+            if scale:
+                return scale
+        except Exception:
+            pass
     try:
         import ctypes
         hdc = ctypes.windll.user32.GetDC(0)
@@ -218,8 +243,29 @@ def set_window_tool_window(window_handle, tool=True):
     """Keep a window out of the taskbar and Alt-Tab (WS_EX_TOOLWINDOW).
 
     For a floating presence that comes and goes: the owner saw two Nunba
-    entries on the taskbar (2026-09-15).  Takes effect on the next show,
-    so call it while the window is hidden or before it is shown.
+    entries on the taskbar (2026-09-15, and again 2026-09-22).
+
+    The style bit alone is NOT enough, and the reason is measured rather
+    than suspected.  pywebview shows a ``hidden=True`` window once at birth
+    (``winforms.py``: ``Opacity = 0; Show(); Hide(); Opacity = 1``) before
+    any caller can touch it, and WinForms rewrites the WHOLE extended style
+    from its own CreateParams on each Opacity change -- measured on a
+    never-shown form: TOOLWINDOW|NOACTIVATE set by hand, then ``Opacity=0``
+    -> gone, APPWINDOW back.  So the shell sees an ordinary window at that
+    first show and registers a taskbar tab for it.  Hiding it does not take
+    the tab away: with the companion HIDDEN and carrying this bit, the
+    shell's own button read "Nunba - 2 running windows" for hours.
+
+    ``ShowInTaskbar=False`` is not a way out either: set after the handle
+    exists it recreates the handle (measured, handle changes), which is the
+    WebView2 child gone.
+
+    What does work is asking the shell directly: ``ITaskbarList::DeleteTab``
+    on the hidden companion took that button to "1 running window" live,
+    the same afternoon.  So ``tool=True`` sets the bit for every future show
+    AND drops whatever tab the shell already holds.  Both halves are needed:
+    the bit stops the next show creating a tab, the call removes the one
+    the first show created.
     """
     if IS_WINDOWS:
         try:
@@ -236,8 +282,43 @@ def set_window_tool_window(window_handle, tool=True):
             else:
                 style = (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
             user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+            if tool:
+                _drop_taskbar_tab(hwnd)
         except Exception as e:
             logger.error(f"Error setting tool-window style: {e}")
+
+
+def _drop_taskbar_tab(hwnd) -> bool:
+    """Tell the shell to forget ``hwnd``'s taskbar tab (``ITaskbarList``).
+
+    ``hwnd`` is the pointer-sized handle ``_hwnd`` makes.  The vtable slots
+    are counted from ``ITaskbarList``'s declaration in ShObjIdl: after the
+    three of IUnknown come HrInit (3), AddTab (4), DeleteTab (5).  Returns
+    whether the shell took the call; a refusal is logged, never raised, so
+    the style change it rides on stands either way.
+    """
+    import ctypes
+
+    from desktop import win32_com
+
+    CLSID_TASKBAR_LIST = win32_com.guid(
+        0x56FDF344, 0xFD6D, 0x11D0,
+        0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90)
+    IID_ITASKBAR_LIST = win32_com.guid(
+        0x56FDF342, 0xFD6D, 0x11D0,
+        0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90)
+    SLOT_HR_INIT, SLOT_DELETE_TAB = 3, 5
+    try:
+        with win32_com.com_instance(CLSID_TASKBAR_LIST,
+                                    IID_ITASKBAR_LIST) as taskbar:
+            win32_com.vcall(taskbar, SLOT_HR_INIT, ctypes.HRESULT, [])
+            win32_com.vcall(taskbar, SLOT_DELETE_TAB, ctypes.HRESULT,
+                            [ctypes.c_void_p], hwnd)
+        return True
+    except Exception as e:
+        logger.warning('the shell refused to drop the taskbar tab for hwnd '
+                       '%s: %s', hwnd, e)
+        return False
 
 
 def set_window_floating_presence(window_handle, on=True):
@@ -325,15 +406,27 @@ def _logical_to_physical(width, height, scale):
 
 
 def set_window_size(window_handle, width, height):
-    """Size a frameless window to width x height LOGICAL px.
+    """Size a window to width x height LOGICAL px.  The ONE conversion.
 
-    pywebview sizes a window by Form.Size while the form still wears its
-    caption and frame, then drops the frame and keeps the smaller client
-    (measured 2026-09-15: 220x310 asked, 198x254 on screen).  A frameless
-    window's outer size is its client size, so SetWindowPos with the
-    designed size, scaled by the same DPI factor get_screen_dimensions()
-    normalises with, restores what the page was laid out for.  Returns
-    True when the window took the size; a refusal is logged, not silent.
+    Two separate reasons this exists rather than the backend's own resize:
+
+    1. pywebview sizes a window by Form.Size while the form still wears its
+       caption and frame, then drops the frame and keeps the smaller client
+       (measured 2026-09-15: 220x310 asked, 198x254 on screen).  A frameless
+       window's outer size IS its client size, so SetWindowPos with the
+       designed size restores what the page was laid out for.
+    2. pywebview 6.1's WinForms backend is not unit-consistent:
+       ``BrowserForm.move()`` multiplies x/y by ``self.scale_factor``
+       (winforms.py:571-596) while ``BrowserForm.resize()`` hands width and
+       height straight to SetWindowPos unscaled (winforms.py:559-569).  The
+       same logical pair is therefore right through move() and 1/scale too
+       small through resize().
+
+    So logical->physical happens HERE, exactly once, by the DPI of the
+    monitor the window is on -- the same factor get_screen_dimensions()
+    divides the work area by, read for this window rather than for the
+    primary display.  Returns True when the window took the size; a refusal
+    is logged, not silent.
     """
     if not IS_WINDOWS:
         return False
@@ -344,7 +437,8 @@ def set_window_size(window_handle, width, height):
         SWP_NOACTIVATE = 0x0010
 
         user32 = ctypes.windll.user32
-        phys_w, phys_h = _logical_to_physical(width, height, _get_win32_dpi_scale())
+        phys_w, phys_h = _logical_to_physical(
+            width, height, _get_win32_dpi_scale(window_handle))
         if not user32.SetWindowPos(
             _hwnd(window_handle), 0, 0, 0, phys_w, phys_h,
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,

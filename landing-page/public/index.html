@@ -247,8 +247,101 @@
       }
     </script>
 
+    <!-- WHICH SURFACE IS THIS PAGE?  Read here, first, before a single style
+         rule or element below it.
+
+         The splash further down paints before React exists and before
+         pywebview injects `window.pywebview`, so it cannot ask a JavaScript
+         value that has not arrived yet — it has to be TOLD, and the only
+         signal that is true at the moment the first pixel is decided is the
+         one carried by the navigation itself.  An inline <script> in <head>
+         runs before the body is parsed, so the attribute it sets is in place
+         for the very first paint.
+
+         The literal below is desktop/companion_surface.py's FLOATING_QUERY.
+         It is written in two languages because a static HTML file cannot
+         import Python; tests/test_companion_surface.py pins the two together
+         so they cannot drift apart silently. -->
+    <script>
+      (function () {
+        try {
+          if (/[?&]surface=floating(?:&|$)/.test(window.location.search)) {
+            document.documentElement.setAttribute(
+              'data-hart-surface',
+              'floating'
+            );
+          }
+        } catch (e) {
+          // A surface we cannot identify is the ordinary one, and the
+          // ordinary one wants the opaque splash: a white flash on a slow
+          // boot is worse than a black one.
+        }
+      })();
+    </script>
+
     <!-- Inline critical splash styles — renders BEFORE any external CSS loads -->
     <style>
+      /* ── The floating companion window ───────────────────────────────
+         That window has the DESKTOP behind it: desktop/glass.py grants the
+         capability at birth and app.py applies it once the handle exists.
+         Everything this page paints edge-to-edge is therefore painted OVER
+         the owner's desktop, and the splash — position:fixed, the whole
+         viewport, z-index 9999 — is the topmost layer of four.  It wins over
+         the window, over pywebview's form and over WebView2 alike.
+
+         MEASURED 2026-09-22 by tests/glass_companion_demo.py, which builds
+         the real window with companion_window_kwargs() and hands it to
+         tests/glass_probe.py: with these blacks in place the surface
+         transmitted exactly 0.200 of the light behind it.  0.200 is
+         1 - 204/255 — the window's own uniform alpha and nothing else.  The
+         page contributed none of it.  That number is the definition of
+         "opaque page inside a see-through window".
+
+         The card's own translucent glass is VoiceOrbPage's, from
+         src/theme/hartGlass — rgba(18,19,28,0.65) with a backdrop blur.  It
+         was always there; it simply had three sheets of black underneath
+         it.
+
+         WHY !important, and why that is the SAFE choice here rather than the
+         lazy one: <body> and #root carry their black as inline style=""
+         ATTRIBUTES, which outrank every stylesheet rule that is not
+         !important.  The alternative was to move those two blacks into this
+         stylesheet so a plain rule could win -- but then any later-loaded
+         rule in the app's own CSS could start winning against them too, and
+         the MAIN window's background would change for reasons that have
+         nothing to do with the companion.  Keeping the inline attributes
+         exactly as they were means the main window is bit-for-bit unchanged;
+         these three rules are the only new thing, and they can only apply to
+         a document whose <html> carries the attribute -- which only the
+         companion's URL sets.  tests/test_companion_surface.py pins that
+         non-interference. */
+      :root[data-hart-surface='floating'] body,
+      :root[data-hart-surface='floating'] #root,
+      :root[data-hart-surface='floating'] #pre-react-loader {
+        background: transparent !important;
+      }
+
+      /* The floating window lays out to exactly the window and scrolls
+         INSIDE, so it must not document-scroll.  MEASURED 2026-09-22 in the
+         same capture that showed the black had gone: a full-height Windows
+         scrollbar was rendered down the right edge of a 220x310 orb.
+
+         This is the same clamp `.nunba-fixed-viewport` applies to /voice-orb
+         and the agents canvas further down, and it carries the same caveat
+         the block below spells out: overflow on the ROOT element propagates
+         to the viewport (CSS Overflow 3.3), which is exactly what is wanted
+         HERE and exactly what must never be done to the main window, where
+         it killed the mouse wheel on every long page.
+
+         margin:0 on body because the UA default 8px would inset the card
+         from the window edge the OS clips to, leaving a hairline of desktop
+         inside the rounded corners. */
+      :root[data-hart-surface='floating'],
+      :root[data-hart-surface='floating'] body {
+        overflow: hidden;
+        height: 100%;
+        margin: 0;
+      }
       /* Loader matches the hero's base look: black bg + drifting brand
          particles.  When React mounts and the hero renders, the only
          visible change is the hero content fading in — the background
@@ -644,6 +737,20 @@
       (function () {
         var bar = document.getElementById('pre-react-titlebar');
         if (!bar) return;
+        // The floating companion is not a window that can be trapped: it is
+        // frameless, drag-anywhere (easy_drag), and the owner closes it from
+        // the tray or by answering the agent.  Revealing this bar there would
+        // put a 32px OPAQUE #0f0e17 strip at z-index 10001 across the top of
+        // a window that is meant to be see-through, and `nunba-frameless-
+        // active` would additionally pad <html> by 32px inside a 220x310 orb.
+        // React's NunbaTitleBar already removes that class on /voice-orb; this
+        // stops it being applied in the first place, which is the difference
+        // between a flash and none.
+        if (document.documentElement.getAttribute('data-hart-surface')
+            === 'floating') {
+          bar.remove();
+          return;
+        }
         var isMac = /Mac|iPhone|iPad|iPod/i.test(
           navigator.platform || navigator.userAgent || ''
         );

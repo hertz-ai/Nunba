@@ -55,8 +55,6 @@ _MAX_JOBS = 500  # Cap in-memory jobs
 _MAX_PROMPT_LEN = 500
 _VALID_MEDIA_TYPES = ('image', 'tts', 'music', 'video')
 
-# A game's background music: long enough to loop without being obvious.
-_MUSIC_SECONDS = 60
 # The capability's own engines take minutes on a busy GPU; past this the
 # job is reported failed rather than held open (the caller polls).
 _GENERATION_TIMEOUT_SECONDS = 300
@@ -278,11 +276,14 @@ def media_asset():
     # reviewer approved -- not a fresh composition that merely sounds
     # similar.  When the app asks on an agent's behalf it names the agent
     # and the game, and the binding answers.
+    prompt_id = request.args.get('prompt_id')
+    game_id = request.args.get('game_id')
+    state = (request.args.get('state') or 'bgm').strip()
     bound, matched = _bound_game_media(
-        request.args.get('prompt_id'),
-        request.args.get('game_id'),
+        prompt_id,
+        game_id,
         media_type,
-        state=(request.args.get('state') or 'bgm').strip(),
+        state=state,
         level=(request.args.get('level') or '').strip() or None,
         user_id=_get_user_id_from_request(),
     )
@@ -292,6 +293,17 @@ def media_asset():
         # the memo already holds a composition for this exact key, so the
         # caller waits for that one rather than starting a second
         return jsonify({'status': 'composing', 'matched': matched}), 202
+    if media_type == 'music' and prompt_id and game_id and state != 'bgm':
+        # A cue -- a chime for a correct answer, a flourish for a streak --
+        # exists ONLY through a binding: the agent composes it once and a
+        # reviewer hears it.  Falling through here composed and served the
+        # game's BACKGROUND MUSIC instead: the app's prompt for a cue is the
+        # same string as for bgm, so the cache below answered with the bgm
+        # file, and the phone kept it under the cue's key for good.
+        # MEASURED 2026-09-22 against the live route.  A missing cue is
+        # silence (the game's built-in sound), never the wrong sound.
+        return jsonify({'status': 'unbound', 'state': state,
+                        'matched': matched}), 404
 
     # --- Auth: extract user_id from JWT (not from query param) ---
     user_id = _get_user_id_from_request()
@@ -304,7 +316,9 @@ def media_asset():
 
     # Build cache key
     sha = ck(prompt, media_type, style)
-    ext_map = {'image': 'png', 'tts': 'wav', 'music': 'mp3', 'video': 'mp4'}
+    # music is WAV: the composer writes wav since HARTOS 41cd45501, and
+    # naming or typing those bytes as MP3 was wrong (hartos-3a F10)
+    ext_map = {'image': 'png', 'tts': 'wav', 'music': 'wav', 'video': 'mp4'}
     ext = ext_map.get(media_type, 'bin')
 
     # Check access control on existing asset
@@ -319,7 +333,7 @@ def media_asset():
 
     # --- CACHE HIT ---
     if os.path.isfile(cache_path):
-        mime_map = {'image': 'image/png', 'tts': 'audio/wav', 'music': 'audio/mpeg', 'video': 'video/mp4'}
+        mime_map = {'image': 'image/png', 'tts': 'audio/wav', 'music': 'audio/wav', 'video': 'video/mp4'}
         return _safe_send_file(cache_path,
                                mime_map.get(media_type, 'application/octet-stream'),
                                cache_root)
@@ -440,9 +454,13 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
     try:
         try:
             from integrations.service_tools.media_agent import (
+                MEDIA_FAILED_STATUSES,
                 check_media_status,
                 generate_media,
             )
+            # one length for a game's music: the memo's table, which the
+            # agent's own tool composes by (hartos-3a F8: 60 here, 30 there)
+            from core.game_sound_memo import GAME_STATE_DURATIONS
         except ImportError as e:
             logger.error(f"media capability unavailable for {job_id}: {e}")
             with _jobs_lock:
@@ -455,15 +473,17 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
             context=prompt,
             output_modality=modality,
             input_text=prompt,
-            duration=_MUSIC_SECONDS if media_type == 'music' else None,
+            duration=GAME_STATE_DURATIONS['bgm'] if media_type == 'music' else None,
             style=style or None,
         ))
 
         result_url = None
+        result_path = None
         status = started.get('status')
         if status == 'completed':
             results = started.get('results') or []
             result_url = results[0].get('url') if results else None
+            result_path = results[0].get('path') if results else None
         elif status == 'pending':
             task_id = started.get('task_id', '')
             deadline = time.time() + _GENERATION_TIMEOUT_SECONDS
@@ -474,8 +494,9 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
                     results = progress.get('results') or []
                     result_url = (progress.get('url')
                                   or (results[0].get('url') if results else None))
+                    result_path = results[0].get('path') if results else None
                     break
-                if progress.get('status') in ('failed', 'error'):
+                if progress.get('status') in MEDIA_FAILED_STATUSES:
                     logger.warning(
                         f"{modality} generation failed for {job_id}: "
                         f"{progress.get('error')}")
@@ -485,7 +506,17 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
                            f"{started.get('error')}")
 
         if result_url:
-            size = _download_and_cache(result_url, cache_path)
+            # The capability keeps a composition on this node and reports
+            # its path beside a node-relative url (HARTOS 6759fbfa6); a
+            # relative url is nothing requests.get can fetch, so the file
+            # itself is taken when it is here.
+            if result_path and os.path.isfile(result_path):
+                import shutil
+                os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+                shutil.copyfile(result_path, cache_path)
+                size = os.path.getsize(cache_path)
+            else:
+                size = _download_and_cache(result_url, cache_path)
             if size > 0:
                 register(sha, media_type, classification, prompt, size, user_id, ext)
                 with _jobs_lock:
@@ -529,7 +560,7 @@ def media_asset_status(job_id):
         cache_path = job.get('result_path')
         if cache_path and os.path.isfile(cache_path):
             _, _, _, _, cache_root = _get_classifier()
-            mime_map = {'music': 'audio/mpeg', 'video': 'video/mp4'}
+            mime_map = {'music': 'audio/wav', 'video': 'video/mp4'}
             mt = job.get('media_type', 'video')
             return _safe_send_file(cache_path,
                                    mime_map.get(mt, 'application/octet-stream'),
