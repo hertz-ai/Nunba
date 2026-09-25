@@ -5198,7 +5198,8 @@ try:
     from routes.hartos_backend_adapter import create_inprocess_dispatch_blueprint
     app.register_blueprint(create_inprocess_dispatch_blueprint())
     logging.info("HARTOS in-process dispatch registered "
-                 "(/api/vlm/stop, /time_agent, /visual_agent)")
+                 "(/api/vlm/stop, /time_agent, /visual_agent, "
+                 "/api/agent/approval)")
 except Exception as e:
     logging.warning(f"HARTOS in-process dispatch registration failed: {e}")
 
