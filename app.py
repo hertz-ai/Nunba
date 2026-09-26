@@ -1218,12 +1218,15 @@ def _proportional_splash(screen_w, screen_h, art_w, art_h, width_frac=0.34):
 #: platform that cannot let the desktop through (GL4).
 _SPLASH_PAGE_RGB = (10, 9, 20)          # '#0A0914'
 
-#: How opaque the ANIMATED splash is as a whole.  Its elements are tk canvas
-#: items over a flat fill, which tk cannot make translucent per pixel, so it
-#: takes the rung glass.py already gives a tk surface: one alpha for the whole
-#: window -- the option the steward named for it (GL4).  High enough that the
-#: wordmark and greetings stay crisp over a busy wallpaper.
-_ANIMATED_SPLASH_OPACITY = 0.90
+#: How opaque BOTH splashes' dark background is (GL4): the ONE value.  Owner
+#: 2026-09-26: "static see-through is a lot, it should be 10% and same for
+#: animated".  The ANIMATED splash hands it to glass.py as one alpha for the
+#: whole window (tk canvas items over a flat fill cannot be translucent per
+#: pixel -- the rung the steward named for it).  The STATIC splash carries it
+#: baked into splash.png: scripts/gen_splash.py stamps it onto splash.svg's
+#: backdrop group and refuses a render whose backdrop alpha is not it.
+#: tests/test_splash_opacity_one_source.py fails when either file drifts.
+_SPLASH_OPACITY = 0.90
 
 
 def _open_static_splash(parent, splash_path, status_text='Starting up...'):
@@ -9831,7 +9834,7 @@ def _show_splash():
         # capability module (glass.py logs the rung it actually reached).
         try:
             from desktop.glass import GlassIntent, apply_glass
-            apply_glass(root, GlassIntent(opacity=_ANIMATED_SPLASH_OPACITY))
+            apply_glass(root, GlassIntent(opacity=_SPLASH_OPACITY))
         except Exception as _glass_err:
             logger.info(f"[SPLASH] see-through skipped: {_glass_err}")
 
