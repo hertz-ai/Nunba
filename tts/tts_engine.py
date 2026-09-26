@@ -777,6 +777,15 @@ for _alias in _CPU_FALLBACK_CATALOG_IDS:
 _CATALOG_TO_BACKEND.setdefault('chatterbox_multilingual', BACKEND_CHATTERBOX_ML)
 
 
+def _is_engine_backend(backend) -> bool:
+    """True iff ``backend`` is a name TTSEngine._create_backend can build:
+    Piper, or a Nunba backend constant in _BACKEND_TO_REGISTRY_KEY.
+    Catalog ids ('f5-tts'), registry keys ('f5_tts') and mangled names
+    ('neuair') are not.  The one rule for "is this a backend here";
+    _create_backend and verified_synth's self-heal gate both ask it."""
+    return backend == BACKEND_PIPER or backend in _BACKEND_TO_REGISTRY_KEY
+
+
 def _entry_to_legacy_caps(entry) -> dict:
     """Convert a ModelCatalog ModelEntry (TTS) to the legacy ENGINE_CAPABILITIES dict format.
 
@@ -2727,15 +2736,15 @@ class TTSEngine:
             self._init_lock.release()
 
     def _create_backend(self, backend):
+        if not _is_engine_backend(backend):
+            return None
         # Piper is CPU-only (no subprocess needed) — still uses its
         # legacy in-process wrapper.
         if backend == BACKEND_PIPER:
             return _LazyPiper()
 
         # Look up the HARTOS ENGINE_REGISTRY spec for this backend.
-        registry_key = _BACKEND_TO_REGISTRY_KEY.get(backend)
-        if registry_key is None:
-            return None
+        registry_key = _BACKEND_TO_REGISTRY_KEY[backend]
 
         # Check if the engine is subprocess-capable (has tool_worker_attr).
         # CPU-only engines (luxtts, pocket_tts, espeak) have tool_module +
