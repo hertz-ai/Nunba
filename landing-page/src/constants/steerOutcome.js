@@ -18,8 +18,12 @@ const _STEER_NEEDS_SIGN_IN = /Missing or invalid Authorization header|Invalid or
  *    no live GroupChat     -> "This run is no longer taking guidance."
  *    otherwise the server's reason, else `fallback`. */
 export function steerError(err, fallback = 'Guidance not delivered.') {
-  if (err?.data?.forbidden) return 'You can only steer your own runs.';
-  const reason = err?.data?.error || err?.error || err?.message || '';
+  // socialApi rejects with the server's JSON; a raw axios error carries it
+  // under response.data (and a message that is only "status code 403").
+  const body = err?.response?.data || err;
+  if (body?.data?.forbidden) return 'You can only steer your own runs.';
+  const reason = body?.data?.error || body?.error
+    || (err?.response ? '' : err?.message) || '';
   if (_STEER_NEEDS_SIGN_IN.test(reason)) return 'Sign in to steer this run.';
   if (/no live GroupChat/.test(reason)) return 'This run is no longer taking guidance.';
   return reason || fallback;

@@ -149,6 +149,11 @@ test.each([
   ['with no reason', () => Promise.reject(new Error('')), 'Guidance not delivered.'],
   ['refused', () => Promise.reject({success: false, data: {error: 'agent not found, or not yours to steer', forbidden: true}}),
     'You can only steer your own runs.'],
+  // Resolved, not rejected: a 2xx body that says success:false.
+  ['answered success:false with no reason', () => Promise.resolve({success: false}),
+    'Guidance not delivered.'],
+  ['answered success:false, refused', () => Promise.resolve({success: false, data: {forbidden: true}}),
+    'You can only steer your own runs.'],
 ])('a steer that fails %s says so once, as its outcome', async (_l, reply, expected) => {
   mockSteer.mockImplementationOnce(reply);
   render(<VoiceOrbPage />);
@@ -159,7 +164,9 @@ test.each([
   }));
   fireEvent.change(screen.getByLabelText('Quick prompt'), {target: {value: 'x'}});
   fireEvent.submit(screen.getByLabelText('Quick prompt').closest('form'));
+  // Exactly the outcome, once: no "Guidance not delivered: ..." prefix.
   expect(await screen.findByText(expected)).toBeInTheDocument();
+  expect(screen.queryByText(/Guidance not delivered:/)).toBeNull();
 });
 
 describe('hosted in the desktop companion window', () => {

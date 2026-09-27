@@ -269,6 +269,24 @@ describe('DiscoverableTogglePanel', () => {
       expect(bleEncounterApi.setDiscoverable).not.toHaveBeenCalled();
     });
 
+    test('s3b) turning a saved yes off saves a no', async () => {
+      bleEncounterApi.getPersona.mockImplementationOnce(() =>
+        Promise.resolve({data: {success: true, data: {interests_discoverable: true}}}),
+      );
+      renderWithProviders(<DiscoverableTogglePanel />);
+      const share = screen.getByTestId('share-interests-switch');
+      await waitFor(() => {
+        expect(share).toBeChecked();
+      });
+      fireEvent.click(share);
+      await waitFor(() => {
+        expect(bleEncounterApi.setPersona).toHaveBeenCalledWith({
+          interests_discoverable: false,
+        });
+      });
+      expect(share).not.toBeChecked();
+    });
+
     test('s4) a failed save puts the switch back and says so', async () => {
       bleEncounterApi.setPersona.mockImplementationOnce(() =>
         Promise.reject(new Error('500')),
