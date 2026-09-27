@@ -149,6 +149,93 @@ def _hart_backend_source():
             return src
     return None
 
+
+#: The hook python-embed runs at every interpreter start (step 7c).  Every
+#: worker Nunba spawns on python-embed (core.venv_paths.venv_creator_python)
+#: gets its sys.path and DLL search path from here, so this is the one owner
+#: of "what the worker can load from ~/.nunba/site-packages".  build.py also
+#: writes it on every build (write_sitecustomize), not only on a full rebuild.
+SITECUSTOMIZE_SOURCE = '''"""sitecustomize.py — auto-runs at Python startup via site.py.
+
+Injects ~/.nunba/site-packages at the FRONT of sys.path so that gpu_worker
+subprocesses spawned by the frozen Nunba app can see the real CUDA torch,
+numpy, transformers deps, etc. that get installed there at runtime by
+install_gpu_torch().
+
+python-embed uses a `_pth` file which disables PYTHONPATH processing,
+so environment-based injection doesn't work — we have to modify sys.path
+from within Python itself. sitecustomize is the standard CPython hook.
+
+Also appends the cx_Freeze lib/ directory as a last-resort fallback for
+deps that happen to be bundled there but not in python-embed.
+"""
+
+import os
+import sys
+
+
+def _inject_path(path, front=True):
+    if os.path.isdir(path) and path not in sys.path:
+        if front:
+            sys.path.insert(0, path)
+        else:
+            sys.path.append(path)
+
+
+_home = os.path.expanduser("~")
+_nunba_sp = os.path.join(_home, ".nunba", "site-packages")
+_inject_path(_nunba_sp, front=True)
+
+# CUDA torch may live on D: when C: is too small (2.5GB install).
+# install_gpu_torch() falls back to D: on ENOSPC.
+_nunba_sp_d = os.path.join("D:\\\\", ".nunba", "site-packages")
+_inject_path(_nunba_sp_d, front=True)
+
+if sys.platform == "win32":
+    # The CUDA runtime install_gpu_ctranslate2 pip-installs here
+    # (nvidia-cublas-cu12, nvidia-cudnn-cu12).  faster-whisper's engine,
+    # ctranslate2, loads cuBLAS with a plain LoadLibrary, which searches PATH;
+    # without these dirs a box whose torch/lib carries no cuBLAS cannot decode
+    # on the GPU even after the install succeeded.  Prepended BEFORE torch/lib
+    # below, so torch/lib stays ahead on PATH and a DLL it already supplies
+    # still resolves from it.
+    for _sp in [_nunba_sp, _nunba_sp_d]:
+        for _cuda in ("cublas", "cudnn"):
+            _cuda_bin = os.path.join(_sp, "nvidia", _cuda, "bin")
+            if os.path.isdir(_cuda_bin):
+                try:
+                    os.add_dll_directory(_cuda_bin)
+                except (OSError, AttributeError):
+                    pass
+                os.environ["PATH"] = _cuda_bin + os.pathsep + os.environ.get("PATH", "")
+
+    for _sp in [_nunba_sp, _nunba_sp_d]:
+        _torch_lib = os.path.join(_sp, "torch", "lib")
+        if os.path.isdir(_torch_lib):
+            try:
+                os.add_dll_directory(_torch_lib)
+            except (OSError, AttributeError):
+                pass
+            os.environ["PATH"] = _torch_lib + os.pathsep + os.environ.get("PATH", "")
+            break  # first found wins
+
+# cx_Freeze lib/ — only present inside frozen Nunba build
+_self = os.path.dirname(os.path.abspath(__file__))
+_embed_dir = os.path.dirname(os.path.dirname(_self))
+_app_dir = os.path.dirname(_embed_dir)
+_lib_dir = os.path.join(_app_dir, "lib")
+_inject_path(_lib_dir, front=False)
+'''
+
+
+def write_sitecustomize(site_packages_dir):
+    """Write SITECUSTOMIZE_SOURCE as <site_packages_dir>/sitecustomize.py and
+    return its path."""
+    path = os.path.join(site_packages_dir, "sitecustomize.py")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(SITECUSTOMIZE_SOURCE)
+    return path
+
 # Import version + deps from centralized deps.py
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
@@ -933,62 +1020,7 @@ def _run_rebuild_steps():
     # transformers-based TTS/VLM worker crashes with torch.types missing.
     # PYTHONPATH doesn't help because python-embed's _pth file disables it.
     step("7c. Writing sitecustomize.py (~/.nunba/site-packages injector)")
-    sitecustomize_path = os.path.join(sp_dir, "sitecustomize.py")
-    with open(sitecustomize_path, "w", encoding="utf-8") as f:
-        f.write('''"""sitecustomize.py — auto-runs at Python startup via site.py.
-
-Injects ~/.nunba/site-packages at the FRONT of sys.path so that gpu_worker
-subprocesses spawned by the frozen Nunba app can see the real CUDA torch,
-numpy, transformers deps, etc. that get installed there at runtime by
-install_gpu_torch().
-
-python-embed uses a `_pth` file which disables PYTHONPATH processing,
-so environment-based injection doesn't work — we have to modify sys.path
-from within Python itself. sitecustomize is the standard CPython hook.
-
-Also appends the cx_Freeze lib/ directory as a last-resort fallback for
-deps that happen to be bundled there but not in python-embed.
-"""
-
-import os
-import sys
-
-
-def _inject_path(path, front=True):
-    if os.path.isdir(path) and path not in sys.path:
-        if front:
-            sys.path.insert(0, path)
-        else:
-            sys.path.append(path)
-
-
-_home = os.path.expanduser("~")
-_nunba_sp = os.path.join(_home, ".nunba", "site-packages")
-_inject_path(_nunba_sp, front=True)
-
-# CUDA torch may live on D: when C: is too small (2.5GB install).
-# install_gpu_torch() falls back to D: on ENOSPC.
-_nunba_sp_d = os.path.join("D:\\\\", ".nunba", "site-packages")
-_inject_path(_nunba_sp_d, front=True)
-
-if sys.platform == "win32":
-    for _sp in [_nunba_sp, _nunba_sp_d]:
-        _torch_lib = os.path.join(_sp, "torch", "lib")
-        if os.path.isdir(_torch_lib):
-            try:
-                os.add_dll_directory(_torch_lib)
-            except (OSError, AttributeError):
-                pass
-            os.environ["PATH"] = _torch_lib + os.pathsep + os.environ.get("PATH", "")
-            break  # first found wins
-
-# cx_Freeze lib/ — only present inside frozen Nunba build
-_self = os.path.dirname(os.path.abspath(__file__))
-_embed_dir = os.path.dirname(os.path.dirname(_self))
-_app_dir = os.path.dirname(_embed_dir)
-_lib_dir = os.path.join(_app_dir, "lib")
-_inject_path(_lib_dir, front=False)
-''')
+    sitecustomize_path = write_sitecustomize(sp_dir)
     print(f"  Wrote: {sitecustomize_path}")
 
     # 8. Verification — HARD GATE for the atomic swap.

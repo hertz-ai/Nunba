@@ -366,3 +366,179 @@ def test_first_run_install_skips_a_recorded_failure(ct2_env, monkeypatch):
     ct2_env.build['id'] = 'build-B'
     li.install_on_first_run()
     assert len(calls) == 1
+
+
+# ── The gate's own branches (review of 0f6171f1, P2) ─────────────────────────
+
+def test_hartos_core_not_importable_reads_as_not_usable(monkeypatch, caplog):
+    import core.subprocess_safe as ss
+    ran = []
+    monkeypatch.setattr(ss, 'run_bounded',
+                        lambda cmd, timeout, **kw: ran.append(cmd) or _Result(0))
+    monkeypatch.setitem(sys.modules, 'core.venv_paths', None)   # import raises
+    with caplog.at_level('WARNING', logger=pi.logger.name):
+        assert pi.is_cuda_ctranslate2() is False
+    assert ran == []
+    assert any('HARTOS core not importable' in r.getMessage()
+               for r in caplog.records if r.levelname == 'WARNING')
+
+
+def test_the_child_is_asked_for_this_platforms_libraries(monkeypatch, worker_python):
+    """The real table, not a one-key stand-in: a lookup of another platform's
+    key would ask for libraries this OS can never load."""
+    table = pi._CT2_CUDA_LIBRARIES
+    assert sys.platform in table and len(table) > 1
+    assert len({tuple(v) for v in table.values()}) == len(table)
+    import core.subprocess_safe as ss
+    argv = []
+    monkeypatch.setattr(ss, 'run_bounded',
+                        lambda cmd, timeout, **kw: argv.append(list(cmd)) or _Result(0))
+    assert pi.is_cuda_ctranslate2() is True
+    assert argv[0][:2] == [worker_python, '-c']
+    assert argv[0][3:] == list(table[sys.platform])
+
+
+# ── After the install, the worker python reaches the CUDA runtime (P1) ───────
+#
+# install_gpu_ctranslate2 pip-installs nvidia-cublas-cu12 / nvidia-cudnn-cu12
+# into ~/.nunba/site-packages/nvidia/{cublas,cudnn}/bin.  The worker (and the
+# gate's child) run on python-embed, whose sitecustomize put only torch/lib on
+# PATH.  Measured in review: with torch/lib off PATH and those dirs on disk,
+# the gate read False ("Could not find module cublas64_12.dll"); with them on
+# PATH, True.  So on a box whose torch/lib carries no cuBLAS the install
+# succeeded and the gate still read False, and the boot installed again.
+
+def _embed_hook_env(monkeypatch, tmp_path):
+    """A home whose ~/.nunba/site-packages holds the installed nvidia dirs
+    (stand-in DLLs), the embed's site-packages to write the generated hook
+    into, and a fake ctranslate2 reporting one device."""
+    import glob
+    import shutil
+    from scripts.rebuild_python_embed import write_sitecustomize
+    home = tmp_path / 'home'
+    user_sp = home / '.nunba' / 'site-packages'
+    src = glob.glob(os.path.join(sys.base_prefix, 'DLLs', 'libffi*.dll'))[0]
+    names, dirs = [], []
+    for lib in ('cublas', 'cudnn'):
+        d = user_sp / 'nvidia' / lib / 'bin'
+        d.mkdir(parents=True)
+        name = f'hart_standin_{lib}.dll'
+        shutil.copy(src, d / name)
+        names.append(name)
+        dirs.append(str(d))
+    embed_sp = tmp_path / 'python-embed' / 'Lib' / 'site-packages'
+    embed_sp.mkdir(parents=True)
+    ct2 = tmp_path / 'ct2'
+    ct2.mkdir()
+    monkeypatch.setenv('USERPROFILE', str(home))
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setattr(pi, '_CT2_CUDA_LIBRARIES', {sys.platform: tuple(names)})
+    return {'hook': lambda: write_sitecustomize(str(embed_sp)),
+            'embed_sp': str(embed_sp), 'ct2': _fake_ctranslate2(ct2, 1),
+            'dirs': dirs, 'names': names, 'user_sp': user_sp}
+
+
+@pytest.mark.skipif(sys.platform != 'win32',
+                    reason="python-embed's hook wires Windows DLL dirs")
+def test_after_the_install_the_gate_reads_usable_through_the_embed_hook(
+        monkeypatch, tmp_path, worker_python):
+    env = _embed_hook_env(monkeypatch, tmp_path)
+    # Control: the same box without the hook cannot reach the libraries.
+    monkeypatch.setenv('PYTHONPATH', env['ct2'])
+    assert pi.is_cuda_ctranslate2() is False
+
+    written = env['hook']()
+    assert os.path.isfile(written)
+    monkeypatch.setenv('PYTHONPATH', env['embed_sp'] + os.pathsep + env['ct2'])
+    assert pi.is_cuda_ctranslate2() is True
+
+
+
+@pytest.mark.skipif(sys.platform != 'win32',
+                    reason="python-embed's hook wires Windows DLL dirs")
+def test_the_installed_runtime_wins_over_another_copy_already_on_path(
+        monkeypatch, tmp_path, worker_python):
+    """A cuBLAS / cuDNN of the same name already on the system PATH (a CUDA
+    Toolkit, another app's copy) must not shadow what the install put in
+    ~/.nunba: the hook prepends the nvidia dirs.  The stand-in elsewhere on
+    PATH here is not a loadable DLL, so reaching it first reads False."""
+    env = _embed_hook_env(monkeypatch, tmp_path)
+    elsewhere = tmp_path / 'system_cuda_bin'
+    elsewhere.mkdir()
+    for name in env['names']:
+        (elsewhere / name).write_bytes(b'not a dll')
+    monkeypatch.setenv('PATH', str(elsewhere) + os.pathsep + os.environ['PATH'])
+    env['hook']()
+    monkeypatch.setenv('PYTHONPATH', env['embed_sp'] + os.pathsep + env['ct2'])
+    assert pi.is_cuda_ctranslate2() is True
+
+@pytest.mark.skipif(sys.platform != 'win32',
+                    reason="python-embed's hook wires Windows DLL dirs")
+def test_the_embed_hook_serves_both_windows_loaders_and_keeps_torch_first(
+        monkeypatch, tmp_path, worker_python):
+    """PATH serves ctranslate2's plain LoadLibrary; add_dll_directory serves
+    loaders that search only the default dirs (ctypes' own default).  A
+    torch/lib that already works keeps its place ahead of the nvidia dirs, so
+    a box that decodes today resolves the same DLLs after this change."""
+    import json
+    import subprocess
+    env = _embed_hook_env(monkeypatch, tmp_path)
+    torch_lib = env['user_sp'] / 'torch' / 'lib'
+    torch_lib.mkdir(parents=True)
+    env['hook']()
+    monkeypatch.setenv('PYTHONPATH', env['embed_sp'])
+    child = (
+        "import ctypes, json, os, sys\n"
+        "path = os.environ['PATH'].split(os.pathsep)\n"
+        "ok = []\n"
+        "for n in sys.argv[1:]:\n"
+        "    try:\n"
+        "        ctypes.CDLL(n)\n"
+        "        ok.append(n)\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "print(json.dumps({'path': path, 'default_dirs_loaded': ok}))\n"
+    )
+    out = subprocess.run([worker_python, '-c', child, *env['names']],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    got = json.loads(out.stdout.strip().splitlines()[-1])
+    norm = [os.path.normcase(os.path.normpath(p)) for p in got['path']]
+    want = [os.path.normcase(os.path.normpath(d)) for d in env['dirs']]
+    tl = os.path.normcase(os.path.normpath(str(torch_lib)))
+    assert tl in norm
+    for d in want:
+        assert d in norm, (d, norm[:5])
+        assert norm.index(tl) < norm.index(d)
+    assert got['default_dirs_loaded'] == env['names']
+
+
+def test_every_build_writes_the_current_embed_hook(monkeypatch, tmp_path):
+    """build.py rebuilds python-embed only when EMBED_DEPS change (Gate A), so
+    a hook change alone would ship the snapshot's old hook.  The build writes
+    the generated hook into the embed on every run, before the ACL pass."""
+    from scripts import build            # puts scripts/ on sys.path for deps
+    from scripts import rebuild_python_embed as rpe
+    import deps
+    root = tmp_path / 'repo'
+    (root / 'scripts').mkdir(parents=True)
+    embed_sp = root / 'python-embed' / 'Lib' / 'site-packages'
+    embed_sp.mkdir(parents=True)
+    (embed_sp / 'sitecustomize.py').write_text('# an old snapshot hook\n')
+    (root / 'python-embed.hash').write_text('HASH')
+    monkeypatch.setattr(build, '__file__', str(root / 'scripts' / 'build.py'))
+    monkeypatch.setattr(deps, 'compute_embed_deps_hash', lambda: 'HASH')
+    monkeypatch.setattr(deps, 'missing_embed_packages', lambda sp: [])
+    monkeypatch.chdir(tmp_path)
+
+    class _Stop(Exception):
+        pass
+
+    def acl(path):
+        raise _Stop(path)
+
+    monkeypatch.setattr(build, 'normalize_embed_acl', acl)
+    with pytest.raises(_Stop):
+        build.build_windows(sys.executable)
+    with open(embed_sp / 'sitecustomize.py', encoding='utf-8') as fh:
+        assert fh.read() == rpe.SITECUSTOMIZE_SOURCE

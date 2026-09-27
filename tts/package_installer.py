@@ -1618,9 +1618,9 @@ def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, 
     boot.  On a CPU-only box it no-ops with a debug log.  Mirrors
     ``install_gpu_torch``: same file-lock, same GPU detection
     (vram_manager first, ``has_nvidia_gpu`` fallback), same
-    ``ensure_user_site_on_path`` + DLL-dir wiring + cache invalidation.
-    Like CUDA torch, the new libs activate fully on next start; this
-    run also wires the DLL dirs so a same-session re-probe can engage.
+    ``ensure_user_site_on_path`` + cache invalidation.  The DLL dirs are
+    wired by python-embed's startup hook in every worker it starts, so the
+    next worker spawn (this session or the next) finds cuBLAS / cuDNN.
     """
     if not _acquire_file_lock('cuda_ctranslate2'):
         return False, "Another process is already installing CUDA ctranslate2"
@@ -1658,25 +1658,12 @@ def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, 
     ], progress_cb, timeout=900)
 
     if ok:
-        # Make the freshly-installed runtime usable this session, exactly
-        # as install_gpu_torch does for torch/lib: put user site on
-        # sys.path and add the NVIDIA DLL dirs to the Windows search path
-        # so CTranslate2 can dlopen cuBLAS/cuDNN.  Next boot, app.py's
-        # path setup + this same wiring re-establish it.
+        # The runtime is used by the STT worker, a python-embed child, never
+        # by this process; python-embed's startup hook
+        # (scripts/rebuild_python_embed.SITECUSTOMIZE_SOURCE) puts
+        # nvidia/{cublas,cudnn}/bin on each child's DLL search path, so the
+        # next worker (and is_cuda_ctranslate2's probe) reaches them.
         ensure_user_site_on_path()
-        _user_sp = get_user_site_packages()
-        if sys.platform == 'win32':
-            for _rel in (('nvidia', 'cublas', 'bin'),
-                         ('nvidia', 'cudnn', 'bin')):
-                _dll_dir = os.path.join(_user_sp, *_rel)
-                if os.path.isdir(_dll_dir):
-                    try:
-                        os.add_dll_directory(_dll_dir)
-                    except Exception:
-                        pass
-                    if _dll_dir not in os.environ.get('PATH', ''):
-                        os.environ['PATH'] = (
-                            _dll_dir + os.pathsep + os.environ.get('PATH', ''))
 
         # Invalidate cached import checks so a re-probe sees the new libs.
         _invalidate_import_cache()
