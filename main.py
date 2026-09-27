@@ -839,11 +839,6 @@ _ALLOWED_ORIGINS = {
     'https://www.hertzai.com',
     'https://hevolve.hertzai.com',
     'https://www.hevolve.hertzai.com',
-    # McGroce (site /app and admin /admin-app share one origin) hosts the
-    # <hart-agent> embed and calls this gateway cross-origin when it is not
-    # proxied same-origin (the CSP connect-src already names *.mcgroce.com).
-    'https://mcgroce.com',
-    'https://www.mcgroce.com',
 }
 
 
