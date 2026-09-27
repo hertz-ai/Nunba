@@ -34,8 +34,9 @@
  * agent type, the per-phone rows (Allow / Block / Don't allow, one scope
  * each) for device_access.  A credential ask (declinable) offers it too:
  * the no covers that one credential for that agent, HARTOS answers the
- * agent "the owner said no" and never shows the card for it again, and the
- * card says exactly that (declineNote).
+ * agent "the owner said no" and does not show the card for it again until
+ * the owner picks "Allow asking again" on the privacy page (its declined-
+ * credentials list, POST /consent/reopen); the card says so (declineNote).
  *
  * Answered elsewhere: an answer given on any surface dismisses the ask on
  * every surface it was shown on, for that user or the network guests (owner
@@ -129,8 +130,9 @@ export const CONSENT_ASKS = Object.freeze({
   // card.  Owner ruling: consent must be able to say no.  Without it the
   // only answers were Accept and "Not now" (the ask stays open), so HARTOS
   // ConsentService.declined never became true and a rejected login re-asked
-  // for ever.  The no is for this one credential and this agent, and
-  // HARTOS tells the agent the owner said no; declineNote says so.
+  // for ever.  The no is for this one credential and this agent, HARTOS
+  // tells the agent the owner said no, and the privacy page's "Allow asking
+  // again" takes it back (declinedCredentials); declineNote says so.
   credential: {
     asks: 'use a password or key you enter here', privacyCard: false,
     secret: true, declinable: true,
@@ -148,6 +150,23 @@ export function asksForSecret(consentType) {
 export function secretName(scope) {
   const s = String(scope || '');
   return s.startsWith(SECRET_SCOPE_PREFIX) ? s.slice(SECRET_SCOPE_PREFIX.length) : null;
+}
+
+// The credentials the owner said no to, one entry per credential, in the
+// server's order: a 'credential' row with revoked_at set is what HARTOS
+// ConsentService.declined reads as a no, for any agent.  The privacy page
+// lists them with "Allow asking again" (consentApi.reopen).
+export function declinedCredentials(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows || []) {
+    if (!r || r.consent_type !== 'credential' || !r.revoked_at) continue;
+    const name = secretName(r.scope);
+    if (!name || seen.has(r.scope)) continue;
+    seen.add(r.scope);
+    out.push({scope: r.scope, name});
+  }
+  return out;
 }
 
 // The camera's consent type, by name, because the SPA has to act on it and
@@ -243,7 +262,7 @@ export function declineNote(consentType, label) {
   if (PRIVACY_CARD_TYPES.includes(consentType)) {
     return `"${label}" lasts until you allow it again in Privacy settings; "Not now" leaves the ask open.`;
   }
-  return `"${label}" tells the agent no, and it will not ask for this again; "Not now" leaves the ask open.`;
+  return `"${label}" tells the agent no, and it will not ask for this again until you choose "Allow asking again" in Privacy settings; "Not now" leaves the ask open.`;
 }
 
 // The decline button: a phone's ask is declined for that phone ("Don't

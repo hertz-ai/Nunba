@@ -49,7 +49,7 @@ import {
 } from './cloudCapabilityScopes';
 import {DEVICE_ACCESS, PHONE_STATES, trustedPhones} from './trustedPhones';
 
-import {allowAllLabel} from '../../../constants/consentAsks';
+import {allowAllLabel, declinedCredentials} from '../../../constants/consentAsks';
 import {consentApi} from '../../../services/socialApi';
 
 import {
@@ -61,6 +61,7 @@ import {
   ExpandMore,
   ExpandLess,
   History,
+  Key,
   Smartphone,
   Videocam,
   Visibility,
@@ -867,6 +868,91 @@ export function TrustedPhonesCard() {
   );
 }
 
+// Passwords and keys the owner said no to.  "Don't allow" on a credential
+// ask (the consent card) ends the asking for it: HARTOS tells the agent no
+// and never shows the card again (ConsentService.declined).  This is the way
+// back, with no friction: "Allow asking again" = POST /consent/reopen, which
+// makes the credential undecided again and grants nothing; the next time an
+// agent needs it, the card asks.  Shown only while there is something to
+// take back.  Exported for its own test.
+export function DeclinedCredentialsCard() {
+  const [items, setItems] = useState([]);
+  const [busyScope, setBusyScope] = useState(null);
+  const [snack, setSnack] = useState(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await consentApi.list({consent_type: 'credential'});
+      setItems(declinedCredentials((res && res.data && res.data.consents) || []));
+    } catch (e) {
+      setSnack({severity: 'error', msg: 'Could not load the credentials you said no to. Please retry.'});
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const reopen = useCallback(async (item) => {
+    setBusyScope(item.scope);
+    try {
+      await consentApi.reopen({consent_type: 'credential', scope: item.scope});
+      setSnack({severity: 'success',
+        msg: `An agent that needs ${item.name} will ask you for it again.`});
+      await refresh();
+    } catch (e) {
+      setSnack({severity: 'error', msg: 'Could not allow asking again. Please retry.'});
+    } finally {
+      setBusyScope(null);
+    }
+  }, [refresh]);
+
+  const snackbar = (
+    <Snackbar open={Boolean(snack)} autoHideDuration={4000} onClose={() => setSnack(null)}
+      anchorOrigin={{vertical: 'bottom', horizontal: 'center'}}>
+      {snack ? (
+        <Alert severity={snack.severity} onClose={() => setSnack(null)}>{snack.msg}</Alert>
+      ) : undefined}
+    </Snackbar>
+  );
+  if (items.length === 0) return snackbar;
+
+  return (
+    <Paper sx={{...glass, p: 2.5, mb: 2.5}} data-testid="declined-credentials-card">
+      <Box sx={{display: 'flex', alignItems: 'center', gap: 1, mb: 1}}>
+        <Key sx={{color: '#6C63FF'}} />
+        <Typography variant="subtitle1" sx={{color: '#fff', fontWeight: 600}}>
+          Passwords and keys you said no to
+        </Typography>
+      </Box>
+      <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.6)', mb: 2}}>
+        Agents do not ask you for these. Allow asking again and the next agent
+        that needs one asks you on a card, where you can enter it or say no.
+      </Typography>
+      <Stack spacing={1}>
+        {items.map((item) => {
+          const busy = busyScope === item.scope;
+          return (
+            <Box key={item.scope}
+              sx={{display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1,
+                p: 1.25, borderRadius: 1.5, bgcolor: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(255,255,255,0.06)'}}>
+              <Typography component="code"
+                sx={{flex: 1, minWidth: 160, fontFamily: 'monospace', color: '#fff'}}>
+                {item.name}
+              </Typography>
+              <Button size="small" variant="outlined" color="inherit" disabled={busy}
+                onClick={() => reopen(item)}
+                startIcon={busy ? <CircularProgress size={14} /> : undefined}>
+                Allow asking again
+              </Button>
+            </Box>
+          );
+        })}
+      </Stack>
+      {snackbar}
+    </Paper>
+  );
+}
+
 // Autonomous external posting.  Granting flips the server-side gate that
 // marketing_tools._external_post_allowed + federated_aggregator enforce
 // (fail-closed).
@@ -1212,6 +1298,8 @@ export default function PrivacySettingsPage() {
       {/* device_access: one row per phone, never a blanket
           (constants/consentAsks PRIVACY_CARD_TYPES names it). */}
       <TrustedPhonesCard />
+      {/* credential: the way back after a "Don't allow" on a password ask. */}
+      <DeclinedCredentialsCard />
 
       {error && !snack && (
         <Alert severity="warning" sx={{mb: 2}}>

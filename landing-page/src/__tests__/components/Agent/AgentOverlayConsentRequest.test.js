@@ -594,12 +594,13 @@ describe('AgentOverlay consent.request — a credential ask', () => {
     });
   });
 
-  test('the card says what a no means for a credential (no privacy-page card to undo it)', async () => {
+  test('the card says what a no means for a credential, and how to take it back', async () => {
     const send = mountOverlay();
     send(CRED_ASK);
     await screen.findByText(CRED_ASK.reason);
-    expect(screen.getByText(/will not ask for this again/)).toBeInTheDocument();
-    expect(screen.queryByText(/Privacy settings/)).toBeNull();
+    expect(screen.getByText(
+      /will not ask for this again until you choose "Allow asking again" in Privacy settings/,
+    )).toBeInTheDocument();
   });
 
   test('a no that does not reach the server stays on the card and says so', async () => {

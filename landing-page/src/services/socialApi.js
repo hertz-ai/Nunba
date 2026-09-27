@@ -356,6 +356,12 @@ export const consentApi = {
       agent_id,
     }),
 
+  // POST /api/social/consent/reopen — take a no back: the (type, scope) is
+  // undecided again for every agent and the next ask shows the card;
+  // nothing is granted (the privacy page's "Allow asking again").
+  reopen: ({consent_type, scope}) =>
+    socialApi.post('/consent/reopen', {consent_type, scope}),
+
   // GET /api/social/consent — list (newest-first by granted_at)
   list: ({consent_type, active_only} = {}) => {
     const params = {};
