@@ -150,6 +150,18 @@ class TestIsAllowedOrigin:
         # Should be False; CORS config restricts origins.
         assert isinstance(result, bool)
 
+    def test_allows_mcgroce_embed_hosts(self):
+        # The <hart-agent> embed on the McGroce site calls this gateway.
+        from main import _is_allowed_origin
+        assert _is_allowed_origin('https://mcgroce.com') is True
+        assert _is_allowed_origin('https://www.mcgroce.com') is True
+
+    def test_rejects_mcgroce_lookalikes(self):
+        from main import _is_allowed_origin
+        assert _is_allowed_origin('http://mcgroce.com') is False
+        assert _is_allowed_origin('https://mcgroce.com.attacker.example') is False
+        assert _is_allowed_origin('https://evilmcgroce.com') is False
+
 
 # ════════════════════════════════════════════════════════════════════════
 # _get_machine_fingerprint — device-id component
