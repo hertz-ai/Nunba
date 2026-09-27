@@ -459,6 +459,11 @@ build_exe_options = {
         # cx_Freeze must NOT also produce a partial copy in lib/ — that
         # third location is the shadow that has caused four production
         # outages (2026-04-21, -24, -25, -26).  See excludes[] below.
+        # Gate 6 accounting for HARTOS subpackages added later, e.g.
+        # integrations.commerce + integrations.ap2 (McGroce agentic commerce,
+        # 2026-09-27): they ride in with the whole integrations/ tree through
+        # _hartos_packages (include_files) and the python-embed pip install,
+        # so they are deliberately NOT listed here either.
 
         "uvicorn",
         # Hypercorn + its h11/h2/wsproto/priority dep chain.  Listed
