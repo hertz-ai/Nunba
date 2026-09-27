@@ -104,6 +104,113 @@ def test_capability_map_keys_the_same_backend(entry_id):
     assert list(caps) == [_hartos_backend(entry_id)]
 
 
+# --- the guard that keeps it at one ------------------------------------------
+# Owner rule: a collapse ships the guard that makes a SECOND copy fail CI.
+# Stripping the 'tts-' prefix is the rule's own step (HARTOS does it inside
+# catalog_id_to_engine_id), so anywhere in Nunba's shipping code that hands
+# the bare prefix 'tts-' (or a regex '^tts-') to a call -- replace,
+# startswith, removeprefix, lstrip, split, partition, re.sub, re.match, ... --
+# is a second conversion.  Building an id (f'tts-{x}') is not a call
+# argument and stays allowed.  Only these two may ever do it:
+_PREFIX_RULE_HOMES = {
+    ('tts/tts_engine.py', 'catalog_entry_backend'),
+    ('models/orchestrator.py', 'TTSLoader._registry_key'),
+}
+_SKIP_DIRS = {'tests', 'build', 'dist', 'node_modules', 'landing-page',
+              '__pycache__', 'venv', 'memory'}
+
+
+def _shipping_py_files(root):
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs
+                   if x not in _SKIP_DIRS and not x.startswith('.')
+                   and not x.startswith('python-embed')]
+        for f in files:
+            if f.endswith('.py'):
+                yield os.path.join(d, f)
+
+
+def _prefix_strip_sites(path, rel):
+    """(rel, qualified function, line) for every call handed the bare
+    'tts-' prefix in ``path``."""
+    import ast
+    with open(path, encoding='utf-8') as fh:
+        tree = ast.parse(fh.read(), path)
+    sites = []
+
+    def visit(node, scope):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef)):
+                visit(child, scope + [child.name])
+                continue
+            if isinstance(child, ast.Call):
+                args = list(child.args) + [k.value for k in child.keywords]
+                if any(isinstance(a, ast.Constant) and isinstance(a.value, str)
+                       and a.value.lstrip('^') == 'tts-' for a in args):
+                    sites.append((rel, '.'.join(scope) or '<module>',
+                                  child.lineno))
+            visit(child, scope)
+    visit(tree, [])
+    return sites
+
+
+def _all_prefix_strip_sites(root):
+    out = []
+    for path in _shipping_py_files(root):
+        rel = os.path.relpath(path, root).replace(os.sep, '/')
+        out += _prefix_strip_sites(path, rel)
+    return out
+
+
+def test_source_guard_tts_prefix_is_stripped_only_by_the_one_rule():
+    stray = [s for s in _all_prefix_strip_sites(PROJECT_ROOT)
+             if (s[0], s[1]) not in _PREFIX_RULE_HOMES]
+    assert not stray, (
+        "catalog id -> backend conversions outside the one rule "
+        f"(use tts_engine.catalog_entry_backend): {stray}")
+
+
+def test_source_guard_scans_the_shipping_tree():
+    """The guard is not vacuous: it walks every tracked shipping .py file
+    (git's own list, minus tests / the embedded interpreter / the web app)."""
+    import subprocess
+    rels = {os.path.relpath(p, PROJECT_ROOT).replace(os.sep, '/')
+            for p in _shipping_py_files(PROJECT_ROOT)}
+    tracked = subprocess.run(
+        ['git', 'ls-files', '*.py'], cwd=PROJECT_ROOT, capture_output=True,
+        text=True, timeout=60, check=True).stdout.split()
+    shipping = {t for t in tracked
+                if not t.startswith(('tests/', 'python-embed', 'build/',
+                                     'landing-page/'))}
+    assert {'tts/tts_engine.py', 'models/orchestrator.py'} <= shipping
+    assert shipping <= rels, sorted(shipping - rels)
+    assert not any(r.startswith('tests/') for r in rels)
+
+
+@pytest.mark.parametrize('line', [
+    "x = entry.id.replace('tts-', '', 1)",
+    "x = e.startswith('tts-')",
+    "x = e.removeprefix('tts-')",
+    "x = re.sub(r'^tts-', '', e)",
+    "x = e.split(sep='tts-')",
+])
+def test_source_guard_catches_a_planted_second_rule(tmp_path, line):
+    (tmp_path / 'routes').mkdir()
+    (tmp_path / 'routes' / 'planted.py').write_text(
+        f"import re\n\ndef backend_for(e):\n    {line}\n    return x\n",
+        encoding='utf-8')
+    assert _all_prefix_strip_sites(str(tmp_path)) == [
+        ('routes/planted.py', 'backend_for', 4)]
+
+
+def test_source_guard_allows_building_an_id(tmp_path):
+    (tmp_path / 'm.py').write_text(
+        "def f(c, x):\n    return c.get(f'tts-{x}'), 'tts-' + x\n",
+        encoding='utf-8')
+    assert _all_prefix_strip_sites(str(tmp_path)) == []
+
+
 @pytest.mark.parametrize('entry_id', REGISTRY_IDS + [UNMAPPED])
 def test_language_ladder_names_the_same_backend(entry_id):
     te._LADDER_FILTER_CACHE.clear()
