@@ -161,6 +161,9 @@ export function declinedCredentials(rows) {
   const out = [];
   for (const r of rows || []) {
     if (!r || r.consent_type !== 'credential' || !r.revoked_at) continue;
+    // Taken back: reopen keeps revoked_at (when the no was given) and
+    // records reopened_at; the no stands again only if revoked after it.
+    if (r.reopened_at && Date.parse(r.reopened_at) >= Date.parse(r.revoked_at)) continue;
     const name = secretName(r.scope);
     if (!name || seen.has(r.scope)) continue;
     seen.add(r.scope);
@@ -262,7 +265,12 @@ export function declineNote(consentType, label) {
   if (PRIVACY_CARD_TYPES.includes(consentType)) {
     return `"${label}" lasts until you allow it again in Privacy settings; "Not now" leaves the ask open.`;
   }
-  return `"${label}" tells the agent no, and it will not ask for this again until you choose "Allow asking again" in Privacy settings; "Not now" leaves the ask open.`;
+  // The privacy page lists declined credentials only (declinedCredentials),
+  // so only a credential is promised "Allow asking again".
+  if (asksForSecret(consentType)) {
+    return `"${label}" tells the agent no, and it will not ask for this again until you choose "Allow asking again" in Privacy settings; "Not now" leaves the ask open.`;
+  }
+  return `"${label}" tells the agent no; "Not now" leaves the ask open.`;
 }
 
 // The decline button: a phone's ask is declined for that phone ("Don't
@@ -276,6 +284,11 @@ export function declineLabel(consentType, agentId, name) {
 
 // The events HARTOS broadcasts when an ask is answered, on any surface.
 export const CONSENT_ANSWER_TYPES = Object.freeze(['consent.granted', 'consent.revoked']);
+
+// Every consent change HARTOS announces: the answers, and a no taken back
+// (ConsentService.reopen emits consent.reopened, for no agent).  A page that
+// lists consents refreshes on any of them.
+export const CONSENT_CHANGE_TYPES = Object.freeze([...CONSENT_ANSWER_TYPES, 'consent.reopened']);
 
 // True when an answer settles an ask, by ConsentService.check_consent's own
 // lookup, step for step:

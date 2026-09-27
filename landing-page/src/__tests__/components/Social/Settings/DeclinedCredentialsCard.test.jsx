@@ -21,6 +21,17 @@ jest.mock('../../../../services/socialApi', () => ({
   },
 }));
 
+const realtimeHandlers = {};
+jest.mock('../../../../services/realtimeService', () => ({
+  __esModule: true,
+  default: {
+    on: jest.fn((topic, cb) => {
+      realtimeHandlers[topic] = cb;
+      return () => { delete realtimeHandlers[topic]; };
+    }),
+  },
+}));
+
 import {consentApi} from '../../../../services/socialApi';
 import {DeclinedCredentialsCard} from '../../../../components/Social/Settings/PrivacySettingsPage';
 import {declinedCredentials} from '../../../../constants/consentAsks';
@@ -54,6 +65,15 @@ beforeEach(() => {
 describe('declinedCredentials', () => {
   test('a credential with a revoked row is declined; pending and granted ones are not', () => {
     expect(declinedCredentials([DECLINED, PENDING, GRANTED]))
+      .toEqual([{scope: 'secret:SITE_PASSWORD', name: 'SITE_PASSWORD'}]);
+  });
+
+  test('a no taken back (reopened after it) is not listed; a no after a reopen is', () => {
+    const T2 = new Date(Date.now() - 30 * 1000).toISOString();
+    const reopened = row({id: 'r1', revoked_at: T1, reopened_at: T2});
+    expect(declinedCredentials([reopened])).toEqual([]);
+    const againNo = row({id: 'r2', revoked_at: T2, reopened_at: T1});
+    expect(declinedCredentials([againNo]))
       .toEqual([{scope: 'secret:SITE_PASSWORD', name: 'SITE_PASSWORD'}]);
   });
 
@@ -104,6 +124,66 @@ describe('the declined-credentials card', () => {
     fireEvent.click(within(card).getByRole('button', {name: 'Allow asking again'}));
     expect(await screen.findByRole('alert', {}, WAIT)).toHaveTextContent(/retry/i);
     expect(within(card).getByText('SITE_PASSWORD')).toBeInTheDocument();
+  });
+
+  test('a 404 (already taken back elsewhere) is nothing to do: the list is read again', async () => {
+    listAnswers([DECLINED]);
+    consentApi.reopen.mockImplementation(async () => {
+      listAnswers([row({id: 'd1', revoked_at: T1, reopened_at: new Date().toISOString()})]);
+      throw Object.assign(new Error('nothing declined'), {response: {status: 404}});
+    });
+    renderWithProviders(<DeclinedCredentialsCard />);
+    const card = await screen.findByTestId('declined-credentials-card', {}, WAIT);
+    fireEvent.click(within(card).getByRole('button', {name: 'Allow asking again'}));
+
+    await waitFor(() => expect(consentApi.list).toHaveBeenCalledTimes(2), WAIT);
+    await waitFor(() => {
+      expect(screen.queryByTestId('declined-credentials-card')).toBeNull();
+    }, WAIT);
+    expect(screen.queryByText(/Please retry/)).toBeNull();
+  });
+
+  test('while the reopen is on its way the button is busy and a second click sends nothing', async () => {
+    listAnswers([DECLINED]);
+    let finish;
+    consentApi.reopen.mockImplementation(() => new Promise((r) => { finish = r; }));
+    renderWithProviders(<DeclinedCredentialsCard />);
+    const card = await screen.findByTestId('declined-credentials-card', {}, WAIT);
+    const button = within(card).getByRole('button', {name: 'Allow asking again'});
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeDisabled(), WAIT);
+    fireEvent.click(button);
+    expect(consentApi.reopen).toHaveBeenCalledTimes(1);
+    finish({success: true});
+    await waitFor(() => expect(consentApi.list).toHaveBeenCalledTimes(2), WAIT);
+  });
+
+  test('a list that cannot be read offers Retry, and the error stays until closed', async () => {
+    jest.useFakeTimers();
+    try {
+      consentApi.list.mockRejectedValueOnce(new Error('down'));
+      renderWithProviders(<DeclinedCredentialsCard />);
+      const alert = await screen.findByRole('alert', {}, WAIT);
+      jest.advanceTimersByTime(10000);
+      expect(screen.getByRole('alert')).toBe(alert);
+      listAnswers([DECLINED]);
+      fireEvent.click(within(alert).getByRole('button', {name: 'Retry'}));
+      await waitFor(() => expect(consentApi.list).toHaveBeenCalledTimes(2), WAIT);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('another window taking the no back refreshes this page (consent.reopened)', async () => {
+    listAnswers([DECLINED]);
+    renderWithProviders(<DeclinedCredentialsCard />);
+    await screen.findByTestId('declined-credentials-card', {}, WAIT);
+    listAnswers([]);
+    realtimeHandlers['consent.reopened']({type: 'consent.reopened',
+      consent_type: 'credential', scope: 'secret:SITE_PASSWORD', agent_id: null});
+    await waitFor(() => {
+      expect(screen.queryByTestId('declined-credentials-card')).toBeNull();
+    }, WAIT);
   });
 
   test('with no credential declined, nothing is shown', async () => {

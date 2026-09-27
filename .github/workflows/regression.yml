@@ -99,8 +99,12 @@ jobs:
         # and `from core....` (HARTOS packages) so without HARTOS
         # installed every Python tier ImportError-collapses at collection.
         # HARTOS is a separate private repo in the same org; clone with
-        # --depth=1 + --no-deps to keep install light (runtime ML deps
-        # stay lazy).  If the default GITHUB_TOKEN can't reach the
+        # --depth=1.  Its dependencies come from HARTOS's OWN declaration
+        # (requirements.txt + the pytest-asyncio dev plugin), installed the
+        # same way HARTOS's flake-checks.yml does -- not a hand-picked list
+        # here.  The old `pip install --no-deps` left out autogen, openai,
+        # python-dateutil and pytest-asyncio, so the "pytest HARTOS
+        # regression" tier died with 5 collection errors.  If the default GITHUB_TOKEN can't reach the
         # other repo, the beacon below surfaces a clear failure in
         # annotations so we can add a dedicated PAT.
         env:
@@ -115,8 +119,13 @@ jobs:
           if git clone --depth 1 \
                https://x-access-token:${GH_TOKEN}@github.com/hertz-ai/HARTOS.git \
                ../HARTOS 2>&1 | tail -20; then
-            pip install --no-deps ../HARTOS || true
-            echo "::notice title=hartos install::OK — hart-backend installed"
+            if pip install -r ../HARTOS/requirements.txt \
+               && pip install --no-deps ../HARTOS \
+               && pip install pytest-asyncio; then
+              echo "::notice title=hartos install::OK — hart-backend + HARTOS requirements.txt installed"
+            else
+              echo "::warning title=hartos install::FAILED — pip could not install HARTOS or its requirements.txt; the HARTOS regression tier will fail at collection."
+            fi
           else
             echo "::warning title=hartos install::FAILED — neither HEVOLVE_REPO_TOKEN nor GITHUB_TOKEN reached hertz-ai/HARTOS; pytest main/harness/e2e will ImportError on integrations.*."
           fi

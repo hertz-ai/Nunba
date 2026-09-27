@@ -49,7 +49,10 @@ import {
 } from './cloudCapabilityScopes';
 import {DEVICE_ACCESS, PHONE_STATES, trustedPhones} from './trustedPhones';
 
-import {allowAllLabel, declinedCredentials} from '../../../constants/consentAsks';
+import {
+  CONSENT_CHANGE_TYPES, allowAllLabel, declinedCredentials,
+} from '../../../constants/consentAsks';
+import realtimeService from '../../../services/realtimeService';
 import {consentApi} from '../../../services/socialApi';
 
 import {
@@ -878,6 +881,8 @@ export function TrustedPhonesCard() {
 export function DeclinedCredentialsCard() {
   const [items, setItems] = useState([]);
   const [busyScope, setBusyScope] = useState(null);
+  // {severity, msg, retry?}: an error stays until closed and offers Retry,
+  // like the page's own errors; a success hides after 4 s.
   const [snack, setSnack] = useState(null);
 
   const refresh = useCallback(async () => {
@@ -885,13 +890,23 @@ export function DeclinedCredentialsCard() {
       const res = await consentApi.list({consent_type: 'credential'});
       setItems(declinedCredentials((res && res.data && res.data.consents) || []));
     } catch (e) {
-      setSnack({severity: 'error', msg: 'Could not load the credentials you said no to. Please retry.'});
+      setSnack({severity: 'error', msg: 'Could not load the credentials you said no to.',
+        retry: () => refresh()});
     }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Another window or device took a no back, or said a new one: read again.
+  useEffect(() => {
+    const offs = CONSENT_CHANGE_TYPES.map((t) => realtimeService.on(t, (ev) => {
+      if (!ev || !ev.consent_type || ev.consent_type === 'credential') refresh();
+    }));
+    return () => offs.forEach((off) => off && off());
+  }, [refresh]);
+
   const reopen = useCallback(async (item) => {
+    if (busyScope) return;
     setBusyScope(item.scope);
     try {
       await consentApi.reopen({consent_type: 'credential', scope: item.scope});
@@ -899,17 +914,35 @@ export function DeclinedCredentialsCard() {
         msg: `An agent that needs ${item.name} will ask you for it again.`});
       await refresh();
     } catch (e) {
-      setSnack({severity: 'error', msg: 'Could not allow asking again. Please retry.'});
+      if (e && e.response && e.response.status === 404) {
+        // Already taken back (another window, another device): nothing to
+        // do but show the list as it is now, as the page's revoke does.
+        setSnack({severity: 'info', msg: `${item.name} was already allowed to be asked again.`});
+        await refresh();
+      } else {
+        setSnack({severity: 'error', msg: 'Could not allow asking again.',
+          retry: () => reopen(item)});
+      }
     } finally {
       setBusyScope(null);
     }
-  }, [refresh]);
+  }, [refresh, busyScope]);
 
+  const closeSnack = () => setSnack(null);
   const snackbar = (
-    <Snackbar open={Boolean(snack)} autoHideDuration={4000} onClose={() => setSnack(null)}
+    <Snackbar open={Boolean(snack)} onClose={closeSnack}
+      autoHideDuration={snack && snack.severity === 'error' ? null : 4000}
       anchorOrigin={{vertical: 'bottom', horizontal: 'center'}}>
       {snack ? (
-        <Alert severity={snack.severity} onClose={() => setSnack(null)}>{snack.msg}</Alert>
+        <Alert severity={snack.severity} onClose={closeSnack}
+          action={snack.retry ? (
+            <Button size="small" sx={{color: '#fff'}}
+              onClick={() => { const retry = snack.retry; setSnack(null); retry(); }}>
+              Retry
+            </Button>
+          ) : undefined}>
+          {snack.msg}
+        </Alert>
       ) : undefined}
     </Snackbar>
   );
@@ -924,8 +957,10 @@ export function DeclinedCredentialsCard() {
         </Typography>
       </Box>
       <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.6)', mb: 2}}>
-        Agents do not ask you for these. Allow asking again and the next agent
-        that needs one asks you on a card, where you can enter it or say no.
+        Agents do not ask you for these: you said no, or every value you
+        entered was refused and the agent stopped asking. Allow asking again
+        and the next agent that needs one asks you on a card, where you can
+        enter it or say no.
       </Typography>
       <Stack spacing={1}>
         {items.map((item) => {

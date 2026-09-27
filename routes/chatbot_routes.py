@@ -4187,13 +4187,17 @@ def vault_store():
                 return jsonify({'success': False, 'error': 'channel_type required for channel secrets'}), 400
             vault.set_channel_secret(channel_type, key_name, value)
         else:
+            _prev = vault.get_tool_key(key_name)
             vault.set_tool_key(key_name, value)
-            # The owner just typed this value, so it replaces whatever the
-            # process holds: export_to_env only setdefault()s, which kept a
-            # value a site had rejected in use until the next restart.  Only
-            # for a credential the owner entered for an agent, never for any
-            # name a caller sends: key_name 'PATH' must not replace PATH.
-            if _is_owner_credential(key_name):
+            # The owner just typed this value, so it replaces what the
+            # process holds (export_to_env only setdefault()s, which kept a
+            # value a site had rejected in use until the next restart).  Only
+            # for a credential the owner entered for an agent, and only while
+            # the process value is unset or still the one this vault stored:
+            # being an owner credential is not enough, since a card for PATH
+            # would make PATH one (review of 670aed3f).
+            if (_is_owner_credential(key_name)
+                    and os.environ.get(key_name) in (None, _prev)):
                 os.environ[key_name] = value
 
         # Export to env so LangChain tools can use it immediately

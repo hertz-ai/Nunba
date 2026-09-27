@@ -87,6 +87,30 @@ def test_a_name_that_is_not_an_owner_credential_never_replaces_the_environment(
     assert os.environ[name] == before
 
 
+@pytest.mark.parametrize('name', ['PATH', 'HTTPS_PROXY', 'NUNBA_CI'])
+def test_the_card_flow_never_replaces_a_setting(vault_route, monkeypatch, name):
+    """Review of 670aed3f (High): the owner types a value for PATH on the
+    card, the card grants secret:PATH (so PATH is an owner credential), the
+    site rejects it, the owner types again: the second store replaced
+    os.environ['PATH'].  The env value is replaced only while it is unset or
+    still the value this vault stored."""
+    before = os.environ.get(name, 'system-value')
+    monkeypatch.setenv(name, before)
+
+    vault_route('typed-once', key_name=name)
+    vault_route.owner_names.add(name)              # the card's grant
+    vault_route('typed-again', key_name=name)      # the re-ask after a rejection
+    assert os.environ[name] == before
+
+
+def test_a_value_changed_by_someone_else_is_not_replaced(vault_route, monkeypatch):
+    vault_route('first-password')
+    vault_route.owner_names.add('SITE_PASSWORD')
+    monkeypatch.setenv('SITE_PASSWORD', 'set-by-something-else')
+    vault_route('second-password')
+    assert os.environ['SITE_PASSWORD'] == 'set-by-something-else'
+
+
 def test_a_first_entry_still_reaches_the_tools(vault_route):
     """The first value for a credential is stored before its first grant, so
     it is not an owner credential yet; nothing holds the name, and the value
