@@ -35,6 +35,7 @@ class RealtimeService {
     this._token = null; // JWT for SSE auth (null = guest mode)
     this._userId = null; // fallback user_id for guest/local SSE
     this._seenIds = new Map(); // request_id → timestamp (dedup)
+    this._sseBase = null; // null = SOCIAL_API_URL (the app); set by the embed
   }
 
   /**
@@ -44,8 +45,13 @@ class RealtimeService {
    * @param {Worker} crossbarWorker
    * @param {Object} [opts]
    * @param {string} [opts.userId] - user_id for guest/local SSE (no JWT)
+   * @param {string} [opts.sseBase] - base the SSE stream hangs off
+   *   (`<base>/events/stream`).  Absent = SOCIAL_API_URL, which is what the
+   *   app always uses; the <hart-agent> embed passes its runtime gateway,
+   *   since a host page's gateway is only known at element connect time.
    */
   init(crossbarWorker, opts = {}) {
+    if (opts.sseBase) this._sseBase = opts.sseBase;
     // Detect userId change — when the user transitions from "anonymous
     // visitor" (effectiveUserId='' → SSE registered as literal 'guest')
     // to "registered guest" (guest_user_id UUID populated post-
@@ -181,11 +187,12 @@ class RealtimeService {
   // Prefer JWT when available, otherwise bind by guest user_id.
   // Always uses SOCIAL_API_URL (points to Flask :5000, not React :3000).
   _buildSSEUrl() {
+    const base = this._sseBase || SOCIAL_API_URL;
     if (this._token) {
-      return `${SOCIAL_API_URL}/events/stream?token=${encodeURIComponent(this._token)}`;
+      return `${base}/events/stream?token=${encodeURIComponent(this._token)}`;
     }
     const uid = this._userId || 'guest';
-    return `${SOCIAL_API_URL}/events/stream?user_id=${encodeURIComponent(uid)}`;
+    return `${base}/events/stream?user_id=${encodeURIComponent(uid)}`;
   }
 
   // Attach the standard handler set (onmessage, named events, onerror)

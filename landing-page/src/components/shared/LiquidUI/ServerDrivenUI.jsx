@@ -434,11 +434,15 @@ const ANIMATION_MAP = {
   slideInRight: 'slideInRight 0.4s ease-out forwards',
 };
 
-// Inject animation keyframes once
+// Inject animation keyframes once per root.  `root` is optional: absent means
+// the document (the app).  The <hart-agent> embed renders inside a shadow
+// root, so it passes that root and the keyframes live next to the nodes
+// that animate with them.
 const ANIM_STYLE_ID = 'sdui-keyframes';
-function ensureAnimationKeyframes() {
+function ensureAnimationKeyframes(root) {
   if (typeof document === 'undefined') return;
-  if (document.getElementById(ANIM_STYLE_ID)) return;
+  const scope = root || document;
+  if (scope.getElementById(ANIM_STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = ANIM_STYLE_ID;
   style.textContent = `
@@ -453,7 +457,7 @@ function ensureAnimationKeyframes() {
     @keyframes slideInLeft { from { opacity: 0; transform: translateX(-30px); } to { opacity: 1; transform: translateX(0); } }
     @keyframes slideInRight { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: translateX(0); } }
   `;
-  document.head.appendChild(style);
+  (root || document.head).appendChild(style);
 }
 
 // ── Maximum loop items (safety limit) ───────────────────────────────────────
@@ -1047,6 +1051,7 @@ const RenderNode = ({
  * - onAction: Callback when user interacts (action name, payload)
  * - sx: Additional container sx styles
  * - style: Additional inline styles (for backward compat)
+ * - keyframesRoot: optional ShadowRoot for the animation keyframes (embed)
  */
 const ServerDrivenUI = ({
   themeTokens,
@@ -1055,6 +1060,7 @@ const ServerDrivenUI = ({
   onAction,
   sx,
   style,
+  keyframesRoot,
 }) => {
   // Fallback: try context if themeTokens prop not provided
   const contextTokens = useContext(LiquidUIContext);
@@ -1076,8 +1082,8 @@ const ServerDrivenUI = ({
   );
 
   useEffect(() => {
-    ensureAnimationKeyframes();
-  }, []);
+    ensureAnimationKeyframes(keyframesRoot);
+  }, [keyframesRoot]);
 
   if (!layout || !tokens) return null;
 
