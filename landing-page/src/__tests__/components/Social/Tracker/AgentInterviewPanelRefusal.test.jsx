@@ -43,7 +43,7 @@ test.each([
 ])('a refusal as %s reads as its outcome', async (_label, reply) => {
   mockInterview.mockImplementation(reply);
   await ask();
-  expect(await screen.findByText(/You can only steer your own runs\./)).toBeInTheDocument();
+  expect(await screen.findByText(/This run belongs to someone else, so nothing was changed\./)).toBeInTheDocument();
   expect(screen.queryByText(/status code 403/)).toBeNull();
 });
 

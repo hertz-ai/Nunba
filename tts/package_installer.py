@@ -549,30 +549,76 @@ def is_cuda_torch() -> bool:
         return False
 
 
-def is_cuda_ctranslate2() -> bool:
-    """Check if the installed CTranslate2 can actually run STT on CUDA.
+# The CUDA libraries ctranslate2 loads for a decode, per platform: cuBLAS
+# lazily at the first encode, cuDNN for the encoder's convolutions.  These are
+# what install_gpu_ctranslate2 provides (nvidia-cublas-cu12,
+# nvidia-cudnn-cu12==9.*).  No entry (macOS) means no CUDA build to probe.
+_CT2_CUDA_LIBRARIES = {
+    'win32': ('cublas64_12.dll', 'cudnn64_9.dll'),
+    'linux': ('libcublas.so.12', 'libcudnn.so.9'),
+}
 
-    faster-whisper runs on CTranslate2 (NOT torch), so a CUDA torch is
-    neither necessary nor sufficient — this is the authoritative GPU-STT
-    gate, the SAME one ``whisper_tool._get_faster_whisper_model`` uses to
-    pick ``device='cuda'``: ``'cuda' in ctranslate2.get_supported_compute_types(
-    'cuda')``, which only returns CUDA types when CTranslate2 can dlopen the
-    NVIDIA cuBLAS/cuDNN runtime.  The CPU-only PyPI wheel returns none, so a
-    fresh install silently runs STT on CPU int8 until the CUDA runtime is
-    installed (see ``install_gpu_ctranslate2``).  Mirrors ``is_cuda_torch``:
-    prefers the user site (where the CUDA runtime is dropped) and never raises.
+# Runs in the child: exit 0 only when ctranslate2 sees a CUDA device AND every
+# library named in argv loads.  winmode=0 is plain LoadLibrary, which searches
+# PATH the way ctranslate2's own lazy load does (ctypes' default does not
+# search PATH).  ctranslate2 is imported first so a library its package
+# already loaded (cudnn64_9.dll ships inside it on Windows) resolves.
+_CT2_CUDA_PROBE = (
+    "import ctypes, sys\n"
+    "import ctranslate2\n"
+    "if ctranslate2.get_cuda_device_count() < 1:\n"
+    "    sys.exit('no CUDA device')\n"
+    "kw = {'winmode': 0} if sys.platform == 'win32' else {}\n"
+    "for name in sys.argv[1:]:\n"
+    "    ctypes.CDLL(name, **kw)\n"
+)
+
+
+def is_cuda_ctranslate2() -> bool:
+    """True when faster-whisper's engine can decode on CUDA here: ctranslate2
+    sees a CUDA device and the cuBLAS / cuDNN libraries it loads are loadable.
+    False means the runtime ``install_gpu_ctranslate2`` provides is missing.
+
+    Asked of the interpreter the STT worker runs on
+    (``core.venv_paths.venv_creator_python`` -- python-embed on the frozen
+    build, whose sitecustomize sets up the worker's PATH), in a child
+    process, never in this one: importing ctranslate2 here is what made
+    ``_run_pip`` defer the very install this gates ("install deferred:
+    ['ctranslate2'] are loaded in this process", every boot, 2026-09-25..27).
+
+    Until 2026-09-28 this tested ``'cuda' in get_supported_compute_types
+    ('cuda')``: a set of compute types never holds the device name (measured
+    on the installed python-embed: 'cuda' in it False, device count 1), so it
+    read "no CUDA" on every box and the install ran, and failed, every boot.
+    The worker's own gate (HARTOS whisper_tool) asks only for a device and
+    falls back to CPU when a decode then fails; this one also asks for the
+    libraries, because providing them is the install's whole job.
+
+    Never raises: anything that stops the child from answering reads False.
     """
     try:
-        ensure_user_site_on_path()
-    except Exception:
-        pass
-    try:
-        import ctranslate2
-        # get_supported_compute_types('cuda') raises on a broken/absent CUDA
-        # runtime — treat any failure as "not CUDA-capable".
-        return 'cuda' in ctranslate2.get_supported_compute_types('cuda')
-    except Exception:
+        from core.venv_paths import venv_creator_python
+        from core.subprocess_safe import run_bounded
+    except ImportError as exc:
+        logger.warning("is_cuda_ctranslate2: HARTOS core not importable (%s); "
+                       "reading as not usable", exc)
         return False
+    python_exe = venv_creator_python()
+    if not python_exe:
+        return False
+    libraries = _CT2_CUDA_LIBRARIES.get(sys.platform, ())
+    try:
+        result = run_bounded([python_exe, '-c', _CT2_CUDA_PROBE, *libraries],
+                             timeout=60)
+    except OSError as exc:
+        logger.warning("is_cuda_ctranslate2: probe could not start (%s)", exc)
+        return False
+    if result.returncode != 0:
+        logger.info("CUDA ctranslate2 runtime not usable (%s): %s",
+                    'timed out' if result.timed_out else f'rc={result.returncode}',
+                    (result.stderr or '').strip()[-300:])
+        return False
+    return True
 
 
 def get_torch_variant() -> str:
@@ -1425,13 +1471,11 @@ def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, 
     """Install the CUDA runtime deps faster-whisper needs to run STT on GPU.
 
     faster-whisper runs on CTranslate2, NOT torch — so a CUDA-enabled torch
-    is neither necessary nor sufficient for GPU whisper.  The
-    AUTHORITATIVE gate (HARTOS whisper_tool._get_faster_whisper_model)
-    is ``'cuda' in ctranslate2.get_supported_compute_types('cuda')``,
-    which only returns CUDA types when CTranslate2 can dlopen the NVIDIA
-    cuBLAS + cuDNN runtime libraries.  The CPU-only ctranslate2 PyPI
-    wheel ships without them, so on a fresh install STT silently falls
-    back to CPU int8 even on an RTX card.
+    is neither necessary nor sufficient for GPU whisper.  CTranslate2 needs
+    the NVIDIA cuBLAS + cuDNN runtime libraries at decode time, and the
+    PyPI wheel does not ship cuBLAS, so without them STT falls back to CPU
+    int8 even on an RTX card.  ``is_cuda_ctranslate2`` is the check for
+    exactly that.
 
     This installs the missing runtime, into the SAME user-writable
     ``~/.nunba/site-packages/`` target that ``install_gpu_torch`` uses,

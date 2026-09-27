@@ -148,12 +148,12 @@ test('Ask HART injects guidance into the active HART through the one steering cl
 test.each([
   ['with no reason', () => Promise.reject(new Error('')), 'Guidance not delivered.'],
   ['refused', () => Promise.reject({success: false, data: {error: 'agent not found, or not yours to steer', forbidden: true}}),
-    'You can only steer your own runs.'],
+    'This run belongs to someone else, so nothing was changed.'],
   // Resolved, not rejected: a 2xx body that says success:false.
   ['answered success:false with no reason', () => Promise.resolve({success: false}),
     'Guidance not delivered.'],
   ['answered success:false, refused', () => Promise.resolve({success: false, data: {forbidden: true}}),
-    'You can only steer your own runs.'],
+    'This run belongs to someone else, so nothing was changed.'],
 ])('a steer that fails %s says so once, as its outcome', async (_l, reply, expected) => {
   mockSteer.mockImplementationOnce(reply);
   render(<VoiceOrbPage />);

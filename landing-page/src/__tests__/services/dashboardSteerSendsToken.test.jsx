@@ -134,7 +134,7 @@ test('a refusal comes back as the server\'s JSON reason, not a generic error', a
 
 test.each([
   ['a refusal (not yours)', {success: false, data: {error: 'agent not found, or not yours to steer', forbidden: true}},
-    'You can only steer your own runs.'],
+    'This run belongs to someone else, so nothing was changed.'],
   ['no token (require_auth)', {success: false, error: 'Missing or invalid Authorization header'},
     'Sign in to steer this run.'],
   ['an expired token (require_auth)', {success: false, error: 'Invalid or expired token'},
@@ -142,6 +142,14 @@ test.each([
   ['a run that stopped taking guidance', {success: false, data: {error: 'no live GroupChat registered for this agent (not currently executing)'}},
     'This run is no longer taking guidance.'],
   ['nothing to go on', undefined, 'Guidance not delivered.'],
+  // A server fault keeps its own message (review of 275e8e361): never
+  // flattened into the generic fallback.
+  ['a 500 with a reason', {success: false, error: 'database is locked'}, 'database is locked'],
+  ['a raw axios 500 with no reason', Object.assign(new Error('Request failed with status code 500'),
+    {response: {status: 500, data: {}}}), 'Request failed with status code 500'],
+  ['a raw axios 403 refusal', Object.assign(new Error('Request failed with status code 403'),
+    {response: {status: 403, data: {success: false, data: {forbidden: true}}}}),
+    'This run belongs to someone else, so nothing was changed.'],
 ])('steerError words %s as its outcome', (_label, body, expected) => {
   expect(steerError(body)).toBe(expected);
 });
@@ -203,7 +211,7 @@ test("the drawer shows why an Inject was refused, and keeps the text", async () 
   global.fetch = drawerSnapshot();
   await openConversation();
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: /send/i})); });
-  expect(await screen.findByText('You can only steer your own runs.')).toBeInTheDocument();
+  expect(await screen.findByText('This run belongs to someone else, so nothing was changed.')).toBeInTheDocument();
   expect(screen.getByPlaceholderText(/retry the failing step/i).value).toBe('use the cloud model');
 });
 
@@ -222,7 +230,7 @@ test("the drawer says so when a run is not the user's to view", async () => {
   mockGets = {'/snapshot': {status: 403, data: {success: false, data: {
     error: 'agent not found, or not yours to steer', forbidden: true}}}};
   render(<AgentOperationsDrawer open agentId="g1" onClose={() => {}} />);
-  expect(await screen.findByText(/You can only steer your own runs\./)).toBeInTheDocument();
+  expect(await screen.findByText(/This run belongs to someone else, so nothing was changed\./)).toBeInTheDocument();
 });
 
 test("the drawer shows why a Pause was refused", async () => {
