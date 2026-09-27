@@ -183,3 +183,41 @@ class TestEnsureVenvSourceRun:
         assert venv_module[0][0] == sys.executable
         assert pyexe.is_file()
         assert venv_paths.venv_mismatch(BACKEND) is None
+
+
+class TestReviewFollowUps:
+    """Review of ad9ce346 / 48d562f7."""
+
+    def test_the_rebuild_drops_the_cached_probe_answers(
+            self, root, frozen, venv_module):
+        # A foreign venv's cached "importable" must not outlive the rebuild
+        # that replaced it (is_venv_healthy would answer from the old venv).
+        vpath = backend_venv.venv_path(BACKEND)
+        _lay_down_venv(vpath, str(root / "miniconda3"), "3.11.4")
+        import time
+        now = time.monotonic()
+        backend_venv._venv_probe_cache[(BACKEND, "kokoro")] = (now, True)
+        backend_venv._venv_probe_cache[("other", "x")] = (now, True)
+
+        backend_venv.ensure_venv(BACKEND)
+
+        assert (BACKEND, "kokoro") not in backend_venv._venv_probe_cache
+        assert ("other", "x") in backend_venv._venv_probe_cache
+
+    def test_a_hartos_without_the_rule_adopts_the_venv_as_before(
+            self, root, frozen, venv_module, monkeypatch, caplog):
+        # An older HARTOS tree (no core.venv_paths.venv_mismatch): the venv
+        # is used as it was before the rule existed, and the log says the
+        # builder was not checked.
+        vpath = backend_venv.venv_path(BACKEND)
+        py = _lay_down_venv(vpath, str(root / "miniconda3"), "3.11.4")
+        monkeypatch.delattr(venv_paths, "venv_mismatch")
+        exposed = []
+        monkeypatch.setattr(venv_paths, "ensure_parent_packages_visible",
+                            lambda b: exposed.append(b))
+        with caplog.at_level("WARNING", logger=backend_venv.logger.name):
+            assert backend_venv.ensure_venv(BACKEND) == py
+        assert venv_module == [], "an old HARTOS must not trigger a rebuild"
+        assert exposed == [BACKEND]
+        assert any("venv_mismatch" in r.getMessage() and BACKEND in r.getMessage()
+                   for r in caplog.records)

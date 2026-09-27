@@ -277,12 +277,28 @@ def check_backend_runnable(backend: str, import_name: str) -> bool:
             try:
                 if is_venv_healthy is not None and not is_venv_healthy(backend):
                     _backend_cache[backend] = False
-                    logger.info(
-                        "Backend probe: %s (%s) NOT importable — venv at "
-                        "~/Documents/Nunba/data/venvs/%s does not exist or "
-                        "lacks python.exe (install_target='venv' but install "
-                        "has not run)", backend, import_name, backend,
-                    )
+                    # Unhealthy is either "no venv" or "a venv another
+                    # interpreter built" (core.venv_paths.venv_mismatch);
+                    # the second exists, so say which.
+                    try:
+                        from core.venv_paths import venv_mismatch
+                        foreign = venv_mismatch(backend)
+                    except Exception as _vm_exc:
+                        logger.debug("venv_mismatch unavailable: %s", _vm_exc)
+                        foreign = None
+                    if foreign:
+                        logger.info(
+                            "Backend probe: %s (%s) NOT importable — its venv "
+                            "was built by another interpreter: %s", backend,
+                            import_name, foreign,
+                        )
+                    else:
+                        logger.info(
+                            "Backend probe: %s (%s) NOT importable — venv for "
+                            "%s does not exist or lacks python.exe "
+                            "(install_target='venv' but install has not run)",
+                            backend, import_name, backend,
+                        )
                     return False
             except Exception:
                 pass

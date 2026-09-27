@@ -108,18 +108,27 @@ _MIGRATABLE_KEYS = [
 ]
 
 
+#: The degraded-mode warning below is logged once per process.
+_DEGRADED_WARNED = False
+
+
 def reads_from_env(key_name: str) -> bool:
     """True when the process legitimately reads ``key_name`` from its
     environment: HARTOS hartos.ai_key_vault.reads_from_env, the one rule
-    (SECRET_KEYS and the channel adapters' env names).  Without HARTOS, only
-    the config.json keys this vault migrates (_MIGRATABLE_KEYS)."""
+    (SECRET_KEYS and every module's declared ENV_SECRETS).  Without that
+    rule, False: nothing in Nunba reads these names from the environment
+    when HARTOS is absent, so nothing is put there (review of 86c65e76).
+    _MIGRATABLE_KEYS is only the config.json migration's list."""
+    global _DEGRADED_WARNED
     try:
         from hartos.ai_key_vault import reads_from_env as _hartos_reads
-        return _hartos_reads(key_name)
+        return bool(_hartos_reads(key_name))
     except Exception:
-        logger.warning("HARTOS env-name rule unavailable; %s is exported only "
-                       "if it is a migrated config key", key_name, exc_info=True)
-        return key_name in _MIGRATABLE_KEYS
+        if not _DEGRADED_WARNED:
+            _DEGRADED_WARNED = True
+            logger.warning("HARTOS env-name rule unavailable: stored keys are "
+                           "not put in the environment", exc_info=True)
+        return False
 
 
 def hold_in_hartos(key_name: str, value: str) -> bool:
@@ -379,13 +388,19 @@ class AIKeyVault:
         # reaches a tool only through its alias.  It used to be setdefault()
         # for every name, so a first card entry named NUNBA_CI or HTTPS_PROXY
         # became configuration (review of Nunba 670aed3f).
+        #
+        # Returns the names HARTOS could not hold (an installed HARTOS older
+        # than hold_credential): stored here, but no agent can use them yet.
+        # Never a fallback to os.environ.
+        unheld = set()
         for key_name, value in self._cache.get('_tool_keys', {}).items():
             if not value:
                 continue
             if reads_from_env(key_name):
                 os.environ.setdefault(key_name, value)
-            else:
-                hold_in_hartos(key_name, value)
+            elif not hold_in_hartos(key_name, value):
+                unheld.add(key_name)
+        return unheld
 
     # ------------------------------------------------------------------
     # config.json migration (one-time)

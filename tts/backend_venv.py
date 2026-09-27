@@ -76,14 +76,14 @@ _IMPORT_PROBE_TIMEOUT = max(
 def _reset_cache_for_tests() -> None:
     """Reset the cached venv root.  Test hook only.
 
-    Delegates to ``core.venv_paths._reset_cache_for_tests`` since the
+    Delegates to ``core.venv_paths.reset_venv_root_cache`` since the
     actual cache moved there as part of the parallel-path elimination
     (2026-05-03).  9 journey tests (J215–J219) call this to clear state
     between cases that mutate ``NUNBA_VENV_ROOT_OVERRIDE`` — the
     forwarding here keeps them green without rewriting every call site.
     """
-    from core.venv_paths import _reset_cache_for_tests as _canonical_reset
-    _canonical_reset()
+    from core.venv_paths import reset_venv_root_cache
+    reset_venv_root_cache()
 
 
 def venv_root() -> Path:
@@ -112,8 +112,8 @@ def _validate_backend_name(backend: str) -> None:
     bare name and the public API in PHASE6_RESULTS.md documents it
     here.
     """
-    from core.venv_paths import _validate_backend_name as _canonical
-    _canonical(backend)
+    from core.venv_paths import validate_backend_name
+    validate_backend_name(backend)
 
 
 # ── Venv python exe resolution ───────────────────────────────────────
@@ -165,17 +165,18 @@ def _resolve_venv_creator_python() -> str:
     the worker will run); this wrapper only refuses loudly when a frozen
     build has no bundled interpreter.
     """
-    from core.venv_paths import venv_creator_python
+    from core.venv_paths import python_embed_dir, venv_creator_python
     creator = venv_creator_python()
     if creator:
         return creator
     # If we somehow can't find the bundled python, raise loudly rather
     # than silently invoking Nunba.exe again — that path produces the
-    # misleading "duplicate instance" error.
-    app_dir = Path(sys.executable).resolve().parent
+    # misleading "duplicate instance" error.  The directory named is the
+    # one venv_creator_python searched (python_embed_dir: sys.executable
+    # resolved), not a second computation of it.
     raise RuntimeError(
         f"frozen mode: could not find bundled python interpreter "
-        f"under {app_dir / 'python-embed'}; refusing to spawn "
+        f"under {python_embed_dir()}; refusing to spawn "
         f"{sys.executable!r} which would re-launch the app and "
         f"trigger the duplicate-instance guard."
     )
@@ -203,7 +204,11 @@ def _foreign_venv_reason(backend: str) -> str | None:
 def ensure_venv(backend: str, python_version: str = "3.11") -> Path:
     """Create the venv for `backend` if missing, and return its python exe.
 
-    Idempotent — second call is a stat-check, not a re-create.
+    Idempotent — a second call is a stat-check plus a read of the venv's
+    pyvenv.cfg, not a re-create.  A venv another interpreter built
+    (core.venv_paths.venv_mismatch) is rebuilt by the installed app, with
+    its cached import-probe answers dropped; a source run refuses it with
+    the reason instead of deleting the app's venv.
 
     The ``python_version`` argument is advisory in this base
     implementation (matches the operator-supplied contract) — the venv

@@ -4204,7 +4204,18 @@ def vault_store():
         # A name the process reads from its environment goes there (only if
         # unset); any other value is held by HARTOS's vault, a re-entered one
         # replacing what it held, and reaches a tool through its alias.
-        vault.export_to_env()
+        unheld = vault.export_to_env() or set()
+        if key_type != 'channel_secret' and key_name in unheld:
+            # Saved in this computer's vault, but the installed HART OS cannot
+            # hold it for agents (older than hold_credential).  Said to the
+            # owner on the card (success false, 200 so the card reads the
+            # error), never papered over with the environment.
+            return jsonify({
+                'success': False, 'key_name': key_name, 'stored': True,
+                'error': ("Saved on this computer, but agents cannot use it yet: "
+                          "this HART OS version cannot hold it for them. Update "
+                          "HART OS and enter it again."),
+            })
 
         return jsonify({'success': True, 'key_name': key_name, 'stored': True})
     except Exception as e:

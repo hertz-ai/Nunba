@@ -61,7 +61,9 @@ def vault_route(tmp_path, monkeypatch):
     monkeypatch.setattr('desktop.ai_key_vault._derive_fernet_key',
                         lambda salt: _PlainFernet(salt))
     from desktop.ai_key_vault import AIKeyVault
+    import desktop.ai_key_vault as desktop_vault
     AIKeyVault.reset()
+    monkeypatch.setattr(desktop_vault, '_DEGRADED_WARNED', False, raising=False)
     for name in _ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
     owner_names = set()
@@ -161,3 +163,67 @@ def test_when_hartos_cannot_be_read_nothing_reaches_the_environment(vault_route,
     assert os.environ['NEWS_API_KEY'] == 'old'
     vault_route('card-value', key_name='NUNBA_CI')
     assert 'NUNBA_CI' not in os.environ
+
+
+# ── Review of 86c65e76: an older HARTOS, and no HARTOS at all ──────────
+
+def test_a_hartos_that_cannot_hold_it_is_reported_to_the_owner(vault_route, monkeypatch):
+    """M1: an installed HARTOS older than hold_credential (version skew).
+    The card used to say "stored" while nothing held it, so the agent asked
+    again and gave up.  The route says it could not be stored for agents,
+    and nothing falls back to the environment."""
+    class _OldHartos:
+        def owner_credential_names(self):
+            return set()
+    import hartos.ai_key_vault as hartos_vault
+    monkeypatch.setattr(hartos_vault, 'get_ai_key_vault', lambda: _OldHartos())
+    resp = vault_route('pw-777', key_name='SITE_PASSWORD')
+    body = resp.get_json() if hasattr(resp, 'get_json') else resp[0].get_json()
+    assert body['success'] is False
+    assert 'agents' in body['error']
+    assert 'SITE_PASSWORD' not in os.environ
+
+
+def test_a_name_hartos_delivers_still_succeeds_without_hold(vault_route, monkeypatch):
+    class _OldHartos:
+        def owner_credential_names(self):
+            return set()
+    import hartos.ai_key_vault as hartos_vault
+    monkeypatch.setattr(hartos_vault, 'get_ai_key_vault', lambda: _OldHartos())
+    resp = vault_route('news-DUMMY', key_name='NEWS_API_KEY')
+    body = resp.get_json() if hasattr(resp, 'get_json') else resp[0].get_json()
+    assert body['success'] is True
+    assert os.environ['NEWS_API_KEY'] == 'news-DUMMY'
+
+
+def _break_the_rule(monkeypatch):
+    """A HARTOS with no reads_from_env at all: the import itself fails."""
+    import sys
+    import types
+    broken = types.ModuleType('hartos.ai_key_vault')
+    monkeypatch.setitem(sys.modules, 'hartos.ai_key_vault', broken)
+
+
+def test_without_the_hartos_rule_nothing_reaches_the_environment(vault_route, monkeypatch):
+    """M2: without HARTOS's rule nothing in Nunba reads these names from the
+    environment, so nothing is put there, not even a migrated config key."""
+    from desktop.ai_key_vault import reads_from_env
+    _break_the_rule(monkeypatch)
+    for name in ('NEWS_API_KEY', 'GOOGLE_API_KEY', 'NUNBA_CI', 'SITE_PASSWORD'):
+        assert reads_from_env(name) is False
+
+
+def test_the_degraded_rule_warns_once(vault_route, monkeypatch, caplog):
+    """m3: one warning when the rule is unavailable, not one per key."""
+    import logging
+    from desktop.ai_key_vault import AIKeyVault
+    _break_the_rule(monkeypatch)
+    vault = AIKeyVault.get_instance()
+    for name in ('NEWS_API_KEY', 'SERPAPI_API_KEY', 'SITE_PASSWORD'):
+        vault.set_tool_key(name, 'v-' + name)
+    with caplog.at_level(logging.WARNING, logger='NunbaVault'):
+        vault.export_to_env()
+        vault.export_to_env()
+    rule = [r for r in caplog.records if 'env-name rule' in r.getMessage()]
+    assert len(rule) == 1
+    assert 'NEWS_API_KEY' not in os.environ
