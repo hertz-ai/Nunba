@@ -4147,6 +4147,24 @@ def llm_config_test():
 # Vault API — generic secret storage (tool keys, channel secrets)
 # Extends AIKeyVault that already handles provider configs via /api/llm/config
 # ---------------------------------------------------------------------------
+def _is_owner_credential(key_name):
+    """True when key_name is a credential the owner of this computer entered
+    for an agent: HARTOS AIKeyVault.owner_credential_names, the one list of
+    them (a granted 'credential' consent row, scope 'secret:NAME', or a value
+    stored through the vault this process).  The consent card stores a
+    re-entered value here before it grants again, so the earlier grant is
+    what names it.  A first entry is not on the list yet; export_to_env sets
+    it, since a name nothing holds has nothing to replace.  A lookup that
+    fails names nothing."""
+    try:
+        from hartos.ai_key_vault import get_ai_key_vault
+        return key_name in get_ai_key_vault().owner_credential_names()
+    except Exception:
+        logger.warning('vault store: could not read the owner credential names; '
+                       '%s is not put into the environment', key_name, exc_info=True)
+        return False
+
+
 def vault_store():
     """POST /api/vault/store — Store a secret in the vault.
     Body: { key_type: 'tool_key'|'channel_secret', key_name: str, value: str, channel_type?: str }
@@ -4172,8 +4190,11 @@ def vault_store():
             vault.set_tool_key(key_name, value)
             # The owner just typed this value, so it replaces whatever the
             # process holds: export_to_env only setdefault()s, which kept a
-            # value a site had rejected in use until the next restart.
-            os.environ[key_name] = value
+            # value a site had rejected in use until the next restart.  Only
+            # for a credential the owner entered for an agent, never for any
+            # name a caller sends: key_name 'PATH' must not replace PATH.
+            if _is_owner_credential(key_name):
+                os.environ[key_name] = value
 
         # Export to env so LangChain tools can use it immediately
         vault.export_to_env()
