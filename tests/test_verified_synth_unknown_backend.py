@@ -98,6 +98,27 @@ def test_engine_unimportable_keeps_agent_goal(tmp_path):
     assert calls[0]['agent_remediation'] is True
 
 
+def test_engine_unimportable_is_logged(tmp_path, caplog):
+    """No silent exception: the fallback names the backend and why the
+    name could not be judged (review of 712602b0)."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger='tts.verified_synth'), \
+            patch.dict(sys.modules, {'tts.tts_engine': None}):
+        _surface('neuair', tmp_path)
+    hits = [r for r in caplog.records
+            if r.name == 'tts.verified_synth' and 'neuair' in r.getMessage()]
+    assert len(hits) == 1
+    assert hits[0].levelno == logging.WARNING
+    assert 'tts.tts_engine' in hits[0].getMessage()
+
+
+def test_engine_importable_logs_nothing_for_the_judgement(tmp_path, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger='tts.verified_synth'):
+        _surface('neuair', tmp_path)
+    assert not [r for r in caplog.records if r.name == 'tts.verified_synth']
+
+
 @pytest.mark.parametrize('name', _engine_backends() + ['neuair', 'f5_tts',
                                                        'luxtts', 'none', ''])
 def test_create_backend_agrees_with_predicate(name):
