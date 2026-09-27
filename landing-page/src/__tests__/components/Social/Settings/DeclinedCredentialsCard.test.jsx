@@ -37,7 +37,7 @@ import {DeclinedCredentialsCard} from '../../../../components/Social/Settings/Pr
 import {declinedCredentials} from '../../../../constants/consentAsks';
 import {renderWithProviders} from '../../../testHelpers';
 
-import {fireEvent, screen, waitFor, within} from '@testing-library/react';
+import {act, fireEvent, screen, waitFor, within} from '@testing-library/react';
 import React from 'react';
 
 const WAIT = {timeout: 5000};
@@ -164,8 +164,9 @@ describe('the declined-credentials card', () => {
       consentApi.list.mockRejectedValueOnce(new Error('down'));
       renderWithProviders(<DeclinedCredentialsCard />);
       const alert = await screen.findByRole('alert', {}, WAIT);
-      jest.advanceTimersByTime(10000);
-      expect(screen.getByRole('alert')).toBe(alert);
+      act(() => { jest.advanceTimersByTime(10000); });
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent(/Could not load/);
       listAnswers([DECLINED]);
       fireEvent.click(within(alert).getByRole('button', {name: 'Retry'}));
       await waitFor(() => expect(consentApi.list).toHaveBeenCalledTimes(2), WAIT);

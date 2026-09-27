@@ -728,7 +728,26 @@ export const identityApi = {
 export const dashboardApi = {
   agents: () => socialApi.get('/dashboard/agents'),
   health: () => socialApi.get('/dashboard/health'),
+  // POST /dashboard/agents/<id>/<verb>, verb = inject | pause | resume |
+  // cancel.  THE one client for steering a goal: it carries the signed-in
+  // token like every other socialApi call, because HARTOS answers a remote
+  // caller without one 401 and lets only the goal's owner (or an admin)
+  // steer it (dashboard_service.may_steer).  Resolves to the JSON body;
+  // a refusal rejects with the server's JSON ({success:false, data:{error}}).
+  // silentError: each caller shows the reason inline, not as a banner.
+  steer: (agentId, verb, body) =>
+    socialApi.post(
+      `/dashboard/agents/${encodeURIComponent(agentId)}/${verb}`,
+      body || {},
+      {silentError: true},
+    ),
 };
+
+/** The reason a steer failed, from whatever dashboardApi.steer rejected
+ *  with (the server's JSON, or a transport Error). */
+export function steerError(err, fallback = 'Guidance not delivered') {
+  return err?.data?.error || err?.error || err?.message || fallback;
+}
 
 // --- Chat API (Local Nunba backend) ---
 // Local LLM inference can take 60-90s on small models; autogen recipe builds

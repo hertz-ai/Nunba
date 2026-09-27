@@ -119,6 +119,14 @@ def test_a_first_entry_still_reaches_the_tools(vault_route):
     assert os.environ['SITE_PASSWORD'] == 'first-password'
 
 
+def test_a_name_that_is_not_an_owner_credential_is_not_replaced_even_if_ours(vault_route):
+    """Both conditions hold: the vault's own earlier value is not enough
+    when the name is not one the owner entered for an agent."""
+    vault_route('first')                      # export_to_env: unset -> 'first'
+    vault_route('second')                     # never granted on a card
+    assert os.environ['SITE_PASSWORD'] == 'first'
+
+
 def test_when_the_owner_list_cannot_be_read_nothing_is_replaced(vault_route, monkeypatch):
     import hartos.ai_key_vault as hartos_vault
 
