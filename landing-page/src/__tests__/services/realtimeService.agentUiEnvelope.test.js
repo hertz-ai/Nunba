@@ -128,6 +128,23 @@ describe('the A2UI envelope reaches the overlay as its component', () => {
     expect(seen[0].component).toBeUndefined();
   });
 
+  test("a card's own user_id survives the unwrap; the envelope's only fills a gap", () => {
+    // Review of HARTOS a0ecafe09 / Nunba 53927f85: the unwrap overwrote a
+    // card's own user_id with the envelope's.  A card can name its subject
+    // (the camera consent card's user_id is what the overlay hands
+    // NUNBA_CAMERA_CONSENT), so, like agent_id, the card's value wins.
+    const {es, seen} = openSse();
+    es._fire('agent.ui.update', envelope({
+      msg_id: 'uid-own',
+      component: {type: 'approval', action: 'enable_camera',
+        user_id: 'subject-9'},
+    }));
+    es._fire('agent.ui.update', envelope({msg_id: 'uid-gap'}));
+    expect(seen).toHaveLength(2);
+    expect(seen[0].user_id).toBe('subject-9');
+    expect(seen[1].user_id).toBe('owner-1');
+  });
+
   test('an agent card is not also re-announced on its own type channel', () => {
     // A notification CARD from an agent belongs to the overlay only.  Were
     // it also emitted as 'notification', every listener on that channel
@@ -186,6 +203,9 @@ describe('the A2UI envelope reaches the overlay as its component', () => {
     // Not the raw envelope printed by the overlay's fallback branch.
     expect(screen.queryByText(/"component"/)).toBeNull();
     // First import of the overlay (MUI) is slow when the suite runs beside
-    // others; 5 s timed out under a parallel run.
-  }, 30000);
+    // others; 5 s timed out under a parallel run.  Measured 2026-09-27 on
+    // one desktop, identical code, back to back: 14 s, 15 s, 42 s, 52 s,
+    // 54 s.  30 s sat inside that spread and failed about half the runs,
+    // so the cap sits well above it: a timeout here means a hang, not MUI.
+  }, 120000);
 });

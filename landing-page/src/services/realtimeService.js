@@ -39,9 +39,11 @@ const DEDUP_MAX_SIZE = 200; // max tracked message IDs
  * fell through to printing raw JSON.  Owner ruling 2026-09-26: this overlay
  * IS Liquid UI on the desktop.
  *
- * The envelope's msg_id stays the dedup key, and its user_id rides along;
- * the component's own agent_id (an approval card names the agent it asks
- * about) wins over the pushing agent's.
+ * The envelope's msg_id stays the dedup key.  For agent_id and user_id the
+ * component's own value wins and the envelope's only fills a gap: an
+ * approval card names the agent it asks about, and a card can name the
+ * person it concerns (the camera consent card's user_id is what AgentOverlay
+ * hands NUNBA_CAMERA_CONSENT).
  */
 export function unwrapAgentUiEnvelope(payload) {
   if (!payload || payload.type !== 'agent.ui.update') return null;
@@ -52,7 +54,7 @@ export function unwrapAgentUiEnvelope(payload) {
   return {
     ...card,
     agent_id: card.agent_id != null ? card.agent_id : payload.agent_id,
-    user_id: payload.user_id,
+    user_id: card.user_id != null ? card.user_id : payload.user_id,
     msg_id: payload.msg_id != null ? payload.msg_id : card.msg_id,
   };
 }
