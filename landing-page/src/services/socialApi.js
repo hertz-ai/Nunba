@@ -281,7 +281,7 @@ export const bleEncounterApi = {
       face_visible: !!face_visible,
       avatar_style: avatar_style || 'studio_ghibli',
     };
-    body.vibe_tags = vibe_tags || [];
+    if (vibe_tags != null) body.vibe_tags = vibe_tags;
     return socialApi.post('/encounter/discoverable', body);
   },
 
