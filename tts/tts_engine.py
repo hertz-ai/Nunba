@@ -777,6 +777,23 @@ for _alias in _CPU_FALLBACK_CATALOG_IDS:
 _CATALOG_TO_BACKEND.setdefault('chatterbox_multilingual', BACKEND_CHATTERBOX_ML)
 
 
+def catalog_entry_backend(catalog_entry_id: str) -> str:
+    """The Nunba backend name for a TTS catalog entry id: 'tts-f5-tts' ->
+    'f5', 'tts-pocket-tts' -> Piper, an id Nunba has no constant for ->
+    its HARTOS engine name ('tts-foo-bar' -> 'foo_bar').
+
+    ONE rule for every catalog -> backend boundary in Nunba (the catalog
+    ladder, the capability map, TTSLoader).  The id -> engine-name step is
+    HARTOS's own public tts_router.catalog_id_to_engine_id, so Nunba
+    and HARTOS name the same engine for the same id; a local
+    ``replace('tts-', '', 1)`` kept the dashes and disagreed with it on
+    every multi-word id Nunba does not map.
+    """
+    from integrations.channels.media.tts_router import catalog_id_to_engine_id
+    key = catalog_id_to_engine_id(catalog_entry_id)
+    return _CATALOG_TO_BACKEND.get(key, key)
+
+
 def _is_engine_backend(backend) -> bool:
     """True iff ``backend`` is a name TTSEngine._create_backend can build:
     Piper, or a Nunba backend constant in _BACKEND_TO_REGISTRY_KEY.
@@ -840,9 +857,7 @@ def _get_engine_capabilities(backend=None) -> dict:
             # Return the full dict, keyed by Nunba backend constants
             result = {}
             for entry in catalog.list_by_type(ModelType.TTS):
-                # Strip 'tts-' prefix to get the catalog-side id
-                catalog_id = entry.id.replace('tts-', '', 1)
-                be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
+                be = catalog_entry_backend(entry.id)
                 result[be] = _entry_to_legacy_caps(entry)
             if result:
                 return result
@@ -980,8 +995,7 @@ def _get_lang_preference(language: str) -> list[str]:
                     supporting.sort(key=lambda x: (x[0], x[1]))
                     result = []
                     for _, _, entry in supporting:
-                        catalog_id = entry.id.replace('tts-', '', 1)
-                        be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
+                        be = catalog_entry_backend(entry.id)
                         if be not in result:
                             result.append(be)
                     if result:
