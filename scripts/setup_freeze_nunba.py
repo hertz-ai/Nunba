@@ -799,6 +799,9 @@ build_exe_options = {
         "hartos.crossbar_server",
         "hartos.hartos_speech",
         "hartos.hartos_speech_stitch",
+        # Imported lazily inside hartos.ai_key_vault.reads_from_env (the env
+        # names a vault value may be delivered to), so tracing never sees it.
+        "hartos.env_secrets_manifest",
     ],
     "include_msvcr": True,
     "bin_includes": ["zlib.dll"],

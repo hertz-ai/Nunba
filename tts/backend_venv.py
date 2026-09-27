@@ -82,8 +82,13 @@ def _reset_cache_for_tests() -> None:
     between cases that mutate ``NUNBA_VENV_ROOT_OVERRIDE`` — the
     forwarding here keeps them green without rewriting every call site.
     """
-    from core.venv_paths import reset_venv_root_cache
-    reset_venv_root_cache()
+    try:
+        from core.venv_paths import reset_venv_root_cache as _reset
+    except ImportError:
+        # HARTOS before 09c1df788 (an install may carry one): the same
+        # function under its old name, which HARTOS keeps as an alias.
+        from core.venv_paths import _reset_cache_for_tests as _reset
+    _reset()
 
 
 def venv_root() -> Path:
@@ -112,8 +117,12 @@ def _validate_backend_name(backend: str) -> None:
     bare name and the public API in PHASE6_RESULTS.md documents it
     here.
     """
-    from core.venv_paths import validate_backend_name
-    validate_backend_name(backend)
+    try:
+        from core.venv_paths import validate_backend_name as _validate
+    except ImportError:
+        # HARTOS before 09c1df788: the old name, kept by HARTOS as an alias.
+        from core.venv_paths import _validate_backend_name as _validate
+    _validate(backend)
 
 
 # ── Venv python exe resolution ───────────────────────────────────────
@@ -165,7 +174,7 @@ def _resolve_venv_creator_python() -> str:
     the worker will run); this wrapper only refuses loudly when a frozen
     build has no bundled interpreter.
     """
-    from core.venv_paths import python_embed_dir, venv_creator_python
+    from core.venv_paths import venv_creator_python
     creator = venv_creator_python()
     if creator:
         return creator
@@ -173,10 +182,16 @@ def _resolve_venv_creator_python() -> str:
     # than silently invoking Nunba.exe again — that path produces the
     # misleading "duplicate instance" error.  The directory named is the
     # one venv_creator_python searched (python_embed_dir: sys.executable
-    # resolved), not a second computation of it.
+    # resolved); a HARTOS before 09c1df788 has no python_embed_dir, so
+    # the same resolution is spelled out here for it.
+    try:
+        from core.venv_paths import python_embed_dir
+        searched = python_embed_dir()
+    except ImportError:
+        searched = str(Path(sys.executable).resolve().parent / "python-embed")
     raise RuntimeError(
         f"frozen mode: could not find bundled python interpreter "
-        f"under {python_embed_dir()}; refusing to spawn "
+        f"under {searched}; refusing to spawn "
         f"{sys.executable!r} which would re-launch the app and "
         f"trigger the duplicate-instance guard."
     )
@@ -190,7 +205,12 @@ def _foreign_venv_reason(backend: str) -> str | None:
     Measured 2026-09-25: miniconda-3.11 venvs from a source run were
     adopted by the installed 3.12 app and died with "bad magic number in
     'encodings'".  A HARTOS tree too old to have the rule answers None
-    (logged), which is the behaviour before it existed.
+    (logged), which is the behaviour before it existed.  Nunba runs
+    against whatever HARTOS is installed or cloned, so every name this
+    module takes from core.venv_paths that an older tree lacks has a
+    fallback (here; _validate_backend_name; _reset_cache_for_tests; the
+    python-embed dir in _resolve_venv_creator_python), and
+    tests/test_backend_venv_foreign_interpreter.py removes all of them.
     """
     try:
         from core.venv_paths import venv_mismatch

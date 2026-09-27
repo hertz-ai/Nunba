@@ -48,8 +48,14 @@ jest.mock('../../../../../services/socialApi', () => {
       },
     }),
   );
+  const getPersona = jest.fn(() =>
+    Promise.resolve({data: {success: true, data: {interests_discoverable: false}}}),
+  );
+  const setPersona = jest.fn(() =>
+    Promise.resolve({data: {success: true, data: {interests_discoverable: true}}}),
+  );
   return {
-    bleEncounterApi: {getDiscoverable, setDiscoverable},
+    bleEncounterApi: {getDiscoverable, setDiscoverable, getPersona, setPersona},
   };
 });
 
@@ -97,7 +103,32 @@ beforeEach(() => {
       },
     }),
   );
+  bleEncounterApi.getPersona.mockImplementation(() =>
+    Promise.resolve({data: {success: true, data: {interests_discoverable: false}}}),
+  );
+  bleEncounterApi.setPersona.mockImplementation(() =>
+    Promise.resolve({data: {success: true, data: {interests_discoverable: true}}}),
+  );
 });
+
+async function toggleOn() {
+  fireEvent.click(screen.getByTestId('age-claim-checkbox'));
+  const switchInput = screen.getByTestId('discoverable-switch');
+  await waitFor(() => {
+    expect(switchInput).not.toBeDisabled();
+  });
+  fireEvent.click(switchInput);
+  await waitFor(() => {
+    expect(bleEncounterApi.setDiscoverable).toHaveBeenCalledTimes(1);
+  });
+  return bleEncounterApi.setDiscoverable.mock.calls[0][0];
+}
+
+function loadedWith(data) {
+  bleEncounterApi.getDiscoverable.mockImplementationOnce(() =>
+    Promise.resolve({data: {success: true, data: {enabled: false, ...data}}}),
+  );
+}
 
 describe('DiscoverableTogglePanel', () => {
   test('a) mount fetches discoverable state once', async () => {
@@ -154,7 +185,105 @@ describe('DiscoverableTogglePanel', () => {
     expect(callArgs.enabled).toBe(true);
     expect(callArgs.age_claim_18).toBe(true);
     expect(callArgs.vibe_tags).toEqual(['hiking', 'coffee']);
-    expect(callArgs.avatar_style).toBe('studio_ghibli');
+    // Not edited here, so left to the server's stored value.
+    expect(callArgs.avatar_style).toBeUndefined();
+    expect(callArgs.face_visible).toBeUndefined();
+  });
+
+  test('c4) Backspace in the empty tag input removes the last tag and sends the edit', async () => {
+    loadedWith({vibe_tags: ['chess', 'jazz']});
+    renderWithProviders(<DiscoverableTogglePanel />);
+    await screen.findByTestId('vibe-tag-jazz');
+    fireEvent.keyDown(screen.getByTestId('vibe-input'), {key: 'Backspace'});
+    await waitFor(() => {
+      expect(screen.queryByTestId('vibe-tag-jazz')).toBeNull();
+    });
+    const args = await toggleOn();
+    expect(args.vibe_tags).toEqual(['chess']);
+  });
+
+  test('c5) a toggle keeps stored face_visible / avatar_style unless edited here', async () => {
+    loadedWith({face_visible: true, avatar_style: 'pixel'});
+    renderWithProviders(<DiscoverableTogglePanel />);
+    await waitFor(() => {
+      expect(screen.getByTestId('face-visible-switch')).toBeChecked();
+    });
+    const args = await toggleOn();
+    expect(args.face_visible).toBeUndefined();
+    expect(args.avatar_style).toBeUndefined();
+  });
+
+  test('c6) an edited face_visible is sent', async () => {
+    loadedWith({face_visible: true});
+    renderWithProviders(<DiscoverableTogglePanel />);
+    const face = screen.getByTestId('face-visible-switch');
+    await waitFor(() => {
+      expect(face).toBeChecked();
+    });
+    fireEvent.click(face);
+    const args = await toggleOn();
+    expect(args.face_visible).toBe(false);
+  });
+
+  describe('share my interests switch', () => {
+    test('s1) defaults OFF, and stays off when the card cannot be loaded', async () => {
+      bleEncounterApi.getPersona.mockImplementationOnce(() =>
+        Promise.reject(new Error('offline')),
+      );
+      renderWithProviders(<DiscoverableTogglePanel />);
+      const share = screen.getByTestId('share-interests-switch');
+      expect(share).not.toBeChecked();
+      await waitFor(() => {
+        expect(bleEncounterApi.getPersona).toHaveBeenCalled();
+      });
+      expect(share).not.toBeChecked();
+      expect(bleEncounterApi.setPersona).not.toHaveBeenCalled();
+    });
+
+    test('s2) shows the saved yes', async () => {
+      bleEncounterApi.getPersona.mockImplementationOnce(() =>
+        Promise.resolve({data: {success: true, data: {interests_discoverable: true}}}),
+      );
+      renderWithProviders(<DiscoverableTogglePanel />);
+      await waitFor(() => {
+        expect(screen.getByTestId('share-interests-switch')).toBeChecked();
+      });
+    });
+
+    test('s3) turning it on saves only interests_discoverable on the card', async () => {
+      renderWithProviders(<DiscoverableTogglePanel />);
+      const share = screen.getByTestId('share-interests-switch');
+      await waitFor(() => {
+        expect(share).not.toBeDisabled();
+      });
+      fireEvent.click(share);
+      await waitFor(() => {
+        expect(bleEncounterApi.setPersona).toHaveBeenCalledWith({
+          interests_discoverable: true,
+        });
+      });
+      await waitFor(() => {
+        expect(share).toBeChecked();
+      });
+      // Not a discoverable toggle: spends no toggle.
+      expect(bleEncounterApi.setDiscoverable).not.toHaveBeenCalled();
+    });
+
+    test('s4) a failed save puts the switch back and says so', async () => {
+      bleEncounterApi.setPersona.mockImplementationOnce(() =>
+        Promise.reject(new Error('500')),
+      );
+      renderWithProviders(<DiscoverableTogglePanel />);
+      const share = screen.getByTestId('share-interests-switch');
+      await waitFor(() => {
+        expect(share).not.toBeDisabled();
+      });
+      fireEvent.click(share);
+      await waitFor(() => {
+        expect(screen.getByTestId('discoverable-snackbar')).toBeInTheDocument();
+      });
+      expect(share).not.toBeChecked();
+    });
   });
 
   test.each([

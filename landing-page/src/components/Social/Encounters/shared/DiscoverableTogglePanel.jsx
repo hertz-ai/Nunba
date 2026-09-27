@@ -152,11 +152,21 @@ export default function DiscoverableTogglePanel() {
   // After a 429, lock the Switch until next mount per task spec.
   const [lockedFor429, setLockedFor429] = useState(false);
 
-  // True once the user adds or removes a tag here.  The persona card also
-  // writes vibe_tags, so a toggle sends them only when they were edited in
-  // this panel; otherwise the server keeps the saved ones (a failed fetch
-  // or a stale copy must not overwrite them).
-  const tagsEditedRef = useRef(false);
+  // The fields the user changed in this panel since the last save.  A
+  // toggle sends vibe_tags / face_visible / avatar_style only when edited
+  // here; otherwise the server keeps the stored ones (a failed fetch's
+  // defaults or a stale copy must not overwrite them; the persona card
+  // also writes vibe_tags).
+  const editedRef = useRef(new Set());
+  const markEdited = (field) => editedRef.current.add(field);
+  const ifEdited = (field, value) =>
+    editedRef.current.has(field) ? value : undefined;
+
+  // "Share my interests with people nearby" = persona.interests_discoverable.
+  // Default OFF; shown as saved on the card, never assumed.
+  const [shareInterests, setShareInterests] = useState(false);
+  const [shareLoading, setShareLoading] = useState(true);
+  const [shareSaving, setShareSaving] = useState(false);
 
   const mountedRef = useRef(true);
   useEffect(() => () => {
@@ -189,6 +199,41 @@ export default function DiscoverableTogglePanel() {
     fetchState();
   }, [fetchState]);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await bleEncounterApi.getPersona();
+        const card = res?.data?.data || res?.data || {};
+        if (mountedRef.current) {
+          setShareInterests(card.interests_discoverable === true);
+        }
+      } catch {
+        /* stays OFF: a card we could not read is not a yes */
+      } finally {
+        if (mountedRef.current) setShareLoading(false);
+      }
+    })();
+  }, []);
+
+  const handleShareInterests = async (event) => {
+    const next = !!event.target.checked;
+    setShareInterests(next);
+    setShareSaving(true);
+    try {
+      await bleEncounterApi.setPersona({interests_discoverable: next});
+    } catch {
+      if (mountedRef.current) {
+        setShareInterests(!next);
+        setSnack({
+          severity: 'error',
+          message: 'Could not save your sharing choice. Please try again.',
+        });
+      }
+    } finally {
+      if (mountedRef.current) setShareSaving(false);
+    }
+  };
+
   const handleToggle = async (event) => {
     const next = !!event.target.checked;
     if (next && !ageClaim18) {
@@ -203,11 +248,11 @@ export default function DiscoverableTogglePanel() {
         age_claim_18: ageClaim18,
         // Server clamps; we send undefined to fall back to default TTL.
         ttl_sec: undefined,
-        face_visible: state.face_visible,
-        avatar_style: state.avatar_style,
-        vibe_tags: tagsEditedRef.current ? state.vibe_tags : undefined,
+        face_visible: ifEdited('face_visible', state.face_visible),
+        avatar_style: ifEdited('avatar_style', state.avatar_style),
+        vibe_tags: ifEdited('vibe_tags', state.vibe_tags),
       });
-      tagsEditedRef.current = false; // saved; the refetch below reloads them
+      editedRef.current = new Set(); // saved; the refetch below reloads them
       const payload = res?.data?.data || res?.data || {};
       // POST returns {enabled, expires_at, remaining_sec} — re-fetch
       // for full state (incl. toggle_count_24h).
@@ -249,13 +294,13 @@ export default function DiscoverableTogglePanel() {
       setVibeInput('');
       return;
     }
-    tagsEditedRef.current = true;
+    markEdited('vibe_tags');
     setState((prev) => ({...prev, vibe_tags: [...prev.vibe_tags, tag]}));
     setVibeInput('');
   };
 
   const handleRemoveVibeTag = (tag) => {
-    tagsEditedRef.current = true;
+    markEdited('vibe_tags');
     setState((prev) => ({
       ...prev,
       vibe_tags: prev.vibe_tags.filter((t) => t !== tag),
@@ -268,7 +313,7 @@ export default function DiscoverableTogglePanel() {
       handleAddVibeTag(vibeInput);
     } else if (event.key === 'Backspace' && !vibeInput) {
       // Pop last tag on Backspace from empty input.
-      if (state.vibe_tags.length) tagsEditedRef.current = true;
+      if (state.vibe_tags.length) markEdited('vibe_tags');
       setState((prev) => ({
         ...prev,
         vibe_tags: prev.vibe_tags.slice(0, -1),
@@ -419,6 +464,28 @@ export default function DiscoverableTogglePanel() {
               sx={{minWidth: 120, flex: 1}}
             />
           </Box>
+          <FormControlLabel
+            sx={{mt: 0.5}}
+            control={
+              <Switch
+                checked={shareInterests}
+                onChange={handleShareInterests}
+                disabled={shareLoading || shareSaving}
+                inputProps={{
+                  'aria-label': 'Share my interests with people nearby',
+                  'data-testid': 'share-interests-switch',
+                }}
+              />
+            }
+            label="Share my interests with people nearby"
+          />
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{display: 'block'}}
+          >
+            Off: people nearby see your avatar but not your vibe tags.
+          </Typography>
         </Box>
 
         {/* ---- Face visible + avatar style ---- */}
@@ -435,12 +502,13 @@ export default function DiscoverableTogglePanel() {
             control={
               <Switch
                 checked={!!state.face_visible}
-                onChange={(e) =>
+                onChange={(e) => {
+                  markEdited('face_visible');
                   setState((prev) => ({
                     ...prev,
                     face_visible: e.target.checked,
-                  }))
-                }
+                  }));
+                }}
                 inputProps={{
                   'aria-label': 'Face visible on avatar',
                   'data-testid': 'face-visible-switch',
@@ -455,12 +523,13 @@ export default function DiscoverableTogglePanel() {
               labelId="avatar-style-label"
               label="Avatar style"
               value={state.avatar_style}
-              onChange={(e) =>
+              onChange={(e) => {
+                markEdited('avatar_style');
                 setState((prev) => ({
                   ...prev,
                   avatar_style: e.target.value,
-                }))
-              }
+                }));
+              }}
               inputProps={{
                 'aria-label': 'Avatar style',
                 'data-testid': 'avatar-style-select',

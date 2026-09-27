@@ -4166,6 +4166,19 @@ def _is_owner_credential(key_name):
         return False
 
 
+def _is_node_secret(key_name):
+    """True for the node's own secrets (HARTOS is_node_secret:
+    SOCIAL_SECRET_KEY, SOCIAL_DB_KEY, DATABASE_URL, REDIS_URL).  Only the
+    node's own vault preload sets them; the consent card and this route never
+    do, held or not.  Without HARTOS nothing reads them, so nothing is
+    refused."""
+    try:
+        from hartos.ai_key_vault import is_node_secret
+    except Exception:
+        return False
+    return bool(is_node_secret(key_name))
+
+
 def vault_store():
     """POST /api/vault/store — Store a secret in the vault.
     Body: { key_type: 'tool_key'|'channel_secret', key_name: str, value: str, channel_type?: str }
@@ -4180,6 +4193,11 @@ def vault_store():
 
         if not key_name or not value:
             return jsonify({'success': False, 'error': 'key_name and value are required'}), 400
+
+        if key_type != 'channel_secret' and _is_node_secret(key_name):
+            return jsonify({'success': False, 'error': (
+                f"{key_name} is this computer's own setting and can't be "
+                f"entered here.")}), 400
 
         vault = AIKeyVault.get_instance()
 

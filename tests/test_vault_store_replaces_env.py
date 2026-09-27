@@ -227,3 +227,25 @@ def test_the_degraded_rule_warns_once(vault_route, monkeypatch, caplog):
     rule = [r for r in caplog.records if 'env-name rule' in r.getMessage()]
     assert len(rule) == 1
     assert 'NEWS_API_KEY' not in os.environ
+
+
+# ── Node secrets never come from the card or this route ────────────────
+
+@pytest.mark.parametrize('name', ['SOCIAL_SECRET_KEY', 'SOCIAL_DB_KEY'])
+def test_a_node_secret_is_refused_and_never_stored(vault_route, monkeypatch, name):
+    """SOCIAL_SECRET_KEY signs every JWT and SOCIAL_DB_KEY opens the node's
+    database: only the node's own vault preload sets them (HARTOS
+    is_node_secret).  The route refuses them even when the process does not
+    hold them yet, and stores nothing anywhere."""
+    import hartos.ai_key_vault as hartos_vault
+    monkeypatch.setattr(hartos_vault, 'is_node_secret',
+                        lambda n: n in ('SOCIAL_SECRET_KEY', 'SOCIAL_DB_KEY'), raising=False)
+    monkeypatch.delenv(name, raising=False)
+    resp = vault_route('agent-supplied', key_name=name)
+    resp, status = (resp if isinstance(resp, tuple) else (resp, 200))
+    assert status == 400
+    assert resp.get_json()['success'] is False
+    assert name not in os.environ
+    assert name not in vault_route.hartos.held
+    from desktop.ai_key_vault import AIKeyVault
+    assert AIKeyVault.get_instance().get_tool_key(name) is None

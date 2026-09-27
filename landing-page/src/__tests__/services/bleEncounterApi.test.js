@@ -95,12 +95,12 @@ describe('bleEncounterApi.setDiscoverable', () => {
     );
   });
 
-  it('coerces falsy enabled/age_claim_18/face_visible to false', async () => {
+  it('coerces falsy enabled/age_claim_18 to false (consent is never implied)', async () => {
     await bleEncounterApi.setDiscoverable({
       enabled: undefined,
       age_claim_18: 0,
       ttl_sec: 120,
-      face_visible: null,
+      face_visible: 0,
       avatar_style: 'studio_ghibli',
       vibe_tags: [],
     });
@@ -117,19 +117,23 @@ describe('bleEncounterApi.setDiscoverable', () => {
     );
   });
 
-  it('defaults avatar_style to studio_ghibli when missing/empty', async () => {
+  // The server keeps the stored face_visible / avatar_style when a toggle
+  // omits them (like vibe_tags), so "not given" must not go on the wire as
+  // false / 'studio_ghibli' (that reset them on every toggle).
+  it.each([
+    ['undefined', {face_visible: undefined, avatar_style: undefined}],
+    ['null', {face_visible: null, avatar_style: null}],
+    ['absent', {}],
+  ])('omits face_visible and avatar_style when %s', async (_label, extra) => {
     await bleEncounterApi.setDiscoverable({
       enabled: true,
       age_claim_18: true,
-      ttl_sec: 1800,
-      face_visible: false,
-      avatar_style: undefined,
-      vibe_tags: ['music'],
+      ...extra,
     });
-    expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-      '/encounter/discoverable',
-      expect.objectContaining({avatar_style: 'studio_ghibli'})
-    );
+    const body = mockAxiosInstance.post.mock.calls[0][1];
+    expect(body).not.toHaveProperty('face_visible');
+    expect(body).not.toHaveProperty('avatar_style');
+    expect(body).toMatchObject({enabled: true, age_claim_18: true});
   });
 
   // vibe_tags is also written by the persona card (PUT /encounter/persona).
@@ -178,6 +182,21 @@ describe('bleEncounterApi.setDiscoverable', () => {
       '/encounter/discoverable',
       expect.objectContaining({ttl_sec: undefined})
     );
+  });
+});
+
+// ── persona card: getPersona / setPersona ─────────────────────────────────
+describe('bleEncounterApi persona card', () => {
+  it('getPersona calls GET /encounter/persona', async () => {
+    await bleEncounterApi.getPersona();
+    expect(mockAxiosInstance.get).toHaveBeenCalledWith('/encounter/persona');
+  });
+
+  it('setPersona PUTs only the fields it is given', async () => {
+    await bleEncounterApi.setPersona({interests_discoverable: true});
+    expect(mockAxiosInstance.put).toHaveBeenCalledWith('/encounter/persona', {
+      interests_discoverable: true,
+    });
   });
 });
 

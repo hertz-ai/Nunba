@@ -262,10 +262,12 @@ export const encountersApi = {
 export const bleEncounterApi = {
   // J200, J201 — discoverable consent + state
   getDiscoverable: () => socialApi.get('/encounter/discoverable'),
-  // vibe_tags is also written by the persona card (PUT /encounter/persona),
-  // and the server keeps the saved tags when a toggle omits them.  So the
-  // tags go on the wire only when the caller passes them (the user edited
-  // them); undefined / null is "not given", never [] (which would wipe them).
+  // The server keeps the stored vibe_tags, face_visible and avatar_style
+  // when a toggle omits them (vibe_tags is also written by the persona
+  // card).  So each goes on the wire only when the caller passes it (the
+  // user edited it); undefined / null is "not given", never [] / false /
+  // the default style (which reset them).  enabled and age_claim_18 are
+  // always sent: consent is never implied.
   setDiscoverable: ({
     enabled,
     age_claim_18,
@@ -278,12 +280,17 @@ export const bleEncounterApi = {
       enabled: !!enabled,
       age_claim_18: !!age_claim_18,
       ttl_sec: ttl_sec || undefined,
-      face_visible: !!face_visible,
-      avatar_style: avatar_style || 'studio_ghibli',
     };
+    if (face_visible != null) body.face_visible = !!face_visible;
+    if (avatar_style != null) body.avatar_style = avatar_style;
     if (vibe_tags != null) body.vibe_tags = vibe_tags;
     return socialApi.post('/encounter/discoverable', body);
   },
+
+  // Persona card (HARTOS GET/PUT /encounter/persona): bio, recognize_me,
+  // vibe_tags, interests_discoverable.  PUT changes only the fields given.
+  getPersona: () => socialApi.get('/encounter/persona'),
+  setPersona: (fields) => socialApi.put('/encounter/persona', fields),
 
   // J200 — phone registers current rotating pubkey
   registerPubkey: (pubkey) =>

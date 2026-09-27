@@ -206,18 +206,69 @@ class TestReviewFollowUps:
 
     def test_a_hartos_without_the_rule_adopts_the_venv_as_before(
             self, root, frozen, venv_module, monkeypatch, caplog):
-        # An older HARTOS tree (no core.venv_paths.venv_mismatch): the venv
-        # is used as it was before the rule existed, and the log says the
-        # builder was not checked.
+        # An older HARTOS tree: none of the names added since
+        # (venv_mismatch; the public validate_backend_name,
+        # reset_venv_root_cache, python_embed_dir of 09c1df788).  Installs
+        # ship one, and scripts/build.py clones whatever HARTOS is latest.
+        # The venv is used as it was before the rule existed, the log says
+        # the builder was not checked, and nothing raises ImportError
+        # (tts.package_installer calls is_venv_healthy at import).
         vpath = backend_venv.venv_path(BACKEND)
         py = _lay_down_venv(vpath, str(root / "miniconda3"), "3.11.4")
-        monkeypatch.delattr(venv_paths, "venv_mismatch")
+        old = _old_hartos(monkeypatch)
         exposed = []
-        monkeypatch.setattr(venv_paths, "ensure_parent_packages_visible",
+        monkeypatch.setattr(old, "ensure_parent_packages_visible",
                             lambda b: exposed.append(b))
         with caplog.at_level("WARNING", logger=backend_venv.logger.name):
             assert backend_venv.ensure_venv(BACKEND) == py
+            assert backend_venv.is_venv_healthy(BACKEND) is True
+            backend_venv._reset_cache_for_tests()
+            with pytest.raises(ValueError):
+                backend_venv._validate_backend_name("../evil")
         assert venv_module == [], "an old HARTOS must not trigger a rebuild"
         assert exposed == [BACKEND]
         assert any("venv_mismatch" in r.getMessage() and BACKEND in r.getMessage()
                    for r in caplog.records)
+
+    def test_a_hartos_without_python_embed_dir_still_names_the_dir(
+            self, root, frozen, venv_module, monkeypatch):
+        os.remove(frozen / "python.exe")
+        _old_hartos(monkeypatch)
+        # Reached through a launcher symlink: the dir named is beside the
+        # resolved binary, as HARTOS's python_embed_dir would say.
+        link_dir = root / "launcher"
+        link_dir.mkdir()
+        try:
+            os.symlink(Path(sys.executable), link_dir / "Nunba.exe")
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"no symlinks here: {exc}")
+        monkeypatch.setattr(sys, "executable", str(link_dir / "Nunba.exe"))
+        with pytest.raises(RuntimeError) as err:
+            backend_venv.ensure_venv(BACKEND)
+        assert str(Path(os.path.realpath(frozen))) in str(err.value)
+        assert str(link_dir / "python-embed") not in str(err.value)
+        assert venv_module == []
+
+
+# Names core.venv_paths gained after the oldest HARTOS an install may carry.
+OLD_HARTOS_LACKS = ("venv_mismatch", "validate_backend_name",
+                    "reset_venv_root_cache", "python_embed_dir")
+
+
+def _old_hartos(monkeypatch):
+    """Stand an older core.venv_paths in for the real one: the same module
+    minus OLD_HARTOS_LACKS, as `from core.venv_paths import X` sees it.
+    (Deleting the names from the real module would also break the real
+    functions that call them, which an old tree's functions do not.)"""
+    import types
+    old = types.ModuleType("core.venv_paths")
+    for key, value in vars(venv_paths).items():
+        if key not in OLD_HARTOS_LACKS:
+            setattr(old, key, value)
+    monkeypatch.setitem(sys.modules, "core.venv_paths", old)
+    import core
+    monkeypatch.setattr(core, "venv_paths", old, raising=False)
+    for name in OLD_HARTOS_LACKS:
+        with pytest.raises(ImportError):
+            exec(f"from core.venv_paths import {name}", {})
+    return old

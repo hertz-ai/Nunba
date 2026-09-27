@@ -266,9 +266,6 @@ def test_venv_probe_failure_writes_diagnostic_err_file(
     assert "ModuleNotFoundError" in content
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
-
 
 def _venv_engine(monkeypatch, tmp_path, healthy=False):
     from tts import _torch_probe as _tp
@@ -308,3 +305,7 @@ def test_a_missing_venv_still_says_it_does_not_exist(monkeypatch, tmp_path,
     said = ' '.join(r.getMessage() for r in caplog.records)
     assert 'does not exist' in said
     assert 'built by another interpreter' not in said
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])
