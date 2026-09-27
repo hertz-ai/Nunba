@@ -16,6 +16,7 @@
  * component, no risk of color drift.
  */
 import { SOCIAL_API_URL } from '../../config/apiBase';
+import { steerError } from '../../constants/steerOutcome';
 import { dashboardApi } from '../../services/socialApi';
 
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
@@ -273,16 +274,24 @@ function SteeringControls({ agentId, currentStatus, onAction }) {
   const canCancel = currentStatus !== 'archived' && currentStatus !== 'completed';
 
   // dashboardApi.steer: the one steering client, carrying the signed-in
-  // token (HARTOS lets only the goal's owner or an admin steer it).
+  // token (HARTOS lets only the goal's owner or an admin steer it).  A
+  // refusal is shown here, worded as its outcome (steerError); a silent
+  // catch left a 403 looking like a button that did nothing.
+  const [refused, setRefused] = useState(null);
   const fire = async (verb) => {
+    setRefused(null);
     try {
       const d = await dashboardApi.steer(agentId, verb,
         { reason: `operator-${verb} via drawer` });
       if (d?.success) onAction && onAction(verb);
-    } catch (_) { /* drawer poll will surface the new state */ }
+      else setRefused(steerError(d));
+    } catch (err) {
+      setRefused(steerError(err));
+    }
   };
 
   return (
+    <>
     <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
       <Button size="small" variant="outlined" startIcon={<PauseIcon />}
         disabled={!canPause}
@@ -303,23 +312,35 @@ function SteeringControls({ agentId, currentStatus, onAction }) {
         Cancel
       </Button>
     </Stack>
+    {refused && (
+      <Typography variant="caption" role="alert"
+        sx={{ display: 'block', mt: 0.5, color: '#ff9800' }}>
+        {refused}
+      </Typography>
+    )}
+    </>
   );
 }
 
 function InjectInstruction({ agentId, onSent }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [refused, setRefused] = useState(null);
   const send = async () => {
     if (!text.trim()) return;
     setSending(true);
+    setRefused(null);
     try {
       const d = await dashboardApi.steer(agentId, 'inject', { instruction: text });
       if (d?.success) {
         setText('');
         onSent && onSent();
+      } else {
+        setRefused(steerError(d));
       }
-    } catch (_) {
-      /* refused or offline: the text stays for another try */
+    } catch (err) {
+      // Refused or offline: say which, and keep the text for another try.
+      setRefused(steerError(err));
     } finally {
       setSending(false);
     }
@@ -348,6 +369,12 @@ function InjectInstruction({ agentId, onSent }) {
           Send
         </Button>
       </Stack>
+      {refused && (
+        <Typography variant="caption" role="alert"
+          sx={{ display: 'block', mt: 0.5, color: '#ff9800' }}>
+          {refused}
+        </Typography>
+      )}
     </Box>
   );
 }

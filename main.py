@@ -3758,14 +3758,14 @@ def admin_models_manifest_import():
                 # test_client hits the live route — preserves every
                 # gate (trusted-org, safetensors, homoglyph, file-probe,
                 # capability seeding, load probe, optional challenge).
+                # No forwarded address: this route already refused any
+                # caller that is not this machine (_is_local_request above),
+                # and the test client's own socket is loopback.  Forwarding
+                # a claimed address here could only turn a failed lookup
+                # into a loopback claim (review of the F3 consolidation).
                 r = client.post(
                     '/api/admin/models/hub/install',
                     json=payload,
-                    headers={
-                        # Preserve the local-only gate by forwarding
-                        # the requesting client's remote addr context.
-                        'X-Forwarded-For': request.remote_addr or '127.0.0.1',
-                    },
                 )
                 if r.status_code == 200:
                     succeeded.append(hf_id)

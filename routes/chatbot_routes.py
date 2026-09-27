@@ -3860,7 +3860,8 @@ def _get_user_id_from_auth():
             logger.warning(f"Token resolution failed: {e}")
             return None
     # Fallback: allow user_id query param ONLY for local requests
-    if request.remote_addr in ('127.0.0.1', '::1', 'localhost'):
+    from routes.auth import _is_local_request
+    if _is_local_request():
         return request.args.get('user_id')
     return None
 
@@ -4153,9 +4154,9 @@ def _is_owner_credential(key_name):
     them (a granted 'credential' consent row, scope 'secret:NAME', or a value
     stored through the vault this process).  The consent card stores a
     re-entered value here before it grants again, so the earlier grant is
-    what names it.  A first entry is not on the list yet; export_to_env sets
-    it, since a name nothing holds has nothing to replace.  A lookup that
-    fails names nothing."""
+    what names it.  A first entry is not on the list yet; export_to_env
+    handles it (the environment for a name the process reads, else HARTOS's
+    vault).  A lookup that fails names nothing."""
     try:
         from hartos.ai_key_vault import get_ai_key_vault
         return key_name in get_ai_key_vault().owner_credential_names()
@@ -4170,7 +4171,7 @@ def vault_store():
     Body: { key_type: 'tool_key'|'channel_secret', key_name: str, value: str, channel_type?: str }
     """
     try:
-        from desktop.ai_key_vault import AIKeyVault
+        from desktop.ai_key_vault import AIKeyVault, reads_from_env
         data = request.get_json() or {}
         key_type = data.get('key_type', 'tool_key')
         key_name = data.get('key_name', '')
@@ -4196,11 +4197,13 @@ def vault_store():
             # the process value is unset or still the one this vault stored:
             # being an owner credential is not enough, since a card for PATH
             # would make PATH one (review of 670aed3f).
-            if (_is_owner_credential(key_name)
+            if (reads_from_env(key_name) and _is_owner_credential(key_name)
                     and os.environ.get(key_name) in (None, _prev)):
                 os.environ[key_name] = value
 
-        # Export to env so LangChain tools can use it immediately
+        # A name the process reads from its environment goes there (only if
+        # unset); any other value is held by HARTOS's vault, a re-entered one
+        # replacing what it held, and reaches a tool through its alias.
         vault.export_to_env()
 
         return jsonify({'success': True, 'key_name': key_name, 'stored': True})

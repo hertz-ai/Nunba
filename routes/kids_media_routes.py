@@ -130,7 +130,8 @@ def _get_user_id_from_request():
         except Exception as e:
             logger.debug(f"JWT decode in media routes: {e}")
     # Fallback: allow local requests without auth (dev mode)
-    if request.remote_addr in ('127.0.0.1', '::1', 'localhost'):
+    from routes.auth import _is_local_request
+    if _is_local_request():
         return request.args.get('user_id')
     return None
 

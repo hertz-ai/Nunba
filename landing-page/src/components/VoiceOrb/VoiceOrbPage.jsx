@@ -1,9 +1,10 @@
 
 import { CHAT_ACTION_THINKING, CHAT_BUBBLE_PRIORITY } from '../../constants/chatBubble';
 import { CONSENT_ANSWER_TYPES, answerCoversAsk } from '../../constants/consentAsks';
+import { steerError } from '../../constants/steerOutcome';
 import useComputerActivity from '../../hooks/useComputerActivity';
 import realtimeService from '../../services/realtimeService';
-import { dashboardApi, steerError } from '../../services/socialApi';
+import { dashboardApi } from '../../services/socialApi';
 import { COMPANION_CARD_RADIUS, COMPANION_GLASS_SURFACE } from '../../theme/hartGlass';
 import { ConsentPromptOverlay } from '../AgentOverlay/AgentOverlay';
 import VoiceVisualizer from '../VoiceVisualizer';
@@ -239,9 +240,10 @@ function Character({ active }) {
   );
 }
 
-// Quick-prompt input bar — the same send path the static companion used:
-// prefer the pywebview bridge (window.pywebview.api.on_companion_prompt, so the
-// main app owns the HARTOS dispatch), fall back to POST /chat (browser/debug).
+// Quick-prompt input bar.  Guidance to a live run: dashboardApi.steer (the
+// one steering client).  An ordinary prompt: the pywebview bridge
+// (window.pywebview.api.on_companion_prompt, so the main app owns the /chat
+// dispatch), else POST /chat (browser/debug).
 function InputBar({liveRun}) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -274,19 +276,20 @@ function InputBar({liveRun}) {
         priority: 'high',
         user_priority: true,
       };
-      if (api && api.on_companion_prompt) {
-        answer = await api.on_companion_prompt(t, context);
-      } else if (context && context.agent_id) {
-        // The one steering client (carries the signed-in token; HARTOS lets
-        // only the goal's owner steer it).  A refusal rejects with the
-        // server's JSON reason; show it either way.
+      if (context && context.agent_id) {
+        // Guidance to a live run goes through the ONE steering client, in
+        // the companion window too: it carries the signed-in token, which
+        // is who HARTOS judges (may_steer).  The pywebview bridge would be
+        // a second, tokenless client (review of e6e806bf).  A failure is
+        // worded as its outcome (steerError), once.
         answer = await dashboardApi.steer(context.agent_id, 'inject', {
           instruction: t, actor_id: 'companion', priority: 'high', user_priority: true,
         }).then(
-          (d) => (d?.success ? 'Guidance sent to the active HART.'
-            : `Guidance not delivered: ${steerError(d)}`),
-          (e) => `Guidance not delivered: ${steerError(e)}`,
+          (d) => (d?.success ? 'Guidance sent to the active HART.' : steerError(d)),
+          (e) => steerError(e),
         );
+      } else if (api && api.on_companion_prompt) {
+        answer = await api.on_companion_prompt(t, context);
       } else {
         const r = await fetch('/chat', {
           method: 'POST',

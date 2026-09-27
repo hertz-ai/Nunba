@@ -108,6 +108,34 @@ _MIGRATABLE_KEYS = [
 ]
 
 
+def reads_from_env(key_name: str) -> bool:
+    """True when the process legitimately reads ``key_name`` from its
+    environment: HARTOS hartos.ai_key_vault.reads_from_env, the one rule
+    (SECRET_KEYS and the channel adapters' env names).  Without HARTOS, only
+    the config.json keys this vault migrates (_MIGRATABLE_KEYS)."""
+    try:
+        from hartos.ai_key_vault import reads_from_env as _hartos_reads
+        return _hartos_reads(key_name)
+    except Exception:
+        logger.warning("HARTOS env-name rule unavailable; %s is exported only "
+                       "if it is a migrated config key", key_name, exc_info=True)
+        return key_name in _MIGRATABLE_KEYS
+
+
+def hold_in_hartos(key_name: str, value: str) -> bool:
+    """Hand a stored value to HARTOS's vault (hold_credential), where its
+    {{secret:NAME}} alias resolves once the owner's grant names it.  Never
+    os.environ.  False (logged) when HARTOS is not reachable."""
+    try:
+        from hartos.ai_key_vault import get_ai_key_vault
+        get_ai_key_vault().hold_credential(key_name, value)
+        return True
+    except Exception:
+        logger.warning("HARTOS vault unavailable; %s is not held for agents yet",
+                       key_name, exc_info=True)
+        return False
+
+
 def _get_machine_identity() -> str:
     """Derive a machine-unique string from hardware identifiers."""
     parts = [str(uuid.getnode())]  # MAC address
@@ -345,10 +373,19 @@ class AIKeyVault:
 
                 logger.info(f"AI vault: exported {active} config to env vars")
 
-        # Export tool keys (Google search, SerpAPI, etc.)
+        # Tool keys.  A name the process reads from its environment (Google
+        # search, SerpAPI...) goes there; any other value (a password the
+        # owner typed on the consent card) is held by HARTOS's vault and
+        # reaches a tool only through its alias.  It used to be setdefault()
+        # for every name, so a first card entry named NUNBA_CI or HTTPS_PROXY
+        # became configuration (review of Nunba 670aed3f).
         for key_name, value in self._cache.get('_tool_keys', {}).items():
-            if value:
+            if not value:
+                continue
+            if reads_from_env(key_name):
                 os.environ.setdefault(key_name, value)
+            else:
+                hold_in_hartos(key_name, value)
 
     # ------------------------------------------------------------------
     # config.json migration (one-time)

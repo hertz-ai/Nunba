@@ -40,7 +40,6 @@ jest.mock('../../services/socialApi', () => ({
   // The one steering client (its token handling is pinned by
   // __tests__/services/dashboardSteerSendsToken.test.jsx).
   dashboardApi: {steer: (...a) => mockSteer(...a)},
-  steerError: (e) => e?.message || 'x',
 }));
 
 // eslint-disable-next-line import/first

@@ -34,8 +34,22 @@ jest.mock('axios', () => {
     return Promise.resolve(resp);
   };
   const create = (cfg) => real.create({...cfg, adapter});
-  const wrapped = Object.assign(Object.create(real), real, {create});
+  // Every request this suite makes goes to the recording adapter: instances
+  // (create) AND the default export (axios.get/post), so nothing reaches
+  // the network (review of e6e806bf: the suite leaked real requests).
+  const wrapped = Object.assign(real.create({adapter}), {
+    create, isAxiosError: real.isAxiosError, CancelToken: real.CancelToken,
+    isCancel: real.isCancel,
+  });
   return {__esModule: true, ...actual, default: wrapped, create};
+});
+
+// Every fetch() in this suite answers locally; a test that needs a
+// particular reply sets global.fetch itself.
+beforeEach(() => {
+  global.fetch = jest.fn(() => Promise.resolve({
+    ok: true, status: 200, json: () => Promise.resolve({}),
+  }));
 });
 
 // The drawer renders MUI; keep its breakpoint hook out of jsdom's way.
@@ -74,6 +88,8 @@ jest.mock('../../services/realtimeService', () => ({
 }));
 
 // eslint-disable-next-line import/first
+import {steerError} from '../../constants/steerOutcome';
+// eslint-disable-next-line import/first
 import {dashboardApi} from '../../services/socialApi';
 
 const header = (cfg) => {
@@ -106,6 +122,20 @@ test('a refusal comes back as the server\'s JSON reason, not a generic error', a
   expect(err.data.error).toBe('this agent belongs to another user');
 });
 
+test.each([
+  ['a refusal (not yours)', {success: false, data: {error: 'agent not found, or not yours to steer', forbidden: true}},
+    'You can only steer your own runs.'],
+  ['no token (require_auth)', {success: false, error: 'Missing or invalid Authorization header'},
+    'Sign in to steer this run.'],
+  ['an expired token (require_auth)', {success: false, error: 'Invalid or expired token'},
+    'Sign in to steer this run.'],
+  ['a run that stopped taking guidance', {success: false, data: {error: 'no live GroupChat registered for this agent (not currently executing)'}},
+    'This run is no longer taking guidance.'],
+  ['nothing to go on', undefined, 'Guidance not delivered.'],
+])('steerError words %s as its outcome', (_label, body, expected) => {
+  expect(steerError(body)).toBe(expected);
+});
+
 // ── the call sites use it ────────────────────────────────────────────────
 
 // eslint-disable-next-line import/first
@@ -126,6 +156,54 @@ test('the operations drawer\'s Pause button sends the token', async () => {
   const steer = mockSent.find((c) => c.url === '/dashboard/agents/g1/pause');
   expect(steer).toBeTruthy();
   expect(header(steer)).toBe('Bearer drawer-token');
+});
+
+const drawerSnapshot = () => jest.fn(() => Promise.resolve({
+  ok: true, status: 200,
+  json: () => Promise.resolve({success: true, data: {
+    agent: {id: 'g1', status: 'active', title: 'Goal'}, tree: [],
+    registered: true, messages: [], next_index: 0,
+  }}),
+}));
+
+async function openConversation() {
+  render(<AgentOperationsDrawer open agentId="g1" onClose={() => {}} />);
+  await act(async () => {
+    fireEvent.click(await screen.findByRole('tab', {name: /conversation/i}));
+  });
+  fireEvent.change(screen.getByPlaceholderText(/retry the failing step/i),
+    {target: {value: 'use the cloud model'}});
+}
+
+test("the operations drawer's Inject sends the token", async () => {
+  localStorage.setItem('access_token', 'drawer-token');
+  global.fetch = drawerSnapshot();
+  await openConversation();
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: /send/i})); });
+  const steer = mockSent.find((c) => c.url === '/dashboard/agents/g1/inject');
+  expect(steer).toBeTruthy();
+  expect(header(steer)).toBe('Bearer drawer-token');
+  expect(JSON.parse(steer.data).instruction).toBe('use the cloud model');
+});
+
+test("the drawer shows why an Inject was refused, and keeps the text", async () => {
+  localStorage.setItem('access_token', 'drawer-token');
+  mockReply = {status: 403, data: {success: false, data: {error: 'agent not found, or not yours to steer', forbidden: true}}};
+  global.fetch = drawerSnapshot();
+  await openConversation();
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: /send/i})); });
+  expect(await screen.findByText('You can only steer your own runs.')).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(/retry the failing step/i).value).toBe('use the cloud model');
+});
+
+test("the drawer shows why a Pause was refused", async () => {
+  mockReply = {status: 401, data: {success: false, error: 'Missing or invalid Authorization header'}};
+  global.fetch = drawerSnapshot();
+  render(<AgentOperationsDrawer open agentId="g1" onClose={() => {}} />);
+  const pause = await screen.findByRole('button', {name: /pause/i});
+  await waitFor(() => expect(pause).not.toBeDisabled());
+  await act(async () => { fireEvent.click(pause); });
+  expect(await screen.findByText('Sign in to steer this run.')).toBeInTheDocument();
 });
 
 // ── the web chat: a signed-in user guiding their own live run ───────────

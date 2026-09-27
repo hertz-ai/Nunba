@@ -6,6 +6,7 @@
  */
 
 import {NUNBA_CAMERA_CONSENT} from '../../../../constants/events';
+import {steerError} from '../../../../constants/steerOutcome';
 import {useSocial} from '../../../../contexts/SocialContext';
 import useAuthSession from '../../../../hooks/useAuthSession';
 import useCameraFrameStream from '../../../../hooks/useCameraFrameStream';
@@ -14,7 +15,7 @@ import {useTTS} from '../../../../hooks/useTTS';
 import realtimeService, {
   subscribeChatNew,
 } from '../../../../services/realtimeService';
-import {chatApi, dashboardApi, steerError} from '../../../../services/socialApi';
+import {chatApi, dashboardApi} from '../../../../services/socialApi';
 import {
   classifyError,
   getBackoff,
