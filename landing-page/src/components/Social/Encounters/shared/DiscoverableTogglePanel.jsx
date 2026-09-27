@@ -11,9 +11,9 @@
  *     -> { success, data: { enabled, expires_at, remaining_sec,
  *          toggle_count_24h, age_claim_18, face_visible,
  *          avatar_style, vibe_tags } }
- *   POST /api/social/encounter/discoverable  (HARTOS encounter_api.py:287-350)
+ *   POST /api/social/encounter/discoverable  (HARTOS encounter_api.py set_discoverable)
  *     -> body { enabled, age_claim_18, ttl_sec, face_visible,
- *               avatar_style, vibe_tags }
+ *               avatar_style, vibe_tags? }  (vibe_tags only when edited here)
  *     -> 403 if (enable && !age_claim_18)
  *     -> 429 if toggle_count_24h >= ENCOUNTER_DISCOVERABLE_MAX_TOGGLES_24H
  *
@@ -152,6 +152,12 @@ export default function DiscoverableTogglePanel() {
   // After a 429, lock the Switch until next mount per task spec.
   const [lockedFor429, setLockedFor429] = useState(false);
 
+  // True once the user adds or removes a tag here.  The persona card also
+  // writes vibe_tags, so a toggle sends them only when they were edited in
+  // this panel; otherwise the server keeps the saved ones (a failed fetch
+  // or a stale copy must not overwrite them).
+  const tagsEditedRef = useRef(false);
+
   const mountedRef = useRef(true);
   useEffect(() => () => {
     mountedRef.current = false;
@@ -199,8 +205,9 @@ export default function DiscoverableTogglePanel() {
         ttl_sec: undefined,
         face_visible: state.face_visible,
         avatar_style: state.avatar_style,
-        vibe_tags: state.vibe_tags,
+        vibe_tags: tagsEditedRef.current ? state.vibe_tags : undefined,
       });
+      tagsEditedRef.current = false; // saved; the refetch below reloads them
       const payload = res?.data?.data || res?.data || {};
       // POST returns {enabled, expires_at, remaining_sec} — re-fetch
       // for full state (incl. toggle_count_24h).
@@ -242,11 +249,13 @@ export default function DiscoverableTogglePanel() {
       setVibeInput('');
       return;
     }
+    tagsEditedRef.current = true;
     setState((prev) => ({...prev, vibe_tags: [...prev.vibe_tags, tag]}));
     setVibeInput('');
   };
 
   const handleRemoveVibeTag = (tag) => {
+    tagsEditedRef.current = true;
     setState((prev) => ({
       ...prev,
       vibe_tags: prev.vibe_tags.filter((t) => t !== tag),
@@ -259,6 +268,7 @@ export default function DiscoverableTogglePanel() {
       handleAddVibeTag(vibeInput);
     } else if (event.key === 'Backspace' && !vibeInput) {
       // Pop last tag on Backspace from empty input.
+      if (state.vibe_tags.length) tagsEditedRef.current = true;
       setState((prev) => ({
         ...prev,
         vibe_tags: prev.vibe_tags.slice(0, -1),

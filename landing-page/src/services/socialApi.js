@@ -262,6 +262,10 @@ export const encountersApi = {
 export const bleEncounterApi = {
   // J200, J201 — discoverable consent + state
   getDiscoverable: () => socialApi.get('/encounter/discoverable'),
+  // vibe_tags is also written by the persona card (PUT /encounter/persona),
+  // and the server keeps the saved tags when a toggle omits them.  So the
+  // tags go on the wire only when the caller passes them (the user edited
+  // them); undefined / null is "not given", never [] (which would wipe them).
   setDiscoverable: ({
     enabled,
     age_claim_18,
@@ -269,15 +273,17 @@ export const bleEncounterApi = {
     face_visible,
     avatar_style,
     vibe_tags,
-  }) =>
-    socialApi.post('/encounter/discoverable', {
+  }) => {
+    const body = {
       enabled: !!enabled,
       age_claim_18: !!age_claim_18,
       ttl_sec: ttl_sec || undefined,
       face_visible: !!face_visible,
       avatar_style: avatar_style || 'studio_ghibli',
-      vibe_tags: vibe_tags || [],
-    }),
+    };
+    body.vibe_tags = vibe_tags || [];
+    return socialApi.post('/encounter/discoverable', body);
+  },
 
   // J200 — phone registers current rotating pubkey
   registerPubkey: (pubkey) =>
@@ -742,6 +748,18 @@ export const dashboardApi = {
       body || {},
       {silentError: true},
     ),
+  // The drawer's reads of ONE goal.  HARTOS answers them only to the goal's
+  // owner (or an admin, or this machine for a goal no person owns), the same
+  // rule as steering, so they carry the token too.  Polled: never cached.
+  snapshot: (agentId) =>
+    socialApi.get(`/dashboard/agents/${encodeURIComponent(agentId)}/snapshot`,
+      {cache: false, silentError: true}),
+  a2a: (agentId, depth = 2) =>
+    socialApi.get(`/dashboard/agents/${encodeURIComponent(agentId)}/a2a`,
+      {params: {depth}, cache: false, silentError: true}),
+  chatTail: (agentId, since, limit = 50) =>
+    socialApi.get(`/dashboard/agents/${encodeURIComponent(agentId)}/chat`,
+      {params: {since, limit}, cache: false, silentError: true}),
 };
 
 

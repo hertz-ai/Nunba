@@ -132,19 +132,36 @@ describe('bleEncounterApi.setDiscoverable', () => {
     );
   });
 
-  it('defaults vibe_tags to [] when missing', async () => {
+  // vibe_tags is also written by the persona card (PUT /encounter/persona).
+  // A toggle that sends [] for "not given" wipes the user's saved tags, so
+  // the wrapper sends vibe_tags only when the caller passes them.
+  it.each([
+    ['undefined', {vibe_tags: undefined}],
+    ['null', {vibe_tags: null}],
+    ['absent', {}],
+  ])('omits vibe_tags when the caller passes %s', async (_label, tags) => {
     await bleEncounterApi.setDiscoverable({
       enabled: true,
       age_claim_18: true,
       ttl_sec: 600,
       face_visible: true,
       avatar_style: 'pixel_art',
-      vibe_tags: undefined,
+      ...tags,
     });
-    expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-      '/encounter/discoverable',
-      expect.objectContaining({vibe_tags: []})
-    );
+    expect(mockAxiosInstance.post).toHaveBeenCalledTimes(1);
+    const body = mockAxiosInstance.post.mock.calls[0][1];
+    expect(body).not.toHaveProperty('vibe_tags');
+    expect(body).toMatchObject({enabled: true, age_claim_18: true});
+  });
+
+  it('sends an explicit [] (the user removed every tag)', async () => {
+    await bleEncounterApi.setDiscoverable({
+      enabled: false,
+      age_claim_18: false,
+      vibe_tags: [],
+    });
+    const body = mockAxiosInstance.post.mock.calls[0][1];
+    expect(body.vibe_tags).toEqual([]);
   });
 
   it('passes ttl_sec=undefined when falsy (server treats as default)', async () => {

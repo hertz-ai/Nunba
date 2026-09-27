@@ -1494,21 +1494,22 @@ class TTSEngine:
 
         # Current language (for routing)
         # Read persisted language so warm-up selects the right TTS engine
-        # (not hardcoded English which triggers F5 install for Tamil users)
+        # (not hardcoded English which triggers F5 install for Tamil users).
+        # Through core.user_lang, the one reader of hart_language.json: it
+        # follows the data root and carries a pre-move file over; reading
+        # ~/Documents/Nunba/data here picked a stale language on macOS /
+        # Linux once the person had switched (tests/
+        # test_preferred_lang_fallback.py::TestLanguageReaderIsCanonical).
         self._language = 'en'
         try:
-            import json as _json
-            _lang_path = os.path.join(
-                os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'hart_language.json')
-            if os.path.isfile(_lang_path):
-                with open(_lang_path) as _f:
-                    _lang_data = _json.load(_f)
-                    _persisted = _lang_data.get('language', 'en')
-                    if _persisted and len(_persisted) >= 2:
-                        self._language = _persisted[:2]
-                        logger.info(f"TTS init: using persisted language '{self._language}'")
-        except Exception:
-            pass
+            from core.user_lang import get_preferred_lang
+            _persisted = get_preferred_lang()
+            if _persisted and len(_persisted) >= 2:
+                self._language = _persisted[:2]
+                logger.info(f"TTS init: using persisted language '{self._language}'")
+        except Exception as _lang_exc:
+            logger.warning("TTS init: core.user_lang unavailable (%s); "
+                           "warm-up language stays 'en'", _lang_exc)
 
     def _detect_hardware(self):
         """Detect hardware via HARTOS VRAMManager (single source of truth)."""

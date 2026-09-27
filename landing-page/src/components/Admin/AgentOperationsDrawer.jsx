@@ -15,7 +15,6 @@
  * one canonical chip across the dashboard surface — no parallel chip
  * component, no risk of color drift.
  */
-import { SOCIAL_API_URL } from '../../config/apiBase';
 import { steerError } from '../../constants/steerOutcome';
 import { dashboardApi } from '../../services/socialApi';
 
@@ -493,47 +492,33 @@ export default function AgentOperationsDrawer({ agentId, open, onClose }) {
   const fetchSnapshot = useCallback(async () => {
     if (!activeId) return;
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${activeId}/snapshot`,
-        { credentials: 'include' });
-      if (!res.ok) {
-        setError(`snapshot ${res.status}`);
-        return;
-      }
-      const body = await res.json();
-      if (body.success) {
+      // dashboardApi carries the signed-in token: HARTOS shows one goal's
+      // snapshot, chat and delegations only to whoever may steer it.
+      const body = await dashboardApi.snapshot(activeId);
+      if (body?.success) {
         setSnapshot(body.data);
         setError(null);
       } else {
-        setError(body.error || 'unknown');
+        setError(steerError(body, 'unknown'));
       }
     } catch (e) {
-      setError(`fetch failed: ${e.message}`);
+      setError(steerError(e, 'Could not load this run.'));
     }
   }, [activeId]);
 
   const fetchA2A = useCallback(async () => {
     if (!activeId) return;
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${activeId}/a2a?depth=2`,
-        { credentials: 'include' });
-      if (!res.ok) return;
-      const body = await res.json();
-      if (body.success) setA2a(body.data);
+      const body = await dashboardApi.a2a(activeId, 2);
+      if (body?.success) setA2a(body.data);
     } catch (_) { /* lazy poll on next tab visit */ }
   }, [activeId]);
 
   const fetchChatTail = useCallback(async () => {
     if (!activeId) return;
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${activeId}/chat`
-          + `?since=${cursorRef.current}&limit=50`,
-        { credentials: 'include' });
-      if (!res.ok) return;
-      const body = await res.json();
-      if (!body.success) return;
+      const body = await dashboardApi.chatTail(activeId, cursorRef.current, 50);
+      if (!body?.success) return;
       const { messages, next_index, registered } = body.data;
       if (messages && messages.length > 0) {
         setChatState(prev => ({

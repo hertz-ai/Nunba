@@ -243,3 +243,127 @@ class TestLanguageWriterIsCanonical:
             "persisting for the next boot (TTS warmup + draft gate read "
             "it via core.user_lang)."
         )
+
+
+# ── Read side: one reader for hart_language.json ─────────────────────
+#
+# 8bbe771c4 moved hart_language.json to the data root (it had been the one
+# file left in ~/Documents/Nunba on macOS / Linux) and taught
+# core.user_lang to carry an old file over, once.  tts_engine.TTSEngine
+# still read the OLD path itself, so after the person switched language
+# (the new file says 'hi'; the old one still says 'ta') TTS warm-up picked
+# 'ta' -- measured by scratchpad/e1a_tts_probe.py.  A reader that builds the
+# path itself also skips the carry-over and the pytest guard.
+
+# Every first-party tree, not only the ones that used to write it.
+_READ_SCAN_ROOTS = _WRITE_SCAN_ROOTS + [
+    PROJECT_ROOT / "integrations",
+    PROJECT_ROOT / "core",
+    PROJECT_ROOT / "scripts",
+    HARTOS_ROOT / "core",
+    HARTOS_ROOT / "hartos",
+    HARTOS_ROOT / "integrations",
+    HARTOS_ROOT / "security",
+]
+
+
+def _docstring_ids(tree):
+    ids = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                          ast.ClassDef)) and n.body \
+                and isinstance(n.body[0], ast.Expr) \
+                and isinstance(n.body[0].value, ast.Constant):
+            ids.add(id(n.body[0].value))
+    return ids
+
+
+def _names_the_lang_file(tree):
+    """Line numbers of a path-like constant naming hart_language.json: a
+    string holding it with no whitespace (prose and docstrings are not a
+    path in use), in any call or path expression."""
+    docs = _docstring_ids(tree)
+    return [n.lineno for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and id(n) not in docs and _LANG_FILE in n.value
+            and not any(c.isspace() for c in n.value)]
+
+
+def _iter_read_scan_files():
+    # os.walk + string keys: Path.resolve() per file took the scan past the
+    # 60 s test timeout on a loaded box.
+    seen = set()
+    for root in _READ_SCAN_ROOTS:
+        if root.is_file():
+            candidates = [str(root)]
+        elif root.is_dir():
+            candidates = []
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if d not in (
+                    "__pycache__", "tests", "node_modules", ".venv", "venv")]
+                candidates += [os.path.join(dirpath, n) for n in filenames]
+        else:
+            candidates = []
+        for c in candidates:
+            key = os.path.normcase(os.path.abspath(c))
+            if not c.endswith(".py") or key in seen:
+                continue
+            seen.add(key)
+            yield Path(c)
+
+
+class TestLanguageReaderIsCanonical:
+    """hart_language.json has exactly one reader too: core.user_lang."""
+
+    def test_no_module_but_user_lang_names_the_file(self):
+        scanned, offenders = 0, []
+        sole = os.path.normcase(str(_SOLE_WRITER))
+        for path in _iter_read_scan_files():
+            if os.path.normcase(os.path.abspath(path)) == sole:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            scanned += 1
+            if _LANG_FILE not in text:   # no constant can name it: skip the parse
+                continue
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                continue
+            offenders += [f"{path}:{ln}" for ln in _names_the_lang_file(tree)]
+        assert scanned > 300, scanned   # the scan saw both trees
+        assert not offenders, (
+            f"{_LANG_FILE} must be read through core.user_lang."
+            "get_preferred_lang (it carries a pre-move file over and "
+            "follows the data root).  Direct paths found:\n  "
+            + "\n  ".join(offenders))
+
+    def test_the_reader_guard_can_fail(self):
+        planted = ast.parse(
+            "import os\n"
+            "p = os.path.join(os.path.expanduser('~'), 'Documents', 'Nunba',"
+            " 'data', 'hart_language.json')\n"
+            "q = open('C:/x/hart_language.json')\n"
+            "def f():\n    '''Reads hart_language.json (a docstring is fine).'''\n"
+            "m = 'core.user_lang owns hart_language.json'\n")
+        assert _names_the_lang_file(planted) == [2, 3]
+
+    def test_tts_warmup_takes_the_canonical_language(self, tmp_path, monkeypatch):
+        """TTSEngine's warm-up language is core.user_lang's answer, even
+        when a stale file at the old ~/Documents path says otherwise."""
+        import json
+
+        import core.user_lang as user_lang_mod
+        for var in ("HOME", "USERPROFILE"):
+            monkeypatch.setenv(var, str(tmp_path))
+        stale = tmp_path / "Documents" / "Nunba" / "data" / _LANG_FILE
+        stale.parent.mkdir(parents=True)
+        stale.write_text(json.dumps({"language": "ta"}), encoding="utf-8")
+        monkeypatch.setattr(user_lang_mod, "get_preferred_lang", lambda *a, **k: "hi")
+
+        from tts.tts_engine import TTSEngine
+        engine = TTSEngine()
+
+        assert engine._language == "hi"

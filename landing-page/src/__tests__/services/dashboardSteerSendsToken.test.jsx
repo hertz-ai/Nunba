@@ -18,12 +18,17 @@ import React from 'react';
 
 const mockSent = [];
 let mockReply = {status: 200, data: {success: true, data: {ok: true}}};
+// GETs answer by path suffix (the drawer's snapshot / chat / a2a polls);
+// anything else gets mockReply.
+let mockGets = {};
 jest.mock('axios', () => {
   const actual = jest.requireActual('axios');
   const real = actual.default || actual;
   const adapter = (config) => {
     mockSent.push(config);
-    const {status, data} = mockReply;
+    const suffix = (config.method === 'get')
+      && Object.keys(mockGets).find((k) => (config.url || '').endsWith(k));
+    const {status, data} = suffix ? mockGets[suffix] : mockReply;
     const resp = {data, status, statusText: String(status), headers: {}, config};
     if (status >= 400) {
       const err = new Error(`HTTP ${status}`);
@@ -43,6 +48,10 @@ jest.mock('axios', () => {
   });
   return {__esModule: true, ...actual, default: wrapped, create};
 });
+
+// The drawer mounts MUI and polls; on a loaded machine its first render has
+// taken over 5 s (measured: 1 run in 4 timed out at jest's default).
+jest.setTimeout(30000);
 
 // Every fetch() in this suite answers locally; a test that needs a
 // particular reply sets global.fetch itself.
@@ -99,6 +108,7 @@ const header = (cfg) => {
 
 beforeEach(() => {
   mockSent.length = 0;
+  mockGets = {};
   mockReply = {status: 200, data: {success: true, data: {ok: true}}};
   localStorage.clear();
 });
@@ -143,12 +153,7 @@ import AgentOperationsDrawer from '../../components/Admin/AgentOperationsDrawer'
 
 test('the operations drawer\'s Pause button sends the token', async () => {
   localStorage.setItem('access_token', 'drawer-token');
-  global.fetch = jest.fn(() => Promise.resolve({
-    ok: true, status: 200,
-    json: () => Promise.resolve({success: true, data: {
-      agent: {id: 'g1', status: 'active', title: 'Goal'}, tree: [],
-    }}),
-  }));
+  drawerSnapshot();
   render(<AgentOperationsDrawer open agentId="g1" onClose={() => {}} />);
   const pause = await screen.findByRole('button', {name: /pause/i});
   await waitFor(() => expect(pause).not.toBeDisabled());
@@ -158,13 +163,19 @@ test('the operations drawer\'s Pause button sends the token', async () => {
   expect(header(steer)).toBe('Bearer drawer-token');
 });
 
-const drawerSnapshot = () => jest.fn(() => Promise.resolve({
-  ok: true, status: 200,
-  json: () => Promise.resolve({success: true, data: {
-    agent: {id: 'g1', status: 'active', title: 'Goal'}, tree: [],
-    registered: true, messages: [], next_index: 0,
-  }}),
-}));
+// The drawer's reads go through dashboardApi (axios) now; answer them here.
+const drawerSnapshot = () => {
+  mockGets = {
+    '/snapshot': {status: 200, data: {success: true, data: {
+      agent: {id: 'g1', status: 'active', title: 'Goal'}, tree: [],
+    }}},
+    '/chat': {status: 200, data: {success: true, data: {
+      registered: true, messages: [], next_index: 0,
+    }}},
+    '/a2a': {status: 200, data: {success: true, data: {nodes: [], edges: []}}},
+  };
+  return global.fetch;
+};
 
 async function openConversation() {
   render(<AgentOperationsDrawer open agentId="g1" onClose={() => {}} />);
@@ -194,6 +205,24 @@ test("the drawer shows why an Inject was refused, and keeps the text", async () 
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: /send/i})); });
   expect(await screen.findByText('You can only steer your own runs.')).toBeInTheDocument();
   expect(screen.getByPlaceholderText(/retry the failing step/i).value).toBe('use the cloud model');
+});
+
+test("the drawer's reads of one goal carry the token", async () => {
+  localStorage.setItem('access_token', 'reader-token');
+  drawerSnapshot();
+  await openConversation();
+  for (const suffix of ['/snapshot', '/chat']) {
+    const read = mockSent.find((c) => c.method === 'get' && c.url === `/dashboard/agents/g1${suffix}`);
+    expect(read).toBeTruthy();
+    expect(header(read)).toBe('Bearer reader-token');
+  }
+});
+
+test("the drawer says so when a run is not the user's to view", async () => {
+  mockGets = {'/snapshot': {status: 403, data: {success: false, data: {
+    error: 'agent not found, or not yours to steer', forbidden: true}}}};
+  render(<AgentOperationsDrawer open agentId="g1" onClose={() => {}} />);
+  expect(await screen.findByText(/You can only steer your own runs\./)).toBeInTheDocument();
 });
 
 test("the drawer shows why a Pause was refused", async () => {

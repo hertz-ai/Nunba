@@ -157,6 +157,65 @@ describe('DiscoverableTogglePanel', () => {
     expect(callArgs.avatar_style).toBe('studio_ghibli');
   });
 
+  test.each([
+    ['the saved tags loaded', () =>
+      Promise.resolve({
+        data: {success: true, data: {enabled: false, vibe_tags: ['chess', 'jazz']}},
+      })],
+    ['the state fetch failed', () => Promise.reject(new Error('offline'))],
+  ])(
+    'c2) toggling without editing tags sends no vibe_tags (%s)',
+    async (_label, getImpl) => {
+      // The persona card also writes vibe_tags; a toggle that did not touch
+      // them must not overwrite them (with [] after a failed fetch, or with
+      // a stale copy after the card changed them).
+      bleEncounterApi.getDiscoverable.mockImplementationOnce(getImpl);
+      renderWithProviders(<DiscoverableTogglePanel />);
+      await waitFor(() => {
+        expect(bleEncounterApi.getDiscoverable).toHaveBeenCalled();
+      });
+      fireEvent.click(screen.getByTestId('age-claim-checkbox'));
+      const switchInput = screen.getByTestId('discoverable-switch');
+      await waitFor(() => {
+        expect(switchInput).not.toBeDisabled();
+      });
+      fireEvent.click(switchInput);
+      await waitFor(() => {
+        expect(bleEncounterApi.setDiscoverable).toHaveBeenCalledTimes(1);
+      });
+      const callArgs = bleEncounterApi.setDiscoverable.mock.calls[0][0];
+      expect(callArgs.enabled).toBe(true);
+      expect(callArgs.vibe_tags).toBeUndefined();
+    },
+  );
+
+  test('c3) removing a loaded tag sends the edited list', async () => {
+    bleEncounterApi.getDiscoverable.mockImplementationOnce(() =>
+      Promise.resolve({
+        data: {success: true, data: {enabled: false, vibe_tags: ['chess', 'jazz']}},
+      }),
+    );
+    renderWithProviders(<DiscoverableTogglePanel />);
+    const chip = await screen.findByTestId('vibe-tag-chess');
+    // MUI Chip's delete icon is the chip's svg child.
+    fireEvent.click(chip.querySelector('svg'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('vibe-tag-chess')).toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('age-claim-checkbox'));
+    const switchInput = screen.getByTestId('discoverable-switch');
+    await waitFor(() => {
+      expect(switchInput).not.toBeDisabled();
+    });
+    fireEvent.click(switchInput);
+    await waitFor(() => {
+      expect(bleEncounterApi.setDiscoverable).toHaveBeenCalledTimes(1);
+    });
+    expect(bleEncounterApi.setDiscoverable.mock.calls[0][0].vibe_tags).toEqual([
+      'jazz',
+    ]);
+  });
+
   test('d) 429 response surfaces Snackbar + locks Switch', async () => {
     bleEncounterApi.setDiscoverable.mockImplementationOnce(() => {
       const err = new Error('rate limited');
