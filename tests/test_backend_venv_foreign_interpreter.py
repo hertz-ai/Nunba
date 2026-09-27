@@ -140,6 +140,17 @@ class TestEnsureVenvInstalledApp:
         assert venv_module == []
         assert keep.exists()
 
+    def test_a_foreign_venv_that_cannot_be_removed_is_not_built_over(
+            self, root, frozen, venv_module, monkeypatch):
+        # A file in use on Windows: rmtree(ignore_errors=True) leaves it.
+        vpath = backend_venv.venv_path(BACKEND)
+        _lay_down_venv(vpath, str(root / "miniconda3"), "3.11.4")
+        monkeypatch.setattr(backend_venv.shutil, "rmtree",
+                            lambda *a, **k: None)
+        with pytest.raises(RuntimeError, match="could not be removed"):
+            backend_venv.ensure_venv(BACKEND)
+        assert venv_module == []
+
     def test_without_python_embed_it_refuses_loudly(self, root, frozen,
                                                     venv_module):
         os.remove(frozen / "python.exe")
