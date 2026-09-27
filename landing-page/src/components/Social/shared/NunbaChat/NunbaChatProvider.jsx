@@ -5,7 +5,6 @@
  * Does NOT import Demopage — lightweight direct API calls only.
  */
 
-import {SOCIAL_API_URL} from '../../../../config/apiBase';
 import {NUNBA_CAMERA_CONSENT} from '../../../../constants/events';
 import {useSocial} from '../../../../contexts/SocialContext';
 import useAuthSession from '../../../../hooks/useAuthSession';
@@ -15,7 +14,7 @@ import {useTTS} from '../../../../hooks/useTTS';
 import realtimeService, {
   subscribeChatNew,
 } from '../../../../services/realtimeService';
-import {chatApi} from '../../../../services/socialApi';
+import {chatApi, dashboardApi, steerError} from '../../../../services/socialApi';
 import {
   classifyError,
   getBackoff,
@@ -772,22 +771,14 @@ export default function NunbaChatProvider({children}) {
       const activeRun = liveRun;
       if (activeRun) {
         try {
-          const res = await fetch(
-            `${SOCIAL_API_URL}/dashboard/agents/${encodeURIComponent(activeRun.agent_id)}/inject`,
-            {
-              method: 'POST', credentials: 'include',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({instruction: text.trim(), actor_id: 'nunba-chat'}),
-            },
-          );
-          // A refused steer is a 400 WITH a JSON reason (no live GroupChat,
-          // agent not found); read it rather than guessing at the cause.
-          const data = await res.json().catch(() => null);
-          if (!data?.success) {
-            throw new Error(
-              data?.error || data?.data?.error || `Guidance not delivered (HTTP ${res.status})`,
-            );
-          }
+          // dashboardApi.steer carries the signed-in token: HARTOS lets only
+          // the goal's owner steer it, and a web caller without a token is
+          // a 401.  A refusal rejects with the server's JSON reason (no live
+          // GroupChat, agent not found, not yours); show it, don't guess.
+          const data = await dashboardApi.steer(activeRun.agent_id, 'inject', {
+            instruction: text.trim(), actor_id: 'nunba-chat',
+          });
+          if (!data?.success) throw data;
           updateMsgById(msgId, {status: 'sent', error: null, retryCount: undefined});
           setMessages((prev) => [...prev, {
             role: 'assistant', text: 'Guidance sent to the active HART.',
@@ -795,7 +786,7 @@ export default function NunbaChatProvider({children}) {
           }]);
         } catch (err) {
           updateMsgById(msgId, {
-            status: 'failed', error: err?.message || 'Could not reach the active HART',
+            status: 'failed', error: steerError(err, 'Could not reach the active HART'),
           });
         } finally {
           setIsLoading(false);

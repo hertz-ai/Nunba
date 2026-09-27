@@ -41,6 +41,38 @@ jest.mock('axios', () => {
 // The drawer renders MUI; keep its breakpoint hook out of jsdom's way.
 jest.mock('@mui/material/useMediaQuery', () => ({__esModule: true, default: () => false}));
 
+// NunbaChatProvider's surroundings (auth context, realtime, TTS, camera).
+// The computer-use projection is driven directly: a live run the user owns.
+let mockLiveRun = null;
+jest.mock('../../hooks/useComputerActivity', () => ({
+  __esModule: true,
+  default: () => ({activity: mockLiveRun, liveRun: mockLiveRun}),
+}));
+jest.mock('../../contexts/SocialContext', () => ({
+  __esModule: true,
+  useSocial: () => ({currentUser: {id: 'web-user'}}),
+  default: {},
+}));
+jest.mock('../../hooks/useAuthSession', () => ({
+  __esModule: true,
+  default: () => ({_raw: {}}),
+  clearAccessTokenForExpiry: () => {},
+}));
+// uuid ships ESM that CRA's jest does not transform.
+let mockUuidN = 0;
+jest.mock('uuid', () => ({v4: () => `uuid-${++mockUuidN}`}));
+jest.mock('../../hooks/useCameraFrameStream', () => ({__esModule: true, default: () => {}}));
+jest.mock('../../hooks/useTTS', () => ({
+  __esModule: true,
+  useTTS: () => ({speak: () => {}, stop: () => {}}),
+  default: () => ({speak: () => {}, stop: () => {}}),
+}));
+jest.mock('../../services/realtimeService', () => ({
+  __esModule: true,
+  default: {on: () => () => {}, off: () => {}},
+  subscribeChatNew: () => () => {},
+}));
+
 // eslint-disable-next-line import/first
 import {dashboardApi} from '../../services/socialApi';
 
@@ -94,4 +126,53 @@ test('the operations drawer\'s Pause button sends the token', async () => {
   const steer = mockSent.find((c) => c.url === '/dashboard/agents/g1/pause');
   expect(steer).toBeTruthy();
   expect(header(steer)).toBe('Bearer drawer-token');
+});
+
+// ── the web chat: a signed-in user guiding their own live run ───────────
+
+// eslint-disable-next-line import/first
+import NunbaChatProvider, {useNunbaChat} from '../../components/Social/shared/NunbaChat/NunbaChatProvider';
+
+// Mount, then let the provider's startup fetches settle: once the chat
+// settings arrive it reloads the thread from storage, which would replace a
+// message sent before that.  A person types after the panel is up.
+async function renderSettled() {
+  render(<NunbaChatProvider><Sender /></NunbaChatProvider>);
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+}
+
+function Sender() {
+  const {sendMessage, messages} = useNunbaChat();
+  return (
+    <div>
+      <button onClick={() => sendMessage('click the blue button')}>send</button>
+      <div data-testid="statuses">{messages.map((m) => `${m.role}:${m.status || ''}:${m.error || ''}`).join('|')}</div>
+    </div>
+  );
+}
+
+test("NunbaChat guidance to the user's live run carries their token", async () => {
+  localStorage.setItem('access_token', 'chat-token');
+  mockLiveRun = {agent_id: 'my-goal', task_id: 't', phase: 'executing', run_done: false};
+  global.fetch = jest.fn(() => Promise.resolve({ok: true, status: 200, json: () => Promise.resolve({})}));
+  await renderSettled();
+  await act(async () => { fireEvent.click(screen.getByText('send')); });
+  const steer = mockSent.find((c) => c.url === '/dashboard/agents/my-goal/inject');
+  expect(steer).toBeTruthy();
+  expect(header(steer)).toBe('Bearer chat-token');
+  expect(JSON.parse(steer.data).instruction).toBe('click the blue button');
+  await waitFor(() => expect(screen.getByTestId('statuses').textContent).toMatch(/user:sent:/));
+  mockLiveRun = null;
+});
+
+test("NunbaChat shows the server's refusal when the run is not the user's", async () => {
+  localStorage.setItem('access_token', 'chat-token');
+  mockLiveRun = {agent_id: 'their-goal', task_id: 't', phase: 'executing', run_done: false};
+  mockReply = {status: 403, data: {success: false, data: {error: 'this agent belongs to another user'}}};
+  global.fetch = jest.fn(() => Promise.resolve({ok: true, status: 200, json: () => Promise.resolve({})}));
+  await renderSettled();
+  await act(async () => { fireEvent.click(screen.getByText('send')); });
+  await waitFor(() => expect(screen.getByTestId('statuses').textContent)
+    .toMatch(/user:failed:this agent belongs to another user/));
+  mockLiveRun = null;
 });

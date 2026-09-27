@@ -361,10 +361,14 @@ class TestEmbeddedHartosDetection:
     """
 
     def test_hartos_release_probe_is_an_absolute_posix_path(self):
-        import inspect
-
-        import core.platform_paths as pp
-        src = inspect.getsource(pp.get_data_dir)
-        assert '/etc/hartos-release' in src, (
-            "get_data_dir must probe the POSIX path '/etc/hartos-release'; "
-            "a backslash literal is relative and can never match on Linux")
+        # The probe lives in _platform_default_data_dir (get_data_dir calls
+        # it).  Behavioural: only the exact POSIX path counts as present, so
+        # a backslash or relative literal would miss it and this fails.
+        with patch('core.platform_paths._IS_LINUX', True), \
+                patch('core.platform_paths._IS_WINDOWS', False), \
+                patch('core.platform_paths._IS_MACOS', False), \
+                patch('os.path.isfile', side_effect=lambda p: p == '/etc/hartos-release'):
+            assert _platform_default_data_dir() == '/var/lib/hartos', (
+                "the embedded-OS probe must test the POSIX path "
+                "'/etc/hartos-release'; a backslash literal is relative and "
+                "can never match on Linux")

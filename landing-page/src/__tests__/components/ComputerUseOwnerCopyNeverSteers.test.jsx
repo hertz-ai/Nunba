@@ -33,9 +33,14 @@ jest.mock('../../components/VoiceVisualizer', () => ({
 jest.mock('../../config/apiBase', () => ({API_BASE_URL: ''}));
 jest.mock('../../constants/events', () => ({NUNBA_CAMERA_CONSENT: 'evt'}));
 jest.mock('qrcode.react', () => ({QRCodeSVG: () => null}));
+const mockSteer = jest.fn(() => Promise.resolve({success: true}));
 jest.mock('../../services/socialApi', () => ({
   consentApi: {grant: jest.fn(() => Promise.resolve({})), decline: jest.fn(() => Promise.resolve({}))},
   notificationsApi: {markRead: jest.fn(() => Promise.resolve({}))},
+  // The one steering client (its token handling is pinned by
+  // __tests__/services/dashboardSteerSendsToken.test.jsx).
+  dashboardApi: {steer: (...a) => mockSteer(...a)},
+  steerError: (e) => e?.message || 'x',
 }));
 
 // eslint-disable-next-line import/first
@@ -67,6 +72,7 @@ beforeAll(() => {
 beforeEach(() => {
   Object.keys(handlers).forEach((k) => delete handlers[k]);
   delete window.pywebview;
+  mockSteer.mockClear();
   global.fetch = jest.fn(() => Promise.resolve({
     status: 200, json: () => Promise.resolve({success: true, response: 'ok'}),
   }));
@@ -101,7 +107,7 @@ test.each([
   await typeAndSend('what is on my screen?');
   const urls = global.fetch.mock.calls.map((c) => String(c[0]));
   expect(urls).toEqual(['/chat']);
-  expect(urls.some((u) => u.includes('/inject'))).toBe(false);
+  expect(mockSteer).not.toHaveBeenCalled();
 });
 
 test('in the companion window the owner copy gives the bridge no goal id', async () => {
@@ -118,6 +124,9 @@ test('control: the run user\'s own message does route typed guidance to inject',
   render(<VoiceOrbPage />);
   act(() => handlers['computer_use.update'](runStep));
   await typeAndSend('click the blue button');
-  const urls = global.fetch.mock.calls.map((c) => String(c[0]));
-  expect(urls).toEqual(['/api/social/dashboard/agents/guest-goal/inject']);
+  expect(global.fetch).not.toHaveBeenCalled();
+  expect(mockSteer).toHaveBeenCalledTimes(1);
+  expect(mockSteer.mock.calls[0][0]).toBe('guest-goal');
+  expect(mockSteer.mock.calls[0][1]).toBe('inject');
+  expect(mockSteer.mock.calls[0][2].instruction).toBe('click the blue button');
 });

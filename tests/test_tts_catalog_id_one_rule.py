@@ -110,12 +110,16 @@ def test_capability_map_keys_the_same_backend(entry_id):
 # (tts_router.catalog_id_to_engine_id).  Nunba's two call sites,
 # tts_engine.catalog_entry_backend and TTSLoader._registry_key, only
 # delegate to it, so no Nunba shipping file needs the prefix as a value at
-# all: ANY string literal equal to 'tts-', or a regex starting '^tts-', is a
-# second conversion in the making, however it is spelled -- a call argument,
-# a named constant, a tuple for startswith, a slice comparison, a pattern
-# with a capture group.  Only BUILDING an id may carry it: inside an
-# f-string (f'tts-{x}') or as the left operand of + ('tts-' + x).  No
-# exemptions by function: nothing in Nunba strips the prefix itself.
+# all: ANY string literal spelling it -- 'tts-' in any case, or a regex
+# anchored on it (^tts-, ^(tts)-, ^(?:tts)-, \Atts-) -- is a second
+# conversion in the making, however it is used: a call argument, a named
+# constant, a tuple for startswith, a slice comparison, a pattern with a
+# capture group.  Only BUILDING an id may carry it: an f-string that
+# actually inserts a value (f'tts-{x}'; f'tts-' alone is just a literal, and
+# the inserted expressions are still scanned) or the left operand of +
+# ('tts-' + x).  No exemptions by function: nothing in Nunba strips the
+# prefix itself.  Not covered: prefix-free spellings such as
+# e.split('-', 1)[1], which are too general to flag without false hits.
 _SKIP_DIRS = {'tests', 'build', 'dist', 'node_modules', 'landing-page',
               '__pycache__', 'venv', 'memory'}
 
@@ -130,10 +134,35 @@ def _shipping_py_files(root):
                 yield os.path.join(d, f)
 
 
+def _is_prefix_text(text):
+    """True when ``text`` spells the bare prefix: 'tts-' in any case, or a
+    regex anchored on it however it groups ('^tts-', '^(tts)-', '^(?:tts)-',
+    r'\\Atts-')."""
+    t = text.lower()
+    if t == 'tts-':
+        return True
+    for anchor in ('^', '\\a'):
+        if t.startswith(anchor):
+            rest = t[len(anchor):].replace('(?:', '').replace('(', '')
+            if rest.replace(')', '').startswith('tts-'):
+                return True
+    return False
+
+
 def _is_prefix_literal(node):
     import ast
-    return (isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and (node.value == 'tts-' or node.value.startswith('^tts-')))
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return _is_prefix_text(node.value)
+    # An f-string that inserts nothing (f'tts-') is only a literal.
+    if isinstance(node, ast.JoinedStr) and not _inserts_a_value(node):
+        return _is_prefix_text(''.join(
+            v.value for v in node.values if isinstance(v, ast.Constant)))
+    return False
+
+
+def _inserts_a_value(joined):
+    import ast
+    return any(isinstance(v, ast.FormattedValue) for v in joined.values)
 
 
 def _prefix_strip_sites(path, rel):
@@ -150,8 +179,13 @@ def _prefix_strip_sites(path, rel):
                                   ast.ClassDef)):
                 visit(child, scope + [child.name])
                 continue
-            if isinstance(child, ast.JoinedStr):
-                continue                  # f'tts-{x}': builds an id
+            if isinstance(child, ast.JoinedStr) and _inserts_a_value(child):
+                # f'tts-{x}' builds an id: its text parts are allowed, but
+                # the expressions it inserts are still scanned.
+                for part in child.values:
+                    if isinstance(part, ast.FormattedValue):
+                        visit(part, scope)
+                continue
             if (isinstance(child, ast.BinOp) and isinstance(child.op, ast.Add)
                     and _is_prefix_literal(child.left)):
                 visit(ast.Expression(body=child.right), scope)
@@ -159,6 +193,7 @@ def _prefix_strip_sites(path, rel):
             if _is_prefix_literal(child):
                 sites.append((rel, '.'.join(scope) or '<module>',
                               child.lineno))
+                continue                  # one site, not one per part
             visit(child, scope)
     visit(tree, [])
     return sites
@@ -226,6 +261,14 @@ def test_git_tracked_py_is_none_outside_a_checkout(tmp_path):
     "x = e.startswith(('tts-', 'stt-'))",
     "x = e[:4] == 'tts-'",
     "x = re.sub(r'^tts-(.+)', r'\\1', e)",
+    # review of 0f1c7e7f / 3cd8dc2c: an f-string that inserts nothing, and
+    # the cheap spellings of the same prefix
+    "x = e.replace(f'tts-', '')",
+    "x = re.sub(r'^(tts)-', '', e)",
+    "x = re.sub(r'^(?:tts)-', '', e)",
+    "x = re.sub(r'\\Atts-', '', e)",
+    "x = e.removeprefix('TTS-'.lower())",
+    "x = f'{e.replace(\"tts-\", \"\")}-x'",
 ])
 def test_source_guard_catches_a_planted_second_rule(tmp_path, line):
     (tmp_path / 'routes').mkdir()
@@ -234,6 +277,19 @@ def test_source_guard_catches_a_planted_second_rule(tmp_path, line):
         encoding='utf-8')
     assert _all_prefix_strip_sites(str(tmp_path)) == [
         ('routes/planted.py', 'backend_for', 4)]
+
+
+@pytest.mark.parametrize('expr,is_prefix', [
+    ("f'tts-{x}'", False),     # inserts a value: builds an id
+    ("f'tts-'", True),         # inserts nothing: only a literal
+    ("'TTS-'", True),
+    ("'tts-f5-tts'", False),   # a whole id, not the prefix
+    ("r'\\Atts-(.+)'", True),
+])
+def test_source_guard_prefix_literal_contract(expr, is_prefix):
+    import ast
+    node = ast.parse(expr, mode='eval').body
+    assert _is_prefix_literal(node) is is_prefix
 
 
 def test_source_guard_catches_a_module_level_constant(tmp_path):

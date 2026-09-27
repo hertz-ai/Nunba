@@ -16,6 +16,7 @@
  * component, no risk of color drift.
  */
 import { SOCIAL_API_URL } from '../../config/apiBase';
+import { dashboardApi } from '../../services/socialApi';
 
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import ChatIcon from '@mui/icons-material/Chat';
@@ -271,14 +272,13 @@ function SteeringControls({ agentId, currentStatus, onAction }) {
   const canResume = currentStatus === 'paused';
   const canCancel = currentStatus !== 'archived' && currentStatus !== 'completed';
 
+  // dashboardApi.steer: the one steering client, carrying the signed-in
+  // token (HARTOS lets only the goal's owner or an admin steer it).
   const fire = async (verb) => {
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${agentId}/${verb}`,
-        { method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason: `operator-${verb} via drawer` }) });
-      if (res.ok) onAction && onAction(verb);
+      const d = await dashboardApi.steer(agentId, verb,
+        { reason: `operator-${verb} via drawer` });
+      if (d?.success) onAction && onAction(verb);
     } catch (_) { /* drawer poll will surface the new state */ }
   };
 
@@ -313,15 +313,13 @@ function InjectInstruction({ agentId, onSent }) {
     if (!text.trim()) return;
     setSending(true);
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${agentId}/inject`,
-        { method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ instruction: text }) });
-      if (res.ok) {
+      const d = await dashboardApi.steer(agentId, 'inject', { instruction: text });
+      if (d?.success) {
         setText('');
         onSent && onSent();
       }
+    } catch (_) {
+      /* refused or offline: the text stays for another try */
     } finally {
       setSending(false);
     }
