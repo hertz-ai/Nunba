@@ -18,7 +18,6 @@ from routes.chatbot_routes import (
     _KEY_NAME_MAP,
     _MISSING_KEY_INDICATORS,
     _detect_missing_key_in_response,
-    _extract_resource_request,
     match_options,
 )
 
@@ -32,46 +31,10 @@ from routes.chatbot_routes import (
 # locks the guard that prevents the hardcoded symbols from coming back.
 
 
-# ==========================================================================
-# 2. Resource Request Extraction
-# ==========================================================================
-class TestExtractResourceRequest:
-    """_extract_resource_request: parse RESOURCE_REQUEST:{json} markers."""
-
-    def test_valid_resource_request(self):
-        text = 'Some text RESOURCE_REQUEST:{"__SECRET_REQUEST__": true, "key_name": "GOOGLE_API_KEY"}'
-        result = _extract_resource_request(text)
-        assert result is not None
-        assert result['key_name'] == 'GOOGLE_API_KEY'
-        assert result['triggered_by'] == 'agent_request_resource'
-
-    def test_no_marker(self):
-        assert _extract_resource_request('hello world') is None
-
-    def test_empty_string(self):
-        assert _extract_resource_request('') is None
-
-    def test_none_input(self):
-        assert _extract_resource_request(None) is None
-
-    def test_invalid_json(self):
-        text = 'RESOURCE_REQUEST:{broken json'
-        assert _extract_resource_request(text) is None
-
-    def test_missing_secret_flag(self):
-        text = 'RESOURCE_REQUEST:{"key_name": "TEST"}'
-        result = _extract_resource_request(text)
-        assert result is None  # __SECRET_REQUEST__ must be true
-
-    def test_secret_flag_removed(self):
-        text = 'RESOURCE_REQUEST:{"__SECRET_REQUEST__": true, "key_name": "X"}'
-        result = _extract_resource_request(text)
-        assert '__SECRET_REQUEST__' not in result
-
-    def test_marker_at_end(self):
-        text = 'I need an API key. RESOURCE_REQUEST:{"__SECRET_REQUEST__": true, "key": "val"}'
-        result = _extract_resource_request(text)
-        assert result is not None
+# (2. Resource Request Extraction: _extract_resource_request parsed the
+# RESOURCE_REQUEST:{json} marker HARTOS Request_Resource used to return.  It
+# asks on the consent card now (HARTOS 6fb9b79bc) and nothing emits the
+# marker, so the parser and its tests are gone.)
 
 
 # ==========================================================================

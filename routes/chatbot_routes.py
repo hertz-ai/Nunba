@@ -285,11 +285,12 @@ def _submit_correction_async(original_response, corrected_text, user_id):
                      name='submit_correction').start()
 
 
-# Agent-driven secret request detection
+# Missing-API-key detection
 # The LangChain agent/tools dictate when secrets are needed — NOT fuzzy regex on user input.
 # When a tool fails due to a missing API key, the agent's error response is detected here
 # and a structured `secret_request` is injected into the response for the frontend to present
-# a secure input screen. The agent can also return `secret_request` directly.
+# a secure input screen.  A credential an agent asks for goes to the consent card instead
+# (HARTOS hartos.ai_key_vault.request_credential).
 _MISSING_KEY_INDICATORS = [
     'api key not found', 'api key is required', 'missing api key',
     'set your api key', 'configure your api key', 'api_key not set',
@@ -313,24 +314,6 @@ _KEY_NAME_MAP = {
                'description': 'Required for OpenAI GPT models.',
                'used_by': 'OpenAI LLM'},
 }
-
-
-def _extract_resource_request(text):
-    """Extract structured resource request from Request_Resource tool output.
-    The tool embeds RESOURCE_REQUEST:{json} in its response. Returns dict or None."""
-    if not text or 'RESOURCE_REQUEST:' not in text:
-        return None
-    try:
-        marker_idx = text.index('RESOURCE_REQUEST:') + len('RESOURCE_REQUEST:')
-        json_str = text[marker_idx:].strip()
-        req = json.loads(json_str)
-        if req.get('__SECRET_REQUEST__'):
-            req.pop('__SECRET_REQUEST__', None)
-            req['triggered_by'] = 'agent_request_resource'
-            return req
-    except (ValueError, json.JSONDecodeError) as e:
-        logger.warning(f'Failed to parse RESOURCE_REQUEST marker: {e}')
-    return None
 
 
 def _detect_missing_key_in_response(text):
@@ -3153,20 +3136,16 @@ def _chat_turn(data):
                         'success': False,
                     }
                     # Agent error may indicate a missing API key
-                    secret_req = result.get('secret_request')
-                    if not secret_req:
-                        key_info = _detect_missing_key_in_response(error_msg)
-                        if key_info:
-                            secret_req = {
-                                'type': 'tool_key',
-                                'key_name': key_info['key_name'],
-                                'label': key_info['label'],
-                                'description': key_info['description'],
-                                'used_by': key_info['used_by'],
-                                'triggered_by': 'tool_error',
-                            }
-                    if secret_req:
-                        error_response['secret_request'] = secret_req
+                    key_info = _detect_missing_key_in_response(error_msg)
+                    if key_info:
+                        error_response['secret_request'] = {
+                            'type': 'tool_key',
+                            'key_name': key_info['key_name'],
+                            'label': key_info['label'],
+                            'description': key_info['description'],
+                            'used_by': key_info['used_by'],
+                            'triggered_by': 'tool_error',
+                        }
                     # #171 — thinking traces stream live via SSE 'chat.response'
                     # (EventBus.emit fan-out, commit 29ac1b9).  The HTTP-attach
                     # path was redundant — every trace was already delivered in
@@ -3232,29 +3211,23 @@ def _chat_turn(data):
                         response_json['source'] = result.get(
                             'source') or response_json['source']
 
-                    # Agent-driven resource request: 3 detection paths (ordered by priority)
-                    # 1. Direct secret_request from backend/adapter
-                    # 2. RESOURCE_REQUEST: marker from Request_Resource tool output
-                    # 3. Missing-key error patterns in response text
-                    secret_req = result.get('secret_request')
-                    if not secret_req:
-                        secret_req = _extract_resource_request(response_text)
-                    if not secret_req:
-                        key_info = _detect_missing_key_in_response(response_text)
-                        if key_info:
-                            secret_req = {
-                                'type': 'tool_key',
-                                'key_name': key_info['key_name'],
-                                'label': key_info['label'],
-                                'description': key_info['description'],
-                                'used_by': key_info['used_by'],
-                                'triggered_by': 'tool_missing_key',
-                            }
-                    if secret_req:
-                        response_json['secret_request'] = secret_req
-                        # Strip the raw RESOURCE_REQUEST: marker from user-visible text
-                        if 'RESOURCE_REQUEST:' in response_text:
-                            response_json['text'] = response_text[:response_text.index('RESOURCE_REQUEST:')].rstrip()
+                    # A reply that says a tool's API key is missing opens the
+                    # key modal (secret_request).  An agent that needs a
+                    # credential asks on the consent card instead (HARTOS
+                    # hartos.ai_key_vault.request_credential, 6fb9b79bc):
+                    # the RESOURCE_REQUEST:{json} marker and a backend
+                    # 'secret_request' field that used to be read here are
+                    # produced by nothing any more.
+                    key_info = _detect_missing_key_in_response(response_text)
+                    if key_info:
+                        response_json['secret_request'] = {
+                            'type': 'tool_key',
+                            'key_name': key_info['key_name'],
+                            'label': key_info['label'],
+                            'description': key_info['description'],
+                            'used_by': key_info['used_by'],
+                            'triggered_by': 'tool_missing_key',
+                        }
                     # Pass through Agent_status for creation/reuse mode tracking
                     agent_status = result.get('Agent_status')
                     if agent_status:

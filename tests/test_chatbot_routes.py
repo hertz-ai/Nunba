@@ -143,34 +143,6 @@ class TestLlmAutoStartDelegation:
                 'llm', caller='chat:u1')
 
 
-class TestExtractResourceRequest:
-    """Test the RESOURCE_REQUEST marker extraction."""
-
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        from routes.chatbot_routes import _extract_resource_request
-        self.extract = _extract_resource_request
-
-    def test_returns_none_for_normal_text(self):
-        assert self.extract("Just a normal response") is None
-
-    def test_returns_none_for_none_input(self):
-        assert self.extract(None) is None
-
-    def test_extracts_valid_resource_request(self):
-        marker = json.dumps({"__SECRET_REQUEST__": True, "key_name": "GOOGLE_API_KEY"})
-        text = f"Some text RESOURCE_REQUEST:{marker}"
-        result = self.extract(text)
-        assert result is not None
-        assert result["key_name"] == "GOOGLE_API_KEY"
-        assert result["triggered_by"] == "agent_request_resource"
-
-    def test_invalid_json_returns_none(self):
-        text = "Some text RESOURCE_REQUEST:{not valid json}"
-        result = self.extract(text)
-        assert result is None
-
-
 class TestDetectMissingKeyInResponse:
     """Test API-key-missing detection in LLM responses."""
 
@@ -626,35 +598,6 @@ class TestMissingKeyDetection:
         from routes.chatbot_routes import _detect_missing_key_in_response
         assert _detect_missing_key_in_response("") is None
         assert _detect_missing_key_in_response(None) is None
-
-
-# ============================================================
-# Resource request extraction
-# ============================================================
-
-class TestResourceRequestExtraction:
-    """_extract_resource_request parses tool output for structured resource needs."""
-
-    def test_extracts_valid_json(self):
-        """Extracts when __SECRET_REQUEST__ flag is present."""
-        from routes.chatbot_routes import _extract_resource_request
-        text = 'RESOURCE_REQUEST:{"__SECRET_REQUEST__": true, "key_name": "GOOGLE_API_KEY", "label": "Google Key"}'
-        result = _extract_resource_request(text)
-        assert result is not None
-        assert result['key_name'] == 'GOOGLE_API_KEY'
-
-    def test_returns_none_without_marker(self):
-        from routes.chatbot_routes import _extract_resource_request
-        assert _extract_resource_request("Just a normal response") is None
-
-    def test_returns_none_for_invalid_json(self):
-        from routes.chatbot_routes import _extract_resource_request
-        result = _extract_resource_request("RESOURCE_REQUEST:{invalid json")
-        assert result is None
-
-    def test_returns_none_for_none_input(self):
-        from routes.chatbot_routes import _extract_resource_request
-        assert _extract_resource_request(None) is None
 
 
 # ============================================================
