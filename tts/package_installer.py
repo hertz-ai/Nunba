@@ -1481,9 +1481,47 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
 # disk) that re-ran pip for nvidia-cublas / cudnn on every boot and failed
 # each time.  A failed install is recorded here, with its reason and what was
 # installed when it failed; the automatic callers ask
-# should_install_gpu_ctranslate2() and skip while nothing has changed.  The
-# setup wizard (desktop/ai_installer.py, the user asking) calls
+# should_install_gpu_ctranslate2() and skip while nothing has changed, for at
+# most _CT2_FAILURE_TTL_S, and each skipped boot says so on a card.  The setup
+# wizard (desktop/ai_installer.py, the user asking) calls
 # install_gpu_ctranslate2 directly and always retries.
+#
+# Only a failure that will fail again is recorded.  Not recorded: an install
+# that never ran pip (deferred, python-embed missing), one that could not
+# reach the index or ran out of time (it may work on the next boot), and a
+# refusal by HARTOS's own pins (--constraint, _write_hart_constraints): that
+# is decided by what the build ships, not by this machine.
+
+#: How long a recorded failure keeps the boot from retrying.  One temporary
+#: failure that slipped past the checks below then costs a day, not a build.
+_CT2_FAILURE_TTL_S = 24 * 3600
+
+# pip / _run_pip output that says the attempt did not get to install
+# anything: nothing about this machine was learned.
+_CT2_NOT_RUN_PREFIXES = ('deferred:', 'python-embed not found')
+_CT2_TRANSIENT_MARKERS = (
+    'pip stalled', 'pip timed out', 'newconnectionerror', 'max retries exceeded',
+    'connectionerror', 'connection refused', 'connection reset',
+    'temporary failure in name resolution', 'getaddrinfo failed',
+    'name or service not known', 'read timed out', 'readtimeouterror',
+    'connecttimeouterror', 'could not fetch url', 'sslerror', 'proxyerror',
+    'no connection could be made', 'network is unreachable',
+)
+# pip marks a requirement that came from a --constraint file this way.
+_CT2_CONSTRAINT_MARKER = '(constraint)'
+
+
+def _ct2_failure_is_recordable(msg: str) -> bool:
+    """True when this install failure will fail again on the next boot: pip
+    ran, reached the index, and was refused for a reason of this machine."""
+    text = msg or ''
+    if text.startswith(_CT2_NOT_RUN_PREFIXES):
+        return False
+    low = text.lower()
+    if any(marker in low for marker in _CT2_TRANSIENT_MARKERS):
+        return False
+    return _CT2_CONSTRAINT_MARKER not in low
+
 
 def _ct2_failure_marker_path() -> str:
     return os.path.join(_INSTALL_LOCK_DIR, 'cuda_ctranslate2_failed.json')
@@ -1521,9 +1559,11 @@ def _record_ct2_install_failure(reason: str) -> None:
     """Write the failure marker: why, when, and the context it failed in."""
     import json
     tail = [ln.strip() for ln in (reason or '').splitlines() if ln.strip()]
+    now = time.time()
     record = {
         'reason': (tail[-1] if tail else 'unknown')[:300],
-        'at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now)),
+        'at_epoch': now,
         **_ct2_install_context(),
     }
     path = _ct2_failure_marker_path()
@@ -1548,7 +1588,8 @@ def _clear_ct2_install_failure() -> None:
 
 def _ct2_failure_that_still_stands() -> dict | None:
     """The recorded failure when it was recorded for what is installed now,
-    else None.  An unreadable marker does not block an install."""
+    less than _CT2_FAILURE_TTL_S ago, else None.  An unreadable marker, or one
+    without a time (written before the expiry existed), does not block."""
     import json
     path = _ct2_failure_marker_path()
     if not os.path.isfile(path):
@@ -1565,15 +1606,54 @@ def _ct2_failure_that_still_stands() -> dict | None:
         logger.info("CUDA ctranslate2: the install failed before on another "
                     "build or interpreter; trying again")
         return None
+    at = record.get('at_epoch')
+    if not isinstance(at, (int, float)) or time.time() - at >= _CT2_FAILURE_TTL_S:
+        logger.info("CUDA ctranslate2: the recorded failure is over %d h old; "
+                    "trying again", _CT2_FAILURE_TTL_S // 3600)
+        return None
     return record
+
+
+def _ct2_off_card_message(prior: dict) -> str:
+    """What the skipped boot tells the owner.  It says 'failed', which is what
+    makes the setup card render as finished rather than as a spinner."""
+    return (f"GPU speech is off: the GPU speech runtime install failed "
+            f"({prior.get('reason', 'unknown reason')}). Retry in AI setup.")
+
+
+def _announce_ct2_off(prior: dict) -> None:
+    """Show the skipped boot as a setup card (the cuda_ctranslate2 job the
+    install itself reports on), so speech-to-text is not on CPU in silence."""
+    try:
+        from integrations.social.realtime import publish_event
+        publish_event('setup_progress', {
+            'type': 'setup_progress',
+            'job_type': 'cuda_ctranslate2',
+            'status': 'error',
+            'complete': True,
+            'message': _ct2_off_card_message(prior),
+        })
+    except Exception as exc:  # noqa: BLE001 -- the card is best-effort
+        logger.warning("CUDA ctranslate2: could not show the 'GPU speech is "
+                       "off' card (%s: %s)", type(exc).__name__, exc)
+
+
+def _ct2_retry_wording() -> str:
+    """When a skipped install is tried again.  A source run has no build to
+    update, so it does not promise one."""
+    after = f"in {_CT2_FAILURE_TTL_S // 3600} h"
+    if _installed_build_id() == 'source':
+        return f"{after} or from AI setup"
+    return f"{after}, after an update, or from AI setup"
 
 
 def should_install_gpu_ctranslate2() -> bool:
     """The boot-time gate for ``install_gpu_ctranslate2``: an NVIDIA GPU, the
     runtime not usable (``is_cuda_ctranslate2``), and no failed install
     recorded for what is installed now.  A recorded failure is skipped with a
-    WARNING naming its reason; it is retried after an update, when the worker
-    interpreter changes, or when the owner runs AI setup.  Never raises."""
+    WARNING naming its reason and a "GPU speech is off" card; it is retried
+    after _CT2_FAILURE_TTL_S, after an update, when the worker interpreter
+    changes, or when the owner runs AI setup.  Never raises."""
     try:
         if not has_nvidia_gpu():
             return False
@@ -1584,10 +1664,11 @@ def should_install_gpu_ctranslate2() -> bool:
         if prior:
             logger.warning(
                 "CUDA ctranslate2 not installed this boot: the install failed "
-                "on this build at %s (%s); speech-to-text stays on CPU. It is "
-                "tried again after an update or from AI setup (marker: %s)",
+                "at %s (%s); speech-to-text stays on CPU. It is tried again %s "
+                "(marker: %s)",
                 prior.get('at', '?'), prior.get('reason', '?'),
-                _ct2_failure_marker_path())
+                _ct2_retry_wording(), _ct2_failure_marker_path())
+            _announce_ct2_off(prior)
             return False
         return True
     except Exception as exc:  # noqa: BLE001 -- a boot gate must not crash boot
@@ -1678,10 +1759,15 @@ def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, 
     else:
         logger.warning("CUDA ctranslate2 install failed (STT stays on CPU): %s",
                        msg)
-        # A deferred install never ran pip (the package is live in this
-        # process); only a real attempt is recorded against this build.
-        if not msg.startswith('deferred:'):
+        # Only a failure that will fail again is recorded against this build
+        # (see _ct2_failure_is_recordable).
+        if _ct2_failure_is_recordable(msg):
             _record_ct2_install_failure(msg)
+        else:
+            logger.info("CUDA ctranslate2: this failure is not recorded (pip "
+                        "did not run, could not reach the index, ran out of "
+                        "time, or HARTOS's pins refused it); the next boot "
+                        "tries again")
 
     _release_file_lock('cuda_ctranslate2')
     return ok, msg

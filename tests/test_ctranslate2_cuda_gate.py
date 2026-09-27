@@ -227,6 +227,12 @@ def ct2_env(monkeypatch, tmp_path):
     monkeypatch.setattr(pi, 'is_cuda_ctranslate2', lambda: False)
     build = {'id': 'build-A'}
     monkeypatch.setattr(pi, '_installed_build_id', lambda: build['id'])
+    # The card the gate shows on a skipped boot goes through HARTOS's
+    # publish_event (the boundary): recorded here, never the real bus.
+    cards = []
+    rt = _types.ModuleType('integrations.social.realtime')
+    rt.publish_event = lambda topic, data: cards.append((topic, data))
+    monkeypatch.setitem(sys.modules, 'integrations.social.realtime', rt)
     pip_calls = []
 
     def set_pip(ok, msg):
@@ -236,7 +242,7 @@ def ct2_env(monkeypatch, tmp_path):
         monkeypatch.setattr(pi, '_run_pip', _run_pip)
 
     return _types.SimpleNamespace(set_pip=set_pip, pip_calls=pip_calls,
-                                  build=build, tmp=tmp_path)
+                                  build=build, tmp=tmp_path, cards=cards)
 
 
 _PIP_FAIL = ("ERROR: Could not find a version that satisfies the requirement "
@@ -366,6 +372,116 @@ def test_first_run_install_skips_a_recorded_failure(ct2_env, monkeypatch):
     ct2_env.build['id'] = 'build-B'
     li.install_on_first_run()
     assert len(calls) == 1
+
+
+# ── The marker is not sticky (review of 16a10a30) ────────────────────────────
+#
+# One temporary failure (offline, index down, pip stall) must not switch GPU
+# speech off for the life of a build; a source run (no build to update) must
+# retry too; and a skipped boot must say so on a card, not in a log only.
+
+def test_a_recorded_failure_expires_after_a_day(ct2_env, monkeypatch):
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    recorded_at = pi.time.time()
+    monkeypatch.setattr(pi.time, 'time',
+                        lambda: recorded_at + pi._CT2_FAILURE_TTL_S - 60)
+    assert pi.should_install_gpu_ctranslate2() is False
+    monkeypatch.setattr(pi.time, 'time',
+                        lambda: recorded_at + pi._CT2_FAILURE_TTL_S + 1)
+    assert pi.should_install_gpu_ctranslate2() is True
+
+
+def test_a_marker_with_no_time_does_not_block(ct2_env):
+    """Markers written before the expiry existed carry no at_epoch."""
+    import json
+    os.makedirs(os.path.dirname(pi._ct2_failure_marker_path()), exist_ok=True)
+    with open(pi._ct2_failure_marker_path(), 'w') as fh:
+        json.dump({'reason': 'x', 'at': '2026-09-28 04:00:00',
+                   **pi._ct2_install_context()}, fh)
+    assert pi.should_install_gpu_ctranslate2() is True
+
+
+@pytest.mark.parametrize('msg', [
+    # _run_pip's own words for an attempt that could not run or finish
+    'python-embed not found',
+    "deferred: live modules ['ctranslate2'] in user-site",
+    "pip stalled — no output for 120s after 'nvidia-cudnn-cu12'. Check network / mirror.",
+    'pip timed out after 900s',
+    # pip offline: retries, then gives up
+    "WARNING: Retrying (Retry(total=4)) after connection broken by "
+    "'NewConnectionError(...: Failed to establish a new connection)'\n"
+    "ERROR: Could not find a version that satisfies the requirement "
+    "nvidia-cublas-cu12 (from versions: none)",
+    'ERROR: Could not install packages due to an OSError: '
+    "HTTPSConnectionPool(host='pypi.org', port=443): Read timed out.",
+    # refused by HARTOS's own pins (the --constraint file)
+    'ERROR: Cannot install ctranslate2 because these package versions have '
+    'conflicting dependencies.\nThe conflict is caused by:\n'
+    '    ctranslate2 4.6.0 depends on numpy>=2\n'
+    '    The user requested (constraint) numpy<2.0.0,>=1.25.0',
+])
+def test_a_failure_that_may_not_repeat_is_not_recorded(ct2_env, msg):
+    ct2_env.set_pip(False, msg)
+    pi.install_gpu_ctranslate2()
+    assert not os.path.exists(pi._ct2_failure_marker_path())
+    assert pi.should_install_gpu_ctranslate2() is True
+
+
+@pytest.mark.parametrize('msg', [
+    _PIP_FAIL,                                   # no wheel for this platform
+    'ERROR: Could not install packages due to an OSError: [Errno 28] '
+    'No space left on device',                   # full disk
+])
+def test_a_failure_that_will_repeat_is_recorded(ct2_env, msg):
+    ct2_env.set_pip(False, msg)
+    pi.install_gpu_ctranslate2()
+    assert os.path.isfile(pi._ct2_failure_marker_path())
+
+
+def test_a_skipped_boot_shows_the_gpu_speech_off_card(ct2_env):
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    assert ct2_env.cards == []                   # the install reports itself
+
+    assert pi.should_install_gpu_ctranslate2() is False
+    assert len(ct2_env.cards) == 1
+    topic, card = ct2_env.cards[0]
+    assert topic == 'setup_progress'
+    assert card['type'] == 'setup_progress'
+    assert card['job_type'] == 'cuda_ctranslate2'
+    assert card['complete'] is True
+    assert card['message'].startswith('GPU speech is off: ')
+    assert 'nvidia-cudnn-cu12==9.*' in card['message']
+    assert card['message'].endswith('Retry in AI setup.')
+    # SetupProgressCard reads a step whose message says 'failed' as a
+    # finished, failed job: no spinner, and the dismiss control shows.
+    assert 'failed' in card['message']
+
+
+def test_no_card_when_nothing_was_skipped(ct2_env, monkeypatch):
+    assert pi.should_install_gpu_ctranslate2() is True       # will install
+    monkeypatch.setattr(pi, 'is_cuda_ctranslate2', lambda: True)
+    assert pi.should_install_gpu_ctranslate2() is False      # already usable
+    assert ct2_env.cards == []
+
+
+@pytest.mark.parametrize('build_id, promises_update', [
+    ('source', False),
+    ('build:abc', True),
+])
+def test_the_skip_says_when_it_is_tried_again(ct2_env, caplog, build_id,
+                                              promises_update):
+    ct2_env.build['id'] = build_id
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    caplog.clear()
+    with caplog.at_level('WARNING', logger=pi.logger.name):
+        assert pi.should_install_gpu_ctranslate2() is False
+    said = ' '.join(r.getMessage() for r in caplog.records)
+    assert f'in {pi._CT2_FAILURE_TTL_S // 3600} h' in said
+    assert 'from AI setup' in said
+    assert ('after an update' in said) is promises_update
 
 
 # ── The gate's own branches (review of 0f6171f1, P2) ─────────────────────────
