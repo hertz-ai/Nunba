@@ -163,3 +163,206 @@ def test_real_child_libraries_without_a_device_are_not_usable(
         monkeypatch, tmp_path, worker_python, loadable_libraries):
     monkeypatch.setenv('PYTHONPATH', _fake_ctranslate2(tmp_path, 0))
     assert pi.is_cuda_ctranslate2() is False
+
+
+# ── "Never raises": anything that stops the answer reads False, and says why ──
+
+@pytest.mark.parametrize('where', ['worker_python', 'run_bounded', 'result'])
+def test_any_failure_to_answer_reads_as_not_usable_and_is_logged(
+        monkeypatch, caplog, where):
+    """The docstring promises "Never raises"; it caught only ImportError and
+    OSError.  This gate runs on the boot path, so it must hold that."""
+    import core.subprocess_safe as ss
+    import core.venv_paths as vp
+
+    def boom(*a, **k):
+        raise RuntimeError(f'broken {where}')
+
+    class _NoAttrs:
+        pass
+
+    monkeypatch.setattr(vp, 'venv_creator_python',
+                        boom if where == 'worker_python' else (lambda: sys.executable))
+    if where == 'run_bounded':
+        monkeypatch.setattr(ss, 'run_bounded', boom)
+    elif where == 'result':
+        monkeypatch.setattr(ss, 'run_bounded', lambda cmd, timeout, **kw: _NoAttrs())
+    else:
+        monkeypatch.setattr(ss, 'run_bounded', lambda cmd, timeout, **kw: _Result(0))
+    with caplog.at_level('WARNING', logger=pi.logger.name):
+        assert pi.is_cuda_ctranslate2() is False
+    said = ' '.join(r.getMessage() for r in caplog.records if r.levelname == 'WARNING')
+    assert 'is_cuda_ctranslate2' in said
+    if where != 'result':
+        assert f'broken {where}' in said
+
+
+# ── An install that cannot succeed is not retried every boot ─────────────────
+#
+# main.py's TTS warmup (every boot) and llama_installer.install_on_first_run
+# ran `if has_nvidia_gpu() and not is_cuda_ctranslate2(): install_gpu_
+# ctranslate2(...)`.  On a box where the CUDA libraries can never install
+# (offline, pip failure, CUDA major mismatch, full disk) that re-ran pip for
+# nvidia-cublas / cudnn on every boot and failed each time.  Now a failed
+# install leaves a marker; the automatic callers skip, with a WARNING naming
+# the reason, until the build or the worker interpreter changes; the setup
+# wizard (the user asking) always retries.
+
+@pytest.fixture
+def ct2_env(monkeypatch, tmp_path):
+    """install_gpu_ctranslate2 with its boundaries stubbed: an NVIDIA GPU, the
+    file lock, pip, and the marker's home under tmp_path."""
+    import types as _types
+    monkeypatch.setattr(pi, '_INSTALL_LOCK_DIR', str(tmp_path / 'nunba'))
+    monkeypatch.setattr(pi, '_acquire_file_lock', lambda name: True)
+    monkeypatch.setattr(pi, '_release_file_lock', lambda name: None)
+    monkeypatch.setattr(pi, 'has_nvidia_gpu', lambda: True)
+    vm = _types.ModuleType('integrations.service_tools.vram_manager')
+    vm.vram_manager = _types.SimpleNamespace(
+        detect_gpu=lambda: {'cuda_available': True})
+    monkeypatch.setitem(sys.modules, 'integrations.service_tools.vram_manager', vm)
+    monkeypatch.setattr(pi, 'ensure_user_site_on_path', lambda: None)
+    monkeypatch.setattr(pi, 'get_user_site_packages', lambda: str(tmp_path / 'site'))
+    monkeypatch.setattr(pi, '_invalidate_import_cache', lambda: None)
+    monkeypatch.setattr(pi, 'is_cuda_ctranslate2', lambda: False)
+    build = {'id': 'build-A'}
+    monkeypatch.setattr(pi, '_installed_build_id', lambda: build['id'])
+    pip_calls = []
+
+    def set_pip(ok, msg):
+        def _run_pip(args, progress_cb=None, **kw):
+            pip_calls.append(list(args))
+            return ok, msg
+        monkeypatch.setattr(pi, '_run_pip', _run_pip)
+
+    return _types.SimpleNamespace(set_pip=set_pip, pip_calls=pip_calls,
+                                  build=build, tmp=tmp_path)
+
+
+_PIP_FAIL = ("ERROR: Could not find a version that satisfies the requirement "
+             "nvidia-cudnn-cu12==9.* (from versions: none)")
+
+
+def test_a_failed_install_is_not_retried_by_the_boot_gate(ct2_env, caplog):
+    ct2_env.set_pip(False, _PIP_FAIL)
+    assert pi.should_install_gpu_ctranslate2() is True       # nothing recorded yet
+    ok, _ = pi.install_gpu_ctranslate2()
+    assert ok is False
+    assert os.path.isfile(pi._ct2_failure_marker_path())
+
+    caplog.clear()                      # only the gate's own skip WARNING
+    with caplog.at_level('WARNING', logger=pi.logger.name):
+        assert pi.should_install_gpu_ctranslate2() is False
+    said = [r.getMessage() for r in caplog.records if r.levelname == 'WARNING']
+    assert len(said) == 1, said
+    assert 'nvidia-cudnn-cu12==9.*' in said[0]
+    assert pi._ct2_failure_marker_path() in said[0]
+
+
+def test_a_new_build_retries(ct2_env):
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    assert pi.should_install_gpu_ctranslate2() is False
+    ct2_env.build['id'] = 'build-B'
+    assert pi.should_install_gpu_ctranslate2() is True
+
+
+def test_another_worker_interpreter_retries(ct2_env, monkeypatch):
+    import core.venv_paths as vp
+    monkeypatch.setattr(vp, 'venv_creator_python', lambda: 'C:/old/python.exe')
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    assert pi.should_install_gpu_ctranslate2() is False
+    monkeypatch.setattr(vp, 'venv_creator_python', lambda: 'C:/new/python.exe')
+    assert pi.should_install_gpu_ctranslate2() is True
+
+
+def test_the_user_asking_retries_and_a_success_clears_the_marker(ct2_env):
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    assert pi.should_install_gpu_ctranslate2() is False
+
+    ct2_env.set_pip(True, 'Successfully installed nvidia-cudnn-cu12-9.1')
+    ok, _ = pi.install_gpu_ctranslate2()          # the wizard calls it directly
+    assert ok is True
+    assert len(ct2_env.pip_calls) == 2
+    assert not os.path.exists(pi._ct2_failure_marker_path())
+    assert pi.should_install_gpu_ctranslate2() is True
+
+
+def test_an_install_that_was_deferred_leaves_no_marker(ct2_env):
+    ct2_env.set_pip(False, "deferred: live modules ['ctranslate2'] in user-site")
+    pi.install_gpu_ctranslate2()
+    assert not os.path.exists(pi._ct2_failure_marker_path())
+
+
+def test_a_lock_held_elsewhere_leaves_no_marker(ct2_env, monkeypatch):
+    monkeypatch.setattr(pi, '_acquire_file_lock', lambda name: False)
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    assert ct2_env.pip_calls == []
+    assert not os.path.exists(pi._ct2_failure_marker_path())
+
+
+def test_the_gate_is_false_when_the_runtime_is_already_usable(ct2_env, monkeypatch):
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    monkeypatch.setattr(pi, 'is_cuda_ctranslate2', lambda: True)
+    assert pi.should_install_gpu_ctranslate2() is False
+    assert not os.path.exists(pi._ct2_failure_marker_path())   # stale record dropped
+
+
+def test_the_gate_is_false_without_an_nvidia_gpu(ct2_env, monkeypatch):
+    monkeypatch.setattr(pi, 'has_nvidia_gpu', lambda: False)
+    assert pi.should_install_gpu_ctranslate2() is False
+
+
+def test_an_unreadable_marker_does_not_block(ct2_env):
+    os.makedirs(os.path.dirname(pi._ct2_failure_marker_path()), exist_ok=True)
+    with open(pi._ct2_failure_marker_path(), 'w') as fh:
+        fh.write('{not json')
+    assert pi.should_install_gpu_ctranslate2() is True
+
+
+def test_the_gate_never_raises(ct2_env, monkeypatch, caplog):
+    def boom():
+        raise RuntimeError('nvidia-smi exploded')
+    monkeypatch.setattr(pi, 'has_nvidia_gpu', boom)
+    with caplog.at_level('WARNING', logger=pi.logger.name):
+        assert pi.should_install_gpu_ctranslate2() is False
+    assert any('nvidia-smi exploded' in r.getMessage() for r in caplog.records)
+
+
+def test_the_build_id_is_the_installed_build_info(monkeypatch, tmp_path):
+    exe = tmp_path / 'Nunba.exe'
+    exe.write_text('')
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(sys, 'executable', str(exe))
+    (tmp_path / 'BUILD_INFO.txt').write_text('BUILD_SHA=aaa\n')
+    first = pi._installed_build_id()
+    (tmp_path / 'BUILD_INFO.txt').write_text('BUILD_SHA=bbb\n')
+    assert pi._installed_build_id() != first
+
+
+def test_first_run_install_skips_a_recorded_failure(ct2_env, monkeypatch):
+    """llama_installer.install_on_first_run goes through the same gate."""
+    from llama import llama_installer as li
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    calls = []
+    monkeypatch.setattr(pi, 'install_gpu_ctranslate2',
+                        lambda **kw: calls.append(kw) or (False, 'x'))
+
+    class _Inst:
+        def install_llama_cpp(self, cb):
+            return True
+
+        def download_model(self, preset, cb):
+            return False
+
+    monkeypatch.setattr(li, 'LlamaInstaller', _Inst)
+    li.install_on_first_run()
+    assert calls == []
+    ct2_env.build['id'] = 'build-B'
+    li.install_on_first_run()
+    assert len(calls) == 1

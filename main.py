@@ -6365,10 +6365,12 @@ def start_background_services():
             # instead of CPU int8 — CPU int8 can't sustain realtime streaming
             # (29s cold load + can't keep the interim cadence). Independent of
             # CUDA torch: faster-whisper runs on CTranslate2, not torch. Gated
-            # by is_cuda_ctranslate2() so it's a no-op once installed.
+            # by should_install_gpu_ctranslate2(): a no-op once installed, and
+            # once an install failed on this build (retried after an update or
+            # from AI setup) instead of re-running pip every boot.
             try:
-                from tts.package_installer import has_nvidia_gpu, is_cuda_ctranslate2
-                if has_nvidia_gpu() and not is_cuda_ctranslate2():
+                from tts.package_installer import should_install_gpu_ctranslate2
+                if should_install_gpu_ctranslate2():
                     logging.info("STT: GPU detected — installing CUDA ctranslate2 for GPU whisper...")
                     from tts.package_installer import install_gpu_ctranslate2
                     def _ct2_progress(msg):

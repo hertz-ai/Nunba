@@ -1644,14 +1644,14 @@ def install_on_first_run(
     # moment as the llama.cpp binary — so GPU speech-to-text installs alongside
     # the GPU LLM rather than silently falling back to CPU int8 (not realtime).
     # faster-whisper runs on CTranslate2 (cuBLAS/cuDNN), independent of torch.
-    # Best-effort + idempotent: no-ops on CPU boxes and when already installed.
+    # Best-effort + idempotent: no-ops on CPU boxes, when already installed,
+    # and when an install already failed on this build (the gate says why).
     try:
         from tts.package_installer import (
-            has_nvidia_gpu,
             install_gpu_ctranslate2,
-            is_cuda_ctranslate2,
+            should_install_gpu_ctranslate2,
         )
-        if has_nvidia_gpu() and not is_cuda_ctranslate2():
+        if should_install_gpu_ctranslate2():
             if progress_callback:
                 progress_callback("Installing CUDA runtime for GPU speech-to-text...")
             install_gpu_ctranslate2(progress_cb=progress_callback)
