@@ -16,9 +16,10 @@
  *             database goal the injector accepts (agent_id) and the run has
  *             not closed.  Between steps the run is still live.
  */
+import realtimeService from '../services/realtimeService';
+
 import {useEffect, useRef, useState} from 'react';
 
-import realtimeService from '../services/realtimeService';
 
 export const ACTIVITY_LINGER_MS = 5000;
 

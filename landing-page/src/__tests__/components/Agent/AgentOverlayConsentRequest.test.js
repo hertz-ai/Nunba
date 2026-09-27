@@ -517,12 +517,20 @@ describe('AgentOverlay consent.request — the buttons answer the click', () => 
     const allow = await screen.findByRole('button', {name: ALLOW_ALL});
     fireEvent.click(allow);
     await waitFor(() => expect(consentApi.grant).toHaveBeenCalledTimes(1));
-    // The card closes on failure today (onDismiss in finally); what must
-    // never happen is a card left with every button dead.
+    // What must never happen is a card left with every button dead.
     await waitFor(() => {
       const still = screen.queryByRole('button', {name: ALLOW_ALL});
       expect(still === null || !still.disabled).toBe(true);
     });
+  });
+
+  test('a failed grant stays on the card and says why, instead of closing', async () => {
+    consentApi.grant.mockImplementationOnce(() => Promise.reject(new Error('server said 500')));
+    const send = mountOverlay();
+    send(ASK);
+    fireEvent.click(await screen.findByRole('button', {name: ALLOW_ALL}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('server said 500');
+    expect(screen.getByText(ASK.reason)).toBeInTheDocument();
   });
 });
 
@@ -542,11 +550,68 @@ describe('AgentOverlay consent.request — a credential ask', () => {
     agent_id: '42',
     reason: 'Site password is needed for the login step.',
   };
-  const ACCEPT = /Allow ALL agents to use/;
+  // What Accept does: the value is saved on this computer, and any agent can
+  // then use it by its alias (resolve_aliases is not per agent).
+  const ACCEPT = 'Save it for any agent to use';
 
   beforeEach(() => {
     // CRA's resetMocks clears the factory's implementation before each test.
     chatApi.vaultStore.mockResolvedValue({success: true});
+    // An earlier describe leaves a rejecting grant behind (mockImplementation).
+    consentApi.grant.mockResolvedValue({});
+    consentApi.decline.mockResolvedValue({});
+  });
+
+  test('Accept says what happens, not "Allow ALL agents to use a password"', async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+    expect(screen.getByRole('button', {name: ACCEPT})).toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: /Allow ALL agents/})).toBeNull();
+  });
+
+  // Owner ruling: consent must be able to say no.  "Not now" leaves the ask
+  // open, so without a decline HARTOS ConsentService.declined never became
+  // true for a credential and a rejected login re-asked forever.
+  test("Don't allow says no to this agent's credential ask, through the consent API", async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+
+    // Saying no needs nothing typed.
+    const no = screen.getByRole('button', {name: "Don't allow this agent"});
+    expect(no).not.toBeDisabled();
+    fireEvent.click(no);
+
+    await waitFor(() => {
+      expect(consentApi.decline).toHaveBeenCalledWith({
+        consent_type: 'credential', scope: 'secret:SITE_PASSWORD', agent_id: '42'});
+    });
+    expect(chatApi.vaultStore).not.toHaveBeenCalled();
+    expect(consentApi.grant).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.queryByText(CRED_ASK.reason)).not.toBeInTheDocument();
+    });
+  });
+
+  test('the card says what a no means for a credential (no privacy-page card to undo it)', async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+    expect(screen.getByText(/will not ask for this again/)).toBeInTheDocument();
+    expect(screen.queryByText(/Privacy settings/)).toBeNull();
+  });
+
+  test('a no that does not reach the server stays on the card and says so', async () => {
+    consentApi.decline.mockImplementationOnce(() => Promise.reject(new Error('network down')));
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+    fireEvent.click(screen.getByRole('button', {name: "Don't allow this agent"}));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('network down');
+    expect(screen.getByText(CRED_ASK.reason)).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: "Don't allow this agent"})).not.toBeDisabled();
   });
 
   test('has a password field, and Accept stays off until something is typed', async () => {

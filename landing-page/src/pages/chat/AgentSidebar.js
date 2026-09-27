@@ -2,11 +2,11 @@
 import AgentPoster from '../../assets/images/AgentPoster.png';
 import HARTSpeechPlayer from '../../components/HART/HARTSpeechPlayer';
 import OtpAuthModal from '../OtpAuthModal';
+import SIDEBAR_LINKS from '../sidebarLinks';
 
 import {ChevronRight, Menu, Star, Plus, X} from 'lucide-react';
 import React from 'react';
 import {Link as RouterLink} from 'react-router-dom';
-import SIDEBAR_LINKS from '../sidebarLinks';
 
 
 /**

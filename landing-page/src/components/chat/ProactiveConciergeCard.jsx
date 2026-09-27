@@ -141,7 +141,7 @@ export default function ProactiveConciergeCard({
         }}
       >
         {guestName ? `Welcome @${guestName}! ` : 'Welcome! '}
-        Hey, I'm getting permission before I speak anything loudly on the screen.
+        Hey, I&apos;m getting permission before I speak anything loudly on the screen.
         The human creator is a true helper to the AI, and I am here as a true friend and helper to you.
       </p>
 

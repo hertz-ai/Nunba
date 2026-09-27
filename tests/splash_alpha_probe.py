@@ -92,7 +92,9 @@ def read_patches(window_rect, patches, hwnd):
 
 def _selftest() -> int:
     import tkinter as tk
+
     from PIL import Image, ImageDraw
+
     from desktop import glass
 
     gp.ensure_dpi_aware()
@@ -162,6 +164,7 @@ def _static() -> int:
     """GL4 proof on the shipping builder and the shipping splash.png."""
     import ctypes
     import tkinter as tk
+
     from PIL import Image
 
     gp.ensure_dpi_aware()

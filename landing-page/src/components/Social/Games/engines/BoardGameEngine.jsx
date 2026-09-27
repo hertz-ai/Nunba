@@ -1,16 +1,15 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Box, Typography, Button } from '@mui/material';
 import { RADIUS } from '../../../../theme/socialTokens';
-import { Client } from 'boardgame.io/react';
-import { Local } from 'boardgame.io/multiplayer';
-import { MCTSBot } from 'boardgame.io/ai';
-
-
-import TicTacToeGame, { TicTacToeBoard } from '../board-games/TicTacToe';
-import ConnectFourGame, { ConnectFourBoard } from '../board-games/ConnectFour';
 import CheckersGame, { CheckersBoard } from '../board-games/Checkers';
-import ReversiGame, { ReversiBoard } from '../board-games/Reversi';
+import ConnectFourGame, { ConnectFourBoard } from '../board-games/ConnectFour';
 import MancalaGame, { MancalaBoard } from '../board-games/Mancala';
+import ReversiGame, { ReversiBoard } from '../board-games/Reversi';
+import TicTacToeGame, { TicTacToeBoard } from '../board-games/TicTacToe';
+
+import { Box, Typography, Button } from '@mui/material';
+import { MCTSBot } from 'boardgame.io/ai';
+import { Local } from 'boardgame.io/multiplayer';
+import { Client } from 'boardgame.io/react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 
 /**
  * The opponent for seat 1, with its thinking bounded.
@@ -112,7 +111,7 @@ function GameBoardWithEndDetection({ board: BoardComponent, onGameOver, ...props
   return <BoardComponent {...props} />;
 }
 
-export default function BoardGameEngine({ multiplayer, catalogEntry, onComplete }) {
+export default function BoardGameEngine({ catalogEntry, onComplete }) {
   const boardType = catalogEntry?.engine_config?.board_type || 'tictactoe';
 
   // Held in a ref so the memoised client is not rebuilt when the handler
@@ -182,7 +181,7 @@ export default function BoardGameEngine({ multiplayer, catalogEntry, onComplete 
           Coming Soon
         </Typography>
         <Typography sx={{ color: 'rgba(255,255,255,0.5)' }}>
-          The board game "{boardType}" is not yet available.
+          The board game &quot;{boardType}&quot; is not yet available.
         </Typography>
         <Button
           variant="outlined"

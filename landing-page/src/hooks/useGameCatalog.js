@@ -1,5 +1,5 @@
-import {gamesApi} from '../services/socialApi';
 import { TRIVIA_FALLBACK_QUESTIONS } from '../data/triviaFallbackQuestions';
+import {gamesApi} from '../services/socialApi';
 
 import {useState, useEffect, useCallback, useRef, useMemo} from 'react';
 

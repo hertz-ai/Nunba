@@ -30,9 +30,12 @@
  * Don't allow: /api/social/consent/decline says no to the ask, for the
  * ask's agent only when it names one.  A no stands until the owner allows
  * the type again on the privacy page (hartos-3e ruling (a)), so an ask card
- * offers it only for a type that has a card there: an on/off card for an
+ * offers it for a type that has a card there: an on/off card for an
  * agent type, the per-phone rows (Allow / Block / Don't allow, one scope
- * each) for device_access.
+ * each) for device_access.  A credential ask (declinable) offers it too:
+ * the no covers that one credential for that agent, HARTOS answers the
+ * agent "the owner said no" and never shows the card for it again, and the
+ * card says exactly that (declineNote).
  *
  * Answered elsewhere: an answer given on any surface dismisses the ask on
  * every surface it was shown on, for that user or the network guests (owner
@@ -122,7 +125,16 @@ export const CONSENT_ASKS = Object.freeze({
   // secret: the card takes the value in a password field, and Accept stores
   // it in this computer's vault before it grants.  The scope names the one
   // credential (secretName); the agent only ever sees {{secret:NAME}}.
-  credential: {asks: 'use a password or key you enter here', privacyCard: false, secret: true},
+  // declinable: the card offers "Don't allow" although there is no privacy
+  // card.  Owner ruling: consent must be able to say no.  Without it the
+  // only answers were Accept and "Not now" (the ask stays open), so HARTOS
+  // ConsentService.declined never became true and a rejected login re-asked
+  // for ever.  The no is for this one credential and this agent, and
+  // HARTOS tells the agent the owner said no; declineNote says so.
+  credential: {
+    asks: 'use a password or key you enter here', privacyCard: false,
+    secret: true, declinable: true,
+  },
 });
 
 // A credential ask's scope is 'secret:<NAME>' (HARTOS consent_service
@@ -204,15 +216,34 @@ export function allowAllLabel(consentType) {
   return `Allow ALL agents to ${consentAskText(consentType)}`;
 }
 
+// The grant button for a credential ask.  What Accept does: the value is
+// saved in this computer's vault, and any agent can then use it by its
+// alias (HARTOS resolve_aliases fills {{secret:NAME}} in for whichever tool
+// names it).  "Allow ALL agents to use a password or key you enter here"
+// said neither that it is saved nor what the agents get.
+export const SAVE_SECRET_LABEL = 'Save it for any agent to use';
+
 // The grant button for an ask: every agent, or the one phone the ask's
 // scope names -- "this phone", never the self-asserted name.
 export function grantLabel(consentType) {
   if (isPerRequester(consentType)) return 'Always allow this phone';
+  if (asksForSecret(consentType)) return SAVE_SECRET_LABEL;
   return allowAllLabel(consentType);
 }
 
+// A type with a privacy card (the way back after a no), or one that says
+// no for a single ask and tells the agent so (declinable: credential).
 export function canDecline(consentType) {
-  return PRIVACY_CARD_TYPES.includes(consentType);
+  return PRIVACY_CARD_TYPES.includes(consentType)
+    || Boolean(CONSENT_ASKS[consentType] && CONSENT_ASKS[consentType].declinable);
+}
+
+// Under the buttons when a decline is offered: how long the no lasts.
+export function declineNote(consentType, label) {
+  if (PRIVACY_CARD_TYPES.includes(consentType)) {
+    return `"${label}" lasts until you allow it again in Privacy settings; "Not now" leaves the ask open.`;
+  }
+  return `"${label}" tells the agent no, and it will not ask for this again; "Not now" leaves the ask open.`;
 }
 
 // The decline button: a phone's ask is declined for that phone ("Don't

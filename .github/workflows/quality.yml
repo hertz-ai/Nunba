@@ -311,16 +311,23 @@ jobs:
           NUNBA_CI: '1'
 
       - name: Wait for Flask backend
+        # Ready means /health answers 200 (curl -f), not "some response":
+        # the old `curl -s` counted a 404 as ready, which hid main.py's Host
+        # allowlist 404ing every route (2026-09-26) until Cypress's wait-on
+        # timed out 150 s later.  The Recheck step below (if: always()) dumps
+        # /tmp/flask.log when this fails.
         run: |
-          for i in $(seq 1 30); do
-            if curl -s http://localhost:5000/health > /dev/null 2>&1; then
+          for i in $(seq 1 90); do
+            if curl -sf -o /dev/null http://localhost:5000/health; then
               echo "Flask is ready (attempt $i)"
-              break
+              exit 0
             fi
             echo "Waiting for Flask... (attempt $i)"
             sleep 2
           done
-          curl -sf http://localhost:5000/health || echo "Flask health check returned non-200 (may still work)"
+          echo "::error::Flask /health never returned 200 in 180 s"
+          curl -s -o /dev/null -w "GET /health -> %{http_code}\n" http://localhost:5000/health || true
+          exit 1
 
       - name: Recheck Flask after React build (catch silent crash)
         # The 2-min React build runs between Flask startup and Cypress wait-on.
@@ -409,11 +416,25 @@ jobs:
         working-directory: landing-page
         run: |
           python3 - <<'PY'
-          import glob, os
-          specs = sorted(glob.glob('cypress/e2e/**/*.cy.{js,jsx,ts,tsx}', recursive=True))
+          import glob, os, sys
+          # Python's glob has NO brace expansion: the old single pattern
+          # 'cypress/e2e/**/*.cy.{js,jsx,ts,tsx}' matched 0 files, so every
+          # shard printed "0 specs" and handed Cypress an empty spec list
+          # (measured 2026-09-26: brace pattern -> 0, '**/*.cy.js' -> 98).
+          # Glob each extension on its own, dedupe, sort.
+          specs = sorted({
+              p for ext in ('js', 'jsx', 'ts', 'tsx')
+              for p in glob.glob(f'cypress/e2e/**/*.cy.{ext}', recursive=True)
+          })
           shard_count = 4
           shard_idx = ${{ matrix.shard }} - 1
           mine = [s for i, s in enumerate(specs) if i % shard_count == shard_idx]
+          if not mine:
+              # An empty spec input is not "nothing to test": never let a
+              # shard pass (or silently run something else) on zero specs.
+              print(f'::error::Shard ${{ matrix.shard }}/{shard_count}: 0 specs '
+                    f'({len(specs)} found in cypress/e2e)')
+              sys.exit(1)
           spec_arg = ','.join(mine)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'spec_pattern={spec_arg}\n')
@@ -547,16 +568,20 @@ jobs:
 
       - name: Wait for Flask backend
         shell: bash
+        # Same readiness rule as the Linux job: 200 from /health, not any
+        # response (a 404 used to count as ready here too).
         run: |
-          for i in $(seq 1 30); do
-            if curl -s http://localhost:5000/health > /dev/null 2>&1; then
+          for i in $(seq 1 90); do
+            if curl -sf -o /dev/null http://localhost:5000/health; then
               echo "Flask is ready (attempt $i)"
-              break
+              exit 0
             fi
             echo "Waiting for Flask... (attempt $i)"
             sleep 2
           done
-          curl -sf http://localhost:5000/health || echo "Flask health check non-200 (may still work)"
+          echo "::error::Flask /health never returned 200 in 180 s"
+          curl -s -o /dev/null -w "GET /health -> %{http_code}\n" http://localhost:5000/health || true
+          exit 1
 
       - name: Install frontend dependencies
         working-directory: landing-page
@@ -626,6 +651,15 @@ jobs:
           record: false
         env:
           CI: true
+
+      - name: Dump flask.log (Windows)
+        # This job wrote flask.log but never printed it, so the server-side
+        # reason for a failure was never visible (the Linux job's Recheck
+        # step does this).  Placed after Cypress so it runs whichever
+        # earlier step failed: the readiness wait or the specs.
+        if: failure()
+        shell: bash
+        run: tail -150 flask.log || true
 
       - name: Upload Cypress screenshots
         if: failure()

@@ -1,6 +1,6 @@
-import React, { useMemo } from 'react';
 import { Box, Typography } from '@mui/material';
 import { INVALID_MOVE } from 'boardgame.io/core';
+import React, { useMemo } from 'react';
 
 const WINNING_LINES = [
   [0, 1, 2], [3, 4, 5], [6, 7, 8],

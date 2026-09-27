@@ -15,7 +15,17 @@
  * one canonical chip across the dashboard surface — no parallel chip
  * component, no risk of color drift.
  */
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { SOCIAL_API_URL } from '../../config/apiBase';
+
+import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import ChatIcon from '@mui/icons-material/Chat';
+import CloseIcon from '@mui/icons-material/Close';
+import HubIcon from '@mui/icons-material/Hub';
+import MemoryIcon from '@mui/icons-material/Memory';
+import PauseIcon from '@mui/icons-material/Pause';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import SendIcon from '@mui/icons-material/Send';
+import StopIcon from '@mui/icons-material/Stop';
 import {
   Drawer,
   Box,
@@ -28,18 +38,9 @@ import {
   CircularProgress,
   Stack,
 } from '@mui/material';
-import CloseIcon from '@mui/icons-material/Close';
-import AccountTreeIcon from '@mui/icons-material/AccountTree';
-import ChatIcon from '@mui/icons-material/Chat';
-import MemoryIcon from '@mui/icons-material/Memory';
-import HubIcon from '@mui/icons-material/Hub';
-import PauseIcon from '@mui/icons-material/Pause';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import StopIcon from '@mui/icons-material/Stop';
-import SendIcon from '@mui/icons-material/Send';
 import { Button, TextField } from '@mui/material';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
-import { SOCIAL_API_URL } from '../../config/apiBase';
 
 const SNAPSHOT_POLL_MS = 2000;
 const CHAT_POLL_MS = 1000;

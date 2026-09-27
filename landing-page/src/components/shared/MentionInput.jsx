@@ -9,7 +9,8 @@
  * accepts the same value/onChange/multiline/placeholder/sx props as
  * @mui/material TextField.
  */
-import React, {useState, useCallback, useEffect, useRef, useMemo} from 'react';
+import {mentionsApi} from '../../services/socialApi';
+
 import {
   TextField,
   Popper,
@@ -23,7 +24,7 @@ import {
   Chip,
   ClickAwayListener,
 } from '@mui/material';
-import {mentionsApi} from '../../services/socialApi';
+import React, {useState, useCallback, useEffect, useRef, useMemo} from 'react';
 
 const USERNAME_RX = /(?:^|\s)@([a-zA-Z0-9_.-]{1,40})$/;
 const DEBOUNCE_MS = 200;

@@ -6703,12 +6703,15 @@ if __name__ == '__main__':
         # cx_Freeze installs missing the h2/wsproto chain still boot.
         # Also honors NUNBA_FORCE_WAITRESS=1 to skip Hypercorn entirely —
         # the e2e-staging container (docker-compose.staging.yml) sets this
-        # because Hypercorn 0.17.3's AsyncioWSGIMiddleware silently
-        # returns 404 for all Flask routes in this configuration despite
-        # 136 rules being registered (proven by the [DIAG-ROUTE-DUMP] +
-        # 36 consecutive probe failures across cdd89120 / b78a0d49 diag
-        # runs).  Waitress is WSGI-native — no middleware translation —
-        # so the routes Flask registers are the routes Waitress serves.
+        # because Hypercorn here returned 404 for all Flask routes despite
+        # 136 rules being registered (the [DIAG-ROUTE-DUMP] + 36 probe
+        # failures across cdd89120 / b78a0d49).  That was blamed on
+        # AsyncioWSGIMiddleware; the cause was this path's Host allowlist,
+        # server_names=['Nunba'], which Hypercorn checks BEFORE the app
+        # runs, so `Host: localhost:5000` got a 404 from every route
+        # (measured 2026-09-26, and the same 404 failed every cypress-e2e
+        # shard).  The allowlist is now core.serve.local_server_names(),
+        # which admits the loopback Host values real clients send.
         _force_waitress = os.environ.get('NUNBA_FORCE_WAITRESS', '').lower() in ('1', 'true', 'yes')
         try:
             if _force_waitress:
@@ -6718,7 +6721,11 @@ if __name__ == '__main__':
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
-            from core.serve import build_asgi_app, make_hypercorn_config
+            from core.serve import (
+                build_asgi_app,
+                local_server_names,
+                make_hypercorn_config,
+            )
             from hypercorn.asyncio import serve as _hcserve
 
             # core.serve owns what all three entry points share: the four
@@ -6731,10 +6738,16 @@ if __name__ == '__main__':
             # (docker-compose.staging.yml sets it) and the Waitress tuning
             # below.  hypercorn is imported inside core.serve, so a missing
             # wheel still raises ImportError in this try block.
+            #
+            # server_names is Hypercorn's Host allowlist and the only
+            # DNS-rebinding barrier on this path: exact match, port
+            # included, 404 before the app runs.  local_server_names gives
+            # ['Nunba'] on the unix socket (what the Liquid UI proxy sends)
+            # and the loopback Host values at this port on a TCP bind.
+            _bind = ([f'unix:{_hart_socket}'] if _hart_socket
+                     else [f'{bind_host}:{args.port}'])
             config = make_hypercorn_config(
-                [f'unix:{_hart_socket}'] if _hart_socket
-                else [f'{bind_host}:{args.port}'],
-                server_names=['Nunba'])
+                _bind, server_names=local_server_names(_bind))
             asgi_app = build_asgi_app(app)
 
             async def _runner():

@@ -1267,7 +1267,7 @@ def _open_static_splash(parent, splash_path, status_text='Starting up...'):
     top.attributes('-topmost', True)
     top.geometry(f"{W}x{H}+{x}+{y}")
     canvas = _tk.Canvas(top, width=W, height=H, highlightthickness=0, bd=0,
-                        bg='#%02X%02X%02X' % _SPLASH_PAGE_RGB)
+                        bg='#{:02X}{:02X}{:02X}'.format(*_SPLASH_PAGE_RGB))
     canvas.pack(fill='both', expand=True)
     status = _tk.StringVar(value=status_text)
 

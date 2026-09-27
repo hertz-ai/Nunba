@@ -70,7 +70,7 @@ def test_unknown_backend_files_no_agent_goal(name, tmp_path):
 
 
 def _engine_backends():
-    from tts.tts_engine import BACKEND_PIPER, _BACKEND_TO_REGISTRY_KEY
+    from tts.tts_engine import _BACKEND_TO_REGISTRY_KEY, BACKEND_PIPER
     return [BACKEND_PIPER, *_BACKEND_TO_REGISTRY_KEY]
 
 

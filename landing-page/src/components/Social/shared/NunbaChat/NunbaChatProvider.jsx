@@ -16,13 +16,13 @@ import realtimeService, {
   subscribeChatNew,
 } from '../../../../services/realtimeService';
 import {chatApi} from '../../../../services/socialApi';
-import {rememberServerPromptId} from '../../../../utils/promptId';
 import {
   classifyError,
   getBackoff,
   makeMsgId,
 } from '../../../../utils/chatRetry';
 import {getStableDeviceId} from '../../../../utils/deviceId';
+import {rememberServerPromptId} from '../../../../utils/promptId';
 
 import React, {
   createContext,
