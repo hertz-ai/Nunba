@@ -31,7 +31,10 @@ Public API
 Design notes
 ------------
   * Idempotent: ensure_venv short-circuits if the python exe already
-    exists. Re-entrant-safe.
+    exists and the venv was built by this app's venv interpreter
+    (core.venv_paths.venv_mismatch). A venv another interpreter built is
+    rebuilt by the installed app and refused by a source run.
+    Re-entrant-safe.
   * Survives reinstall: venvs live in the user-writable
     ~/Documents/Nunba/data/venvs/ tree (via
     core.platform_paths.get_data_dir), NOT under Program Files, so a
@@ -156,33 +159,45 @@ def _resolve_venv_creator_python() -> str:
     The bundled interpreter is the same Python version Nunba was
     built against, so the venv it creates is binary-compatible with
     everything Nunba already imported.
+
+    The answer is ``core.venv_paths.venv_creator_python`` (the same one
+    the spawn path judges a venv against, so a venv this creates is one
+    the worker will run); this wrapper only refuses loudly when a frozen
+    build has no bundled interpreter.
     """
-    if getattr(sys, 'frozen', False):
-        # Frozen — sys.executable is Nunba.exe.  Look for the bundled
-        # interpreter at <app-dir>/python-embed/python.exe.
-        app_dir = Path(sys.executable).resolve().parent
-        candidate = app_dir / 'python-embed' / 'python.exe'
-        if candidate.is_file():
-            return str(candidate)
-        # Linux/macOS bundle layout — interpreter typically under
-        # python-embed/bin/python or similar.
-        for alt in (
-            app_dir / 'python-embed' / 'bin' / 'python3',
-            app_dir / 'python-embed' / 'bin' / 'python',
-        ):
-            if alt.is_file():
-                return str(alt)
-        # If we somehow can't find the bundled python, raise loudly
-        # rather than silently invoking Nunba.exe again — that path
-        # produces the misleading "duplicate instance" error.
-        raise RuntimeError(
-            f"frozen mode: could not find bundled python interpreter "
-            f"under {app_dir / 'python-embed'}; refusing to spawn "
-            f"{sys.executable!r} which would re-launch the app and "
-            f"trigger the duplicate-instance guard."
-        )
-    # Dev / source-run mode — sys.executable is a real Python.
-    return sys.executable
+    from core.venv_paths import venv_creator_python
+    creator = venv_creator_python()
+    if creator:
+        return creator
+    # If we somehow can't find the bundled python, raise loudly rather
+    # than silently invoking Nunba.exe again — that path produces the
+    # misleading "duplicate instance" error.
+    app_dir = Path(sys.executable).resolve().parent
+    raise RuntimeError(
+        f"frozen mode: could not find bundled python interpreter "
+        f"under {app_dir / 'python-embed'}; refusing to spawn "
+        f"{sys.executable!r} which would re-launch the app and "
+        f"trigger the duplicate-instance guard."
+    )
+
+
+def _foreign_venv_reason(backend: str) -> str | None:
+    """Why ``backend``'s venv was built by an interpreter other than the one
+    this process creates venvs with (``core.venv_paths.venv_mismatch``, the
+    rule the spawn path applies too), or None.
+
+    Measured 2026-09-25: miniconda-3.11 venvs from a source run were
+    adopted by the installed 3.12 app and died with "bad magic number in
+    'encodings'".  A HARTOS tree too old to have the rule answers None
+    (logged), which is the behaviour before it existed.
+    """
+    try:
+        from core.venv_paths import venv_mismatch
+    except ImportError as exc:
+        logger.warning("venv %r: core.venv_paths has no venv_mismatch (%s); "
+                       "its builder is not checked", backend, exc)
+        return None
+    return venv_mismatch(backend)
 
 
 def ensure_venv(backend: str, python_version: str = "3.11") -> Path:
@@ -203,8 +218,29 @@ def ensure_venv(backend: str, python_version: str = "3.11") -> Path:
     pyexe = _python_exe_in(vpath)
 
     if pyexe.is_file():
-        _expose_parent_packages(backend)
-        return pyexe
+        foreign = _foreign_venv_reason(backend)
+        if not foreign:
+            _expose_parent_packages(backend)
+            return pyexe
+        if not getattr(sys, 'frozen', False):
+            # A source run shares this store with the installed app on a
+            # dev box; deleting the app's venv here would cost it a full
+            # reinstall, so say why and stop.
+            raise RuntimeError(
+                f"{foreign}.  A source run does not replace a venv it did "
+                f"not build; set NUNBA_VENV_ROOT_OVERRIDE to give this run "
+                f"its own venv store."
+            )
+        # The installed app owns the store and is the only interpreter
+        # whose venvs it can run: rebuild.
+        logger.warning("%s; rebuilding it", foreign)
+        shutil.rmtree(vpath, ignore_errors=True)
+        invalidate_venv_probe_cache(backend)
+        if vpath.exists():
+            raise RuntimeError(
+                f"{foreign}, and it could not be removed for a rebuild "
+                f"(a file under {vpath} is in use)"
+            )
 
     vpath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -625,6 +661,10 @@ def is_venv_healthy(backend: str, probe_module: str | None = None) -> bool:
     vpath = venv_path(backend)
     pyexe = _python_exe_in(vpath)
     if not pyexe.is_file():
+        return False
+    # Like the file check, never cached: a venv another interpreter built
+    # is not one this app can run, whatever it can import.
+    if _foreign_venv_reason(backend):
         return False
     if probe_module is None:
         return True
