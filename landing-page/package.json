@@ -90,6 +90,8 @@
     "setup-env": "bash scripts/setup-env.sh",
     "prebuild": "bash scripts/setup-env.sh",
     "build": "react-app-rewired build",
+    "build:embed": "vite build -c vite.embed.config.mjs",
+    "test:embed": "vitest run -c vite.embed.config.mjs",
     "encrypt-env": "bash scripts/encrypt-env.sh",
     "test": "react-app-rewired test",
     "eject": "react-scripts eject",
@@ -116,6 +118,7 @@
   "devDependencies": {
     "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
     "@cypress/code-coverage": "^4.0.0",
+    "@vitejs/plugin-react": "^6.1.1",
     "ajv": "^8.17.1",
     "ajv-keywords": "^5.1.0",
     "babel-eslint": "^10.1.0",
@@ -127,11 +130,14 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",
     "eslint-plugin-security": "^3.0.0",
+    "jsdom": "^30.1.1",
     "nyc": "^17.1.0",
     "postcss-cli": "^11.0.0",
     "prettier": "^3.8.1",
     "sass": "^1.98.0",
-    "tailwindcss": "^3.4.14"
+    "tailwindcss": "^3.4.14",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
   },
   "nyc": {
     "report-dir": "coverage",
