@@ -1,14 +1,16 @@
-import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import Stack from '@mui/material/Stack';
+import { postsApi } from '../../services/socialApi';
+import ShareDialog from '../Social/shared/ShareDialog';
+
+import ForumIcon from '@mui/icons-material/Forum';
+import PsychologyIcon from '@mui/icons-material/Psychology';
+import ShareIcon from '@mui/icons-material/Share';
+import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Snackbar from '@mui/material/Snackbar';
-import Alert from '@mui/material/Alert';
-import PsychologyIcon from '@mui/icons-material/Psychology';
-import ForumIcon from '@mui/icons-material/Forum';
-import ShareIcon from '@mui/icons-material/Share';
-import ShareDialog from '../Social/shared/ShareDialog';
-import { postsApi } from '../../services/socialApi';
+import Stack from '@mui/material/Stack';
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
+
 
 /**
  * DiscussBar — three ways to take a page further, all on existing machinery.

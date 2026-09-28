@@ -236,7 +236,7 @@ export default function SignupLite() {
                         {phoneNumber.length === 10 && !PhoneNumberVerified && (
                           <>
                             <button
-                              className="py-[6px] px-4 md:inline hidden items-center justify-center tracking-wider align-middle duration-500 text-sm text-center rounded"
+                              className="btn-feedback py-[6px] px-4 md:inline hidden items-center justify-center tracking-wider align-middle duration-500 text-sm text-center rounded"
                               style={{
                                 background:
                                   'linear-gradient(to right, #00e89d, #0078ff)',
@@ -280,7 +280,7 @@ export default function SignupLite() {
                         />
                         <button
                           type="button"
-                          className="py-[6px] px-4 md:inline hidden items-center justify-center tracking-wider align-middle duration-500 text-sm text-center rounded"
+                          className="btn-feedback py-[6px] px-4 md:inline hidden items-center justify-center tracking-wider align-middle duration-500 text-sm text-center rounded"
                           style={{
                             background:
                               'linear-gradient(to right, #00e89d, #0078ff)',
@@ -352,7 +352,7 @@ export default function SignupLite() {
                       <button
                         disabled={!PhoneNumberVerified && !termsAccepted}
                         type="submit"
-                        className="py-2 px-5 inline-block tracking-wide border align-middle duration-500 text-base text-center bg-amber-400 hover:bg-amber-500 border-amber-400 hover:border-amberbg-amber-500 text-white rounded-md w-full"
+                        className="btn-feedback py-2 px-5 inline-block tracking-wide border align-middle duration-500 text-base text-center bg-amber-400 hover:bg-amber-500 border-amber-400 hover:border-amberbg-amber-500 text-white rounded-md w-full"
                         onClick={handleFormSubmitBussiness}
                         style={{
                           background:

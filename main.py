@@ -1331,15 +1331,15 @@ def _chat_sync_resolve_uid():
         # Fail-closed: if we can't confirm the toggle is on, don't sync
         return None, (jsonify({'error': 'sync_probe_failed'}), 500)
 
-    # Gate 2: JWT → user_id
+    # Gate 2: token → user_id, through HARTOS's resolver (a cloud login's
+    # opaque token is the user's api_token; a JWT-only decode 401'd it).
     auth = request.headers.get('Authorization', '')
     if not auth.startswith('Bearer '):
         return None, (jsonify({'error': 'unauthorized'}), 401)
     token = auth[7:].strip()
     try:
-        from integrations.social.auth import decode_jwt
-        payload = decode_jwt(token)
-        uid = payload.get('user_id') if isinstance(payload, dict) else None
+        from integrations.social.auth import user_id_for_token
+        uid = user_id_for_token(token)
     except Exception:
         return None, (jsonify({'error': 'unauthorized'}), 401)
     if not uid:
@@ -3758,14 +3758,14 @@ def admin_models_manifest_import():
                 # test_client hits the live route — preserves every
                 # gate (trusted-org, safetensors, homoglyph, file-probe,
                 # capability seeding, load probe, optional challenge).
+                # No forwarded address: this route already refused any
+                # caller that is not this machine (_is_local_request above),
+                # and the test client's own socket is loopback.  Forwarding
+                # a claimed address here could only turn a failed lookup
+                # into a loopback claim (review of the F3 consolidation).
                 r = client.post(
                     '/api/admin/models/hub/install',
                     json=payload,
-                    headers={
-                        # Preserve the local-only gate by forwarding
-                        # the requesting client's remote addr context.
-                        'X-Forwarded-For': request.remote_addr or '127.0.0.1',
-                    },
                 )
                 if r.status_code == 200:
                     succeeded.append(hf_id)
@@ -4432,21 +4432,16 @@ def debug_routes():
 def test_api():
     return jsonify({'status': 'API routes working', 'message': 'This is a test endpoint'})
 
-# API endpoints that should NOT be caught by the landing page handler
-API_ENDPOINTS = {
-    'api', 'probe', 'execute', 'screenshot', 'indicator', 'llm_control_status',
-    'status', 'logs', 'custom_gpt', 'tts', 'crash-report', 'llama',
-    'ai', 'health', 'prompts', 'agents', 'chat', 'backend', 'media'
-}
-
-# Companion rule to API_ENDPOINTS: paths that must 404 instead of falling back
-# to the SPA shell.  Lives in routes/spa_fallback.py rather than here so it can
-# be unit-tested without importing main (which pulls in torch/sympy/transformers).
+# Which unmatched paths must 404 instead of falling back to the SPA shell
+# (API namespaces incl. API_ENDPOINTS, and missing assets).  Lives in
+# routes/spa_fallback.py rather than here so it can be unit-tested without
+# importing main (which pulls in torch/sympy/transformers).  API_ENDPOINTS is
+# re-exported here for existing `from main import API_ENDPOINTS` callers.
 from routes.spa_fallback import (  # noqa: E402
+    API_ENDPOINTS,  # noqa: F401
     SPA_SHELL_CACHE_CONTROL,
-    first_path_segment,
+    is_api_miss,
     is_asset_path,
-    is_spa_page,
 )
 
 
@@ -4821,7 +4816,9 @@ def sse_event_stream():
     Frontend connects here only when the Crossbar worker reports disconnected.
     Requires a valid JWT token as ``?token=`` query parameter.
     """
-    logging.info(f"SSE: client connecting (args={dict(request.args)})")
+    # Arg NAMES only: ?token= is a bearer credential, and logging the dict
+    # wrote it in plaintext (seen 2026-09-25 in the Nunba logs).
+    logging.info(f"SSE: client connecting (args={sorted(request.args.keys())})")
     from flask import Response
     from flask import jsonify as _jsonify
     from flask import request as flask_request
@@ -4835,10 +4832,13 @@ def sse_event_stream():
 
     uid = None
     if token:
+        # HARTOS's resolver, not a JWT-only decode: a cloud login's opaque
+        # token is the user's api_token, and the JWT decode fell through to
+        # 'guest' (live 2026-09-25), so pushes to the signed-in user were
+        # delivered to nobody.
         try:
-            from integrations.social.auth import decode_jwt
-            payload = decode_jwt(token)
-            uid = payload.get('user_id')
+            from integrations.social.auth import user_id_for_token
+            uid = user_id_for_token(token)
         except Exception:
             if not _is_local:
                 return _jsonify({"error": "Invalid or expired token"}), 401
@@ -4978,15 +4978,13 @@ def handle_404(e):
     """Handle 404 errors by serving static files or React app for client-side routing"""
     from flask import send_from_directory
     path = request.path
-    first_segment = first_path_segment(path)
 
     # Return 404 for API routes — UNLESS the exact path is an SPA page that
     # merely shares its first segment with an API namespace.  `/agents` is the
     # Agents Hub page while /agents/sync etc. are real APIs; classifying the
     # bare page path as API served raw JSON on deep link / F5 (task #628,
     # found live by route-smoke.cy.js 2026-08-07).
-    if first_segment in API_ENDPOINTS and not is_spa_page(
-            path, request.headers.get('Accept')):
+    if is_api_miss(path, request.headers.get('Accept')):
         return jsonify({'error': 'API endpoint not found', 'path': path}), 404
 
     # A missing asset is a missing FILE, not a client-side route.  Answering it
@@ -5193,7 +5191,8 @@ try:
     from routes.hartos_backend_adapter import create_inprocess_dispatch_blueprint
     app.register_blueprint(create_inprocess_dispatch_blueprint())
     logging.info("HARTOS in-process dispatch registered "
-                 "(/api/vlm/stop, /time_agent, /visual_agent)")
+                 "(/api/vlm/stop, /time_agent, /visual_agent, "
+                 "/api/agent/approval)")
 except Exception as e:
     logging.warning(f"HARTOS in-process dispatch registration failed: {e}")
 
@@ -6366,10 +6365,12 @@ def start_background_services():
             # instead of CPU int8 — CPU int8 can't sustain realtime streaming
             # (29s cold load + can't keep the interim cadence). Independent of
             # CUDA torch: faster-whisper runs on CTranslate2, not torch. Gated
-            # by is_cuda_ctranslate2() so it's a no-op once installed.
+            # by should_install_gpu_ctranslate2(): a no-op once installed, and
+            # once an install failed on this build (retried after an update or
+            # from AI setup) instead of re-running pip every boot.
             try:
-                from tts.package_installer import has_nvidia_gpu, is_cuda_ctranslate2
-                if has_nvidia_gpu() and not is_cuda_ctranslate2():
+                from tts.package_installer import should_install_gpu_ctranslate2
+                if should_install_gpu_ctranslate2():
                     logging.info("STT: GPU detected — installing CUDA ctranslate2 for GPU whisper...")
                     from tts.package_installer import install_gpu_ctranslate2
                     def _ct2_progress(msg):
@@ -6704,12 +6705,15 @@ if __name__ == '__main__':
         # cx_Freeze installs missing the h2/wsproto chain still boot.
         # Also honors NUNBA_FORCE_WAITRESS=1 to skip Hypercorn entirely —
         # the e2e-staging container (docker-compose.staging.yml) sets this
-        # because Hypercorn 0.17.3's AsyncioWSGIMiddleware silently
-        # returns 404 for all Flask routes in this configuration despite
-        # 136 rules being registered (proven by the [DIAG-ROUTE-DUMP] +
-        # 36 consecutive probe failures across cdd89120 / b78a0d49 diag
-        # runs).  Waitress is WSGI-native — no middleware translation —
-        # so the routes Flask registers are the routes Waitress serves.
+        # because Hypercorn here returned 404 for all Flask routes despite
+        # 136 rules being registered (the [DIAG-ROUTE-DUMP] + 36 probe
+        # failures across cdd89120 / b78a0d49).  That was blamed on
+        # AsyncioWSGIMiddleware; the cause was this path's Host allowlist,
+        # server_names=['Nunba'], which Hypercorn checks BEFORE the app
+        # runs, so `Host: localhost:5000` got a 404 from every route
+        # (measured 2026-09-26, and the same 404 failed every cypress-e2e
+        # shard).  The allowlist is now core.serve.local_server_names(),
+        # which admits the loopback Host values real clients send.
         _force_waitress = os.environ.get('NUNBA_FORCE_WAITRESS', '').lower() in ('1', 'true', 'yes')
         try:
             if _force_waitress:
@@ -6719,7 +6723,11 @@ if __name__ == '__main__':
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
-            from core.serve import build_asgi_app, make_hypercorn_config
+            from core.serve import (
+                build_asgi_app,
+                local_server_names,
+                make_hypercorn_config,
+            )
             from hypercorn.asyncio import serve as _hcserve
 
             # core.serve owns what all three entry points share: the four
@@ -6732,10 +6740,16 @@ if __name__ == '__main__':
             # (docker-compose.staging.yml sets it) and the Waitress tuning
             # below.  hypercorn is imported inside core.serve, so a missing
             # wheel still raises ImportError in this try block.
+            #
+            # server_names is Hypercorn's Host allowlist and the only
+            # DNS-rebinding barrier on this path: exact match, port
+            # included, 404 before the app runs.  local_server_names gives
+            # ['Nunba'] on the unix socket (what the Liquid UI proxy sends)
+            # and the loopback Host values at this port on a TCP bind.
+            _bind = ([f'unix:{_hart_socket}'] if _hart_socket
+                     else [f'{bind_host}:{args.port}'])
             config = make_hypercorn_config(
-                [f'unix:{_hart_socket}'] if _hart_socket
-                else [f'{bind_host}:{args.port}'],
-                server_names=['Nunba'])
+                _bind, server_names=local_server_names(_bind))
             asgi_app = build_asgi_app(app)
 
             async def _runner():

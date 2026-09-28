@@ -85,7 +85,7 @@ class RootErrorBoundary extends React.Component {
           >
             {errMsg}
           </div>
-          <button
+          <button className="btn-feedback"
             onClick={() => window.location.reload()}
             style={{
               background: 'linear-gradient(135deg, #6C63FF, #9B94FF)',

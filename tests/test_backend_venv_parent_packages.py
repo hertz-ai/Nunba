@@ -13,6 +13,8 @@ fix is repaired the next time anything asks for it.
 """
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,8 +36,9 @@ def venv_root(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_venv_module(monkeypatch):
-    """Stand in for `python -m venv`: lay down the interpreter file and the
-    site-packages dir, which is all the writer needs to see."""
+    """Stand in for `python -m venv`: lay down the interpreter file, the
+    site-packages dir, and the pyvenv.cfg naming this interpreter as the
+    builder (ensure_venv uses no venv another interpreter built)."""
     calls = []
 
     def _run(cmd, **kwargs):
@@ -44,6 +47,11 @@ def fake_venv_module(monkeypatch):
         py = backend_venv._python_exe_in(target)
         py.parent.mkdir(parents=True, exist_ok=True)
         py.write_text("", encoding="utf-8")
+        base = getattr(sys, "_base_executable", None) or sys.executable
+        (target / "pyvenv.cfg").write_text(
+            f"home = {os.path.dirname(os.path.abspath(base))}\n"
+            f"version = {'%d.%d.%d' % sys.version_info[:3]}\n",
+            encoding="utf-8")
         Path(venv_paths.venv_site_packages(BACKEND)).mkdir(parents=True, exist_ok=True)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 

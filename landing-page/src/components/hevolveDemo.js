@@ -272,7 +272,7 @@ class HevolveDemo extends Component {
             ></input>
             <button
               type="submit"
-              className="msger-send-btn"
+              className="btn-feedback msger-send-btn"
               disabled={this.state.sending}
             >
               {this.state.sending ? '...' : 'Send'}

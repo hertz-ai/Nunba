@@ -137,7 +137,7 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
     >
       <div className="flex justify-between items-center mb-2">
         <h2 className="text-xl font-semibold text-white">Create New Agent</h2>
-        <button onClick={onClose} className="text-white hover:text-gray-300">
+        <button onClick={onClose} className="btn-feedback text-white hover:text-gray-300">
           <X className="w-6 h-6" />
         </button>
       </div>
@@ -175,7 +175,7 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
                   />
                   <button
                     type="button"
-                    className="absolute top-0 right-0 bg-red-500 rounded-full p-1"
+                    className="btn-feedback absolute top-0 right-0 bg-red-500 rounded-full p-1"
                     onClick={(e) => {
                       e.stopPropagation();
                       setImageFile(null);
@@ -217,7 +217,7 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
                   </span>
                   <button
                     type="button"
-                    className="bg-red-500 rounded-full p-1"
+                    className="btn-feedback bg-red-500 rounded-full p-1"
                     onClick={(e) => {
                       e.stopPropagation();
                       setAudioFile(null);
@@ -278,7 +278,7 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
         <button
           type="submit"
           disabled={isSubmitting}
-          className="w-full py-2 px-4 rounded text-white font-medium flex items-center justify-center"
+          className="btn-feedback w-full py-2 px-4 rounded text-white font-medium flex items-center justify-center"
           style={{
             background: 'linear-gradient(to right, #00e89d, #0078ff)',
             cursor: isSubmitting ? 'not-allowed' : 'pointer',

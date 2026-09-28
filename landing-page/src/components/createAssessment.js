@@ -1,19 +1,15 @@
 import React, {useState} from 'react';
 import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
-import FormControlLabel from '@mui/material/FormControlLabel';
 
 // get our fontawesome imports
 // import {faUserPlus, faSearch} from '@fortawesome/fontawesome-free';
-import Spacer from './Spacer';
 import logo_dark from './../images/logo-dark.png';
-import FormHelperText from '@mui/material/FormHelperText';
-import {QuestionAnswer} from '@mui/icons-material';
-import Hidden from '@mui/material/Hidden';
 import Controls from './controls/Controls';
 import DynamicElementHandler from './DynamicElementHandler';
-import {useForm} from './useForm';
+import Spacer from './Spacer';
 import Header from './TeacherLanding/Header';
+import {useForm} from './useForm';
 
 import './TeacherLanding/TeacherHome.css';
 import {QUES_ANS3_URL, QUES_ANS_URL} from '../config/apiBase';
@@ -22,6 +18,7 @@ import {logger} from '../utils/logger';
 
 import {faUserPlus, faPaperPlane} from '@fortawesome/free-solid-svg-icons';
 import {FontAwesomeIcon} from '@fortawesome/react-fontawesome';
+import {QuestionAnswer} from '@mui/icons-material';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import {Autocomplete} from '@mui/lab';
 import Alert from '@mui/lab/Alert';
@@ -34,9 +31,12 @@ import Chip from '@mui/material/Chip';
 import {green, purple} from '@mui/material/colors';
 import Container from '@mui/material/Container';
 import FormControl from '@mui/material/FormControl';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import Form from '@mui/material/FormGroup';
+import FormHelperText from '@mui/material/FormHelperText';
 import FormLabel from '@mui/material/FormLabel';
 import Grid from '@mui/material/Grid';
+import Hidden from '@mui/material/Hidden';
 import Input from '@mui/material/Input';
 import InputLabel from '@mui/material/InputLabel';
 import Link from '@mui/material/Link';

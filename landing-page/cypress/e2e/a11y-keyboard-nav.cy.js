@@ -55,9 +55,11 @@ describe('a11y: keyboard navigation + focus management', () => {
   it('Tab key cycles through focusable elements without error', () => {
     cy.visit('/local', {failOnStatusCode: false});
     cy.get('body').focus();
-    // Tab 5 times — shouldn't throw.
+    // Tab 5 times — shouldn't throw.  `.type('{tab}')` is not a supported
+    // character sequence in Cypress (it throws); cy.press() dispatches a
+    // real Tab key (Cypress >= 14.3; package.json pins ^15.10).
     for (let i = 0; i < 5; i++) {
-      cy.get('body').type('{tab}', {force: true});
+      cy.press(Cypress.Keyboard.Keys.TAB);
     }
   });
 
@@ -149,9 +151,19 @@ describe('a11y: reduced-motion preference respected', () => {
   });
 });
 
-describe('a11y: static metadata (title, headings, labels)', () => {
+describe('a11y: static metadata + skip-link presence', () => {
   beforeEach(() => {
     installBaselineStubs();
+  });
+
+  it('skip-to-main-content link exists and is shown on focus (WCAG 2.4.1)', () => {
+    cy.visit('/local', {failOnStatusCode: false});
+    cy.get('main#main-content', {timeout: 10000}).should('exist');
+    cy.get('a[href="#main-content"]')
+      .should('have.length', 1)
+      .and('contain.text', 'Skip to main content')
+      .focus()
+      .should('have.css', 'position', 'fixed');
   });
 
   it('document has a title', () => {

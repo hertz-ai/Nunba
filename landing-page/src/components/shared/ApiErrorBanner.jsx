@@ -12,9 +12,9 @@
  *
  * Mount once at the app root, alongside the existing ToastProvider.
  */
-import React, {useEffect, useRef, useState, useCallback} from 'react';
-import {Snackbar, Alert} from '@mui/material';
 import CloudOffOutlinedIcon from '@mui/icons-material/CloudOffOutlined';
+import {Snackbar, Alert} from '@mui/material';
+import React, {useEffect, useRef, useState, useCallback} from 'react';
 
 const DEDUP_WINDOW_MS = 5_000;
 const AUTO_DISMISS_MS = 6_000;

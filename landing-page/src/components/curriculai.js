@@ -160,7 +160,7 @@ const Curriculai = (props) => {
           Own Your AI & Tailored to your needs, Secure in-house deployment. Your
           AI is constantly learning and always evolving..
         </p>
-        <button className="fadeInUp" style={{animationDelay: '0.8s'}}>
+        <button className="btn-feedback fadeInUp" style={{animationDelay: '0.8s'}}>
           Check Now >
         </button>
 
@@ -240,7 +240,7 @@ const Curriculai = (props) => {
       {!currentLocation && (
         <React.Fragment>
           <button
-            className="button fadeInUp"
+            className="btn-feedback button fadeInUp"
             style={{animationDelay: '0.6s'}}
             onClick={() => getLocation()}
           >

@@ -63,7 +63,7 @@ const SecureInputModal = ({secretRequest, onClose}) => {
           <h3 style={styles.title}>
             {secretRequest.label || 'API Key Required'}
           </h3>
-          <button onClick={onClose} style={styles.closeBtn} aria-label="Close">
+          <button className="btn-feedback" onClick={onClose} style={styles.closeBtn} aria-label="Close">
             <svg
               width="18"
               height="18"
@@ -141,10 +141,10 @@ const SecureInputModal = ({secretRequest, onClose}) => {
 
         {/* Actions */}
         <div style={styles.actions}>
-          <button onClick={onClose} style={styles.cancelBtn} disabled={storing}>
+          <button className="btn-feedback" onClick={onClose} style={styles.cancelBtn} disabled={storing}>
             Cancel
           </button>
-          <button
+          <button className="btn-feedback"
             onClick={handleStore}
             disabled={!consent || !value.trim() || storing || stored}
             style={{

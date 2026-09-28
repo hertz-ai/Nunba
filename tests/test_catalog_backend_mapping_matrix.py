@@ -138,15 +138,14 @@ class TestCatalogTTSEntries:
 
     def test_each_tts_entry_id_mappable(self, tts_entries):
         """Every TTS catalog entry ID should be mappable to a backend."""
+        from tts.tts_engine import catalog_entry_backend
         for e in tts_entries:
-            # Strip 'tts-' prefix
-            bare_id = e.id.replace('tts-', '', 1) if e.id.startswith('tts-') else e.id
-            mapped = _CATALOG_TO_BACKEND.get(bare_id)
-            if mapped is None:
-                # Try with underscore variant
-                mapped = _CATALOG_TO_BACKEND.get(bare_id.replace('-', '_'))
+            # The product's own rule (catalog_entry_backend), not a copy.
+            be = catalog_entry_backend(e.id)
             # Not all catalog TTS entries need Nunba backend mapping
-            # (some may be HARTOS-only), so just log unmapped
+            # (some may be HARTOS-only): only a backend Nunba maps is held
+            # to having a capabilities row.
+            mapped = be if be in _CATALOG_TO_BACKEND.values() else None
             if mapped and mapped not in _HARTOS_SUBPROCESS_ONLY_BACKENDS:
                 assert mapped in _FALLBACK_ENGINE_CAPABILITIES
 

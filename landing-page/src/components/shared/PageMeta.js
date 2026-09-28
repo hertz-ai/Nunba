@@ -1,7 +1,8 @@
+import { canonicalFor } from '../../config/site';
+
 import React from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useLocation } from 'react-router-dom';
-import { canonicalFor } from '../../config/site';
 
 /**
  * Everything a page tells a crawler and a link preview, in one place.

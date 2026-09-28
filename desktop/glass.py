@@ -1215,6 +1215,239 @@ def _apply_tk(window, intent: GlassIntent) -> GlassResult:
              'had on this surface')
 
 
+# ── per-pixel alpha: a tk surface that IS an image ──────────────────────
+#
+# ``_apply_tk`` above lets the desktop through a whole tk window at ONE
+# alpha.  Some surfaces need more than that: the static splash (GL4) is
+# artwork on a dark background, and the steward asked for the background
+# alone to be see-through while the artwork stays solid.  One alpha cannot
+# say that; each pixel has to carry its own.
+#
+# On Windows that is ``UpdateLayeredWindow``: the window's pixels come from
+# a premultiplied 32-bit bitmap the caller hands over, alpha and all, and
+# the DWM composites each pixel against what is behind it.  It is the rung
+# GL1 named as the unbuilt candidate "a tk panel painted with per-pixel alpha
+# via UpdateLayeredWindow".  A window driven this way ignores GDI painting,
+# so the caller supplies EVERY pixel -- its whole look, as an image -- and
+# calls again whenever that look changes.  The image is the caller's; this
+# module still holds no colour and no opacity of its own.
+
+#: What earning this rung takes where it is not built yet.
+PER_PIXEL_MECHANISM = (
+    'Windows: UpdateLayeredWindow (built); macOS: the tk window attribute '
+    '-transparent with systemTransparent widget backgrounds, owed a pixel '
+    'proof on a Mac; Linux: an ARGB visual under a compositing window '
+    'manager, with no universal answer')
+
+#: The rung each window last reached, by HWND, so a caller pushing frames
+#: every tick gets ONE log line when the rung changes rather than one per
+#: frame -- the same "an absent line is unfalsifiable" rule as apply_glass,
+#: without drowning the log in identical lines.
+_PER_PIXEL_RUNGS = {}
+
+
+def apply_image_alpha(surface, image) -> GlassResult:
+    """Show ``image`` as the whole of a tk window, each pixel's own alpha
+    deciding how much of the desktop shows through it.
+
+    ``surface`` is a tk window (duck-typed, as ``apply_glass`` does);
+    ``image`` is a PIL image sized to the window in PHYSICAL pixels.  Call it
+    again with a new image to change what the window shows -- a progress
+    bar, a status line.  Nothing else paints this window once it takes.
+
+    Returns LAYERED_ALPHA only when the OS took the bitmap.  SOLID means the
+    window was not touched and still paints the old way, so a caller keeps a
+    working surface on every platform and draws its look flattened instead.
+    """
+    if not _is_tk_surface(surface):
+        result = GlassResult(
+            SOLID, TK, note='per-pixel alpha is built for a tk surface only')
+    elif platform_utils.IS_WINDOWS:
+        result = _windows_image_alpha(surface, image)
+    else:
+        result = GlassResult(
+            SOLID, TK, note='per-pixel alpha is not built on this platform '
+                            'yet: ' + PER_PIXEL_MECHANISM)
+
+    key = _surface_key(surface)
+    if _PER_PIXEL_RUNGS.get(key) != result.rung:
+        _PER_PIXEL_RUNGS[key] = result.rung
+        logger.info('glass: %s', result)
+    return result
+
+
+def _surface_key(surface):
+    """A stable key for the rung cache: the widget id, or the object."""
+    try:
+        return int(surface.winfo_id())
+    except Exception:
+        return id(surface)
+
+
+def premultiplied_bgra(image) -> bytes:
+    """``image`` as the bytes a 32-bit top-down DIB wants for per-pixel alpha.
+
+    Two conversions the OS insists on, and getting either wrong is visible:
+    channel order BGRA, and colour PREMULTIPLIED by alpha.
+    ``UpdateLayeredWindow`` with ``AC_SRC_ALPHA`` assumes premultiplied
+    input, so a straight-alpha pixel of (255, 0, 0, 128) would be drawn at
+    double its brightness -- the fringe that gives away a hand-rolled
+    layered window.  ``ImageChops.multiply`` computes c * a / 255 in C.
+    """
+    from PIL import Image, ImageChops
+
+    rgba = image.convert('RGBA')
+    red, green, blue, alpha = rgba.split()
+    red = ImageChops.multiply(red, alpha)
+    green = ImageChops.multiply(green, alpha)
+    blue = ImageChops.multiply(blue, alpha)
+    return Image.merge('RGBA', (blue, green, red, alpha)).tobytes()
+
+
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [('biSize', ctypes.c_uint32), ('biWidth', ctypes.c_int32),
+                ('biHeight', ctypes.c_int32), ('biPlanes', ctypes.c_uint16),
+                ('biBitCount', ctypes.c_uint16),
+                ('biCompression', ctypes.c_uint32),
+                ('biSizeImage', ctypes.c_uint32),
+                ('biXPelsPerMeter', ctypes.c_int32),
+                ('biYPelsPerMeter', ctypes.c_int32),
+                ('biClrUsed', ctypes.c_uint32),
+                ('biClrImportant', ctypes.c_uint32)]
+
+
+class _BLENDFUNCTION(ctypes.Structure):
+    _fields_ = [('BlendOp', ctypes.c_ubyte), ('BlendFlags', ctypes.c_ubyte),
+                ('SourceConstantAlpha', ctypes.c_ubyte),
+                ('AlphaFormat', ctypes.c_ubyte)]
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
+
+
+class _SIZE(ctypes.Structure):
+    _fields_ = [('cx', ctypes.c_long), ('cy', ctypes.c_long)]
+
+
+def _gdi():
+    """user32 + gdi32 with HANDLE-sized return types, as PRIVATE instances.
+
+    The shared ``ctypes.windll`` libraries carry no restypes (the c1a026f4
+    lesson), so a handle returned through them is a 32-bit C int -- a DC or
+    a bitmap truncated on x64.  Setting restypes on the shared instances
+    would change every other caller in the process, so these are separate
+    ``WinDLL`` loads whose restypes are this module's business alone.
+    """
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    gdi32 = ctypes.WinDLL('gdi32', use_last_error=True)
+    for fn in (user32.GetDC, gdi32.CreateCompatibleDC,
+               gdi32.CreateDIBSection, gdi32.SelectObject,
+               user32.GetAncestor):
+        fn.restype = ctypes.c_void_p
+    return user32, gdi32
+
+
+def _windows_image_alpha(surface, image) -> GlassResult:
+    """``UpdateLayeredWindow`` with the caller's pixels, alpha and all.
+
+    ``WS_EX_LAYERED`` comes from ``platform_utils.set_window_floating_
+    presence``, the one writer of that bit in the app -- a second writer here
+    is the parallel path the source guards forbid.  It also sets
+    ``WS_EX_NOACTIVATE``, which a surface that only shows something wants
+    anyway: it must never take the owner's keystrokes.  The bit is READ back,
+    because a style that did not take would make the call below fail with a
+    bare error code.
+
+    Never ``SetLayeredWindowAttributes``: a window that has had it cannot
+    take ``UpdateLayeredWindow`` at all, and it is the uniform-alpha rung
+    (``_windows_layered_alpha``), not this one.  Never a colour key: GL1
+    measured keyed pixels going click-through.
+    """
+    GA_ROOT = 2
+    GWL_EXSTYLE = -20
+    WS_EX_LAYERED = 0x00080000
+    DIB_RGB_COLORS = 0
+    BI_RGB = 0
+    AC_SRC_OVER, AC_SRC_ALPHA = 0, 1
+    ULW_ALPHA = 0x00000002
+    OPAQUE_BYTE = 255   # the bitmap's own alpha does the work, unscaled
+
+    user32 = gdi32 = None
+    screen_dc = mem_dc = bitmap = old = None
+    try:
+        user32, gdi32 = _gdi()
+        hwnd = user32.GetAncestor(ctypes.c_void_p(int(surface.winfo_id())),
+                                  GA_ROOT)
+        if not hwnd:
+            return GlassResult(SOLID, TK,
+                               note='no top-level window handle yet')
+
+        platform_utils.set_window_floating_presence(hwnd, True)
+        style = user32.GetWindowLongW(ctypes.c_void_p(hwnd), GWL_EXSTYLE)
+        if not int(style) & WS_EX_LAYERED:
+            logger.warning('glass: hwnd %s did not take WS_EX_LAYERED '
+                           '(exstyle 0x%X); per-pixel alpha needs it', hwnd,
+                           int(style))
+            return GlassResult(SOLID, TK, note='WS_EX_LAYERED did not take')
+
+        width, height = image.size
+        data = premultiplied_bgra(image)
+
+        header = _BITMAPINFOHEADER()
+        header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        header.biWidth = width
+        header.biHeight = -height            # negative: top-down rows
+        header.biPlanes = 1
+        header.biBitCount = 32
+        header.biCompression = BI_RGB
+        bits = ctypes.c_void_p()
+
+        screen_dc = user32.GetDC(None)
+        mem_dc = gdi32.CreateCompatibleDC(ctypes.c_void_p(screen_dc))
+        bitmap = gdi32.CreateDIBSection(
+            ctypes.c_void_p(mem_dc), ctypes.byref(header), DIB_RGB_COLORS,
+            ctypes.byref(bits), None, 0)
+        if not bitmap or not bits.value:
+            return GlassResult(SOLID, TK,
+                               note='could not allocate the bitmap')
+        ctypes.memmove(bits, data, len(data))
+        old = gdi32.SelectObject(ctypes.c_void_p(mem_dc),
+                                 ctypes.c_void_p(bitmap))
+
+        size = _SIZE(width, height)
+        origin = _POINT(0, 0)
+        blend = _BLENDFUNCTION(AC_SRC_OVER, 0, OPAQUE_BYTE, AC_SRC_ALPHA)
+        if not user32.UpdateLayeredWindow(
+                ctypes.c_void_p(hwnd), ctypes.c_void_p(screen_dc), None,
+                ctypes.byref(size), ctypes.c_void_p(mem_dc),
+                ctypes.byref(origin), 0, ctypes.byref(blend), ULW_ALPHA):
+            error = ctypes.get_last_error()
+            logger.warning('glass: UpdateLayeredWindow refused hwnd %s '
+                           '(error %s)', hwnd, error)
+            return GlassResult(SOLID, TK,
+                               note=f'UpdateLayeredWindow refused ({error})')
+        return GlassResult(
+            LAYERED_ALPHA, TK, steps=('per_pixel_alpha',),
+            note='each pixel carries its own alpha, so the desktop shows '
+                 'through where the image is clear and not where it is '
+                 'solid - sharp, not blurred')
+    except Exception as e:
+        logger.error('glass: per-pixel alpha failed: %s', e)
+        return GlassResult(SOLID, TK, note=f'per-pixel alpha failed: {e}')
+    finally:
+        if gdi32 is not None:
+            if old and mem_dc:
+                gdi32.SelectObject(ctypes.c_void_p(mem_dc),
+                                   ctypes.c_void_p(old))
+            if bitmap:
+                gdi32.DeleteObject(ctypes.c_void_p(bitmap))
+            if mem_dc:
+                gdi32.DeleteDC(ctypes.c_void_p(mem_dc))
+        if user32 is not None and screen_dc:
+            user32.ReleaseDC(None, ctypes.c_void_p(screen_dc))
+
+
 # ── the one platform selection ─────────────────────────────────────────
 
 _WINDOWS_BACKEND = _Backend(WINDOWS, NATIVE_GLASS,

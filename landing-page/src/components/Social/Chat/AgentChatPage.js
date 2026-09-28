@@ -160,7 +160,7 @@ export default function AgentChatPage() {
         <Typography variant="caption" sx={{color: 'rgba(255,255,255,0.5)'}}>
           {viewMode === 'local' ? 'Local Mode' : 'Hosted Mode'}
         </Typography>
-        <button
+        <button className="btn-feedback"
           onClick={onClick}
           style={{
             background: 'rgba(108,99,255,0.2)',

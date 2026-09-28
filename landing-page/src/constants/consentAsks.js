@@ -30,9 +30,13 @@
  * Don't allow: /api/social/consent/decline says no to the ask, for the
  * ask's agent only when it names one.  A no stands until the owner allows
  * the type again on the privacy page (hartos-3e ruling (a)), so an ask card
- * offers it only for a type that has a card there: an on/off card for an
+ * offers it for a type that has a card there: an on/off card for an
  * agent type, the per-phone rows (Allow / Block / Don't allow, one scope
- * each) for device_access.
+ * each) for device_access.  A credential ask (declinable) offers it too:
+ * the no covers that one credential for that agent, HARTOS answers the
+ * agent "the owner said no" and does not show the card for it again until
+ * the owner picks "Allow asking again" on the privacy page (its declined-
+ * credentials list, POST /consent/reopen); the card says so (declineNote).
  *
  * Answered elsewhere: an answer given on any surface dismisses the ask on
  * every surface it was shown on, for that user or the network guests (owner
@@ -117,7 +121,56 @@ export const CONSENT_ASKS = Object.freeze({
     asks: 'link with this computer without proving who it is',
     privacyCard: false,
   },
+  // An agent needs a password, key or token only the owner can give
+  // (HARTOS hartos.ai_key_vault.request_credential, behind Request_Resource).
+  // secret: the card takes the value in a password field, and Accept stores
+  // it in this computer's vault before it grants.  The scope names the one
+  // credential (secretName); the agent only ever sees {{secret:NAME}}.
+  // declinable: the card offers "Don't allow" although there is no privacy
+  // card.  Owner ruling: consent must be able to say no.  Without it the
+  // only answers were Accept and "Not now" (the ask stays open), so HARTOS
+  // ConsentService.declined never became true and a rejected login re-asked
+  // for ever.  The no is for this one credential and this agent, HARTOS
+  // tells the agent the owner said no, and the privacy page's "Allow asking
+  // again" takes it back (declinedCredentials); declineNote says so.
+  credential: {
+    asks: 'use a password or key you enter here', privacyCard: false,
+    secret: true, declinable: true,
+  },
 });
+
+// A credential ask's scope is 'secret:<NAME>' (HARTOS consent_service
+// CREDENTIAL_SCOPE_PREFIX); NAME is the vault key the value is stored under.
+const SECRET_SCOPE_PREFIX = 'secret:';
+
+export function asksForSecret(consentType) {
+  return Boolean(CONSENT_ASKS[consentType] && CONSENT_ASKS[consentType].secret);
+}
+
+export function secretName(scope) {
+  const s = String(scope || '');
+  return s.startsWith(SECRET_SCOPE_PREFIX) ? s.slice(SECRET_SCOPE_PREFIX.length) : null;
+}
+
+// The credentials the owner said no to, one entry per credential, in the
+// server's order: a 'credential' row with revoked_at set is what HARTOS
+// ConsentService.declined reads as a no, for any agent.  The privacy page
+// lists them with "Allow asking again" (consentApi.reopen).
+export function declinedCredentials(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows || []) {
+    if (!r || r.consent_type !== 'credential' || !r.revoked_at) continue;
+    // Taken back: reopen keeps revoked_at (when the no was given) and
+    // records reopened_at; the no stands again only if revoked after it.
+    if (r.reopened_at && Date.parse(r.reopened_at) >= Date.parse(r.revoked_at)) continue;
+    const name = secretName(r.scope);
+    if (!name || seen.has(r.scope)) continue;
+    seen.add(r.scope);
+    out.push({scope: r.scope, name});
+  }
+  return out;
+}
 
 // The camera's consent type, by name, because the SPA has to act on it and
 // not just describe it: the frames come from THIS browser (getUserMedia ->
@@ -185,15 +238,39 @@ export function allowAllLabel(consentType) {
   return `Allow ALL agents to ${consentAskText(consentType)}`;
 }
 
+// The grant button for a credential ask.  What Accept does: the value is
+// saved in this computer's vault, and any agent can then use it by its
+// alias (HARTOS resolve_aliases fills {{secret:NAME}} in for whichever tool
+// names it).  "Allow ALL agents to use a password or key you enter here"
+// said neither that it is saved nor what the agents get.
+export const SAVE_SECRET_LABEL = 'Save it for any agent to use';
+
 // The grant button for an ask: every agent, or the one phone the ask's
 // scope names -- "this phone", never the self-asserted name.
 export function grantLabel(consentType) {
   if (isPerRequester(consentType)) return 'Always allow this phone';
+  if (asksForSecret(consentType)) return SAVE_SECRET_LABEL;
   return allowAllLabel(consentType);
 }
 
+// A type with a privacy card (the way back after a no), or one that says
+// no for a single ask and tells the agent so (declinable: credential).
 export function canDecline(consentType) {
-  return PRIVACY_CARD_TYPES.includes(consentType);
+  return PRIVACY_CARD_TYPES.includes(consentType)
+    || Boolean(CONSENT_ASKS[consentType] && CONSENT_ASKS[consentType].declinable);
+}
+
+// Under the buttons when a decline is offered: how long the no lasts.
+export function declineNote(consentType, label) {
+  if (PRIVACY_CARD_TYPES.includes(consentType)) {
+    return `"${label}" lasts until you allow it again in Privacy settings; "Not now" leaves the ask open.`;
+  }
+  // The privacy page lists declined credentials only (declinedCredentials),
+  // so only a credential is promised "Allow asking again".
+  if (asksForSecret(consentType)) {
+    return `"${label}" tells the agent no, and it will not ask for this again until you choose "Allow asking again" in Privacy settings; "Not now" leaves the ask open.`;
+  }
+  return `"${label}" tells the agent no; "Not now" leaves the ask open.`;
 }
 
 // The decline button: a phone's ask is declined for that phone ("Don't
@@ -207,6 +284,11 @@ export function declineLabel(consentType, agentId, name) {
 
 // The events HARTOS broadcasts when an ask is answered, on any surface.
 export const CONSENT_ANSWER_TYPES = Object.freeze(['consent.granted', 'consent.revoked']);
+
+// Every consent change HARTOS announces: the answers, and a no taken back
+// (ConsentService.reopen emits consent.reopened, for no agent).  A page that
+// lists consents refreshes on any of them.
+export const CONSENT_CHANGE_TYPES = Object.freeze([...CONSENT_ANSWER_TYPES, 'consent.reopened']);
 
 // True when an answer settles an ask, by ConsentService.check_consent's own
 // lookup, step for step:

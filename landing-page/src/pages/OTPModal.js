@@ -11,7 +11,7 @@ export default function OTPModal({isOpen, onClose, otp, setOtp, onVerify}) {
       <div className="relative w-full max-w-md bg-white rounded-lg p-6 mx-4">
         <button
           onClick={onClose}
-          className="absolute right-4 top-4 text-gray-500 hover:text-gray-700"
+          className="btn-feedback absolute right-4 top-4 text-gray-500 hover:text-gray-700"
         >
           <X size={24} />
         </button>
@@ -37,7 +37,7 @@ export default function OTPModal({isOpen, onClose, otp, setOtp, onVerify}) {
 
         <button
           onClick={onVerify}
-          className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md"
+          className="btn-feedback w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md"
         >
           Verify OTP
         </button>

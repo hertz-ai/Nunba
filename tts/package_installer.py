@@ -549,29 +549,81 @@ def is_cuda_torch() -> bool:
         return False
 
 
-def is_cuda_ctranslate2() -> bool:
-    """Check if the installed CTranslate2 can actually run STT on CUDA.
+# The CUDA libraries ctranslate2 loads for a decode, per platform: cuBLAS
+# lazily at the first encode, cuDNN for the encoder's convolutions.  These are
+# what install_gpu_ctranslate2 provides (nvidia-cublas-cu12,
+# nvidia-cudnn-cu12==9.*).  No entry (macOS) means no CUDA build to probe.
+_CT2_CUDA_LIBRARIES = {
+    'win32': ('cublas64_12.dll', 'cudnn64_9.dll'),
+    'linux': ('libcublas.so.12', 'libcudnn.so.9'),
+}
 
-    faster-whisper runs on CTranslate2 (NOT torch), so a CUDA torch is
-    neither necessary nor sufficient — this is the authoritative GPU-STT
-    gate, the SAME one ``whisper_tool._get_faster_whisper_model`` uses to
-    pick ``device='cuda'``: ``'cuda' in ctranslate2.get_supported_compute_types(
-    'cuda')``, which only returns CUDA types when CTranslate2 can dlopen the
-    NVIDIA cuBLAS/cuDNN runtime.  The CPU-only PyPI wheel returns none, so a
-    fresh install silently runs STT on CPU int8 until the CUDA runtime is
-    installed (see ``install_gpu_ctranslate2``).  Mirrors ``is_cuda_torch``:
-    prefers the user site (where the CUDA runtime is dropped) and never raises.
+# Runs in the child: exit 0 only when ctranslate2 sees a CUDA device AND every
+# library named in argv loads.  winmode=0 is plain LoadLibrary, which searches
+# PATH the way ctranslate2's own lazy load does (ctypes' default does not
+# search PATH).  ctranslate2 is imported first so a library its package
+# already loaded (cudnn64_9.dll ships inside it on Windows) resolves.
+_CT2_CUDA_PROBE = (
+    "import ctypes, sys\n"
+    "import ctranslate2\n"
+    "if ctranslate2.get_cuda_device_count() < 1:\n"
+    "    sys.exit('no CUDA device')\n"
+    "kw = {'winmode': 0} if sys.platform == 'win32' else {}\n"
+    "for name in sys.argv[1:]:\n"
+    "    ctypes.CDLL(name, **kw)\n"
+)
+
+
+def is_cuda_ctranslate2() -> bool:
+    """True when faster-whisper's engine can decode on CUDA here: ctranslate2
+    sees a CUDA device and the cuBLAS / cuDNN libraries it loads are loadable.
+    False means the runtime ``install_gpu_ctranslate2`` provides is missing.
+
+    Asked of the interpreter the STT worker runs on
+    (``core.venv_paths.venv_creator_python`` -- python-embed on the frozen
+    build, whose sitecustomize sets up the worker's PATH), in a child
+    process, never in this one: importing ctranslate2 here is what made
+    ``_run_pip`` defer the very install this gates ("install deferred:
+    ['ctranslate2'] are loaded in this process", every boot, 2026-09-25..27).
+
+    Until 2026-09-28 this tested ``'cuda' in get_supported_compute_types
+    ('cuda')``: a set of compute types never holds the device name (measured
+    on the installed python-embed: 'cuda' in it False, device count 1), so it
+    read "no CUDA" on every box and the install ran, and failed, every boot.
+    The worker's own gate (HARTOS whisper_tool) asks only for a device and
+    falls back to CPU when a decode then fails; this one also asks for the
+    libraries, because providing them is the install's whole job.
+
+    Never raises: it gates installs on the boot path, so anything that stops
+    the child from answering (HARTOS core not importable, no worker python,
+    a spawn or result that fails in any way) reads False and is logged at
+    WARNING with the reason.
     """
     try:
-        ensure_user_site_on_path()
-    except Exception:
-        pass
+        from core.subprocess_safe import run_bounded
+        from core.venv_paths import venv_creator_python
+    except ImportError as exc:
+        logger.warning("is_cuda_ctranslate2: HARTOS core not importable (%s); "
+                       "reading as not usable", exc)
+        return False
     try:
-        import ctranslate2
-        # get_supported_compute_types('cuda') raises on a broken/absent CUDA
-        # runtime — treat any failure as "not CUDA-capable".
-        return 'cuda' in ctranslate2.get_supported_compute_types('cuda')
-    except Exception:
+        python_exe = venv_creator_python()
+        if not python_exe:
+            return False
+        libraries = _CT2_CUDA_LIBRARIES.get(sys.platform, ())
+        result = run_bounded([python_exe, '-c', _CT2_CUDA_PROBE, *libraries],
+                             timeout=60)
+        if result.returncode != 0:
+            logger.info("CUDA ctranslate2 runtime not usable (%s): %s",
+                        'timed out' if result.timed_out
+                        else f'rc={result.returncode}',
+                        (result.stderr or '').strip()[-300:])
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the gate must never crash boot
+        logger.warning("is_cuda_ctranslate2: the probe could not answer "
+                       "(%s: %s); reading as not usable",
+                       type(exc).__name__, exc)
         return False
 
 
@@ -1421,17 +1473,219 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
     return ok, msg
 
 
+# ── A CUDA ctranslate2 install that failed is not retried every boot ──────────
+#
+# main.py's TTS warmup runs on every boot, and it (like llama_installer's
+# first-run path) installed the runtime whenever it was missing.  On a box
+# where it can never install (offline, pip failure, CUDA major mismatch, full
+# disk) that re-ran pip for nvidia-cublas / cudnn on every boot and failed
+# each time.  A failed install is recorded here, with its reason and what was
+# installed when it failed; the automatic callers ask
+# should_install_gpu_ctranslate2() and skip while nothing has changed, for at
+# most _CT2_FAILURE_TTL_S, and each skipped boot says so on a card.  The setup
+# wizard (desktop/ai_installer.py, the user asking) calls
+# install_gpu_ctranslate2 directly and always retries.
+#
+# Only a failure that will fail again is recorded.  Not recorded: an install
+# that never ran pip (deferred, python-embed missing), one that could not
+# reach the index or ran out of time (it may work on the next boot), and a
+# refusal by HARTOS's own pins (--constraint, _write_hart_constraints): that
+# is decided by what the build ships, not by this machine.
+
+#: How long a recorded failure keeps the boot from retrying.  One temporary
+#: failure that slipped past the checks below then costs a day, not a build.
+_CT2_FAILURE_TTL_S = 24 * 3600
+
+# pip / _run_pip output that says the attempt did not get to install
+# anything: nothing about this machine was learned.
+_CT2_NOT_RUN_PREFIXES = ('deferred:', 'python-embed not found')
+_CT2_TRANSIENT_MARKERS = (
+    'pip stalled', 'pip timed out', 'newconnectionerror', 'max retries exceeded',
+    'connectionerror', 'connection refused', 'connection reset',
+    'temporary failure in name resolution', 'getaddrinfo failed',
+    'name or service not known', 'read timed out', 'readtimeouterror',
+    'connecttimeouterror', 'could not fetch url', 'sslerror', 'proxyerror',
+    'no connection could be made', 'network is unreachable',
+)
+# pip marks a requirement that came from a --constraint file this way.
+_CT2_CONSTRAINT_MARKER = '(constraint)'
+
+
+def _ct2_failure_is_recordable(msg: str) -> bool:
+    """True when this install failure will fail again on the next boot: pip
+    ran, reached the index, and was refused for a reason of this machine."""
+    text = msg or ''
+    if text.startswith(_CT2_NOT_RUN_PREFIXES):
+        return False
+    low = text.lower()
+    if any(marker in low for marker in _CT2_TRANSIENT_MARKERS):
+        return False
+    return _CT2_CONSTRAINT_MARKER not in low
+
+
+def _ct2_failure_marker_path() -> str:
+    return os.path.join(_INSTALL_LOCK_DIR, 'cuda_ctranslate2_failed.json')
+
+
+def _installed_build_id() -> str:
+    """What is installed, for "has anything changed since the failure":
+    a hash of the frozen build's BUILD_INFO.txt (scripts/build.py writes one
+    per build, beside the exe), or 'source' when there is none."""
+    import hashlib
+    if getattr(sys, 'frozen', False):
+        info = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                            'BUILD_INFO.txt')
+        try:
+            with open(info, 'rb') as fh:
+                return 'build:' + hashlib.sha256(fh.read()).hexdigest()[:16]
+        except OSError as exc:
+            logger.debug("CUDA ctranslate2 marker: no BUILD_INFO.txt (%s)", exc)
+    return 'source'
+
+
+def _ct2_install_context() -> dict:
+    """The build and the worker interpreter the install targets: when either
+    changes, a recorded failure no longer stands."""
+    try:
+        from core.venv_paths import venv_creator_python
+        python_exe = venv_creator_python() or ''
+    except Exception as exc:  # noqa: BLE001 -- best-effort context
+        logger.debug("CUDA ctranslate2 marker: no worker python (%s)", exc)
+        python_exe = ''
+    return {'build': _installed_build_id(), 'python': python_exe}
+
+
+def _record_ct2_install_failure(reason: str) -> None:
+    """Write the failure marker: why, when, and the context it failed in."""
+    import json
+    tail = [ln.strip() for ln in (reason or '').splitlines() if ln.strip()]
+    now = time.time()
+    record = {
+        'reason': (tail[-1] if tail else 'unknown')[:300],
+        'at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now)),
+        'at_epoch': now,
+        **_ct2_install_context(),
+    }
+    path = _ct2_failure_marker_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(record, fh)
+    except OSError as exc:
+        logger.warning("CUDA ctranslate2: could not record the failed install "
+                       "(%s); the next boot will try again", exc)
+
+
+def _clear_ct2_install_failure() -> None:
+    try:
+        os.remove(_ct2_failure_marker_path())
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("CUDA ctranslate2: could not clear the failure marker "
+                       "%s (%s)", _ct2_failure_marker_path(), exc)
+
+
+def _ct2_failure_that_still_stands() -> dict | None:
+    """The recorded failure when it was recorded for what is installed now,
+    less than _CT2_FAILURE_TTL_S ago, else None.  An unreadable marker, or one
+    without a time (written before the expiry existed), does not block."""
+    import json
+    path = _ct2_failure_marker_path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding='utf-8') as fh:
+            record = json.load(fh)
+    except (OSError, ValueError) as exc:
+        logger.warning("CUDA ctranslate2: failure marker %s unreadable (%s); "
+                       "ignoring it", path, exc)
+        return None
+    now = _ct2_install_context()
+    if any(record.get(k) != v for k, v in now.items()):
+        logger.info("CUDA ctranslate2: the install failed before on another "
+                    "build or interpreter; trying again")
+        return None
+    at = record.get('at_epoch')
+    if not isinstance(at, (int, float)) or time.time() - at >= _CT2_FAILURE_TTL_S:
+        logger.info("CUDA ctranslate2: the recorded failure is over %d h old; "
+                    "trying again", _CT2_FAILURE_TTL_S // 3600)
+        return None
+    return record
+
+
+def _ct2_off_card_message(prior: dict) -> str:
+    """What the skipped boot tells the owner.  It says 'failed', which is what
+    makes the setup card render as finished rather than as a spinner."""
+    return (f"GPU speech is off: the GPU speech runtime install failed "
+            f"({prior.get('reason', 'unknown reason')}). Retry in AI setup.")
+
+
+def _announce_ct2_off(prior: dict) -> None:
+    """Show the skipped boot as a setup card (the cuda_ctranslate2 job the
+    install itself reports on), so speech-to-text is not on CPU in silence."""
+    try:
+        from integrations.social.realtime import publish_event
+        publish_event('setup_progress', {
+            'type': 'setup_progress',
+            'job_type': 'cuda_ctranslate2',
+            'status': 'error',
+            'complete': True,
+            'message': _ct2_off_card_message(prior),
+        })
+    except Exception as exc:  # noqa: BLE001 -- the card is best-effort
+        logger.warning("CUDA ctranslate2: could not show the 'GPU speech is "
+                       "off' card (%s: %s)", type(exc).__name__, exc)
+
+
+def _ct2_retry_wording() -> str:
+    """When a skipped install is tried again.  A source run has no build to
+    update, so it does not promise one."""
+    after = f"in {_CT2_FAILURE_TTL_S // 3600} h"
+    if _installed_build_id() == 'source':
+        return f"{after} or from AI setup"
+    return f"{after}, after an update, or from AI setup"
+
+
+def should_install_gpu_ctranslate2() -> bool:
+    """The boot-time gate for ``install_gpu_ctranslate2``: an NVIDIA GPU, the
+    runtime not usable (``is_cuda_ctranslate2``), and no failed install
+    recorded for what is installed now.  A recorded failure is skipped with a
+    WARNING naming its reason and a "GPU speech is off" card; it is retried
+    after _CT2_FAILURE_TTL_S, after an update, when the worker interpreter
+    changes, or when the owner runs AI setup.  Never raises."""
+    try:
+        if not has_nvidia_gpu():
+            return False
+        if is_cuda_ctranslate2():
+            _clear_ct2_install_failure()
+            return False
+        prior = _ct2_failure_that_still_stands()
+        if prior:
+            logger.warning(
+                "CUDA ctranslate2 not installed this boot: the install failed "
+                "at %s (%s); speech-to-text stays on CPU. It is tried again %s "
+                "(marker: %s)",
+                prior.get('at', '?'), prior.get('reason', '?'),
+                _ct2_retry_wording(), _ct2_failure_marker_path())
+            _announce_ct2_off(prior)
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001 -- a boot gate must not crash boot
+        logger.warning("CUDA ctranslate2 gate failed (%s: %s); not installing "
+                       "this boot", type(exc).__name__, exc)
+        return False
+
+
 def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, str]:
     """Install the CUDA runtime deps faster-whisper needs to run STT on GPU.
 
     faster-whisper runs on CTranslate2, NOT torch — so a CUDA-enabled torch
-    is neither necessary nor sufficient for GPU whisper.  The
-    AUTHORITATIVE gate (HARTOS whisper_tool._get_faster_whisper_model)
-    is ``'cuda' in ctranslate2.get_supported_compute_types('cuda')``,
-    which only returns CUDA types when CTranslate2 can dlopen the NVIDIA
-    cuBLAS + cuDNN runtime libraries.  The CPU-only ctranslate2 PyPI
-    wheel ships without them, so on a fresh install STT silently falls
-    back to CPU int8 even on an RTX card.
+    is neither necessary nor sufficient for GPU whisper.  CTranslate2 needs
+    the NVIDIA cuBLAS + cuDNN runtime libraries at decode time, and the
+    PyPI wheel does not ship cuBLAS, so without them STT falls back to CPU
+    int8 even on an RTX card.  ``is_cuda_ctranslate2`` is the check for
+    exactly that.
 
     This installs the missing runtime, into the SAME user-writable
     ``~/.nunba/site-packages/`` target that ``install_gpu_torch`` uses,
@@ -1445,9 +1699,9 @@ def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, 
     boot.  On a CPU-only box it no-ops with a debug log.  Mirrors
     ``install_gpu_torch``: same file-lock, same GPU detection
     (vram_manager first, ``has_nvidia_gpu`` fallback), same
-    ``ensure_user_site_on_path`` + DLL-dir wiring + cache invalidation.
-    Like CUDA torch, the new libs activate fully on next start; this
-    run also wires the DLL dirs so a same-session re-probe can engage.
+    ``ensure_user_site_on_path`` + cache invalidation.  The DLL dirs are
+    wired by python-embed's startup hook in every worker it starts, so the
+    next worker spawn (this session or the next) finds cuBLAS / cuDNN.
     """
     if not _acquire_file_lock('cuda_ctranslate2'):
         return False, "Another process is already installing CUDA ctranslate2"
@@ -1485,28 +1739,16 @@ def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, 
     ], progress_cb, timeout=900)
 
     if ok:
-        # Make the freshly-installed runtime usable this session, exactly
-        # as install_gpu_torch does for torch/lib: put user site on
-        # sys.path and add the NVIDIA DLL dirs to the Windows search path
-        # so CTranslate2 can dlopen cuBLAS/cuDNN.  Next boot, app.py's
-        # path setup + this same wiring re-establish it.
+        # The runtime is used by the STT worker, a python-embed child, never
+        # by this process; python-embed's startup hook
+        # (scripts/rebuild_python_embed.SITECUSTOMIZE_SOURCE) puts
+        # nvidia/{cublas,cudnn}/bin on each child's DLL search path, so the
+        # next worker (and is_cuda_ctranslate2's probe) reaches them.
         ensure_user_site_on_path()
-        _user_sp = get_user_site_packages()
-        if sys.platform == 'win32':
-            for _rel in (('nvidia', 'cublas', 'bin'),
-                         ('nvidia', 'cudnn', 'bin')):
-                _dll_dir = os.path.join(_user_sp, *_rel)
-                if os.path.isdir(_dll_dir):
-                    try:
-                        os.add_dll_directory(_dll_dir)
-                    except Exception:
-                        pass
-                    if _dll_dir not in os.environ.get('PATH', ''):
-                        os.environ['PATH'] = (
-                            _dll_dir + os.pathsep + os.environ.get('PATH', ''))
 
         # Invalidate cached import checks so a re-probe sees the new libs.
         _invalidate_import_cache()
+        _clear_ct2_install_failure()
         logger.info(
             "CUDA ctranslate2 runtime installed — faster-whisper will load "
             "on GPU once the CTranslate2 CUDA probe re-runs (next STT load "
@@ -1517,6 +1759,15 @@ def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, 
     else:
         logger.warning("CUDA ctranslate2 install failed (STT stays on CPU): %s",
                        msg)
+        # Only a failure that will fail again is recorded against this build
+        # (see _ct2_failure_is_recordable).
+        if _ct2_failure_is_recordable(msg):
+            _record_ct2_install_failure(msg)
+        else:
+            logger.info("CUDA ctranslate2: this failure is not recorded (pip "
+                        "did not run, could not reach the index, ran out of "
+                        "time, or HARTOS's pins refused it); the next boot "
+                        "tries again")
 
     _release_file_lock('cuda_ctranslate2')
     return ok, msg

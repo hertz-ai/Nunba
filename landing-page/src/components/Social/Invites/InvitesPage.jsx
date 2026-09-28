@@ -15,8 +15,15 @@
  * Route params (when navigated to from a community/conversation):
  *   parent_kind, parent_id, parent_name, open_compose
  */
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { invitesApi, mentionsApi } from '../../../services/socialApi';
+import EmptyState from '../shared/EmptyState';
+
+import AddIcon from '@mui/icons-material/Add';
+import CheckIcon from '@mui/icons-material/Check';
+import CloseIcon from '@mui/icons-material/Close';
+import EmailOutlinedIcon from '@mui/icons-material/EmailOutlined';
+import LinkIcon from '@mui/icons-material/Link';
+import PeopleIcon from '@mui/icons-material/People';
 import {
   Box, Card, CardContent, Typography, Avatar, Button,
   Stack, Chip, CircularProgress, Snackbar, Alert,
@@ -25,15 +32,9 @@ import {
   FormHelperText,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
-import AddIcon from '@mui/icons-material/Add';
-import CheckIcon from '@mui/icons-material/Check';
-import CloseIcon from '@mui/icons-material/Close';
-import LinkIcon from '@mui/icons-material/Link';
-import PeopleIcon from '@mui/icons-material/People';
-import EmailOutlinedIcon from '@mui/icons-material/EmailOutlined';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
-import { invitesApi, mentionsApi } from '../../../services/socialApi';
-import EmptyState from '../shared/EmptyState';
 
 const ROLES = [
   { key: 'member', label: 'Member' },

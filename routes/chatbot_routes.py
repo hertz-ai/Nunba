@@ -285,11 +285,12 @@ def _submit_correction_async(original_response, corrected_text, user_id):
                      name='submit_correction').start()
 
 
-# Agent-driven secret request detection
+# Missing-API-key detection
 # The LangChain agent/tools dictate when secrets are needed — NOT fuzzy regex on user input.
 # When a tool fails due to a missing API key, the agent's error response is detected here
 # and a structured `secret_request` is injected into the response for the frontend to present
-# a secure input screen. The agent can also return `secret_request` directly.
+# a secure input screen.  A credential an agent asks for goes to the consent card instead
+# (HARTOS hartos.ai_key_vault.request_credential).
 _MISSING_KEY_INDICATORS = [
     'api key not found', 'api key is required', 'missing api key',
     'set your api key', 'configure your api key', 'api_key not set',
@@ -313,24 +314,6 @@ _KEY_NAME_MAP = {
                'description': 'Required for OpenAI GPT models.',
                'used_by': 'OpenAI LLM'},
 }
-
-
-def _extract_resource_request(text):
-    """Extract structured resource request from Request_Resource tool output.
-    The tool embeds RESOURCE_REQUEST:{json} in its response. Returns dict or None."""
-    if not text or 'RESOURCE_REQUEST:' not in text:
-        return None
-    try:
-        marker_idx = text.index('RESOURCE_REQUEST:') + len('RESOURCE_REQUEST:')
-        json_str = text[marker_idx:].strip()
-        req = json.loads(json_str)
-        if req.get('__SECRET_REQUEST__'):
-            req.pop('__SECRET_REQUEST__', None)
-            req['triggered_by'] = 'agent_request_resource'
-            return req
-    except (ValueError, json.JSONDecodeError) as e:
-        logger.warning(f'Failed to parse RESOURCE_REQUEST marker: {e}')
-    return None
 
 
 def _detect_missing_key_in_response(text):
@@ -2528,6 +2511,35 @@ def check_internet_connection():
     return _internet_cache['online']
 
 
+def _is_same_agent(a, b):
+    """True when two /prompts rows are the same agent.
+
+    Rows come from three sources with different key sets: LOCAL_AGENTS and
+    CLOUD_AGENTS carry ``id``; HARTOS rows carry ``prompt_id`` and often an
+    empty ``name``.  A key counts only when BOTH rows have a non-empty value
+    for it, so an absent key is never evidence of sameness.  Comparing the
+    raw ``.get()`` values made every HARTOS row after the first a "duplicate"
+    on None == None and the user saw one HARTOS agent.
+
+    When BOTH rows carry a prompt_id, it is the identity and nothing else is
+    consulted: two HARTOS agents with the same name are still two agents with
+    two recipes (review of 3bfe4c18, measured: 26 owner rows listed 20; 'IPL
+    Score Tracker', 'Spider-Man', 'Superman' and others vanished).  id and
+    name only decide for a row without a prompt_id (LOCAL_AGENTS /
+    CLOUD_AGENTS), which keeps a HARTOS row from shadowing a local agent.
+    """
+    pa, pb = a.get('prompt_id'), b.get('prompt_id')
+    if pa not in (None, '') and pb not in (None, ''):
+        return str(pa) == str(pb)
+    for key in ('id', 'name'):
+        va, vb = a.get(key), b.get(key)
+        if va in (None, '') or vb in (None, ''):
+            continue
+        if str(va) == str(vb):
+            return True
+    return False
+
+
 def get_prompts_route():
     """
     GET /prompts - Get all agents (local first, then HARTOS, then cloud)
@@ -2567,7 +2579,7 @@ def get_prompts_route():
                     hartos_available = True
                     for agent in hartos_agents:
                         # Skip duplicates already in LOCAL_AGENTS
-                        if any(a.get('id') == agent.get('id') or a.get('name') == agent.get('name') for a in agents):
+                        if any(_is_same_agent(a, agent) for a in agents):
                             continue
                         agent['available'] = True
                         if not agent.get('type'):
@@ -2586,7 +2598,7 @@ def get_prompts_route():
     has_auth = bool(request.headers.get('Authorization') or os.environ.get('HEVOLVE_LLM_API_KEY'))
     if agent_type in ['all', 'cloud'] and is_online:
         for agent in CLOUD_AGENTS:
-            if not any(a.get('id') == agent.get('id') or a.get('name') == agent.get('name') for a in agents):
+            if not any(_is_same_agent(a, agent) for a in agents):
                 agent_copy = agent.copy()
                 agent_copy['available'] = has_auth  # guests can see but not use
                 agent_copy['origin'] = ORIGIN_HIVE
@@ -3142,20 +3154,16 @@ def _chat_turn(data):
                         'success': False,
                     }
                     # Agent error may indicate a missing API key
-                    secret_req = result.get('secret_request')
-                    if not secret_req:
-                        key_info = _detect_missing_key_in_response(error_msg)
-                        if key_info:
-                            secret_req = {
-                                'type': 'tool_key',
-                                'key_name': key_info['key_name'],
-                                'label': key_info['label'],
-                                'description': key_info['description'],
-                                'used_by': key_info['used_by'],
-                                'triggered_by': 'tool_error',
-                            }
-                    if secret_req:
-                        error_response['secret_request'] = secret_req
+                    key_info = _detect_missing_key_in_response(error_msg)
+                    if key_info:
+                        error_response['secret_request'] = {
+                            'type': 'tool_key',
+                            'key_name': key_info['key_name'],
+                            'label': key_info['label'],
+                            'description': key_info['description'],
+                            'used_by': key_info['used_by'],
+                            'triggered_by': 'tool_error',
+                        }
                     # #171 — thinking traces stream live via SSE 'chat.response'
                     # (EventBus.emit fan-out, commit 29ac1b9).  The HTTP-attach
                     # path was redundant — every trace was already delivered in
@@ -3221,29 +3229,23 @@ def _chat_turn(data):
                         response_json['source'] = result.get(
                             'source') or response_json['source']
 
-                    # Agent-driven resource request: 3 detection paths (ordered by priority)
-                    # 1. Direct secret_request from backend/adapter
-                    # 2. RESOURCE_REQUEST: marker from Request_Resource tool output
-                    # 3. Missing-key error patterns in response text
-                    secret_req = result.get('secret_request')
-                    if not secret_req:
-                        secret_req = _extract_resource_request(response_text)
-                    if not secret_req:
-                        key_info = _detect_missing_key_in_response(response_text)
-                        if key_info:
-                            secret_req = {
-                                'type': 'tool_key',
-                                'key_name': key_info['key_name'],
-                                'label': key_info['label'],
-                                'description': key_info['description'],
-                                'used_by': key_info['used_by'],
-                                'triggered_by': 'tool_missing_key',
-                            }
-                    if secret_req:
-                        response_json['secret_request'] = secret_req
-                        # Strip the raw RESOURCE_REQUEST: marker from user-visible text
-                        if 'RESOURCE_REQUEST:' in response_text:
-                            response_json['text'] = response_text[:response_text.index('RESOURCE_REQUEST:')].rstrip()
+                    # A reply that says a tool's API key is missing opens the
+                    # key modal (secret_request).  An agent that needs a
+                    # credential asks on the consent card instead (HARTOS
+                    # hartos.ai_key_vault.request_credential, 6fb9b79bc):
+                    # the RESOURCE_REQUEST:{json} marker and a backend
+                    # 'secret_request' field that used to be read here are
+                    # produced by nothing any more.
+                    key_info = _detect_missing_key_in_response(response_text)
+                    if key_info:
+                        response_json['secret_request'] = {
+                            'type': 'tool_key',
+                            'key_name': key_info['key_name'],
+                            'label': key_info['label'],
+                            'description': key_info['description'],
+                            'used_by': key_info['used_by'],
+                            'triggered_by': 'tool_missing_key',
+                        }
                     # Pass through Agent_status for creation/reuse mode tracking
                     agent_status = result.get('Agent_status')
                     if agent_status:
@@ -3859,54 +3861,25 @@ def network_status_route():
 
 # ── Agent sync endpoints ──
 
-def _load_jwt_secret_key():
-    """Load the JWT secret key from the same file used by social auth."""
-    # Check SOCIAL_SECRET_KEY env var first
-    env_key = os.environ.get('SOCIAL_SECRET_KEY', '')
-    if env_key and len(env_key) >= 32:
-        return env_key
-    # Load from persisted key file (same path as integrations/social/auth.py)
-    db_path = os.environ.get('HEVOLVE_DB_PATH', '')
-    if db_path and db_path != ':memory:' and os.path.isabs(db_path):
-        key_file = os.path.join(os.path.dirname(db_path), '.social_secret_key')
-    else:
-        try:
-            from core.platform_paths import get_db_dir
-            key_file = os.path.join(get_db_dir(), '.social_secret_key')
-        except ImportError:
-            key_file = os.path.join(
-                os.path.expanduser('~'), 'Documents', 'Nunba', 'data', '.social_secret_key'
-            )
-    try:
-        if os.path.exists(key_file):
-            with open(key_file) as f:
-                key = f.read().strip()
-            if len(key) >= 32:
-                return key
-    except (PermissionError, OSError) as e:
-        logger.warning(f"Cannot read JWT secret key from {key_file}: {e}")
-    return None
-
-
 def _get_user_id_from_auth():
-    """Extract user_id from JWT Bearer token or query param (local only)."""
+    """User id from the Bearer token (HARTOS's resolver), or the query
+    param for local requests."""
     auth = request.headers.get('Authorization', '')
     if auth.startswith('Bearer '):
+        # The canonical resolver, not a JWT-only decode: a cloud login's
+        # token is an opaque Kong token stored as the user's api_token, and
+        # decoding it as a JWT 401'd every cloud user (live 2026-09-25:
+        # "JWT decode failed: Not enough segments" -> "Session expired").
+        token = auth.split(' ', 1)[1].strip()
         try:
-            import jwt as pyjwt
-            token = auth.split(' ', 1)[1]
-            secret_key = _load_jwt_secret_key()
-            if secret_key:
-                payload = pyjwt.decode(token, secret_key, algorithms=["HS256"])
-            else:
-                logger.warning("JWT secret key unavailable — cannot verify token signature")
-                return None
-            return payload.get('user_id') or payload.get('sub')
+            from integrations.social.auth import user_id_for_token
+            return user_id_for_token(token)
         except Exception as e:
-            logger.warning(f"JWT decode failed: {e}")
+            logger.warning(f"Token resolution failed: {e}")
             return None
     # Fallback: allow user_id query param ONLY for local requests
-    if request.remote_addr in ('127.0.0.1', '::1', 'localhost'):
+    from routes.auth import _is_local_request
+    if _is_local_request():
         return request.args.get('user_id')
     return None
 
@@ -4193,12 +4166,43 @@ def llm_config_test():
 # Vault API — generic secret storage (tool keys, channel secrets)
 # Extends AIKeyVault that already handles provider configs via /api/llm/config
 # ---------------------------------------------------------------------------
+def _is_owner_credential(key_name):
+    """True when key_name is a credential the owner of this computer entered
+    for an agent: HARTOS AIKeyVault.owner_credential_names, the one list of
+    them (a granted 'credential' consent row, scope 'secret:NAME', or a value
+    stored through the vault this process).  The consent card stores a
+    re-entered value here before it grants again, so the earlier grant is
+    what names it.  A first entry is not on the list yet; export_to_env
+    handles it (the environment for a name the process reads, else HARTOS's
+    vault).  A lookup that fails names nothing."""
+    try:
+        from hartos.ai_key_vault import get_ai_key_vault
+        return key_name in get_ai_key_vault().owner_credential_names()
+    except Exception:
+        logger.warning('vault store: could not read the owner credential names; '
+                       '%s is not put into the environment', key_name, exc_info=True)
+        return False
+
+
+def _is_node_secret(key_name):
+    """True for the node's own secrets (HARTOS is_node_secret:
+    SOCIAL_SECRET_KEY, SOCIAL_DB_KEY, DATABASE_URL, REDIS_URL).  Only the
+    node's own vault preload sets them; the consent card and this route never
+    do, held or not.  Without HARTOS nothing reads them, so nothing is
+    refused."""
+    try:
+        from hartos.ai_key_vault import is_node_secret
+    except Exception:
+        return False
+    return bool(is_node_secret(key_name))
+
+
 def vault_store():
     """POST /api/vault/store — Store a secret in the vault.
     Body: { key_type: 'tool_key'|'channel_secret', key_name: str, value: str, channel_type?: str }
     """
     try:
-        from desktop.ai_key_vault import AIKeyVault
+        from desktop.ai_key_vault import AIKeyVault, reads_from_env
         data = request.get_json() or {}
         key_type = data.get('key_type', 'tool_key')
         key_name = data.get('key_name', '')
@@ -4208,6 +4212,11 @@ def vault_store():
         if not key_name or not value:
             return jsonify({'success': False, 'error': 'key_name and value are required'}), 400
 
+        if key_type != 'channel_secret' and _is_node_secret(key_name):
+            return jsonify({'success': False, 'error': (
+                f"{key_name} is this computer's own setting and can't be "
+                f"entered here.")}), 400
+
         vault = AIKeyVault.get_instance()
 
         if key_type == 'channel_secret':
@@ -4215,10 +4224,34 @@ def vault_store():
                 return jsonify({'success': False, 'error': 'channel_type required for channel secrets'}), 400
             vault.set_channel_secret(channel_type, key_name, value)
         else:
+            _prev = vault.get_tool_key(key_name)
             vault.set_tool_key(key_name, value)
+            # The owner just typed this value, so it replaces what the
+            # process holds (export_to_env only setdefault()s, which kept a
+            # value a site had rejected in use until the next restart).  Only
+            # for a credential the owner entered for an agent, and only while
+            # the process value is unset or still the one this vault stored:
+            # being an owner credential is not enough, since a card for PATH
+            # would make PATH one (review of 670aed3f).
+            if (reads_from_env(key_name) and _is_owner_credential(key_name)
+                    and os.environ.get(key_name) in (None, _prev)):
+                os.environ[key_name] = value
 
-        # Export to env so LangChain tools can use it immediately
-        vault.export_to_env()
+        # A name the process reads from its environment goes there (only if
+        # unset); any other value is held by HARTOS's vault, a re-entered one
+        # replacing what it held, and reaches a tool through its alias.
+        unheld = vault.export_to_env() or set()
+        if key_type != 'channel_secret' and key_name in unheld:
+            # Saved in this computer's vault, but the installed HART OS cannot
+            # hold it for agents (older than hold_credential).  Said to the
+            # owner on the card (success false, 200 so the card reads the
+            # error), never papered over with the environment.
+            return jsonify({
+                'success': False, 'key_name': key_name, 'stored': True,
+                'error': ("Saved on this computer, but agents cannot use it yet: "
+                          "this HART OS version cannot hold it for them. Update "
+                          "HART OS and enter it again."),
+            })
 
         return jsonify({'success': True, 'key_name': key_name, 'stored': True})
     except Exception as e:

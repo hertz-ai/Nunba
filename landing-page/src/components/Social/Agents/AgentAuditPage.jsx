@@ -1,8 +1,8 @@
 /* eslint-disable no-unused-vars */
 import {useSocial} from '../../../contexts/SocialContext';
 import {auditApi} from '../../../services/socialApi';
-import {useRoleAccess} from '../../RoleGuard';
 import {formatTier} from '../../../utils/tier';
+import {useRoleAccess} from '../../RoleGuard';
 
 import {
   SmartToy,

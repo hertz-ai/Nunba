@@ -170,7 +170,7 @@ const HevolveDemo = () => {
             className="msger-input"
             placeholder="Enter your message..."
           />
-          <button type="submit" className="msger-send-btn">
+          <button type="submit" className="btn-feedback msger-send-btn">
             Send
           </button>
         </form>

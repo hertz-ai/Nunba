@@ -130,13 +130,29 @@ def _surface_backend_exception(backend: str, err: BaseException) -> None:
     # throttle in error_advice keys on (category, fingerprint) so
     # repeated failures of the SAME shape only file ONE goal per
     # window — chatterbox failing 50× per session = 1 goal, not 50.
+    #
+    # A name TTSEngine cannot build (e.g. 'neuair', a mangled catalog id,
+    # 2026-09-22..26) is a caller bug, not a broken backend: a self-heal
+    # goal for it can never succeed (repair_backend_venv rejects unknown
+    # names) and lived for days.  It is still logged and sent to Sentry;
+    # it just files no agent goal.
+    try:
+        from tts.tts_engine import _is_engine_backend
+        remediable = _is_engine_backend(backend)
+    except Exception as judge_err:
+        # Cannot judge the name: keep filing the goal, and say why.
+        remediable = True
+        logger.warning(
+            "TTS probe of %r: could not import tts.tts_engine to judge the "
+            "backend name (%s: %s); filing the self-heal goal as before",
+            backend, type(judge_err).__name__, judge_err)
     try:
         from core.error_advice import handle_exception
         handle_exception(
             err,
             category='tts.probe',
             severity='high',
-            agent_remediation=True,
+            agent_remediation=remediable,
             context={
                 'backend': backend,
                 'err_log_path': _backend_err_log_path(backend),

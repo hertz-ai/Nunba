@@ -711,7 +711,9 @@ class LlamaConfig:
         """
         try:
             import time as _time
-            log_dir = Path(os.path.expanduser('~')) / 'Documents' / 'Nunba' / 'logs'
+            # The same dir HARTOS's get_boot_decision reads (one resolver).
+            from core.platform_paths import get_log_dir
+            log_dir = Path(get_log_dir())
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / 'draft_decision.jsonl'
             entry = {

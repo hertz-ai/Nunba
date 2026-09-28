@@ -74,7 +74,7 @@ export default function HARTSpeechPlayer({ language = 'en', variant = 'button', 
   // Minimal inline button variant (for LightYourHART overlay)
   if (variant === 'inline') {
     return (
-      <button
+      <button className="btn-feedback"
         onClick={playing ? stop : play}
         style={{
           background: 'transparent',
@@ -114,7 +114,7 @@ export default function HARTSpeechPlayer({ language = 'en', variant = 'button', 
             <option key={code} value={code}>{label}</option>
           ))}
         </select>
-        <button
+        <button className="btn-feedback"
           onClick={playing ? stop : play}
           style={{
             width: '100%',
@@ -153,7 +153,7 @@ export default function HARTSpeechPlayer({ language = 'en', variant = 'button', 
           <option key={code} value={code}>{label}</option>
         ))}
       </select>
-      <button
+      <button className="btn-feedback"
         onClick={playing ? stop : play}
         style={{
           padding: '10px 24px',

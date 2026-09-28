@@ -2,18 +2,37 @@
 # Measure runtime code coverage during the e2e suite.  Sources listed
 # here are the Nunba code that ships to users — we explicitly track
 # coverage of the code that runs in production, not the test scaffolding.
+#
+# `source` is the repo DIRECTORY, never a list of modules.  coverage 7
+# treats a `source` entry that is not a directory as an importable module
+# name and resolves it with importlib.util.find_spec() at start-up: the old
+# `app.py` / `main.py` entries made coverage IMPORT and boot the whole
+# desktop app (llama-server, HARTOS bootstrap, Tk) under pytest's argv, and
+# its sys.modules restore then deleted modules those boot threads were still
+# importing -- the KeyError 'conftest' / 'tests.e2e.conftest' collection
+# failures in regression.yml.  Likewise `core` resolved to HARTOS's `core`
+# package (Nunba has no core/ dir), folding HARTOS lines into this number
+# against the omit rule below.  With `source = .` nothing is imported;
+# app.py, main.py, wamp_router.py and the tts/llama/routes/models/desktop
+# packages are measured (and reported at 0% until a test runs them), and
+# the non-shipping trees are excluded by `omit`.
 source =
-    app.py
-    main.py
-    tts
-    llama
-    routes
-    core
-    models
-    desktop
+    .
 
 # Exclude known non-runtime artifacts.
 omit =
+    # Non-shipping top-level trees that `source = .` would otherwise walk
+    # or record when a test executes them.
+    scripts/*
+    bench/*
+    docs/*
+    deploy/*
+    packaging/*
+    dist/*
+    Output/*
+    .backups/*
+    .claude/*
+    .uitest_*
     */__pycache__/*
     */tests/*
     */.venv/*

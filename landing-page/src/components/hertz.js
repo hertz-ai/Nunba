@@ -104,7 +104,7 @@ const Hertz = (props) => {
 
         <div>
           <button
-            className="button fadeInUp"
+            className="btn-feedback button fadeInUp"
             style={{animationDelay: '0.6s'}}
             onClick={() => getContactForm()}
           >
@@ -112,7 +112,7 @@ const Hertz = (props) => {
           </button>
           <br />
           <button
-            className="button fadeInUp"
+            className="btn-feedback button fadeInUp"
             style={{animationDelay: '0.6s'}}
             onClick={() => getLocation()}
           >
@@ -134,7 +134,7 @@ const Hertz = (props) => {
       {!currentLocation && (
         <React.Fragment>
           <button
-            className="button fadeInUp"
+            className="btn-feedback button fadeInUp"
             style={{animationDelay: '0.6s'}}
             onClick={() => getLocation()}
           >

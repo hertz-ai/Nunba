@@ -1430,11 +1430,20 @@ def create_proxy_blueprint():
 #   /visual_agent    execute_python_file and call_visual_task, same pair in
 #                    create_recipe.py) POSTed to localhost:6777 -> connection
 #                    refused, so every scheduled agent action was dropped.
+#   /api/agent/approval  live drive 2026-09-26: 404 'API endpoint not found'.
+#                    The consent card (landing-page AgentOverlay.jsx
+#                    ApprovalOverlay) swallows the error, so Approve / Deny
+#                    closed the card and no UserConsent row was written.
+#                    HARTOS's agent_approval (hart_intelligence_entry.py) is
+#                    the one handler; the liquid-UI shell's route of the same
+#                    name is on the shell's own Flask app and port
+#                    (LiquidUIService), not on :5000.
 _INPROCESS_DISPATCH_ROUTES = (
     # (path, methods) -- dispatched into HARTOS, never reimplemented here
-    ('/api/vlm/stop', ('POST',)),    # Stop AI Control (call_stop_api)
-    ('/time_agent', ('POST',)),      # scheduled recipe actions
-    ('/visual_agent', ('POST',)),    # scheduled visual (VLM) actions
+    ('/api/vlm/stop', ('POST',)),        # Stop AI Control (call_stop_api)
+    ('/time_agent', ('POST',)),          # scheduled recipe actions
+    ('/visual_agent', ('POST',)),        # scheduled visual (VLM) actions
+    ('/api/agent/approval', ('POST',)),  # consent card Approve / Deny
 )
 
 
