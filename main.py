@@ -4868,6 +4868,12 @@ def sse_event_stream():
         try:
             with _sse_lock:
                 _sse_clients.setdefault(uid, []).append(entry)
+                uid_clients = len(_sse_clients.get(uid, []))
+                total_clients = sum(len(v) for v in _sse_clients.values())
+            logging.info(
+                "SSE: client registered uid=%s uid_clients=%s total_clients=%s",
+                uid, uid_clients, total_clients,
+            )
             yield "data: {\"type\": \"connected\"}\n\n"
             while True:
                 try:

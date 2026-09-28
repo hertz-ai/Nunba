@@ -190,3 +190,38 @@ describe('computer-use commentary SSE channel', () => {
     expect(FakeEventSource.instances).toHaveLength(1);
   });
 });
+
+
+describe('canonical credential-mode transitions', () => {
+  test('explicit guest mode rotates off a cached cloud token without a delivery gap', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.init(null, {userId: 'cloud-user', token: 'opaque-cloud-token'});
+    const cloudEs = FakeEventSource.instances[0];
+    cloudEs._simulateOpen();
+
+    realtimeService.init(null, {userId: 'guest-uuid', token: null});
+
+    expect(FakeEventSource.instances).toHaveLength(2);
+    const guestEs = FakeEventSource.instances[1];
+    expect(guestEs.url).toMatch(/user_id=guest-uuid/);
+    expect(guestEs.url).not.toMatch(/[?&]token=/);
+    expect(cloudEs.closed).toBe(false);
+
+    guestEs._simulateOpen();
+    expect(cloudEs.closed).toBe(true);
+    expect(guestEs.closed).toBe(false);
+  });
+
+  test('disconnect clears the previous bearer before a local guest reconnect', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.connect('opaque-cloud-token');
+    FakeEventSource.instances[0]._simulateOpen();
+
+    realtimeService.disconnect();
+    realtimeService.init(null, {userId: 'guest-uuid'});
+
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[1].url).toMatch(/user_id=guest-uuid/);
+    expect(FakeEventSource.instances[1].url).not.toMatch(/[?&]token=/);
+  });
+});

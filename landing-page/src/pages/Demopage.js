@@ -2636,7 +2636,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         activeWorker = crossbarWorker;
         setWorker(crossbarWorker);
         initGameRealtime(crossbarWorker);
-        realtimeService.init(crossbarWorker, { userId: effectiveUserId || 'guest' });
+        realtimeService.init(crossbarWorker);
 
         if (decryptedUserId) {
           logger.log(
@@ -2693,7 +2693,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         setConnectionStatus('Failed to Initialize');
         // SSE must open even if crossbar worker fails — local TTS/agent events
         // only arrive via SSE, not WAMP. Pass null worker, SSE opens immediately.
-        realtimeService.init(null, { userId: effectiveUserId || 'guest' });
+        realtimeService.init(null);
       } finally {
         isInitializing = false;
       }
@@ -2712,24 +2712,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     };
   }, [decryptedUserId]);
 
-  // ── SSE user_id alignment ─────────────────────────────────────────────
-  // The worker-init effect above only re-fires on decryptedUserId change.
-  // Guest mode populates `guest_user_id` in localStorage AFTER the
-  // "Continue as Guest" flow completes (post-mount), at which point
-  // effectiveUserId flips from '' to the per-guest UUID — but the SSE
-  // connection opened at mount is still registered under the literal
-  // 'guest' fallback.  HARTOS /chat publishes TTS with the UUID (from
-  // request body), so the broker key 'd68c9dee-…' doesn't match the
-  // SSE-registered 'guest' key and the audio event drops silently.
-  //
-  // realtimeService.init detects userId change and reconnects SSE with
-  // the new ?user_id= query param.  No worker churn — that effect's
-  // deps stay [decryptedUserId].
-  useEffect(() => {
-    if (effectiveUserId) {
-      realtimeService.init(null, { userId: effectiveUserId });
-    }
-  }, [effectiveUserId]);
+  // SSE identity is owned by RealtimeProvider. This component only
+  // attaches its Crossbar worker to the shared transport above; keeping user
+  // identity in one owner prevents auth hydration from racing two rotations.
 
   // ── Realtime event subscriptions (transport-agnostic) ─────────────────
   // All events arrive via realtimeService (WAMP primary, SSE fallback).

@@ -79,6 +79,19 @@ class RealtimeService {
    * @param {string} [opts.userId] - user_id for guest/local SSE (no JWT)
    */
   init(crossbarWorker, opts = {}) {
+    // `token` is tri-state here: omitted means "leave the current credential
+    // alone", a string selects authenticated SSE, and explicit null selects
+    // the local user_id channel. The distinction matters after a cloud user
+    // signs out or a persisted guest session wins auth resolution: keeping the
+    // old token makes _buildSSEUrl ignore the new guest UUID and the server
+    // registers the stream under the previous token owner.
+    const hasExplicitToken = Object.prototype.hasOwnProperty.call(opts, 'token');
+    const previousTokenMode = Boolean(this._token);
+    if (hasExplicitToken) {
+      this._token = opts.token || null;
+    }
+    const credentialModeChanged = previousTokenMode !== Boolean(this._token);
+
     // Detect userId change — when the user transitions from "anonymous
     // visitor" (effectiveUserId='' → SSE registered as literal 'guest')
     // to "registered guest" (guest_user_id UUID populated post-
@@ -107,11 +120,15 @@ class RealtimeService {
     );
     if (userIdChanged) {
       this._userId = opts.userId;
-      if (this._sseConnected) {
-        this._rotateSSE();
-      }
     } else if (opts.userId) {
       this._userId = opts.userId;
+    }
+
+    // A user-id change and a token<->local transition are both identity
+    // changes. Rotate once, after both fields have been updated, so the new
+    // EventSource is built from one coherent identity snapshot.
+    if ((userIdChanged || credentialModeChanged) && this._sseConnected) {
+      this._rotateSSE();
     }
 
     // Always open SSE — even if worker is null (failed to create).
@@ -178,7 +195,10 @@ class RealtimeService {
    * disconnect() which fully tears down + de-auths.
    */
   connect(token) {
-    if (token) this._token = token;
+    if (token) {
+      this.init(null, {token});
+      return;
+    }
     if (this._crossbarConnected) return;
     if (!this._sseConnected) this._openSSE();
   }
@@ -186,6 +206,10 @@ class RealtimeService {
   disconnect() {
     this._connected = false;
     this._closeSSE();
+    // Explicit disconnect is the auth boundary (logout/provider unmount).
+    // Do not let a later guest/local init reuse the previous owner's bearer.
+    this._token = null;
+    this._userId = null;
     if (_workerMessageHandler && _worker) {
       _worker.removeEventListener('message', _workerMessageHandler);
       _workerMessageHandler = null;
@@ -215,7 +239,12 @@ class RealtimeService {
   // Always uses SOCIAL_API_URL (points to Flask :5000, not React :3000).
   _buildSSEUrl() {
     if (this._token) {
-      return `${SOCIAL_API_URL}/events/stream?token=${encodeURIComponent(this._token)}`;
+      // The server authenticates the token first. Bundled mode may use the
+      // claimed uid only when an old opaque cloud token is no longer present
+      // in the local auth DB; remote servers never trust this fallback.
+      const uid = this._userId || 'guest';
+      return `${SOCIAL_API_URL}/events/stream?token=${encodeURIComponent(this._token)}`
+        + `&user_id=${encodeURIComponent(uid)}`;
     }
     const uid = this._userId || 'guest';
     return `${SOCIAL_API_URL}/events/stream?user_id=${encodeURIComponent(uid)}`;
