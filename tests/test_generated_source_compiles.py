@@ -43,12 +43,22 @@ def test_the_program_compiles_with_no_syntax_warning(name):
         compile(SOURCES[name], name, 'exec')
 
 
-def _run_sitecustomize(tmp_path):
+def _run_sitecustomize(tmp_path, d_root=None):
     """Write the hook the way the build does, then run it in a fresh child
-    whose home holds a ~/.nunba/site-packages, and report what it did."""
+    whose home holds a ~/.nunba/site-packages, and report what it did.
+
+    ``d_root``: run it with its D: drive root pointed at this folder instead
+    (a test harness change to the copy the child runs, so the D: branch can
+    be exercised without a D: drive)."""
     sp_dir = tmp_path / 'embed' / 'Lib' / 'site-packages'
     sp_dir.mkdir(parents=True)
     path = rpe.write_sitecustomize(str(sp_dir))
+    if d_root is not None:
+        text = open(path, encoding='utf-8').read()
+        real = '_nunba_root_d = os.path.join("D:\\\\", ".nunba")'
+        assert text.count(real) == 1
+        open(path, 'w', encoding='utf-8').write(
+            text.replace(real, f'_nunba_root_d = {str(d_root)!r}'))
     home = tmp_path / 'home'
     nunba_sp = home / '.nunba' / 'site-packages'
     nunba_sp.mkdir(parents=True)
@@ -69,12 +79,41 @@ def _run_sitecustomize(tmp_path):
 def test_the_written_sitecustomize_puts_the_user_site_first(tmp_path):
     ran, nunba_sp = _run_sitecustomize(tmp_path)
     assert ran['home_sp'] == nunba_sp
-    # At the front: first, or second behind D:\.nunba\site-packages, which
-    # the hook inserts after it when that drive has one.
-    front = [p for p in ran['path'][:2]]
-    assert nunba_sp in front, ran['path'][:3]
+    assert ran['path'][0] == nunba_sp
 
 
 def test_the_written_sitecustomize_names_the_d_drive_site_with_one_backslash(tmp_path):
     ran, _ = _run_sitecustomize(tmp_path)
     assert ran['d'] == os.path.join('D:\\', '.nunba', 'site-packages')
+
+
+# Review of efab9501 (SECURITY): the D: site went to sys.path[0] for every
+# worker, and anyone who can log on can write into a drive-root folder.
+
+def test_a_d_site_anyone_may_write_is_not_on_the_path(tmp_path):
+    from tts._private_dir import make_private_dir
+    d_root = tmp_path / 'dshared'
+    (d_root / 'site-packages').mkdir(parents=True)
+    if sys.platform == 'win32':
+        subprocess.run(['icacls', str(d_root), '/grant', '*S-1-5-11:(OI)(CI)M'],
+                       capture_output=True, timeout=30)
+    else:
+        os.chmod(d_root, 0o777)
+    ran, _ = _run_sitecustomize(tmp_path, d_root=d_root)
+    assert str(d_root / 'site-packages') not in ran['path']
+
+
+def test_a_private_d_site_goes_after_the_home_site(tmp_path):
+    from tts._private_dir import make_private_dir
+    d_root = tmp_path / 'dprivate'
+    assert make_private_dir(str(d_root))
+    (d_root / 'site-packages').mkdir()
+    ran, nunba_sp = _run_sitecustomize(tmp_path, d_root=d_root)
+    assert ran['path'][0] == nunba_sp
+    assert ran['path'][1] == str(d_root / 'site-packages')
+
+
+def test_the_hook_carries_the_one_private_dir_check():
+    """Embedded from tts/_private_dir.py, not a second copy."""
+    with open(rpe._PRIVATE_DIR_SOURCE_PATH, encoding='utf-8') as fh:
+        assert fh.read() in rpe.SITECUSTOMIZE_SOURCE

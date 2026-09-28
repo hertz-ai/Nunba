@@ -233,6 +233,7 @@ def ct2_env(monkeypatch, tmp_path):
     rt = _types.ModuleType('integrations.social.realtime')
     rt.publish_event = lambda topic, data: cards.append((topic, data))
     monkeypatch.setitem(sys.modules, 'integrations.social.realtime', rt)
+    monkeypatch.setattr(pi, '_ct2_card_shown', False)        # a fresh process
     pip_calls = []
 
     def set_pip(ok, msg):
@@ -403,40 +404,58 @@ def test_a_marker_with_no_time_does_not_block(ct2_env):
 
 
 @pytest.mark.parametrize('msg', [
-    # _run_pip's own words for an attempt that could not run or finish
+    # _run_pip's own words for an attempt that never ran pip
     'python-embed not found',
     "deferred: live modules ['ctranslate2'] in user-site",
-    "pip stalled — no output for 120s after 'nvidia-cudnn-cu12'. Check network / mirror.",
-    'pip timed out after 900s',
-    # pip offline: retries, then gives up
-    "WARNING: Retrying (Retry(total=4)) after connection broken by "
-    "'NewConnectionError(...: Failed to establish a new connection)'\n"
-    "ERROR: Could not find a version that satisfies the requirement "
-    "nvidia-cublas-cu12 (from versions: none)",
-    'ERROR: Could not install packages due to an OSError: '
-    "HTTPSConnectionPool(host='pypi.org', port=443): Read timed out.",
-    # refused by HARTOS's own pins (the --constraint file)
-    'ERROR: Cannot install ctranslate2 because these package versions have '
-    'conflicting dependencies.\nThe conflict is caused by:\n'
-    '    ctranslate2 4.6.0 depends on numpy>=2\n'
-    '    The user requested (constraint) numpy<2.0.0,>=1.25.0',
 ])
-def test_a_failure_that_may_not_repeat_is_not_recorded(ct2_env, msg):
+def test_an_attempt_that_never_ran_pip_is_not_recorded(ct2_env, msg):
     ct2_env.set_pip(False, msg)
     pi.install_gpu_ctranslate2()
     assert not os.path.exists(pi._ct2_failure_marker_path())
     assert pi.should_install_gpu_ctranslate2() is True
 
 
+# Review of e5351913 (REJECTED): leaving these unrecorded ran pip on every
+# boot -- 6 of 6 simulated boots for a constraint refusal, 900 s each, and on
+# an air-gapped box every boot.  Every attempt that ran pip is recorded; the
+# 24 h expiry bounds a temporary one.
 @pytest.mark.parametrize('msg', [
     _PIP_FAIL,                                   # no wheel for this platform
     'ERROR: Could not install packages due to an OSError: [Errno 28] '
     'No space left on device',                   # full disk
+    "pip stalled — no output for 120s after 'nvidia-cudnn-cu12'. Check network / mirror.",
+    'pip timed out after 900s',
+    # offline: pip retries, then gives up
+    "WARNING: Retrying (Retry(total=4)) after connection broken by "
+    "'NewConnectionError(...: Failed to establish a new connection)'\n"
+    "ERROR: Could not find a version that satisfies the requirement "
+    "nvidia-cublas-cu12 (from versions: none)",
+    'ERROR: Could not install packages due to an OSError: '
+    "HTTPSConnectionPool(host='pypi.org', port=443): Read timed out.",
+    # refused by HARTOS's own pins (the --constraint file): this build's call
+    'ERROR: Cannot install ctranslate2 because these package versions have '
+    'conflicting dependencies.\nThe conflict is caused by:\n'
+    '    ctranslate2 4.6.0 depends on numpy>=2\n'
+    '    The user requested (constraint) numpy<2.0.0,>=1.25.0',
 ])
-def test_a_failure_that_will_repeat_is_recorded(ct2_env, msg):
+def test_every_attempt_that_ran_pip_is_recorded(ct2_env, msg):
     ct2_env.set_pip(False, msg)
     pi.install_gpu_ctranslate2()
     assert os.path.isfile(pi._ct2_failure_marker_path())
+    assert pi.should_install_gpu_ctranslate2() is False
+
+
+def test_boots_after_an_offline_failure_run_pip_once_a_day(ct2_env, monkeypatch):
+    """Six boots across a day on an air-gapped box: pip runs on the first and
+    again only once the record has expired."""
+    ct2_env.set_pip(False, 'pip timed out after 900s')
+    t0 = pi.time.time()
+    for hours in (0, 1, 5, 12, 23, 25):
+        monkeypatch.setattr(pi.time, 'time', lambda h=hours: t0 + h * 3600)
+        monkeypatch.setattr(pi, '_ct2_card_shown', False)      # a new process
+        if pi.should_install_gpu_ctranslate2():
+            pi.install_gpu_ctranslate2()
+    assert len(ct2_env.pip_calls) == 2
 
 
 def test_a_skipped_boot_shows_the_gpu_speech_off_card(ct2_env):
@@ -453,10 +472,57 @@ def test_a_skipped_boot_shows_the_gpu_speech_off_card(ct2_env):
     assert card['complete'] is True
     assert card['message'].startswith('GPU speech is off: ')
     assert 'nvidia-cudnn-cu12==9.*' in card['message']
-    assert card['message'].endswith('Retry in AI setup.')
+    # Only what will really happen: nothing retries on demand, so the card
+    # names the automatic retry (24 h from a failure just recorded).
+    assert card['message'].endswith(
+        'It will be tried again automatically in about 24 h.')
+    assert 'AI setup' not in card['message']
     # SetupProgressCard reads a step whose message says 'failed' as a
     # finished, failed job: no spinner, and the dismiss control shows.
     assert 'failed' in card['message']
+
+
+def test_the_card_is_shown_once_per_failure_not_every_boot(ct2_env, monkeypatch):
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    for _boot in range(3):
+        monkeypatch.setattr(pi, '_ct2_card_shown', False)      # a new process
+        assert pi.should_install_gpu_ctranslate2() is False
+    assert len(ct2_env.cards) == 1
+
+    # A new failure (after the record expired) is a new card.
+    t0 = pi.time.time()
+    monkeypatch.setattr(pi.time, 'time', lambda: t0 + pi._CT2_FAILURE_TTL_S + 1)
+    monkeypatch.setattr(pi, '_ct2_card_shown', False)
+    assert pi.should_install_gpu_ctranslate2() is True
+    pi.install_gpu_ctranslate2()
+    monkeypatch.setattr(pi, '_ct2_card_shown', False)
+    assert pi.should_install_gpu_ctranslate2() is False
+    assert len(ct2_env.cards) == 2
+
+
+def test_the_card_is_never_shown_twice_in_one_boot(ct2_env, monkeypatch):
+    """Even when the marker cannot record that it was shown."""
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    import core.file_cache as fc
+
+    def refuse(*a, **k):
+        raise OSError('read-only')
+
+    monkeypatch.setattr(fc, 'atomic_json_write', refuse)
+    assert pi.should_install_gpu_ctranslate2() is False
+    assert pi.should_install_gpu_ctranslate2() is False       # llama first-run
+    assert len(ct2_env.cards) == 1
+
+
+def test_the_card_says_how_long_is_left(ct2_env, monkeypatch):
+    ct2_env.set_pip(False, _PIP_FAIL)
+    pi.install_gpu_ctranslate2()
+    t0 = pi.time.time()
+    monkeypatch.setattr(pi.time, 'time', lambda: t0 + 20 * 3600)
+    assert pi.should_install_gpu_ctranslate2() is False
+    assert ct2_env.cards[0][1]['message'].endswith('in about 4 h.')
 
 
 def test_no_card_when_nothing_was_skipped(ct2_env, monkeypatch):
@@ -479,8 +545,8 @@ def test_the_skip_says_when_it_is_tried_again(ct2_env, caplog, build_id,
     with caplog.at_level('WARNING', logger=pi.logger.name):
         assert pi.should_install_gpu_ctranslate2() is False
     said = ' '.join(r.getMessage() for r in caplog.records)
-    assert f'in {pi._CT2_FAILURE_TTL_S // 3600} h' in said
-    assert 'from AI setup' in said
+    assert 'tried again in about 24 h' in said
+    assert 'AI setup' not in said
     assert ('after an update' in said) is promises_update
 
 

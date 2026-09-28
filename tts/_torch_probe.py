@@ -71,13 +71,18 @@ def _resolve_paths():
     _tlib = os.path.join(_usp, 'torch', 'lib')
 
     # CUDA torch may live on a secondary drive (D:) when C: is too small
-    # for the 2.5GB torch + CUDA DLLs.  Check D:/.nunba/site-packages as
-    # fallback — mirrors sitecustomize.py's D: path injection.
+    # for the 2.5GB torch + CUDA DLLs.  Same rule as python-embed's hook:
+    # only a D: site private to this user (tts._private_dir), since anyone
+    # who can log on can otherwise plant what the probe loads.
     if not os.path.isdir(_tlib):
-        _alt = os.path.join('D:\\', '.nunba', 'site-packages', 'torch', 'lib')
-        if os.path.isdir(_alt):
+        from tts._private_dir import is_private_dir
+        _d_root = os.path.join('D:\\', '.nunba')
+        _d_sp = os.path.join(_d_root, 'site-packages')
+        _alt = os.path.join(_d_sp, 'torch', 'lib')
+        if (os.path.isdir(_alt) and is_private_dir(_d_root)
+                and is_private_dir(_d_sp)):
             _tlib = _alt
-            _usp = os.path.join('D:\\', '.nunba', 'site-packages')
+            _usp = _d_sp
 
     if sys.platform != 'win32' or not getattr(sys, 'frozen', False):
         return False

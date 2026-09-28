@@ -522,6 +522,36 @@ def is_package_installed(import_name: str) -> bool:
     return importlib.util.find_spec(import_name) is not None
 
 
+#: The secondary-drive root install_gpu_torch uses when C: is full.
+_D_DRIVE_ROOT = os.path.join('D:\\', '.nunba')
+
+
+def _private_d_drive_sites() -> list:
+    """The D: site-packages as a one-item list when it and its parent are
+    private to this user (tts._private_dir.is_private_dir), else []."""
+    from tts._private_dir import is_private_dir
+    sp = os.path.join(_D_DRIVE_ROOT, 'site-packages')
+    if (os.path.isdir(sp) and is_private_dir(_D_DRIVE_ROOT)
+            and is_private_dir(sp)):
+        return [sp]
+    return []
+
+
+def _make_private_d_drive_site() -> bool:
+    """Create the D: root private to this user, then site-packages inside it
+    (inheriting that ACL).  True only when both read back as private."""
+    from tts._private_dir import is_private_dir, make_private_dir
+    if not make_private_dir(_D_DRIVE_ROOT):
+        return False
+    sp = os.path.join(_D_DRIVE_ROOT, 'site-packages')
+    try:
+        os.makedirs(sp, exist_ok=True)
+    except OSError as exc:
+        logger.warning("CUDA torch: could not create %s (%s)", sp, exc)
+        return False
+    return is_private_dir(sp)
+
+
 def is_cuda_torch() -> bool:
     """Check if CUDA torch exists — checks user site-packages first.
 
@@ -530,8 +560,10 @@ def is_cuda_torch() -> bool:
     rather than importing (which would find the stub).
     """
     # Check both C: and D: site-packages (CUDA torch may be on secondary
-    # drive when C: is too small for the 2.5GB install)
-    for _sp in [get_user_site_packages(), os.path.join('D:\\', '.nunba', 'site-packages')]:
+    # drive when C: is too small for the 2.5GB install).  The D: one counts
+    # only when it is private to this user, the rule python-embed's hook
+    # applies before any worker loads from it (tts._private_dir).
+    for _sp in [get_user_site_packages()] + _private_d_drive_sites():
         user_torch = os.path.join(_sp, 'torch', 'version.py')
         if os.path.isfile(user_torch):
             try:
@@ -1370,9 +1402,15 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
     # Fallback: if C: is full (ENOSPC), retry to D: drive.
     # CUDA torch is 2.5GB — C: often has <5GB free on 500GB disks
     # that are full with system files + models.
-    if not ok and 'No space left' in msg:
-        _d_target = os.path.join('D:\\', '.nunba', 'site-packages')
-        os.makedirs(_d_target, exist_ok=True)
+    # The D: folder is made private first (tts._private_dir): at a drive root
+    # every authenticated user could otherwise write into it, and workers load
+    # from it.  A folder that cannot be made private is not used.
+    if not ok and 'No space left' in msg and not _make_private_d_drive_site():
+        logger.warning("CUDA torch: C: is full, and the D: drive site could "
+                       "not be made private to this user; not installing "
+                       "there (%s)", _D_DRIVE_ROOT)
+    elif not ok and 'No space left' in msg:
+        _d_target = os.path.join(_D_DRIVE_ROOT, 'site-packages')
         if progress_cb:
             progress_cb("C: drive full — installing CUDA torch to D: drive...")
         logger.info("CUDA torch: C: ENOSPC, retrying to D: drive")
@@ -1482,45 +1520,32 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
 # each time.  A failed install is recorded here, with its reason and what was
 # installed when it failed; the automatic callers ask
 # should_install_gpu_ctranslate2() and skip while nothing has changed, for at
-# most _CT2_FAILURE_TTL_S, and each skipped boot says so on a card.  The setup
-# wizard (desktop/ai_installer.py, the user asking) calls
+# most _CT2_FAILURE_TTL_S.  The first skip after a failure says so on a card,
+# once for that failure.  The setup wizard (desktop/ai_installer.py) calls
 # install_gpu_ctranslate2 directly and always retries.
 #
-# Only a failure that will fail again is recorded.  Not recorded: an install
-# that never ran pip (deferred, python-embed missing), one that could not
-# reach the index or ran out of time (it may work on the next boot), and a
-# refusal by HARTOS's own pins (--constraint, _write_hart_constraints): that
-# is decided by what the build ships, not by this machine.
+# Every attempt that ran pip and failed is recorded, whatever the reason:
+# offline or an unreachable index (an air-gapped box ran pip on every boot),
+# a stall or timeout (900 s each), a refusal by HARTOS's own pins (decided by
+# this build, which the marker is keyed on), a missing wheel, a full disk.
+# The 24 h expiry bounds how long a temporary one keeps GPU speech off; a new
+# build or worker interpreter retries at once.  Only an attempt that never
+# ran pip ('deferred:', python-embed missing) is not recorded.
 
-#: How long a recorded failure keeps the boot from retrying.  One temporary
-#: failure that slipped past the checks below then costs a day, not a build.
+#: How long a recorded failure keeps the boot from retrying.
 _CT2_FAILURE_TTL_S = 24 * 3600
 
-# pip / _run_pip output that says the attempt did not get to install
-# anything: nothing about this machine was learned.
+# _run_pip's words for an attempt that did not get to run pip at all.
 _CT2_NOT_RUN_PREFIXES = ('deferred:', 'python-embed not found')
-_CT2_TRANSIENT_MARKERS = (
-    'pip stalled', 'pip timed out', 'newconnectionerror', 'max retries exceeded',
-    'connectionerror', 'connection refused', 'connection reset',
-    'temporary failure in name resolution', 'getaddrinfo failed',
-    'name or service not known', 'read timed out', 'readtimeouterror',
-    'connecttimeouterror', 'could not fetch url', 'sslerror', 'proxyerror',
-    'no connection could be made', 'network is unreachable',
-)
-# pip marks a requirement that came from a --constraint file this way.
-_CT2_CONSTRAINT_MARKER = '(constraint)'
+
+#: A 'GPU speech is off' card shown in this process (never twice in a boot,
+#: even when the marker cannot record that it was shown).
+_ct2_card_shown = False
 
 
 def _ct2_failure_is_recordable(msg: str) -> bool:
-    """True when this install failure will fail again on the next boot: pip
-    ran, reached the index, and was refused for a reason of this machine."""
-    text = msg or ''
-    if text.startswith(_CT2_NOT_RUN_PREFIXES):
-        return False
-    low = text.lower()
-    if any(marker in low for marker in _CT2_TRANSIENT_MARKERS):
-        return False
-    return _CT2_CONSTRAINT_MARKER not in low
+    """True when pip ran and failed; False when it never ran."""
+    return not (msg or '').startswith(_CT2_NOT_RUN_PREFIXES)
 
 
 def _ct2_failure_marker_path() -> str:
@@ -1614,16 +1639,33 @@ def _ct2_failure_that_still_stands() -> dict | None:
     return record
 
 
+def _ct2_hours_until_retry(prior: dict) -> int:
+    """Whole hours (at least 1) until the recorded failure expires."""
+    import math
+    left = _CT2_FAILURE_TTL_S - (time.time() - float(prior.get('at_epoch', 0)))
+    return max(1, math.ceil(left / 3600))
+
+
 def _ct2_off_card_message(prior: dict) -> str:
     """What the skipped boot tells the owner.  It says 'failed', which is what
-    makes the setup card render as finished rather than as a spinner."""
+    makes the setup card render as finished rather than as a spinner, and it
+    names only what will really happen: nothing in the app retries this on
+    demand (--setup-ai exits "already configured"; the web UI has no entry),
+    so the card says when the automatic retry comes."""
     return (f"GPU speech is off: the GPU speech runtime install failed "
-            f"({prior.get('reason', 'unknown reason')}). Retry in AI setup.")
+            f"({prior.get('reason', 'unknown reason')}). It will be tried "
+            f"again automatically in about {_ct2_hours_until_retry(prior)} h.")
 
 
 def _announce_ct2_off(prior: dict) -> None:
     """Show the skipped boot as a setup card (the cuda_ctranslate2 job the
-    install itself reports on), so speech-to-text is not on CPU in silence."""
+    install itself reports on), once per recorded failure: the marker keeps
+    'announced', and a process never shows it twice even if that write
+    fails."""
+    global _ct2_card_shown
+    if _ct2_card_shown or prior.get('announced'):
+        return
+    _ct2_card_shown = True
     try:
         from integrations.social.realtime import publish_event
         publish_event('setup_progress', {
@@ -1636,15 +1678,23 @@ def _announce_ct2_off(prior: dict) -> None:
     except Exception as exc:  # noqa: BLE001 -- the card is best-effort
         logger.warning("CUDA ctranslate2: could not show the 'GPU speech is "
                        "off' card (%s: %s)", type(exc).__name__, exc)
+        return
+    try:
+        from core.file_cache import atomic_json_write
+        atomic_json_write(_ct2_failure_marker_path(),
+                          {**prior, 'announced': True}, indent=None)
+    except Exception as exc:  # noqa: BLE001 -- the card was shown
+        logger.warning("CUDA ctranslate2: could not record that the card was "
+                       "shown (%s); a later boot may show it again", exc)
 
 
-def _ct2_retry_wording() -> str:
+def _ct2_retry_wording(prior: dict) -> str:
     """When a skipped install is tried again.  A source run has no build to
     update, so it does not promise one."""
-    after = f"in {_CT2_FAILURE_TTL_S // 3600} h"
+    after = f"in about {_ct2_hours_until_retry(prior)} h"
     if _installed_build_id() == 'source':
-        return f"{after} or from AI setup"
-    return f"{after}, after an update, or from AI setup"
+        return after
+    return f"{after}, or at once after an update"
 
 
 def should_install_gpu_ctranslate2() -> bool:
@@ -1667,7 +1717,7 @@ def should_install_gpu_ctranslate2() -> bool:
                 "at %s (%s); speech-to-text stays on CPU. It is tried again %s "
                 "(marker: %s)",
                 prior.get('at', '?'), prior.get('reason', '?'),
-                _ct2_retry_wording(), _ct2_failure_marker_path())
+                _ct2_retry_wording(prior), _ct2_failure_marker_path())
             _announce_ct2_off(prior)
             return False
         return True
@@ -1759,15 +1809,13 @@ def install_gpu_ctranslate2(progress_cb: Callable | None = None) -> tuple[bool, 
     else:
         logger.warning("CUDA ctranslate2 install failed (STT stays on CPU): %s",
                        msg)
-        # Only a failure that will fail again is recorded against this build
-        # (see _ct2_failure_is_recordable).
+        # Every attempt that ran pip is recorded against this build; the 24 h
+        # expiry bounds a temporary one (see _ct2_failure_is_recordable).
         if _ct2_failure_is_recordable(msg):
             _record_ct2_install_failure(msg)
         else:
-            logger.info("CUDA ctranslate2: this failure is not recorded (pip "
-                        "did not run, could not reach the index, ran out of "
-                        "time, or HARTOS's pins refused it); the next boot "
-                        "tries again")
+            logger.info("CUDA ctranslate2: pip did not run (%s); nothing "
+                        "recorded, the next boot tries again", msg[:80])
 
     _release_file_lock('cuda_ctranslate2')
     return ok, msg

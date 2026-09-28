@@ -150,12 +150,20 @@ def _hart_backend_source():
     return None
 
 
+#: The directory check the hook applies to anything outside the user's
+#: profile (tts/_private_dir.py), embedded verbatim: the hook runs before the
+#: worker has an import path to it, and one source means the parent and every
+#: worker answer the same question the same way.
+_PRIVATE_DIR_SOURCE_PATH = os.path.join(PROJECT_DIR, "tts", "_private_dir.py")
+with open(_PRIVATE_DIR_SOURCE_PATH, encoding="utf-8") as _f:
+    _PRIVATE_DIR_SOURCE = _f.read()
+
 #: The hook python-embed runs at every interpreter start (step 7c).  Every
 #: worker Nunba spawns on python-embed (core.venv_paths.venv_creator_python)
 #: gets its sys.path and DLL search path from here, so this is the one owner
 #: of "what the worker can load from ~/.nunba/site-packages".  build.py also
 #: writes it on every build (write_sitecustomize), not only on a full rebuild.
-SITECUSTOMIZE_SOURCE = '''"""sitecustomize.py — auto-runs at Python startup via site.py.
+_SITECUSTOMIZE_HEAD = '''"""sitecustomize.py — auto-runs at Python startup via site.py.
 
 Injects ~/.nunba/site-packages at the FRONT of sys.path so that gpu_worker
 subprocesses spawned by the frozen Nunba app can see the real CUDA torch,
@@ -166,10 +174,19 @@ python-embed uses a `_pth` file which disables PYTHONPATH processing,
 so environment-based injection doesn't work — we have to modify sys.path
 from within Python itself. sitecustomize is the standard CPython hook.
 
+The D: drive site (where install_gpu_torch goes when C: is full) is used
+only when it is private to this user (is_private_dir, embedded below from
+tts/_private_dir.py), and then AFTER the home site, never ahead of it.
+
 Also appends the cx_Freeze lib/ directory as a last-resort fallback for
 deps that happen to be bundled there but not in python-embed.
 """
 
+# -- tts/_private_dir.py, embedded --
+'''
+
+_SITECUSTOMIZE_BODY = '''
+# -- the hook --
 import os
 import sys
 
@@ -185,11 +202,20 @@ def _inject_path(path, front=True):
 _home = os.path.expanduser("~")
 _nunba_sp = os.path.join(_home, ".nunba", "site-packages")
 _inject_path(_nunba_sp, front=True)
+_sites = [_nunba_sp]
 
-# CUDA torch may live on D: when C: is too small (2.5GB install).
-# install_gpu_torch() falls back to D: on ENOSPC.
-_nunba_sp_d = os.path.join("D:\\\\", ".nunba", "site-packages")
-_inject_path(_nunba_sp_d, front=True)
+# CUDA torch may live on D: when C: is too small (install_gpu_torch falls
+# back there on ENOSPC).  A folder at a drive root is writable by every
+# authenticated user unless it was made private, and whatever is here runs
+# in every worker, so it is used only when both levels are private, and it
+# goes AFTER the home site.
+_nunba_root_d = os.path.join("D:\\\\", ".nunba")
+_nunba_sp_d = os.path.join(_nunba_root_d, "site-packages")
+if (os.path.isdir(_nunba_sp_d) and _nunba_sp_d not in sys.path
+        and is_private_dir(_nunba_root_d) and is_private_dir(_nunba_sp_d)):
+    _at = sys.path.index(_nunba_sp) + 1 if _nunba_sp in sys.path else 0
+    sys.path.insert(_at, _nunba_sp_d)
+    _sites.append(_nunba_sp_d)
 
 if sys.platform == "win32":
     # The CUDA runtime install_gpu_ctranslate2 pip-installs here
@@ -198,8 +224,9 @@ if sys.platform == "win32":
     # without these dirs a box whose torch/lib carries no cuBLAS cannot decode
     # on the GPU even after the install succeeded.  Prepended BEFORE torch/lib
     # below, so torch/lib stays ahead on PATH and a DLL it already supplies
-    # still resolves from it.
-    for _sp in [_nunba_sp, _nunba_sp_d]:
+    # still resolves from it.  Walked in reverse so the home site's dirs end
+    # up ahead of the D: site's.
+    for _sp in reversed(_sites):
         for _cuda in ("cublas", "cudnn"):
             _cuda_bin = os.path.join(_sp, "nvidia", _cuda, "bin")
             if os.path.isdir(_cuda_bin):
@@ -209,7 +236,7 @@ if sys.platform == "win32":
                     pass
                 os.environ["PATH"] = _cuda_bin + os.pathsep + os.environ.get("PATH", "")
 
-    for _sp in [_nunba_sp, _nunba_sp_d]:
+    for _sp in _sites:
         _torch_lib = os.path.join(_sp, "torch", "lib")
         if os.path.isdir(_torch_lib):
             try:
@@ -226,6 +253,9 @@ _app_dir = os.path.dirname(_embed_dir)
 _lib_dir = os.path.join(_app_dir, "lib")
 _inject_path(_lib_dir, front=False)
 '''
+
+SITECUSTOMIZE_SOURCE = (_SITECUSTOMIZE_HEAD + _PRIVATE_DIR_SOURCE
+                        + _SITECUSTOMIZE_BODY)
 
 
 def write_sitecustomize(site_packages_dir):

@@ -498,6 +498,10 @@ build_exe_options = {
         "tts.piper_tts",  # Piper TTS for CPU text-to-speech
         "tts.package_installer",  # Runtime TTS package installer
         "tts.backend_venv",  # Per-backend venv infra (Track A)
+        # Imported inside function bodies (package_installer, _torch_probe),
+        # which the tracer cannot follow: the "is this D: site private to this
+        # user" check before anything there is loaded or installed.
+        "tts._private_dir",
         # tts.indic_parler_worker DELETED — was a duplicate __main__ path
         # paralleling HARTOS integrations/service_tools/indic_parler_tool.
         # The central dispatcher (gpu_worker._dispatch_and_run) now spawns
