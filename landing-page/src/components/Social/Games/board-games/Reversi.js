@@ -123,8 +123,10 @@ const ReversiGame = {
     }
   },
 
+  // No minMoves: onBegin's auto-pass calls events.endTurn() before any move
+  // is made, and boardgame.io refuses that ("cannot end turn before making 1
+  // moves") while minMoves is 1. maxMoves still ends the turn after a move.
   turn: {
-    minMoves: 1,
     maxMoves: 1,
     onBegin: ({ G, ctx, events }) => {
       // If current player has no valid moves, auto-pass
@@ -136,14 +138,23 @@ const ReversiGame = {
     },
   },
   ai: {
-  // Legal moves for the bot that plays seat 1.
-  //
-  // These are two-player games but only seat 0 is ever mounted, so without
-  // an opponent the game stalls on "Opponent's turn" after the human's very
-  // first move and can never finish. boardgame.io bots need ai.enumerate to
-  // know what they may play.
-    enumerate: (G, ctx) => getValidMoves(G.board, ctx.currentPlayer)
-      .map(({ r, c }) => ({ move: 'placePiece', args: [r, c] })),
+    // Legal moves for the bot that plays seat 1.
+    //
+    // These are two-player games but only seat 0 is ever mounted, so without
+    // an opponent the game stalls on "Opponent's turn" after the human's very
+    // first move and can never finish. boardgame.io bots need ai.enumerate to
+    // know what they may play.
+    //
+    // No legal placement means the only legal move is `pass`. An empty list
+    // is not "nothing to do": the bot returns a null action and boardgame.io's
+    // Local master throws reading its payload, so seat 1 never moves again.
+    enumerate: (G, ctx) => {
+      const validMoves = getValidMoves(G.board, ctx.currentPlayer);
+      if (validMoves.length === 0) {
+        return [{ move: 'pass', args: [] }];
+      }
+      return validMoves.map(({ r, c }) => ({ move: 'placePiece', args: [r, c] }));
+    },
   },
 };
 
