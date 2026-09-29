@@ -591,6 +591,61 @@ class TestInstallCudaTorch:
             assert ok is False
 
 
+class TestInstallGpuTorchReleasesItsLock:
+    """install_gpu_torch took the cross-process 'cuda_torch' lock and released
+    it only on its last line: the "No GPU detected" and "already has GPU
+    support" returns, and any exception, left the lock file naming this live
+    process, so every later call in it waited _CUDA_TORCH_LOCK_WAIT_S (15 min)
+    and then answered "in progress".  Measured in the test process: the fake
+    _run_pip in test_cuda_torch_d_drive_fallback.py (broken by a new keyword
+    since 79dcd068) raised, and the next test hung on its own lock.
+
+    The real lock, in tmp_path; only its boundaries are stubbed."""
+
+    @pytest.fixture
+    def lock_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pi, '_INSTALL_LOCK_DIR', str(tmp_path))
+        monkeypatch.setattr(pi, '_CUDA_TORCH_LOCK_WAIT_S', 0)
+        return tmp_path / '.cuda_torch.lock'
+
+    @staticmethod
+    def _gpu(monkeypatch, vendor):
+        vm_mod = types.ModuleType('integrations.service_tools.vram_manager')
+        vm_mod.vram_manager = TestInstallCudaTorch._mock_gpu_detect(vendor=vendor)
+        monkeypatch.setitem(sys.modules, 'integrations.service_tools.vram_manager', vm_mod)
+        monkeypatch.setattr(pi, 'has_nvidia_gpu', lambda: vendor == 'nvidia')
+
+    def test_no_gpu_releases_the_lock(self, lock_file, monkeypatch):
+        self._gpu(monkeypatch, None)
+        assert pi.install_gpu_torch() == (False, 'No GPU detected')
+        assert not lock_file.exists()
+
+    def test_torch_already_on_the_gpu_releases_the_lock(self, lock_file, monkeypatch):
+        self._gpu(monkeypatch, 'nvidia')
+        monkeypatch.setattr(pi, 'get_torch_variant', lambda: 'cu124')
+        ok, _ = pi.install_gpu_torch()
+        assert ok is True
+        assert not lock_file.exists()
+
+    def test_an_exception_releases_the_lock(self, lock_file, monkeypatch):
+        self._gpu(monkeypatch, 'nvidia')
+        monkeypatch.setattr(pi, 'get_torch_variant', lambda: 'cpu')
+
+        def boom(*a, **k):
+            raise RuntimeError('pip exploded')
+
+        monkeypatch.setattr(pi, '_run_pip', boom)
+        with pytest.raises(RuntimeError, match='pip exploded'):
+            pi.install_gpu_torch()
+        assert not lock_file.exists()
+
+    def test_a_second_call_is_not_blocked_by_the_first(self, lock_file, monkeypatch):
+        self._gpu(monkeypatch, None)
+        pi.install_gpu_torch()
+        ok, msg = pi.install_gpu_torch()
+        assert not msg.startswith(pi.INSTALL_IN_PROGRESS), msg
+
+
 # ========================== install_backend_packages ======================
 
 class TestInstallBackendPackages:

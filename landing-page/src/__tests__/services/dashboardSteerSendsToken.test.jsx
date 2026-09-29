@@ -145,13 +145,57 @@ test.each([
   // A server fault keeps its own message (review of 275e8e361): never
   // flattened into the generic fallback.
   ['a 500 with a reason', {success: false, error: 'database is locked'}, 'database is locked'],
+  // A fault with no reason says what failed, never axios' own sentence
+  // and never the generic fallback (review of d4146f843).
   ['a raw axios 500 with no reason', Object.assign(new Error('Request failed with status code 500'),
-    {response: {status: 500, data: {}}}), 'Request failed with status code 500'],
+    {response: {status: 500, data: {}}}), 'server error (500)'],
+  ['a raw axios 500 with an HTML body', Object.assign(new Error('Request failed with status code 500'),
+    {response: {status: 500, data: '<html><body>Internal Server Error</body></html>'}}),
+    'server error (500)'],
+  ['socialApi's rejection of an HTML 503', {status: 503}, 'server error (503)'],
+  ['a raw axios 401 with no body', Object.assign(new Error('Request failed with status code 401'),
+    {response: {status: 401, data: ''}}), 'Sign in to steer this run.'],
   ['a raw axios 403 refusal', Object.assign(new Error('Request failed with status code 403'),
     {response: {status: 403, data: {success: false, data: {forbidden: true}}}}),
     'This run belongs to someone else, so nothing was changed.'],
+  // HARTOS's structured flags decide, whatever the prose says: it has
+  // already drifted ("Invalid or expired token." with a period elsewhere).
+  ['a sign-in flag with drifted prose', {success: false, error: 'Invalid or expired token.', needs_sign_in: true},
+    'Sign in to steer this run.'],
+  ['a sign-in flag with new prose', {success: false, error: 'Session ended', needs_sign_in: true},
+    'Sign in to steer this run.'],
+  ['a not-steerable flag with new prose', {success: false, data: {error: 'the run went idle', not_steerable: true}},
+    'This run is no longer taking guidance.'],
+  // Without a flag (a newer message from an older HARTOS) the reason shows.
+  ['unflagged new prose', {success: false, data: {error: 'the run went idle'}}, 'the run went idle'],
 ])('steerError words %s as its outcome', (_label, body, expected) => {
   expect(steerError(body)).toBe(expected);
+});
+
+test.each([
+  ['a refusal', {success: false, data: {error: 'x', forbidden: true}},
+    'This run belongs to someone else, so it cannot be shown.'],
+  ['no sign-in', {success: false, error: 'x', needs_sign_in: true}, 'Sign in to see this run.'],
+  ['a raw 401', Object.assign(new Error('401'), {response: {status: 401, data: ''}}),
+    'Sign in to see this run.'],
+])('a READ surface words %s for what it could not show', (_label, body, expected) => {
+  expect(steerError(body, 'Could not load this run.', {read: true})).toBe(expected);
+});
+
+test('socialApi keeps the status of a steer that failed without JSON', async () => {
+  localStorage.setItem('access_token', 't');
+  mockReply = {status: 500, data: '<html>Internal Server Error</html>'};
+  const err = await dashboardApi.steer('g', 'pause', {}).catch((e) => e);
+  expect(err.status).toBe(500);
+  expect(steerError(err)).toBe('server error (500)');
+});
+
+test('socialApi keeps the server JSON and adds the status to a refusal', async () => {
+  localStorage.setItem('access_token', 't');
+  mockReply = {status: 403, data: {success: false, data: {error: 'e', forbidden: true}}};
+  const err = await dashboardApi.steer('g', 'pause', {}).catch((e) => e);
+  expect(err.status).toBe(403);
+  expect(err.data.forbidden).toBe(true);
 });
 
 // ── the call sites use it ────────────────────────────────────────────────
@@ -230,7 +274,8 @@ test("the drawer says so when a run is not the user's to view", async () => {
   mockGets = {'/snapshot': {status: 403, data: {success: false, data: {
     error: 'agent not found, or not yours to steer', forbidden: true}}}};
   render(<AgentOperationsDrawer open agentId="g1" onClose={() => {}} />);
-  expect(await screen.findByText(/This run belongs to someone else, so nothing was changed\./)).toBeInTheDocument();
+  // A read: nothing was being changed, so it says what it cannot show.
+  expect(await screen.findByText('This run belongs to someone else, so it cannot be shown.')).toBeInTheDocument();
 });
 
 test("the drawer shows why a Pause was refused", async () => {

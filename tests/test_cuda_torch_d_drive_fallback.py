@@ -38,8 +38,15 @@ class CudaTorchDDriveFallbackTests(unittest.TestCase):
         from tts import package_installer as pi
 
         calls = []
+        self.run_pip_kwargs = []
 
-        def fake_run_pip(args, progress_cb=None, timeout=None):
+        # _run_pip's real signature.  This fake took only `timeout`, so since
+        # 79dcd068 added stall_timeout every test here raised TypeError, and
+        # the raise left install_gpu_torch's lock held, hanging the next test.
+        def fake_run_pip(args, progress_cb=None, timeout=900,
+                         stall_timeout=120, heartbeat_s=20):
+            self.run_pip_kwargs.append({'timeout': timeout,
+                                        'stall_timeout': stall_timeout})
             calls.append(list(args))
             nonlocal run_pip_side_effect
             if callable(run_pip_side_effect):
@@ -127,6 +134,14 @@ class CudaTorchDDriveFallbackTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertIn("--no-deps", calls[1])
+
+    def test_the_d_retry_keeps_the_long_stall_budget(self):
+        """pip is silent for the whole 2.5 GB transfer (79dcd068): the D:
+        retry needs the same stall budget as the first attempt."""
+        side = [(False, "No space left on device"), (True, "ok")]
+        self._install_with_runs(side)
+        self.assertEqual([k['stall_timeout'] for k in self.run_pip_kwargs],
+                         [1800, 1800])
 
 
     def test_a_d_drive_site_that_cannot_be_made_private_is_not_used(self):

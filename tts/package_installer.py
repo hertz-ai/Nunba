@@ -1361,6 +1361,19 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
                            + 'CUDA torch is being installed by another worker; '
                              'GPU TTS activates once it completes')
         time.sleep(5)
+    # Every exit releases the lock.  Released only on the last line, the "No
+    # GPU detected" / "already has GPU support" returns and any exception left
+    # the lock naming this live process, so every later call in it waited the
+    # full _CUDA_TORCH_LOCK_WAIT_S and then answered "in progress".
+    try:
+        return _install_gpu_torch_holding_lock(progress_cb)
+    finally:
+        _release_file_lock('cuda_torch')
+
+
+def _install_gpu_torch_holding_lock(progress_cb: Callable | None) -> tuple[bool, str]:
+    """The install itself; install_gpu_torch holds the 'cuda_torch' lock
+    around it and releases it on every exit."""
     # Central GPU detection — one source of truth
     try:
         from integrations.service_tools.vram_manager import vram_manager
@@ -1507,7 +1520,6 @@ def install_gpu_torch(progress_cb: Callable | None = None) -> tuple[bool, str]:
             logger.warning(f"torch reload after CUDA install failed: {e}")
             if progress_cb:
                 progress_cb("CUDA PyTorch installed — will activate on next start")
-    _release_file_lock('cuda_torch')
     return ok, msg
 
 
