@@ -60,8 +60,8 @@ def vault_route(tmp_path, monkeypatch):
     monkeypatch.setattr('desktop.ai_key_vault._SALT_PATH', nunba_dir / 'vault.salt')
     monkeypatch.setattr('desktop.ai_key_vault._derive_fernet_key',
                         lambda salt: _PlainFernet(salt))
-    from desktop.ai_key_vault import AIKeyVault
     import desktop.ai_key_vault as desktop_vault
+    from desktop.ai_key_vault import AIKeyVault
     AIKeyVault.reset()
     monkeypatch.setattr(desktop_vault, '_DEGRADED_WARNED', False, raising=False)
     for name in _ENV_NAMES:
@@ -216,6 +216,7 @@ def test_without_the_hartos_rule_nothing_reaches_the_environment(vault_route, mo
 def test_the_degraded_rule_warns_once(vault_route, monkeypatch, caplog):
     """m3: one warning when the rule is unavailable, not one per key."""
     import logging
+
     from desktop.ai_key_vault import AIKeyVault
     _break_the_rule(monkeypatch)
     vault = AIKeyVault.get_instance()

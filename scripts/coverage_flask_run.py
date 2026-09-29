@@ -112,6 +112,7 @@ def _install_coverage_routes(app) -> None:
     @app.route("/_debug/coverage/flush", methods=["GET", "POST"])
     def _coverage_flush():  # pragma: no cover — loopback helper
         from flask import jsonify
+
         from routes.auth import _is_local_request
         if not _is_local_request():
             return jsonify({"error": "loopback only"}), 403
@@ -135,6 +136,7 @@ def _install_coverage_routes(app) -> None:
         terminate on Windows."""
 
         from flask import jsonify
+
         from routes.auth import _is_local_request
         if not _is_local_request():
             return jsonify({"error": "loopback only"}), 403

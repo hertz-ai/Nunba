@@ -82,7 +82,7 @@ def venv_module(monkeypatch):
         # that is itself a venv (this test interpreter) that is not its dir.
         home = (_this_home() if creator == sys.executable
                 else os.path.dirname(creator))
-        _lay_down_venv(Path(cmd[-1]), home, "%d.%d.%d" % sys.version_info[:3])
+        _lay_down_venv(Path(cmd[-1]), home, "{}.{}.{}".format(*sys.version_info[:3]))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(backend_venv.subprocess, "run", _run)
@@ -108,7 +108,7 @@ class TestIsVenvHealthy:
 
     def test_an_own_venv_is_healthy(self, root, monkeypatch):
         _lay_down_venv(backend_venv.venv_path(BACKEND), _this_home(),
-                       "%d.%d.%d" % sys.version_info[:3])
+                       "{}.{}.{}".format(*sys.version_info[:3]))
         monkeypatch.setattr(backend_venv, "invoke_in_venv",
                             lambda *a, **k: (0, "", ""))
         assert backend_venv.is_venv_healthy(BACKEND) is True
@@ -133,7 +133,7 @@ class TestEnsureVenvInstalledApp:
 
     def test_an_own_venv_is_kept(self, root, frozen, venv_module):
         vpath = backend_venv.venv_path(BACKEND)
-        _lay_down_venv(vpath, str(frozen), "%d.%d.%d" % sys.version_info[:3])
+        _lay_down_venv(vpath, str(frozen), "{}.{}.{}".format(*sys.version_info[:3]))
         keep = vpath / "Lib" / "site-packages" / "kept.pyd"
         keep.write_text("", encoding="utf-8")
         assert backend_venv.ensure_venv(BACKEND).is_file()

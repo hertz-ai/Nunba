@@ -15,7 +15,6 @@ import pytest
 from models.catalog import ModelEntry, ModelType
 
 
-
 @pytest.fixture(autouse=True)
 def isolated_model_storage_home(tmp_path, monkeypatch):
     # The API constructs its real LlamaConfig; never let a storage test

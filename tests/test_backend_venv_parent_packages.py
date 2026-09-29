@@ -50,7 +50,7 @@ def fake_venv_module(monkeypatch):
         base = getattr(sys, "_base_executable", None) or sys.executable
         (target / "pyvenv.cfg").write_text(
             f"home = {os.path.dirname(os.path.abspath(base))}\n"
-            f"version = {'%d.%d.%d' % sys.version_info[:3]}\n",
+            f"version = {'{}.{}.{}'.format(*sys.version_info[:3])}\n",
             encoding="utf-8")
         Path(venv_paths.venv_site_packages(BACKEND)).mkdir(parents=True, exist_ok=True)
         return SimpleNamespace(returncode=0, stdout="", stderr="")

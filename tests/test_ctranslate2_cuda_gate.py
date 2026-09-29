@@ -596,6 +596,7 @@ def _embed_hook_env(monkeypatch, tmp_path):
     into, and a fake ctranslate2 reporting one device."""
     import glob
     import shutil
+
     from scripts.rebuild_python_embed import write_sitecustomize
     home = tmp_path / 'home'
     user_sp = home / '.nunba' / 'site-packages'
@@ -699,7 +700,10 @@ def test_every_build_writes_the_current_embed_hook(monkeypatch, tmp_path):
     """build.py rebuilds python-embed only when EMBED_DEPS change (Gate A), so
     a hook change alone would ship the snapshot's old hook.  The build writes
     the generated hook into the embed on every run, before the ACL pass."""
-    from scripts import build            # puts scripts/ on sys.path for deps
+    # Order matters: importing build puts scripts/ on sys.path, and only then
+    # does `import deps` resolve -- to the same module build uses.  An import
+    # sort moves deps first and it fails; hence the noqa.
+    from scripts import build  # noqa: I001
     from scripts import rebuild_python_embed as rpe
     import deps
     root = tmp_path / 'repo'

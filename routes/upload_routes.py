@@ -117,8 +117,9 @@ def image_chat_context(text, image_url):
         return text
     if not isinstance(image_url, str):
         raise ValueError('Image reference must be a URL string')
-    from integrations.vision.image_describe import resolve_uploaded_image
     from urllib.parse import urlsplit
+
+    from integrations.vision.image_describe import resolve_uploaded_image
     reference = urlsplit(image_url)
     if reference.scheme in ('http', 'https') and reference.netloc:
         # Preserve external references for the existing remote image tool.

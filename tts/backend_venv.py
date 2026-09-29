@@ -62,7 +62,7 @@ from pathlib import Path
 logger = logging.getLogger("NunbaBackendVenv")
 
 
-def _kill_proc_tree(proc: "subprocess.Popen") -> None:
+def _kill_proc_tree(proc: subprocess.Popen) -> None:
     """Kill a subprocess AND all of its descendants.
 
     pip can spawn grandchildren (wheel builds, vendored downloaders) that
