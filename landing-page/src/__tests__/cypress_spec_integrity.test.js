@@ -12,6 +12,8 @@
  * Cypress tests from the run.
  */
 
+const {parse: babelParse} = require('@babel/parser');
+
 const fs = require('fs');
 const path = require('path');
 
@@ -43,28 +45,13 @@ describe.each(SPECS.map((s) => [path.basename(s), s]))(
     const src = fs.readFileSync(fullPath, 'utf-8');
 
     it('parses as valid JavaScript', () => {
-      // new Function() will throw a SyntaxError on malformed JS.
-      // Cypress specs use describe/it globals which are defined at
-      // runtime by Cypress — we can't call them here, but we can
-      // still syntax-check the file text.
-      expect(() => {
-        // Use Function constructor instead of eval for cleaner scope.
-        // Prefix with a no-op that shadows describe/it globals so the
-        // syntax-checker doesn't complain about undefined references
-        // (Cypress provides these at runtime).
-        new Function(
-          'describe',
-          'it',
-          'beforeEach',
-          'before',
-          'afterEach',
-          'after',
-          'cy',
-          'Cypress',
-          'expect',
-          src,
-        );
-      }).not.toThrow();
+      // Cypress bundles every spec as an ES module (webpack + babel), so a
+      // spec may `import` helpers such as ../support/realInput. Parse with
+      // the module goal: `new Function(src)` compiles a function body, where
+      // an import declaration is a SyntaxError even in a valid spec.
+      expect(() =>
+        babelParse(src, {sourceType: 'module', sourceFilename: basename}),
+      ).not.toThrow();
     });
 
     it('contains at least one describe or it block', () => {
