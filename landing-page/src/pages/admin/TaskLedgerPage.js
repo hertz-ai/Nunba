@@ -645,19 +645,46 @@ export default function TaskLedgerPage() {
     });
   }, [groups]);
 
+  // ?task_id= deep-link, step 1: open every level (prompt -> session ->
+  // flow) that contains the highlighted task.  Must NOT depend on
+  // highlightRef — the row (and so the ref) only exists once its
+  // ancestors are expanded, so gating the expand on the ref meant a
+  // task in a collapsed group was never shown (regression from the
+  // grouped view, 6213ea6).
   useEffect(() => {
-    if (highlightId && highlightRef.current) {
-      highlightRef.current.scrollIntoView({
-        behavior: 'smooth', block: 'center',
-      });
-      // Make sure the group containing the highlighted task is open.
-      const g = groups.find(grp => grp.tasks.some(
-        t => (t.id || t.task_id) === highlightId));
-      if (g) {
-        setExpandedGroups((prev) => ({...prev, [g.key]: true}));
+    if (!highlightId) return;
+    const hasIt = (list) => list.some(t => (t.id || t.task_id) === highlightId);
+    const open = (setter, key) => setter(
+      (prev) => (prev[key] ? prev : {...prev, [key]: true}));
+    for (const g of groups) {
+      if (!hasIt(g.tasks)) continue;
+      open(setExpandedGroups, g.key);
+      for (const s of (g.sessionList || [])) {
+        if (!hasIt(s.tasks)) continue;
+        open(setExpandedSessions, s.key);
+        for (const f of (s.flowList || [])) {
+          if (hasIt(f.tasks)) open(setExpandedFlows, f.key);
+        }
+      }
+      for (const f of (g.flowList || [])) {
+        if (hasIt(f.tasks)) open(setExpandedFlows, f.key);
       }
     }
-  }, [highlightId, tasks, groups]);
+  }, [highlightId, groups]);
+
+  // Step 2: scroll once the highlighted row has actually mounted (it
+  // mounts on the render AFTER step 1's expand).  Scroll once per
+  // highlightId so later expand/collapse clicks don't yank the view.
+  const scrolledForRef = useRef(null);
+  useEffect(() => {
+    if (!highlightId || !highlightRef.current) return;
+    if (scrolledForRef.current === highlightId) return;
+    scrolledForRef.current = highlightId;
+    highlightRef.current.scrollIntoView({
+      behavior: 'smooth', block: 'center',
+    });
+  }, [highlightId, groups, expandedGroups, expandedSessions, expandedFlows,
+      viewMode]);
 
   const toggleGroup = (key) => setExpandedGroups(
     (p) => ({...p, [key]: !p[key]}));
