@@ -94,6 +94,27 @@ describe('FormOverlay', () => {
   });
 });
 
+describe('Invite share card (local submit action)', () => {
+  const INVITE = {
+    type: 'form', msg_id: 'inv-1', title: 'Share invite', channel: 'invite',
+    fields: [{name: 'invite_url', label: 'Your invite link',
+      value: 'https://hevolve.ai/i/abc', readonly: true}],
+    submit_label: 'Copy link', submit_action: 'copy_invite_url',
+  };
+
+  test('shows the link it was sent and copies it, with no server call', async () => {
+    const writeText = jest.fn(() => Promise.resolve());
+    Object.assign(navigator, {clipboard: {writeText}});
+    const send = mountOverlay();
+    send(INVITE);
+    expect(screen.getByLabelText('Your invite link')).toHaveValue('https://hevolve.ai/i/abc');
+    fireEvent.click(screen.getByText('Copy link'));
+    await waitFor(() => expect(screen.queryByText('Share invite')).toBeNull());
+    expect(writeText).toHaveBeenCalledWith('https://hevolve.ai/i/abc');
+    expect(agentFormApi.submit).not.toHaveBeenCalled();
+  });
+});
+
 describe('QR pairing card', () => {
   const qr = (code, n) => ({
     type: 'qr_pair', channel: 'whatsapp', msg_id: `qr_pair-whatsapp-${n}`,
@@ -118,6 +139,42 @@ describe('QR pairing card', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  test("the channel's failure toast clears its dead QR", () => {
+    const send = mountOverlay();
+    send(qr('CODE-1', 1));
+    send({type: 'toast', severity: 'error', channel: 'whatsapp', msg_id: 't-1',
+      text: 'The WhatsApp link expired before it was completed.'});
+    expect(screen.queryByTestId('qr')).toBeNull();
+  });
+
+  test("another channel's toast leaves the QR alone", () => {
+    const send = mountOverlay();
+    send(qr('CODE-1', 1));
+    send({type: 'toast', severity: 'error', channel: 'telegram', msg_id: 't-2',
+      text: "Telegram couldn't connect."});
+    expect(screen.getByTestId('qr')).toHaveTextContent('CODE-1');
+  });
+
+  test("can't scan: the phone number goes to the endpoint HARTOS named", async () => {
+    agentFormApi.submit.mockResolvedValue({data: {success: true}});
+    const send = mountOverlay();
+    send({...qr('CODE-1', 1),
+      pair_code_action: '/api/social/channels/whatsapp/connect-pair-code'});
+    fireEvent.click(screen.getByText("Can't scan? Link with phone number"));
+    fireEvent.change(screen.getByLabelText('Your phone number'),
+      {target: {value: '+91 90000 00000'}});
+    fireEvent.click(screen.getByText('Send me a code'));
+    await waitFor(() => expect(screen.queryByTestId('qr')).toBeNull());
+    expect(agentFormApi.submit).toHaveBeenCalledWith(
+      '/api/social/channels/whatsapp/connect-pair-code', {phone: '+91 90000 00000'});
+  });
+
+  test('without pair_code_action there is no phone option', () => {
+    const send = mountOverlay();
+    send(qr('CODE-1', 1));
+    expect(screen.queryByText("Can't scan? Link with phone number")).toBeNull();
   });
 
   test('connected clears the pairing card for that channel', () => {

@@ -425,8 +425,21 @@ function MetricOverlay({ data }) {
   );
 }
 
+// Form submits HARTOS handles on this side, with no server round trip.
+// Invite_Friend's share card names `copy_invite_url` and carries the link
+// as its read-only field's value.
+const LOCAL_SUBMIT_ACTIONS = {
+  copy_invite_url: (values) => navigator.clipboard.writeText(values.invite_url || ''),
+};
+
 function FormOverlay({ data, onDismiss }) {
-  const [values, setValues] = useState({});
+  // Fields may arrive pre-filled (`value`) or with a default: start from
+  // those, so a read-only field shows what the producer sent.
+  const [values, setValues] = useState(() => Object.fromEntries(
+    (data.fields || [])
+      .filter((f) => f.value != null || f.default != null)
+      .map((f) => [f.name, f.value != null ? f.value : f.default]),
+  ));
   // The card closes only once the server took the values.  It used to post
   // with a bare fetch (no Bearer token, so the auth-required channel routes
   // answered 401), swallow the result and close anyway: a typed bot token
@@ -435,7 +448,8 @@ function FormOverlay({ data, onDismiss }) {
   const [error, setError] = useState(null);
   const handleSubmit = async () => {
     if (busy) return;
-    if (!data.action) {
+    const local = LOCAL_SUBMIT_ACTIONS[data.submit_action];
+    if (!data.action && !local) {
       // A form with nowhere to send its values is a producer bug; say so
       // rather than pretend the values went somewhere.
       console.error('[form] card has no action; values not sent', data);
@@ -445,7 +459,11 @@ function FormOverlay({ data, onDismiss }) {
     setBusy(true);
     setError(null);
     try {
-      await agentFormApi.submit(data.action, values);
+      if (data.action) {
+        await agentFormApi.submit(data.action, values);
+      } else {
+        await local(values);
+      }
     } catch (e) {
       console.error('[form] submit failed', e);
       setError(answerFailure(e));
@@ -462,6 +480,7 @@ function FormOverlay({ data, onDismiss }) {
         <TextField key={i} label={f.label || f.name} size="small" fullWidth
           type={f.secret ? 'password' : (f.type || 'text')} required={f.required}
           helperText={f.help || undefined}
+          InputProps={{ readOnly: Boolean(f.readonly) }}
           value={values[f.name] || ''} onChange={e => { setError(null); setValues(v => ({ ...v, [f.name]: e.target.value })); }}
           sx={{ mb: 1, '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' }, '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.5)' }, '& .MuiFormHelperText-root': { color: 'rgba(255,255,255,0.45)' } }} />
       ))}
@@ -591,6 +610,29 @@ function QRPairOverlay({ data, onDismiss }) {
     'Open the app on your phone, find "Linked devices" or "Devices", '
     + 'and scan this code.'
   );
+  // "Link with phone number": for someone whose only device is the phone
+  // the QR is on.  HARTOS names the endpoint (pair_code_action); it mints
+  // an 8-char code that arrives as a pair_code card.
+  const pairAction = data && data.pair_code_action;
+  const [byPhone, setByPhone] = useState(false);
+  const [phone, setPhone] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const requestCode = async () => {
+    if (busy || !phone.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await agentFormApi.submit(pairAction, { phone });
+    } catch (e) {
+      console.error('[qr_pair] pair-code request failed', e);
+      setError(answerFailure(e));
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    if (onDismiss) onDismiss();
+  };
   return (
     <Box sx={{ p: 2, textAlign: 'center' }}>
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.25 }}>
@@ -621,6 +663,26 @@ function QRPairOverlay({ data, onDismiss }) {
       >
         {help}
       </Typography>
+      {pairAction && byPhone && (
+        <Box sx={{ mt: 1.5, textAlign: 'left' }}>
+          <TextField label="Your phone number" size="small" fullWidth type="tel"
+            value={phone} onChange={(e) => { setError(null); setPhone(e.target.value); }}
+            placeholder="+91 90000 00000"
+            sx={{ mb: 1, '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' }, '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.5)' } }} />
+          {error && <AnswerError text={error} />}
+          <Button variant="contained" size="small" fullWidth disabled={busy || !phone.trim()}
+            aria-busy={busy} onClick={requestCode}
+            sx={{ background: ACCENT, '&:hover': { background: '#5A52E0' } }}>
+            Send me a code
+          </Button>
+        </Box>
+      )}
+      {pairAction && !byPhone && (
+        <Button size="small" variant="text" onClick={() => setByPhone(true)}
+          sx={{ mt: 1, color: INFO_BLUE, textTransform: 'none' }}>
+          Can't scan? Link with phone number
+        </Button>
+      )}
       {onDismiss && (
         <Button
           size="small"
@@ -1201,7 +1263,10 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
           return next;
         }
       }
-      if (type === 'channel_connected') {
+      // Connected, or the attempt failed for good (HARTOS's error toast for
+      // that channel: gateway down, code expired): its QR is dead either way.
+      if (type === 'channel_connected'
+          || (type === 'toast' && payload.severity === 'error')) {
         prev.filter(pairingOf).forEach((o) => {
           clearTimeout(timersRef.current[o._id]);
           delete timersRef.current[o._id];

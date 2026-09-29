@@ -690,7 +690,10 @@ export const channelUserApi = {
 // in `action` is used as is.
 const agentFormClient = createApiClient(API_BASE_URL, {cache: false});
 export const agentFormApi = {
-  submit: (action, body) => agentFormClient.post(action, body),
+  // silentError: the card shows the server's reason inline, so the global
+  // error banner would only repeat it less precisely.
+  submit: (action, body) =>
+    agentFormClient.post(action, body, {silentError: true}),
 };
 
 // --- Workflows API --- uses channels admin_bp at /api/admin/automation/workflows
