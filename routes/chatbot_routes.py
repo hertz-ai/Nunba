@@ -467,20 +467,13 @@ def gpt_lang(message, user_id, prompt=None, prompt_id=None, timeout=120, probe=F
         logger.error(f'Error extracting history: {e}')
         user_text = message[-1]['content'] if isinstance(message, list) else str(message)
 
-    # If image is attached, get vision description and prepend to text
     if image_url:
         try:
-            from routes.upload_routes import UPLOAD_DIR, _describe_image_via_llm
-            # Resolve local path from /uploads/... URL
-            rel = image_url.lstrip('/').replace('uploads/', '', 1)
-            local_path = UPLOAD_DIR / rel
-            if local_path.is_file():
-                vision_desc = _describe_image_via_llm(str(local_path), "Describe this image in detail.")
-                if vision_desc:
-                    user_text = f"[Image attached — vision analysis: {vision_desc}]\n\n{user_text}"
-                    logger.info(f'Vision context added for image: {image_url}')
-        except Exception as ve:
-            logger.warning(f'Vision inference skipped: {ve}')
+            from routes.upload_routes import image_chat_context
+            user_text = image_chat_context(user_text, image_url)
+        except (ValueError, FileNotFoundError) as ve:
+            logger.warning(f'Image attachment unavailable: {ve}')
+            user_text = f'[Uploaded image unavailable: {ve}]\n{user_text}'
 
     # Validate prompt_id — must be integer (DB column is int(11))
     if prompt_id is not None and not str(prompt_id).isdigit():
@@ -2713,6 +2706,17 @@ def _chat_turn(data):
     if not text.strip():
         return jsonify({'error': 'Text is required'}), 400
 
+    # Attachment context is shared by the current and legacy chat paths.
+    # The upload already inferred it; only its cached text/reference enters
+    # chat history. A later image tool call can reopen the saved file.
+    image_url = data.get('image_url')
+    if image_url:
+        try:
+            from routes.upload_routes import image_chat_context
+            text = image_chat_context(text, image_url)
+        except (ValueError, FileNotFoundError) as e:
+            return jsonify({'error': str(e), 'success': False}), 400
+
     # Async TTS: after ANY successful response, synthesize audio in background
     # and push via WAMP/SSE.
     # Unified flag: media_mode ('audio'|'video'|'text') — same across all platforms.
@@ -2742,7 +2746,7 @@ def _chat_turn(data):
     # feed frames via existing WebSocket; macOS feeds via the new
     # /api/vision/frame HTTP transport (commit 4f1c56ab).  Both write
     # to the same `svc.store.put_frame()` consumed here.
-    if media_mode == 'video':
+    if media_mode == 'video' and not image_url:
         try:
             _svc = _get_vision_service()
             _store = getattr(_svc, 'store', None) if _svc is not None else None

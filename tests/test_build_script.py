@@ -144,11 +144,17 @@ class TestCleanBuild:
 class TestDirSize:
     """_dir_size_mb used for build size reporting."""
 
-    def test_returns_float(self):
+    def test_returns_float(self, tmp_path):
         from scripts.build import _dir_size_mb
-        result = _dir_size_mb(tempfile.gettempdir())
+        # Use an owned fixture, not every application's potentially huge
+        # temporary directory. Check both nesting and the reported units.
+        (tmp_path / 'first.bin').write_bytes(b'x' * (1024 * 1024))
+        nested = tmp_path / 'nested'
+        nested.mkdir()
+        (nested / 'second.bin').write_bytes(b'x' * 1024)
+        result = _dir_size_mb(str(tmp_path))
         assert isinstance(result, (int, float))
-        assert result >= 0
+        assert result == 1 + 1 / 1024
 
     def test_nonexistent_dir_returns_zero(self):
         from scripts.build import _dir_size_mb

@@ -15,6 +15,17 @@ import pytest
 from models.catalog import ModelEntry, ModelType
 
 
+
+@pytest.fixture(autouse=True)
+def isolated_model_storage_home(tmp_path, monkeypatch):
+    # The API constructs its real LlamaConfig; never let a storage test
+    # overwrite the owner's ~/.nunba/llama_config.json.
+    home = tmp_path / 'isolated_home'
+    home.mkdir()
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    monkeypatch.delenv('NUNBA_MODELS_DIR', raising=False)
+
+
 def test_llama_installer_models_dir_priority(tmp_path):
     """Test priority order: explicit > env > config > default."""
     from llama.llama_installer import LlamaInstaller
@@ -103,6 +114,10 @@ def test_llama_loader_download_uses_custom_local_dir(tmp_path):
 
     custom_dest = str(tmp_path / "my_custom_drive")
     os.makedirs(custom_dest, exist_ok=True)
+    with open(os.path.join(custom_dest, 'model.gguf'), 'wb') as artifact:
+        artifact.write(b'GGUF')
+        artifact.seek(100_000_000 - 1)
+        artifact.write(bytes(1))
 
     entry = ModelEntry(
         id="test-custom-llm",
@@ -114,7 +129,7 @@ def test_llama_loader_download_uses_custom_local_dir(tmp_path):
         backend="llama.cpp",
         vram_gb=2.0,
         ram_gb=4.0,
-        disk_gb=1.0,
+        disk_gb=0.1,
     )
 
     loader = LlamaLoader()
@@ -166,6 +181,7 @@ def test_is_main_window_foreground_cross_platform():
         mock_u32.IsIconic.return_value = 0
         mock_u32.IsWindowVisible.return_value = 1
         mock_u32.GetForegroundWindow.return_value = 12345
+        mock_u32.GetAncestor.side_effect = lambda hwnd, flag: getattr(hwnd, 'value', hwnd)
         with patch("ctypes.windll.user32", mock_u32):
             assert pu.is_main_window_foreground(12345) is True
             assert pu.is_main_window_foreground(99999) is False
@@ -173,7 +189,8 @@ def test_is_main_window_foreground_cross_platform():
     # 2. Darwin path
     with patch.object(pu, "IS_WINDOWS", False), \
          patch.object(pu, "IS_MACOS", True), \
-         patch.object(pu, "IS_LINUX", False):
+         patch.object(pu, "IS_LINUX", False), \
+         patch.object(pu.sys, "platform", "darwin"):
         mock_appkit = MagicMock()
         mock_ws = MagicMock()
         mock_front = MagicMock()
@@ -194,18 +211,35 @@ def test_is_main_window_foreground_cross_platform():
 
             mock_win_other = MagicMock()
             mock_win_other.native = MagicMock()  # Not equal to mock_key
-            mock_app.mainWindow.return_value = None
+            # macOS foreground ownership is app-level without Accessibility.
+            mock_front.processIdentifier.return_value = os.getpid() + 1
             assert pu.is_main_window_foreground(mock_win_other) is False
 
-    # 3. Linux path
+    # 3. Linux path: current implementation uses the active X11 window ID.
     with patch.object(pu, "IS_WINDOWS", False), \
-         patch.object(pu, "IS_MACOS", False), \
-         patch.object(pu, "IS_LINUX", True):
-        mock_native = MagicMock()
-        mock_native.is_active.return_value = True
-        mock_win = MagicMock()
-        mock_win.native = mock_native
+         patch.object(pu.sys, "platform", "linux"), \
+         patch("subprocess.run") as probe:
+        probe.return_value.stdout = '12345'
+        assert pu.is_main_window_foreground(12345) is True
+        assert pu.is_main_window_foreground(99999) is False
 
-        assert pu.is_main_window_foreground(mock_win) is True
-        mock_native.is_active.return_value = False
-        assert pu.is_main_window_foreground(mock_win) is False
+
+def test_storage_save_failure_keeps_old_destination(tmp_path, monkeypatch):
+    from llama.llama_config import LlamaConfig
+    monkeypatch.delenv('NUNBA_MODELS_DIR', raising=False)
+    cfg = LlamaConfig(config_dir=str(tmp_path / 'config'))
+    old_dir = cfg.get_models_dir()
+    old_config = dict(cfg.config)
+    monkeypatch.setattr(cfg, '_save_config', lambda: False)
+    with pytest.raises(OSError, match='persist'):
+        cfg.set_models_dir(str(tmp_path / 'target'))
+    assert cfg.get_models_dir() == old_dir
+    assert cfg.config == old_config
+
+def test_storage_env_override_is_not_silently_overridden(tmp_path, monkeypatch):
+    from llama.llama_config import LlamaConfig
+    monkeypatch.setenv('NUNBA_MODELS_DIR', str(tmp_path / 'env'))
+    cfg = LlamaConfig(config_dir=str(tmp_path / 'config'))
+    with pytest.raises(ValueError, match='NUNBA_MODELS_DIR'):
+        cfg.set_models_dir(str(tmp_path / 'target'))
+    assert Path(cfg.get_models_dir()) == tmp_path / 'env'

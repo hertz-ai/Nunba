@@ -47,11 +47,27 @@ def client():
 
 # ───────────────────────────── /hub/search ─────────────────────────────
 
-def test_hub_search_requires_local(client):
+
+@pytest.fixture
+def authorized_remote_headers(monkeypatch):
+    # A valid credential must STILL not bypass the Hub's local-only rule.
+    # Without it the outer API gate correctly returns 401 before that rule.
+    from security import secrets_manager
+    original = secrets_manager.get_secret
+    def secret(name, *args, **kwargs):
+        if name == 'HEVOLVE_API_KEY':
+            return 'hub-test-api-key'
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(secrets_manager, 'get_secret', secret)
+    return {'X-API-Key': 'hub-test-api-key'}
+
+
+def test_hub_search_requires_local(client, authorized_remote_headers):
     """GET /api/admin/models/hub/search from a remote IP must 403."""
     resp = client.get(
         '/api/admin/models/hub/search?category=llm',
         environ_base={'REMOTE_ADDR': '8.8.8.8'},
+        headers=authorized_remote_headers,
     )
     assert resp.status_code == 403, (
         f"remote caller should be rejected, got {resp.status_code}: "
@@ -283,12 +299,13 @@ def test_hub_install_fails_closed_on_private_repo(client):
     assert (resp.get_json() or {}).get('error') == 'file_probe_failed'
 
 
-def test_hub_install_from_remote_is_rejected(client):
+def test_hub_install_from_remote_is_rejected(client, authorized_remote_headers):
     """Even if everything else is fine, a remote caller is refused."""
     resp = client.post(
         '/api/admin/models/hub/install',
         json={'hf_id': 'google/flan-t5-small', 'category': 'llm'},
         environ_base={'REMOTE_ADDR': '1.2.3.4'},
+        headers=authorized_remote_headers,
     )
     assert resp.status_code == 403
 

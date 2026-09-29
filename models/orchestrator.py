@@ -111,6 +111,9 @@ class LlamaLoader(ModelLoader):
         try:
             from llama.llama_config import LlamaConfig
             config = LlamaConfig()
+            if entry.files.get('local_dir'):
+                config.installer.models_dir = config.installer.resolve_models_dir(
+                    entry.files['local_dir'])
             preset, idx = self._resolve_preset_and_index(entry)
             if not preset:
                 logger.error(f"LLM preset not found for catalog entry: {entry.id}")
@@ -136,7 +139,7 @@ class LlamaLoader(ModelLoader):
     def download(self, entry: ModelEntry) -> bool:
         try:
             from llama.llama_installer import LlamaInstaller
-            installer = LlamaInstaller()
+            installer = LlamaInstaller(models_dir=entry.files.get('local_dir'))
             preset, _ = self._resolve_preset_and_index(entry)
             if not preset:
                 logger.error(f"LLM download: no preset for {entry.id}")
@@ -170,7 +173,7 @@ class LlamaLoader(ModelLoader):
     def is_downloaded(self, entry: ModelEntry) -> bool:
         try:
             from llama.llama_installer import LlamaInstaller
-            installer = LlamaInstaller()
+            installer = LlamaInstaller(models_dir=entry.files.get('local_dir'))
             preset, _ = self._resolve_preset_and_index(entry)
             if preset:
                 return installer.is_model_downloaded(preset)

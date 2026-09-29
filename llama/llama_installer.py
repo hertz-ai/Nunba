@@ -423,7 +423,7 @@ class LlamaInstaller:
     # spawned with --version at most once until it changes on disk.
     _version_cache: dict[str, tuple[float, int]] = {}
 
-    def __init__(self, install_dir: str | None = None, models_dir: str | None = None):
+    def __init__(self, install_dir: str | None = None, models_dir: str | None = None, *, config_dir=None):
         """
         Initialize the installer
 
@@ -433,13 +433,32 @@ class LlamaInstaller:
         """
         home = Path.home()
         self.install_dir = Path(install_dir) if install_dir else home / ".nunba" / "llama.cpp"
-        self.models_dir = Path(models_dir) if models_dir else home / ".nunba" / "models"
+        self.default_models_dir = home / ".nunba" / "models"
+        self.models_dir = self.resolve_models_dir(models_dir, config_dir=config_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.install_dir.parent.mkdir(parents=True, exist_ok=True)
 
         self.os_name = platform.system().lower()
         self.gpu_available = self._detect_gpu()
         self.binary_supports_gpu = False  # Will be set during installation
+
+    @staticmethod
+    def resolve_models_dir(models_dir=None, *, config_dir=None):
+        """One LLM storage rule: explicit, environment, saved config, default."""
+        selected = models_dir or os.environ.get('NUNBA_MODELS_DIR', '').strip()
+        if not selected:
+            config_file = (Path(config_dir) if config_dir else
+                           Path.home() / '.nunba') / 'llama_config.json'
+            try:
+                saved = json.loads(config_file.read_text(encoding='utf-8'))
+                selected = saved.get('models_dir') or None
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError, AttributeError):
+                logger.warning('Could not read saved LLM storage location', exc_info=True)
+        if not selected:
+            return Path.home() / '.nunba' / 'models'
+        return Path(selected).expanduser().resolve()
 
     @staticmethod
     def _no_window() -> tuple:
@@ -1352,9 +1371,10 @@ class LlamaInstaller:
             Path to the file if found and valid, None otherwise
         """
         # Check Nunba's own models dir first
-        local_path = self.models_dir / file_name
-        if local_path.exists() and local_path.stat().st_size >= min_size:
-            return local_path
+        for directory in dict.fromkeys((self.models_dir, self.default_models_dir)):
+            local_path = directory / file_name
+            if local_path.is_file() and local_path.stat().st_size >= min_size:
+                return local_path
 
         # Check sibling project model directories
         for sibling_dir in SIBLING_MODEL_DIRS:
