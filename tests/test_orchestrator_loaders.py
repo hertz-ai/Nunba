@@ -283,6 +283,49 @@ class TestTTSLoader(unittest.TestCase):
             self.loader.download(self._tts_entry(id='tts-kokoro'))
         m.assert_called_once_with('kokoro')
 
+    def test_backend_name_only_strips_leading_prefix(self):
+        # Regression: a plain str.replace('tts-', '') also eats the 'tts-'
+        # *inside* the engine key — 'tts-neutts-air' -> 'neuair',
+        # 'tts-xtts-v2' -> 'xv2' — producing a phantom backend that is not
+        # in ENGINE_REGISTRY, so _create_backend returns None and the
+        # auto-install/probe path crash-reports. _backend_name goes through
+        # tts_engine.catalog_entry_backend, the one catalog -> backend rule
+        # (F5's Nunba backend constant is 'f5').
+        cases = {
+            'tts-neutts-air': 'neutts_air',
+            'tts-xtts-v2': 'xtts_v2',
+            'tts-f5-tts': 'f5',
+            'tts-chatterbox-turbo': 'chatterbox_turbo',
+            'tts-kokoro': 'kokoro',
+        }
+        for catalog_id, expected in cases.items():
+            self.assertEqual(
+                self.loader._backend_name(self._tts_entry(id=catalog_id)),
+                expected,
+                f"{catalog_id} must map to registry key {expected!r}",
+            )
+
+    def test_backend_name_is_a_backend_the_engine_can_build(self):
+        # Every derived name for a subprocess engine must be one
+        # TTSEngine._create_backend can build, otherwise it returns None and
+        # the auto-install/probe path crash-reports on a phantom engine.
+        from tts.tts_engine import _is_engine_backend
+        for catalog_id in ('tts-neutts-air', 'tts-xtts-v2', 'tts-f5-tts',
+                           'tts-chatterbox-turbo'):
+            name = self.loader._backend_name(self._tts_entry(id=catalog_id))
+            self.assertTrue(_is_engine_backend(name),
+                            f"{catalog_id} -> {name!r} is not a buildable backend")
+
+    def test_load_neutts_auto_install_uses_registry_name(self):
+        # The mangled 'neuair' name is what reached _try_auto_install_backend
+        # in the field and produced the '_create_backend returned None'
+        # crash-report. Guard the exact call.
+        mock_engine = MagicMock()
+        mock_engine._can_run_backend.return_value = False
+        with patch('tts.tts_engine.TTSEngine', return_value=mock_engine):
+            self.loader.load(self._tts_entry(id='tts-neutts-air'), 'cpu')
+        mock_engine._try_auto_install_backend.assert_called_once_with('neutts_air')
+
     def test_download_install_failure(self):
         with patch('tts.package_installer.install_backend_full', return_value=(False, 'err')):
             self.assertFalse(self.loader.download(self._tts_entry()))
