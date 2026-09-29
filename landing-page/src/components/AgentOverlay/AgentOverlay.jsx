@@ -6,7 +6,7 @@ import {
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
-import { chatApi, consentApi, notificationsApi } from '../../services/socialApi';
+import { agentFormApi, chatApi, consentApi, notificationsApi } from '../../services/socialApi';
 import { HART_GLASS_SURFACE } from '../../theme/hartGlass';
 
 
@@ -33,7 +33,10 @@ const AUTO_DISMISS_MS = 15000;
 // consent.request: a gate is waiting for the answer (HARTOS
 // computer_control_block waits up to 90 s), so the card stays until
 // answered instead of vanishing at AUTO_DISMISS_MS.
-const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request']);
+// qr_pair: a WhatsApp code lives ~20s and HARTOS sends the next one as it
+// rotates (replacing this card in place, see handleEvent), so the card stays
+// until the phone links or the user closes it.
+const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair']);
 
 // The card's frosted surface is the ONE HART glass (src/theme/hartGlass,
 // mirroring HARTOS theme_service.py's emitted shell values), so an overlay
@@ -424,13 +427,32 @@ function MetricOverlay({ data }) {
 
 function FormOverlay({ data, onDismiss }) {
   const [values, setValues] = useState({});
-  const handleSubmit = () => {
-    if (data.action) {
-      fetch(data.action.startsWith('http') ? data.action : `${API_BASE_URL}${data.action}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(values),
-      }).catch(() => {});
+  // The card closes only once the server took the values.  It used to post
+  // with a bare fetch (no Bearer token, so the auth-required channel routes
+  // answered 401), swallow the result and close anyway: a typed bot token
+  // vanished with nothing on screen.  Same contract as the approval card.
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const handleSubmit = async () => {
+    if (busy) return;
+    if (!data.action) {
+      // A form with nowhere to send its values is a producer bug; say so
+      // rather than pretend the values went somewhere.
+      console.error('[form] card has no action; values not sent', data);
+      setError('This form cannot be submitted (no destination). Please report it.');
+      return;
     }
+    setBusy(true);
+    setError(null);
+    try {
+      await agentFormApi.submit(data.action, values);
+    } catch (e) {
+      console.error('[form] submit failed', e);
+      setError(answerFailure(e));
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
     onDismiss();
   };
   return (
@@ -438,11 +460,14 @@ function FormOverlay({ data, onDismiss }) {
       {data.title && <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>{data.title}</Typography>}
       {(data.fields || []).map((f, i) => (
         <TextField key={i} label={f.label || f.name} size="small" fullWidth
-          type={f.type || 'text'} required={f.required}
-          value={values[f.name] || ''} onChange={e => setValues(v => ({ ...v, [f.name]: e.target.value }))}
-          sx={{ mb: 1, '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' }, '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.5)' } }} />
+          type={f.secret ? 'password' : (f.type || 'text')} required={f.required}
+          helperText={f.help || undefined}
+          value={values[f.name] || ''} onChange={e => { setError(null); setValues(v => ({ ...v, [f.name]: e.target.value })); }}
+          sx={{ mb: 1, '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' }, '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.5)' }, '& .MuiFormHelperText-root': { color: 'rgba(255,255,255,0.45)' } }} />
       ))}
-      <Button variant="contained" size="small" fullWidth sx={{ background: ACCENT, '&:hover': { background: '#5A52E0' } }} onClick={handleSubmit}>
+      {error && <AnswerError text={error} />}
+      <Button variant="contained" size="small" fullWidth disabled={busy} aria-busy={busy}
+        sx={{ background: ACCENT, '&:hover': { background: '#5A52E0' } }} onClick={handleSubmit}>
         {data.submit_label || 'Submit'}
       </Button>
     </Box>
@@ -1158,7 +1183,32 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
     const entry = { ...payload, _id: id, _type: type };
     if (msgId) showingRef.current.set(msgId, id);
 
+    // Channel pairing cards follow the channel, not the message: WhatsApp
+    // rotates its QR, so a newer code for the same channel replaces the
+    // card in place (the old one would be a dead code), and once the
+    // channel is connected its QR / pair-code cards go away.
+    const pairingOf = (o) => (o._type === 'qr_pair' || o._type === 'pair_code')
+      && payload.channel && o.channel === payload.channel;
+
     setOverlays(prev => {
+      if (type === 'qr_pair') {
+        const i = prev.findIndex(o => o._type === 'qr_pair' && pairingOf(o));
+        if (i >= 0) {
+          const next = [...prev];
+          forgetShowing(prev[i]._id);
+          if (msgId) showingRef.current.set(msgId, prev[i]._id);
+          next[i] = { ...entry, _id: prev[i]._id };
+          return next;
+        }
+      }
+      if (type === 'channel_connected') {
+        prev.filter(pairingOf).forEach((o) => {
+          clearTimeout(timersRef.current[o._id]);
+          delete timersRef.current[o._id];
+          forgetShowing(o._id);
+        });
+        prev = prev.filter(o => !pairingOf(o));
+      }
       const next = [...prev, entry];
       // FIFO eviction if over max
       while (next.length > MAX_OVERLAYS) {
