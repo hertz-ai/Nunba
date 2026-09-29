@@ -1,8 +1,9 @@
+import RelativeTime, { useRelativeTick } from '../../components/Common/RelativeTime';
+
 import { Box, IconButton, Typography, LinearProgress, Fade, Button, Stack, Tooltip } from '@mui/material';
 import { X as CloseIcon } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 
-import RelativeTime, { useRelativeTick } from '../../components/Common/RelativeTime';
 
 /**
  * SetupProgressCard — dreamy progress card for long-running setup jobs

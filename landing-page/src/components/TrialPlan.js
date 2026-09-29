@@ -175,7 +175,7 @@ export default function TrialPlan() {
                           color: '#FFFAE8',
                         }}
                         onClick={() => handlePayNowClick(subscription)}
-                        className="py-2 px-5 inline-block font-semibold tracking-wide border rounded text-amber-400 hover:text-white"
+                        className="btn-feedback py-2 px-5 inline-block font-semibold tracking-wide border rounded text-amber-400 hover:text-white"
                       >
                         Register For Free
                       </button>
@@ -189,7 +189,7 @@ export default function TrialPlan() {
                           borderColor: '#00f0c5',
                           color: '#FFFAE8',
                         }}
-                        className="py-2 px-5 inline-block font-semibold tracking-wide border rounded text-amber-400 hover:text-white"
+                        className="btn-feedback py-2 px-5 inline-block font-semibold tracking-wide border rounded text-amber-400 hover:text-white"
                       >
                         Pay Now
                       </button>
@@ -280,7 +280,7 @@ export default function TrialPlan() {
                           color: '#FFFAE8',
                         }}
                         onClick={() => handlePayNowClick(subscription)}
-                        className="py-2 px-5 inline-block font-semibold tracking-wide border rounded text-amber-400 hover:text-white"
+                        className="btn-feedback py-2 px-5 inline-block font-semibold tracking-wide border rounded text-amber-400 hover:text-white"
                       >
                         Register For Free
                       </button>
@@ -294,7 +294,7 @@ export default function TrialPlan() {
                           borderColor: '#00f0c5',
                           color: '#FFFAE8',
                         }}
-                        className="py-2 px-5 inline-block font-semibold tracking-wide border rounded text-amber-400 hover:text-white"
+                        className="btn-feedback py-2 px-5 inline-block font-semibold tracking-wide border rounded text-amber-400 hover:text-white"
                       >
                         Pay Now
                       </button>

@@ -106,5 +106,64 @@ class TestRuntimeLogsNeverEnterTheBundle(unittest.TestCase):
                 f'{name!r} must NOT be excluded')
 
 
+class TestWindowsReservedNamesNeverStopTheSiblingCopy(unittest.TestCase):
+    """A file named like a Windows device must not reach copytree.
+
+    Measured 2026-09-23: the build died at the HARTOS sibling copy with
+      shutil.Error: [('...\\HARTOS\\nul', '...\\hart-freeze-pkg-...\\HARTOS\\nul',
+                      '[WinError 87] The parameter is incorrect')]
+    HARTOS/nul was a 1,906-byte diff written by a shell `> nul` from a POSIX
+    shell, which creates a real file instead of discarding output.  It is
+    gitignored (HARTOS .gitignore:60), so git never shows it, but copytree
+    walks the tree, not the index.  Windows cannot open a path whose last
+    component is a device name (CON PRN AUX NUL COM1-9 LPT1-9, any case,
+    with or without an extension), so one stray file stopped every build.
+
+    These run the REAL _IGNORE_HEAVY built from setup_freeze_nunba.py's own
+    source, not a copy of its pattern list.
+    """
+
+    @staticmethod
+    def _real_ignore():
+        import ast
+        import shutil
+        path = os.path.join(_ROOT, 'scripts', 'setup_freeze_nunba.py')
+        with open(path, encoding='utf-8') as fh:
+            tree = ast.parse(fh.read())
+        wanted = ('_WIN_RESERVED_PATTERNS', '_IGNORE_HEAVY')
+        found = {}
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id in wanted):
+                found[node.targets[0].id] = node
+        missing = [w for w in wanted if w not in found]
+        if missing:
+            raise AssertionError(f'setup_freeze_nunba.py defines no {missing}')
+        ns = {'_shutil': shutil}
+        for name in wanted:
+            exec(compile(ast.Module(body=[found[name]], type_ignores=[]),
+                         path, 'exec'), ns)
+        return ns['_IGNORE_HEAVY']
+
+    def test_device_names_are_ignored_in_any_case_and_with_extensions(self):
+        ignore = self._real_ignore()
+        names = ['nul', 'NUL', 'Nul', 'nul.txt', 'con', 'CON.log', 'prn',
+                 'aux', 'aux.py', 'com1', 'COM9', 'lpt1', 'LPT9.txt']
+        ignored = ignore('HARTOS', names)
+        for name in names:
+            self.assertIn(name, ignored,
+                          f'{name!r} would reach copytree and fail on Windows')
+
+    def test_ordinary_names_that_merely_start_like_a_device_are_kept(self):
+        ignore = self._real_ignore()
+        keep = ['null_check.py', 'nullable.json', 'console.py', 'contrib',
+                'auxiliary.py', 'printer.py', 'com.py', 'com10', 'lpt',
+                'compose.yaml', 'core', 'config.json', '__init__.py']
+        ignored = ignore('HARTOS', keep)
+        self.assertEqual(sorted(set(keep) & set(ignored)), [],
+                         'real package content must not be excluded')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -22,6 +22,23 @@ can import in milliseconds.  ``main`` imports FROM here — this is the single
 source of truth, not a second copy of the rule.
 """
 
+# First path segments that are API namespaces: a miss under one of them is an
+# API miss and must answer a JSON 404, never 200 + the SPA shell.  Lives here
+# (not in main) so the decision is testable without importing main; main
+# re-exports it as main.API_ENDPOINTS.
+#
+# `a2a`: every /a2a/* route is an API (HARTOS
+# integrations/google_a2a/google_a2a_integration.py registers /a2a/agents,
+# /a2a/<id>/recipe, /a2a/<id>/.well-known/agent.json, /a2a/<id>/jsonrpc) and
+# the SPA declares no /a2a page.  Without it an unmatched peer call such as
+# POST /a2a/<id>/execute got 200 index.html, so the calling peer logged a
+# misleading "non-JSON" error instead of a 404.
+API_ENDPOINTS = {
+    'api', 'probe', 'execute', 'screenshot', 'indicator', 'llm_control_status',
+    'status', 'logs', 'custom_gpt', 'tts', 'crash-report', 'llama',
+    'ai', 'health', 'prompts', 'agents', 'chat', 'backend', 'media', 'a2a',
+}
+
 # Path prefixes served by an explicit asset route (main.serve_static /
 # main.serve_fonts).  A miss under one of these is a genuinely absent file:
 # there is no client-side route it could still resolve to.
@@ -99,6 +116,16 @@ def first_path_segment(path):
     """``/static/js/app.js`` -> ``'static'``; ``/`` and ``''`` -> ``''``."""
     parts = (path or '').split('/')
     return parts[1] if len(parts) > 1 else ''
+
+
+def is_api_miss(path, accept_header=None):
+    """True when an unmatched `path` must get a JSON 404 as an API miss.
+
+    The API namespace rule, minus the exact SPA pages that share a first
+    segment with an API namespace (see is_spa_page).
+    """
+    return (first_path_segment(path) in API_ENDPOINTS
+            and not is_spa_page(path, accept_header))
 
 
 def is_asset_path(path):

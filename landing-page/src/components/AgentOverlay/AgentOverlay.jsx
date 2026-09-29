@@ -1,14 +1,14 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import {
   CAMERA_CONSENT_TYPE, CONSENT_ANSWER_TYPES, FINGERPRINT_CAPTION, answerCoversAsk,
-  askTitle, askerName, canDecline, consentAskText, declineLabel, deviceFingerprint,
-  grantLabel, isPerRequester,
+  askTitle, askerName, asksForSecret, canDecline, consentAskText, declineLabel,
+  declineNote, deviceFingerprint, grantLabel, isPerRequester, secretName,
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
-import { consentApi, notificationsApi } from '../../services/socialApi';
+import { chatApi, consentApi, notificationsApi } from '../../services/socialApi';
 import { HART_GLASS_SURFACE } from '../../theme/hartGlass';
-import { QRCodeSVG } from 'qrcode.react';
+
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CloseIcon from '@mui/icons-material/Close';
@@ -25,6 +25,7 @@ import {
   Fade, Grow, Chip, Rating,
 } from '@mui/material';
 import DOMPurify from 'dompurify';
+import { QRCodeSVG } from 'qrcode.react';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 const MAX_OVERLAYS = 3;
@@ -267,37 +268,81 @@ function AgentActionOverlay({ data }) {
   );
 }
 
+// Why an answer on a card did not go through, in words the owner can act
+// on: the server's own reason when it gave one (HARTOS answers
+// {status, reason} or {success: false, error}), else the transport error.
+function answerFailure(e) {
+  const body = (e && e.response && e.response.data) || (e && e.body) || {};
+  return String(body.reason || body.error || (e && e.message)
+    || 'Your answer did not reach this computer; try again.');
+}
+
+// The line a card shows when an answer did not go through.
+function AnswerError({ text }) {
+  return (
+    <Typography variant="caption" role="alert" sx={{display: 'block', color: ERROR_RED, mb: 1}}>
+      {text}
+    </Typography>
+  );
+}
+
 function ApprovalOverlay({ data, onDismiss }) {
-  const postDecision = (decision) => {
-    fetch(`${API_BASE_URL}/api/agent/approval`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_id: data.agent_id, action: data.action, decision }),
-    }).catch(() => {});
+  // Which decision is on its way, and why the last one did not go through.
+  // The card closes only once HARTOS has the answer: its .catch(() => {})
+  // used to close it on a 404 or a 500 too, so an answer nobody recorded
+  // looked exactly like one that was.
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
 
-    // Camera consent → NunbaChatProvider listens for this event and
-    // mounts useCameraFrameStream, which opens WS to VisionService
-    // :5460 and pipes JPEG frames at ~1fps.  The server protocol is
-    // (user_id digit, 'video_start', binary frames) — not JSON.
+  // Camera consent → NunbaChatProvider listens for this event and
+  // mounts useCameraFrameStream, which opens WS to VisionService
+  // :5460 and pipes JPEG frames at ~1fps.  The server protocol is
+  // (user_id digit, 'video_start', binary frames) — not JSON.
+  const applyCamera = (decision) => {
     const _action = String(data.action || '').toLowerCase();
-    if (_action.includes('camera') || _action.includes('video')) {
-      try {
-        window.dispatchEvent(new CustomEvent(NUNBA_CAMERA_CONSENT, {
-          detail: {
-            approved: decision === 'approve',
-            user_id: data.user_id || data.agent_id,
-          },
-        }));
-      } catch { /* CustomEvent unavailable (older WebView) */ }
-    }
+    if (!_action.includes('camera') && !_action.includes('video')) return;
+    try {
+      window.dispatchEvent(new CustomEvent(NUNBA_CAMERA_CONSENT, {
+        detail: {
+          approved: decision === 'approve',
+          user_id: data.user_id || data.agent_id,
+        },
+      }));
+    } catch { /* CustomEvent unavailable (older WebView) */ }
+  };
 
+  const postDecision = async (decision) => {
+    if (busy) return;
+    setBusy(decision);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: data.agent_id, action: data.action, decision }),
+      });
+      if (!res.ok) {
+        let body = {};
+        try { body = await res.json(); } catch { /* not JSON */ }
+        throw Object.assign(new Error(`The answer was refused (HTTP ${res.status})`), {body});
+      }
+    } catch (e) {
+      console.error('[approval] decision not recorded', e);
+      setError(answerFailure(e));
+      setBusy(null);
+      return;
+    }
+    applyCamera(decision);
+    setBusy(null);
     onDismiss();
   };
 
-  // `options` labels the three decisions POSITIONALLY: [approve, deny, defer].
+  // `options` labels the three choices POSITIONALLY: [approve, deny, defer].
   // A missing or non-string entry keeps that button's default label, so the
-  // button SET never shrinks and the POSTed vocabulary stays approve|deny|later
-  // (the only three /api/agent/approval accepts).  Producers use it to say what
-  // the choice MEANS: the game-sound card offers 'Keep it' / 'Compose another'.
+  // button SET never shrinks.  Producers use it to say what the choice
+  // MEANS: the game-sound card offers 'Keep it' / 'Compose another'.
+  // Only approve | deny are answers /api/agent/approval records; HARTOS
+  // refuses 'later' with 400, so the defer button closes the card and sends
+  // nothing, like "Not now" on the consent card (the producer asks again).
   const label = (i, dflt) => {
     const o = Array.isArray(data.options) ? data.options[i] : null;
     return (typeof o === 'string' && o) ? o : dflt;
@@ -307,10 +352,11 @@ function ApprovalOverlay({ data, onDismiss }) {
     <Box>
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>{data.title || 'Approval Required'}</Typography>
       <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)', mb: 1.5 }}>{data.description}</Typography>
+      {error && <AnswerError text={error} />}
       <Box sx={{ display: 'flex', gap: 1 }}>
-        <Button variant="contained" size="small" sx={{ background: SUCCESS, flex: 1, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>{label(0, 'Approve')}</Button>
-        <Button variant="outlined" size="small" sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1 }} onClick={() => postDecision('deny')}>{label(1, 'Deny')}</Button>
-        <Button variant="outlined" size="small" sx={{ color: 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)' }} onClick={() => postDecision('later')}>{label(2, 'Later')}</Button>
+        <Button variant="contained" size="small" disabled={Boolean(busy)} aria-busy={busy === 'approve'} sx={{ background: SUCCESS, flex: 1, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>{label(0, 'Approve')}</Button>
+        <Button variant="outlined" size="small" disabled={Boolean(busy)} aria-busy={busy === 'deny'} sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1 }} onClick={() => postDecision('deny')}>{label(1, 'Deny')}</Button>
+        <Button variant="outlined" size="small" disabled={Boolean(busy)} sx={{ color: 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)' }} onClick={onDismiss}>{label(2, 'Later')}</Button>
       </Box>
     </Box>
   );
@@ -828,12 +874,15 @@ function consentCardFor(data) {
       consentType: type,
       scope: data.scope || '*',
       agentId: data.agent_id || null,
+      // A credential ask: the value is typed here and stored in this
+      // computer's vault under this name before the grant.
+      secretKey: asksForSecret(type) ? secretName(data.scope) : null,
       title: askTitle(type),
       text: data.reason ||
         `${askerName(data.agent_name)} asks to ${consentAskText(type)}.`,
       grantLabel: grantLabel(type),
-      // A no stands until the owner allows the type again on the privacy
-      // page, so only a type with a card there can be declined here.
+      // A type with a card on the privacy page (the way back after a no),
+      // or a credential ask, whose no ends that one ask (declineNote).
       declineLabel: canDecline(type)
         ? declineLabel(type, data.agent_id, data.agent_name) : null,
     };
@@ -857,6 +906,13 @@ function consentCardFor(data) {
 // the main window is behind other windows.  One card, one consent API.
 export function ConsentPromptOverlay({ data, onDismiss }) {
   const card = consentCardFor(data || {});
+  const [secret, setSecret] = useState('');
+  // Why the last answer did not go through.  The card stays up with it: an
+  // answer that silently closed the card looked written when it was not.
+  const [error, setError] = useState(null);
+  // Which answer is on its way ('grant' | 'decline'): that button spins, the
+  // others wait, and a second click sends nothing.
+  const [busy, setBusy] = useState(null);
   // A camera answer has to act HERE.  Every other consent is actuated
   // server-side (HARTOS grant_consent drives the embodied feed, and the
   // screen capture loop polls its own consent), but the camera frames come
@@ -872,27 +928,51 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
     } catch { /* CustomEvent unavailable (older WebView) */ }
   };
   const grant = async () => {
-    try {
-      await consentApi.grant({consent_type: card.consentType, scope: card.scope});
-      applyCamera(true);
-    } catch (e) {
-      console.error('[consent_prompt] grant failed', e);
-    } finally {
-      if (onDismiss) onDismiss();
+    if (busy) return;
+    setBusy('grant');
+    // A credential goes into the vault first; if it cannot be stored the ask
+    // stays open, since a grant with nothing stored gives the agent nothing.
+    if (card.secretKey) {
+      let stored = null;
+      try {
+        stored = await chatApi.vaultStore({
+          key_type: 'tool_key', key_name: card.secretKey, value: secret});
+      } catch (e) {
+        stored = {success: false, error: e?.message};
+      }
+      if (!stored?.success) {
+        setError(stored?.error || 'Could not store it on this computer');
+        setBusy(null);
+        return;
+      }
+      // The field keeps the value until the card closes, so a grant that
+      // does not go through can be sent again without typing it twice.
     }
+    await answer('grant', () => consentApi.grant(
+      {consent_type: card.consentType, scope: card.scope}), true);
   };
   // The ask's own agent: a no to one agent's ask leaves the others open.
   const decline = async () => {
+    if (busy) return;
+    setBusy('decline');
+    await answer('decline', () => consentApi.decline({
+      consent_type: card.consentType, scope: card.scope, agent_id: card.agentId,
+    }), false);
+  };
+  // Send one answer.  Written: the card closes.  Not written: the card stays
+  // with the reason and the buttons back, so the owner can answer again.
+  const answer = async (what, send, approved) => {
     try {
-      await consentApi.decline({
-        consent_type: card.consentType, scope: card.scope, agent_id: card.agentId,
-      });
-      applyCamera(false);
+      await send();
     } catch (e) {
-      console.error('[consent_prompt] decline failed', e);
-    } finally {
-      if (onDismiss) onDismiss();
+      console.error(`[consent_prompt] ${what} failed`, e);
+      setError(answerFailure(e));
+      setBusy(null);
+      return;
     }
+    applyCamera(approved);
+    setBusy(null);
+    if (onDismiss) onDismiss();
   };
   return (
     <Box data-testid="liquid-consent-prompt" sx={{p: 1.5}}>
@@ -916,21 +996,36 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
           </Typography>
         </Box>
       )}
+      {card.secretKey && (
+        <Box sx={{mb: 1.5}}>
+          <TextField type="password" size="small" fullWidth autoComplete="off"
+            value={secret} onChange={(e) => { setSecret(e.target.value); setError(null); }}
+            inputProps={{'data-testid': 'liquid-consent-secret', 'aria-label': 'Password or key'}}
+            sx={{'& .MuiInputBase-root': {color: '#fff', background: 'rgba(255,255,255,0.05)'}}} />
+        </Box>
+      )}
+      {error && <AnswerError text={error} />}
       {card.declineLabel && (
         <Typography variant="caption" sx={{display: 'block', opacity: 0.6, mb: 1}}>
-          {`"${card.declineLabel}" lasts until you allow it again in Privacy settings; "Not now" leaves the ask open.`}
+          {declineNote(card.consentType, card.declineLabel)}
         </Typography>
       )}
       <Box sx={{display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'flex-end'}}>
-        <button onClick={onDismiss} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
+        <button className="btn-feedback" onClick={onDismiss} disabled={Boolean(busy)}
+          style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
           Not now
         </button>
         {card.declineLabel && (
-          <button onClick={decline} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #FF6B6B', background: 'transparent', color: '#FF6B6B', cursor: 'pointer'}}>
+          <button className="btn-feedback" onClick={decline} disabled={Boolean(busy)}
+            aria-busy={busy === 'decline'}
+            style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #FF6B6B', background: 'transparent', color: '#FF6B6B', cursor: 'pointer'}}>
             {card.declineLabel}
           </button>
         )}
-        <button data-testid="liquid-consent-grant" onClick={grant} style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
+        <button className="btn-feedback" data-testid="liquid-consent-grant" onClick={grant}
+          disabled={Boolean(busy) || (Boolean(card.secretKey) && !secret)}
+          aria-busy={busy === 'grant'}
+          style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
           {card.grantLabel}
         </button>
       </Box>
@@ -941,7 +1036,10 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
 function PostPreviewOverlay({ data, onDismiss }) {
   const platform = data?.platform || 'platform';
   const content = data?.content || '';
+  const [posting, setPosting] = useState(false);
   const confirm = async () => {
+    if (posting) return;
+    setPosting(true);
     try {
       // Re-invoke the originating tool with dry_run=False.  We hit /chat with
       // a synthetic tool-call message; HARTOS dispatches to Post_As_User.
@@ -957,6 +1055,7 @@ function PostPreviewOverlay({ data, onDismiss }) {
     } catch (e) {
       console.error('[post_preview] confirm failed', e);
     } finally {
+      setPosting(false);
       if (onDismiss) onDismiss();
     }
   };
@@ -974,10 +1073,13 @@ function PostPreviewOverlay({ data, onDismiss }) {
         Posting as {data?.handle || 'your saved session'}
       </Typography>
       <Box sx={{display: 'flex', gap: 1, justifyContent: 'flex-end'}}>
-        <button onClick={onDismiss} style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
+        <button className="btn-feedback" onClick={onDismiss} disabled={posting}
+          style={{padding: '6px 14px', borderRadius: 8, border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer'}}>
           {data?.cancel_label || 'Cancel'}
         </button>
-        <button data-testid="liquid-post-confirm" onClick={confirm} style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#6C63FF', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
+        <button className="btn-feedback" data-testid="liquid-post-confirm" onClick={confirm}
+          disabled={posting} aria-busy={posting}
+          style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#6C63FF', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
           {data?.confirm_label || `Post to ${platform}`}
         </button>
       </Box>

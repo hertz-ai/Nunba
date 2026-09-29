@@ -1399,7 +1399,7 @@ export default function LightYourHART({ userId, onComplete }) {
                   mb: 2,
                   fontFamily: '"Inter", sans-serif',
                 }}>
-                  Hey, I'm getting permission before I speak anything loudly on the screen.
+                  Hey, I&apos;m getting permission before I speak anything loudly on the screen.
                   As a true friend and helper, I respect your presence and your acoustic space.
                 </Typography>
 

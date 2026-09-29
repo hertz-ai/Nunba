@@ -190,7 +190,7 @@ export default function Pricing() {
                         transition: 'background-color 0.3s ease',
                       }}
                       onClick={() => handlePayNowClick(subscription)}
-                      className="py-2 px-5 inline-block font-semibold tracking-wide border align-middle duration-500 text-base text-center bg-amber-400/5 hover:bg-amber-400 rounded border-amber-400/10 hover:border-amber-400 text-amber-400 hover:text-white"
+                      className="btn-feedback py-2 px-5 inline-block font-semibold tracking-wide border align-middle duration-500 text-base text-center bg-amber-400/5 hover:bg-amber-400 rounded border-amber-400/10 hover:border-amber-400 text-amber-400 hover:text-white"
                     >
                       Register For Free
                     </button>
@@ -206,7 +206,7 @@ export default function Pricing() {
                         color: '#FFFAE8',
                         transition: 'background-color 0.3s ease',
                       }}
-                      className="py-2 px-5 inline-block font-semibold tracking-wide border align-middle duration-500 text-base text-center bg-amber-400/5 hover:bg-amber-400 rounded border-amber-400/10 hover:border-amber-400 text-amber-400 hover:text-white"
+                      className="btn-feedback py-2 px-5 inline-block font-semibold tracking-wide border align-middle duration-500 text-base text-center bg-amber-400/5 hover:bg-amber-400 rounded border-amber-400/10 hover:border-amber-400 text-amber-400 hover:text-white"
                     >
                       Pay Now
                     </button>

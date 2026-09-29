@@ -51,9 +51,9 @@ import RateReviewIcon from '@mui/icons-material/RateReview';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 
 import {useNunbaChat, getAgentPalette} from './NunbaChatProvider';
+
 import useSpeechRecognition from '../../../../hooks/useSpeechRecognition';
 import {useReducedMotion} from '../../../../hooks/useAnimations';
-
 import {
   GRADIENTS,
   EASINGS,

@@ -227,7 +227,7 @@ class HeaderMulti extends Component {
               </Link>
 
               <button
-                className="navbar-toggler"
+                className="btn-feedback navbar-toggler"
                 type="button"
                 onClick={this.toggleHeader}
               >
@@ -312,7 +312,7 @@ class HeaderMulti extends Component {
                   </li>
                 </ul>
                 <button
-                  className="btn btn-sm navbar-btn"
+                  className="btn-feedback btn btn-sm navbar-btn"
                   style={{color: '#13ce67'}}
                 >
                   Sign up

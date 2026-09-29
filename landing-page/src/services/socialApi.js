@@ -262,6 +262,12 @@ export const encountersApi = {
 export const bleEncounterApi = {
   // J200, J201 — discoverable consent + state
   getDiscoverable: () => socialApi.get('/encounter/discoverable'),
+  // The server keeps the stored vibe_tags, face_visible and avatar_style
+  // when a toggle omits them (vibe_tags is also written by the persona
+  // card).  So each goes on the wire only when the caller passes it (the
+  // user edited it); undefined / null is "not given", never [] / false /
+  // the default style (which reset them).  enabled and age_claim_18 are
+  // always sent: consent is never implied.
   setDiscoverable: ({
     enabled,
     age_claim_18,
@@ -269,15 +275,22 @@ export const bleEncounterApi = {
     face_visible,
     avatar_style,
     vibe_tags,
-  }) =>
-    socialApi.post('/encounter/discoverable', {
+  }) => {
+    const body = {
       enabled: !!enabled,
       age_claim_18: !!age_claim_18,
       ttl_sec: ttl_sec || undefined,
-      face_visible: !!face_visible,
-      avatar_style: avatar_style || 'studio_ghibli',
-      vibe_tags: vibe_tags || [],
-    }),
+    };
+    if (face_visible != null) body.face_visible = !!face_visible;
+    if (avatar_style != null) body.avatar_style = avatar_style;
+    if (vibe_tags != null) body.vibe_tags = vibe_tags;
+    return socialApi.post('/encounter/discoverable', body);
+  },
+
+  // Persona card (HARTOS GET/PUT /encounter/persona): bio, recognize_me,
+  // vibe_tags, interests_discoverable.  PUT changes only the fields given.
+  getPersona: () => socialApi.get('/encounter/persona'),
+  setPersona: (fields) => socialApi.put('/encounter/persona', fields),
 
   // J200 — phone registers current rotating pubkey
   registerPubkey: (pubkey) =>
@@ -355,6 +368,12 @@ export const consentApi = {
       scope,
       agent_id,
     }),
+
+  // POST /api/social/consent/reopen — take a no back: the (type, scope) is
+  // undecided again for every agent and the next ask shows the card;
+  // nothing is granted (the privacy page's "Allow asking again").
+  reopen: ({consent_type, scope}) =>
+    socialApi.post('/consent/reopen', {consent_type, scope}),
 
   // GET /api/social/consent — list (newest-first by granted_at)
   list: ({consent_type, active_only} = {}) => {
@@ -722,7 +741,34 @@ export const identityApi = {
 export const dashboardApi = {
   agents: () => socialApi.get('/dashboard/agents'),
   health: () => socialApi.get('/dashboard/health'),
+  // POST /dashboard/agents/<id>/<verb>, verb = inject | pause | resume |
+  // cancel.  THE one client for steering a goal: it carries the signed-in
+  // token like every other socialApi call, because HARTOS answers a remote
+  // caller without one 401 and lets only the goal's owner (or an admin)
+  // steer it (dashboard_service.may_steer).  Resolves to the JSON body;
+  // a refusal rejects with the server's JSON ({success:false, data:{error}});
+  // constants/steerOutcome.steerError words it for a person.
+  // silentError: each caller shows the reason inline, not as a banner.
+  steer: (agentId, verb, body) =>
+    socialApi.post(
+      `/dashboard/agents/${encodeURIComponent(agentId)}/${verb}`,
+      body || {},
+      {silentError: true},
+    ),
+  // The drawer's reads of ONE goal.  HARTOS answers them only to the goal's
+  // owner (or an admin, or this machine for a goal no person owns), the same
+  // rule as steering, so they carry the token too.  Polled: never cached.
+  snapshot: (agentId) =>
+    socialApi.get(`/dashboard/agents/${encodeURIComponent(agentId)}/snapshot`,
+      {cache: false, silentError: true}),
+  a2a: (agentId, depth = 2) =>
+    socialApi.get(`/dashboard/agents/${encodeURIComponent(agentId)}/a2a`,
+      {params: {depth}, cache: false, silentError: true}),
+  chatTail: (agentId, since, limit = 50) =>
+    socialApi.get(`/dashboard/agents/${encodeURIComponent(agentId)}/chat`,
+      {params: {since, limit}, cache: false, silentError: true}),
 };
+
 
 // --- Chat API (Local Nunba backend) ---
 // Local LLM inference can take 60-90s on small models; autogen recipe builds

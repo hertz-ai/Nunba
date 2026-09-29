@@ -130,7 +130,8 @@ def _get_user_id_from_request():
         except Exception as e:
             logger.debug(f"JWT decode in media routes: {e}")
     # Fallback: allow local requests without auth (dev mode)
-    if request.remote_addr in ('127.0.0.1', '::1', 'localhost'):
+    from routes.auth import _is_local_request
+    if _is_local_request():
         return request.args.get('user_id')
     return None
 
@@ -453,14 +454,14 @@ def _async_generate(job_id, media_type, prompt, style, cache_path, sha, classifi
     _, _, register, _, _ = _get_classifier()
     try:
         try:
+            # one length for a game's music: the memo's table, which the
+            # agent's own tool composes by (hartos-3a F8: 60 here, 30 there)
+            from core.game_sound_memo import GAME_STATE_DURATIONS
             from integrations.service_tools.media_agent import (
                 MEDIA_FAILED_STATUSES,
                 check_media_status,
                 generate_media,
             )
-            # one length for a game's music: the memo's table, which the
-            # agent's own tool composes by (hartos-3a F8: 60 here, 30 there)
-            from core.game_sound_memo import GAME_STATE_DURATIONS
         except ImportError as e:
             logger.error(f"media capability unavailable for {job_id}: {e}")
             with _jobs_lock:

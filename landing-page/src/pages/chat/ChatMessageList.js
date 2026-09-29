@@ -424,7 +424,7 @@ const ChatMessageList = ({
                 <button
                   onClick={() => onSetupLlm?.(card)}
                   disabled={isRequestInFlight}
-                  className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+                  className="btn-feedback px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
                   style={{
                     backgroundColor: isRequestInFlight ? '#4a4a4a' : '#6C63FF',
                     color: '#fff',
@@ -435,7 +435,7 @@ const ChatMessageList = ({
                 </button>
                 <button
                   onClick={() => onConfigureLlm?.()}
-                  className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+                  className="btn-feedback px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
                   style={{
                     backgroundColor: 'transparent',
                     color: '#999',
@@ -513,7 +513,7 @@ const ChatMessageList = ({
                 <button
                   onClick={() => onExecutePlan?.(plan, message.prompt_id)}
                   disabled={isRequestInFlight}
-                  className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+                  className="btn-feedback px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
                   style={{
                     backgroundColor: isRequestInFlight ? '#4a4a4a' : '#6C63FF',
                     color: '#fff',
@@ -527,7 +527,7 @@ const ChatMessageList = ({
                     // Remove the plan card and let user rephrase
                     setMessages((prev) => prev.filter((_, i) => i !== index));
                   }}
-                  className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+                  className="btn-feedback px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
                   style={{
                     backgroundColor: 'transparent',
                     color: '#999',
@@ -590,7 +590,7 @@ const ChatMessageList = ({
 
                           <button
                             onClick={() => onPdfClick(message.pdf)}
-                            className="text-blue-600 hover:text-blue-800 underline flex items-center gap-2"
+                            className="btn-feedback text-blue-600 hover:text-blue-800 underline flex items-center gap-2"
                           >
                             <FileText className="w-5 h-5" />
                             View Uploaded PDF
@@ -697,7 +697,7 @@ const ChatMessageList = ({
                 {message.code && (
                   <button
                     onClick={() => setCodeContent(message.code)}
-                    className="bg-blue-500 text-white px-3 py-1 rounded-md"
+                    className="btn-feedback bg-blue-500 text-white px-3 py-1 rounded-md"
                   >
                     Show Code
                   </button>
@@ -742,7 +742,7 @@ const ChatMessageList = ({
                           e.stopPropagation();
                           onDeleteMessage(message.messageId);
                         }}
-                        className="text-[11px] text-gray-500 hover:text-red-400 transition-colors font-medium"
+                        className="btn-feedback text-[11px] text-gray-500 hover:text-red-400 transition-colors font-medium"
                       >
                         Cancel
                       </button>
@@ -786,7 +786,7 @@ const ChatMessageList = ({
                           e.stopPropagation();
                           onRetryMessage(message.messageId);
                         }}
-                        className="text-[11px] font-semibold text-red-300 hover:text-white px-2 py-0.5 rounded-md transition-all"
+                        className="btn-feedback text-[11px] font-semibold text-red-300 hover:text-white px-2 py-0.5 rounded-md transition-all"
                         style={{background: 'rgba(239, 68, 68, 0.2)'}}
                       >
                         Retry
@@ -796,7 +796,7 @@ const ChatMessageList = ({
                           e.stopPropagation();
                           onDeleteMessage(message.messageId);
                         }}
-                        className="text-[11px] text-gray-500 hover:text-red-400 transition-colors"
+                        className="btn-feedback text-[11px] text-gray-500 hover:text-red-400 transition-colors"
                       >
                         Delete
                       </button>

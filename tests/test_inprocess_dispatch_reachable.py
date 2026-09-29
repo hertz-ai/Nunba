@@ -9,8 +9,12 @@ Measured on the bundled desktop:
               localhost:6777/time_agent and /visual_agent.  The desktop never
               binds :6777 and neither path was in /debug/routes, so every
               scheduled action was dropped while the caller still returned 'done'.
+  2026-09-26  (live drive) POST /api/agent/approval -> 404 'API endpoint not found'.  The
+              consent card's Approve / Deny (landing-page AgentOverlay.jsx
+              ApprovalOverlay) swallows the failure with .catch(()=>{}), so the
+              card closed and no UserConsent row was ever written.
 
-HARTOS declares all three on ITS OWN Flask app, which the desktop never mounts
+HARTOS declares all four on ITS OWN Flask app, which the desktop never mounts
 on :5000.  create_inprocess_dispatch_blueprint() is the one door on this side.
 
 The door is also a way in.  :5000 binds 0.0.0.0, and a web page open in the
@@ -38,7 +42,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Pinned here, not read from _INPROCESS_DISPATCH_ROUTES: a test that takes its
 # expected set from the code under test still passes when a route is dropped.
-PATHS = ('/api/vlm/stop', '/time_agent', '/visual_agent')
+PATHS = ('/api/vlm/stop', '/time_agent', '/visual_agent', '/api/agent/approval')
 
 EVIL = 'https://evil.example'
 LAN = {'REMOTE_ADDR': '192.168.0.50'}
@@ -114,6 +118,35 @@ def test_the_scheduler_request_shape_gets_through(nunba, received, path):
                       headers={'Content-Type': 'application/json'})
     assert resp.status_code == 200
     assert received == [(path, body)]
+
+
+@pytest.mark.parametrize('decision', ['approve', 'deny', 'later'])
+def test_the_consent_card_decision_reaches_hartos(nunba, received, decision):
+    """What ApprovalOverlay (landing-page AgentOverlay.jsx) sends: JSON
+    {agent_id, action, decision}, Content-Type only, from Nunba's own page."""
+    body = {'agent_id': 'livetest_agent', 'action': 'enable_camera',
+            'decision': decision}
+    resp = nunba.post('/api/agent/approval', json=body,
+                      headers={'Origin': 'http://localhost:5000'})
+    assert resp.status_code == 200
+    assert received == [('/api/agent/approval', body)]
+
+
+def test_hartos_answer_is_returned_unchanged(monkeypatch):
+    """HARTOS's agent_approval refuses 'later' with 400; the door must pass
+    HARTOS's status and body through, not turn them into a success."""
+    fake = Flask('fake_hartos_400')
+
+    @fake.route('/api/agent/approval', methods=['POST'])
+    def _refuse():
+        return jsonify({'status': 'error', 'reason': 'invalid decision'}), 400
+
+    monkeypatch.setattr(adapter, '_hevolve_app', fake)
+    monkeypatch.setattr(adapter, '_hartos_backend_available', True)
+    _clean_auth_env(monkeypatch)
+    resp = _nunba_client().post('/api/agent/approval', json={'decision': 'later'})
+    assert resp.status_code == 400
+    assert resp.get_json() == {'status': 'error', 'reason': 'invalid decision'}
 
 
 def _stop_caller_shapes():

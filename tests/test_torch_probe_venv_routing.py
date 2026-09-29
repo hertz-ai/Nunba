@@ -266,5 +266,46 @@ def test_venv_probe_failure_writes_diagnostic_err_file(
     assert "ModuleNotFoundError" in content
 
 
+
+def _venv_engine(monkeypatch, tmp_path, healthy=False):
+    from tts import _torch_probe as _tp
+    fake_spec = SimpleNamespace(engine_id='kokoro', install_target='venv')
+    monkeypatch.setattr(
+        'integrations.channels.media.tts_router.ENGINE_REGISTRY',
+        {'kokoro': fake_spec}, raising=False)
+    monkeypatch.setattr(_tp, '_resolve_paths', lambda: True)
+    monkeypatch.setattr(_tp, '_tlib', str(tmp_path), raising=False)
+    monkeypatch.setattr(_tp.os.path, 'isdir', lambda p: True)
+    monkeypatch.setattr('tts.backend_venv.is_venv_healthy',
+                        lambda backend, probe_module=None: healthy)
+    return _tp
+
+
+def test_a_foreign_venv_is_named_as_built_by_another_interpreter(
+        monkeypatch, tmp_path, caplog):
+    """Review of 48d562f7: a venv another interpreter built exists, so the
+    log must not say it "does not exist"."""
+    _tp = _venv_engine(monkeypatch, tmp_path)
+    reason = ("venv 'kokoro' at X was built from C:/miniconda3 (Python "
+              "3.11.4); this process runs venvs built from Y (Python 3.12)")
+    monkeypatch.setattr('core.venv_paths.venv_mismatch', lambda b: reason)
+    with caplog.at_level('INFO', logger=_tp.logger.name):
+        assert _tp.check_backend_runnable('kokoro', 'kokoro') is False
+    said = ' '.join(r.getMessage() for r in caplog.records)
+    assert 'built by another interpreter' in said and 'miniconda3' in said
+    assert 'does not exist' not in said
+
+
+def test_a_missing_venv_still_says_it_does_not_exist(monkeypatch, tmp_path,
+                                                     caplog):
+    _tp = _venv_engine(monkeypatch, tmp_path)
+    monkeypatch.setattr('core.venv_paths.venv_mismatch', lambda b: None)
+    with caplog.at_level('INFO', logger=_tp.logger.name):
+        assert _tp.check_backend_runnable('kokoro', 'kokoro') is False
+    said = ' '.join(r.getMessage() for r in caplog.records)
+    assert 'does not exist' in said
+    assert 'built by another interpreter' not in said
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

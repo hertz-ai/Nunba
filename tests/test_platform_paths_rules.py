@@ -23,6 +23,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from core.platform_paths import (
+    _platform_default_data_dir,
     ensure_data_dirs,
     get_agent_data_dir,
     get_data_dir,
@@ -97,6 +98,10 @@ class TestHartosDataDirOverride:
 # ==========================================================================
 # 3. Windows Defaults
 # ==========================================================================
+# The platform-default tests (3-5) ask _platform_default_data_dir, the branch
+# selector.  Under pytest HARTOS's get_data_dir swaps a result that IS the
+# owner's real data root for a temp dir, so no test writes ~/Documents/Nunba;
+# on the host's own platform these patches resolve to exactly that root.
 class TestWindowsDefaults:
     def test_windows_uses_documents(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -106,7 +111,7 @@ class TestWindowsDefaults:
                 with patch('core.platform_paths._IS_MACOS', False):
                     with patch('core.platform_paths._IS_LINUX', False):
                         reset_cache()
-                        result = get_data_dir()
+                        result = _platform_default_data_dir()
                         assert 'Documents' in result
                         assert 'Nunba' in result
 
@@ -133,7 +138,7 @@ class TestMacOSDefaults:
                 with patch('core.platform_paths._IS_MACOS', True):
                     with patch('core.platform_paths._IS_LINUX', False):
                         reset_cache()
-                        result = get_data_dir()
+                        result = _platform_default_data_dir()
                         assert 'Library' in result
                         assert 'Application Support' in result
                         assert 'Nunba' in result
@@ -164,7 +169,7 @@ class TestLinuxDefaults:
                     with patch('core.platform_paths._IS_LINUX', True):
                         with patch('os.path.isfile', return_value=False):  # no /etc/hartos-release
                             reset_cache()
-                            result = get_data_dir()
+                            result = _platform_default_data_dir()
                             assert '.config' in result
                             assert 'nunba' in result
 
@@ -177,7 +182,7 @@ class TestLinuxDefaults:
                     with patch('core.platform_paths._IS_LINUX', True):
                         with patch('os.path.isfile', return_value=False):
                             reset_cache()
-                            result = get_data_dir()
+                            result = _platform_default_data_dir()
                             assert result == os.path.join('/xdg/data', 'nunba')
 
 
@@ -356,10 +361,14 @@ class TestEmbeddedHartosDetection:
     """
 
     def test_hartos_release_probe_is_an_absolute_posix_path(self):
-        import inspect
-
-        import core.platform_paths as pp
-        src = inspect.getsource(pp.get_data_dir)
-        assert '/etc/hartos-release' in src, (
-            "get_data_dir must probe the POSIX path '/etc/hartos-release'; "
-            "a backslash literal is relative and can never match on Linux")
+        # The probe lives in _platform_default_data_dir (get_data_dir calls
+        # it).  Behavioural: only the exact POSIX path counts as present, so
+        # a backslash or relative literal would miss it and this fails.
+        with patch('core.platform_paths._IS_LINUX', True), \
+                patch('core.platform_paths._IS_WINDOWS', False), \
+                patch('core.platform_paths._IS_MACOS', False), \
+                patch('os.path.isfile', side_effect=lambda p: p == '/etc/hartos-release'):
+            assert _platform_default_data_dir() == '/var/lib/hartos', (
+                "the embedded-OS probe must test the POSIX path "
+                "'/etc/hartos-release'; a backslash literal is relative and "
+                "can never match on Linux")

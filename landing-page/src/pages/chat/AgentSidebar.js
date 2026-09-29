@@ -2,11 +2,11 @@
 import AgentPoster from '../../assets/images/AgentPoster.png';
 import HARTSpeechPlayer from '../../components/HART/HARTSpeechPlayer';
 import OtpAuthModal from '../OtpAuthModal';
+import SIDEBAR_LINKS from '../sidebarLinks';
 
 import {ChevronRight, Menu, Star, Plus, X} from 'lucide-react';
 import React from 'react';
 import {Link as RouterLink} from 'react-router-dom';
-import SIDEBAR_LINKS from '../sidebarLinks';
 
 
 /**
@@ -120,7 +120,7 @@ const AgentSidebar = ({
 
           <button
             onClick={handleCreateAgentClick}
-            className={`flex items-center gap-2 mb-1 btn-press ${
+            className={`btn-feedback flex items-center gap-2 mb-1 btn-press ${
               isAuthenticated
                 ? 'text-orange-500 hover:text-orange-600'
                 : 'text-gray-500 hover:text-gray-400 cursor-not-allowed'
@@ -194,7 +194,7 @@ const AgentSidebar = ({
 
             <button
               onClick={() => setShowAgentsOverlay(true)}
-              className="text-sm mt-2 ml-2 hover:text-white flex items-center gap-1 btn-press"
+              className="btn-feedback text-sm mt-2 ml-2 hover:text-white flex items-center gap-1 btn-press"
             >
               View All Agents
               <ChevronRight className="w-4 h-4" />
@@ -206,7 +206,7 @@ const AgentSidebar = ({
               </div>
             )}
             {!isLocalRoute && (
-              <button className="flex justify-center flex-col w-full items-center xl:flex-row xl:justify-around">
+              <button className="btn-feedback flex justify-center flex-col w-full items-center xl:flex-row xl:justify-around">
                 <a
                   href="https://play.google.com/store/apps/details?id=com.hertzai.hevolve&hl=en&gl=US&pcampaignid=pcampaignidMKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1"
                   className="inline-block"
@@ -357,7 +357,7 @@ const AgentSidebar = ({
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="absolute left-4 top-4 text-white z-50"
+          className="btn-feedback absolute left-4 top-4 text-white z-50"
         >
           <Menu className="w-6 h-6" />
         </button>
@@ -367,14 +367,14 @@ const AgentSidebar = ({
         <div className="absolute left-0 w-full h-screen bg-gray-900 transition-all duration-300 p-2 z-50">
           <div className="flex justify-between items-center mb-1">
             <h1 className="text-2xl font-semibold text-white">Nunba</h1>
-            <button onClick={() => setIsOpen(false)} className="text-white">
+            <button onClick={() => setIsOpen(false)} className="btn-feedback text-white">
               <X className="w-6 h-6" />
             </button>
           </div>
 
           <button
             onClick={handleCreateAgentClick}
-            className={`flex items-center gap-2 mb-1 ${
+            className={`btn-feedback flex items-center gap-2 mb-1 ${
               isAuthenticated
                 ? 'text-orange-500 hover:text-orange-600'
                 : 'text-gray-500 hover:text-gray-400 cursor-not-allowed'
@@ -464,7 +464,7 @@ const AgentSidebar = ({
             </div>
             <button
               onClick={() => setShowAgentsOverlay(true)}
-              className="text-sm mt-2 hover:text-white flex items-center gap-1"
+              className="btn-feedback text-sm mt-2 hover:text-white flex items-center gap-1"
             >
               View All Agents
               <ChevronRight className="w-4 h-4" />
@@ -483,7 +483,7 @@ const AgentSidebar = ({
               !isLocalRoute block — Nunba IS the companion, the link
               was a self-reference). */}
           {!isLocalRoute && (
-            <button className="flex justify-center flex-col w-full items-center xl:flex-row xl:justify-around">
+            <button className="btn-feedback flex justify-center flex-col w-full items-center xl:flex-row xl:justify-around">
               <a
                 href="https://play.google.com/store/apps/details?id=com.hertzai.hevolve&hl=en&gl=US&pcampaignid=pcampaignidMKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1"
                 className="inline-block"
@@ -521,7 +521,7 @@ const AgentSidebar = ({
           </div>
 
           <div className="left-4 flex items-center gap-2 cursor-pointer mt-2">
-            <button className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center">
+            <button className="btn-feedback w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center">
               <span className="text-white">
                 {decryptedEmail ? decryptedEmail.charAt(0).toUpperCase() : ''}
               </span>
@@ -531,7 +531,7 @@ const AgentSidebar = ({
 
           <div className="mt-1 flex justify-center gap-1">
             <button
-              className="py-2 px-4 rounded text-white btn-gradient"
+              className="btn-feedback py-2 px-4 rounded text-white btn-gradient"
               style={{
                 background: 'linear-gradient(to right, #00e89d, #0078ff)',
                 cursor: 'pointer',

@@ -54,6 +54,56 @@ def _uses_qwen35_runtime(model_preset) -> bool:
     return getattr(model_preset, 'runtime_family', None) == QWEN35_RUNTIME_FAMILY
 
 
+def fresh_free_vram_gb(vm) -> float:
+    """Free VRAM NOW, in GB -- a new sample, not the memoized one.
+
+    get_free_vram() reads detect_gpu()'s memo, so two reads around a spawn
+    returned the same number and the residency delta was always 0.0 (#110):
+    no model's cost was ever recorded. Forcing the refresh is the answer
+    _get_ctx_size already uses, for the same reason (117-second-stale
+    sample, measured 2026-09-10). get_free_vram() then keeps its
+    CUDA/Metal rule for what "free" means.
+    """
+    vm.refresh_gpu_info(force=True)
+    return float(vm.get_free_vram())
+
+
+def spawn_vram_delta_gb(before, after):
+    """What a spawn cost on the card, or None when the delta can't be trusted.
+
+    Another process can allocate or release during the spawn window, so a
+    negative, tiny (< 0.05) or absurd (>= 512) delta is dropped rather than
+    booked or recorded; the next spawn measures again.
+    """
+    if before is None or after is None:
+        return None
+    delta = before - after
+    if 0.05 < delta < 512:
+        return round(delta, 3)
+    return None
+
+
+def embeddings_args(spec_args) -> list:
+    """``--embeddings`` for the main server, unless the spawn runs MTP.
+
+    The one writer of that flag.  Measured 2026-09-24 (Tiel-Coder 35B-A3B
+    MTP, llama.cpp b9180+): with ``--embeddings`` beside ``--spec-type
+    draft-mtp`` llama-server dies at load with GGML_ASSERT "missing
+    result_norm/result_embd tensor"; the identical command without it loads
+    and serves.  The watchdog respawns from config, so the MTP preset left the
+    desktop with no LLM at all.  MTP is what the preset exists for, and
+    hevolveai already treats a server without the route as "no native
+    embedding" (_probe_native_embedding -> None), so the route steps aside.
+    """
+    args = list(spec_args or [])
+    if 'draft-mtp' in args:
+        logger.warning(
+            "MTP spawn: leaving out --embeddings (llama.cpp asserts with both); "
+            "hevolveai's native /embedding route is off while this model serves")
+        return []
+    return ['--embeddings']
+
+
 # Task #652 — thinking MUST be off for every local llama-server.
 #
 # ``--reasoning-budget 0`` below already DECLARES that intent, but on
@@ -347,12 +397,12 @@ class LlamaConfig:
         self.server_status_file = self.config_dir / "server_status.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
-        self.installer = LlamaInstaller()
         self.server_process: subprocess.Popen | None = None
         self._server_starting = False  # Lock to prevent double start
 
         # Load or create config
         self.config = self._load_config()
+        self.installer = LlamaInstaller(config_dir=self.config_dir)
 
         # Update API base with configured port
         self.api_base = f"http://127.0.0.1:{self.config.get('server_port', 8080)}/v1"
@@ -413,14 +463,43 @@ class LlamaConfig:
                 json.dump(self.config, f, indent=2)
             os.replace(tmp, self.config_file)
             tmp = None
+            return True
         except Exception as e:
             logger.error(f"Failed to save config: {e}")
+            return False
         finally:
             if tmp:
                 try:
                     os.unlink(tmp)
                 except OSError:
                     pass
+
+    def get_models_dir(self) -> str:
+        """Expose the installer's resolved destination to the existing Admin API."""
+        return str(self.installer.models_dir)
+
+    def set_models_dir(self, models_dir) -> dict:
+        """Validate and persist future downloads; never move existing weights."""
+        if not isinstance(models_dir, str) or not models_dir.strip():
+            raise ValueError('models_dir must be a nonempty path')
+        if os.environ.get('NUNBA_MODELS_DIR', '').strip():
+            raise ValueError('NUNBA_MODELS_DIR controls storage; change that setting first')
+        destination = Path(models_dir.strip()).expanduser().resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+        fd, probe = tempfile.mkstemp(prefix='.nunba-write-check-', dir=destination)
+        os.close(fd)
+        os.unlink(probe)
+        import shutil
+        usage = shutil.disk_usage(destination)
+        previous = dict(self.config)
+        self.config['models_dir'] = str(destination)
+        if self._save_config() is not True:
+            self.config = previous
+            raise OSError('Could not persist the model storage location')
+        self.installer.models_dir = destination
+        return {'models_dir': str(destination),
+                'free_gb': round(usage.free / (1024 ** 3), 2),
+                'total_gb': round(usage.total / (1024 ** 3), 2)}
 
     @staticmethod
     def _propagate_llm_url(url: str):
@@ -661,7 +740,9 @@ class LlamaConfig:
         """
         try:
             import time as _time
-            log_dir = Path(os.path.expanduser('~')) / 'Documents' / 'Nunba' / 'logs'
+            # The same dir HARTOS's get_boot_decision reads (one resolver).
+            from core.platform_paths import get_log_dir
+            log_dir = Path(get_log_dir())
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / 'draft_decision.jsonl'
             entry = {
@@ -1640,6 +1721,27 @@ class LlamaConfig:
         server_type, _ = self.check_server_type(port)
         return server_type in [ServerType.NUNBA_MANAGED, ServerType.EXTERNAL_LLAMA]
 
+    def _wait_until_serving(self, port: int, timeout: float) -> bool:
+        """True once the server on ``port`` has its model LOADED.
+
+        check_server_running counts a 503 "Loading model" as running, on
+        purpose (it stops the watchdog restarting a server that is warming
+        up). Anything that needs the weights in place -- the residency
+        measurement -- must wait past that. Measured 2026-09-24: reading
+        free VRAM at "running" booked 0.130 GiB for a dense 2.712 GiB model.
+        False when the deadline passes or the server is gone.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            server_type, info = self.check_server_type(port)
+            if server_type not in (ServerType.NUNBA_MANAGED,
+                                   ServerType.EXTERNAL_LLAMA):
+                return False
+            if (info or {}).get('status') != 'loading':
+                return True
+            time.sleep(1.0)
+        return False
+
     def _write_server_status(self, running: bool, pid: int | None = None,
                              model: str | None = None, port: int | None = None):
         """Write server status to SHARED file for cross-app coordination.
@@ -2310,7 +2412,9 @@ class LlamaConfig:
                 # yields per-token vectors. The OAI /v1/embeddings route
                 # rejects pooling none as "not OAI compatible", so consumers
                 # must use the native /embedding endpoint.
-                "--embeddings",
+                #
+                # Added after the MTP decision below, through embeddings_args:
+                # an MTP spawn cannot carry it (measured 2026-09-24).
             ]
 
             # ── N-gram speculative decoding (no draft model needed) ──
@@ -2379,52 +2483,24 @@ class LlamaConfig:
                 )
 
             # ── Multi-Token Prediction (MTP) ──────────────────────
-            # MTP support landed in llama.cpp PR #22673 (am17an) and the
-            # SERVING binary now has it. Opt in with:
-            #   $env:HEVOLVE_LLAMA_MTP_N = "3"
-            # which appends:
-            #   --spec-type draft-mtp --spec-draft-n-max 3
-            #
-            # `draft-mtp`, NOT `mtp`. Upstream renamed the choice after the
-            # PR, and this block kept emitting the original spelling, so the
-            # feature could never have worked. MEASURED 2026-09-22 against
-            # the binary that actually serves:
-            #   --spec-type mtp        -> error: unknown speculative type: mtp
-            #   --spec-type draft-mtp  -> accepted
-            # The old comment blamed a too-old binary for exactly this
-            # symptom, which would have sent the next person chasing a
-            # version problem that does not exist.
-            #
-            # It also named the wrong binary. There are THREE llama-server
-            # .exe on this box and the one that serves is
-            #   .nunba\llama.cpp\build\bin\Release\  -> build 10330
-            # while .trueflow\...\Release\ is 8200 and the top-level
-            # .nunba\llama.cpp\llama-server.exe is 7909 -- below the 9180
-            # floor and the FIRST hit of any naive path walk. Check the
-            # serving process, not the first binary found.
-            # Qwen3.5-4B-UD-Q4_K_XL (the current model) ships with the
-            # MTP head exposed in checkpoint config — confirmed by the
-            # llama.cpp + Qwen3.5 / Qwen3.6 community guides.
+            # Switched on by the MODEL, not an env flag (owner, 2026-09-24:
+            # "automatic from model").  This block used to append
+            # --spec-type draft-mtp only when HEVOLVE_LLAMA_MTP_N >= 1,
+            # which was set nowhere, so the Tiel-Coder MTP preset loaded as
+            # a plain MoE.  model_catalog.mtp_spec_args decides from the
+            # GGUF's own MTP head AND from whether THIS binary accepts the
+            # flag (an unknown --spec-type makes llama-server exit at start;
+            # builds 7909/8200 on this box lack it).  HEVOLVE_LLAMA_MTP_N is
+            # still honoured as an override: 0 = off, N = draft depth.  The
+            # same call every spawn path makes.
+            _mtp_args = []
             try:
-                _mtp_n = int(os.environ.get('HEVOLVE_LLAMA_MTP_N', '0') or '0')
-            except (TypeError, ValueError):
-                _mtp_n = 0
-            if _mtp_n >= 1:
-                cmd.extend([
-                    "--spec-type", "draft-mtp",
-                    "--spec-draft-n-max", str(_mtp_n),
-                ])
-                logger.info(
-                    "[MTP] Enabling Multi-Token Prediction (--spec-type "
-                    "draft-mtp --spec-draft-n-max %d) — opt-in via "
-                    "HEVOLVE_LLAMA_MTP_N.  Needs BOTH a build carrying "
-                    "draft-mtp (10330 has it; 7909 and 8200 on this box do "
-                    "not) AND a model whose GGUF carries an MTP head — "
-                    "Tiel-Coder-35B-A3B-MTP does, verified by its "
-                    "blk.40.nextn.* tensors. With a plain GGUF the flag is "
-                    "accepted and buys nothing.",
-                    _mtp_n,
-                )
+                from integrations.service_tools.model_catalog import mtp_spec_args
+                _mtp_args = mtp_spec_args(str(model_path), str(llama_server))
+                cmd.extend(_mtp_args)
+            except Exception as e:
+                logger.info("MTP probe skipped (%s); launching without it", e)
+            cmd.extend(embeddings_args(_mtp_args))
 
             # Qwen3.5-MoE family models need additional flags.  Test the
             # shared family predicate directly: the `is_qwen35` local moved
@@ -2555,7 +2631,7 @@ class LlamaConfig:
             try:
                 _vm_pre = self._get_vram_manager()
                 if _vm_pre and can_use_gpu:
-                    _vram_before = float(_vm_pre.get_free_vram())
+                    _vram_before = fresh_free_vram_gb(_vm_pre)
             except Exception as _pre_err:
                 logger.debug(f"pre-spawn VRAM read skipped: {_pre_err}")
 
@@ -2644,11 +2720,19 @@ class LlamaConfig:
                             # byte-for-byte what it was before.
                             _measured_gb = None
                             try:
+                                # "Started" includes a 503 still loading
+                                # the weights; measure once they are in.
                                 if _vram_before is not None:
-                                    _delta = _vram_before - float(
-                                        vm.get_free_vram())
-                                    if 0.05 < _delta < 512:
-                                        _measured_gb = round(_delta, 3)
+                                    if self._wait_until_serving(
+                                            desired_port, timeout=90):
+                                        _measured_gb = spawn_vram_delta_gb(
+                                            _vram_before,
+                                            fresh_free_vram_gb(vm))
+                                    else:
+                                        logger.info(
+                                            "VRAM not measured: the model "
+                                            "was still loading at the "
+                                            "deadline; booking the file size")
                             except Exception as _post_err:
                                 logger.debug(
                                     f"post-spawn VRAM read skipped: {_post_err}")

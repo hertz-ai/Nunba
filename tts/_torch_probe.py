@@ -71,13 +71,18 @@ def _resolve_paths():
     _tlib = os.path.join(_usp, 'torch', 'lib')
 
     # CUDA torch may live on a secondary drive (D:) when C: is too small
-    # for the 2.5GB torch + CUDA DLLs.  Check D:/.nunba/site-packages as
-    # fallback — mirrors sitecustomize.py's D: path injection.
+    # for the 2.5GB torch + CUDA DLLs.  Same rule as python-embed's hook:
+    # only a D: site private to this user (tts._private_dir), since anyone
+    # who can log on can otherwise plant what the probe loads.
     if not os.path.isdir(_tlib):
-        _alt = os.path.join('D:\\', '.nunba', 'site-packages', 'torch', 'lib')
-        if os.path.isdir(_alt):
+        from tts._private_dir import is_private_dir
+        _d_root = os.path.join('D:\\', '.nunba')
+        _d_sp = os.path.join(_d_root, 'site-packages')
+        _alt = os.path.join(_d_sp, 'torch', 'lib')
+        if (os.path.isdir(_alt) and is_private_dir(_d_root)
+                and is_private_dir(_d_sp)):
             _tlib = _alt
-            _usp = os.path.join('D:\\', '.nunba', 'site-packages')
+            _usp = _d_sp
 
     if sys.platform != 'win32' or not getattr(sys, 'frozen', False):
         return False
@@ -277,12 +282,28 @@ def check_backend_runnable(backend: str, import_name: str) -> bool:
             try:
                 if is_venv_healthy is not None and not is_venv_healthy(backend):
                     _backend_cache[backend] = False
-                    logger.info(
-                        "Backend probe: %s (%s) NOT importable — venv at "
-                        "~/Documents/Nunba/data/venvs/%s does not exist or "
-                        "lacks python.exe (install_target='venv' but install "
-                        "has not run)", backend, import_name, backend,
-                    )
+                    # Unhealthy is either "no venv" or "a venv another
+                    # interpreter built" (core.venv_paths.venv_mismatch);
+                    # the second exists, so say which.
+                    try:
+                        from core.venv_paths import venv_mismatch
+                        foreign = venv_mismatch(backend)
+                    except Exception as _vm_exc:
+                        logger.debug("venv_mismatch unavailable: %s", _vm_exc)
+                        foreign = None
+                    if foreign:
+                        logger.info(
+                            "Backend probe: %s (%s) NOT importable — its venv "
+                            "was built by another interpreter: %s", backend,
+                            import_name, foreign,
+                        )
+                    else:
+                        logger.info(
+                            "Backend probe: %s (%s) NOT importable — venv for "
+                            "%s does not exist or lacks python.exe "
+                            "(install_target='venv' but install has not run)",
+                            backend, import_name, backend,
+                        )
                     return False
             except Exception:
                 pass

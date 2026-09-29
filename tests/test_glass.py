@@ -917,7 +917,10 @@ class TestThereIsOnlyOneOfThese:
         assert 'apply_glass' in imported or 'apply_floating_presence' in hop, (
             'the companion must reach the capability through the one module, '
             'directly or through companion_surface')
-        if 'apply_glass' not in imported:
+        # Keyed on the HOP, not on "app.py imports apply_glass": since GL4 the
+        # animated splash imports apply_glass in app.py for its own surface,
+        # and keying on that would let this companion check pass vacuously.
+        if 'apply_floating_presence' in hop:
             assert 'from desktop.glass import' in surface, (
                 'companion_surface must reach the capability through '
                 'desktop.glass, not reimplement it')

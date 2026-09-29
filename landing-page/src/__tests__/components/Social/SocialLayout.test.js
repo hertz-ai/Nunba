@@ -1,6 +1,7 @@
-import React from 'react';
-import {screen, within} from '@testing-library/react';
 import {renderWithProviders} from '../../testHelpers';
+
+import {screen, within} from '@testing-library/react';
+import React from 'react';
 
 /* The manual mock at services/__mocks__/socialApi.js, picked up with no
  * factory. SocialLayout calls evolutionApi.leaderboard on mount; the mock

@@ -104,7 +104,7 @@ const Essentials = (props) => {
       {!currentLocation && (
         <React.Fragment>
           <button
-            className="button fadeInUp"
+            className="btn-feedback button fadeInUp"
             style={{animationDelay: '0.6s'}}
             onClick={() => getLocation()}
           >

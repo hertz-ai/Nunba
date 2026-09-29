@@ -777,6 +777,32 @@ for _alias in _CPU_FALLBACK_CATALOG_IDS:
 _CATALOG_TO_BACKEND.setdefault('chatterbox_multilingual', BACKEND_CHATTERBOX_ML)
 
 
+def catalog_entry_backend(catalog_entry_id: str) -> str:
+    """The Nunba backend name for a TTS catalog entry id: 'tts-f5-tts' ->
+    'f5', 'tts-pocket-tts' -> Piper, an id Nunba has no constant for ->
+    its HARTOS engine name ('tts-foo-bar' -> 'foo_bar').
+
+    ONE rule for every catalog -> backend boundary in Nunba (the catalog
+    ladder, the capability map, TTSLoader).  The id -> engine-name step is
+    HARTOS's own public tts_router.catalog_id_to_engine_id, so Nunba
+    and HARTOS name the same engine for the same id; a local
+    ``replace('tts-', '', 1)`` kept the dashes and disagreed with it on
+    every multi-word id Nunba does not map.
+    """
+    from integrations.channels.media.tts_router import catalog_id_to_engine_id
+    key = catalog_id_to_engine_id(catalog_entry_id)
+    return _CATALOG_TO_BACKEND.get(key, key)
+
+
+def _is_engine_backend(backend) -> bool:
+    """True iff ``backend`` is a name TTSEngine._create_backend can build:
+    Piper, or a Nunba backend constant in _BACKEND_TO_REGISTRY_KEY.
+    Catalog ids ('f5-tts'), registry keys ('f5_tts') and mangled names
+    ('neuair') are not.  The one rule for "is this a backend here";
+    _create_backend and verified_synth's self-heal gate both ask it."""
+    return backend == BACKEND_PIPER or backend in _BACKEND_TO_REGISTRY_KEY
+
+
 def _entry_to_legacy_caps(entry) -> dict:
     """Convert a ModelCatalog ModelEntry (TTS) to the legacy ENGINE_CAPABILITIES dict format.
 
@@ -831,9 +857,7 @@ def _get_engine_capabilities(backend=None) -> dict:
             # Return the full dict, keyed by Nunba backend constants
             result = {}
             for entry in catalog.list_by_type(ModelType.TTS):
-                # Strip 'tts-' prefix to get the catalog-side id
-                catalog_id = entry.id.replace('tts-', '', 1)
-                be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
+                be = catalog_entry_backend(entry.id)
                 result[be] = _entry_to_legacy_caps(entry)
             if result:
                 return result
@@ -971,8 +995,7 @@ def _get_lang_preference(language: str) -> list[str]:
                     supporting.sort(key=lambda x: (x[0], x[1]))
                     result = []
                     for _, _, entry in supporting:
-                        catalog_id = entry.id.replace('tts-', '', 1)
-                        be = _CATALOG_TO_BACKEND.get(catalog_id, catalog_id)
+                        be = catalog_entry_backend(entry.id)
                         if be not in result:
                             result.append(be)
                     if result:
@@ -1471,21 +1494,22 @@ class TTSEngine:
 
         # Current language (for routing)
         # Read persisted language so warm-up selects the right TTS engine
-        # (not hardcoded English which triggers F5 install for Tamil users)
+        # (not hardcoded English which triggers F5 install for Tamil users).
+        # Through core.user_lang, the one reader of hart_language.json: it
+        # follows the data root and carries a pre-move file over; reading
+        # ~/Documents/Nunba/data here picked a stale language on macOS /
+        # Linux once the person had switched (tests/
+        # test_preferred_lang_fallback.py::TestLanguageReaderIsCanonical).
         self._language = 'en'
         try:
-            import json as _json
-            _lang_path = os.path.join(
-                os.path.expanduser('~'), 'Documents', 'Nunba', 'data', 'hart_language.json')
-            if os.path.isfile(_lang_path):
-                with open(_lang_path) as _f:
-                    _lang_data = _json.load(_f)
-                    _persisted = _lang_data.get('language', 'en')
-                    if _persisted and len(_persisted) >= 2:
-                        self._language = _persisted[:2]
-                        logger.info(f"TTS init: using persisted language '{self._language}'")
-        except Exception:
-            pass
+            from core.user_lang import get_preferred_lang
+            _persisted = get_preferred_lang()
+            if _persisted and len(_persisted) >= 2:
+                self._language = _persisted[:2]
+                logger.info(f"TTS init: using persisted language '{self._language}'")
+        except Exception as _lang_exc:
+            logger.warning("TTS init: core.user_lang unavailable (%s); "
+                           "warm-up language stays 'en'", _lang_exc)
 
     def _detect_hardware(self):
         """Detect hardware via HARTOS VRAMManager (single source of truth)."""
@@ -2727,15 +2751,15 @@ class TTSEngine:
             self._init_lock.release()
 
     def _create_backend(self, backend):
+        if not _is_engine_backend(backend):
+            return None
         # Piper is CPU-only (no subprocess needed) — still uses its
         # legacy in-process wrapper.
         if backend == BACKEND_PIPER:
             return _LazyPiper()
 
         # Look up the HARTOS ENGINE_REGISTRY spec for this backend.
-        registry_key = _BACKEND_TO_REGISTRY_KEY.get(backend)
-        if registry_key is None:
-            return None
+        registry_key = _BACKEND_TO_REGISTRY_KEY[backend]
 
         # Check if the engine is subprocess-capable (has tool_worker_attr).
         # CPU-only engines (luxtts, pocket_tts, espeak) have tool_module +

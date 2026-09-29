@@ -317,10 +317,10 @@ function UnverifiedOrgModal({hfId, publisher, reason, onConfirm, onClose}) {
           marginTop: 20,
         }}
       >
-        <button type="button" onClick={onClose} style={btn(TEXT_MUTED)}>
+        <button className="btn-feedback" type="button" onClick={onClose} style={btn(TEXT_MUTED)}>
           Cancel
         </button>
-        <button
+        <button className="btn-feedback"
           ref={confirmRef}
           type="button"
           disabled={!acknowledged}
@@ -379,10 +379,10 @@ function UnsafeWeightsModal({hfId, onFindSafetensors, onClose}) {
           marginTop: 20,
         }}
       >
-        <button type="button" onClick={onClose} style={btn(TEXT_MUTED)}>
+        <button className="btn-feedback" type="button" onClick={onClose} style={btn(TEXT_MUTED)}>
           Cancel
         </button>
-        <button
+        <button className="btn-feedback"
           ref={ctaRef}
           type="button"
           onClick={() => onFindSafetensors(hfId)}
@@ -436,7 +436,7 @@ function InvalidIdModal({hfId, reason, onClose}) {
           marginTop: 20,
         }}
       >
-        <button
+        <button className="btn-feedback"
           ref={closeRef}
           type="button"
           onClick={onClose}
@@ -506,7 +506,7 @@ function TimeoutBanner({hfId, attempt, onRetry, onDismiss}) {
       </div>
       {!maxedOut && (
         <>
-          <button
+          <button className="btn-feedback"
             type="button"
             onClick={() => setAutoArm((a) => !a)}
             style={{
@@ -518,7 +518,7 @@ function TimeoutBanner({hfId, attempt, onRetry, onDismiss}) {
           >
             {autoArm ? 'Pause' : 'Resume'}
           </button>
-          <button
+          <button className="btn-feedback"
             type="button"
             onClick={() => onRetry(attempt + 1)}
             disabled={remaining > 0 && autoArm}
@@ -539,7 +539,7 @@ function TimeoutBanner({hfId, attempt, onRetry, onDismiss}) {
           </button>
         </>
       )}
-      <button
+      <button className="btn-feedback"
         type="button"
         onClick={onDismiss}
         aria-label="Dismiss timeout banner"

@@ -15,24 +15,25 @@
  * surfaces, optimistic UI updates, EmptyState component for the
  * zero-data path.  Stays inside the existing socialTokens palette.
  */
-import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { friendsApi } from '../../../services/socialApi';
+import EmptyState from '../shared/EmptyState';
+
+import BlockIcon from '@mui/icons-material/Block';
+import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import CheckIcon from '@mui/icons-material/Check';
+import CloseIcon from '@mui/icons-material/Close';
+import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
+import PeopleIcon from '@mui/icons-material/People';
+import PersonRemoveIcon from '@mui/icons-material/PersonRemove';
 import {
   Box, Card, CardContent, Typography, Tabs, Tab, Avatar, Button,
   Stack, Chip, IconButton, CircularProgress, Snackbar, Alert,
   Tooltip,
 } from '@mui/material';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { alpha, useTheme } from '@mui/material/styles';
-import PeopleIcon from '@mui/icons-material/People';
-import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
-import BlockIcon from '@mui/icons-material/Block';
-import CheckIcon from '@mui/icons-material/Check';
-import CloseIcon from '@mui/icons-material/Close';
-import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
-import PersonRemoveIcon from '@mui/icons-material/PersonRemove';
 
-import { friendsApi } from '../../../services/socialApi';
-import EmptyState from '../shared/EmptyState';
 
 const TABS = [
   { key: 'friends', label: 'Friends',  icon: <PeopleIcon fontSize="small" /> },

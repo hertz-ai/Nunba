@@ -141,7 +141,7 @@ export default function ProactiveConciergeCard({
         }}
       >
         {guestName ? `Welcome @${guestName}! ` : 'Welcome! '}
-        Hey, I'm getting permission before I speak anything loudly on the screen.
+        Hey, I&apos;m getting permission before I speak anything loudly on the screen.
         The human creator is a true helper to the AI, and I am here as a true friend and helper to you.
       </p>
 
@@ -181,7 +181,7 @@ export default function ProactiveConciergeCard({
           onClick={() => handleChoice(true)}
           onMouseEnter={() => setHoveredBtn('speak')}
           onMouseLeave={() => setHoveredBtn(null)}
-          className="w-full sm:w-auto flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-full text-sm font-semibold transition-all duration-200"
+          className="btn-feedback w-full sm:w-auto flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-full text-sm font-semibold transition-all duration-200"
           style={{
             background: 'linear-gradient(135deg, #6C63FF 0%, #9B94FF 100%)',
             color: '#FFFFFF',
@@ -205,7 +205,7 @@ export default function ProactiveConciergeCard({
           onClick={() => handleChoice(false)}
           onMouseEnter={() => setHoveredBtn('quiet')}
           onMouseLeave={() => setHoveredBtn(null)}
-          className="w-full sm:w-auto flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-full text-sm font-medium transition-all duration-200"
+          className="btn-feedback w-full sm:w-auto flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-full text-sm font-medium transition-all duration-200"
           style={{
             background:
               hoveredBtn === 'quiet'

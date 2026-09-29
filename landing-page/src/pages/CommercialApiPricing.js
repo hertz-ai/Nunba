@@ -335,7 +335,7 @@ export default function CommercialApiPricing() {
                     </li>
                   </ul>
 
-                  <button
+                  <button className="btn-feedback"
                     onClick={() => handleGetApiKey(tierKey)}
                     style={{
                       width: '100%',
@@ -473,7 +473,7 @@ curl -X POST https://api.hevolve.ai/api/v1/intelligence/chat \\
               projects, education, prototyping — anything.
             </p>
             <div style={{display: 'flex', justifyContent: 'center', gap: 12, flexWrap: 'wrap'}}>
-              <button
+              <button className="btn-feedback"
                 onClick={() => handleGetApiKey('free')}
                 style={{
                   padding: '12px 22px',

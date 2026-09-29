@@ -1,6 +1,6 @@
-import React from 'react';
 import { Box, Typography } from '@mui/material';
 import { INVALID_MOVE } from 'boardgame.io/core';
+import React from 'react';
 
 const PITS_PER_SIDE = 6;
 const INITIAL_STONES = 4;
@@ -130,7 +130,7 @@ const MancalaGame = {
       // Seat 0 sows from pits 0-5, seat 1 from 7-12; stores are 6 and 13.
       const base = ctx.currentPlayer === '0' ? 0 : 7;
       const out = [];
-      for (let i = base; i < base + 6; i++) {
+      for (let i = base; i < base + PITS_PER_SIDE; i++) {
         if (G.pits[i] > 0) out.push({ move: 'sowStones', args: [i] });
       }
       return out;

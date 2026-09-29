@@ -107,7 +107,10 @@ def test_with_the_real_gate_peers_reach_the_full_app_and_chat_needs_a_credential
     ({'REMOTE_ADDR': '::1'}, '', '', True),
     ({'REMOTE_ADDR': '192.168.0.50'}, '', '', False),
     ({'REMOTE_ADDR': '192.168.0.50', 'HTTP_X_FORWARDED_FOR': '127.0.0.1'}, '', '', False),
-    ({'REMOTE_ADDR': '10.0.0.1', 'HTTP_X_FORWARDED_FOR': '127.0.0.1'}, '10.0.0.1', '', True),
+    # A forwarded loopback claim is never local, even from TRUSTED_PROXY
+    # (review of HARTOS 291e548df, F1/F3: this row used to expect True).
+    ({'REMOTE_ADDR': '10.0.0.1', 'HTTP_X_FORWARDED_FOR': '127.0.0.1'}, '10.0.0.1', '', False),
+    ({'REMOTE_ADDR': '127.0.0.1', 'HTTP_X_FORWARDED_FOR': '127.0.0.1'}, '', '', True),
     ({'REMOTE_ADDR': '10.0.0.1', 'HTTP_X_FORWARDED_FOR': '8.8.8.8'}, '10.0.0.1', '', False),
     ({'REMOTE_ADDR': '192.168.0.50'}, '', '1', True),
 ])

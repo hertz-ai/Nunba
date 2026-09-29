@@ -85,7 +85,10 @@ class TestIsLocalRequest:
         with app.test_request_context('/', environ_overrides={'REMOTE_ADDR': '8.8.8.8'}):
             assert auth_mod._is_local_request() is False
 
-    def test_proxy_forwarded_from_localhost_is_local(self, monkeypatch):
+    def test_proxy_forwarded_from_localhost_is_not_local(self, monkeypatch):
+        """A forwarded loopback claim from another machine (even the
+        TRUSTED_PROXY) is never local: HARTOS core.auth_local's rule
+        (review of HARTOS 291e548df, F1/F3; this used to assert True)."""
         monkeypatch.setenv('TRUSTED_PROXY', '10.0.0.1')
         auth_mod = _fresh_auth_module()
         app = _make_app(auth_mod)
@@ -94,7 +97,7 @@ class TestIsLocalRequest:
             environ_overrides={'REMOTE_ADDR': '10.0.0.1'},
             headers={'X-Forwarded-For': '127.0.0.1'},
         ):
-            assert auth_mod._is_local_request() is True
+            assert auth_mod._is_local_request() is False
 
     def test_proxy_forwarded_from_public_is_not_local(self, monkeypatch):
         monkeypatch.setenv('TRUSTED_PROXY', '10.0.0.1')
@@ -107,18 +110,23 @@ class TestIsLocalRequest:
         ):
             assert auth_mod._is_local_request() is False
 
-    def test_proxy_forwarded_picks_first_hop(self, monkeypatch):
-        """X-Forwarded-For can contain a chain `client, proxy1, proxy2`.
-        The first hop is the real client."""
-        monkeypatch.setenv('TRUSTED_PROXY', '10.0.0.1')
+    def test_a_local_proxy_believes_the_hop_it_appended(self, monkeypatch):
+        """X-Forwarded-For is `client, proxy1, ...`, started by the CLIENT;
+        only the LAST hop was written by the proxy in front of us.  A local
+        proxy forwarding a local browser is local; a first-hop 127.0.0.1
+        written by a remote client is not (the old first-hop rule was the
+        spoof)."""
+        monkeypatch.delenv('TRUSTED_PROXY', raising=False)
         auth_mod = _fresh_auth_module()
         app = _make_app(auth_mod)
         with app.test_request_context(
-            '/',
-            environ_overrides={'REMOTE_ADDR': '10.0.0.1'},
-            headers={'X-Forwarded-For': '127.0.0.1, 10.0.0.1, 172.16.0.5'},
-        ):
+            '/', environ_overrides={'REMOTE_ADDR': '127.0.0.1'},
+            headers={'X-Forwarded-For': '203.0.113.9, 127.0.0.1'}):
             assert auth_mod._is_local_request() is True
+        with app.test_request_context(
+            '/', environ_overrides={'REMOTE_ADDR': '127.0.0.1'},
+            headers={'X-Forwarded-For': '127.0.0.1, 10.0.0.1, 172.16.0.5'}):
+            assert auth_mod._is_local_request() is False
 
     def test_untrusted_proxy_falls_through_to_remote_addr(self, monkeypatch):
         """If TRUSTED_PROXY env-var isn't set to the proxy addr we see,
@@ -231,9 +239,10 @@ class TestRequireLocalOrToken:
         )
         assert resp.status_code == 401
 
-    def test_trusted_proxy_forward_from_localhost_bypasses_token(self, monkeypatch):
-        """When the trusted proxy says the client is localhost, we don't
-        need the token — local bypass wins."""
+    def test_trusted_proxy_forward_from_localhost_still_needs_the_token(
+            self, monkeypatch):
+        """A forwarded loopback claim is not local, so the token is still
+        required (this used to assert the bypass, which was the spoof)."""
         monkeypatch.setenv('TRUSTED_PROXY', '10.0.0.1')
         auth_mod = _fresh_auth_module(api_token='s3cret')
         app = _make_app(auth_mod)
@@ -242,6 +251,13 @@ class TestRequireLocalOrToken:
             '/protected',
             environ_overrides={'REMOTE_ADDR': '10.0.0.1'},
             headers={'X-Forwarded-For': '127.0.0.1'},
+        )
+        assert resp.status_code != 200
+        resp = client.get(
+            '/protected',
+            environ_overrides={'REMOTE_ADDR': '10.0.0.1'},
+            headers={'X-Forwarded-For': '127.0.0.1',
+                     'Authorization': 'Bearer s3cret'},
         )
         assert resp.status_code == 200
 

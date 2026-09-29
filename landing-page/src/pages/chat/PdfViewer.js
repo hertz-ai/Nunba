@@ -31,7 +31,7 @@ const PdfViewer = ({
         {/* Close Button */}
         <button
           onClick={onClose}
-          className="absolute top-2 right-2 bg-gray-300 hover:bg-gray-400 rounded-full p-2"
+          className="btn-feedback absolute top-2 right-2 bg-gray-300 hover:bg-gray-400 rounded-full p-2"
         >
           ✕
         </button>
@@ -68,7 +68,7 @@ const PdfViewer = ({
             <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-white shadow-lg rounded-full flex items-center">
               <button
                 onClick={onPrevPage}
-                className="px-3 py-2 bg-gray-300 rounded-full flex items-center justify-center cursor-pointer"
+                className="btn-feedback px-3 py-2 bg-gray-300 rounded-full flex items-center justify-center cursor-pointer"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -77,7 +77,7 @@ const PdfViewer = ({
               </span>
               <button
                 onClick={onNextPage}
-                className="px-3 py-2 bg-gray-300 rounded-full flex items-center justify-center cursor-pointer"
+                className="btn-feedback px-3 py-2 bg-gray-300 rounded-full flex items-center justify-center cursor-pointer"
               >
                 <ChevronRight size={16} />
               </button>

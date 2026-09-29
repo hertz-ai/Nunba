@@ -297,7 +297,7 @@ function AIAssistantCarousel({userId}) {
           </p>
           <button
             onClick={fetchAssistants}
-            className="px-6 py-3 bg-white bg-opacity-20 hover:bg-opacity-30 text-white font-semibold rounded-lg transition-all duration-300"
+            className="btn-feedback px-6 py-3 bg-white bg-opacity-20 hover:bg-opacity-30 text-white font-semibold rounded-lg transition-all duration-300"
           >
             Retry
           </button>
@@ -485,7 +485,7 @@ function AIAssistantCarousel({userId}) {
                                 e.stopPropagation();
                                 toggleCenterVideo(assistant, cardKey);
                               }}
-                              className="p-2 bg-black bg-opacity-60 hover:bg-opacity-80 text-white rounded-full backdrop-blur-sm transition-all duration-300 hover:scale-110 shadow-lg"
+                              className="btn-feedback p-2 bg-black bg-opacity-60 hover:bg-opacity-80 text-white rounded-full backdrop-blur-sm transition-all duration-300 hover:scale-110 shadow-lg"
                             >
                               {isPlaying ? (
                                 <Pause size={16} />
@@ -515,7 +515,7 @@ function AIAssistantCarousel({userId}) {
                                 e.stopPropagation();
                                 handleVideoDemo(assistant);
                               }}
-                              className="self-start px-4 py-2 bg-black bg-opacity-60 hover:bg-opacity-80 text-white text-sm font-semibold rounded-lg backdrop-blur-sm transition-all duration-300 transform hover:scale-110 hover:-translate-y-1 border border-white border-opacity-30 hover:border-opacity-60 shadow-xl"
+                              className="btn-feedback self-start px-4 py-2 bg-black bg-opacity-60 hover:bg-opacity-80 text-white text-sm font-semibold rounded-lg backdrop-blur-sm transition-all duration-300 transform hover:scale-110 hover:-translate-y-1 border border-white border-opacity-30 hover:border-opacity-60 shadow-xl"
                             >
                               Video Call Now ▶
                             </button>
@@ -534,13 +534,13 @@ function AIAssistantCarousel({userId}) {
             <div className="flex justify-center space-x-4 mb-6">
               <button
                 onClick={prevSlide}
-                className="p-3 bg-white bg-opacity-10 hover:bg-opacity-20 text-white rounded-full backdrop-blur-sm transition-all duration-300 transform hover:scale-110 border border-white border-opacity-20"
+                className="btn-feedback p-3 bg-white bg-opacity-10 hover:bg-opacity-20 text-white rounded-full backdrop-blur-sm transition-all duration-300 transform hover:scale-110 border border-white border-opacity-20"
               >
                 <ChevronLeft size={24} />
               </button>
               <button
                 onClick={nextSlide}
-                className="p-3 bg-white bg-opacity-10 hover:bg-opacity-20 text-white rounded-full backdrop-blur-sm transition-all duration-300 transform hover:scale-110 border border-white border-opacity-20"
+                className="btn-feedback p-3 bg-white bg-opacity-10 hover:bg-opacity-20 text-white rounded-full backdrop-blur-sm transition-all duration-300 transform hover:scale-110 border border-white border-opacity-20"
               >
                 <ChevronRight size={24} />
               </button>

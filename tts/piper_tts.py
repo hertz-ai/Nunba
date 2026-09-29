@@ -333,6 +333,36 @@ def voice_for_lang(lang: str | None) -> str:
     raise PiperLangUnavailable(f"No Piper voice for lang={lang!r}")
 
 
+# A canonical PCM WAV header is 44 bytes; a file no bigger holds no audio.
+_WAV_HEADER_BYTES = 44
+
+
+def wav_has_audio(path) -> bool:
+    """True if ``path`` names a WAV bigger than its header.  ``None`` (an
+    engine that produced nothing) is simply not audio, never an error."""
+    if not path:
+        return False
+    try:
+        return os.path.getsize(path) > _WAV_HEADER_BYTES
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _discard(path) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _publish(written, final_path):
+    """Move a finished synthesis into place; ``None`` if it holds no audio."""
+    if not written or not wav_has_audio(written):
+        return None
+    os.replace(written, final_path)
+    return final_path
+
+
 class PiperTTS:
     """
     Piper TTS engine for local text-to-speech synthesis.
@@ -719,12 +749,30 @@ class PiperTTS:
             text_hash = hashlib.md5(f"{text}:{voice_id}:{speed}".encode()).hexdigest()[:16]
             output_path = str(self.cache_dir / f"tts_{text_hash}.wav")
 
-            # Return cached file if exists
-            if os.path.exists(output_path):
+            # Return the cached file only if it holds audio.  A 0-byte or
+            # header-only WAV (a synthesis that died mid-write) used to be
+            # served as a hit forever, so that line never spoke again.
+            if wav_has_audio(output_path):
                 logger.debug(f"Using cached audio: {output_path}")
                 return output_path
+            _discard(output_path)
 
         model_path, config_path = self.get_voice_path(voice_id)
+
+        # Synthesize into a private file and move it into place only once it
+        # is complete.  Writing straight to output_path let a concurrent call
+        # for the same text see the half-written file as a cache hit and
+        # return it empty (/api/social/tts/quick answered success with no
+        # audio; measured 2026-09-23).
+        final_path = output_path
+        output_path = f"{final_path}.{os.getpid()}-{threading.get_ident()}.part.wav"
+        try:
+            return self._synthesize_to(text, output_path, final_path, model_path, speed)
+        finally:
+            _discard(output_path)
+
+    def _synthesize_to(self, text, output_path, final_path, model_path, speed):
+        """Run the synthesis chain into ``output_path``; publish it at ``final_path``."""
 
         # Record what was actually TRIED so the closing message cannot lie. The
         # old code logged "No synthesis method available" on every fall-through,
@@ -738,7 +786,11 @@ class PiperTTS:
         if self._get_piper_module():
             attempted.append('module')
             try:
-                return self._synthesize_with_module(text, output_path, model_path, speed)
+                published = _publish(
+                    self._synthesize_with_module(text, output_path, model_path, speed),
+                    final_path)
+                if published:
+                    return published
             except Exception as e:
                 logger.error(f"Module synthesis failed: {e}", exc_info=True)
 
@@ -747,7 +799,11 @@ class PiperTTS:
         if piper_exe:
             attempted.append('executable')
             try:
-                return self._synthesize_with_executable(text, output_path, model_path, piper_exe, speed)
+                published = _publish(
+                    self._synthesize_with_executable(text, output_path, model_path, piper_exe, speed),
+                    final_path)
+                if published:
+                    return published
             except Exception as e:
                 logger.error(f"Executable synthesis failed: {e}")
 

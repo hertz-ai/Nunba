@@ -782,9 +782,14 @@ function initCrossbar({
       protocols: ['wamp.2.json'],
     };
 
+    // Always claim the user's identity.  In loopback mode the router issues
+    // no ticket and authorizes per-user topics by the CLAIMED authid
+    // (wamp_router._handle_hello); claiming it only inside the ticket branch
+    // left every loopback session 'anonymous', so each of the user's
+    // subscriptions was DENIED (topic-authid mismatch) -- live 2026-09-25.
+    connOpts.authid = userId || 'client';
     if (_wampTicket) {
       connOpts.authmethods = ['ticket'];
-      connOpts.authid = userId || 'client';
       connOpts.onchallenge = (session, method) => {
         if (method === 'ticket') {
           return _wampTicket;

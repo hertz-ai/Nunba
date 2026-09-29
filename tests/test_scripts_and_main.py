@@ -779,6 +779,16 @@ class TestApiEndpoints:
         assert 'chat' in API_ENDPOINTS
         assert 'status' in API_ENDPOINTS
 
+    def test_unmatched_a2a_call_gets_json_404_not_spa_shell(self, app_client):
+        """Measured live 2026-09-26: POST /a2a/<id>/execute returned 200
+        text/html (index.html), so the calling peer logged "non-JSON"."""
+        r = app_client.post('/a2a/livetest_a2a_bogus_0/execute', json={})
+        assert r.status_code == 404
+        assert r.get_json() == {'error': 'API endpoint not found',
+                                'path': '/a2a/livetest_a2a_bogus_0/execute'}
+        control = app_client.get('/api/livetest_a2a_nosuch')
+        assert control.status_code == 404 and control.is_json
+
     def test_landing_page_build_dir(self):
         from main import LANDING_PAGE_BUILD_DIR
         assert 'landing-page' in LANDING_PAGE_BUILD_DIR

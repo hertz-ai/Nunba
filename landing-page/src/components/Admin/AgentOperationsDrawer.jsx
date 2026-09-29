@@ -15,7 +15,18 @@
  * one canonical chip across the dashboard surface — no parallel chip
  * component, no risk of color drift.
  */
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { steerError } from '../../constants/steerOutcome';
+import { dashboardApi } from '../../services/socialApi';
+
+import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import ChatIcon from '@mui/icons-material/Chat';
+import CloseIcon from '@mui/icons-material/Close';
+import HubIcon from '@mui/icons-material/Hub';
+import MemoryIcon from '@mui/icons-material/Memory';
+import PauseIcon from '@mui/icons-material/Pause';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import SendIcon from '@mui/icons-material/Send';
+import StopIcon from '@mui/icons-material/Stop';
 import {
   Drawer,
   Box,
@@ -28,18 +39,9 @@ import {
   CircularProgress,
   Stack,
 } from '@mui/material';
-import CloseIcon from '@mui/icons-material/Close';
-import AccountTreeIcon from '@mui/icons-material/AccountTree';
-import ChatIcon from '@mui/icons-material/Chat';
-import MemoryIcon from '@mui/icons-material/Memory';
-import HubIcon from '@mui/icons-material/Hub';
-import PauseIcon from '@mui/icons-material/Pause';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import StopIcon from '@mui/icons-material/Stop';
-import SendIcon from '@mui/icons-material/Send';
 import { Button, TextField } from '@mui/material';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
-import { SOCIAL_API_URL } from '../../config/apiBase';
 
 const SNAPSHOT_POLL_MS = 2000;
 const CHAT_POLL_MS = 1000;
@@ -270,18 +272,25 @@ function SteeringControls({ agentId, currentStatus, onAction }) {
   const canResume = currentStatus === 'paused';
   const canCancel = currentStatus !== 'archived' && currentStatus !== 'completed';
 
+  // dashboardApi.steer: the one steering client, carrying the signed-in
+  // token (HARTOS lets only the goal's owner or an admin steer it).  A
+  // refusal is shown here, worded as its outcome (steerError); a silent
+  // catch left a 403 looking like a button that did nothing.
+  const [refused, setRefused] = useState(null);
   const fire = async (verb) => {
+    setRefused(null);
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${agentId}/${verb}`,
-        { method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason: `operator-${verb} via drawer` }) });
-      if (res.ok) onAction && onAction(verb);
-    } catch (_) { /* drawer poll will surface the new state */ }
+      const d = await dashboardApi.steer(agentId, verb,
+        { reason: `operator-${verb} via drawer` });
+      if (d?.success) onAction && onAction(verb);
+      else setRefused(steerError(d));
+    } catch (err) {
+      setRefused(steerError(err));
+    }
   };
 
   return (
+    <>
     <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
       <Button size="small" variant="outlined" startIcon={<PauseIcon />}
         disabled={!canPause}
@@ -302,25 +311,35 @@ function SteeringControls({ agentId, currentStatus, onAction }) {
         Cancel
       </Button>
     </Stack>
+    {refused && (
+      <Typography variant="caption" role="alert"
+        sx={{ display: 'block', mt: 0.5, color: '#ff9800' }}>
+        {refused}
+      </Typography>
+    )}
+    </>
   );
 }
 
 function InjectInstruction({ agentId, onSent }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [refused, setRefused] = useState(null);
   const send = async () => {
     if (!text.trim()) return;
     setSending(true);
+    setRefused(null);
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${agentId}/inject`,
-        { method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ instruction: text }) });
-      if (res.ok) {
+      const d = await dashboardApi.steer(agentId, 'inject', { instruction: text });
+      if (d?.success) {
         setText('');
         onSent && onSent();
+      } else {
+        setRefused(steerError(d));
       }
+    } catch (err) {
+      // Refused or offline: say which, and keep the text for another try.
+      setRefused(steerError(err));
     } finally {
       setSending(false);
     }
@@ -349,6 +368,12 @@ function InjectInstruction({ agentId, onSent }) {
           Send
         </Button>
       </Stack>
+      {refused && (
+        <Typography variant="caption" role="alert"
+          sx={{ display: 'block', mt: 0.5, color: '#ff9800' }}>
+          {refused}
+        </Typography>
+      )}
     </Box>
   );
 }
@@ -467,47 +492,33 @@ export default function AgentOperationsDrawer({ agentId, open, onClose }) {
   const fetchSnapshot = useCallback(async () => {
     if (!activeId) return;
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${activeId}/snapshot`,
-        { credentials: 'include' });
-      if (!res.ok) {
-        setError(`snapshot ${res.status}`);
-        return;
-      }
-      const body = await res.json();
-      if (body.success) {
+      // dashboardApi carries the signed-in token: HARTOS shows one goal's
+      // snapshot, chat and delegations only to whoever may steer it.
+      const body = await dashboardApi.snapshot(activeId);
+      if (body?.success) {
         setSnapshot(body.data);
         setError(null);
       } else {
-        setError(body.error || 'unknown');
+        setError(steerError(body, 'unknown'));
       }
     } catch (e) {
-      setError(`fetch failed: ${e.message}`);
+      setError(steerError(e, 'Could not load this run.'));
     }
   }, [activeId]);
 
   const fetchA2A = useCallback(async () => {
     if (!activeId) return;
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${activeId}/a2a?depth=2`,
-        { credentials: 'include' });
-      if (!res.ok) return;
-      const body = await res.json();
-      if (body.success) setA2a(body.data);
+      const body = await dashboardApi.a2a(activeId, 2);
+      if (body?.success) setA2a(body.data);
     } catch (_) { /* lazy poll on next tab visit */ }
   }, [activeId]);
 
   const fetchChatTail = useCallback(async () => {
     if (!activeId) return;
     try {
-      const res = await fetch(
-        `${SOCIAL_API_URL}/dashboard/agents/${activeId}/chat`
-          + `?since=${cursorRef.current}&limit=50`,
-        { credentials: 'include' });
-      if (!res.ok) return;
-      const body = await res.json();
-      if (!body.success) return;
+      const body = await dashboardApi.chatTail(activeId, cursorRef.current, 50);
+      if (!body?.success) return;
       const { messages, next_index, registered } = body.data;
       if (messages && messages.length > 0) {
         setChatState(prev => ({

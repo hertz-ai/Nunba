@@ -25,6 +25,7 @@ from routes.spa_fallback import (
     ASSET_PREFIXES,
     SPA_PAGE_NAMESPACES,
     first_path_segment,
+    is_api_miss,
     is_asset_path,
     is_spa_page,
 )
@@ -182,3 +183,38 @@ def test_werkzeug_accept_html_would_be_the_wrong_discriminator():
     fetch = MIMEAccept([('*/*', 1)])
     assert fetch.accept_html is True          # the trap
     assert is_spa_page('/agents/Hevolve', _FETCH) is False   # we do not fall in it
+
+
+# ── API namespace misses answer JSON 404, never the SPA shell ──────────────
+# Found live 2026-09-26: POST /a2a/<id>/execute on :5000 returned 200
+# text/html (index.html) because `a2a` was not an API namespace, so the
+# calling peer logged a misleading "non-JSON" error.  Control on the same
+# build: GET /api/<missing> returned 404 JSON.  is_api_miss is the exact
+# predicate main.handle_404 branches on.
+
+@pytest.mark.parametrize("path", [
+    "/a2a/livetest_a2a_bogus_0/execute",   # the exact path measured live
+    "/a2a/livetest_a2a_bogus_0/jsonrpc/extra",
+    "/a2a/nosuch",
+    "/a2a",
+])
+@pytest.mark.parametrize("accept", [_FETCH, _JSON, _NAV, None])
+def test_a2a_miss_is_an_api_miss(path, accept):
+    assert is_api_miss(path, accept) is True
+
+
+def test_api_miss_control_and_spa_routes_unchanged():
+    assert is_api_miss('/api/livetest_a2a_nosuch', _FETCH) is True   # control
+    assert is_api_miss('/social/feed', _NAV) is False                 # SPA route
+    assert is_api_miss('/agents', _FETCH) is False                    # hub page (#628)
+    assert is_api_miss('/agents/Hevolve', _NAV) is False              # deep link (#642)
+    assert is_api_miss('/agents/Hevolve', _FETCH) is True             # fetch keeps JSON
+    assert is_api_miss('/', _NAV) is False
+
+
+def test_handle_404_branches_on_is_api_miss():
+    """Source guard (secondary to the behavioural tests above): main must use
+    the shared predicate, not re-derive the API rule inline."""
+    assert _call_lines(_handle_404_node(), "is_api_miss"), (
+        "main.handle_404 must call routes.spa_fallback.is_api_miss"
+    )
