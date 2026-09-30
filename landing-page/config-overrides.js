@@ -79,27 +79,4 @@ function override(config) {
 
 module.exports = {
   webpack: override,
-  jest: (config) => {
-    /* CRA sets resetMocks: true, which strips the implementation from every
-     * jest.fn() before each test -- not just the recorded calls. A manual
-     * mock cannot then supply a working default: src/services/__mocks__/
-     * socialApi.js hands out functions that resolve to { data: [] }, and
-     * resetMocks turns each of them back into a function returning undefined
-     * before the first test runs, so any component calling .then() on the
-     * result crashes. That is exactly how it failed here: SocialLayout's
-     * leaderboard fetch died on "Cannot read properties of undefined
-     * (reading 'then')" in all 54 assertions.
-     *
-     * Every suite that needs isolation already calls jest.clearAllMocks() in
-     * its own beforeEach, which clears recorded calls between tests and is
-     * what those files actually rely on; the reset only removed defaults
-     * nothing had asked it to remove. Ported from Hevolve web, which hit the
-     * same wall when its manual mock landed.
-     *
-     * This file exported a bare function before, which react-app-rewired
-     * treats as the webpack override alone -- there was no jest hook to put
-     * this in. */
-    config.resetMocks = false;
-    return config;
-  },
 };

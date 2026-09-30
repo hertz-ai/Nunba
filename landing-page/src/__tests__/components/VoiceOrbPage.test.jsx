@@ -123,7 +123,9 @@ test('Ask HART injects guidance into the active HART through the one steering cl
   // pywebview bridge, which would be a second, tokenless client (review of
   // e6e806bf).  The bridge still carries ordinary prompts to /chat.
   const prompt = jest.fn(() => Promise.resolve('never'));
-  mockSteer.mockClear();
+  // CRA runs jest with resetMocks: true, which strips the factory's default
+  // implementation before every test; give this test its own accepted reply.
+  mockSteer.mockResolvedValueOnce({success: true});
   window.pywebview = {api: {on_companion_prompt: prompt}};
   try {
     render(<VoiceOrbPage />);

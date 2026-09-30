@@ -77,7 +77,11 @@ describe('MarketingFunnelCard', () => {
         screen.getByText(/Leading channel:/i),
       ).toBeInTheDocument(),
     );
-    expect(screen.getByText(/li_a/i)).toBeInTheDocument();
+    // li_a is also a row in the per-channel table, so scope the
+    // assertion to the leader banner itself.
+    expect(screen.getByText(/Leading channel:/i)).toHaveTextContent(
+      'Leading channel: li_a (9 downloads, 20 clicks)',
+    );
   });
 
   test('shows empty hint when no clicks tracked yet', async () => {

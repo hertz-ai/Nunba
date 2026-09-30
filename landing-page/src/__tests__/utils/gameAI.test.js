@@ -15,13 +15,23 @@
  *   - All 5 board games (tictactoe/connect4/checkers/reversi/mancala)
  *     have ai.enumerate declared in their Game definitions
  *   - BOARD_GAME_AI_SUPPORT lists exactly those 5 board types
- *   - BoardGameEngine.jsx imports buildSoloBotsMap from utils/gameAI
- *     and wires it into Local() in solo mode
+ *   - (BoardGameEngine's solo-bot wiring: see
+ *     components/Social/Games/__tests__/BoardGameEngine.soloBots.test.js)
  *   - Each board game's enumerate returns the right move name (the
  *     name of a move function defined in its own moves block — so a
  *     future renamer doesn't silently break AI via string mismatch)
  *   - Difficulty presets map 3 levels (easy/medium/hard) → bot type
  */
+
+
+import CheckersGame from '../../components/Social/Games/board-games/Checkers';
+import ConnectFourGame from '../../components/Social/Games/board-games/ConnectFour';
+import MancalaGame from '../../components/Social/Games/board-games/Mancala';
+import ReversiGame from '../../components/Social/Games/board-games/Reversi';
+import TicTacToeGame from '../../components/Social/Games/board-games/TicTacToe';
+
+import {Client as HeadlessClient} from 'boardgame.io/client';
+import {INVALID_MOVE} from 'boardgame.io/core';
 
 const fs = require('fs');
 const path = require('path');
@@ -32,10 +42,6 @@ const GAME_AI_PATH = path.join(SRC_ROOT, 'utils/gameAI.js');
 const BOARD_GAMES_DIR = path.join(
   SRC_ROOT,
   'components/Social/Games/board-games'
-);
-const BOARD_ENGINE_PATH = path.join(
-  SRC_ROOT,
-  'components/Social/Games/engines/BoardGameEngine.jsx'
 );
 
 const BOARD_GAMES = [
@@ -176,100 +182,43 @@ describe('board games have ai.enumerate', () => {
   );
 });
 
-// ─── Enumerate move names match actual move function names ──────────
+// ─── Every enumerated move is a real, legal move ─────────────────────
+//
+// Behavioural: each Game is started in boardgame.io's own headless client,
+// its ai.enumerate is asked for the opening moves, and the first one is
+// actually played. A move name missing from the Game's `moves` block, or
+// args the move rejects, leaves the turn where it was. BoardGameEngine's
+// solo-bot wiring is covered by
+// components/Social/Games/__tests__/BoardGameEngine.soloBots.test.js.
 
-describe('enumerate move names reference real moves', () => {
-  // Each game's enumerate must emit `move: '<name>'` where <name> is
-  // a key defined in that game's own `moves: { ... }` block. This
-  // catches the "rename the move function and forget the AI" class
-  // of bug.
-  //
-  // Hand-mapped because text parsing the full moves block across all
-  // 5 files robustly is more code than the payoff warrants — and the
-  // mapping itself should be stable.
-  const EXPECTED = [
-    {file: 'TicTacToe.js', expectedMoves: ['clickCell']},
-    {file: 'ConnectFour.js', expectedMoves: ['dropPiece']},
-    {file: 'Checkers.js', expectedMoves: ['movePiece']},
-    {file: 'Reversi.js', expectedMoves: ['placePiece', 'pass']},
-    {file: 'Mancala.js', expectedMoves: ['sowStones']},
-  ];
+describe('enumerate emits moves the game accepts', () => {
+  const GAMES = {
+    'TicTacToe.js': TicTacToeGame,
+    'ConnectFour.js': ConnectFourGame,
+    'Checkers.js': CheckersGame,
+    'Reversi.js': ReversiGame,
+    'Mancala.js': MancalaGame,
+  };
 
-  test.each(EXPECTED)(
-    '$file enumerate emits $expectedMoves and those are defined in moves block',
-    ({file, expectedMoves}) => {
-      const src = fs.readFileSync(path.join(BOARD_GAMES_DIR, file), 'utf8');
+  test.each(Object.keys(GAMES))('%s: opening enumeration is playable', (file) => {
+    const game = GAMES[file];
+    const client = HeadlessClient({game, numPlayers: 2, playerID: '0'});
+    client.start();
+    const before = client.getState();
 
-      // Extract the ai.enumerate body (everything between `ai: {` and
-      // the matching closing brace — simple scan, good enough for
-      // our single-ai-block files).
-      const aiIdx = src.indexOf('ai:');
-      expect(aiIdx).toBeGreaterThan(-1);
-      const enumerateBody = src.slice(aiIdx);
+    const options = game.ai.enumerate(before.G, before.ctx, '0');
+    expect(options.length).toBeGreaterThan(0);
+    options.forEach(({move, args}) => {
+      expect(Object.keys(game.moves)).toContain(move);
+      expect(Array.isArray(args)).toBe(true);
+    });
 
-      expectedMoves.forEach((moveName) => {
-        // enumerate must reference this move name
-        expect(enumerateBody).toMatch(
-          new RegExp(`move:\\s*['"]${moveName}['"]`)
-        );
-        // moves block must define it
-        expect(src).toMatch(
-          new RegExp(`${moveName}\\s*:\\s*\\(\\s*\\{`)
-        );
-      });
-    }
-  );
-});
-
-// ─── BoardGameEngine wiring ──────────────────────────────────────────
-
-describe('BoardGameEngine.jsx solo-mode wiring', () => {
-  const src = fs.readFileSync(BOARD_ENGINE_PATH, 'utf8');
-
-  test('imports buildSoloBotsMap from utils/gameAI', () => {
-    expect(src).toMatch(
-      /import\s*\{[^}]*buildSoloBotsMap[^}]*\}\s*from\s*['"][^'"]*utils\/gameAI['"]/
-    );
-  });
-
-  test('imports DIFFICULTY from utils/gameAI', () => {
-    expect(src).toMatch(
-      /import\s*\{[^}]*DIFFICULTY[^}]*\}\s*from\s*['"][^'"]*utils\/gameAI['"]/
-    );
-  });
-
-  test('accepts difficulty prop with default', () => {
-    expect(src).toMatch(/difficulty\s*=\s*DIFFICULTY\.[A-Z]+/);
-  });
-
-  test('detects solo mode via !multiplayer || !multiplayer.isMultiplayer', () => {
-    expect(src).toMatch(/!multiplayer\s*\|\|\s*!multiplayer\.isMultiplayer/);
-  });
-
-  test('calls buildSoloBotsMap in solo mode with locked difficulty', () => {
-    expect(src).toMatch(/buildSoloBotsMap\(boardType,\s*lockedDifficulty\)/);
-  });
-
-  test('locks difficulty at mount via useState initializer', () => {
-    expect(src).toMatch(/useState\(difficulty\)/);
-  });
-
-  test('accepts soloMode prop with default "ai"', () => {
-    expect(src).toMatch(/soloMode\s*=\s*['"]ai['"]/);
-  });
-
-  test('preserves hotseat as a solo option', () => {
-    expect(src).toMatch(/soloMode\s*===\s*['"]ai['"]/);
-    // hotseat comment must be present so a future reader knows why
-    expect(src).toMatch(/hotseat/);
-  });
-
-  test('wires Local({bots}) when bots map is non-null', () => {
-    expect(src).toMatch(/Local\(\{\s*bots\s*\}\)/);
-  });
-
-  test('falls back to Local() when bots map is null', () => {
-    expect(src).toMatch(/bots\s*\?\s*Local\(\{\s*bots\s*\}\)\s*:\s*Local\(\)/);
+    const [{move, args}] = options;
+    client.moves[move](...args);
+    const after = client.getState();
+    expect(after._stateID).toBeGreaterThan(before._stateID);
+    expect(after.ctx.currentPlayer).toBe('1');
+    client.stop();
   });
 });
 
@@ -299,12 +248,45 @@ describe('Checkers enumerate respects forced-capture rule', () => {
 // ─── Reversi enumerate handles the pass case ─────────────────────────
 
 describe('Reversi enumerate handles pass when no valid moves', () => {
-  const src = fs.readFileSync(path.join(BOARD_GAMES_DIR, 'Reversi.js'), 'utf8');
+  // Seat 0 holds one disc next to seat 1's disc in the corner: nothing can
+  // be flanked, so seat 0 has no placement anywhere on the board.
+  const stuckBoard = () => {
+    const board = Array.from({length: 8}, () => Array(8).fill(null));
+    board[0][0] = '1';
+    board[0][1] = '0';
+    return board;
+  };
 
-  test('emits a pass move when getValidMoves returns empty', () => {
-    const aiBlock = src.slice(src.indexOf('ai:'));
-    expect(aiBlock).toMatch(/getValidMoves/);
-    expect(aiBlock).toMatch(/validMoves\.length\s*===\s*0/);
-    expect(aiBlock).toMatch(/move:\s*['"]pass['"]/);
+  test('emits a pass move when the current player has no placement', () => {
+    const G = {board: stuckBoard(), passCount: 0};
+    expect(ReversiGame.ai.enumerate(G, {currentPlayer: '0'})).toEqual([
+      {move: 'pass', args: []},
+    ]);
+  });
+
+  test('the enumerated pass is accepted by the pass move', () => {
+    const G = {board: stuckBoard(), passCount: 0};
+    expect(ReversiGame.moves.pass({G, playerID: '0'})).not.toBe(INVALID_MOVE);
+    expect(G.passCount).toBe(1);
+  });
+
+  test('a seat with no placement is passed automatically at turn start', () => {
+    // Without this the human seat (no Pass button) waits forever, and the
+    // pass is counted twice once the bot also passes, ending the game early.
+    const game = {...ReversiGame, setup: () => ({board: stuckBoard(), passCount: 0})};
+    const client = HeadlessClient({game, numPlayers: 2, playerID: '0'});
+    client.start();
+    const {ctx, G} = client.getState();
+    expect(ctx.currentPlayer).toBe('1');
+    expect(G.passCount).toBe(1);
+    expect(ctx.gameover).toBeUndefined();
+    client.stop();
+  });
+
+  test('never emits pass while a placement exists', () => {
+    const G = ReversiGame.setup();
+    const options = ReversiGame.ai.enumerate(G, {currentPlayer: '0'});
+    expect(options).toHaveLength(4); // the four standard opening moves
+    expect(options.every(({move}) => move === 'placePiece')).toBe(true);
   });
 });

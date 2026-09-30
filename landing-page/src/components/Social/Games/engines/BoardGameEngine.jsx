@@ -1,4 +1,5 @@
 import { RADIUS } from '../../../../theme/socialTokens';
+import { buildSoloBotsMap, DIFFICULTY } from '../../../../utils/gameAI';
 import CheckersGame, { CheckersBoard } from '../board-games/Checkers';
 import ConnectFourGame, { ConnectFourBoard } from '../board-games/ConnectFour';
 import MancalaGame, { MancalaBoard } from '../board-games/Mancala';
@@ -6,25 +7,9 @@ import ReversiGame, { ReversiBoard } from '../board-games/Reversi';
 import TicTacToeGame, { TicTacToeBoard } from '../board-games/TicTacToe';
 
 import { Box, Typography, Button } from '@mui/material';
-import { MCTSBot } from 'boardgame.io/ai';
 import { Local } from 'boardgame.io/multiplayer';
 import { Client } from 'boardgame.io/react';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-
-/**
- * The opponent for seat 1, with its thinking bounded.
- *
- * MCTSBot defaults to 1000 iterations at playout depth 50. On a 3x3 board that
- * is invisible, but on Checkers or Reversi it is seconds of blocking work per
- * turn — the tab stops responding between moves and a game cannot be played
- * through in any reasonable time. These numbers still pick sensible moves while
- * keeping a turn well under a second.
- */
-class QuickBot extends MCTSBot {
-  constructor(opts) {
-    super({ ...opts, iterations: 60, playoutDepth: 20 });
-  }
-}
 
 
 // Exported so the catalog contract test can verify every boardgame entry's
@@ -111,8 +96,21 @@ function GameBoardWithEndDetection({ board: BoardComponent, onGameOver, ...props
   return <BoardComponent {...props} />;
 }
 
-export default function BoardGameEngine({ catalogEntry, onComplete }) {
+export default function BoardGameEngine({
+  multiplayer,
+  catalogEntry,
+  onComplete,
+  difficulty = DIFFICULTY.MEDIUM,
+  soloMode = 'ai', // 'ai' | 'hotseat' (two people sharing one device)
+}) {
   const boardType = catalogEntry?.engine_config?.board_type || 'tictactoe';
+
+  // Solo = no live multiplayer session (hook absent, or started with no peers).
+  const isSolo = !multiplayer || !multiplayer.isMultiplayer;
+
+  // Locked at mount: a changing prop must not rebuild the memoised client
+  // and wipe the board mid-game.
+  const [lockedDifficulty] = useState(difficulty);
 
   // Held in a ref so the memoised client is not rebuilt when the handler
   // identity changes, which would reset the game mid-play.
@@ -153,17 +151,23 @@ export default function BoardGameEngine({ catalogEntry, onComplete }) {
     // Reversi anyway, so giving seat 1 to a bot is both the fix and the right
     // product behaviour.
     //
-    // MCTSBot with a small iteration budget: strong enough to feel like an
-    // opponent, cheap enough not to stall the UI between turns.
+    // The bot comes from utils/gameAI, the one dispatcher for client-side
+    // opponents: it owns the bounded MCTS budgets (the library default of
+    // 1000 iterations / depth 50 stalls the tab on Checkers and Reversi) and
+    // returns null for a board type without ai.enumerate, which falls back to
+    // a plain Local() (hotseat), as does soloMode='hotseat'.
+    const bots =
+      isSolo && soloMode === 'ai'
+        ? buildSoloBotsMap(boardType, lockedDifficulty)
+        : null;
+
     return Client({
       game: entry.game,
       board: WrappedBoard,
-      multiplayer: Local({
-        bots: { 1: QuickBot },
-      }),
+      multiplayer: bots ? Local({ bots }) : Local(),
       numPlayers: 2,
     });
-  }, [boardType]);
+  }, [boardType, isSolo, soloMode, lockedDifficulty]);
 
   if (!BOARD_REGISTRY[boardType]) {
     return (
