@@ -25,11 +25,23 @@
  * @param {function} [config.onResult] - Callback with final transcript text
  * @param {function} [config.onPartialResult] - Callback with partial transcript text
  * @param {function} [config.onError] - Callback with error string
+ * @param {string|null} [config.sttUrl] - streaming STT socket.  Default is
+ *   the local HARTOS Whisper (ws://127.0.0.1:8005).  `null` / '' skips the
+ *   socket and goes straight to the browser recognizer; so does a plain ws://
+ *   URL on an https page, which the browser would block as mixed content.
  */
 
 import {useState, useEffect, useRef, useCallback} from 'react';
 
 const WS_STT_URL = 'ws://127.0.0.1:8005';
+
+// A ws:// socket from an https page is mixed content: the browser refuses it,
+// so trying it only adds the 3 s open timeout before the fallback.
+export function usableSttUrl(url, pageProtocol) {
+  if (!url) return null;
+  if (pageProtocol === 'https:' && /^ws:\/\//i.test(url)) return null;
+  return url;
+}
 
 // Check if browser SpeechRecognition is available
 const SpeechRecognitionAPI =
@@ -50,7 +62,10 @@ export default function useSpeechRecognition(config = {}) {
     onResult,
     onPartialResult,
     onError: onErrorCallback,
+    sttUrl = WS_STT_URL,
   } = config;
+  const sttUrlRef = useRef(sttUrl);
+  sttUrlRef.current = sttUrl;
 
   const [transcript, setTranscript] = useState('');
   const [isListening, setIsListening] = useState(false);
@@ -80,6 +95,10 @@ export default function useSpeechRecognition(config = {}) {
   // ── WebSocket STT ──────────────────────────────────────────────────────────
 
   const startWebSocketSTT = useCallback(async (lang) => {
+    const url = usableSttUrl(
+      sttUrlRef.current,
+      typeof window !== 'undefined' ? window.location.protocol : '');
+    if (!url) return false;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({audio: true});
       if (!mountedRef.current) {
@@ -88,7 +107,7 @@ export default function useSpeechRecognition(config = {}) {
       }
       mediaStreamRef.current = stream;
 
-      const ws = new WebSocket(WS_STT_URL);
+      const ws = new WebSocket(url);
       wsRef.current = ws;
 
       return new Promise((resolve) => {

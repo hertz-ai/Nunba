@@ -5,6 +5,7 @@ import {
   declineNote, deviceFingerprint, grantLabel, isPerRequester, secretName,
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
+import { formatMoney } from '../../constants/liquidFragments';
 import realtimeService from '../../services/realtimeService';
 import { agentFormApi, chatApi, consentApi, notificationsApi } from '../../services/socialApi';
 import { HART_GLASS_SURFACE } from '../../theme/hartGlass';
@@ -48,12 +49,51 @@ const GLASS = {
   color: '#fff',
 };
 
-const ACCENT = '#6C63FF';
+// The accent is a CSS variable with the app's violet as its fallback: the app
+// never sets --hart-accent, so it renders exactly as before, and the
+// <hart-agent> embed sets it from the host's brand tokens.
+const ACCENT = 'var(--hart-accent, #6C63FF)';
+const ACCENT_HOVER = 'var(--hart-accent-strong, #5A52E0)';
 const INFO_BLUE = '#64C8FF';
 const SUCCESS = '#2ECC71';
 const ERROR_RED = '#FF6B6B';
 
 let _overlayIdCounter = 0;
+
+const isIsoCurrency = (c) => typeof c === 'string' && /^[A-Z]{3}$/.test(c);
+// An ISO code (INR) is formatted (₹1,240); a bare amount keeps the shape it
+// always had.
+const showMoney = (v, cur) => (isIsoCurrency(cur) ? formatMoney(v, cur) : v);
+
+// Runs an `onAction` (the embed's host-bridge callback) and keeps the button
+// state: idle -> busy -> done | error.  `onAction` resolves {ok, error?,
+// fieldErrors?}; a rejected promise counts as an error.
+function useActionRunner(onAction) {
+  const [state, setState] = useState({ phase: 'idle', error: null });
+  const run = useCallback(async (kind, payload) => {
+    if (!onAction) return null;
+    setState({ phase: 'busy', error: null });
+    let res;
+    try {
+      res = await onAction(kind, payload);
+    } catch (e) {
+      res = { ok: false, error: (e && e.message) || 'Something went wrong' };
+    }
+    const ok = !res || res.ok !== false;
+    setState({ phase: ok ? 'done' : 'error', error: ok ? null : (res.error || 'Something went wrong') });
+    return res || { ok: true };
+  }, [onAction]);
+  return [state, run];
+}
+
+function ActionError({ state }) {
+  if (state.phase !== 'error' || !state.error) return null;
+  return (
+    <Typography role="alert" variant="caption" sx={{ color: ERROR_RED, display: 'block', mt: 0.75 }}>
+      {state.error}
+    </Typography>
+  );
+}
 
 // ─── Type-specific renderers ─────────────────────────────────────────
 
@@ -120,11 +160,16 @@ function NotificationCard({ data, navigate, onDismiss }) {
   );
 }
 
-function ProductCardOverlay({ data }) {
+function ProductCardOverlay({ data, onAction }) {
+  const [act, run] = useActionRunner(onAction);
+  // HARTOS COMPONENT_TYPES names the prop `image`; older pushes used
+  // `image_url`.  Either renders.
+  const image = data.image || data.image_url;
+  const addLabel = { idle: 'Add to cart', busy: 'Adding…', done: 'Added ✓ · Add another', error: 'Try again' }[act.phase];
   return (
     <Box>
-      {data.image_url && (
-        <Box component="img" src={data.image_url} alt={data.name}
+      {image && (
+        <Box component="img" src={image} alt={data.name}
           sx={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: '8px', mb: 1 }} />
       )}
       <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{data.name}</Typography>
@@ -134,12 +179,26 @@ function ProductCardOverlay({ data }) {
         </Typography>
       )}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
-        {data.price != null && <Typography sx={{ fontWeight: 700, color: ACCENT }}>{data.currency || '$'}{data.price}</Typography>}
+        {data.price != null && <Typography sx={{ fontWeight: 700, color: ACCENT }}>{isIsoCurrency(data.currency) ? formatMoney(data.price, data.currency) : `${data.currency || '$'}${data.price}`}</Typography>}
         {data.rating != null && <Rating value={data.rating} precision={0.5} size="small" readOnly />}
       </Box>
-      {data.buy_action && (
+      {data.buy_action && onAction && (
+        <>
+          <Button variant="contained" size="small" fullWidth disabled={act.phase === 'busy'}
+            aria-label={`${addLabel}: ${data.name}`}
+            sx={{ mt: 1, minHeight: 44, background: ACCENT, '&:hover': { background: ACCENT_HOVER } }}
+            onClick={() => run('cart.add', {
+              sku: data.sku, product_id: data.product_id, category_id: data.category_id,
+              name: data.name, price: data.price, currency: data.currency, qty: 1,
+            })}>
+            {addLabel}
+          </Button>
+          <ActionError state={act} />
+        </>
+      )}
+      {data.buy_action && !onAction && (
         <Button variant="contained" size="small" fullWidth
-          sx={{ mt: 1, background: ACCENT, '&:hover': { background: '#5A52E0' } }}
+          sx={{ mt: 1, background: ACCENT, '&:hover': { background: ACCENT_HOVER } }}
           onClick={() => window.open(data.buy_action, '_blank')}>
           Buy
         </Button>
@@ -148,50 +207,93 @@ function ProductCardOverlay({ data }) {
   );
 }
 
-function CartOverlay({ data }) {
+function CartOverlay({ data, onAction }) {
+  const [act, run] = useActionRunner(onAction);
+  const items = data.items || [];
+  // Embed: a newer cart (or a placed order) replaced this snapshot.
+  const stale = !!(onAction && data.superseded);
   return (
-    <Box>
+    <Box sx={stale ? { opacity: 0.62 } : undefined}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
         <ShoppingCartIcon sx={{ fontSize: 20, color: ACCENT }} />
         <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>Cart</Typography>
       </Box>
-      {(data.items || []).map((item, i) => (
-        <Box key={i} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.3 }}>
-          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.8)' }}>{item.name}</Typography>
-          <Typography variant="body2" sx={{ color: ACCENT }}>{item.price}</Typography>
+      {onAction && items.length === 0 && (
+        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)' }}>Your cart is empty.</Typography>
+      )}
+      {items.map((item, i) => (
+        <Box key={i} sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, py: 0.3 }}>
+          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.8)', minWidth: 0, overflowWrap: 'anywhere' }}>
+            {item.qty ? `${item.qty} × ` : ''}{item.name}
+          </Typography>
+          <Typography variant="body2" sx={{ color: ACCENT, whiteSpace: 'nowrap' }}>{typeof item.price === 'number' ? showMoney(item.price, data.currency) : item.price}</Typography>
         </Box>
       ))}
       <Box sx={{ borderTop: '1px solid rgba(255,255,255,0.1)', mt: 1, pt: 1, display: 'flex', justifyContent: 'space-between' }}>
         <Typography variant="body2" sx={{ fontWeight: 600 }}>Total</Typography>
-        <Typography variant="body2" sx={{ fontWeight: 700, color: ACCENT }}>{data.total}</Typography>
+        <Typography variant="body2" sx={{ fontWeight: 700, color: ACCENT }}>{showMoney(data.total, data.currency)}</Typography>
       </Box>
-      {data.checkout_action && (
+      {stale && (
+        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'rgba(255,255,255,0.85)' }}>
+          {data.ordered ? 'Ordered ✓' : 'Updated — see the latest cart below'}
+        </Typography>
+      )}
+      {data.checkout_action && !stale && (
         <Button variant="contained" size="small" fullWidth
-          sx={{ mt: 1, background: ACCENT, '&:hover': { background: '#5A52E0' } }}>
-          Checkout
+          disabled={onAction ? (act.phase === 'busy' || items.length === 0) : undefined}
+          onClick={onAction ? () => run('checkout.start', { items, total: data.total, currency: data.currency }) : undefined}
+          sx={{ mt: 1, minHeight: onAction ? 44 : undefined, background: ACCENT, '&:hover': { background: ACCENT_HOVER } }}>
+          {onAction && act.phase === 'busy' ? 'Opening checkout…' : 'Checkout'}
         </Button>
       )}
+      <ActionError state={act} />
     </Box>
   );
 }
 
-function CheckoutOverlay({ data }) {
+function CheckoutOverlay({ data, onAction }) {
+  const [act, run] = useActionRunner(onAction);
+  const count = data.items_count || (Array.isArray(data.items) ? data.items.length : 0);
+  const total = showMoney(data.total || data.amount, data.currency);
   return (
     <Box>
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>Confirm Payment</Typography>
       <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)', mb: 1 }}>
-        {data.items_count || 0} items &middot; {data.total || data.amount}
+        {count} items &middot; {total}
       </Typography>
       {data.payment_methods && (
         <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
           {data.payment_methods.map((m, i) => <Chip key={i} label={m} size="small" sx={{ color: '#fff', borderColor: 'rgba(255,255,255,0.2)' }} variant="outlined" />)}
         </Box>
       )}
-      <Button variant="contained" fullWidth
-        sx={{ background: SUCCESS, '&:hover': { background: '#27AE60' } }}
-        onClick={() => data.confirm_action && fetch(data.confirm_action, { method: 'POST' })}>
-        Confirm Payment
-      </Button>
+      {onAction && (data.paid || data.cancelled) ? (
+        <Typography role="status" variant="body2" sx={{ fontWeight: 600, color: data.paid ? SUCCESS : 'rgba(255,255,255,0.7)' }}>
+          {data.paid ? `Paid ✓${data.order_id ? ` · Order ${data.order_id}` : ''}` : 'Payment cancelled'}
+        </Typography>
+      ) : onAction && data.approval_action ? (
+        // AP2: the approval card is the one place to pay, so this card
+        // does not offer a second "Pay" button.
+        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.78)' }}>
+          Waiting for your approval to pay.
+        </Typography>
+      ) : onAction ? (
+        // Embed: the host bridge carries the confirm (AP2 -> host payment
+        // rails with a user gesture); an agent-supplied URL is never fetched.
+        <>
+          <Button variant="contained" fullWidth disabled={act.phase === 'busy' || act.phase === 'done'}
+            onClick={() => run('checkout.confirm', data)}
+            sx={{ minHeight: 44, background: SUCCESS, '&:hover': { background: '#27AE60' } }}>
+            {{ idle: `Pay ${total}`, busy: 'Waiting for approval…', done: 'Paid ✓', error: `Try again · Pay ${total}` }[act.phase]}
+          </Button>
+          <ActionError state={act} />
+        </>
+      ) : (
+        <Button variant="contained" fullWidth
+          sx={{ background: SUCCESS, '&:hover': { background: '#27AE60' } }}
+          onClick={() => data.confirm_action && fetch(data.confirm_action, { method: 'POST' })}>
+          Confirm Payment
+        </Button>
+      )}
     </Box>
   );
 }
@@ -217,7 +319,8 @@ function OrderTrackingOverlay({ data }) {
           {step.completed
             ? <CheckCircleIcon sx={{ fontSize: 16, color: SUCCESS }} />
             : <Box sx={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)' }} />}
-          <Typography variant="body2" sx={{ color: step.completed ? '#fff' : 'rgba(255,255,255,0.5)' }}>{step.label || step.name}</Typography>
+          <Typography variant="body2" aria-current={step.current ? 'step' : undefined}
+            sx={{ color: step.completed ? '#fff' : 'rgba(255,255,255,0.6)', fontWeight: step.current ? 700 : undefined }}>{step.label || step.name}</Typography>
         </Box>
       ))}
       {data.eta && <Typography variant="caption" sx={{ color: INFO_BLUE, mt: 1, display: 'block' }}>ETA: {data.eta}</Typography>}
@@ -289,7 +392,8 @@ function AnswerError({ text }) {
   );
 }
 
-function ApprovalOverlay({ data, onDismiss }) {
+function ApprovalOverlay({ data, onDismiss, onAction }) {
+  const [act, run] = useActionRunner(onAction);
   // Which decision is on its way, and why the last one did not go through.
   // The card closes only once HARTOS has the answer: its .catch(() => {})
   // used to close it on a 404 or a 500 too, so an answer nobody recorded
@@ -315,6 +419,13 @@ function ApprovalOverlay({ data, onDismiss }) {
   };
 
   const postDecision = async (decision) => {
+    if (onAction) {
+      // Embed: the session decides (AP2 goes through the host first).  The
+      // card stays up with its error if the decision did not land.
+      const res = await run('approval.decide', { ...data, decision });
+      if (!res || res.ok !== false) onDismiss();
+      return;
+    }
     if (busy) return;
     setBusy(decision);
     setError(null);
@@ -356,11 +467,12 @@ function ApprovalOverlay({ data, onDismiss }) {
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>{data.title || 'Approval Required'}</Typography>
       <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)', mb: 1.5 }}>{data.description}</Typography>
       {error && <AnswerError text={error} />}
-      <Box sx={{ display: 'flex', gap: 1 }}>
-        <Button variant="contained" size="small" disabled={Boolean(busy)} aria-busy={busy === 'approve'} sx={{ background: SUCCESS, flex: 1, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>{label(0, 'Approve')}</Button>
-        <Button variant="outlined" size="small" disabled={Boolean(busy)} aria-busy={busy === 'deny'} sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1 }} onClick={() => postDecision('deny')}>{label(1, 'Deny')}</Button>
-        <Button variant="outlined" size="small" disabled={Boolean(busy)} sx={{ color: 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)' }} onClick={onDismiss}>{label(2, 'Later')}</Button>
+      <Box sx={{ display: 'flex', gap: 1, flexWrap: onAction ? 'wrap' : undefined }}>
+        <Button variant="contained" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'approve'} sx={{ background: SUCCESS, flex: 1, minHeight: onAction ? 44 : undefined, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>{act.phase === 'busy' ? 'Working…' : label(0, 'Approve')}</Button>
+        <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'deny'} sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1, minHeight: onAction ? 44 : undefined }} onClick={() => postDecision('deny')}>{label(1, 'Deny')}</Button>
+        <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : onDismiss}>{label(2, 'Later')}</Button>
       </Box>
+      <ActionError state={act} />
     </Box>
   );
 }
@@ -432,14 +544,17 @@ const LOCAL_SUBMIT_ACTIONS = {
   copy_invite_url: (values) => navigator.clipboard.writeText(values.invite_url || ''),
 };
 
-function FormOverlay({ data, onDismiss }) {
+function FormOverlay({ data, onDismiss, onAction }) {
   // Fields may arrive pre-filled (`value`) or with a default: start from
   // those, so a read-only field shows what the producer sent.
   const [values, setValues] = useState(() => Object.fromEntries(
     (data.fields || [])
-      .filter((f) => f.value != null || f.default != null)
+      .filter((f) => f && f.name && (f.value != null || f.default != null))
       .map((f) => [f.name, f.value != null ? f.value : f.default]),
   ));
+  // Embed only: the per-field errors the host answers a submit with.
+  const [errors, setErrors] = useState({});
+  const [act, run] = useActionRunner(onAction);
   // The card closes only once the server took the values.  It used to post
   // with a bare fetch (no Bearer token, so the auth-required channel routes
   // answered 401), swallow the result and close anyway: a typed bot token
@@ -447,6 +562,14 @@ function FormOverlay({ data, onDismiss }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const handleSubmit = async () => {
+    if (onAction) {
+      // Embed: the host bridge carries the submit; the card never posts to
+      // an agent-supplied URL.
+      const res = await run('form.submit', { action: data.action, values, form: data });
+      setErrors((res && res.fieldErrors) || {});
+      if (res && res.ok !== false) onDismiss();
+      return;
+    }
     if (busy) return;
     const local = LOCAL_SUBMIT_ACTIONS[data.submit_action];
     if (!data.action && !local) {
@@ -478,17 +601,29 @@ function FormOverlay({ data, onDismiss }) {
       {data.title && <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>{data.title}</Typography>}
       {(data.fields || []).map((f, i) => (
         <TextField key={i} label={f.label || f.name} size="small" fullWidth
-          type={f.secret ? 'password' : (f.type || 'text')} required={f.required}
-          helperText={f.help || undefined}
+          type={f.secret ? 'password' : (f.type === 'textarea' ? 'text' : (f.type || 'text'))} required={f.required}
+          multiline={f.type === 'textarea' || undefined} minRows={f.type === 'textarea' ? 3 : undefined}
+          placeholder={f.placeholder}
+          inputProps={f.inputMode ? { inputMode: f.inputMode } : undefined}
           InputProps={{ readOnly: Boolean(f.readonly) }}
-          value={values[f.name] || ''} onChange={e => { setError(null); setValues(v => ({ ...v, [f.name]: e.target.value })); }}
-          sx={{ mb: 1, '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' }, '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.5)' }, '& .MuiFormHelperText-root': { color: 'rgba(255,255,255,0.45)' } }} />
+          disabled={onAction ? act.phase === 'done' : undefined}
+          error={!!errors[f.name]} helperText={errors[f.name] || f.help || undefined}
+          InputLabelProps={f.type === 'date' ? { shrink: true } : undefined}
+          value={values[f.name] || ''}
+          onChange={e => {
+            setError(null);
+            setValues(v => ({ ...v, [f.name]: e.target.value }));
+          }}
+          sx={{ mb: 1, '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' }, '& .MuiInputLabel-root': { color: onAction ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.5)' }, '& .MuiFormHelperText-root': { color: 'rgba(255,255,255,0.45)' }, '& .MuiFormHelperText-root.Mui-error': { color: ERROR_RED } }} />
       ))}
       {error && <AnswerError text={error} />}
-      <Button variant="contained" size="small" fullWidth disabled={busy} aria-busy={busy}
-        sx={{ background: ACCENT, '&:hover': { background: '#5A52E0' } }} onClick={handleSubmit}>
-        {data.submit_label || 'Submit'}
+      <Button variant="contained" size="small" fullWidth
+        disabled={onAction ? (act.phase === 'busy' || act.phase === 'done') : busy}
+        aria-busy={onAction ? act.phase === 'busy' : busy}
+        sx={{ minHeight: onAction ? 44 : undefined, background: ACCENT, '&:hover': { background: ACCENT_HOVER } }} onClick={handleSubmit}>
+        {onAction && act.phase === 'busy' ? 'Submitting…' : onAction && act.phase === 'done' ? 'Done ✓' : (data.submit_label || 'Submit')}
       </Button>
+      <ActionError state={act} />
     </Box>
   );
 }
@@ -505,11 +640,11 @@ function ListOverlay({ data }) {
   );
 }
 
-function LayoutOverlay({ data, navigate, onDismiss }) {
+function LayoutOverlay({ data, navigate, onDismiss, onAction }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: data.direction || 'column', gap: data.gap || 1 }}>
       {(data.children || []).map((child, i) => (
-        <Box key={i}><OverlayContent data={child} navigate={navigate} onDismiss={onDismiss} /></Box>
+        <Box key={i}><OverlayContent data={child} navigate={navigate} onDismiss={onDismiss} onAction={onAction} /></Box>
       ))}
     </Box>
   );
@@ -863,7 +998,11 @@ function ChannelConnectedOverlay({ data, onDismiss }) {
 
 // ─── Router: picks the right renderer ────────────────────────────────
 
-function OverlayContent({ data, onDismiss, navigate }) {
+// `onAction(kind, payload)` is optional.  Without it every card behaves as it
+// always has in the app.  The <hart-agent> embed passes it so card buttons
+// go through the host bridge (cart.add, checkout.start, payment.authorize…)
+// instead of opening or POSTing agent-supplied URLs.
+export function OverlayContent({ data, onDismiss, navigate, onAction }) {
   const type = data.type || data.component_type || 'notification';
   switch (type) {
     case 'notification': return <NotificationCard data={data} navigate={navigate} onDismiss={onDismiss} />;
@@ -894,26 +1033,26 @@ function OverlayContent({ data, onDismiss, navigate }) {
       };
       return <NotificationCard data={oauthData} navigate={navigate} onDismiss={onDismiss} />;
     }
-    case 'product_card': return <ProductCardOverlay data={data} />;
-    case 'cart': return <CartOverlay data={data} />;
-    case 'checkout': return <CheckoutOverlay data={data} />;
+    case 'product_card': return <ProductCardOverlay data={data} onAction={onAction} />;
+    case 'cart': return <CartOverlay data={data} onAction={onAction} />;
+    case 'checkout': return <CheckoutOverlay data={data} onAction={onAction} />;
     case 'payment_status': return <PaymentStatusOverlay data={data} />;
     case 'order_tracking': return <OrderTrackingOverlay data={data} />;
     case 'comparison': return <ComparisonOverlay data={data} />;
     case 'progress': return <ProgressOverlay data={data} />;
     case 'agent_action': return <AgentActionOverlay data={data} />;
-    case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} />;
+    case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
     case 'chart': return <ChartOverlay data={data} />;
     case 'code': return <CodeOverlay data={data} />;
     case 'markdown': return <MarkdownOverlay data={data} />;
     case 'media': return <MediaOverlay data={data} />;
     case 'metric': return <MetricOverlay data={data} />;
-    case 'form': return <FormOverlay data={data} onDismiss={onDismiss} />;
+    case 'form': return <FormOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
     case 'qr_pair': return <QRPairOverlay data={data} onDismiss={onDismiss} />;
     case 'pair_code': return <PairCodeOverlay data={data} onDismiss={onDismiss} />;
     case 'channel_connected': return <ChannelConnectedOverlay data={data} onDismiss={onDismiss} />;
     case 'list': return <ListOverlay data={data} />;
-    case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} />;
+    case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} onAction={onAction} />;
     case 'meet_copilot': return <MeetCopilotOverlay data={data} onDismiss={onDismiss} />;
     case 'consent_prompt': return <ConsentPromptOverlay data={data} onDismiss={onDismiss} />;
     case 'consent.request': return <ConsentPromptOverlay data={data} onDismiss={onDismiss} />;
@@ -1176,7 +1315,20 @@ function PostPreviewOverlay({ data, onDismiss }) {
 
 // ─── Main Overlay Manager ────────────────────────────────────────────
 
-export default function AgentOverlay({ navigate, onInlineChatCard }) {
+// Optional props (the app passes none of them, so it is unchanged):
+//   subscribe(handler) -> unsubscribe   card source; default realtimeService
+//                                       'agent.ui.update'.  The embed passes
+//                                       its session's FLOATING fragments,
+//                                       already routed by constants/
+//                                       liquidFragments.
+//   onAction(kind, payload)             see OverlayContent
+//   containerSx / cardSx                placement near the embed's orb, and
+//                                       the embed's legibility underlay
+//   cardTransition                      entrance transition component
+//                                       (default MUI Grow); the embed passes
+//                                       its own so every surface shares one
+//                                       spring
+export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, onAction, containerSx, cardSx, cardTransition: CardTransition = Grow }) {
   const [overlays, setOverlays] = useState([]);
   const timersRef = useRef({});
   // msg_id -> overlay id, for the cards on screen now.  A producer that
@@ -1295,7 +1447,9 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
     // Single subscription — realtimeService handles all transports
     // (WAMP primary, SSE fallback with auto-reconnect and dedup).
     // No transport-specific code here.
-    const unsub = realtimeService.on('agent.ui.update', handleEvent);
+    const unsub = subscribe
+      ? subscribe(handleEvent)
+      : realtimeService.on('agent.ui.update', handleEvent);
     const unsubAnswers = CONSENT_ANSWER_TYPES.map(
       (t) => realtimeService.on(t, settleAsks));
 
@@ -1304,7 +1458,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
       unsubAnswers.forEach((u) => u && u());
       Object.values(timersRef.current).forEach(clearTimeout);
     };
-  }, [handleEvent, settleAsks]);
+  }, [handleEvent, settleAsks, subscribe]);
 
   if (overlays.length === 0) return null;
 
@@ -1313,13 +1467,15 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
       position: 'fixed', bottom: { xs: 16, md: 80 }, right: { xs: 8, md: 16 },
       zIndex: 9998, display: 'flex', flexDirection: 'column-reverse', gap: 1.5,
       width: { xs: 'calc(100% - 16px)', sm: 340 }, maxHeight: '80vh', pointerEvents: 'none',
+      ...containerSx,
     }}>
       {overlays.map((overlay) => (
-        <Grow in key={overlay._id} timeout={300}>
+        <CardTransition in key={overlay._id} timeout={300}>
           <Box sx={{
             ...GLASS, p: 2, position: 'relative', pointerEvents: 'auto',
             animation: 'agentSlideUp 0.3s ease',
             '@keyframes agentSlideUp': { from: { opacity: 0, transform: 'translateY(20px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
+            ...cardSx,
           }}>
             {/* Agent badge: the agent's name.  A bare id (a prompt id) means
                 nothing to a person, so an overlay with only an id gets no
@@ -1330,15 +1486,15 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
                   background: 'rgba(108,99,255,0.2)', color: ACCENT, border: '1px solid rgba(108,99,255,0.3)' }} />
             )}
             {/* Close button */}
-            <IconButton size="small" onClick={() => dismiss(overlay._id)}
+            <IconButton size="small" aria-label="Dismiss" onClick={() => dismiss(overlay._id)}
               sx={{ position: 'absolute', top: 4, right: 4, color: 'rgba(255,255,255,0.4)', '&:hover': { color: '#fff' } }}>
               <CloseIcon sx={{ fontSize: 16 }} />
             </IconButton>
             <Box sx={{ mt: overlay.agent_name ? 2.5 : 0 }}>
-              <OverlayContent data={overlay} onDismiss={() => dismiss(overlay._id)} navigate={navigate} />
+              <OverlayContent data={overlay} onDismiss={() => dismiss(overlay._id)} navigate={navigate} onAction={onAction} />
             </Box>
           </Box>
-        </Grow>
+        </CardTransition>
       ))}
     </Box>
   );

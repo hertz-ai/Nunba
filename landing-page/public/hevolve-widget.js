@@ -1,10 +1,96 @@
 /* eslint-disable */
 (function () {
+  // Where this script was served from: native mode loads the embed bundle
+  // from the same place unless `embedSrc` says otherwise.
+  var _thisScript = document.currentScript && document.currentScript.src;
+
   // Create the HevolveWidget object with only init exposed globally
   window.HevolveWidget = {
     init: function (userConfig) {
+      // v2: `embedMode: 'native'` mounts the <hart-agent> web component (the
+      // Nunba Liquid UI, landing-page/src/embed).  One widget, two renderers;
+      // the iframe renderer below is deprecated (see createIframe).
+      if (userConfig && userConfig.embedMode === 'native') {
+        return NativeWidget.init(userConfig);
+      }
       // Return instance of widget
       return WidgetInstance.init(userConfig);
+    },
+  };
+
+  // ── Native mode: <hart-agent> ─────────────────────────────────────────
+  // Config: embedSrc, surface ('assistant' | 'overlay' | 'voice' |
+  // 'merchant-onboarding' | 'marketing'), gatewayUrl, promptId, userId,
+  // locale, theme (object or JSON), position ('bottom-right' |
+  // 'bottom-left'), agentName, demo, autoOpen, getToken (async fn), context.
+  // Tokens only ever travel through getToken(), never a URL or attribute.
+  var NativeWidget = {
+    init: function (cfg) {
+      var self = Object.create(NativeWidget.api);
+      self.callbacks = {open: [], close: [], message: [], action: [], navigate: [], ready: []};
+      self.config = cfg;
+      var src = cfg.embedSrc || (_thisScript
+        ? _thisScript.replace(/[^/]*$/, 'hart-embed.umd.js') : 'hart-embed.umd.js');
+      var el = document.createElement('hart-agent');
+      var attrs = {
+        surface: cfg.surface || 'assistant',
+        'gateway-url': cfg.gatewayUrl,
+        'prompt-id': cfg.promptId,
+        'user-id': cfg.userId,
+        locale: cfg.locale,
+        position: cfg.position,
+        'agent-name': cfg.agentName,
+        theme: cfg.theme && typeof cfg.theme === 'object' ? JSON.stringify(cfg.theme) : cfg.theme,
+      };
+      Object.keys(attrs).forEach(function (k) {
+        if (attrs[k] !== undefined && attrs[k] !== null && attrs[k] !== '') el.setAttribute(k, attrs[k]);
+      });
+      if (cfg.demo) el.setAttribute('demo', '');
+      if (cfg.autoOpen) el.setAttribute('auto-open', '');
+      if (typeof cfg.getToken === 'function') el.getToken = cfg.getToken;
+      if (cfg.context) el.context = cfg.context;
+      self.element = el;
+      var relay = function (type, name) {
+        el.addEventListener(type, function (e) { self.trigger(name, e.detail); });
+      };
+      relay('hart:ready', 'ready');
+      relay('hart:message', 'message');
+      relay('hart:action', 'action');
+      relay('hart:navigate', 'navigate');
+      document.body.appendChild(el);
+      if (!window.customElements || !window.customElements.get('hart-agent')) {
+        if (!document.querySelector('script[data-hart-embed]')) {
+          var s = document.createElement('script');
+          s.src = src;
+          s.async = true;
+          s.setAttribute('data-hart-embed', '');
+          s.onerror = function () { console.error('Hevolve Widget: could not load ' + src); };
+          document.head.appendChild(s);
+        }
+      }
+      return self;
+    },
+    api: {
+      open: function () { if (this.element.open) this.element.open(); this.trigger('open'); return this; },
+      close: function () { if (this.element.close) this.element.close(); this.trigger('close'); return this; },
+      toggle: function () { return this.element.isOpen ? this.close() : this.open(); },
+      send: function (text) { if (this.element.send) this.element.send(text); return this; },
+      setUser: function (user) { if (this.element.setUser) this.element.setUser(user || {}); return this; },
+      setContext: function (ctx) { this.element.context = ctx; return this; },
+      on: function (event, cb) {
+        if (!this.callbacks[event]) {
+          console.warn("Hevolve Widget: Unknown event type '" + event + "'");
+          return this;
+        }
+        this.callbacks[event].push(cb);
+        return this;
+      },
+      trigger: function (event, data) {
+        (this.callbacks[event] || []).forEach(function (cb) {
+          try { cb(data); } catch (err) { console.error('Error in ' + event + ' callback:', err); }
+        });
+      },
+      destroy: function () { if (this.element && this.element.parentNode) this.element.parentNode.removeChild(this.element); },
     },
   };
 
@@ -325,6 +411,13 @@
      * Create iframe for iframe mode
      */
     createIframe: function () {
+      // DEPRECATED — removal date 2026-12-31.  This mode puts auth tokens in
+      // the iframe URL's query string (visible in history, logs and
+      // Referer).  Use HevolveWidget.init({embedMode: 'native', getToken}).
+      console.warn(
+        "Hevolve Widget: embedMode 'iframe' is deprecated and will be removed " +
+        "on 2026-12-31. Use embedMode 'native' (tokens via getToken, never in URLs)."
+      );
       const iframe = document.createElement('iframe');
       iframe.className = 'hevolve-widget-iframe';
 

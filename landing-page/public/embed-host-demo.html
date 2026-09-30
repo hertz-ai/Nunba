@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#01b0a8">
+<title>hart-embed host demo</title>
+<!--
+  Host fixture for <hart-agent> (Nunba hart-embed, PLAN §6 / §11).
+
+  A stand-in for the McGroce SPA: it owns the cart, the catalog, checkout and
+  the merchant back office, and exposes them to the agent ONLY through the
+  hart:action contract.  The agent's fragments float over this page; its
+  "Add" buttons land in THIS page's cart (with the page's own fly-to-cart).
+
+  Open it from the repo (file:// or any static server) after
+    npx vite build -c vite.embed.config.mjs
+  It loads ./hart-embed.umd.js, falling back to ../build-embed/hart-embed.umd.js.
+  Everything is offline: the agent is the labelled demo transport.
+-->
+<style>
+  :root {
+    --brand: #01b0a8; --brand-strong: #00736d; --brand-weak: #e6f7f6; --accent: #f05f40;
+    --ink: #1d2322; --ink-muted: #5b6664; --bg: #f7f8f6; --surface: #fff; --border: #dde3e1;
+    --focus: #0a84ff; --spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif; }
+  header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .logo { font-weight: 800; font-size: 20px; color: var(--brand-strong); letter-spacing: -0.02em; }
+  .store { font-size: 13px; color: var(--ink-muted); }
+  .spacer { flex: 1; }
+  .seg { display: inline-flex; background: var(--brand-weak); border-radius: 999px; padding: 3px; }
+  .seg button { border: 0; background: transparent; min-height: 36px; padding: 0 14px; border-radius: 999px;
+    font: inherit; font-size: 14px; font-weight: 600; color: var(--brand-strong); cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .cart-btn { position: relative; min-width: 44px; min-height: 44px; border-radius: 12px; border: 1px solid var(--border);
+    background: var(--surface); font: inherit; font-weight: 600; cursor: pointer; padding: 0 12px; color: var(--ink); }
+  .badge { position: absolute; top: -6px; right: -6px; min-width: 20px; height: 20px; border-radius: 10px; padding: 0 6px;
+    background: var(--accent); color: #fff; font-size: 12px; line-height: 20px; text-align: center; font-weight: 700; }
+  .badge.bump { animation: bump 420ms var(--spring); }
+  @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.35); } 100% { transform: scale(1); } }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px 16px 120px; }
+  h1 { font-size: 22px; line-height: 28px; margin: 8px 0 4px; }
+  .lede { color: var(--ink-muted); margin: 0 0 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 12px;
+    display: flex; flex-direction: column; gap: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+  .tile { height: 88px; border-radius: 12px; background: var(--brand-weak); display: grid; place-items: center; font-size: 40px; }
+  .name { font-size: 14px; font-weight: 600; min-height: 42px; }
+  .price { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--brand-strong); }
+  .add { min-height: 44px; border-radius: 10px; border: 0; background: var(--brand-strong); color: #fff;
+    font: inherit; font-weight: 600; cursor: pointer; }
+  button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px; margin: 16px 0; }
+  .log { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-muted); max-height: 180px; overflow: auto; white-space: pre-wrap; }
+  .fly { position: fixed; z-index: 2147483600; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--brand); color: #fff; font-size: 18px; pointer-events: none;
+    transition: transform 620ms cubic-bezier(.2,.8,.2,1), opacity 620ms ease; }
+  .scrim { position: fixed; inset: 0; z-index: 2147483500; background: rgba(15,20,19,.45); display: none; align-items: flex-end; justify-content: center; }
+  .scrim[data-open="true"] { display: flex; }
+  .sheet { width: min(420px, 100%); background: var(--surface); border-radius: 20px 20px 0 0; padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+    box-shadow: 0 -12px 32px rgba(0,0,0,.14); }
+  @media (min-width: 640px) { .scrim { align-items: center; } .sheet { border-radius: 20px; } }
+  .sheet h2 { margin: 0 0 4px; font-size: 18px; }
+  .sheet p { margin: 0 0 16px; color: var(--ink-muted); }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; min-height: 48px; border-radius: 12px; font: inherit; font-weight: 700; cursor: pointer; }
+  .primary { border: 0; background: var(--brand-strong); color: #fff; }
+  .ghost { border: 1px solid var(--border); background: var(--surface); color: var(--ink); }
+  [hidden] { display: none !important; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="logo">McGroce</div>
+    <div class="store">Sri Balaji Stores · 600078</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="seg" role="group" aria-label="View">
+    <button type="button" id="view-shop" aria-pressed="true">Shop</button>
+    <button type="button" id="view-merchant" aria-pressed="false">Merchant</button>
+  </div>
+  <button type="button" class="cart-btn" id="cart-btn" aria-label="Cart, 0 items">🛒<span class="badge" id="cart-count" hidden>0</span></button>
+</header>
+
+<main>
+  <section id="shop">
+    <h1>Fresh today</h1>
+    <p class="lede">Tap the orb and try “add 2 milk”, “find paneer”, “checkout” or “track my order”. The mic on the left takes the same by voice.</p>
+    <div class="grid" id="grid"></div>
+  </section>
+  <section id="merchant" hidden>
+    <h1>Merchant back office</h1>
+    <p class="lede">Try “onboard my store Sri Balaji Stores in 600078”, “add SKU Amul Butter 100g ₹56”, or open Marketing and “draft a Diwali campaign for my customers”.</p>
+  </section>
+  <div class="panel">
+    <strong>hart:action log</strong> <span class="store">(what the agent asked this page to do)</span>
+    <div class="log" id="log" aria-live="off"></div>
+  </div>
+</main>
+
+<div class="scrim" id="pay-scrim" data-open="false">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="pay-title">
+    <h2 id="pay-title">Confirm payment</h2>
+    <p id="pay-desc"></p>
+    <div class="row">
+      <button type="button" class="ghost" id="pay-cancel">Cancel</button>
+      <button type="button" class="primary" id="pay-ok">Pay</button>
+    </div>
+  </div>
+</div>
+
+<!-- Shopper surfaces -->
+<hart-agent id="agent" surface="assistant" demo agent-name="McGroce" store-name="Sri Balaji Stores" locale="en-IN"
+  theme='{"brand":"#01b0a8","accent":"#f05f40"}'></hart-agent>
+<hart-agent id="voice" surface="voice" demo position="bottom-left" agent-name="McGroce" locale="en-IN"
+  theme='{"brand":"#01b0a8","accent":"#f05f40"}'></hart-agent>
+<hart-agent id="overlay" surface="overlay" demo theme='{"brand":"#01b0a8","accent":"#f05f40"}'></hart-agent>
+<!-- Merchant surfaces: each has its own session, separate from the shopper chat -->
+<hart-agent id="merchant-agent" surface="merchant-onboarding" demo session="merchant" agent-name="McGroce" store-name="Sri Balaji Stores"
+  theme='{"brand":"#01b0a8","accent":"#f05f40"}' hidden></hart-agent>
+<hart-agent id="marketing-agent" surface="marketing" demo session="marketing" position="bottom-left" agent-name="McGroce" store-name="Sri Balaji Stores"
+  theme='{"brand":"#01b0a8","accent":"#f05f40"}' hidden></hart-agent>
+
+<script id="host-script">
+(function () {
+  'use strict';
+  var PRODUCTS = [
+    {sku: 'MLK-AAV-500', name: 'Aavin Full Cream Milk 500 ml', price: 30, glyph: '🥛'},
+    {sku: 'PNR-MLM-200', name: 'Milky Mist Paneer 200 g', price: 95, glyph: '🧀'},
+    {sku: 'PNR-AMU-200', name: 'Amul Fresh Paneer 200 g', price: 90, glyph: '🧀'},
+    {sku: 'BTR-AMU-100', name: 'Amul Butter 100 g', price: 56, glyph: '🧈'},
+    {sku: 'BRD-BRT-400', name: 'Britannia Brown Bread 400 g', price: 50, glyph: '🍞'},
+    {sku: 'EGG-FRM-6', name: 'Farm Fresh Eggs (6 pcs)', price: 48, glyph: '🥚'},
+    {sku: 'TOM-LOC-1K', name: 'Tomato (Local) 1 kg', price: 40, glyph: '🍅'},
+    {sku: 'COF-NAR-200', name: "Narasu's Filter Coffee 200 g", price: 120, glyph: '☕'}
+  ];
+  var cart = {};           // sku -> {sku, name, price, qty}   (single source of truth)
+  var orders = [];
+  var rupee = new Intl.NumberFormat('en-IN', {style: 'currency', currency: 'INR', maximumFractionDigits: 0});
+  var $ = function (id) { return document.getElementById(id); };
+  var agents = function () { return Array.prototype.slice.call(document.querySelectorAll('hart-agent')); };
+
+  window.__hostDemo = {cart: cart, orders: orders, actions: []};
+
+  function log(line) {
+    window.__hostDemo.actions.push(line);
+    var el = $('log');
+    el.textContent = (line + '\n' + el.textContent).slice(0, 4000);
+  }
+
+  function cartView() {
+    var items = Object.keys(cart).map(function (k) { return cart[k]; });
+    var total = items.reduce(function (s, l) { return s + l.price * l.qty; }, 0);
+    return {items: items, total: total, currency: 'INR'};
+  }
+
+  function syncContext() {
+    var c = cartView();
+    var count = c.items.reduce(function (s, l) { return s + l.qty; }, 0);
+    var badge = $('cart-count');
+    badge.hidden = count === 0;
+    badge.textContent = String(count);
+    badge.classList.remove('bump'); void badge.offsetWidth; badge.classList.add('bump');
+    $('cart-btn').setAttribute('aria-label', 'Cart, ' + count + ' item' + (count === 1 ? '' : 's'));
+    agents().forEach(function (a) {
+      if (a.setContext) a.setContext({page: 'home', cart: c, orders: orders, store: {id: 1, name: 'Sri Balaji Stores'}});
+    });
+  }
+
+  function flyToCart(fromEl) {
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    var to = $('cart-btn').getBoundingClientRect();
+    var from = fromEl && fromEl.getBoundingClientRect ? fromEl.getBoundingClientRect()
+      : {left: window.innerWidth - 60, top: window.innerHeight - 60, width: 0, height: 0};
+    var dot = document.createElement('div');
+    dot.className = 'fly'; dot.textContent = '+';
+    dot.style.left = (from.left + from.width / 2 - 18) + 'px';
+    dot.style.top = (from.top + from.height / 2 - 18) + 'px';
+    document.body.appendChild(dot);
+    requestAnimationFrame(function () {
+      dot.style.transform = 'translate(' + (to.left - from.left - from.width / 2 + 18) + 'px,' + (to.top - from.top - from.height / 2 + 18) + 'px) scale(.4)';
+      dot.style.opacity = '0.2';
+    });
+    setTimeout(function () { dot.remove(); }, 700);
+  }
+
+  function addLine(p, qty) {
+    var line = cart[p.sku] || {sku: p.sku, name: p.name, price: p.price, qty: 0};
+    line.qty += qty;
+    cart[p.sku] = line;
+    syncContext();
+  }
+
+  function search(q, limit) {
+    var words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean).map(function (w) { return w.replace(/s$/, ''); });
+    return PRODUCTS.filter(function (p) {
+      var n = p.name.toLowerCase();
+      return words.some(function (w) { return n.indexOf(w) !== -1; });
+    }).slice(0, limit || 3).map(function (p) {
+      return {sku: p.sku, product_id: p.sku, name: p.name, price: p.price, currency: 'INR'};
+    });
+  }
+
+  var pendingPay = null;
+  function askToPay(payload, respond) {
+    pendingPay = respond;
+    $('pay-desc').textContent = 'Pay ' + rupee.format(payload.amount) + ' to ' + payload.merchant + ' with UPI. Mandate ' + (payload.mandate && payload.mandate.mandate_id || '') + '.';
+    $('pay-ok').textContent = 'Pay ' + rupee.format(payload.amount);
+    $('pay-scrim').dataset.open = 'true';
+    $('pay-ok').focus();
+  }
+  function settlePay(ok) {
+    $('pay-scrim').dataset.open = 'false';
+    var respond = pendingPay; pendingPay = null;
+    if (!respond) return;
+    if (!ok) { respond({ok: false, error: 'You cancelled the payment.'}); return; }
+    var id = 'MG-' + (24817 + orders.length);
+    orders.unshift({order_id: id, status: 'Accepted by store', eta: 'about 25 min'});
+    Object.keys(cart).forEach(function (k) { delete cart[k]; });
+    syncContext();
+    respond({ok: true, data: {order_id: id, transaction_id: 'upi_' + Date.now().toString(36), method: 'UPI · AP2 mandate'}});
+  }
+  $('pay-ok').addEventListener('click', function () { settlePay(true); });
+  $('pay-cancel').addEventListener('click', function () { settlePay(false); });
+
+  // ── The whole host contract: one listener ─────────────────────────────
+  document.addEventListener('hart:action', function (e) {
+    var d = e.detail, p = d.payload || {};
+    log(d.kind + ' ' + JSON.stringify(p).slice(0, 160));
+    switch (d.kind) {
+      case 'catalog.search':
+        return d.respond({ok: true, data: {items: search(p.q, p.limit)}});
+      case 'cart.add': {
+        var prod = PRODUCTS.filter(function (x) { return x.sku === p.sku; })[0]
+          || {sku: p.sku, name: p.name, price: Number(p.price) || 0};
+        addLine(prod, Number(p.qty) || 1);
+        flyToCart(e.composedPath ? e.composedPath()[0] : null);
+        return d.respond({ok: true, data: {cart: cartView()}});
+      }
+      case 'cart.update':
+      case 'cart.remove':
+        if (cart[p.sku]) {
+          if (d.kind === 'cart.remove' || !p.qty) delete cart[p.sku];
+          else cart[p.sku].qty = p.qty;
+        }
+        syncContext();
+        return d.respond({ok: true, data: {cart: cartView()}});
+      case 'checkout.start':
+        // A real store routes to its own checkout page here.  This demo has
+        // none, so it hands checkout back to the agent's AP2 flow instead.
+        d.respond({ok: true, data: {navigated: false}});
+        return setTimeout(function () { $('agent').send('checkout'); }, 0);
+      case 'payment.authorize':
+        return askToPay(p, d.respond);
+      case 'merchant.onboard':
+        return d.respond({ok: true, data: {merchant_id: 'mrc_' + Date.now().toString(36)}});
+      case 'merchant.sku.upsert':
+        PRODUCTS.push({sku: p.draft_id, name: p.name, price: p.price_inr, glyph: '🆕'});
+        renderGrid();
+        return d.respond({ok: true, data: {sku: p.draft_id}});
+      case 'campaign.draft':
+        return d.respond({ok: true, data: {campaign_id: 'cmp_' + Date.now().toString(36), status: 'draft'}});
+      default:
+        return d.respond({ok: false, error: 'This store does not support ' + d.kind + ' yet.'});
+    }
+  });
+  document.addEventListener('hart:navigate', function (e) { log('navigate ' + JSON.stringify(e.detail)); });
+  document.addEventListener('hart:ready', function (e) { log('ready ' + JSON.stringify(e.detail)); syncContext(); });
+
+  function renderGrid() {
+    var grid = $('grid');
+    grid.innerHTML = '';
+    PRODUCTS.forEach(function (p) {
+      var card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = '<div class="tile" aria-hidden="true">' + p.glyph + '</div>'
+        + '<div class="name"></div><div class="price">' + rupee.format(p.price) + '</div>'
+        + '<button type="button" class="add">Add</button>';
+      card.querySelector('.name').textContent = p.name;
+      var btn = card.querySelector('.add');
+      btn.setAttribute('aria-label', 'Add ' + p.name);
+      btn.addEventListener('click', function () { addLine(p, 1); flyToCart(btn); });
+      grid.appendChild(card);
+    });
+  }
+  renderGrid();
+
+  function setView(merchant) {
+    $('view-shop').setAttribute('aria-pressed', String(!merchant));
+    $('view-merchant').setAttribute('aria-pressed', String(merchant));
+    $('shop').hidden = merchant; $('merchant').hidden = !merchant;
+    ['agent', 'voice', 'overlay'].forEach(function (id) { $(id).hidden = merchant; if (merchant && $(id).close) $(id).close(); });
+    ['merchant-agent', 'marketing-agent'].forEach(function (id) { $(id).hidden = !merchant; if (!merchant && $(id).close) $(id).close(); });
+  }
+  $('view-shop').addEventListener('click', function () { setView(false); });
+  $('view-merchant').addEventListener('click', function () { setView(true); });
+  $('cart-btn').addEventListener('click', function () { $('agent').send && $('agent').send("what's in my cart"); });
+})();
+</script>
+<script>
+  (function () {
+    // Prefer a copy next to this page; fall back to the repo's build output.
+    var s = document.createElement('script');
+    s.src = './hart-embed.umd.js';
+    s.onerror = function () {
+      var f = document.createElement('script');
+      f.src = '../build-embed/hart-embed.umd.js';
+      document.head.appendChild(f);
+    };
+    document.head.appendChild(s);
+  })();
+</script>
+</body>
+</html>

@@ -11,6 +11,7 @@
  */
 
 import {HART_GLASS} from './hartGlass';
+import {DURATIONS, EASINGS} from './motionTokens';
 
 import {alpha} from '@mui/material/styles';
 
@@ -112,24 +113,10 @@ export const SPACING = {
   xxl: 48,
 };
 
-// ── Easing Curves ─────────────────────────────────────────────────────────────
+// ── Easing Curves + Duration Tokens ───────────────────────────────────────────
+// Defined once in ./motionTokens (dependency-free, shared with the embed).
 
-export const EASINGS = {
-  snappy: 'cubic-bezier(0.2, 0, 0, 1)',
-  bounce: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
-  smooth: 'cubic-bezier(0.4, 0, 0.2, 1)',
-  decelerate: 'cubic-bezier(0, 0, 0.2, 1)',
-  spring: 'cubic-bezier(0.175, 0.885, 0.32, 1.275)',
-};
-
-// ── Duration Tokens ───────────────────────────────────────────────────────────
-
-export const DURATIONS = {
-  instant: 100,
-  fast: 200,
-  normal: 300,
-  slow: 500,
-};
+export {EASINGS, DURATIONS};
 
 // ── Glassmorphism Mixins (theme-dependent) ────────────────────────────────────
 //
