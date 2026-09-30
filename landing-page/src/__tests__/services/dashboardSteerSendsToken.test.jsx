@@ -152,7 +152,7 @@ test.each([
   ['a raw axios 500 with an HTML body', Object.assign(new Error('Request failed with status code 500'),
     {response: {status: 500, data: '<html><body>Internal Server Error</body></html>'}}),
     'server error (500)'],
-  ['socialApi's rejection of an HTML 503', {status: 503}, 'server error (503)'],
+  ["socialApi's rejection of an HTML 503", {status: 503}, 'server error (503)'],
   ['a raw axios 401 with no body', Object.assign(new Error('Request failed with status code 401'),
     {response: {status: 401, data: ''}}), 'Sign in to steer this run.'],
   ['a raw axios 403 refusal', Object.assign(new Error('Request failed with status code 403'),

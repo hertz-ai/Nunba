@@ -1663,10 +1663,13 @@ def _ct2_off_card_message(prior: dict) -> str:
     makes the setup card render as finished rather than as a spinner, and it
     names only what will really happen: nothing in the app retries this on
     demand (--setup-ai exits "already configured"; the web UI has no entry),
-    so the card says when the automatic retry comes."""
+    and the gate runs only at a start (main.py's warm-up, the first-run
+    installer), so a Nunba that stays up does not retry: the card says the
+    retry comes at the next start once the record has expired."""
     return (f"GPU speech is off: the GPU speech runtime install failed "
             f"({prior.get('reason', 'unknown reason')}). It will be tried "
-            f"again automatically in about {_ct2_hours_until_retry(prior)} h.")
+            f"again at the next start, after about "
+            f"{_ct2_hours_until_retry(prior)} h.")
 
 
 def _announce_ct2_off(prior: dict) -> None:
@@ -1701,9 +1704,10 @@ def _announce_ct2_off(prior: dict) -> None:
 
 
 def _ct2_retry_wording(prior: dict) -> str:
-    """When a skipped install is tried again.  A source run has no build to
-    update, so it does not promise one."""
-    after = f"in about {_ct2_hours_until_retry(prior)} h"
+    """When a skipped install is tried again: at a start, since only the
+    boot warm-up and the first-run installer ask the gate.  A source run has
+    no build to update, so it does not promise one."""
+    after = f"at the next start after about {_ct2_hours_until_retry(prior)} h"
     if _installed_build_id() == 'source':
         return after
     return f"{after}, or at once after an update"

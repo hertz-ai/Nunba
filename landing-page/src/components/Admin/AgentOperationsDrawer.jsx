@@ -499,10 +499,11 @@ export default function AgentOperationsDrawer({ agentId, open, onClose }) {
         setSnapshot(body.data);
         setError(null);
       } else {
-        setError(steerError(body, 'unknown'));
+        setError(steerError(body, 'Could not load this run.', {read: true}));
       }
     } catch (e) {
-      setError(steerError(e, 'Could not load this run.'));
+      // A read: worded for what could not be shown (nothing was changed).
+      setError(steerError(e, 'Could not load this run.', {read: true}));
     }
   }, [activeId]);
 

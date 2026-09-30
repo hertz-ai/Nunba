@@ -472,10 +472,13 @@ def test_a_skipped_boot_shows_the_gpu_speech_off_card(ct2_env):
     assert card['complete'] is True
     assert card['message'].startswith('GPU speech is off: ')
     assert 'nvidia-cudnn-cu12==9.*' in card['message']
-    # Only what will really happen: nothing retries on demand, so the card
-    # names the automatic retry (24 h from a failure just recorded).
+    # Only what will really happen: nothing retries on demand, and the gate
+    # runs only at a start (main.py's warm-up, the first-run installer), so
+    # the card names the next start after the record expires (24 h from a
+    # failure just recorded); a Nunba that stays up does not retry.
     assert card['message'].endswith(
-        'It will be tried again automatically in about 24 h.')
+        'It will be tried again at the next start, after about 24 h.')
+    assert 'automatically' not in card['message']
     assert 'AI setup' not in card['message']
     # SetupProgressCard reads a step whose message says 'failed' as a
     # finished, failed job: no spinner, and the dismiss control shows.
@@ -522,7 +525,8 @@ def test_the_card_says_how_long_is_left(ct2_env, monkeypatch):
     t0 = pi.time.time()
     monkeypatch.setattr(pi.time, 'time', lambda: t0 + 20 * 3600)
     assert pi.should_install_gpu_ctranslate2() is False
-    assert ct2_env.cards[0][1]['message'].endswith('in about 4 h.')
+    assert ct2_env.cards[0][1]['message'].endswith(
+        'at the next start, after about 4 h.')
 
 
 def test_no_card_when_nothing_was_skipped(ct2_env, monkeypatch):
@@ -545,7 +549,7 @@ def test_the_skip_says_when_it_is_tried_again(ct2_env, caplog, build_id,
     with caplog.at_level('WARNING', logger=pi.logger.name):
         assert pi.should_install_gpu_ctranslate2() is False
     said = ' '.join(r.getMessage() for r in caplog.records)
-    assert 'tried again in about 24 h' in said
+    assert 'tried again at the next start after about 24 h' in said
     assert 'AI setup' not in said
     assert ('after an update' in said) is promises_update
 

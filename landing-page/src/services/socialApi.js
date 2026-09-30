@@ -749,24 +749,26 @@ export const dashboardApi = {
   // a refusal rejects with the server's JSON ({success:false, data:{error}});
   // constants/steerOutcome.steerError words it for a person.
   // silentError: each caller shows the reason inline, not as a banner.
+  // keepStatus: a failure keeps its HTTP status (axiosFactory), so a fault
+  // with no JSON still reads "server error (500)", not a blank fallback.
   steer: (agentId, verb, body) =>
     socialApi.post(
       `/dashboard/agents/${encodeURIComponent(agentId)}/${verb}`,
       body || {},
-      {silentError: true},
+      {silentError: true, keepStatus: true},
     ),
   // The drawer's reads of ONE goal.  HARTOS answers them only to the goal's
   // owner (or an admin, or this machine for a goal no person owns), the same
   // rule as steering, so they carry the token too.  Polled: never cached.
   snapshot: (agentId) =>
     socialApi.get(`/dashboard/agents/${encodeURIComponent(agentId)}/snapshot`,
-      {cache: false, silentError: true}),
+      {cache: false, silentError: true, keepStatus: true}),
   a2a: (agentId, depth = 2) =>
     socialApi.get(`/dashboard/agents/${encodeURIComponent(agentId)}/a2a`,
-      {params: {depth}, cache: false, silentError: true}),
+      {params: {depth}, cache: false, silentError: true, keepStatus: true}),
   chatTail: (agentId, since, limit = 50) =>
     socialApi.get(`/dashboard/agents/${encodeURIComponent(agentId)}/chat`,
-      {params: {since, limit}, cache: false, silentError: true}),
+      {params: {since, limit}, cache: false, silentError: true, keepStatus: true}),
 };
 
 

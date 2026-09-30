@@ -174,6 +174,18 @@ export function createApiClient(
         return error.config._staleData;
       }
 
+      // keepStatus (opt-in per request): the rejection keeps the HTTP
+      // status beside the server's JSON, and says it even when the body is
+      // not JSON (an HTML 500 page, an empty 401), where the plain data
+      // rejection below carries nothing at all.  constants/steerOutcome
+      // words "server error (500)" / "Sign in" from it.
+      if (error.config?.keepStatus && error.response) {
+        const {status, data: body} = error.response;
+        return Promise.reject(body && typeof body === 'object' && !Array.isArray(body)
+          ? {...body, status}
+          : {status});
+      }
+
       return Promise.reject(error.response ? error.response.data : error);
     }
   );
