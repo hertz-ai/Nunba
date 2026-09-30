@@ -16,7 +16,7 @@
  */
 
 import React from 'react';
-import {render, screen, fireEvent, act, waitFor} from '@testing-library/react';
+import {render, screen, fireEvent, act, waitFor, cleanup} from '@testing-library/react';
 
 jest.mock('../../../services/realtimeService', () => ({
   __esModule: true,
@@ -88,6 +88,21 @@ describe('ApprovalOverlay', () => {
     expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
       agent_id: '42', action: 'enable_camera', decision: 'approve'});
     expect(cameraEvents).toEqual([{approved: true, user_id: '42'}]);
+  });
+
+  test('the decision carries the signed-in Bearer, and none when signed out', async () => {
+    for (const [token, expected] of [['tok-1', 'Bearer tok-1'], [null, undefined]]) {
+      global.fetch = jest.fn(() => reply(200, {status: 'approved'}));
+      if (token) localStorage.setItem('access_token', token);
+      else localStorage.removeItem('access_token');
+      const send = mountOverlay();
+      send(CARD);
+      fireEvent.click(await screen.findByRole('button', {name: 'Approve'}));
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+      expect(global.fetch.mock.calls[0][1].headers.Authorization).toBe(expected);
+      cleanup();
+    }
+    localStorage.removeItem('access_token');
   });
 
   test('an Approve refused by the server stays on the card and says why', async () => {

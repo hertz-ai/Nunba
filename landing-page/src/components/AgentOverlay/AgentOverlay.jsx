@@ -430,8 +430,14 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
     setBusy(decision);
     setError(null);
     try {
+      // The node names the approver from the caller's Bearer (never the body).
+      const token = localStorage.getItem('access_token');
       const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ agent_id: data.agent_id, action: data.action, decision }),
       });
       if (!res.ok) {
