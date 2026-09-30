@@ -6,7 +6,7 @@ import {
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
 import realtimeService from '../../services/realtimeService';
-import { chatApi, consentApi, notificationsApi } from '../../services/socialApi';
+import { agentFormApi, chatApi, consentApi, notificationsApi } from '../../services/socialApi';
 import { HART_GLASS_SURFACE } from '../../theme/hartGlass';
 
 
@@ -33,7 +33,10 @@ const AUTO_DISMISS_MS = 15000;
 // consent.request: a gate is waiting for the answer (HARTOS
 // computer_control_block waits up to 90 s), so the card stays until
 // answered instead of vanishing at AUTO_DISMISS_MS.
-const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request']);
+// qr_pair: a WhatsApp code lives ~20s and HARTOS sends the next one as it
+// rotates (replacing this card in place, see handleEvent), so the card stays
+// until the phone links or the user closes it.
+const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair']);
 
 // The card's frosted surface is the ONE HART glass (src/theme/hartGlass,
 // mirroring HARTOS theme_service.py's emitted shell values), so an overlay
@@ -422,15 +425,52 @@ function MetricOverlay({ data }) {
   );
 }
 
+// Form submits HARTOS handles on this side, with no server round trip.
+// Invite_Friend's share card names `copy_invite_url` and carries the link
+// as its read-only field's value.
+const LOCAL_SUBMIT_ACTIONS = {
+  copy_invite_url: (values) => navigator.clipboard.writeText(values.invite_url || ''),
+};
+
 function FormOverlay({ data, onDismiss }) {
-  const [values, setValues] = useState({});
-  const handleSubmit = () => {
-    if (data.action) {
-      fetch(data.action.startsWith('http') ? data.action : `${API_BASE_URL}${data.action}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(values),
-      }).catch(() => {});
+  // Fields may arrive pre-filled (`value`) or with a default: start from
+  // those, so a read-only field shows what the producer sent.
+  const [values, setValues] = useState(() => Object.fromEntries(
+    (data.fields || [])
+      .filter((f) => f.value != null || f.default != null)
+      .map((f) => [f.name, f.value != null ? f.value : f.default]),
+  ));
+  // The card closes only once the server took the values.  It used to post
+  // with a bare fetch (no Bearer token, so the auth-required channel routes
+  // answered 401), swallow the result and close anyway: a typed bot token
+  // vanished with nothing on screen.  Same contract as the approval card.
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const handleSubmit = async () => {
+    if (busy) return;
+    const local = LOCAL_SUBMIT_ACTIONS[data.submit_action];
+    if (!data.action && !local) {
+      // A form with nowhere to send its values is a producer bug; say so
+      // rather than pretend the values went somewhere.
+      console.error('[form] card has no action; values not sent', data);
+      setError('This form cannot be submitted (no destination). Please report it.');
+      return;
     }
+    setBusy(true);
+    setError(null);
+    try {
+      if (data.action) {
+        await agentFormApi.submit(data.action, values);
+      } else {
+        await local(values);
+      }
+    } catch (e) {
+      console.error('[form] submit failed', e);
+      setError(answerFailure(e));
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
     onDismiss();
   };
   return (
@@ -438,11 +478,15 @@ function FormOverlay({ data, onDismiss }) {
       {data.title && <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>{data.title}</Typography>}
       {(data.fields || []).map((f, i) => (
         <TextField key={i} label={f.label || f.name} size="small" fullWidth
-          type={f.type || 'text'} required={f.required}
-          value={values[f.name] || ''} onChange={e => setValues(v => ({ ...v, [f.name]: e.target.value }))}
-          sx={{ mb: 1, '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' }, '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.5)' } }} />
+          type={f.secret ? 'password' : (f.type || 'text')} required={f.required}
+          helperText={f.help || undefined}
+          InputProps={{ readOnly: Boolean(f.readonly) }}
+          value={values[f.name] || ''} onChange={e => { setError(null); setValues(v => ({ ...v, [f.name]: e.target.value })); }}
+          sx={{ mb: 1, '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' }, '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.5)' }, '& .MuiFormHelperText-root': { color: 'rgba(255,255,255,0.45)' } }} />
       ))}
-      <Button variant="contained" size="small" fullWidth sx={{ background: ACCENT, '&:hover': { background: '#5A52E0' } }} onClick={handleSubmit}>
+      {error && <AnswerError text={error} />}
+      <Button variant="contained" size="small" fullWidth disabled={busy} aria-busy={busy}
+        sx={{ background: ACCENT, '&:hover': { background: '#5A52E0' } }} onClick={handleSubmit}>
         {data.submit_label || 'Submit'}
       </Button>
     </Box>
@@ -566,6 +610,29 @@ function QRPairOverlay({ data, onDismiss }) {
     'Open the app on your phone, find "Linked devices" or "Devices", '
     + 'and scan this code.'
   );
+  // "Link with phone number": for someone whose only device is the phone
+  // the QR is on.  HARTOS names the endpoint (pair_code_action); it mints
+  // an 8-char code that arrives as a pair_code card.
+  const pairAction = data && data.pair_code_action;
+  const [byPhone, setByPhone] = useState(false);
+  const [phone, setPhone] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const requestCode = async () => {
+    if (busy || !phone.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await agentFormApi.submit(pairAction, { phone });
+    } catch (e) {
+      console.error('[qr_pair] pair-code request failed', e);
+      setError(answerFailure(e));
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    if (onDismiss) onDismiss();
+  };
   return (
     <Box sx={{ p: 2, textAlign: 'center' }}>
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.25 }}>
@@ -596,6 +663,26 @@ function QRPairOverlay({ data, onDismiss }) {
       >
         {help}
       </Typography>
+      {pairAction && byPhone && (
+        <Box sx={{ mt: 1.5, textAlign: 'left' }}>
+          <TextField label="Your phone number" size="small" fullWidth type="tel"
+            value={phone} onChange={(e) => { setError(null); setPhone(e.target.value); }}
+            placeholder="+91 90000 00000"
+            sx={{ mb: 1, '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' }, '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.5)' } }} />
+          {error && <AnswerError text={error} />}
+          <Button variant="contained" size="small" fullWidth disabled={busy || !phone.trim()}
+            aria-busy={busy} onClick={requestCode}
+            sx={{ background: ACCENT, '&:hover': { background: '#5A52E0' } }}>
+            Send me a code
+          </Button>
+        </Box>
+      )}
+      {pairAction && !byPhone && (
+        <Button size="small" variant="text" onClick={() => setByPhone(true)}
+          sx={{ mt: 1, color: INFO_BLUE, textTransform: 'none' }}>
+          Can't scan? Link with phone number
+        </Button>
+      )}
       {onDismiss && (
         <Button
           size="small"
@@ -1158,7 +1245,35 @@ export default function AgentOverlay({ navigate, onInlineChatCard }) {
     const entry = { ...payload, _id: id, _type: type };
     if (msgId) showingRef.current.set(msgId, id);
 
+    // Channel pairing cards follow the channel, not the message: WhatsApp
+    // rotates its QR, so a newer code for the same channel replaces the
+    // card in place (the old one would be a dead code), and once the
+    // channel is connected its QR / pair-code cards go away.
+    const pairingOf = (o) => (o._type === 'qr_pair' || o._type === 'pair_code')
+      && payload.channel && o.channel === payload.channel;
+
     setOverlays(prev => {
+      if (type === 'qr_pair') {
+        const i = prev.findIndex(o => o._type === 'qr_pair' && pairingOf(o));
+        if (i >= 0) {
+          const next = [...prev];
+          forgetShowing(prev[i]._id);
+          if (msgId) showingRef.current.set(msgId, prev[i]._id);
+          next[i] = { ...entry, _id: prev[i]._id };
+          return next;
+        }
+      }
+      // Connected, or the attempt failed for good (HARTOS's error toast for
+      // that channel: gateway down, code expired): its QR is dead either way.
+      if (type === 'channel_connected'
+          || (type === 'toast' && payload.severity === 'error')) {
+        prev.filter(pairingOf).forEach((o) => {
+          clearTimeout(timersRef.current[o._id]);
+          delete timersRef.current[o._id];
+          forgetShowing(o._id);
+        });
+        prev = prev.filter(o => !pairingOf(o));
+      }
       const next = [...prev, entry];
       // FIFO eviction if over max
       while (next.length > MAX_OVERLAYS) {

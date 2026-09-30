@@ -1,6 +1,7 @@
 import {createApiClient} from './axiosFactory';
 
 import {
+  API_BASE_URL,
   SOCIAL_API_URL,
   ADMIN_API_URL,
   CHAT_API_URL,
@@ -678,6 +679,21 @@ export const channelUserApi = {
     socialApi.post(`/channels/${channelType}/pair-code`, data),
   presence: () => socialApi.get('/channels/presence'),
   conversations: (params) => socialApi.get('/channels/conversations', {params}),
+};
+
+// --- Agent form cards (AgentOverlay FormOverlay) ---
+// A HARTOS form card names its submit URL in `action` (e.g.
+// /api/social/channels/<type>/connect).  Those routes need the user's
+// Bearer token, which the bare fetch the overlay used never sent, so
+// every submit was a 401 the card could not see.  This client carries
+// the same auth interceptor as every other call here; an absolute URL
+// in `action` is used as is.
+const agentFormClient = createApiClient(API_BASE_URL, {cache: false});
+export const agentFormApi = {
+  // silentError: the card shows the server's reason inline, so the global
+  // error banner would only repeat it less precisely.
+  submit: (action, body) =>
+    agentFormClient.post(action, body, {silentError: true}),
 };
 
 // --- Workflows API --- uses channels admin_bp at /api/admin/automation/workflows
