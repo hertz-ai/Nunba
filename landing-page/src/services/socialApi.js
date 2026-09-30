@@ -686,14 +686,24 @@ export const channelUserApi = {
 // /api/social/channels/<type>/connect).  Those routes need the user's
 // Bearer token, which the bare fetch the overlay used never sent, so
 // every submit was a 401 the card could not see.  This client carries
-// the same auth interceptor as every other call here; an absolute URL
-// in `action` is used as is.
+// the same auth interceptor as every other call here, and that interceptor
+// attaches the Bearer token to whatever URL the request names.  The card
+// is data an agent produced, so `action` is only accepted as one of this
+// app's own /api/ paths (every destination HARTOS emits is one); an
+// absolute or protocol-relative URL would otherwise carry the token to any
+// host the card names.
+const AGENT_FORM_PATH = /^\/api\/./;
 const agentFormClient = createApiClient(API_BASE_URL, {cache: false});
 export const agentFormApi = {
   // silentError: the card shows the server's reason inline, so the global
   // error banner would only repeat it less precisely.
-  submit: (action, body) =>
-    agentFormClient.post(action, body, {silentError: true}),
+  submit: (action, body) => {
+    if (typeof action !== 'string' || !AGENT_FORM_PATH.test(action)) {
+      return Promise.reject(new Error(
+        'This form points outside the app, so it was not sent.'));
+    }
+    return agentFormClient.post(action, body, {silentError: true});
+  },
 };
 
 // --- Workflows API --- uses channels admin_bp at /api/admin/automation/workflows
