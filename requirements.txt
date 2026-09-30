@@ -39,7 +39,7 @@ soundfile==0.13.1
 sentry-sdk[flask]==2.52.0
 google-auth==2.48.0
 cachetools==7.0.1
-PyJWT==2.11.0
+PyJWT==2.14.0
 autogen-agentchat==0.2.37
 apscheduler==3.11.2
 json-repair==0.57.1
