@@ -740,6 +740,7 @@ class LlamaConfig:
         """
         try:
             import time as _time
+
             # The same dir HARTOS's get_boot_decision reads (one resolver).
             from core.platform_paths import get_log_dir
             log_dir = Path(get_log_dir())

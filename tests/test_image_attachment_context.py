@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from flask import Flask
 from integrations.vision import image_describe as vis
+
 from routes import upload_routes as uploads
 
 
@@ -78,9 +79,10 @@ def test_image_inspection_endpoint_rejects_path_escape(store):
 
 def test_current_chat_passes_cached_attachment_and_keeps_video_audio(store, monkeypatch):
     client, root = store
-    from routes import chatbot_routes as cr
-    from models import orchestrator
     from unittest.mock import MagicMock
+
+    from models import orchestrator
+    from routes import chatbot_routes as cr
     app = client.application
     app.add_url_rule('/chat', view_func=cr.chat_route, methods=['POST'])
     image = root / 'files' / 'chat.png'
@@ -110,8 +112,9 @@ def test_current_chat_passes_cached_attachment_and_keeps_video_audio(store, monk
 @pytest.mark.parametrize('image_url', ['/uploads/../outside.png', 123, True, {'url': 'image'}, ['image']])
 def test_current_chat_rejects_invalid_attachment_before_backend(store, monkeypatch, image_url):
     client, _ = store
-    from routes import chatbot_routes as cr
     from unittest.mock import MagicMock
+
+    from routes import chatbot_routes as cr
     client.application.add_url_rule('/chat', view_func=cr.chat_route, methods=['POST'])
     backend = MagicMock(side_effect=AssertionError('escaped path reached backend'))
     monkeypatch.setattr(cr, 'hevolve_chat', backend)
