@@ -91,7 +91,7 @@ CORE_DEPS = {
     # Auth
     "google-auth": "2.48.0",
     "cachetools": "7.0.1",
-    "PyJWT": "2.11.0",
+    "PyJWT": "2.14.0",
     # HARTOS runtime deps (--no-deps install skips these)
     "autogen-agentchat": "0.2.37",
     "apscheduler": "3.11.2",
