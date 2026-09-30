@@ -48,7 +48,7 @@ const LlmUpgradeCard = ({ card, onUpgrade, onDismiss }) => {
         {card.queued ? (
           <button
             disabled
-            className="px-4 py-2 rounded-lg text-sm font-semibold"
+            className="btn-feedback px-4 py-2 rounded-lg text-sm font-semibold"
             style={{ backgroundColor: '#2a3a36', color: '#9fe', cursor: 'default' }}
           >
             Queued — restart to apply
@@ -56,7 +56,7 @@ const LlmUpgradeCard = ({ card, onUpgrade, onDismiss }) => {
         ) : (
           <button
             onClick={() => onUpgrade?.(card)}
-            className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+            className="btn-feedback px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
             style={{ backgroundColor: '#00b87f', color: '#fff', cursor: 'pointer' }}
           >
             Upgrade engine
@@ -64,7 +64,7 @@ const LlmUpgradeCard = ({ card, onUpgrade, onDismiss }) => {
         )}
         <button
           onClick={() => onDismiss?.(card)}
-          className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+          className="btn-feedback px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
           style={{
             backgroundColor: 'transparent',
             color: '#999',

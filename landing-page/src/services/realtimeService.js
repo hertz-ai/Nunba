@@ -26,6 +26,39 @@ const SSE_RECONNECT_DELAY = 3000; // 3s retry on SSE disconnect
 const DEDUP_WINDOW_MS = 10000; // 10s dedup window
 const DEDUP_MAX_SIZE = 200; // max tracked message IDs
 
+/**
+ * The card inside a HARTOS A2UI envelope, flat, or null when `payload` is
+ * not one.
+ *
+ * HARTOS LiquidUIService.agent_ui_update emits
+ * {agent_id, component: {type, ...props}, user_id, msg_id} on the
+ * `agent.ui.update` channel.  Android unwraps `component` the same way
+ * (AutobahnConnectionManager.onEventAgentUI).  AgentOverlay renders a card
+ * by its own `type`, so it must receive the component, not the envelope:
+ * given the envelope it saw type 'agent.ui.update', matched no renderer and
+ * fell through to printing raw JSON.  Owner ruling 2026-09-26: this overlay
+ * IS Liquid UI on the desktop.
+ *
+ * The envelope's msg_id stays the dedup key.  For agent_id and user_id the
+ * component's own value wins and the envelope's only fills a gap: an
+ * approval card names the agent it asks about, and a card can name the
+ * person it concerns (the camera consent card's user_id is what AgentOverlay
+ * hands NUNBA_CAMERA_CONSENT).
+ */
+export function unwrapAgentUiEnvelope(payload) {
+  if (!payload || payload.type !== 'agent.ui.update') return null;
+  const card = payload.component;
+  if (!card || typeof card !== 'object' || Array.isArray(card) || !card.type) {
+    return null;
+  }
+  return {
+    ...card,
+    agent_id: card.agent_id != null ? card.agent_id : payload.agent_id,
+    user_id: card.user_id != null ? card.user_id : payload.user_id,
+    msg_id: payload.msg_id != null ? payload.msg_id : card.msg_id,
+  };
+}
+
 class RealtimeService {
   constructor() {
     this._listeners = new Map();
@@ -52,6 +85,19 @@ class RealtimeService {
    */
   init(crossbarWorker, opts = {}) {
     if (opts.sseBase) this._sseBase = opts.sseBase;
+    // `token` is tri-state here: omitted means "leave the current credential
+    // alone", a string selects authenticated SSE, and explicit null selects
+    // the local user_id channel. The distinction matters after a cloud user
+    // signs out or a persisted guest session wins auth resolution: keeping the
+    // old token makes _buildSSEUrl ignore the new guest UUID and the server
+    // registers the stream under the previous token owner.
+    const hasExplicitToken = Object.prototype.hasOwnProperty.call(opts, 'token');
+    const previousTokenMode = Boolean(this._token);
+    if (hasExplicitToken) {
+      this._token = opts.token || null;
+    }
+    const credentialModeChanged = previousTokenMode !== Boolean(this._token);
+
     // Detect userId change — when the user transitions from "anonymous
     // visitor" (effectiveUserId='' → SSE registered as literal 'guest')
     // to "registered guest" (guest_user_id UUID populated post-
@@ -80,11 +126,15 @@ class RealtimeService {
     );
     if (userIdChanged) {
       this._userId = opts.userId;
-      if (this._sseConnected) {
-        this._rotateSSE();
-      }
     } else if (opts.userId) {
       this._userId = opts.userId;
+    }
+
+    // A user-id change and a token<->local transition are both identity
+    // changes. Rotate once, after both fields have been updated, so the new
+    // EventSource is built from one coherent identity snapshot.
+    if ((userIdChanged || credentialModeChanged) && this._sseConnected) {
+      this._rotateSSE();
     }
 
     // Always open SSE — even if worker is null (failed to create).
@@ -151,7 +201,10 @@ class RealtimeService {
    * disconnect() which fully tears down + de-auths.
    */
   connect(token) {
-    if (token) this._token = token;
+    if (token) {
+      this.init(null, {token});
+      return;
+    }
     if (this._crossbarConnected) return;
     if (!this._sseConnected) this._openSSE();
   }
@@ -159,6 +212,10 @@ class RealtimeService {
   disconnect() {
     this._connected = false;
     this._closeSSE();
+    // Explicit disconnect is the auth boundary (logout/provider unmount).
+    // Do not let a later guest/local init reuse the previous owner's bearer.
+    this._token = null;
+    this._userId = null;
     if (_workerMessageHandler && _worker) {
       _worker.removeEventListener('message', _workerMessageHandler);
       _workerMessageHandler = null;
@@ -189,7 +246,12 @@ class RealtimeService {
   _buildSSEUrl() {
     const base = this._sseBase || SOCIAL_API_URL;
     if (this._token) {
-      return `${base}/events/stream?token=${encodeURIComponent(this._token)}`;
+      // The server authenticates the token first. Bundled mode may use the
+      // claimed uid only when an old opaque cloud token is no longer present
+      // in the local auth DB; remote servers never trust this fallback.
+      const uid = this._userId || 'guest';
+      return `${base}/events/stream?token=${encodeURIComponent(this._token)}`
+        + `&user_id=${encodeURIComponent(uid)}`;
     }
     const uid = this._userId || 'guest';
     return `${base}/events/stream?user_id=${encodeURIComponent(uid)}`;
@@ -415,6 +477,15 @@ class RealtimeService {
 
   _dispatchSocialPayload(payload) {
     if (this._isDuplicate(payload)) return;
+
+    // A HARTOS A2UI envelope is an agent card and nothing else: the overlay
+    // gets the card, and it is NOT re-announced on the card's own type
+    // channel (a 'notification' card would otherwise reach the bell too).
+    const card = unwrapAgentUiEnvelope(payload);
+    if (card) {
+      this._emit('agent.ui.update', card);
+      return;
+    }
 
     // Normalize event type from any payload shape
     let eventType = payload.type || payload.event_type || payload.action || 'message';

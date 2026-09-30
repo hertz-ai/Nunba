@@ -1302,9 +1302,18 @@ def build_windows(python_exe, app_only=False, installer_only=False):
                         env=_embed_env,
                     )
 
+    # The startup hook every python-embed worker runs, written on EVERY
+    # build.  Gate A rebuilds python-embed only when EMBED_DEPS change, so a
+    # change to the hook alone would otherwise ship the snapshot's old hook
+    # silently -- the same trap Gate A exists for.  One source:
+    # rebuild_python_embed.SITECUSTOMIZE_SOURCE.
+    if os.path.isdir(_embed_sp):
+        from rebuild_python_embed import write_sitecustomize
+        print_info(f"Wrote python-embed startup hook: {write_sitecustomize(_embed_sp)}")
+
     # Elevation vaccine -- MUST run after every python-embed write.
     # This call covers the writes ABOVE (atomic rebuild + incremental
-    # top-up).  It is NOT the last one: cx_Freeze's post-build hook
+    # top-up + startup hook).  It is NOT the last one: cx_Freeze's post-build hook
     # writes python-embed again, so the vaccine runs a second time after
     # that call too.  See the note there before deleting either.
     normalize_embed_acl(embed_src)

@@ -5,12 +5,27 @@ var a = {}.REACT_APP_MAILER_API_URL || "https://mailer.hertzai.com", o = {}.REAC
 ({}).REACT_APP_SENTRY_DSN, {}.REACT_APP_GA_TRACKING_ID, {}.REACT_APP_SECRET_KEY, `${a}`, `${a}`, `${a}`, `${a}`, `${r}`, `${r}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, {}.REACT_APP_PHONEPE_MERCHANT_ID, {}.REACT_APP_PHONEPE_SALT_INDEX, {}.REACT_APP_PHONEPE_SALT_KEY, `${r}`, `${r}`, `${r}`, `${r}`, `${r}`, `${e}`, `${e}`, `${e}`, `${e}`, `${r}`, `${e}`, `${e}`, `${e}`, `${r}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${a}`, `${r}`, `${o}`, {}.REACT_APP_WAMP_URL, `${e}`;
 //#endregion
 //#region src/services/realtimeService.js
-var s = null, c = null, l = null, u = null, d = 3e3, f = 1e4, p = 200, m = new class {
+var s = null, c = null, l = null, u = null, d = 3e3, f = 1e4, p = 200;
+function m(e) {
+	if (!e || e.type !== "agent.ui.update") return null;
+	let t = e.component;
+	return !t || typeof t != "object" || Array.isArray(t) || !t.type ? null : {
+		...t,
+		agent_id: t.agent_id == null ? e.agent_id : t.agent_id,
+		user_id: t.user_id == null ? e.user_id : t.user_id,
+		msg_id: e.msg_id == null ? t.msg_id : e.msg_id
+	};
+}
+var h = new class {
 	constructor() {
 		this._listeners = /* @__PURE__ */ new Map(), this._connected = !1, this._crossbarConnected = !1, this._sseConnected = !1, this._token = null, this._userId = null, this._seenIds = /* @__PURE__ */ new Map(), this._sseBase = null;
 	}
 	init(e, t = {}) {
-		if (t.sseBase && (this._sseBase = t.sseBase), t.userId !== void 0 && t.userId !== null && t.userId !== this._userId ? (this._userId = t.userId, this._sseConnected && this._rotateSSE()) : t.userId && (this._userId = t.userId), this._sseConnected || this._openSSE(), e && s !== e) {
+		t.sseBase && (this._sseBase = t.sseBase);
+		let n = Object.prototype.hasOwnProperty.call(t, "token"), r = !!this._token;
+		n && (this._token = t.token || null);
+		let i = r !== !!this._token, a = t.userId !== void 0 && t.userId !== null && t.userId !== this._userId;
+		if ((a || t.userId) && (this._userId = t.userId), (a || i) && this._sseConnected && this._rotateSSE(), this._sseConnected || this._openSSE(), e && s !== e) {
 			let t = s;
 			s = e, c && t && t.removeEventListener("message", c), c = (e) => {
 				let { type: t, payload: n } = e.data;
@@ -24,10 +39,14 @@ var s = null, c = null, l = null, u = null, d = 3e3, f = 1e4, p = 200, m = new c
 		this._crossbarConnected || this._openSSE();
 	}
 	connect(e) {
-		e && (this._token = e), !this._crossbarConnected && (this._sseConnected || this._openSSE());
+		if (e) {
+			this.init(null, { token: e });
+			return;
+		}
+		this._crossbarConnected || this._sseConnected || this._openSSE();
 	}
 	disconnect() {
-		this._connected = !1, this._closeSSE(), c && s && (s.removeEventListener("message", c), c = null);
+		this._connected = !1, this._closeSSE(), this._token = null, this._userId = null, c && s && (s.removeEventListener("message", c), c = null);
 	}
 	get connected() {
 		return this._connected;
@@ -44,7 +63,10 @@ var s = null, c = null, l = null, u = null, d = 3e3, f = 1e4, p = 200, m = new c
 	}
 	_buildSSEUrl() {
 		let e = this._sseBase || t;
-		if (this._token) return `${e}/events/stream?token=${encodeURIComponent(this._token)}`;
+		if (this._token) {
+			let t = this._userId || "guest";
+			return `${e}/events/stream?token=${encodeURIComponent(this._token)}&user_id=${encodeURIComponent(t)}`;
+		}
 		let n = this._userId || "guest";
 		return `${e}/events/stream?user_id=${encodeURIComponent(n)}`;
 	}
@@ -142,12 +164,17 @@ var s = null, c = null, l = null, u = null, d = 3e3, f = 1e4, p = 200, m = new c
 	}
 	_dispatchSocialPayload(e) {
 		if (this._isDuplicate(e)) return;
-		let t = e.type || e.event_type || e.action || "message";
-		e.action === "TTS" && e.generated_audio_url && (t = "tts");
-		let n = e.type === "consent.request";
-		if ((e.component_type || n || e.type && e.agent_id && e.type !== "notification") && t !== "agent.ui.update" && this._emit("agent.ui.update", e), this._emit(t, e), t === "notification") {
-			var r, i;
-			let t = ((r = e.data) == null ? void 0 : r.type) || ((i = e.data) == null ? void 0 : i.event_type);
+		let t = m(e);
+		if (t) {
+			this._emit("agent.ui.update", t);
+			return;
+		}
+		let n = e.type || e.event_type || e.action || "message";
+		e.action === "TTS" && e.generated_audio_url && (n = "tts");
+		let r = e.type === "consent.request";
+		if ((e.component_type || r || e.type && e.agent_id && e.type !== "notification") && n !== "agent.ui.update" && this._emit("agent.ui.update", e), this._emit(n, e), n === "notification") {
+			var i, a;
+			let t = ((i = e.data) == null ? void 0 : i.type) || ((a = e.data) == null ? void 0 : a.event_type);
 			t && t !== "notification" && this._emit(t, e.data || e);
 		}
 	}
@@ -170,4 +197,4 @@ var s = null, c = null, l = null, u = null, d = 3e3, f = 1e4, p = 200, m = new c
 	}
 }();
 //#endregion
-export { r as a, n as i, i as n, a as o, e as r, t as s, m as t };
+export { r as a, n as i, i as n, a as o, e as r, t as s, h as t };

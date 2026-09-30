@@ -10,7 +10,7 @@
  */
 import {
   CONSENT_ASKS, FINGERPRINT_CAPTION, PRIVACY_CARD_TYPES, askTitle, canDecline,
-  declineLabel, deviceFingerprint, grantLabel, isPerRequester,
+  declineLabel, declineNote, deviceFingerprint, grantLabel, isPerRequester,
 } from '../constants/consentAsks';
 
 const KEY = '3f9a1c0277deb4e1' + 'c'.repeat(48);
@@ -74,5 +74,20 @@ describe('an agent ask is unchanged', () => {
       .toBe("Don't allow Disk Watch Dan");
     expect(declineLabel('computer_control', '88659566083', '')).toBe("Don't allow this agent");
     expect(declineLabel('computer_control', null, '')).toBe("Don't allow");
+  });
+});
+
+describe('declineNote: only a credential promises "Allow asking again"', () => {
+  // Review m5: the fallback promised the privacy page's credential list for
+  // every type without a privacy card, and that list shows credentials only.
+  test('a credential names the way back', () => {
+    expect(declineNote('credential', 'No')).toMatch(/"Allow asking again" in Privacy settings/);
+  });
+
+  test('a privacy-card type names its card; any other type promises nothing', () => {
+    expect(declineNote('computer_control', 'No')).toMatch(/until you allow it again in Privacy settings/);
+    const other = declineNote('data_access', 'No');
+    expect(other).not.toMatch(/Allow asking again/);
+    expect(other).not.toMatch(/Privacy settings/);
   });
 });

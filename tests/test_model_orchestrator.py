@@ -329,9 +329,12 @@ class TestTTSLoader:
         mock_engine._can_run_backend.return_value = True
         mock_tts = MagicMock()
         mock_tts.TTSEngine = MagicMock(return_value=mock_engine)
-        with patch.dict('sys.modules', {'tts.tts_engine': mock_tts}):
+        # The id now resolves to the real chatterbox ToolWorker; keep the
+        # test from spawning it.
+        with patch.dict('sys.modules', {'tts.tts_engine': mock_tts}), \
+                patch.object(loader, '_get_tool_worker', return_value=None):
             loader.load(entry, 'gpu')
-        mock_engine._can_run_backend.assert_called_with('chatterbox-turbo')
+        mock_engine._can_run_backend.assert_called_with('chatterbox_turbo')
 
     # ── validate() — L1.2 capability probe ──────────────────────────
     def _mock_handshake_modules(self, handshake_result, engine=None):
@@ -399,7 +402,7 @@ class TestTTSLoader:
         _, mock_hs, modules = self._mock_handshake_modules(result)
         with patch.dict('sys.modules', modules):
             loader.validate(entry)
-        mock_hs.invalidate.assert_called_once_with('chatterbox-turbo')
+        mock_hs.invalidate.assert_called_once_with('chatterbox_turbo')
 
     def test_validate_returns_false_on_import_failure(self):
         """tts.tts_handshake missing → (False, 'TTS imports failed: ...')."""
@@ -439,8 +442,8 @@ class TestTTSLoader:
         assert 'boom' in reason
 
     def test_validate_uses_backend_name_without_tts_prefix(self):
-        """The handshake gets the stripped backend name, matching the
-        ENGINE_REGISTRY keys (e.g. 'piper', not 'tts-piper')."""
+        """The handshake gets the Nunba backend constant for the entry
+        (e.g. 'indic_parler', not 'tts-indic-parler' or 'indic-parler')."""
         loader = TTSLoader()
         entry = _make_entry(id='tts-indic-parler', model_type='tts')
         result = SimpleNamespace(ok=True, n_bytes=15_000, duration_s=0.8, err='')
@@ -449,7 +452,7 @@ class TestTTSLoader:
             loader.validate(entry)
         args, kwargs = mock_hs.run_handshake.call_args
         # backend is the 2nd positional arg to run_handshake(engine, backend, ...)
-        assert args[1] == 'indic-parler'
+        assert args[1] == 'indic_parler'
 
 
 # ===========================================================================

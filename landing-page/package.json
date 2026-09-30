@@ -87,8 +87,8 @@
   "scripts": {
     "analyze": "source-map-explorer 'build/static/js/*.js'",
     "start": "react-app-rewired start",
-    "setup-env": "bash scripts/setup-env.sh",
-    "prebuild": "bash scripts/setup-env.sh",
+    "setup-env": "node scripts/setup-env.cjs",
+    "prebuild": "node scripts/setup-env.cjs",
     "build": "react-app-rewired build",
     "build:embed": "vite build -c vite.embed.config.mjs",
     "test:embed": "vitest run -c vite.embed.config.mjs",

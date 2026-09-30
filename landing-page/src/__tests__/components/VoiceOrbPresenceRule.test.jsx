@@ -19,10 +19,11 @@
  *    action='Thinking' (the same contract the main window's Thought-process
  *    Steps key on).  'Status' is canned spinner copy and must NOT surface.
  */
+import { CHAT_ACTION_STATUS, CHAT_ACTION_THINKING, CHAT_BUBBLE_PRIORITY } from '../../constants/chatBubble';
+
 import { render, screen, act } from '@testing-library/react';
 import React from 'react';
 
-import { CHAT_ACTION_STATUS, CHAT_ACTION_THINKING, CHAT_BUBBLE_PRIORITY } from '../../constants/chatBubble';
 
 const handlers = {};
 jest.mock('../../services/realtimeService', () => ({

@@ -15,7 +15,7 @@ var v = Object.freeze([
 	marketing: "megaphone"
 }, b = typeof HTMLElement < "u" ? HTMLElement : class {}, x = 0;
 function S() {
-	return import("./hart-embed-mountEmbed-Ge-hVxUo.js");
+	return import("./hart-embed-mountEmbed-CGLWWlQW.js");
 }
 function C(e, t) {
 	switch (e) {
@@ -130,7 +130,7 @@ var w = class extends b {
 		return e.setTransportLoader(this.isDemo ? import("./hart-embed-demoTransport-BxS-BN13.js").then((t) => t.createDemoTransport({
 			sink: e.sink,
 			storeName: n
-		})) : import("./hart-embed-gatewayTransport-DpX82GhD.js").then((n) => {
+		})) : import("./hart-embed-gatewayTransport-Bt0iq4hr.js").then((n) => {
 			let i = n.createGatewayTransport({
 				sink: e.sink,
 				gatewayUrl: t,

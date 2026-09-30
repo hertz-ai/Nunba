@@ -145,7 +145,7 @@ export default function Features({classlist}) {
               <div className="flex justify-center pb-4">
                 <button
                   onClick={() => handleButtonClick(item)}
-                  className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition-transform duration-300 transform hover:scale-110"
+                  className="btn-feedback bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition-transform duration-300 transform hover:scale-110"
                 >
                   Talk To Agent
                 </button>
@@ -158,7 +158,7 @@ export default function Features({classlist}) {
           <button
             onClick={() => navigate('/agents')}
             style={{color: 'black'}}
-            className="px-4 py-2 bg-blue-600 rounded-lg transition-colors duration-300 hover:bg-blue-700 flex items-center"
+            className="btn-feedback px-4 py-2 bg-blue-600 rounded-lg transition-colors duration-300 hover:bg-blue-700 flex items-center"
           >
             View All Agents
             <FontAwesomeIcon icon={faArrowRight} style={{marginLeft: '10px'}} />

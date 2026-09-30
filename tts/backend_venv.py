@@ -31,7 +31,10 @@ Public API
 Design notes
 ------------
   * Idempotent: ensure_venv short-circuits if the python exe already
-    exists. Re-entrant-safe.
+    exists and the venv was built by this app's venv interpreter
+    (core.venv_paths.venv_mismatch). A venv another interpreter built is
+    rebuilt by the installed app and refused by a source run.
+    Re-entrant-safe.
   * Survives reinstall: venvs live in the user-writable
     ~/Documents/Nunba/data/venvs/ tree (via
     core.platform_paths.get_data_dir), NOT under Program Files, so a
@@ -58,6 +61,44 @@ from pathlib import Path
 
 logger = logging.getLogger("NunbaBackendVenv")
 
+
+def _kill_proc_tree(proc: "subprocess.Popen") -> None:
+    """Kill a subprocess AND all of its descendants.
+
+    pip can spawn grandchildren (wheel builds, vendored downloaders) that
+    inherit the stdout/stderr pipes.  Killing only the direct child leaves
+    those pipes open, so the reader threads never see EOF and
+    ``communicate()`` hangs forever *despite* a timeout — the exact deadlock
+    py-spy caught wedging auto-setup on a TTS backend install.  Reap the whole
+    tree instead.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        if sys.platform == "win32":
+            si_k = cf_k = None
+            try:
+                from tts._subprocess import hidden_startupinfo
+                si_k, cf_k = hidden_startupinfo()
+            except Exception:
+                si_k = cf_k = None
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, timeout=30,
+                startupinfo=si_k, creationflags=cf_k or 0,
+            )
+        else:
+            import signal as _signal
+            try:
+                os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+            except Exception:
+                proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
 # Import-validate timeout for `python -c "import <pkg>"` probes.  Default
 # is 90s (was 30s — too short for backends that initialize CUDA on import,
 # notably chatterbox_turbo which observed a hard rc=124 timeout in
@@ -73,14 +114,19 @@ _IMPORT_PROBE_TIMEOUT = max(
 def _reset_cache_for_tests() -> None:
     """Reset the cached venv root.  Test hook only.
 
-    Delegates to ``core.venv_paths._reset_cache_for_tests`` since the
+    Delegates to ``core.venv_paths.reset_venv_root_cache`` since the
     actual cache moved there as part of the parallel-path elimination
     (2026-05-03).  9 journey tests (J215–J219) call this to clear state
     between cases that mutate ``NUNBA_VENV_ROOT_OVERRIDE`` — the
     forwarding here keeps them green without rewriting every call site.
     """
-    from core.venv_paths import _reset_cache_for_tests as _canonical_reset
-    _canonical_reset()
+    try:
+        from core.venv_paths import reset_venv_root_cache as _reset
+    except ImportError:
+        # HARTOS before 09c1df788 (an install may carry one): the same
+        # function under its old name, which HARTOS keeps as an alias.
+        from core.venv_paths import _reset_cache_for_tests as _reset
+    _reset()
 
 
 def venv_root() -> Path:
@@ -109,8 +155,12 @@ def _validate_backend_name(backend: str) -> None:
     bare name and the public API in PHASE6_RESULTS.md documents it
     here.
     """
-    from core.venv_paths import _validate_backend_name as _canonical
-    _canonical(backend)
+    try:
+        from core.venv_paths import validate_backend_name as _validate
+    except ImportError:
+        # HARTOS before 09c1df788: the old name, kept by HARTOS as an alias.
+        from core.venv_paths import _validate_backend_name as _validate
+    _validate(backend)
 
 
 # ── Venv python exe resolution ───────────────────────────────────────
@@ -156,39 +206,67 @@ def _resolve_venv_creator_python() -> str:
     The bundled interpreter is the same Python version Nunba was
     built against, so the venv it creates is binary-compatible with
     everything Nunba already imported.
+
+    The answer is ``core.venv_paths.venv_creator_python`` (the same one
+    the spawn path judges a venv against, so a venv this creates is one
+    the worker will run); this wrapper only refuses loudly when a frozen
+    build has no bundled interpreter.
     """
-    if getattr(sys, 'frozen', False):
-        # Frozen — sys.executable is Nunba.exe.  Look for the bundled
-        # interpreter at <app-dir>/python-embed/python.exe.
-        app_dir = Path(sys.executable).resolve().parent
-        candidate = app_dir / 'python-embed' / 'python.exe'
-        if candidate.is_file():
-            return str(candidate)
-        # Linux/macOS bundle layout — interpreter typically under
-        # python-embed/bin/python or similar.
-        for alt in (
-            app_dir / 'python-embed' / 'bin' / 'python3',
-            app_dir / 'python-embed' / 'bin' / 'python',
-        ):
-            if alt.is_file():
-                return str(alt)
-        # If we somehow can't find the bundled python, raise loudly
-        # rather than silently invoking Nunba.exe again — that path
-        # produces the misleading "duplicate instance" error.
-        raise RuntimeError(
-            f"frozen mode: could not find bundled python interpreter "
-            f"under {app_dir / 'python-embed'}; refusing to spawn "
-            f"{sys.executable!r} which would re-launch the app and "
-            f"trigger the duplicate-instance guard."
-        )
-    # Dev / source-run mode — sys.executable is a real Python.
-    return sys.executable
+    from core.venv_paths import venv_creator_python
+    creator = venv_creator_python()
+    if creator:
+        return creator
+    # If we somehow can't find the bundled python, raise loudly rather
+    # than silently invoking Nunba.exe again — that path produces the
+    # misleading "duplicate instance" error.  The directory named is the
+    # one venv_creator_python searched (python_embed_dir: sys.executable
+    # resolved); a HARTOS before 09c1df788 has no python_embed_dir, so
+    # the same resolution is spelled out here for it.
+    try:
+        from core.venv_paths import python_embed_dir
+        searched = python_embed_dir()
+    except ImportError:
+        searched = str(Path(sys.executable).resolve().parent / "python-embed")
+    raise RuntimeError(
+        f"frozen mode: could not find bundled python interpreter "
+        f"under {searched}; refusing to spawn "
+        f"{sys.executable!r} which would re-launch the app and "
+        f"trigger the duplicate-instance guard."
+    )
+
+
+def _foreign_venv_reason(backend: str) -> str | None:
+    """Why ``backend``'s venv was built by an interpreter other than the one
+    this process creates venvs with (``core.venv_paths.venv_mismatch``, the
+    rule the spawn path applies too), or None.
+
+    Measured 2026-09-25: miniconda-3.11 venvs from a source run were
+    adopted by the installed 3.12 app and died with "bad magic number in
+    'encodings'".  A HARTOS tree too old to have the rule answers None
+    (logged), which is the behaviour before it existed.  Nunba runs
+    against whatever HARTOS is installed or cloned, so every name this
+    module takes from core.venv_paths that an older tree lacks has a
+    fallback (here; _validate_backend_name; _reset_cache_for_tests; the
+    python-embed dir in _resolve_venv_creator_python), and
+    tests/test_backend_venv_foreign_interpreter.py removes all of them.
+    """
+    try:
+        from core.venv_paths import venv_mismatch
+    except ImportError as exc:
+        logger.warning("venv %r: core.venv_paths has no venv_mismatch (%s); "
+                       "its builder is not checked", backend, exc)
+        return None
+    return venv_mismatch(backend)
 
 
 def ensure_venv(backend: str, python_version: str = "3.11") -> Path:
     """Create the venv for `backend` if missing, and return its python exe.
 
-    Idempotent — second call is a stat-check, not a re-create.
+    Idempotent — a second call is a stat-check plus a read of the venv's
+    pyvenv.cfg, not a re-create.  A venv another interpreter built
+    (core.venv_paths.venv_mismatch) is rebuilt by the installed app, with
+    its cached import-probe answers dropped; a source run refuses it with
+    the reason instead of deleting the app's venv.
 
     The ``python_version`` argument is advisory in this base
     implementation (matches the operator-supplied contract) — the venv
@@ -203,8 +281,29 @@ def ensure_venv(backend: str, python_version: str = "3.11") -> Path:
     pyexe = _python_exe_in(vpath)
 
     if pyexe.is_file():
-        _expose_parent_packages(backend)
-        return pyexe
+        foreign = _foreign_venv_reason(backend)
+        if not foreign:
+            _expose_parent_packages(backend)
+            return pyexe
+        if not getattr(sys, 'frozen', False):
+            # A source run shares this store with the installed app on a
+            # dev box; deleting the app's venv here would cost it a full
+            # reinstall, so say why and stop.
+            raise RuntimeError(
+                f"{foreign}.  A source run does not replace a venv it did "
+                f"not build; set NUNBA_VENV_ROOT_OVERRIDE to give this run "
+                f"its own venv store."
+            )
+        # The installed app owns the store and is the only interpreter
+        # whose venvs it can run: rebuild.
+        logger.warning("%s; rebuilding it", foreign)
+        shutil.rmtree(vpath, ignore_errors=True)
+        invalidate_venv_probe_cache(backend)
+        if vpath.exists():
+            raise RuntimeError(
+                f"{foreign}, and it could not be removed for a rebuild "
+                f"(a file under {vpath} is in use)"
+            )
 
     vpath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -444,16 +543,29 @@ def install_into_venv(
             log_f.flush()
             r = None
             for attempt in range(1, _MAX_PIP_ATTEMPTS + 1):
+                proc = subprocess.Popen(
+                    [str(pyexe), "-m", "pip", "install", pkg],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    startupinfo=si,
+                    creationflags=cf or 0,
+                    # POSIX: own session so the whole tree can be signalled.
+                    start_new_session=(sys.platform != "win32"),
+                )
                 try:
-                    r = subprocess.run(
-                        [str(pyexe), "-m", "pip", "install", pkg],
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout_per_package,
-                        startupinfo=si,
-                        creationflags=cf or 0,
-                    )
+                    out, err = proc.communicate(timeout=timeout_per_package)
+                    r = subprocess.CompletedProcess(
+                        proc.args, proc.returncode, out, err)
                 except subprocess.TimeoutExpired:
+                    # Reap the WHOLE tree. A plain kill would leave a grandchild
+                    # (wheel build) holding the pipes, and communicate() would
+                    # hang here forever — the freeze that broke auto-setup.
+                    _kill_proc_tree(proc)
+                    try:
+                        proc.communicate(timeout=15)
+                    except Exception:
+                        pass
                     msg = f"pip install {pkg!r} timed out after {timeout_per_package}s"
                     log_f.write(msg + "\n")
                     return False, msg
@@ -625,6 +737,10 @@ def is_venv_healthy(backend: str, probe_module: str | None = None) -> bool:
     vpath = venv_path(backend)
     pyexe = _python_exe_in(vpath)
     if not pyexe.is_file():
+        return False
+    # Like the file check, never cached: a venv another interpreter built
+    # is not one this app can run, whatever it can import.
+    if _foreign_venv_reason(backend):
         return False
     if probe_module is None:
         return True

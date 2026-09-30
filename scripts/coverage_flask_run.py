@@ -27,7 +27,7 @@ Graceful shutdown on Windows:
     then `os._exit(0)` — this is the only reliable way to collect a
     coverage fragment on Windows where SIGTERM often arrives via
     `TerminateProcess` which bypasses atexit.  The endpoint is gated
-    to loopback (`request.remote_addr` starts with 127.) and to the
+    to this machine (routes.auth._is_local_request) and to the
     presence of `NUNBA_COVERAGE_ENABLED=1` in the environment.
 """
 
@@ -111,9 +111,9 @@ def _install_coverage_routes(app) -> None:
 
     @app.route("/_debug/coverage/flush", methods=["GET", "POST"])
     def _coverage_flush():  # pragma: no cover — loopback helper
-        from flask import jsonify, request
-        remote = (request.remote_addr or "")
-        if not (remote.startswith("127.") or remote == "::1"):
+        from flask import jsonify
+        from routes.auth import _is_local_request
+        if not _is_local_request():
             return jsonify({"error": "loopback only"}), 403
         _flush_coverage()
         # restart coverage so subsequent traffic continues to be
@@ -134,9 +134,9 @@ def _install_coverage_routes(app) -> None:
         returns without needing SIGTERM.  The reliable way to
         terminate on Windows."""
 
-        from flask import jsonify, request
-        remote = (request.remote_addr or "")
-        if not (remote.startswith("127.") or remote == "::1"):
+        from flask import jsonify
+        from routes.auth import _is_local_request
+        if not _is_local_request():
             return jsonify({"error": "loopback only"}), 403
         _flush_coverage()
         import threading

@@ -12,6 +12,38 @@
 }
 
 @layer components {
+  /* Hover, press, keyboard-focus, disabled and busy feedback for every
+     <button>.  Uses filter + an inset overlay so it shows over inline
+     background/colour styles.  Declared first so a button's own btn-* class
+     or Tailwind hover:/active: utility still wins. */
+  .btn-feedback {
+    transition: filter 150ms, transform 80ms, box-shadow 150ms;
+  }
+  .btn-feedback:hover:not(:disabled) {
+    filter: brightness(1.15);
+    box-shadow: inset 0 0 0 999px rgba(128, 128, 128, 0.12);
+  }
+  .btn-feedback:active:not(:disabled) {
+    transform: scale(0.96);
+    filter: brightness(0.9);
+  }
+  .btn-feedback:focus-visible {
+    outline: 2px solid #6C63FF;
+    outline-offset: 2px;
+  }
+  .btn-feedback:disabled {
+    cursor: not-allowed;
+    filter: grayscale(0.5) brightness(0.8);
+  }
+  .btn-feedback[aria-busy='true'] {
+    cursor: progress;
+    animation: btn-feedback-busy 0.8s ease-in-out infinite alternate;
+  }
+  @keyframes btn-feedback-busy {
+    from { opacity: 1; }
+    to { opacity: 0.55; }
+  }
+
   /* Gradient action button — primary CTA with press/hover feedback */
   .btn-gradient {
     @apply w-full py-2 px-4 rounded text-white font-semibold

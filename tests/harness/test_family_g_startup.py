@@ -51,7 +51,11 @@ def test_g3_pywebview_handler_trace_survives_buffered_logger(source_app_py, sour
     src = source_text(source_app_py)
     on_loaded_idx = src.find("EVENT: on_loaded fired")
     on_shown_idx = src.find("EVENT: on_shown fired")
-    mount_idx = src.find("BG_SHOWN: mount check")
+    # The mount-check loop moved into the shared remount routine in
+    # 2d5bd1a6c ("taskbar-restore triggers mount-recovery"), so its trace
+    # prefix is now REMOUNT[<origin>] instead of BG_SHOWN.  The invariant
+    # is unchanged: an unbuffered _trace() inside the mount-check loop.
+    mount_idx = src.find('_trace(f"REMOUNT[{origin}]: mount check #')
     assert on_loaded_idx > 0, "no _trace call inside on_loaded handler"
     assert on_shown_idx > 0, "no _trace call inside on_shown handler"
     assert mount_idx > 0, "no _trace call inside mount-check loop"

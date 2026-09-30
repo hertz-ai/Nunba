@@ -28,8 +28,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 
+# The ONE splash opacity (app.py _SPLASH_OPACITY) and the reading of a
+# splash PNG's backdrop alpha are the generator's own, so the probe expects
+# what the file was built to be, never a number typed here.
 import glass_probe as gp  # noqa: E402
+from gen_splash import png_backdrop_alpha, splash_opacity  # noqa: E402
+
+#: How far a measured transmittance may sit from its target.  The instrument
+#: read 0.380 for 0.380 and 0.122 for 0.120 (2026-09-25) and 0.096 / 0.099 for
+#: 0.100 (2026-09-26): 0.02 holds every reading and still fails a splash
+#: that drifts a fifth of the way to the next owner's step.
+TRANSMITTANCE_TOLERANCE = 0.02
+
+#: Alpha steps either side of the backdrop's alpha that still count as
+#: backdrop when hunting a patch: LANCZOS resize and the kolam dots ripple the
+#: resized alpha a few steps; a glow or the artwork lifts it far past this.
+BACKDROP_ALPHA_BAND = 8
 
 
 def read_patches(window_rect, patches, hwnd):
@@ -76,7 +92,9 @@ def read_patches(window_rect, patches, hwnd):
 
 def _selftest() -> int:
     import tkinter as tk
+
     from PIL import Image, ImageDraw
+
     from desktop import glass
 
     gp.ensure_dpi_aware()
@@ -146,6 +164,7 @@ def _static() -> int:
     """GL4 proof on the shipping builder and the shipping splash.png."""
     import ctypes
     import tkinter as tk
+
     from PIL import Image
 
     gp.ensure_dpi_aware()
@@ -175,8 +194,22 @@ def _static() -> int:
                     return (left + x, top_y + y, left + x + bw, top_y + y + bh)
         return None
 
-    background = box_where(lambda lo, hi: 150 <= lo and hi <= 166)
+    # The target is the one splash opacity; the file must carry it, and the
+    # patch hunted is wherever the file's own backdrop alpha is.
+    target = 1 - splash_opacity()
+    bg_alpha = png_backdrop_alpha(str(splash))
+    png_ok = abs(bg_alpha - 255 * (1 - target)) <= 1
+    print(f'target transmittance {target:.3f}; splash.png backdrop alpha '
+          f'{bg_alpha} ({"matches" if png_ok else "DOES NOT match"} it)')
+    band = BACKDROP_ALPHA_BAND
+    background = box_where(
+        lambda lo, hi: bg_alpha - band <= lo and hi <= bg_alpha + band)
     print('background patch', background)
+    if background is None:
+        root.destroy()
+        print('no patch of the resized art sits at the backdrop alpha')
+        print('STATIC FAIL')
+        return 1
     verdicts = read_patches(rect, {'background': background}, hwnd)
 
     # Whole-window map: measured transmittance vs 1 - alpha, pixel by pixel.
@@ -214,7 +247,8 @@ def _static() -> int:
     root.destroy()
 
     bg = verdicts['background']
-    ok = (bg.kind == gp.ALPHA and abs(bg.transmittance - (1 - 158 / 255)) <= 0.06
+    ok = (png_ok and bg.kind == gp.ALPHA
+          and abs(bg.transmittance - target) <= TRANSMITTANCE_TOLERANCE
           and mae <= 0.05)
     print('STATIC', 'PASS' if ok else 'FAIL')
     return 0 if ok else 1
@@ -227,7 +261,7 @@ def _animated() -> int:
     module-level names it reads supplied: a logger, ``_eroot = None`` (the
     dev path, where it makes its own root) and the helpers it calls.  The
     whole window should let the desktop through uniformly at
-    1 - _ANIMATED_SPLASH_OPACITY, the rung glass.py gives a tk surface.
+    1 - _SPLASH_OPACITY, the rung glass.py gives a tk surface.
     """
     import ast
     import ctypes
@@ -237,7 +271,7 @@ def _animated() -> int:
     app = Path(__file__).resolve().parent.parent / 'app.py'
     tree = ast.parse(app.read_text(encoding='utf-8'))
     wanted = {'_proportional_splash', '_show_splash', '_safe_tk_update',
-              '_ANIMATED_SPLASH_OPACITY'}
+              '_SPLASH_OPACITY'}
     nodes = [n for n in tree.body
              if (isinstance(n, ast.FunctionDef) and n.name in wanted)
              or (isinstance(n, ast.Assign) and any(
@@ -247,7 +281,7 @@ def _animated() -> int:
           'logger': logging.getLogger('splash_alpha_probe')}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(app), 'exec'),
          ns)
-    expected = 1 - ns['_ANIMATED_SPLASH_OPACITY']
+    expected = 1 - ns['_SPLASH_OPACITY']
 
     gp.ensure_dpi_aware()
     root, _status, close = ns['_show_splash']()
@@ -266,7 +300,8 @@ def _animated() -> int:
     for name, v in verdicts.items():
         print(f'{name:10s} {v}')
     close()
-    ok = all(v.kind == gp.ALPHA and abs(v.transmittance - expected) <= 0.04
+    ok = all(v.kind == gp.ALPHA
+             and abs(v.transmittance - expected) <= TRANSMITTANCE_TOLERANCE
              for v in verdicts.values())
     print(f'expected transmittance {expected:.3f}')
     print('ANIMATED', 'PASS' if ok else 'FAIL')

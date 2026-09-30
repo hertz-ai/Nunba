@@ -119,7 +119,7 @@ const RESIZE_GRIPS = [
 
 function WindowButton({ label, onClick, hoverBg, testId, children }) {
   return (
-    <button
+    <button className="btn-feedback"
       type="button"
       aria-label={label}
       onClick={onClick}

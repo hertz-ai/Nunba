@@ -397,12 +397,12 @@ class LlamaConfig:
         self.server_status_file = self.config_dir / "server_status.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
-        self.installer = LlamaInstaller()
         self.server_process: subprocess.Popen | None = None
         self._server_starting = False  # Lock to prevent double start
 
         # Load or create config
         self.config = self._load_config()
+        self.installer = LlamaInstaller(config_dir=self.config_dir)
 
         # Update API base with configured port
         self.api_base = f"http://127.0.0.1:{self.config.get('server_port', 8080)}/v1"
@@ -463,14 +463,43 @@ class LlamaConfig:
                 json.dump(self.config, f, indent=2)
             os.replace(tmp, self.config_file)
             tmp = None
+            return True
         except Exception as e:
             logger.error(f"Failed to save config: {e}")
+            return False
         finally:
             if tmp:
                 try:
                     os.unlink(tmp)
                 except OSError:
                     pass
+
+    def get_models_dir(self) -> str:
+        """Expose the installer's resolved destination to the existing Admin API."""
+        return str(self.installer.models_dir)
+
+    def set_models_dir(self, models_dir) -> dict:
+        """Validate and persist future downloads; never move existing weights."""
+        if not isinstance(models_dir, str) or not models_dir.strip():
+            raise ValueError('models_dir must be a nonempty path')
+        if os.environ.get('NUNBA_MODELS_DIR', '').strip():
+            raise ValueError('NUNBA_MODELS_DIR controls storage; change that setting first')
+        destination = Path(models_dir.strip()).expanduser().resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+        fd, probe = tempfile.mkstemp(prefix='.nunba-write-check-', dir=destination)
+        os.close(fd)
+        os.unlink(probe)
+        import shutil
+        usage = shutil.disk_usage(destination)
+        previous = dict(self.config)
+        self.config['models_dir'] = str(destination)
+        if self._save_config() is not True:
+            self.config = previous
+            raise OSError('Could not persist the model storage location')
+        self.installer.models_dir = destination
+        return {'models_dir': str(destination),
+                'free_gb': round(usage.free / (1024 ** 3), 2),
+                'total_gb': round(usage.total / (1024 ** 3), 2)}
 
     @staticmethod
     def _propagate_llm_url(url: str):
@@ -711,7 +740,9 @@ class LlamaConfig:
         """
         try:
             import time as _time
-            log_dir = Path(os.path.expanduser('~')) / 'Documents' / 'Nunba' / 'logs'
+            # The same dir HARTOS's get_boot_decision reads (one resolver).
+            from core.platform_paths import get_log_dir
+            log_dir = Path(get_log_dir())
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / 'draft_decision.jsonl'
             entry = {

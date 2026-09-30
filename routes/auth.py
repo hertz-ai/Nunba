@@ -26,13 +26,14 @@ def _ci_trusts_every_caller():
 
 
 def is_local_environ(environ):
-    """True when a WSGI request comes from this machine, accounting for proxies.
+    """True when a WSGI request comes from this machine: HARTOS's one rule,
+    core.auth_local.is_local_environ, imported rather than copied.
 
-    When running behind a reverse proxy, *all* requests appear as 127.0.0.1
-    because the proxy connects locally.  If the ``TRUSTED_PROXY`` env-var is
-    set to the proxy's address we inspect ``X-Forwarded-For`` to determine the
-    *real* client IP.  Without the env-var, only ``REMOTE_ADDR`` is checked
-    (safe default for direct connections).
+    Local means the SOCKET peer is loopback and, when that peer is a proxy on
+    this machine, the client it forwards is loopback too.  A forwarded claim
+    never makes a request local: this used to take the FIRST
+    X-Forwarded-For hop behind TRUSTED_PROXY, so a client that wrote
+    '127.0.0.1' there was this machine (review of HARTOS 291e548df, F3).
 
     CI bypass: HARTOS's core.auth_local.ci_trusts_every_caller, imported
     rather than copied so the two rules cannot diverge again.  NUNBA_CI=1
@@ -44,15 +45,60 @@ def is_local_environ(environ):
     The one loopback rule: _is_local_request applies it to the current Flask
     request, and app.py's dispatcher to a raw environ before any app has it.
     """
+    try:
+        from core.auth_local import is_local_environ as _rule
+    except Exception:
+        # ImportError (an older HARTOS) or a HARTOS module that failed part-
+        # way: the fallback is the same rule, so it can neither grant nor
+        # refuse more (tests/test_inprocess_dispatch_reachable.py covers the
+        # half-loaded module, tests/test_one_client_address_rule.py the rest).
+        return _is_local_environ_without_hartos(environ)
+    return _rule(environ)
+
+
+def _is_local_environ_without_hartos(environ):
+    """HARTOS's rule (core.auth_local._local_from) for a HARTOS without
+    is_local_environ: an installed desktop whose bundled core/auth_local.py
+    predates it (measured 2026-09-27: both installed copies, md5 c4b060ce).
+
+    The same two conditions, so the degraded path can neither grant more nor
+    refuse more: the SOCKET peer is loopback, and when it forwarded a client
+    (a proxy on this machine) the LAST X-Forwarded-For hop, the one that
+    proxy appended, is loopback too.  A TRUSTED_PROXY that is loopback and
+    names no client is not local.  Tested with the import forced to fail
+    (tests/test_one_client_address_rule.py).
+    """
+    import ipaddress
+
+    def _norm(v):
+        v = (v or '').strip().strip('[]').lower()
+        try:
+            ip = ipaddress.ip_address(v)
+            return str(getattr(ip, 'ipv4_mapped', None) or ip)
+        except ValueError:
+            return v
+
+    def _loop(v):
+        v = _norm(v)
+        if v == 'localhost':
+            return True
+        try:
+            return ipaddress.ip_address(v).is_loopback
+        except ValueError:
+            return False
+
     if _ci_trusts_every_caller():
         return True
-    remote_addr = environ.get('REMOTE_ADDR', '')
-    trusted_proxy = os.environ.get('TRUSTED_PROXY', '')
-    if trusted_proxy and remote_addr == trusted_proxy:
-        forwarded_for = environ.get('HTTP_X_FORWARDED_FOR', '').split(',')[0].strip()
-        return forwarded_for in ('127.0.0.1', '::1', 'localhost')
-    # Direct connection - check REMOTE_ADDR
-    return remote_addr in ('127.0.0.1', '::1')
+    remote = _norm(environ.get('REMOTE_ADDR', ''))
+    if not _loop(remote):
+        return False
+    hops = [h for h in (environ.get('HTTP_X_FORWARDED_FOR') or '').split(',')
+            if h.strip()]
+    if hops:
+        return _loop(hops[-1])
+    trusted = {_norm(p) for p in os.environ.get('TRUSTED_PROXY', '').split(',')
+               if p.strip()}
+    return remote not in trusted
 
 
 def _is_local_request():

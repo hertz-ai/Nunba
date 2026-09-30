@@ -6,6 +6,7 @@
  * Reuses msgAppear keyframe from ThoughtExperimentTracker.
  */
 
+import { steerError } from '../../../constants/steerOutcome';
 import { trackerApi } from '../../../services/socialApi';
 import { socialTokens, RADIUS, EASINGS, DURATIONS, SHADOWS } from '../../../theme/socialTokens';
 
@@ -66,7 +67,9 @@ export default function AgentInterviewPanel({ postId, agentTitle, onClose }) {
       const answer = res?.data?.answer || res?.data?.data?.answer || 'No response from agent.';
       setMessages((prev) => [...prev, { role: 'agent', text: answer, ts: Date.now() }]);
     } catch (err) {
-      const errMsg = err?.response?.data?.error || err.message || 'Interview request failed';
+      // HARTOS asks may_steer here too: a non-owner gets 403.  Worded as the
+      // outcome, the way every steering surface says it.
+      const errMsg = steerError(err, 'Interview request failed');
       setMessages((prev) => [...prev, { role: 'agent', text: `Error: ${errMsg}`, ts: Date.now(), error: true }]);
     } finally {
       setSending(false);

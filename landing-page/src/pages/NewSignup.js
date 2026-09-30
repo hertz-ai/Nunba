@@ -71,7 +71,7 @@ const PhoneNumberInput = ({
         <div className="relative" ref={dropdownRef}>
           <button
             type="button"
-            className="form-input mt-3 flex items-center justify-between w-28 py-2 px-3 h-10 bg-transparent dark:bg-slate-900 dark:text-slate-200 rounded outline-none border border-gray-200 focus:border-amber-400 dark:border-gray-800"
+            className="btn-feedback form-input mt-3 flex items-center justify-between w-28 py-2 px-3 h-10 bg-transparent dark:bg-slate-900 dark:text-slate-200 rounded outline-none border border-gray-200 focus:border-amber-400 dark:border-gray-800"
             onClick={() => setIsDropdownOpen(!isDropdownOpen)}
           >
             {countryCode}
@@ -95,7 +95,7 @@ const PhoneNumberInput = ({
                   filteredCountries.map((country, index) => (
                     <button
                       key={index}
-                      className="block w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-slate-800 dark:text-slate-200"
+                      className="btn-feedback block w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-slate-800 dark:text-slate-200"
                       onClick={() => {
                         setCountryCode(country.code);
                         setIsDropdownOpen(false);
@@ -528,7 +528,7 @@ export default function NewSignUp() {
                       <div className="mb-4">
                         <button
                           type="submit"
-                          className="py-2 px-5 inline-block tracking-wide border align-middle duration-500 text-base text-center  text-white rounded-md w-full"
+                          className="btn-feedback py-2 px-5 inline-block tracking-wide border align-middle duration-500 text-base text-center  text-white rounded-md w-full"
                           style={{
                             backgroundColor: '#00f0c5',
                             borderColor: '#FFFAE8',
@@ -663,7 +663,7 @@ export default function NewSignUp() {
                         <button
                           disabled={!termsAccepted}
                           type="submit"
-                          className="py-2 px-5 inline-block tracking-wide border align-middle duration-500 text-base text-center bg-amber-400 hover:bg-amber-500 border-amber-400 hover:border-amberbg-amber-500 text-white rounded-md w-full"
+                          className="btn-feedback py-2 px-5 inline-block tracking-wide border align-middle duration-500 text-base text-center bg-amber-400 hover:bg-amber-500 border-amber-400 hover:border-amberbg-amber-500 text-white rounded-md w-full"
                           onClick={handleFormSubmitBussiness}
                           style={{
                             background:

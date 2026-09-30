@@ -30,7 +30,7 @@ class HeaderW3c extends Component {
             <a href="#news">News</a>
             <a href="#contact">Contact</a>
             <div className="dropdown">
-              <button className="dropbtn">
+              <button className="btn-feedback dropbtn">
                 Dropdown
                 <i className="fa fa-caret-down" />
               </button>

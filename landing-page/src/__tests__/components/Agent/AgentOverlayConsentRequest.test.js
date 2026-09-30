@@ -46,10 +46,11 @@ jest.mock('../../../services/socialApi', () => ({
     decline: jest.fn(() => Promise.resolve({})),
   },
   notificationsApi: {markRead: jest.fn(() => Promise.resolve({}))},
+  chatApi: {vaultStore: jest.fn(() => Promise.resolve({success: true}))},
 }));
 
 const {default: AgentOverlay} = require('../../../components/AgentOverlay/AgentOverlay');
-const {consentApi} = require('../../../services/socialApi');
+const {consentApi, chatApi} = require('../../../services/socialApi');
 
 // The ask integrations/vlm/safety.computer_control_block files for a
 // known agent: its reason carries COMPUTER_CONTROL_COVERS.
@@ -480,6 +481,190 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
       expect(screen.queryByText(TITLE_B)).not.toBeInTheDocument();
     });
     expect(screen.getByText(TITLE)).toBeInTheDocument();
+  });
+});
+
+describe('AgentOverlay consent.request — the buttons answer the click', () => {
+  // Owner 2026-09-26: "the consent buttons do not have realtime feedback and
+  // user has no idea whether the button is hovered pressed etc".  Live the
+  // same day: four clicks on Allow sent four grants, because nothing showed
+  // the first was on its way.
+  test('while the grant is on its way the button says so and a second click sends nothing', async () => {
+    let finish;
+    consentApi.grant.mockImplementation(() => new Promise((r) => { finish = r; }));
+    const send = mountOverlay();
+    send(ASK);
+    const allow = await screen.findByRole('button', {name: ALLOW_ALL});
+
+    fireEvent.click(allow);
+    await waitFor(() => expect(allow).toBeDisabled());
+    expect(allow).toHaveAttribute('aria-busy', 'true');
+    fireEvent.click(allow);
+    fireEvent.click(screen.getByRole('button', {name: "Don't allow this agent"}));
+    expect(consentApi.grant).toHaveBeenCalledTimes(1);
+    expect(consentApi.decline).not.toHaveBeenCalled();
+
+    await act(async () => { finish({}); });
+    await waitFor(() => {
+      expect(screen.queryByText(ASK.reason)).not.toBeInTheDocument();
+    });
+  });
+
+  test('a failed grant gives the buttons back', async () => {
+    consentApi.grant.mockImplementation(() => Promise.reject(new Error('down')));
+    const send = mountOverlay();
+    send(ASK);
+    const allow = await screen.findByRole('button', {name: ALLOW_ALL});
+    fireEvent.click(allow);
+    await waitFor(() => expect(consentApi.grant).toHaveBeenCalledTimes(1));
+    // What must never happen is a card left with every button dead.
+    await waitFor(() => {
+      const still = screen.queryByRole('button', {name: ALLOW_ALL});
+      expect(still === null || !still.disabled).toBe(true);
+    });
+  });
+
+  test('a failed grant stays on the card and says why, instead of closing', async () => {
+    consentApi.grant.mockImplementationOnce(() => Promise.reject(new Error('server said 500')));
+    const send = mountOverlay();
+    send(ASK);
+    fireEvent.click(await screen.findByRole('button', {name: ALLOW_ALL}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('server said 500');
+    expect(screen.getByText(ASK.reason)).toBeInTheDocument();
+  });
+});
+
+describe('AgentOverlay consent.request — a credential ask', () => {
+  // HARTOS hartos.ai_key_vault.request_credential files this when an agent
+  // needs a password or key (Request_Resource): consent_type 'credential',
+  // scope 'secret:<NAME>'.  The agent only ever gets {{secret:NAME}}; the
+  // owner types the value here.  Accept stores it in this computer's vault
+  // (/api/vault/store, the store SecureInputModal used) and then grants the
+  // ask.  The value goes to the vault call and nowhere else.
+  const SECRET = 'Tr0ub4dor&3-horse';
+  const CRED_ASK = {
+    type: 'consent.request',
+    msg_id: 'consent.request:row-20',
+    consent_type: 'credential',
+    scope: 'secret:SITE_PASSWORD',
+    agent_id: '42',
+    reason: 'Site password is needed for the login step.',
+  };
+  // What Accept does: the value is saved on this computer, and any agent can
+  // then use it by its alias (resolve_aliases is not per agent).
+  const ACCEPT = 'Save it for any agent to use';
+
+  beforeEach(() => {
+    // CRA's resetMocks clears the factory's implementation before each test.
+    chatApi.vaultStore.mockResolvedValue({success: true});
+    // An earlier describe leaves a rejecting grant behind (mockImplementation).
+    consentApi.grant.mockResolvedValue({});
+    consentApi.decline.mockResolvedValue({});
+  });
+
+  test('Accept says what happens, not "Allow ALL agents to use a password"', async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+    expect(screen.getByRole('button', {name: ACCEPT})).toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: /Allow ALL agents/})).toBeNull();
+  });
+
+  // Owner ruling: consent must be able to say no.  "Not now" leaves the ask
+  // open, so without a decline HARTOS ConsentService.declined never became
+  // true for a credential and a rejected login re-asked forever.
+  test("Don't allow says no to this agent's credential ask, through the consent API", async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+
+    // Saying no needs nothing typed.
+    const no = screen.getByRole('button', {name: "Don't allow this agent"});
+    expect(no).not.toBeDisabled();
+    fireEvent.click(no);
+
+    await waitFor(() => {
+      expect(consentApi.decline).toHaveBeenCalledWith({
+        consent_type: 'credential', scope: 'secret:SITE_PASSWORD', agent_id: '42'});
+    });
+    expect(chatApi.vaultStore).not.toHaveBeenCalled();
+    expect(consentApi.grant).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.queryByText(CRED_ASK.reason)).not.toBeInTheDocument();
+    });
+  });
+
+  test('the card says what a no means for a credential, and how to take it back', async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+    expect(screen.getByText(
+      /will not ask for this again until you choose "Allow asking again" in Privacy settings/,
+    )).toBeInTheDocument();
+  });
+
+  test('a no that does not reach the server stays on the card and says so', async () => {
+    consentApi.decline.mockImplementationOnce(() => Promise.reject(new Error('network down')));
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+    fireEvent.click(screen.getByRole('button', {name: "Don't allow this agent"}));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('network down');
+    expect(screen.getByText(CRED_ASK.reason)).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: "Don't allow this agent"})).not.toBeDisabled();
+  });
+
+  test('has a password field, and Accept stays off until something is typed', async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    await screen.findByText(CRED_ASK.reason);
+
+    const field = screen.getByTestId('liquid-consent-secret');
+    expect(field).toHaveAttribute('type', 'password');
+    expect(screen.getByRole('button', {name: ACCEPT})).toBeDisabled();
+  });
+
+  test('Accept stores the value in the vault, then grants that one credential', async () => {
+    const send = mountOverlay();
+    send(CRED_ASK);
+    fireEvent.change(await screen.findByTestId('liquid-consent-secret'),
+      {target: {value: SECRET}});
+    fireEvent.click(screen.getByRole('button', {name: ACCEPT}));
+
+    await waitFor(() => {
+      expect(consentApi.grant).toHaveBeenCalledWith({
+        consent_type: 'credential', scope: 'secret:SITE_PASSWORD'});
+    });
+    expect(chatApi.vaultStore).toHaveBeenCalledWith({
+      key_type: 'tool_key', key_name: 'SITE_PASSWORD', value: SECRET});
+    expect(chatApi.vaultStore.mock.invocationCallOrder[0])
+      .toBeLessThan(consentApi.grant.mock.invocationCallOrder[0]);
+    expect(JSON.stringify(consentApi.grant.mock.calls)).not.toContain(SECRET);
+    await waitFor(() => {
+      expect(screen.queryByText(CRED_ASK.reason)).not.toBeInTheDocument();
+    });
+  });
+
+  test('when the vault refuses, nothing is granted and the card stays up', async () => {
+    chatApi.vaultStore.mockImplementationOnce(
+      () => Promise.resolve({success: false, error: 'vault unavailable'}));
+    const send = mountOverlay();
+    send(CRED_ASK);
+    fireEvent.change(await screen.findByTestId('liquid-consent-secret'),
+      {target: {value: SECRET}});
+    fireEvent.click(screen.getByRole('button', {name: ACCEPT}));
+
+    expect(await screen.findByText('vault unavailable')).toBeInTheDocument();
+    expect(consentApi.grant).not.toHaveBeenCalled();
+    expect(screen.getByText(CRED_ASK.reason)).toBeInTheDocument();
+  });
+
+  test('a card for any other ask has no password field', async () => {
+    const send = mountOverlay();
+    send(ASK);
+    await screen.findByText(ASK.reason);
+    expect(screen.queryByTestId('liquid-consent-secret')).toBeNull();
   });
 });
 

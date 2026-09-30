@@ -1169,7 +1169,9 @@ def test_music_is_named_and_served_as_the_wav_it_is(tmp_path):
     """hartos-3a F10: the composer writes WAV (HARTOS 41cd45501), but the
     node named its cached music .mp3 and served it as MPEG audio."""
     from unittest.mock import MagicMock, patch
+
     from flask import Flask
+
     from routes import kids_media_routes as r
     app = Flask(__name__)
     r.register_routes(app)

@@ -2,6 +2,7 @@ import AgentContactRequest from './components/Agent/AgentContactRequest';
 import AgentMessageToast from './components/Agent/AgentMessageToast';
 import ApiErrorBanner from './components/shared/ApiErrorBanner';
 import PageSkeleton from './components/shared/PageSkeleton';
+import SkipLink from './components/shared/SkipLink';
 import {ToastProvider} from './components/shared/ToastProvider';
 import NunbaTitleBar from './components/Shell/NunbaTitleBar';
 import {GA_TRACKING_ID, API_BASE_URL} from './config/apiBase';
@@ -127,6 +128,9 @@ function App() {
             {/* NunbaTitleBar wraps MainRoutes so its TitleBarSlotProvider
                 is in scope for every page — Demopage's chip can portal into
                 the titlebar's right cluster when present, else render inline. */}
+            {/* Skip-link: first tab stop, jumps keyboard users past the
+                titlebar and banners to <main id="main-content"> (WCAG 2.4.1). */}
+            <SkipLink />
             <NunbaTitleBar>
               {/* React Router does not reset scroll on navigation, so every
                   page opened at whatever offset the PREVIOUS page was left at.

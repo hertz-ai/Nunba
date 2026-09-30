@@ -1,6 +1,8 @@
+const {declaredRoutes} = require('./testHelpers');
+
 const fs = require('fs');
 const path = require('path');
-const {declaredRoutes} = require('./testHelpers');
+
 const SIDEBAR_LINKS = require('../pages/sidebarLinks').default;
 
 const MAIN_ROUTE = fs.readFileSync(

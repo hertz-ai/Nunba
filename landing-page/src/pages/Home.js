@@ -147,7 +147,7 @@ export default function IndexThree() {
                 <button
                   onClick={() => navigate('/agents')}
                   style={{color: 'black'}}
-                  className="px-4 py-2 bg-blue-600 rounded-lg transition-colors duration-300 hover:bg-blue-700 flex items-center"
+                  className="btn-feedback px-4 py-2 bg-blue-600 rounded-lg transition-colors duration-300 hover:bg-blue-700 flex items-center"
                 >
                   View All Agents
                   <FontAwesomeIcon icon={faArrowRight} />

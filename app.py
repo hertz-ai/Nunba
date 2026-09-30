@@ -1218,12 +1218,15 @@ def _proportional_splash(screen_w, screen_h, art_w, art_h, width_frac=0.34):
 #: platform that cannot let the desktop through (GL4).
 _SPLASH_PAGE_RGB = (10, 9, 20)          # '#0A0914'
 
-#: How opaque the ANIMATED splash is as a whole.  Its elements are tk canvas
-#: items over a flat fill, which tk cannot make translucent per pixel, so it
-#: takes the rung glass.py already gives a tk surface: one alpha for the whole
-#: window -- the option the steward named for it (GL4).  High enough that the
-#: wordmark and greetings stay crisp over a busy wallpaper.
-_ANIMATED_SPLASH_OPACITY = 0.88
+#: How opaque BOTH splashes' dark background is (GL4): the ONE value.  Owner
+#: 2026-09-26: "static see-through is a lot, it should be 10% and same for
+#: animated".  The ANIMATED splash hands it to glass.py as one alpha for the
+#: whole window (tk canvas items over a flat fill cannot be translucent per
+#: pixel -- the rung the steward named for it).  The STATIC splash carries it
+#: baked into splash.png: scripts/gen_splash.py stamps it onto splash.svg's
+#: backdrop group and refuses a render whose backdrop alpha is not it.
+#: tests/test_splash_opacity_one_source.py fails when either file drifts.
+_SPLASH_OPACITY = 0.90
 
 
 def _open_static_splash(parent, splash_path, status_text='Starting up...'):
@@ -1264,7 +1267,7 @@ def _open_static_splash(parent, splash_path, status_text='Starting up...'):
     top.attributes('-topmost', True)
     top.geometry(f"{W}x{H}+{x}+{y}")
     canvas = _tk.Canvas(top, width=W, height=H, highlightthickness=0, bd=0,
-                        bg='#%02X%02X%02X' % _SPLASH_PAGE_RGB)
+                        bg='#{:02X}{:02X}{:02X}'.format(*_SPLASH_PAGE_RGB))
     canvas.pack(fill='both', expand=True)
     status = _tk.StringVar(value=status_text)
 
@@ -8194,18 +8197,14 @@ def main():
                             _port = args.port
                         except Exception:
                             _port = 5000
-                        # Route contextual guidance through the same live
-                        # GroupChat injection endpoint as the operations drawer.
-                        _agent_id = (context or {}).get('agent_id') if isinstance(context, dict) else None
-                        if _agent_id:
-                            _url = (f"http://127.0.0.1:{_port}/api/social/dashboard/agents/"
-                                    f"{requests.utils.quote(str(_agent_id), safe='')}/inject")
-                            _body = {"instruction": prompt, "actor_id": "companion"}
-                            _steering = True
-                        else:
-                            _url = f"http://127.0.0.1:{_port}/chat"
-                            _body = {"text": prompt, "source": "companion_input_bar"}
-                            _steering = False
+                        # Ordinary prompts only.  Guidance to a live run
+                        # never comes through here: the page sends it with
+                        # dashboardApi.steer, which carries the signed-in
+                        # token HARTOS judges (may_steer).  This bridge had
+                        # its own tokenless /inject branch -- a second
+                        # steering client (review of Nunba e6e806bf).
+                        _url = f"http://127.0.0.1:{_port}/chat"
+                        _body = {"text": prompt, "source": "companion_input_bar"}
                         try:
                             # /chat's contract names the prompt `text`
                             # (routes/chatbot_routes.py chat_route); the
@@ -8228,10 +8227,6 @@ def main():
                             data = r.json()
                         except Exception:
                             return (r.text or "").strip()[:240] or "OK"
-                        if _steering:
-                            return ("Guidance sent to the active HART."
-                                    if data.get('success') else
-                                    "That HART is no longer running.")
                         reply = (
                             (isinstance(data, dict) and (
                                 data.get("response")
@@ -9831,7 +9826,7 @@ def _show_splash():
         # capability module (glass.py logs the rung it actually reached).
         try:
             from desktop.glass import GlassIntent, apply_glass
-            apply_glass(root, GlassIntent(opacity=_ANIMATED_SPLASH_OPACITY))
+            apply_glass(root, GlassIntent(opacity=_SPLASH_OPACITY))
         except Exception as _glass_err:
             logger.info(f"[SPLASH] see-through skipped: {_glass_err}")
 

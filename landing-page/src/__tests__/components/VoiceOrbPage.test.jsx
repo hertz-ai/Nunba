@@ -38,12 +38,16 @@ jest.mock('../../components/VoiceVisualizer', () => ({
 jest.mock('../../config/apiBase', () => ({API_BASE_URL: ''}));
 jest.mock('../../constants/events', () => ({NUNBA_CAMERA_CONSENT: 'evt'}));
 jest.mock('qrcode.react', () => ({QRCodeSVG: () => null}));
+const mockSteer = jest.fn(() => Promise.resolve({success: true}));
 jest.mock('../../services/socialApi', () => ({
   consentApi: {
     grant: jest.fn(() => Promise.resolve({})),
     decline: jest.fn(() => Promise.resolve({})),
   },
   notificationsApi: {markRead: jest.fn(() => Promise.resolve({}))},
+  // The one steering client; its token + wording are pinned by
+  // __tests__/services/dashboardSteerSendsToken.test.jsx.
+  dashboardApi: {steer: (...a) => mockSteer(...a)},
 }));
 
 // jsdom has no real media element; stub Audio so the duration probe is inert.
@@ -113,8 +117,13 @@ test('renders the existing computer-use projection without a new transport', () 
   expect(screen.getByTestId('voice-orb').dataset.active).toBe('1');
 });
 
-test('Ask HART injects guidance into the active HART context', async () => {
-  const prompt = jest.fn(() => Promise.resolve('Guidance sent to the active HART.'));
+test('Ask HART injects guidance into the active HART through the one steering client', async () => {
+  // In the companion window too: steering goes through dashboardApi.steer
+  // (it carries the signed-in token, the identity HARTOS judges), never the
+  // pywebview bridge, which would be a second, tokenless client (review of
+  // e6e806bf).  The bridge still carries ordinary prompts to /chat.
+  const prompt = jest.fn(() => Promise.resolve('never'));
+  mockSteer.mockClear();
   window.pywebview = {api: {on_companion_prompt: prompt}};
   try {
     render(<VoiceOrbPage />);
@@ -125,13 +134,39 @@ test('Ask HART injects guidance into the active HART context', async () => {
     }));
     fireEvent.change(screen.getByLabelText('Quick prompt'), {target: {value: 'Use the safer option'}});
     fireEvent.submit(screen.getByLabelText('Quick prompt').closest('form'));
-    await waitFor(() => expect(prompt).toHaveBeenCalledWith(
-      'Use the safer option',
-      expect.objectContaining({agent_id: 'goal-42', prompt_id: '42', task_id: 'computer_use_run_1'}),
+    await waitFor(() => expect(mockSteer).toHaveBeenCalledWith(
+      'goal-42', 'inject',
+      expect.objectContaining({instruction: 'Use the safer option', actor_id: 'companion'}),
     ));
+    expect(prompt).not.toHaveBeenCalled();
+    expect(await screen.findByText('Guidance sent to the active HART.')).toBeInTheDocument();
   } finally {
     delete window.pywebview;
   }
+});
+
+test.each([
+  ['with no reason', () => Promise.reject(new Error('')), 'Guidance not delivered.'],
+  ['refused', () => Promise.reject({success: false, data: {error: 'agent not found, or not yours to steer', forbidden: true}}),
+    'This run belongs to someone else, so nothing was changed.'],
+  // Resolved, not rejected: a 2xx body that says success:false.
+  ['answered success:false with no reason', () => Promise.resolve({success: false}),
+    'Guidance not delivered.'],
+  ['answered success:false, refused', () => Promise.resolve({success: false, data: {forbidden: true}}),
+    'This run belongs to someone else, so nothing was changed.'],
+])('a steer that fails %s says so once, as its outcome', async (_l, reply, expected) => {
+  mockSteer.mockImplementationOnce(reply);
+  render(<VoiceOrbPage />);
+  act(() => handlers['computer_use.update']({
+    type: 'computer_use.update', task_id: 'computer_use_run_1',
+    prompt_id: '42', agent_id: 'goal-42', summary: 'Selecting a control',
+    phase: 'executing',
+  }));
+  fireEvent.change(screen.getByLabelText('Quick prompt'), {target: {value: 'x'}});
+  fireEvent.submit(screen.getByLabelText('Quick prompt').closest('form'));
+  // Exactly the outcome, once: no "Guidance not delivered: ..." prefix.
+  expect(await screen.findByText(expected)).toBeInTheDocument();
+  expect(screen.queryByText(/Guidance not delivered:/)).toBeNull();
 });
 
 describe('hosted in the desktop companion window', () => {

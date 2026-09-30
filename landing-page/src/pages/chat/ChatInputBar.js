@@ -123,7 +123,7 @@ const ChatInputBar = ({
                       prev.filter((item) => item.id !== q.id)
                     );
                   }}
-                  className="text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all text-xs ml-1"
+                  className="btn-feedback text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all text-xs ml-1"
                   aria-label="Remove queued message"
                 >
                   ✕
@@ -138,7 +138,7 @@ const ChatInputBar = ({
           <span className="text-gray-400">Uploaded PDF: {pdfFile.name}</span>
           <button
             onClick={handleRemovePdf}
-            className="text-red-600 hover:text-red-800 p-1 ml-2"
+            className="btn-feedback text-red-600 hover:text-red-800 p-1 ml-2"
           >
             Remove
           </button>
@@ -154,7 +154,7 @@ const ChatInputBar = ({
           />
           <button
             onClick={handleRemoveImage}
-            className="text-red-600 hover:text-red-800 p-1 ml-2"
+            className="btn-feedback text-red-600 hover:text-red-800 p-1 ml-2"
           >
             Remove
           </button>
@@ -256,7 +256,7 @@ const ChatInputBar = ({
         {!isAuthenticated && (
           <button
             onClick={() => setIsModalOpen(true)}
-            className="absolute text-white bg-black p-2 rounded-lg top-[40px] left-0"
+            className="btn-feedback absolute text-white bg-black p-2 rounded-lg top-[40px] left-0"
           >
             Please login to talk to agent.
           </button>
@@ -270,7 +270,7 @@ const ChatInputBar = ({
               document.getElementById('fileInput').click();
             }
           }}
-          className="text-gray-400 hover:text-gray-600 p-1"
+          className="btn-feedback text-gray-400 hover:text-gray-600 p-1"
           aria-label="Upload image"
         >
           <Image className="w-5 h-5" />
@@ -284,7 +284,7 @@ const ChatInputBar = ({
               document.getElementById('pdfInput').click();
             }
           }}
-          className="text-gray-400 hover:text-gray-600 p-1"
+          className="btn-feedback text-gray-400 hover:text-gray-600 p-1"
           aria-label="Upload PDF"
         >
           <FileText className="w-5 h-5" />
@@ -293,7 +293,7 @@ const ChatInputBar = ({
         {/* TTS Toggle Button */}
         <button
           onClick={() => setTtsEnabled(!ttsEnabled)}
-          className={`p-1 btn-press ${
+          className={`btn-feedback p-1 btn-press ${
             ttsEnabled
               ? 'text-green-500 hover:text-green-700'
               : 'text-gray-400 hover:text-gray-600'
@@ -314,7 +314,7 @@ const ChatInputBar = ({
         {!isRecording ? (
           <button
             onClick={handleStart}
-            className="text-green-500 hover:text-green-700 p-1 flex items-center gap-1 btn-press"
+            className="btn-feedback text-green-500 hover:text-green-700 p-1 flex items-center gap-1 btn-press"
             title="Voice input"
           >
             <Mic className="w-5 h-5" />
@@ -322,7 +322,7 @@ const ChatInputBar = ({
         ) : (
           <button
             onClick={handleStop}
-            className="text-red-500 hover:text-red-700 p-1 flex items-center gap-1 btn-press"
+            className="btn-feedback text-red-500 hover:text-red-700 p-1 flex items-center gap-1 btn-press"
           >
             <span>Stop</span>
           </button>
@@ -331,7 +331,7 @@ const ChatInputBar = ({
         {/* Clipboard paste */}
         {onClipboardPaste && (
           <button onClick={onClipboardPaste}
-            className="text-gray-400 hover:text-purple-400 p-1 btn-press" title="Paste from clipboard"
+            className="btn-feedback text-gray-400 hover:text-purple-400 p-1 btn-press" title="Paste from clipboard"
             aria-label="Paste from clipboard">
             <ClipboardPaste className="w-4 h-4" />
           </button>
@@ -340,7 +340,7 @@ const ChatInputBar = ({
         {/* Camera capture */}
         {onCameraCapture && (
           <button onClick={onCameraCapture}
-            className="text-gray-400 hover:text-blue-400 p-1 btn-press" title="Take photo"
+            className="btn-feedback text-gray-400 hover:text-blue-400 p-1 btn-press" title="Take photo"
             aria-label="Take photo">
             <Camera className="w-4 h-4" />
           </button>
@@ -349,7 +349,7 @@ const ChatInputBar = ({
         {/* Memory panel */}
         {onMemoryOpen && (
           <button onClick={onMemoryOpen}
-            className="text-gray-400 hover:text-pink-400 p-1 btn-press" title="Memories"
+            className="btn-feedback text-gray-400 hover:text-pink-400 p-1 btn-press" title="Memories"
             aria-label="Open memories">
             <Brain className="w-4 h-4" />
           </button>
@@ -358,7 +358,7 @@ const ChatInputBar = ({
         {/* Always-listening toggle */}
         {onToggleAlwaysListening && (
           <button onClick={onToggleAlwaysListening}
-            className={`p-1 btn-press ${alwaysListening ? 'text-green-400' : 'text-gray-500 hover:text-gray-300'}`}
+            className={`btn-feedback p-1 btn-press ${alwaysListening ? 'text-green-400' : 'text-gray-500 hover:text-gray-300'}`}
             title={alwaysListening ? 'Stop listening for "Hey Nunba"' : 'Listen for "Hey Nunba"'}>
             <Ear className="w-4 h-4" />
             {alwaysListening && (
@@ -373,7 +373,7 @@ const ChatInputBar = ({
         {onToggleShowThinkingTraces && (
           <button
             onClick={onToggleShowThinkingTraces}
-            className={`p-1 btn-press ${showThinkingTraces ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'}`}
+            className={`btn-feedback p-1 btn-press ${showThinkingTraces ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'}`}
             title={showThinkingTraces ? 'Hide thinking traces' : 'Show thinking traces'}
             aria-label={showThinkingTraces ? 'Hide thinking traces' : 'Show thinking traces'}
           >
@@ -404,7 +404,7 @@ const ChatInputBar = ({
              container's `md:justify-end` — which is exactly the layout that
              shipped on 2026-08-07 (Send under the orb column, icons bunched
              left, empty middle) when ml-auto was the ONLY alignment. */
-          className="ml-auto md:ml-0 p-1 rounded-lg transition-all duration-200 hover:scale-110 active:scale-90 motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
+          className="btn-feedback ml-auto md:ml-0 p-1 rounded-lg transition-all duration-200 hover:scale-110 active:scale-90 motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
           style={{
             background: inputMessage.trim()
               ? 'linear-gradient(135deg, #6C63FF, #9B94FF)'

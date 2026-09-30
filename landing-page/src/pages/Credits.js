@@ -546,13 +546,13 @@ const CreditSystem = ({
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowCreditWarning(false)}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  className="btn-feedback flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={() => buyCredits(purchaseAmount)}
-                  className="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                  className="btn-feedback flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
                 >
                   Buy {currencySymbol}
                   {purchaseAmount} Credits
@@ -651,14 +651,14 @@ const CreditSystem = ({
               <div className="space-y-1">
                 <button
                   onClick={() => buyCredits(purchaseAmount)}
-                  className="w-full px-4 py-3 bg-gradient-to-r from-blue-500 to-green-500 text-white rounded-lg hover:from-blue-600 hover:to-green-600 transition-all duration-200 font-semibold"
+                  className="btn-feedback w-full px-4 py-3 bg-gradient-to-r from-blue-500 to-green-500 text-white rounded-lg hover:from-blue-600 hover:to-green-600 transition-all duration-200 font-semibold"
                 >
                   Purchase {currencySymbol}
                   {purchaseAmount} Credits
                 </button>
                 <button
                   onClick={() => setIsTrialExpired(false)}
-                  className="w-full px-4 py-2 text-gray-500 hover:text-gray-700 transition-colors"
+                  className="btn-feedback w-full px-4 py-2 text-gray-500 hover:text-gray-700 transition-colors"
                 >
                   Maybe Later
                 </button>

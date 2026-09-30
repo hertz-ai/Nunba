@@ -151,7 +151,7 @@ def test_a_shell_that_refuses_leaves_the_style_change_standing(
     @contextlib.contextmanager
     def refusing(clsid, iid):
         raise OSError('[WinError -2147221008] CoInitialize has not been called')
-        yield  # noqa: unreachable, keeps it a generator
+        yield  # unreachable: keeps it a generator
 
     monkeypatch.setattr(win32_com, 'com_instance', refusing)
 

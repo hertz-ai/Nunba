@@ -423,7 +423,7 @@ class LlamaInstaller:
     # spawned with --version at most once until it changes on disk.
     _version_cache: dict[str, tuple[float, int]] = {}
 
-    def __init__(self, install_dir: str | None = None, models_dir: str | None = None):
+    def __init__(self, install_dir: str | None = None, models_dir: str | None = None, *, config_dir=None):
         """
         Initialize the installer
 
@@ -433,13 +433,32 @@ class LlamaInstaller:
         """
         home = Path.home()
         self.install_dir = Path(install_dir) if install_dir else home / ".nunba" / "llama.cpp"
-        self.models_dir = Path(models_dir) if models_dir else home / ".nunba" / "models"
+        self.default_models_dir = home / ".nunba" / "models"
+        self.models_dir = self.resolve_models_dir(models_dir, config_dir=config_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.install_dir.parent.mkdir(parents=True, exist_ok=True)
 
         self.os_name = platform.system().lower()
         self.gpu_available = self._detect_gpu()
         self.binary_supports_gpu = False  # Will be set during installation
+
+    @staticmethod
+    def resolve_models_dir(models_dir=None, *, config_dir=None):
+        """One LLM storage rule: explicit, environment, saved config, default."""
+        selected = models_dir or os.environ.get('NUNBA_MODELS_DIR', '').strip()
+        if not selected:
+            config_file = (Path(config_dir) if config_dir else
+                           Path.home() / '.nunba') / 'llama_config.json'
+            try:
+                saved = json.loads(config_file.read_text(encoding='utf-8'))
+                selected = saved.get('models_dir') or None
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError, AttributeError):
+                logger.warning('Could not read saved LLM storage location', exc_info=True)
+        if not selected:
+            return Path.home() / '.nunba' / 'models'
+        return Path(selected).expanduser().resolve()
 
     @staticmethod
     def _no_window() -> tuple:
@@ -1114,31 +1133,51 @@ class LlamaInstaller:
         try:
             logger.info("Checking for prebuilt binaries...")
 
-            # Fetch latest release info
-            release_url = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
-            req = urllib.request.Request(release_url)
+            # Find a release that actually ships a binary asset for this
+            # OS + GPU backend.
+            #
+            # ggml-org/llama.cpp's "latest" release is now a semver tag
+            # (e.g. v0.4.1) whose assets do NOT follow the per-build
+            # `llama-b<NNNNN>-bin-<os>-<accel>` naming _select_release_assets
+            # expects.  Keying off /releases/latest therefore matched NO asset
+            # and silently fell through to build_from_source(), which fails on
+            # any machine without a C/C++ toolchain — so auto-setup never
+            # produced a llama-server.  Scan recent releases and take the first
+            # that carries a compatible binary asset (the per-build `bNNNNN`
+            # tags, which are not flagged "latest").
+            releases_url = ("https://api.github.com/repos/ggml-org/llama.cpp"
+                            "/releases?per_page=20")
+            req = urllib.request.Request(releases_url)
             req.add_header('User-Agent', 'Nunba/1.0')
 
             with urllib.request.urlopen(req, timeout=10) as response:
-                release_data = json.loads(response.read().decode())
+                releases = json.loads(response.read().decode())
+            if isinstance(releases, dict):  # defensive: single-object response
+                releases = [releases]
 
-            tag_name = release_data.get('tag_name')
-            if not tag_name:
-                return False
+            tag_name = None
+            asset_map = {}
+            assets = []
+            accel = None
+            for release_data in releases:
+                cand_tag = release_data.get('tag_name')
+                if not cand_tag:
+                    continue
+                cand_map = {a['name']: a for a in release_data.get('assets', [])}
+                # Pick the archives for this OS + GPU backend (correct extension,
+                # Vulkan-universal GPU fallback, dynamic CUDA version, cudart runtime).
+                cand_assets, cand_accel = self._select_release_assets(cand_map, cand_tag)
+                if cand_assets:
+                    tag_name, asset_map, assets, accel = (
+                        cand_tag, cand_map, cand_assets, cand_accel)
+                    break
 
-            logger.info(f"Latest release: {tag_name}")
-
-            asset_map = {a['name']: a for a in release_data.get('assets', [])}
-
-            # Pick the archives for this OS + GPU backend (correct extension,
-            # Vulkan-universal GPU fallback, dynamic CUDA version, cudart runtime).
-            assets, accel = self._select_release_assets(asset_map, tag_name)
             if not assets:
                 logger.warning(
                     f"No compatible {self.os_name}/{self.gpu_available} asset in "
-                    f"release {tag_name}")
+                    f"the 20 most recent llama.cpp releases")
                 return False
-            logger.info(f"Selected {accel} build: {', '.join(assets)}")
+            logger.info(f"Selected {accel} build from {tag_name}: {', '.join(assets)}")
 
             # Create install directory and bin dir
             self.install_dir.mkdir(parents=True, exist_ok=True)
@@ -1352,9 +1391,10 @@ class LlamaInstaller:
             Path to the file if found and valid, None otherwise
         """
         # Check Nunba's own models dir first
-        local_path = self.models_dir / file_name
-        if local_path.exists() and local_path.stat().st_size >= min_size:
-            return local_path
+        for directory in dict.fromkeys((self.models_dir, self.default_models_dir)):
+            local_path = directory / file_name
+            if local_path.is_file() and local_path.stat().st_size >= min_size:
+                return local_path
 
         # Check sibling project model directories
         for sibling_dir in SIBLING_MODEL_DIRS:
@@ -1644,14 +1684,14 @@ def install_on_first_run(
     # moment as the llama.cpp binary — so GPU speech-to-text installs alongside
     # the GPU LLM rather than silently falling back to CPU int8 (not realtime).
     # faster-whisper runs on CTranslate2 (cuBLAS/cuDNN), independent of torch.
-    # Best-effort + idempotent: no-ops on CPU boxes and when already installed.
+    # Best-effort + idempotent: no-ops on CPU boxes, when already installed,
+    # and when an install already failed on this build (the gate says why).
     try:
         from tts.package_installer import (
-            has_nvidia_gpu,
             install_gpu_ctranslate2,
-            is_cuda_ctranslate2,
+            should_install_gpu_ctranslate2,
         )
-        if has_nvidia_gpu() and not is_cuda_ctranslate2():
+        if should_install_gpu_ctranslate2():
             if progress_callback:
                 progress_callback("Installing CUDA runtime for GPU speech-to-text...")
             install_gpu_ctranslate2(progress_cb=progress_callback)

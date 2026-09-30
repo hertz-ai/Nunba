@@ -25,7 +25,7 @@ class Contact extends Component {
                   </h5>
                   <button
                     type="button"
-                    className="close"
+                    className="btn-feedback close"
                     data-dismiss="modal"
                     aria-label="Close"
                   >

@@ -13,12 +13,14 @@
  *   activity  the latest event, kept for ACTIVITY_LINGER_MS after the run
  *             closes so the outcome is readable, then null.
  *   liveRun   the event while guidance can still reach the run: it names the
- *             database goal the injector accepts (agent_id) and the run has
+ *             database goal the injector accepts (agent_id), it is not a
+ *             disclosure-only copy of someone else's run, and the run has
  *             not closed.  Between steps the run is still live.
  */
+import realtimeService from '../services/realtimeService';
+
 import {useEffect, useRef, useState} from 'react';
 
-import realtimeService from '../services/realtimeService';
 
 export const ACTIVITY_LINGER_MS = 5000;
 
@@ -30,8 +32,15 @@ export function isRunClosed(event) {
   return event.phase !== 'executing';
 }
 
+/** The event guidance may be routed to, or null.  Never a `disclosure_only`
+ *  copy: HARTOS tells the desktop owner every step of a run ANOTHER user
+ *  started (activity_stream._disclosure_copy), and that run is theirs.  When
+ *  the owner's copy named the other user's goal, the owner's typed chat went
+ *  to that goal's /inject (review of HARTOS de3f89364, CRITICAL).  The
+ *  marker is refused on its own, whatever else the copy carries. */
 export function liveRunOf(event) {
-  return event && event.agent_id && !isRunClosed(event) ? event : null;
+  return event && event.agent_id && !event.disclosure_only && !isRunClosed(event)
+    ? event : null;
 }
 
 export default function useComputerActivity() {

@@ -53,7 +53,7 @@ const HeroContent = ({ heroName, heroDesc, heroImg, hartName, heroEntrance, mobi
         {hartName && <p style={hartGreetingStyle(mobile)}>Hey @{hartName}, meet your agent</p>}
         <h1 className="text-5xl md:text-6xl lg:text-7xl xl:text-8xl font-bold leading-tight mb-6">{heroName}</h1>
         {heroDesc && <p className="mb-8 text-lg md:text-xl">{heroDesc}</p>}
-        <button className="inline-flex items-center justify-center px-8 py-4 text-lg font-medium rounded-full transition-all"
+        <button className="btn-feedback inline-flex items-center justify-center px-8 py-4 text-lg font-medium rounded-full transition-all"
             style={{
                 background: 'linear-gradient(135deg, #6C63FF, #9B94FF)',
                 boxShadow: `0 4px ${mobile ? 20 : 24}px rgba(108, 99, 255, 0.35)`,

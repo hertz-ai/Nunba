@@ -1,5 +1,5 @@
 import { i as e, t } from "./hart-embed-hostBridge-8cnIGXKd.js";
-import { t as n } from "./hart-embed-realtimeService-CuKUvH0I.js";
+import { t as n } from "./hart-embed-realtimeService-BPbQiNix.js";
 //#region src/embed/transports/gatewayTransport.js
 var r = 9e4;
 function i(e, t) {

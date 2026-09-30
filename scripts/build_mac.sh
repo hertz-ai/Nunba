@@ -83,8 +83,11 @@ sign_app() {
     find "$APP" -name "*.rst" -delete
     find "$APP" -name "*.svg" -delete
     # NOTE: Do NOT blanket-delete .json — many are runtime config (model_catalog.json, etc.)
-    # Only delete source map manifests
-    find "$APP" -name "*.json" -path "*/node_modules/*" -delete 2>/dev/null || true
+    # package.json/package-lock.json are required for Node module resolution;
+    # deleting them left every package in node_modules without a package.json,
+    # which combined with the old unscoped *.js delete below silently gutted
+    # real runtime files (e.g. ipaddr.js/lib/ipaddr.js). Found 2026-09-25.
+    find "$APP" -name "*.json" -path "*/node_modules/*" -not -name "package.json" -not -name "package-lock.json" -delete 2>/dev/null || true
     find "$APP" -name "*.map" -delete
     # NOTE: Do NOT blanket-delete .cfg/.ini/.toml — packages need METADATA, entry_points.txt, etc.
     # Only delete known non-essential config files
@@ -107,15 +110,18 @@ sign_app() {
     find "$APP/Contents/MacOS" -name "*.tiff" -delete
     find "$APP/Contents/MacOS" -name "*.webp" -delete
 
-    # Web assets
-    find "$APP/Contents/MacOS" -name "*.html" -delete 2>/dev/null || true
-    find "$APP/Contents/MacOS" -name "*.css" -delete 2>/dev/null || true
+    # Web assets (landing-page build output only — must exclude node_modules,
+    # otherwise this deletes real runtime files from Node dependencies)
+    find "$APP/Contents/MacOS" -name "*.html" -not -path "*/node_modules/*" -delete 2>/dev/null || true
+    find "$APP/Contents/MacOS" -name "*.css" -not -path "*/node_modules/*" -delete 2>/dev/null || true
 
-    # landing-page (web assets, not needed in signed bundle)
-    rm -rf "$APP/Contents/MacOS/landing-page" 2>/dev/null || true
+    # landing-page/build is NOT disposable: main.py/app.py serve the React
+    # frontend directly from Contents/MacOS/landing-page/build at runtime.
+    # Deleting it makes every route 404, including "/". Found 2026-09-25.
 
-    # cx_Freeze frozen modules
-    find "$APP" -name "library.dat" -delete 2>/dev/null || true
+    # library.dat is NOT disposable: cx_Freeze's zipimporter uses it to locate
+    # __startup__ inside library.zip. Deleting it breaks launch with
+    # "ModuleNotFoundError: No module named '__startup__'". Found 2026-09-25.
 
     # Shell/bat scripts (e.g. ctypes/macholib)
     find "$APP" -name "*.bat" -delete
@@ -151,14 +157,18 @@ sign_app() {
     # cx_Freeze license file
     rm -f "$APP/Contents/MacOS/frozen_application_license.txt" 2>/dev/null || true
     find "$APP" -name "langchain_config.json" -delete 2>/dev/null || true
-    find "$APP" -path "*/jwt/*.pyc" -delete 2>/dev/null || true
-    find "$APP" -path "*/encodings/*.pyc" -delete 2>/dev/null || true
-    find "$APP" -path "*/encodings/__pycache__" -exec rm -rf {} + 2>/dev/null || true
-    find "$APP" -path "*/jwt/*.pyc" -delete 2>/dev/null || true
-    find "$APP" -path "*/encodings/mac_*.pyc" -delete 2>/dev/null || true
+    # These used to delete jwt/encodings .pyc files to dodge a codesign "code
+    # object is not signed" complaint. encodings/*.pyc has NO .py fallback in
+    # a frozen build — deleting it crashes Python at startup with
+    # "Fatal Python error: init_fs_encoding ... can't find encoding" before
+    # any app code runs. Pre-signing every file individually before the final
+    # bundle sign fixes the original complaint without deleting anything.
+    # Found + reverted 2026-09-25.
 
-    # Loose .py files at MacOS root level
-    find "$APP/Contents/MacOS" -maxdepth 1 -name "*.py" -delete
+    # main.py at Contents/MacOS root is NOT disposable: app.py loads it at
+    # runtime via importlib.util.spec_from_file_location(main_path) —
+    # deleting it makes flask_app never get set, so the desktop UI is stuck
+    # forever on the boot placeholder. Found 2026-09-25.
 
     # Move misplaced .icns to Resources
     if [ -f "$APP/Contents/MacOS/app.icns" ]; then

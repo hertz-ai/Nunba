@@ -27,6 +27,11 @@ from integrations.service_tools.model_orchestrator import (  # noqa: F401
 # Ensure Nunba's get_catalog() (with populators) is used
 from models.catalog import ModelCatalog, ModelType, get_catalog  # noqa: F401
 
+# Catalog entry id -> Nunba TTS backend name (the one rule, owned by
+# tts_engine).  Bound at import so a test that swaps tts.tts_engine in
+# sys.modules for a mock engine still resolves names through the real rule.
+from tts.tts_engine import catalog_entry_backend
+
 logger = logging.getLogger('NunbaModelOrchestrator')
 
 
@@ -106,6 +111,9 @@ class LlamaLoader(ModelLoader):
         try:
             from llama.llama_config import LlamaConfig
             config = LlamaConfig()
+            if entry.files.get('local_dir'):
+                config.installer.models_dir = config.installer.resolve_models_dir(
+                    entry.files['local_dir'])
             preset, idx = self._resolve_preset_and_index(entry)
             if not preset:
                 logger.error(f"LLM preset not found for catalog entry: {entry.id}")
@@ -131,7 +139,7 @@ class LlamaLoader(ModelLoader):
     def download(self, entry: ModelEntry) -> bool:
         try:
             from llama.llama_installer import LlamaInstaller
-            installer = LlamaInstaller()
+            installer = LlamaInstaller(models_dir=entry.files.get('local_dir'))
             preset, _ = self._resolve_preset_and_index(entry)
             if not preset:
                 logger.error(f"LLM download: no preset for {entry.id}")
@@ -165,7 +173,7 @@ class LlamaLoader(ModelLoader):
     def is_downloaded(self, entry: ModelEntry) -> bool:
         try:
             from llama.llama_installer import LlamaInstaller
-            installer = LlamaInstaller()
+            installer = LlamaInstaller(models_dir=entry.files.get('local_dir'))
             preset, _ = self._resolve_preset_and_index(entry)
             if preset:
                 return installer.is_model_downloaded(preset)
@@ -220,8 +228,24 @@ class TTSLoader(ModelLoader):
     those fields — no duplicate table here.
     """
 
+    @staticmethod
+    def _registry_key(entry: ModelEntry) -> str:
+        """HARTOS ENGINE_REGISTRY key for a catalog entry:
+        'tts-neutts-air' -> 'neutts_air'.  Uses the canonical inverse
+        in tts_router (strips only a LEADING 'tts-', then '-' -> '_')."""
+        from integrations.channels.media.tts_router import catalog_id_to_engine_id
+        return catalog_id_to_engine_id(entry.id)
+
     def _backend_name(self, entry: ModelEntry) -> str:
-        return entry.id.replace('tts-', '')
+        """Nunba backend constant the TTS engine, installer and handshake
+        take: 'tts-f5-tts' -> 'f5', 'tts-neutts-air' -> 'neutts_air'.
+        CPU-fallback ids (tts_engine._CPU_FALLBACK_CATALOG_IDS:
+        pocket_tts, espeak, luxtts) resolve to Piper, the engine that
+        speaks for them in Nunba (it cannot create those backends), so
+        load/validate check the voice that actually runs.  Other engines
+        Nunba has no constant for keep their registry key.  The one rule:
+        tts_engine.catalog_entry_backend."""
+        return catalog_entry_backend(entry.id)
 
     def _get_tool_worker(self, entry: ModelEntry):
         """Return the ToolWorker instance for this entry, or None if
@@ -234,7 +258,7 @@ class TTSLoader(ModelLoader):
             from integrations.channels.media.tts_router import ENGINE_REGISTRY
         except ImportError:
             return None
-        spec = ENGINE_REGISTRY.get(self._backend_name(entry))
+        spec = ENGINE_REGISTRY.get(self._registry_key(entry))
         if spec is None or not spec.tool_module or not spec.tool_worker_attr:
             return None
         try:

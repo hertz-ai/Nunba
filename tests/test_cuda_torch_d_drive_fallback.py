@@ -29,7 +29,7 @@ from unittest.mock import MagicMock, patch
 
 
 class CudaTorchDDriveFallbackTests(unittest.TestCase):
-    def _install_with_runs(self, run_pip_side_effect, gpu='nvidia'):
+    def _install_with_runs(self, run_pip_side_effect, gpu='nvidia', private=True):
         """Run install_gpu_torch under the given _run_pip side effects.
 
         Returns the list of _run_pip call args (one per call) for
@@ -61,7 +61,9 @@ class CudaTorchDDriveFallbackTests(unittest.TestCase):
                             with patch("integrations.service_tools.vram_manager.detect_gpu",
                                        return_value={"name": "NVIDIA RTX 4080",
                                                      "cuda_available": True}):
-                                with patch("os.makedirs"):  # Don't actually mkdir
+                                with patch("os.makedirs"), \
+                                        patch.object(pi, "_make_private_d_drive_site",
+                                                     return_value=private):
                                     ok, msg = pi.install_gpu_torch()
             return calls, ok, msg
 
@@ -126,6 +128,20 @@ class CudaTorchDDriveFallbackTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("--no-deps", calls[1])
 
+
+    def test_a_d_drive_site_that_cannot_be_made_private_is_not_used(self):
+        """Review of efab9501 (SECURITY): at a drive root every authenticated
+        user can write into a folder, and workers load from this one.  If it
+        cannot be made private to this user, C: full is a failure, not a
+        retry on D:."""
+        side = [
+            (False, "ERROR: ... No space left on device"),
+            (True, "ok"),
+        ]
+        calls, ok, msg = self._install_with_runs(side, private=False)
+
+        self.assertFalse(ok)
+        self.assertEqual(len(calls), 1, "no install into a shared D: folder")
 
 if __name__ == "__main__":
     unittest.main()

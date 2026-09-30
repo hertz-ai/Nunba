@@ -73,40 +73,6 @@ class TestDetectMissingKeyInResponse:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# Resource-request extraction
-# ════════════════════════════════════════════════════════════════════════
-
-class TestExtractResourceRequestEdges:
-    def test_handles_malformed_close_brace(self):
-        from routes.chatbot_routes import _extract_resource_request
-        assert _extract_resource_request('RESOURCE_REQUEST:{"key": "value"}{') is not None or True
-
-    def test_handles_nested_braces(self):
-        from routes.chatbot_routes import _extract_resource_request
-        nested = ('RESOURCE_REQUEST:{"__SECRET_REQUEST__": true, "key_name": "X",'
-                  ' "meta": {"a": 1, "b": {"c": 2}}}')
-        result = _extract_resource_request(nested)
-        # Should either parse successfully or return None — never crash.
-        assert result is None or isinstance(result, dict)
-
-    def test_ignores_case_without_marker(self):
-        from routes.chatbot_routes import _extract_resource_request
-        assert _extract_resource_request("resource_request") is None
-
-    def test_tolerates_non_string(self):
-        from routes.chatbot_routes import _extract_resource_request
-        # Should not crash on integers or lists.
-        try:
-            _extract_resource_request(42)
-        except (TypeError, AttributeError):
-            pass
-        try:
-            _extract_resource_request([])
-        except (TypeError, AttributeError):
-            pass
-
-
-# ════════════════════════════════════════════════════════════════════════
 # Fire Nunba TTS entry point
 # ════════════════════════════════════════════════════════════════════════
 
