@@ -1017,6 +1017,17 @@ if getattr(sys, 'frozen', False):
         _trace_log.flush()
     except Exception:
         pass
+    # Native crashes (access violation in cv2.pyd, 2026-10-01 20:21) kill the
+    # process before Python can log anything; frozen_debug.log is a Python
+    # object with no fd, so faulthandler needs its own real file.  The handle
+    # stays open for the life of the process.
+    try:
+        import faulthandler as _faulthandler
+        _native_crash_log = open(os.path.join(_frozen_log_dir, 'native_crash.log'),
+                                 'a', encoding='utf-8')
+        _faulthandler.enable(file=_native_crash_log, all_threads=True)
+    except (OSError, RuntimeError, ValueError):
+        pass  # read-only log dir: crash forensics are best-effort
     _trace("=== Nunba startup trace ===")
     _trace(f"argv: {sys.argv}")
     _trace(f"frozen: {getattr(sys, 'frozen', False)}")
