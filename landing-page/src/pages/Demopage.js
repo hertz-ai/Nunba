@@ -32,6 +32,7 @@ import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, makeMsgId, MAX_RETRIES } from '../utils/chatRetry';
+import { shouldUseLocalBackend } from '../utils/chatRouting';
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload } from '../utils/ttsGuards';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
@@ -4236,11 +4237,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
 
       // ── Dual-mode routing: local LLM backend vs cloud API ──
-      const useLocalBackend =
-        intelligencePreference === 'local_only' ||
-        (intelligencePreference === 'auto' &&
-          backendHealth !== 'offline' &&
-          (isGuestMode || isLocalAgent(currentAgent) || !navigator.onLine));
+      const useLocalBackend = shouldUseLocalBackend({
+        preference: intelligencePreference,
+        backendHealth,
+        isGuestMode,
+        localAgent: isLocalAgent(currentAgent),
+        online: navigator.onLine,
+      });
 
       if (useLocalBackend) {
         // Route to local Flask /chat via existing chatApi service with persistent retry
