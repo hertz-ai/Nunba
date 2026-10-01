@@ -310,6 +310,12 @@ class RealtimeService {
       'setup_progress',
       'chat.response',
       'agent.ui.update',
+      // Named events a component subscribes to with realtimeService.on():
+      // NotificationBell ('notification.read') and Demopage
+      // ('capability_update').  Registered nowhere, so neither subscriber
+      // could fire over SSE.
+      'notification.read',
+      'capability_update',
     ].forEach((name) => {
       es.addEventListener(name, (e) => {
         try {
@@ -455,9 +461,14 @@ class RealtimeService {
     // No explicit ID — generate content hash so identical payloads from
     // different transports (WAMP + SSE) dedup correctly.
     if (!id) {
+      // notification.read carries `ids`, capability_update carries
+      // capability+name: without them every event of the kind hashes alike
+      // and the second one inside the window is dropped.
       const key = (payload.action || payload.type || '') + '|' +
         (payload.generated_audio_url || payload.agent_id || '') + '|' +
-        (payload.message || payload.content || payload.text || '').slice(0, 100);
+        (payload.message || payload.content || payload.text || '').slice(0, 100) + '|' +
+        (Array.isArray(payload.ids) ? payload.ids.join(',') : '') + '|' +
+        (payload.capability || '') + ':' + (payload.name || '');
       id = '_h:' + key;
     }
     const now = Date.now();
