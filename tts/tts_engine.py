@@ -89,7 +89,14 @@ def _get_tts_state_path() -> str:
     `~/Documents/Nunba/data/` only if the resolver isn't importable
     (degraded-mode dev environment); the production path resolves
     through the helper.
+
+    ``NUNBA_TTS_STATE_PATH`` names the file outright and wins over all of
+    the above.  tests/conftest.py sets it for every test so that a test
+    which makes an engine fail cannot demote the owner's real engines.
     """
+    override = os.environ.get('NUNBA_TTS_STATE_PATH')
+    if override:
+        return override
     try:
         from core.platform_paths import get_db_dir
         return os.path.join(get_db_dir(), 'tts_state.json')

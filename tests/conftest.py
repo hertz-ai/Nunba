@@ -33,6 +33,22 @@ from tests.conftest_cuda_mock import (  # noqa: E402,F401  (pytest fixture re-ex
 )
 
 # ---------------------------------------------------------------------------
+# The owner's real tts_state.json is never a test's to write.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _private_tts_state_file(tmp_path, monkeypatch):
+    """Point the TTS engine's persisted-demotion file at this test's tmp dir.
+
+    A test that makes a backend fail drives the engine's real save path.
+    Without this, that save wrote ~/Documents/Nunba/data/tts_state.json
+    (2026-09-27 17:42:31: seven engines demoted for 7 days on the owner's
+    machine by a test run).  tests/test_tts_state_isolation.py pins it.
+    """
+    monkeypatch.setenv('NUNBA_TTS_STATE_PATH', str(tmp_path / 'tts_state.json'))
+
+
+# ---------------------------------------------------------------------------
 # Temp directory for config files (llama_config, etc.)
 # ---------------------------------------------------------------------------
 
