@@ -43,6 +43,21 @@ try:
 except ImportError:
     publish_geometry = None
 
+# A llama-server we spawn must die with Nunba.  The tray quits with
+# os._exit(0); an orphaned server kept its RAM and CPU, and the next launch
+# reused it as "external" (2026-10-01: 2.2 GB at full CPU, 1.4 GB free, chat
+# at 60-200 s).  HARTOS core.child_lifecycle binds it to a kill-on-close Job
+# Object.  With an older HARTOS that lacks it, spawn unbound, as before.
+try:
+    from core.child_lifecycle import bind_to_parent as _bind_to_parent
+except ImportError:
+    _bind_to_parent = None
+
+
+def _bind_child(proc) -> bool:
+    """Tie ``proc`` to Nunba's lifetime when HARTOS can.  Never raises."""
+    return bool(_bind_to_parent and _bind_to_parent(proc))
+
 
 def _uses_qwen35_runtime(model_preset) -> bool:
     """Whether a preset needs the Qwen3.5-MoE runtime settings.
@@ -2645,6 +2660,7 @@ class LlamaConfig:
                 startupinfo=startupinfo,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
             )
+            _bind_child(self.server_process)
             # Close our handle on the file — the subprocess holds its own
             # inherited handle.  Keeping ours open just leaks an FD per
             # restart.  DEVNULL is a sentinel; nothing to close.
@@ -2974,6 +2990,7 @@ class LlamaConfig:
                 startupinfo=startupinfo,
                 creationflags=_creationflags,
             )
+            _bind_child(self._caption_process)
             self._caption_log_fh = log_fh
 
             logger.info(f"Caption server starting: PID={self._caption_process.pid} "
