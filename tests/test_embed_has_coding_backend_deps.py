@@ -22,6 +22,10 @@ _REQUIRED = {
     'tree_sitter_language_pack': 'tree-sitter-language-pack',  # grep_ast.tsl
     'diff_match_patch': 'diff-match-patch',  # coders/search_replace.py
     'pathspec': 'pathspec',            # grep_ast
+    # tree_sitter_language_pack/__init__.py imports these at load
+    'tree_sitter_c_sharp': 'tree-sitter-c-sharp',
+    'tree_sitter_embedded_template': 'tree-sitter-embedded-template',
+    'tree_sitter_yaml': 'tree-sitter-yaml',
 }
 
 

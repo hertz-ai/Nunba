@@ -239,6 +239,13 @@ EMBED_DEPS = {
     "tree-sitter": "0.23.2",
     "tree-sitter-language-pack": "0.6.0",
     "diff-match-patch": "20230430",
+    # tree-sitter-language-pack 0.6.0 imports these three at module load
+    # (tree_sitter_language_pack/__init__.py:9 `import tree_sitter_c_sharp`);
+    # the embed install is --no-deps, so a missing one makes grep_ast.tsl fall
+    # through to the absent tree_sitter_languages and aider_core stays dead.
+    "tree-sitter-c-sharp": "0.23.5",
+    "tree-sitter-embedded-template": "0.25.0",
+    "tree-sitter-yaml": "0.7.2",
     "pathspec": "0.12.1",   # grep-ast's one pure-python dep
     # NOTE: descript-audio-codec (dac) is NOT here — it pulls a massive
     # transitive tree (descript-audiotools → librosa → scipy → matplotlib).
