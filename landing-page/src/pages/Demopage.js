@@ -33,6 +33,7 @@ import {animateScroll as scrollLibrary} from 'react-scroll';
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, makeMsgId, MAX_RETRIES } from '../utils/chatRetry';
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload } from '../utils/ttsGuards';
+import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
@@ -1322,9 +1323,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // are id-less, see comment at NunbaChatProvider:982).
             // Regression guard 2026-05-11 (overwrite caused live loss).
             const savedMessages = loadMessagesFromStorage(savedAgent.prompt_id || savedAgent.id);
-            setMessages((prev) =>
-              savedMessages.length > prev.length ? savedMessages : prev
-            );
+            // Merge, never replace: a message sent before this fetch
+            // returned (first chat after install) is newer than storage.
+            setMessages((prev) => mergeRestoredMessages(savedMessages, prev));
           } else {
             // Orphan-chat recovery: savedAgentId is valid but the
             // agent isn't in allAgents (server sync failed, backend
@@ -1400,9 +1401,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               // orphan branches above — pick whichever timeline is
               // longer, preserving both first-mount restore AND
               // mid-conversation live state.
-              setMessages((prev) =>
-                savedMessages.length > prev.length ? savedMessages : prev
-              );
+              setMessages((prev) => mergeRestoredMessages(savedMessages, prev));
             }
           }
         }
@@ -2092,8 +2091,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (parsed.action === 'TTS' && parsed.generated_audio_url) {
         logger.log('TTS AUDIO RECEIVED:', parsed.generated_audio_url);
         try {
-          const audio = new Audio(parsed.generated_audio_url);
-          audio.play().catch(() => {});
+          // The one shared element, already unlocked by the user's send
+          // gesture.  A fresh `new Audio()` is rejected by WebView2's
+          // autoplay policy and the rejection used to be swallowed, so a
+          // reply was synthesized and nobody heard it.
+          const audio = getTtsAudioElement() || new Audio();
+          audio.src = parsed.generated_audio_url;
+          audio.play().catch((err) => {
+            console.warn('[TTS] Play FAILED (pushed audio):', err && err.message);
+          });
         } catch (e) {
           logger.log('TTS audio play failed:', e);
         }
