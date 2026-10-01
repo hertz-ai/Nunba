@@ -221,6 +221,25 @@ EMBED_DEPS = {
     "ddgs": "9.16.0",
     "primp": "2.0.0",   # ddgs's HTTP layer; the TLS-impersonation part that works
     "lxml": "6.1.2",    # ddgs SERP parsing
+    # grep-ast / tree-sitter / tree-sitter-language-pack / diff-match-patch /
+    # pathspec: the imports of HARTOS's in-process coding backend
+    # (integrations/coding_agent/aider_core: repomap.py:15 `from grep_ast`,
+    # :19 `from tree_sitter`, coders/search_replace.py:11 `from
+    # diff_match_patch`).  Pinned in HARTOS requirements.txt:348-351 but not
+    # here, and EMBED_DEPS is what fills python-embed, so they shipped missing.
+    # Measured 2026-10-01 on the install: `python-embed\python.exe` raised
+    # ModuleNotFoundError for grep_ast and diff_match_patch, so
+    # AiderNativeBackend.is_installed() was False, get_available_backends()
+    # was empty, and every daemon coding goal returned "No coding tools
+    # installed. Install one: kilocode, claude (Claude Code), or opencode."
+    # (the 2026-10-01 gui_app.log shows ~300 requires_breakdown / pending /
+    # error rounds and consent-wait replies from that string).  Same class
+    # as the einops note above.  Versions match HARTOS requirements.txt.
+    "grep-ast": "0.9.0",
+    "tree-sitter": "0.23.2",
+    "tree-sitter-language-pack": "0.6.0",
+    "diff-match-patch": "20230430",
+    "pathspec": "0.12.1",   # grep-ast's one pure-python dep
     # NOTE: descript-audio-codec (dac) is NOT here — it pulls a massive
     # transitive tree (descript-audiotools → librosa → scipy → matplotlib).
     # It's installed at RUNTIME by install_backend_full('indic_parler')
