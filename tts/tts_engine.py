@@ -1424,6 +1424,7 @@ class TTSEngine:
         # underlying state these helpers read from.
         instance._consecutive_failures = {}
         instance._demoted_backends = set()
+        instance._demotion_meta = {}
         instance._failure_threshold = 3
         instance._backends = {}
         instance._active_backend = BACKEND_NONE
@@ -1463,6 +1464,9 @@ class TTSEngine:
         # engine across reboots.
         self._consecutive_failures: dict[str, int] = {}
         self._demoted_backends: set[str] = set()
+        # When each demotion was first written and when it expires, kept so
+        # a later save does not restart an older entry's 7-day clock.
+        self._demotion_meta: dict[str, dict[str, float]] = {}
         # 3 strikes is the same threshold the model_lifecycle.py
         # eviction guard uses — keep it consistent across the codebase
         # so failures observed by either subsystem trip a single,
@@ -1868,6 +1872,7 @@ class TTSEngine:
                         # the autonomous-recovery contract.
                         if backend in self._demoted_backends:
                             self._demoted_backends.discard(backend)
+                            self._demotion_meta.pop(backend, None)
                             self._consecutive_failures[backend] = 0
                             try:
                                 self._save_persisted_demotions()
@@ -2201,6 +2206,12 @@ class TTSEngine:
             self._demoted_backends.add(backend)
             self._consecutive_failures[backend] = info.get(
                 'failures_at_demotion', self._failure_threshold)
+            first = info.get('first_demoted_at')
+            self._demotion_meta[backend] = {
+                'first_demoted_at': first if isinstance(
+                    first, (int, float)) else now,
+                'expires_at': expires_at,
+            }
             hydrated.append(backend)
 
         if hydrated:
@@ -2235,9 +2246,18 @@ class TTSEngine:
         for backend in self._demoted_backends:
             if backend in (BACKEND_PIPER, BACKEND_NONE):
                 continue
-            demoted_payload[backend] = {
+            # An entry already on file keeps its own clock; only a backend
+            # demoted for the first time gets "now".  Stamping every row
+            # with "now" restarted all seven 7-day TTLs whenever any one
+            # backend was demoted, so a demotion for a cause long fixed
+            # never expired.
+            meta = self._demotion_meta.setdefault(backend, {
                 'first_demoted_at': now,
                 'expires_at': now + _DEMOTION_TTL_SECONDS,
+            })
+            demoted_payload[backend] = {
+                'first_demoted_at': meta['first_demoted_at'],
+                'expires_at': meta['expires_at'],
                 'failures_at_demotion': self._consecutive_failures.get(
                     backend, self._failure_threshold),
             }
