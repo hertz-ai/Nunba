@@ -428,6 +428,12 @@ export default function VoiceOrbPage() {
       // above (Date.now()) would otherwise read as "just interacted" and hold
       // the card open for one IDLE_MS after adoption.
       lastInteract.current = 0;
+      // Same reason, same state: the seed above is 'shown' whenever pywebview
+      // was absent at first render.  Left alone, the first presence sent to
+      // the bridge is 'shown' and the born-hidden window appears on its
+      // loading frame (measured 2026-10-02, 13:09 launch).  decide() takes
+      // over from here within a second.
+      setPresence('hidden');
     };
     if (inCompanion()) { adopt(); return undefined; }
     window.addEventListener('pywebviewready', adopt);

@@ -97,6 +97,22 @@ test('presence reaches the bridge when pywebview lands after mount', () => {
   expect(presence).toHaveBeenCalled();
 });
 
+test('a late-adopted companion tells the window to stay hidden, not shown', () => {
+  // Measured 2026-10-02: the 13:09 launch logged `[COMPANION] presence shown
+  // -> show` 8 s after the window was created, with nobody touching it, while
+  // the 14:36 and 14:51 launches logged none.  The page seeds presence 'shown'
+  // when pywebview is absent at first render (the browser/HART OS default), and
+  // adoption flipped `hosted` without resetting it, so the first thing sent to
+  // the bridge was 'shown' and the born-hidden window appeared on its loading
+  // frame.  The companion is born away; the first word it sends must say so.
+  render(<VoiceOrbPage />);
+
+  pywebviewArrivesLate();
+
+  expect(presence).toHaveBeenCalled();
+  expect(presence.mock.calls[0][0]).toBe('hidden');
+});
+
 test('the glass shell replaces the bare transparent background once hosted', () => {
   // RED pre-fix: every glass property stayed at its un-hosted fallback, so the
   // window's own background_color '#000000' was the whole card -- the black
