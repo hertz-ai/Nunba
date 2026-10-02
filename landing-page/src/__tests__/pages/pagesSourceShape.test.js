@@ -124,6 +124,22 @@ describe('Demopage: a send waits until the page knows its agent', () => {
   });
 });
 
+// #581: the draft-replacement branch of handleDataReceived read extractedText
+// before its `const` declaration (temporal dead zone), so an expert reply
+// carrying a speculation_id never replaced its draft.
+describe('Demopage: the reply text is read before the draft replacement uses it', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf-8',
+  );
+
+  it('declares extractedText above its first use (#581)', () => {
+    const declared = src.indexOf('const extractedText');
+    const used = src.indexOf('parsed.speculation_id && extractedText');
+    expect(declared).toBeGreaterThan(-1);
+    expect(used).toBeGreaterThan(declared);
+  });
+});
+
 describe('pages/ directory integrity', () => {
   const PAGES_DIR = path.join(__dirname, '..', '..', 'pages');
 

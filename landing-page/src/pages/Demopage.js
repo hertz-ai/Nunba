@@ -2131,6 +2131,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         return;
       }
 
+      // Declared before its first use, the draft replacement below.  It was
+      // declared further down, so that branch read the const in its temporal
+      // dead zone and an expert reply never replaced its draft (#581).
+      const extractedText = parsed.text?.[0] || '';
+
       // Draft-replacement: if the WAMP message carries a speculation_id,
       // find the draft bubble and replace its content in-place instead of
       // appending a second message. This prevents the "two bubbles" confusion.
@@ -2327,7 +2332,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         return;
       }
 
-      const extractedText = parsed.text?.[0] || '';
       const responseVideoUrl = parsed.video_link?.video || '';
       const responseAudioUrl = parsed.video_link?.aud_url || '';
 
