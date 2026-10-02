@@ -353,6 +353,13 @@ class TestVoiceTranscribe:
         data = response.get_json()
         assert "error" in data
 
+    def test_api_spelling_reaches_the_same_handler(self, client):
+        """POST /api/voice/transcribe (HARTOS's spelling, what phones send) is
+        the same route: no audio -> the handler's own 400, not a 404."""
+        response = client.post("/api/voice/transcribe")
+        assert response.status_code == 400
+        assert response.get_json() == {"error": "No audio file provided"}
+
     def test_empty_filename_returns_400(self, client):
         """POST /voice/transcribe with empty filename should return 400."""
         data = {"audio": (io.BytesIO(b""), "")}
