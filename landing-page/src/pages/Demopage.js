@@ -34,6 +34,7 @@ import autobahn from 'autobahn';
 import { classifyError, getBackoff, makeMsgId, MAX_RETRIES } from '../utils/chatRetry';
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload } from '../utils/ttsGuards';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
+import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
@@ -1211,6 +1212,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   useEffect(() => {
+    // restore-on-mount: the stored chat for the last active agent is in
+    // localStorage already; waiting for /prompts + /agents/sync to return
+    // left the chat empty for as long as boot made those slow (3-7 s warm,
+    // far longer while HARTOS loads).  Merge, never replace: a message sent
+    // in the meantime is newer than storage.  Routes that name an agent, and
+    // embeds, keep the existing restore (the agent switch loads its own).
+    if (agentName || embeddedMode) return;
+    const activeId = localStorage.getItem('active_agent_id');
+    const stored = readLocalMessages(activeId);
+    if (stored && stored.length > 0) {
+      setMessages((prev) => mergeRestoredMessages(stored, prev));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     return () => {
       // Save messages when component unmounts (using refs to avoid stale closure)
       const _unmountId = currentAgentRef.current?.prompt_id || currentAgentRef.current?.id;
@@ -1733,10 +1749,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     } catch (_) {}
   };
 
-  const loadMessagesFromStorage = (promptId) => {
-    if (!promptId) return [];
+  // localStorage only — no network.  Returns null when nothing is stored (or
+  // the stored value cannot be read), so the caller can fall back to the
+  // server DB.  The mount-time restore uses this alone: the server fallback is
+  // a synchronous XHR and must not run on the main thread during boot.
+  const readLocalMessages = (promptId) => {
+    if (!promptId) return null;
 
-    // Try localStorage first (fastest)
     try {
       const storageKey = getChatStorageKey(promptId);
       const savedData = localStorage.getItem(storageKey);
@@ -1771,11 +1790,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `📥 Loaded ${sanitized.length} messages for agent ${promptId}`
         );
-        return sanitized;
+        return normalizeRestoredMessages(sanitized);
       }
     } catch (error) {
       console.error('Failed to load messages from localStorage:', error);
     }
+    return null;
+  };
+
+  const loadMessagesFromStorage = (promptId) => {
+    if (!promptId) return [];
+
+    const local = readLocalMessages(promptId);
+    if (local !== null) return local;
 
     // Fallback: load from server DB (survives WebView reset / reinstall)
     try {
@@ -1788,12 +1815,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         if (Array.isArray(convs) && convs.length > 0) {
           const restored = [];
           convs.forEach((c) => {
-            if (c.request) restored.push({ role: 'user', text: c.request });
-            if (c.response) restored.push({ role: 'assistant', text: c.response });
+            if (c.request) restored.push({ type: 'user', content: c.request });
+            if (c.response) restored.push({ type: 'assistant', content: c.response });
           });
           if (restored.length > 0) {
             logger.log(`Restored ${restored.length} messages from server DB for agent ${promptId}`);
-            return restored;
+            return normalizeRestoredMessages(restored);
           }
         }
       }

@@ -17,9 +17,11 @@ describe('loadingRetryDelayMs (boot-window re-send backoff, #161)', () => {
     }
   });
 
-  it('cumulatively spans the ~2 min model-warm window', () => {
+  it('cumulatively spans the measured cold boot (HARTOS ready 242 s after launch on 2026-10-02)', () => {
+    // The 5-step schedule summed to 157 s, so a message bounced at t<85 s
+    // exhausted its retries before Tier-1 was ready and was dropped silently.
     const total = LOADING_RETRY_SCHEDULE_MS.reduce((a, b) => a + b, 0);
-    expect(total).toBeGreaterThanOrEqual(120000); // >= 2 minutes
+    expect(total).toBeGreaterThanOrEqual(300000); // >= 5 minutes
   });
 
   it('gives up (null) once MAX_LOADING_RETRIES is reached — bounded, never loops', () => {
