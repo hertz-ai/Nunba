@@ -65,6 +65,7 @@ import realtimeService from '../services/realtimeService';
 import {useTTS} from '../hooks/useTTS';
 import {sttConfigMessage} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
+import {playTtsClip} from '../services/ttsClipPlayer';
 
 // ── Local engine readiness — gates messageQueue while local LLM is booting.
 //    Returns true in steady-state and on health-endpoint failure (optimistic),
@@ -1992,6 +1993,38 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }
   };
 
+  // THE TTS player for this page.  A clip arrives over SSE ('tts' listener) and
+  // over WAMP (handleDataReceived); both call this, which skips a clip for a
+  // superseded request and loads the shared element at most once per clip
+  // (services/ttsClipPlayer.js).  Two inline players aborted each other's
+  // play() and the reply was never heard.
+  const playPushedTts = useCallback((data) => {
+    if (!data || !data.generated_audio_url) return;
+    if (data.request_id && requestIdRef.current && data.request_id !== requestIdRef.current) {
+      console.log('[TTS] Skipped stale:', data.request_id, '!= current:', requestIdRef.current);
+      return;
+    }
+    const el = getTtsAudioElement();
+    const outcome = playTtsClip(el, data.generated_audio_url, {
+      onStart: () => {
+        // Wire to audioRef so VoiceVisualizer can animate
+        audioRef.current = el;
+        setIsPlayingResponse(true);
+      },
+      onEnd: () => setIsPlayingResponse(false),
+      onError: (err) => {
+        console.error('[TTS] Play FAILED:', err && err.message);
+        setIsPlayingResponse(false);
+        const resumeAudio = () => {
+          el.play().catch(() => {});
+          document.removeEventListener('click', resumeAudio);
+        };
+        document.addEventListener('click', resumeAudio, { once: true });
+      },
+    });
+    console.log('[TTS] Clip', outcome + ':', data.generated_audio_url);
+  }, []);
+
   const handleDataReceived = useCallback((data) => {
     logger.log('🚦 handleDataReceived START');
     logger.log('📥 Raw data:', data);
@@ -2114,22 +2147,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         return;
       }
 
-      // TTS audio pushed from backend — play immediately
+      // TTS audio pushed from backend (the WAMP copy of a clip the SSE 'tts'
+      // listener also receives): the same single player, deduped by URL.
       if (parsed.action === 'TTS' && parsed.generated_audio_url) {
         logger.log('TTS AUDIO RECEIVED:', parsed.generated_audio_url);
-        try {
-          // The one shared element, already unlocked by the user's send
-          // gesture.  A fresh `new Audio()` is rejected by WebView2's
-          // autoplay policy and the rejection used to be swallowed, so a
-          // reply was synthesized and nobody heard it.
-          const audio = getTtsAudioElement() || new Audio();
-          audio.src = parsed.generated_audio_url;
-          audio.play().catch((err) => {
-            console.warn('[TTS] Play FAILED (pushed audio):', err && err.message);
-          });
-        } catch (e) {
-          logger.log('TTS audio play failed:', e);
-        }
+        playPushedTts(parsed);
         return;
       }
 
@@ -2790,26 +2812,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         console.log('[TTS] Skipped stale:', data.request_id, '!= current:', requestIdRef.current);
         return;
       }
-      if (data.generated_audio_url && ttsAudio) {
-        console.log('[TTS] Playing audio:', data.generated_audio_url);
-        ttsAudio.src = data.generated_audio_url;
-        // Wire to audioRef so VoiceVisualizer can animate
-        audioRef.current = ttsAudio;
-        setIsPlayingResponse(true);
-        ttsAudio.onended = () => setIsPlayingResponse(false);
-        ttsAudio.onerror = () => setIsPlayingResponse(false);
-        ttsAudio.play().then(() => {
-          console.log('[TTS] Audio playing OK');
-        }).catch((err) => {
-          console.error('[TTS] Play FAILED:', err.message);
-          setIsPlayingResponse(false);
-          const resumeAudio = () => {
-            ttsAudio.play().catch(() => {});
-            document.removeEventListener('click', resumeAudio);
-          };
-          document.addEventListener('click', resumeAudio, { once: true });
-        });
-      }
+      playPushedTts(data);
     });
 
     // Setup progress — TTS engine install, model downloads.
