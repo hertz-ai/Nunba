@@ -1,6 +1,7 @@
 /**
- * chatRetry.js — Shared retry utilities for chat message sending.
- * Used by both Demopage.js and NunbaChatProvider.jsx.
+ * chatRetry.js — Shared retry utilities for chat message sending, and the
+ * one test for whether a chat turn got its reply.
+ * Used by Demopage.js, NunbaChatProvider.jsx and chat/ChatMessageList.js.
  */
 
 export const BASE_BACKOFF_MS = 2000;
@@ -44,3 +45,31 @@ export function getBackoff(retryCount) {
 export function makeMsgId() {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
+
+/**
+ * True for a message the user reads as an answer: assistant text, or a card
+ * that answers in its place.  ChatMessageList renders llm_setup_card and
+ * plan_card only when their payload is present, so they count only then.
+ */
+export function isReplyMessage(message) {
+  if (!message) return false;
+  if (message.type === 'assistant') {
+    return typeof message.content === 'string' && message.content.trim() !== '';
+  }
+  if (message.type === 'llm_setup_card') return !!message.setupCard;
+  if (message.type === 'plan_card') return !!message.plan;
+  return false;
+}
+
+/** True when the user message at userIndex has a reply before the next user message. */
+export function turnHasReply(messages, userIndex) {
+  for (let i = userIndex + 1; i < messages.length; i++) {
+    if (messages[i].type === 'user') return false;
+    if (isReplyMessage(messages[i])) return true;
+  }
+  return false;
+}
+
+// Shown on a message whose turn ended without a reply.
+export const EMPTY_REPLY_REASON = 'The AI returned an empty reply';
+export const PUSHED_REPLY_MISSING_REASON = 'Sent, but no reply reached this window';

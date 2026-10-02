@@ -140,6 +140,65 @@ describe('Demopage: the reply text is read before the draft replacement uses it'
   });
 });
 
+// 2026-10-02: "✦ Thought for X" showed with no reply.  The flag behind it,
+// isRequestInFlight, was cleared by a thinking trace mid-turn, by a push that
+// failed to parse, and by the cloud accepting a message whose reply is pushed
+// later; an empty local reply ended the turn with nothing on screen.  A turn
+// now ends with its reply, or with the reason on the user's message.
+describe('Demopage: a turn that ends without a reply says why', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf-8',
+  );
+  const between = (from, to) => {
+    const start = src.indexOf(from);
+    const end = src.indexOf(to, start + from.length);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return src.slice(start, end);
+  };
+
+  it('a thinking trace does not end the turn', () => {
+    const thinking = between(
+      'parsed.action === CHAT_ACTION_THINKING) {', 'const responseVideoUrl');
+    expect(thinking).not.toMatch(/setIsRequestInFlight\(false\)/);
+  });
+
+  it('an unreadable push or a failed handler does not end the turn', () => {
+    expect(between("parsed?.error === 'parse_failed'", 'bumpChatDeadline'))
+      .not.toMatch(/setIsRequestInFlight\(false\)/);
+    expect(between("console.error('Error processing data:', err);", '}, []);'))
+      .not.toMatch(/setIsRequestInFlight\(false\)/);
+  });
+
+  it('a cloud send stays open until its pushed reply lands or the wait ends', () => {
+    expect(between('const response = await fetch(endpoint', 'if (!response.ok) {'))
+      .not.toMatch(/setIsRequestInFlight\(false\)/);
+    const accepted = between('// Success', '} catch (err) {');
+    expect(accepted).toMatch(/awaitPushedReply\(msgId, sentAt\)/);
+    expect(accepted).not.toMatch(/setIsRequestInFlight\(false\)/);
+    expect(src).not.toMatch(/Response is taking longer than expected/);
+  });
+
+  it('the pushed-reply wait marks an unanswered message with the reason', () => {
+    const wait = between('const awaitPushedReply = ', 'const handleSend = async');
+    expect(wait).toMatch(/turnHasReply\(/);
+    expect(wait).toMatch(/PUSHED_REPLY_MISSING_REASON/);
+  });
+
+  it('an empty local reply, an empty plan run and a signed-out send say why', () => {
+    expect(between('Routing to LOCAL backend via chatApi', 'if (localSuccess) return;'))
+      .toMatch(/EMPTY_REPLY_REASON/);
+    expect(between('const handleExecutePlan = useCallback', 'const handleSetupLlm'))
+      .toMatch(/EMPTY_REPLY_REASON/);
+    expect(between("console.error('Authorization token is missing.');", 'return;'))
+      .toMatch(/updateMessageStatus\(msgId, \{ status: 'failed'/);
+  });
+
+  it('decides "answered" with the one shared predicate', () => {
+    expect(src).toMatch(/import \{[^}]*\bturnHasReply\b[^}]*\} from '\.\.\/utils\/chatRetry'/);
+  });
+});
+
 describe('pages/ directory integrity', () => {
   const PAGES_DIR = path.join(__dirname, '..', '..', 'pages');
 

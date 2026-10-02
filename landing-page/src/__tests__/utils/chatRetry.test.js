@@ -82,3 +82,37 @@ describe('#125 chatRetry contract', () => {
     }
   });
 });
+
+// The "✦ Thought for X" pill (ChatMessageList) and the no-reply reasons
+// (Demopage) both decide "did this turn get a reply?" from these two.
+describe('a chat turn and its reply', () => {
+  const {isReplyMessage, turnHasReply} = require('../../utils/chatRetry');
+
+  test('assistant text is a reply; an empty assistant bubble is not', () => {
+    expect(isReplyMessage({type: 'assistant', content: 'Hello'})).toBe(true);
+    expect(isReplyMessage({type: 'assistant', content: '   '})).toBe(false);
+    expect(isReplyMessage({type: 'assistant'})).toBe(false);
+  });
+
+  test('a setup card or a plan card answers in place of text', () => {
+    expect(isReplyMessage({type: 'llm_setup_card', setupCard: {model_name: 'm'}})).toBe(true);
+    expect(isReplyMessage({type: 'plan_card', plan: {steps: []}})).toBe(true);
+  });
+
+  test.each([
+    'user', 'system', 'thinking_container', 'setup_progress', 'workflow_flowchart',
+  ])('%s is not a reply', (type) => {
+    expect(isReplyMessage({type, content: 'text'})).toBe(false);
+  });
+
+  test('a turn runs from its user message to the next one', () => {
+    const msgs = [
+      {type: 'user', content: 'first'},
+      {type: 'thinking_container', thinkingSteps: []},
+      {type: 'user', content: 'second'},
+      {type: 'assistant', content: 'answer to second'},
+    ];
+    expect(turnHasReply(msgs, 0)).toBe(false);
+    expect(turnHasReply(msgs, 2)).toBe(true);
+  });
+});

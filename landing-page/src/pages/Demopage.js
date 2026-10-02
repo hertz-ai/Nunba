@@ -31,7 +31,7 @@ import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isBackg
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
-import { classifyError, getBackoff, makeMsgId, MAX_RETRIES } from '../utils/chatRetry';
+import { classifyError, getBackoff, makeMsgId, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload } from '../utils/ttsGuards';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
@@ -99,6 +99,11 @@ const HOSTED_URL = 'https://hevolve.hertzai.com';
 // a never-ready engine queued every message forever (regression from the #475
 // engineReady gate; the hook is realtime-reconciled, NOT sticky-true).
 const ENGINE_BOOT_GRACE_MS = 20000;
+
+// How long a send whose reply is pushed later (the cloud path, or a local
+// `no_content`) stays open waiting for that push before the message says no
+// reply came.  The same 2 minutes the cloud branch waited before.
+const PUSHED_REPLY_WAIT_MS = 120000;
 
 // Setup/install cards (CUDA torch, GPU-whisper ctranslate2, model downloads,
 // TTS engine setup) report SYSTEM-global state — they are NOT tied to the
@@ -2066,9 +2071,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const parsed = safeParsePayload(rawPayload);
 
       if (parsed?.error === 'parse_failed') {
+        // Not the end of the turn: an unreadable push need not even belong
+        // to it.  The turn still ends with its reply, or with the reason on
+        // the message (handleSend / awaitPushedReply).
         console.error('Payload parsing failed, aborting message handling');
-        setLoading(false);
-        setIsRequestInFlight(false);
         return;
       }
 
@@ -2328,7 +2334,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         setCurrentThinkingId(containerRequestId);
         setLoading(false);
-        setIsRequestInFlight(false);
+        // isRequestInFlight stays on: a trace is progress, not the reply, so
+        // the spinner and its live stage text run until the reply lands.
+        // Clearing it here showed "Thought for X" with no reply (2026-10-02).
         return;
       }
 
@@ -2533,9 +2541,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         setUploadedImage(parsed.page_image_url);
       }
     } catch (err) {
+      // Not the end of the turn either (see parse_failed above).
       console.error('Error processing data:', err);
-      setLoading(false);
-      setIsRequestInFlight(false);
     }
   }, []);
 
@@ -4106,6 +4113,26 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     ));
   };
 
+  // ── A reply that comes by push, not in the HTTP response ──
+  // The cloud (and a local `no_content`) only accepts the message; its reply
+  // is pushed to handleDataReceived, which ends the turn.  Until then the turn
+  // stays open (spinner).  If no reply has landed after PUSHED_REPLY_WAIT_MS,
+  // the message says so.  sentAt is this send's lastMessageSentAtRef value:
+  // a newer send owns the spinner, so only the latest send's wait closes it.
+  const awaitPushedReply = (msgId, sentAt) => {
+    setTimeout(() => {
+      const msgs = messagesRef.current;
+      const idx = msgs.findIndex((m) => m.messageId === msgId);
+      if (idx !== -1 && !turnHasReply(msgs, idx)) {
+        updateMessageStatus(msgId, { status: 'failed', error: PUSHED_REPLY_MISSING_REASON });
+      }
+      if (lastMessageSentAtRef.current === sentAt) {
+        setLoading(false);
+        setIsRequestInFlight(false);
+      }
+    }, PUSHED_REPLY_WAIT_MS);
+  };
+
   const handleSend = async () => {
     // Prime TTS audio element on user gesture — required by WebView2 autoplay policy.
     // Without this, audio.play() from async SSE callbacks is silently blocked.
@@ -4246,7 +4273,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
     setMessages((prevMessages) => [...prevMessages, userMessage]);
     setLoading(true);
-    lastMessageSentAtRef.current = Date.now();
+    const sentAt = Date.now();
+    lastMessageSentAtRef.current = sentAt;
     // Force-clear the textarea DOM value immediately.  React's controlled
     // rerender is enough in theory, but WKWebView occasionally ignores the
     // rerender when another source (wake-listener, STT) writes to the same
@@ -4297,6 +4325,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     try {
       if (!token && !isGuestMode) {
         console.error('Authorization token is missing.');
+        updateMessageStatus(msgId, { status: 'failed', error: 'Not sent: log in first' });
         setLoading(false);
         setIsModalOpen(true);
         return;
@@ -4376,7 +4405,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               file_url: fileUrl || null,
               preferred_lang: localStorage.getItem('hart_language') || 'en',
             });
-            setIsRequestInFlight(false);
+            // isRequestInFlight is cleared below, once the reply (or the
+            // reason there is none) is on screen.
             const resultData = localResult || {};
             logger.log('Local backend response:', resultData);
 
@@ -4556,7 +4586,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // Skip assistant message when a card already consumed the text
             const responseText = resultData.text || resultData.response;
             const cardConsumedText = !!(resultData.llm_setup_card || (resultData.agentic_plan && resultData.agent_status === 'Plan Mode'));
-            if (!cardConsumedText && resultData.status !== 'no_content' && responseText) {
+            // no_content: the reply is pushed to this window later, as on the
+            // cloud path, so the turn stays open for it (awaitPushedReply).
+            const replyPushed = resultData.status === 'no_content';
+            if (!cardConsumedText && !replyPushed && responseText) {
               const assistantMessage = {
                 type: 'assistant',
                 content: responseText,
@@ -4648,6 +4681,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
                 });
               }
+            } else if (!cardConsumedText && !replyPushed) {
+              // A 200 with no text and no card: say so on the message
+              // rather than end the turn with nothing on screen.
+              updateMessageStatus(msgId, { status: 'failed', error: EMPTY_REPLY_REASON });
             }
             // Auto-save after each response (survives force-quit)
             const _saveId = currentAgent?.prompt_id || currentAgent?.id;
@@ -4655,7 +4692,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               setTimeout(() => saveMessagesToStorage(messagesRef.current, _saveId), 100);
             }
             setLoading(false);
-            setIsRequestInFlight(false);
+            if (replyPushed) {
+              awaitPushedReply(msgId, sentAt);
+            } else {
+              setIsRequestInFlight(false);
+            }
             setUserImage(null);
             setPdfFile(null);
             return;
@@ -4772,9 +4813,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             body: dataToSend,
           });
 
-          setIsRequestInFlight(false);
-
           if (!response.ok) {
+            setIsRequestInFlight(false);
             let errorResponse = {};
             try { errorResponse = await response.json(); } catch (err) { console.error('Failed to parse error response:', err); }
             console.error('API call failed:', response.status, response.statusText);
@@ -4823,28 +4863,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             continue;
           }
 
-          // Success
+          // Success: the cloud accepted the message.  Its reply is pushed to
+          // this window (handleDataReceived), not returned here, so the turn
+          // stays open until that reply lands or the wait runs out.  Ending
+          // the turn on this accept showed "Thought for X" with no reply
+          // (2026-10-02).
           updateMessageStatus(msgId, { status: 'sent', error: null, retryCount: undefined });
 
           const dataJson = await response.json();
+          awaitPushedReply(msgId, sentAt);
 
           if (dataJson.status === 'no_content') {
             logger.log('No content from API. Awaiting Crossbar message...');
-            setIsRequestInFlight(false);
-            // Timeout fallback: if Crossbar doesn't deliver within 120s, clear loading
-            setTimeout(() => {
-              setLoading((current) => {
-                if (current) {
-                  setIsRequestInFlight(false);
-                  setMessages((prev) => [...prev, {
-                    type: 'system',
-                    content: 'Response is taking longer than expected. The AI backend may still be processing. Please try again if no response appears.',
-                  }]);
-                  return false;
-                }
-                return current;
-              });
-            }, 120000);
             return;
           }
 
@@ -4938,6 +4968,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           servedBy: resultData.served_by,
           nodeTier: resultData.node_tier,
         }]);
+      } else {
+        // No text back: say so, rather than end the run with nothing shown.
+        setMessages((prev) => [...prev, { type: 'system', content: EMPTY_REPLY_REASON }]);
       }
       // Track agent status from execution response
       if (resultData.agent_status) {
