@@ -237,6 +237,36 @@ describe('canonical credential-mode transitions', () => {
     expect(ownEs.closed).toBe(false);
   });
 
+  test('a second identity change supersedes the first pending stream', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.init(null, {userId: 'guest'});
+    const guestEs = FakeEventSource.instances[0];
+
+    realtimeService.init(null, {userId: 'A'});
+    realtimeService.init(null, {userId: 'B', token: 'tok'});
+    const [, aEs, bEs] = FakeEventSource.instances;
+    expect(aEs.closed).toBe(true);
+
+    // A late open from the superseded stream must not become the live one.
+    aEs._simulateOpen();
+    bEs._simulateOpen();
+    const open = FakeEventSource.instances.filter((es) => !es.closed);
+    expect(open).toEqual([bEs]);
+    expect(guestEs.closed).toBe(true);
+  });
+
+  test('disconnect also closes a stream still waiting to replace the old one', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.init(null, {userId: 'guest'});
+    realtimeService.init(null, {userId: '10202', token: 'tok'});
+    const pendingEs = FakeEventSource.instances[1];
+
+    realtimeService.disconnect();
+    pendingEs._simulateOpen();
+
+    expect(FakeEventSource.instances.filter((es) => !es.closed)).toEqual([]);
+  });
+
   test('disconnect clears the previous bearer before a local guest reconnect', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
     realtimeService.connect('opaque-cloud-token');

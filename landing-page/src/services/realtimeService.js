@@ -21,6 +21,9 @@ let _worker = null;
 let _workerMessageHandler = null;
 let _eventSource = null;
 let _sseReconnectTimer = null;
+// The rotated stream waiting for its onopen.  Held here so a newer identity
+// or disconnect() can close it; otherwise it opened later as an orphan.
+let _pendingRotateEs = null;
 
 const SSE_RECONNECT_DELAY = 3000; // 3s retry on SSE disconnect
 const DEDUP_WINDOW_MS = 10000; // 10s dedup window
@@ -379,6 +382,10 @@ class RealtimeService {
 
     const oldEs = _eventSource;
     const newUrl = this._buildSSEUrl();
+    if (_pendingRotateEs) {
+      try { _pendingRotateEs.close(); } catch { /* noop */ }
+      _pendingRotateEs = null;
+    }
 
     let newEs;
     try {
@@ -396,11 +403,13 @@ class RealtimeService {
     // window; after swap the standard onerror takes over via the
     // `es !== _eventSource` check it already does.
     this._attachSSEHandlers(newEs);
+    _pendingRotateEs = newEs;
 
     let switched = false;
     newEs.onopen = () => {
-      if (switched) return;
+      if (switched || newEs !== _pendingRotateEs) return;
       switched = true;
+      _pendingRotateEs = null;
       // Swap the module pointer BEFORE closing the old one so any
       // concurrent onerror on `oldEs` sees `oldEs !== _eventSource`
       // and skips the reconnect path (handler check in
@@ -430,6 +439,8 @@ class RealtimeService {
       // Failed to open the rotated connection — keep OLD running and
       // retry the rotate after the standard delay.
       try { newEs.close(); } catch { /* noop */ }
+      if (newEs !== _pendingRotateEs) return; // superseded or disconnected
+      _pendingRotateEs = null;
       _sseReconnectTimer = setTimeout(
         () => this._rotateSSE(),
         SSE_RECONNECT_DELAY
@@ -445,6 +456,10 @@ class RealtimeService {
     if (_eventSource) {
       _eventSource.close();
       _eventSource = null;
+    }
+    if (_pendingRotateEs) {
+      try { _pendingRotateEs.close(); } catch { /* noop */ }
+      _pendingRotateEs = null;
     }
     this._sseConnected = false;
     if (!this._crossbarConnected) {
