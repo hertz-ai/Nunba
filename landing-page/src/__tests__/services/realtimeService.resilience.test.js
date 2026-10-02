@@ -212,6 +212,31 @@ describe('canonical credential-mode transitions', () => {
     expect(guestEs.closed).toBe(false);
   });
 
+  // Measured live 2026-10-03 on /local (bundle main.378a478c.js): the chat
+  // page's worker init opened the stream with no identity, RealtimeProvider's
+  // identity arrived while that stream was still connecting, and the server
+  // registered `uid=guest` for good while every /chat from the page was
+  // user 10202 -- so the page never received its own reply audio.
+  test('identity that arrives while the first stream is still connecting rotates it', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.init(null);
+    expect(FakeEventSource.instances).toHaveLength(1);
+    const anonEs = FakeEventSource.instances[0];
+    expect(anonEs.url).toMatch(/user_id=guest/);
+
+    // Not opened yet -- the provider's identity lands in the connect window.
+    realtimeService.init(null, {userId: '10202', token: 'tok'});
+
+    expect(FakeEventSource.instances).toHaveLength(2);
+    const ownEs = FakeEventSource.instances[1];
+    expect(ownEs.url).toMatch(/[?&]token=tok/);
+    expect(ownEs.url).toMatch(/user_id=10202/);
+
+    ownEs._simulateOpen();
+    expect(anonEs.closed).toBe(true);
+    expect(ownEs.closed).toBe(false);
+  });
+
   test('disconnect clears the previous bearer before a local guest reconnect', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
     realtimeService.connect('opaque-cloud-token');

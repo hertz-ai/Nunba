@@ -133,7 +133,11 @@ class RealtimeService {
     // A user-id change and a token<->local transition are both identity
     // changes. Rotate once, after both fields have been updated, so the new
     // EventSource is built from one coherent identity snapshot.
-    if ((userIdChanged || credentialModeChanged) && this._sseConnected) {
+    // A stream that is still connecting counts: gating on _sseConnected let
+    // an identity that landed before onopen fall through to _openSSE, which
+    // returns early on the existing source, so the page stayed registered
+    // as `guest` and never received its own replies (measured 2026-10-03).
+    if ((userIdChanged || credentialModeChanged) && (this._sseConnected || _eventSource)) {
       this._rotateSSE();
     }
 
