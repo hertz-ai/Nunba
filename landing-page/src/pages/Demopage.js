@@ -4272,11 +4272,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
 
       // ── Dual-mode routing: local LLM backend vs cloud API ──
+      // No agent selected yet = the agent list is still loading, and the one
+      // it selects by default is local.  A page served by this PC listens on
+      // this PC's message bus, where a cloud reply never arrives (2026-10-02:
+      // two first-after-load messages never reached this PC's server).
+      const agentListLoadingHere =
+        !currentAgent && isLocalBackendHost(window.location.hostname);
       const useLocalBackend =
         intelligencePreference === 'local_only' ||
         (intelligencePreference === 'auto' &&
           backendHealth !== 'offline' &&
-          (isGuestMode || isLocalAgent(currentAgent) || !navigator.onLine));
+          (isGuestMode || isLocalAgent(currentAgent) || agentListLoadingHere || !navigator.onLine));
 
       if (useLocalBackend) {
         // Route to local Flask /chat via existing chatApi service with persistent retry

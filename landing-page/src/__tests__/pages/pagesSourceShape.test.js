@@ -79,6 +79,24 @@ describe('pages/ source-shape smoke (batch #44)', () => {
   });
 });
 
+// 2026-10-02: for a signed-in account a message went to this PC only when the
+// selected agent was local.  Before the agent list loads nothing is selected,
+// so the first message after a page load went to the cloud, whose reply never
+// reaches a page on this PC's message bus.  Measured: two such first messages
+// (89fa1525, 83d04012) never reached this PC's server.
+describe('Demopage chat routing', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf-8',
+  );
+
+  it('a send before the agent list loads goes to this PC when the page is served by it', () => {
+    expect(src).toMatch(
+      /const agentListLoadingHere =\s*!currentAgent && isLocalBackendHost\(window\.location\.hostname\);/,
+    );
+    expect(src).toMatch(/isLocalAgent\(currentAgent\) \|\| agentListLoadingHere/);
+  });
+});
+
 describe('pages/ directory integrity', () => {
   const PAGES_DIR = path.join(__dirname, '..', '..', 'pages');
 
