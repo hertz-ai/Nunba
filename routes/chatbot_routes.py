@@ -2641,6 +2641,16 @@ def _chat_turn(data):
     conversation_id = data.get('conversation_id')
     video_req = data.get('video_req', False)
     request_id = data.get('request_id', str(int(time.time())))
+    # The turn's arrival, on record before any branch can return.  Until this
+    # line existed a request that never reached here and one that returned
+    # before its first log line read the same in every log (2026-10-02: a
+    # message typed in the first minutes after boot left no trace at all).
+    # Shape only -- never the text.
+    logger.info(
+        "[CHAT] turn received: user_id=%s agent_id=%s agent_type=%s "
+        "text_len=%d media_mode=%s request_id=%s",
+        user_id, agent_id, agent_type, len(text or ''),
+        data.get('media_mode'), request_id)
     prompt_id = data.get('prompt_id')
     create_agent = data.get('create_agent', False)
     autonomous_creation = data.get('autonomous_creation', False) or data.get('autonomous', False)
