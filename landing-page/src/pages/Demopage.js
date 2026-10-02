@@ -1040,9 +1040,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // ── Message queue: auto-send next queued message when loading finishes ──
   // Also fires when engineReady transitions true→ (i.e., when a local-engine
   // boot completes), so messages typed during boot autopush exactly the same
-  // way as messages typed during a previous in-flight request.
+  // way as messages typed during a previous in-flight request — and when the
+  // agent list has named the agent a send routes as (agentsLoading).
   useEffect(() => {
-    if (!loading && engineReady && messageQueue.length > 0) {
+    if (!loading && engineReady && !agentsLoading && messageQueue.length > 0) {
       const [next, ...rest] = messageQueue;
       setMessageQueue(rest);
       // Directly set inputMessage and call handleSend via ref on next tick
@@ -1051,7 +1052,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         if (handleSendRef.current) handleSendRef.current();
       }, 50);
     }
-  }, [loading, engineReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loading, engineReady, agentsLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Safety: force-drain a stuck queue ──
   // The normal drain (effect above) only runs when `!loading && engineReady`.
@@ -1291,37 +1292,51 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // Local /prompts already merges HARTOS + cloud agents — no separate cloud call needed
 
         // Multi-device agent sync (authenticated users only)
-        if (decryptedUserId && !isGuestMode) {
-          try {
-            const syncRes = await chatApi.getAgentSync();
-            const syncAgents = syncRes?.agents || [];
-            syncAgents.forEach((syncAgent) => {
-              const exists = allAgents.some(
-                (a) => String(a.prompt_id) === String(syncAgent.prompt_id)
-              );
-              if (!exists) {
-                allAgents.push({ ...syncAgent, _isSynced: true });
-              } else {
-                // Merge: prefer newer updated_at
-                const idx = allAgents.findIndex(
+        const mergeSyncedAgents = async () => {
+          if (decryptedUserId && !isGuestMode) {
+            try {
+              const syncRes = await chatApi.getAgentSync();
+              const syncAgents = syncRes?.agents || [];
+              syncAgents.forEach((syncAgent) => {
+                const exists = allAgents.some(
                   (a) => String(a.prompt_id) === String(syncAgent.prompt_id)
                 );
-                if (idx >= 0 && syncAgent.updated_at > (allAgents[idx].updated_at || '')) {
-                  allAgents[idx] = { ...allAgents[idx], ...syncAgent, _isSynced: true };
+                if (!exists) {
+                  allAgents.push({ ...syncAgent, _isSynced: true });
+                } else {
+                  // Merge: prefer newer updated_at
+                  const idx = allAgents.findIndex(
+                    (a) => String(a.prompt_id) === String(syncAgent.prompt_id)
+                  );
+                  if (idx >= 0 && syncAgent.updated_at > (allAgents[idx].updated_at || '')) {
+                    allAgents[idx] = { ...allAgents[idx], ...syncAgent, _isSynced: true };
+                  }
                 }
-              }
-            });
-            logger.log('Synced agents from server:', syncAgents.length);
-          } catch (syncErr) {
-            console.warn('Agent sync not available:', syncErr.message);
+              });
+              logger.log('Synced agents from server:', syncAgents.length);
+            } catch (syncErr) {
+              console.warn('Agent sync not available:', syncErr.message);
+            }
           }
-        }
+        };
+
+        // Choose the agent as soon as the local list names it; wait for the
+        // sync only when the saved agent may exist on another device alone.
+        // Measured 2026-10-02: /agents/sync took 2 min 15 s after a restart,
+        // and until an agent is chosen sends wait in the queue (agentsLoading).
+        const savedAgentId = localStorage.getItem('active_agent_id');
+        const knownLocally = allAgents.length > 0 && (
+          !savedAgentId || allAgents.some(
+            (a) => String(a.prompt_id) === String(savedAgentId) ||
+                   String(a.id) === String(savedAgentId)
+          )
+        );
+        if (!knownLocally) await mergeSyncedAgents();
 
         logger.log('Total merged agents:', allAgents);
         setAllAgents(allAgents);
 
         // Restore last active agent from localStorage
-        const savedAgentId = localStorage.getItem('active_agent_id');
         if (savedAgentId && allAgents.length > 0) {
           const savedAgent = allAgents.find(
             (a) => String(a.prompt_id) === String(savedAgentId) ||
@@ -1421,6 +1436,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               setMessages((prev) => mergeRestoredMessages(savedMessages, prev));
             }
           }
+        }
+
+        // The agent is chosen: release queued sends now, then merge the
+        // other-device agents into the list without choosing again.
+        setAgentsLoading(false);
+        if (knownLocally) {
+          allAgents = [...allAgents];
+          await mergeSyncedAgents();
+          setAllAgents(allAgents);
         }
       } catch (error) {
         console.error('Error fetching agents:', error);
@@ -4172,12 +4196,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // 10s safety-flush below only armed while `loading`).  So the engine gate
     // only holds for ENGINE_BOOT_GRACE_MS — long enough to auto-flush a real
     // cold boot, after which we trust the backend's own readiness handling.
+    //
+    // agentsLoading: until the agent list names the agent, currentAgent is
+    // the route's placeholder (Agent.js's cloud "Hevolve"), so a send would
+    // route as that agent.  Measured 2026-10-02: the first message after a
+    // restart went to the cloud and no reply came back.  The queue drains
+    // once the agent is chosen.
     const timeSinceLastMsg = Date.now() - lastMessageSentAtRef.current;
     const withinEngineBootGrace =
       Date.now() - chatMountAtRef.current < ENGINE_BOOT_GRACE_MS;
     if (
       (loading && lastMessageSentAtRef.current > 0 && timeSinceLastMsg < 10000) ||
-      (!engineReady && withinEngineBootGrace)
+      (!engineReady && withinEngineBootGrace) ||
+      agentsLoading
     ) {
       setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
       setInputMessage('');
@@ -4272,17 +4303,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
 
       // ── Dual-mode routing: local LLM backend vs cloud API ──
-      // No agent selected yet = the agent list is still loading, and the one
-      // it selects by default is local.  A page served by this PC listens on
-      // this PC's message bus, where a cloud reply never arrives (2026-10-02:
-      // two first-after-load messages never reached this PC's server).
-      const agentListLoadingHere =
-        !currentAgent && isLocalBackendHost(window.location.hostname);
       const useLocalBackend =
         intelligencePreference === 'local_only' ||
         (intelligencePreference === 'auto' &&
           backendHealth !== 'offline' &&
-          (isGuestMode || isLocalAgent(currentAgent) || agentListLoadingHere || !navigator.onLine));
+          (isGuestMode || isLocalAgent(currentAgent) || !navigator.onLine));
 
       if (useLocalBackend) {
         // Route to local Flask /chat via existing chatApi service with persistent retry

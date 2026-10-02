@@ -79,21 +79,48 @@ describe('pages/ source-shape smoke (batch #44)', () => {
   });
 });
 
-// 2026-10-02: for a signed-in account a message went to this PC only when the
-// selected agent was local.  Before the agent list loads nothing is selected,
-// so the first message after a page load went to the cloud, whose reply never
-// reaches a page on this PC's message bus.  Measured: two such first messages
-// (89fa1525, 83d04012) never reached this PC's server.
-describe('Demopage chat routing', () => {
+// 2026-10-02, measured in the browser: the first message after a restart went
+// to the cloud (azurekong /chat/custom_gpt) and no reply came back.  Until the
+// agent list loads, the selected agent is Agent.js's hard-coded cloud
+// "Hevolve" (prompt_id 54), and the list waited on /agents/sync, which took
+// 2 min 15 s after the restart.  The boot queue only waits for the LLM.
+describe('Demopage: a send waits until the page knows its agent', () => {
   const src = fs.readFileSync(
     path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf-8',
   );
+  const fetchPromptsBody = src.slice(
+    src.indexOf('const fetchPrompts = async'),
+    src.indexOf('fetchPrompts();'),
+  );
 
-  it('a send before the agent list loads goes to this PC when the page is served by it', () => {
+  it('queues a send while the agent list is loading', () => {
     expect(src).toMatch(
-      /const agentListLoadingHere =\s*!currentAgent && isLocalBackendHost\(window\.location\.hostname\);/,
+      /\(!engineReady && withinEngineBootGrace\) \|\|\s*agentsLoading\s*\)\s*\{\s*setMessageQueue/,
     );
-    expect(src).toMatch(/isLocalAgent\(currentAgent\) \|\| agentListLoadingHere/);
+  });
+
+  it('drains the queue only once the agent list has loaded', () => {
+    expect(src).toMatch(
+      /if \(!loading && engineReady && !agentsLoading && messageQueue\.length > 0\)/,
+    );
+    expect(src).toMatch(/\}, \[loading, engineReady, agentsLoading\]\);/);
+  });
+
+  it('selects the agent the local list names before waiting on the multi-device sync', () => {
+    expect(fetchPromptsBody).toMatch(/const knownLocally =/);
+    expect(fetchPromptsBody).toMatch(/if \(!knownLocally\) await mergeSyncedAgents\(\);/);
+    const selected = fetchPromptsBody.indexOf('setCurrentAgent(savedAgent);');
+    const lateSync = fetchPromptsBody.indexOf('if (knownLocally) {');
+    expect(selected).toBeGreaterThan(-1);
+    expect(lateSync).toBeGreaterThan(selected);
+    // The queue opens as soon as the agent is chosen, not after the sync.
+    const opened = fetchPromptsBody.slice(0, lateSync).lastIndexOf('setAgentsLoading(false);');
+    expect(opened).toBeGreaterThan(selected);
+    expect(fetchPromptsBody.slice(lateSync)).toMatch(/await mergeSyncedAgents\(\);/);
+  });
+
+  it('has no second routing rule for the loading window', () => {
+    expect(src).not.toMatch(/agentListLoadingHere/);
   });
 });
 
