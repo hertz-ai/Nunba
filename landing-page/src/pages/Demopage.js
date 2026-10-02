@@ -1325,12 +1325,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // Measured 2026-10-02: /agents/sync took 2 min 15 s after a restart,
         // and until an agent is chosen sends wait in the queue (agentsLoading).
         const savedAgentId = localStorage.getItem('active_agent_id');
-        const knownLocally = allAgents.length > 0 && (
-          !savedAgentId || allAgents.some(
-            (a) => String(a.prompt_id) === String(savedAgentId) ||
-                   String(a.id) === String(savedAgentId)
-          )
-        );
+        const isSavedAgent = (a) =>
+          String(a.prompt_id) === String(savedAgentId) ||
+          String(a.id) === String(savedAgentId);
+        const knownLocally = allAgents.length > 0 &&
+          (!savedAgentId || allAgents.some(isSavedAgent));
         if (!knownLocally) await mergeSyncedAgents();
 
         logger.log('Total merged agents:', allAgents);
@@ -1338,10 +1337,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         // Restore last active agent from localStorage
         if (savedAgentId && allAgents.length > 0) {
-          const savedAgent = allAgents.find(
-            (a) => String(a.prompt_id) === String(savedAgentId) ||
-                   String(a.id) === String(savedAgentId)
-          );
+          const savedAgent = allAgents.find(isSavedAgent);
           if (savedAgent) {
             logger.log('Restoring active agent:', savedAgent.name);
             setCurrentAgent(savedAgent);
@@ -1408,7 +1404,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // If still no current agent, prefer the built-in default (local_assistant).
         // Never auto-select a user-created agent — those have full agentic prompts
         // that would make a simple "hi" trigger an autonomous agent workflow.
-        if (!savedAgentId || !allAgents.find(a => String(a.prompt_id) === String(savedAgentId) || String(a.id) === String(savedAgentId))) {
+        if (!savedAgentId || !allAgents.find(isSavedAgent)) {
           if (allAgents.length > 0) {
             const defaultAgent =
               allAgents.find(a => a.id === 'local_assistant') ||
