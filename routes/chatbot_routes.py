@@ -4924,9 +4924,6 @@ def register_routes(app):
 
     # Voice pipeline routes (STT + Diarization — batch fallback for WS streaming primary)
     app.route("/voice/transcribe", methods=["POST"])(voice_transcribe)
-    # HARTOS's own spelling of the same route; phones post here to any node.
-    app.add_url_rule("/api/voice/transcribe", view_func=voice_transcribe,
-                     methods=["POST"], endpoint="voice_transcribe_api")
     app.route("/voice/diarize", methods=["POST"])(voice_diarize)
     app.route("/voice/stt/stream-port", methods=["GET"])(voice_stt_stream_port)
 
