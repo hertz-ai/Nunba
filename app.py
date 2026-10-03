@@ -3177,6 +3177,13 @@ if not args.background:
 # Create a logger for install/setup phases (before NunbaGUI logger at line 592)
 _setup_logger = logging.getLogger('NunbaSetup')
 _setup_logger.info(f"=== Nunba startup === args={sys.argv}")
+# Which Nunba and HARTOS commits this boot runs: one '[BUILD]' line here, and
+# a 'build' entry in boot_record.jsonl, which outlives this log's rotation.
+try:
+    from desktop.boot_record import record_build_identity
+    record_build_identity()
+except Exception as _bi_err:
+    _setup_logger.warning(f"[BUILD] build identity not logged: {_bi_err}")
 
 # Handle --install-ai: download ALL AI components and exit
 if getattr(args, 'install_ai', False):

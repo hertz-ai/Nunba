@@ -2201,82 +2201,16 @@ def llm_switch_model():
 
 @app.route('/api/harthash', methods=["GET"])
 def harthash():
-    """@HARTHASH — returns git commit hashes of all repos at build time.
+    """@HARTHASH — git commit hashes of the repos this build came from.
 
-    Frozen builds: reads BUILD_INFO.txt (written by scripts/build.py
-    post-cx_Freeze).  Source of truth.  Also tries the legacy
-    build_hashes.json for backwards compat with older installs.
-    Dev mode: live `git rev-parse HEAD` per sibling repo.
-
-    Always returns a JSON object — never errors.  Missing fields
-    surface as 'unknown' so the client can flag misconfigured
-    builds without a 500.
+    desktop.boot_record.build_identity is the one reader: BUILD_INFO.txt
+    beside a frozen exe (written by scripts/build.py), the legacy
+    build_hashes.json, else live git in a source run.  The same values are
+    logged as '[BUILD]' on every boot.  Always a JSON object; a value that
+    cannot be read is 'unknown', never a 500.
     """
-    import json as _json
-    _install_dir = os.path.dirname(os.path.abspath(
-        sys.executable if getattr(sys, 'frozen', False) else __file__,
-    ))
-
-    # 1) BUILD_INFO.txt — the actual artifact every freeze ships.  Format
-    #    is `KEY=VALUE` lines (BUILD_SHA, HARTOS_SHA, BUILD_TIME,
-    #    BUILD_PLATFORM).  Normalize key names to match the JSON schema
-    #    legacy callers expect.
-    _info_file = os.path.join(_install_dir, 'BUILD_INFO.txt')
-    if os.path.isfile(_info_file):
-        try:
-            kv: dict = {}
-            with open(_info_file, encoding='utf-8') as _f:
-                for _ln in _f:
-                    if '=' in _ln:
-                        _k, _v = _ln.strip().split('=', 1)
-                        kv[_k.strip()] = _v.strip()
-            return jsonify({
-                'nunba': kv.get('BUILD_SHA', 'unknown'),
-                'hartos': kv.get('HARTOS_SHA', 'unknown'),
-                'hevolveai': kv.get('HEVOLVEAI_SHA', 'unknown'),
-                'hevolve_database': kv.get('HEVOLVE_DATABASE_SHA', 'unknown'),
-                'build_time': kv.get('BUILD_TIME', 'unknown'),
-                'build_platform': kv.get('BUILD_PLATFORM', sys.platform),
-                'source': 'BUILD_INFO.txt',
-            })
-        except Exception as _e:
-            logging.warning(f"harthash: BUILD_INFO.txt parse failed: {_e}")
-
-    # 2) Legacy build_hashes.json (older installs / dev tree)
-    _hash_file = os.path.join(_install_dir, 'build_hashes.json')
-    if os.path.isfile(_hash_file):
-        try:
-            with open(_hash_file) as f:
-                _data = _json.load(f)
-            _data.setdefault('source', 'build_hashes.json')
-            return jsonify(_data)
-        except Exception:
-            pass
-
-    # 3) Dev mode — live git rev-parse on sibling repos
-    import subprocess
-    hashes: dict = {}
-    repos = {
-        'nunba': os.path.dirname(os.path.abspath(__file__)),
-        'hartos': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'HARTOS'),
-        'hevolve_database': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Hevolve_Database'),
-        'hevolveai': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hevolveai'),
-    }
-    # Four repos x one git spawn each = up to four console flashes on Windows
-    # without the hide flags.  Resolve them once outside the loop.
-    from desktop.platform_utils import get_subprocess_flags
-    _win_flags = get_subprocess_flags()
-    for name, path in repos.items():
-        try:
-            r = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
-                               capture_output=True, text=True, cwd=path, timeout=5,
-                               **_win_flags)
-            hashes[name] = r.stdout.strip() if r.returncode == 0 else 'unknown'
-        except Exception:
-            hashes[name] = 'unknown'
-    hashes['build_time'] = 'dev-mode'
-    hashes['source'] = 'live-git'
-    return jsonify(hashes)
+    from desktop.boot_record import build_identity
+    return jsonify(build_identity())
 
 
 @app.route('/api/admin/models', methods=["GET"])
@@ -6764,6 +6698,14 @@ if __name__ == '__main__':
         logging.info(f"Python version: {sys.version}")
         logging.info(f"Running from: {os.path.abspath(__file__)}")
         logging.info(f"Hevolve build directory: {LANDING_PAGE_BUILD_DIR}")
+        # Which commits this run comes from.  app.py names the build for the
+        # installed app; `python main.py` never runs app.py.  Never fatal: the
+        # except below this block exits the server.
+        try:
+            from desktop.boot_record import record_build_identity
+            record_build_identity()
+        except Exception as _bi_err:
+            logging.warning(f"[BUILD] build identity not logged: {_bi_err}")
 
         start_background_services()
 
