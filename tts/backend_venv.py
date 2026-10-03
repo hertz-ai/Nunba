@@ -413,6 +413,12 @@ def _venv_log_path(backend: str) -> Path:
     return log_dir / f"venv_{backend}.log"
 
 
+# pip's scripts-not-on-PATH warning resolves every PATH entry; a junction on
+# PATH (here OpenAI Codex\bin) raised WinError 448 there and pip rolled the
+# whole install back -- chatterbox_turbo failed 14 times on 2026-10-03.
+_NO_PATH_SCAN = "--no-warn-script-location"
+
+
 def install_into_venv(
     backend: str,
     packages: list[str],
@@ -497,7 +503,7 @@ def install_into_venv(
         #   wheel:      installs cleanly when sdists ARE built.
         try:
             up = subprocess.run(
-                [str(pyexe), "-m", "pip", "install", "--upgrade",
+                [str(pyexe), "-m", "pip", "install", _NO_PATH_SCAN, "--upgrade",
                  "pip", "setuptools", "wheel"],
                 capture_output=True,
                 text=True,
@@ -544,7 +550,7 @@ def install_into_venv(
             r = None
             for attempt in range(1, _MAX_PIP_ATTEMPTS + 1):
                 proc = subprocess.Popen(
-                    [str(pyexe), "-m", "pip", "install", pkg],
+                    [str(pyexe), "-m", "pip", "install", _NO_PATH_SCAN, pkg],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
