@@ -408,6 +408,24 @@ class TestConsentReachesEveryClientOfTheUser:
         assert body.count('consent.granted') == 1, body
 
 
+class TestChatNewReachesTheLocalRouter:
+    """A persisted turn (chat.new) is mirrored onto its own WAMP topic, where
+    crossbarWorker.js subscribes -- not onto the chat-bubble topic, where it
+    would arrive as a bubble with no text."""
+
+    def test_chat_new_goes_to_its_own_topic(self, main_mod, monkeypatch):
+        from unittest.mock import MagicMock
+        fake = MagicMock()
+        fake.is_running.return_value = True
+        monkeypatch.setitem(sys.modules, 'wamp_router', fake)
+
+        main_mod.broadcast_sse_event('chat.new', {'msg_id': 'm1', 'role': 'user',
+                                                  'content': 'hi'}, user_id='u1')
+
+        topics = [c.args[0] for c in fake.publish_local.call_args_list]
+        assert topics == ['com.hertzai.hevolve.chat.new.u1'], topics
+
+
 class TestOneLockHold:
     """Review of b07e025f: moving the enqueue, the record or the replay
     snapshot out of their lock hold passed every other test here."""

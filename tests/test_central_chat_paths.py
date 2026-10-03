@@ -297,6 +297,24 @@ def test_chat_turn_hands_hartos_the_avatar_and_draft_choice_and_keeps_its_map(cl
     assert calls[0]['teacher_avatar_id'] == 2933
 
 
+def test_chat_turn_hands_hartos_the_sending_device(client):
+    """The device a turn came from reaches HARTOS, which records it on the
+    mirrored turn so that device can tell its own turns from another's."""
+    calls = []
+
+    def fake_hevolve_chat(**kwargs):
+        calls.append(kwargs)
+        return {'text': 'real answer'}
+
+    with patch.object(cr, 'HEVOLVE_CHAT_AVAILABLE', True), \
+            patch.object(cr, 'hevolve_chat', fake_hevolve_chat, create=True), \
+            patch.object(cr, '_fire_nunba_tts'), \
+            patch.dict(sys.modules, {'models.orchestrator': None}):
+        client.post('/chat', json={'text': 'hello', 'user_id': 'u',
+                                   'device_id': 'dev-desk'})
+    assert calls and calls[0]['device_id'] == 'dev-desk'
+
+
 def test_a_non_numeric_agent_id_names_no_agent(client):
     """A prompt_id that is not a number names no agent: the turn runs as a
     casual chat (chat_route's _resolve_agent and the adapter coerce it) instead

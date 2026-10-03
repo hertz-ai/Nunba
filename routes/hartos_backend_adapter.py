@@ -652,6 +652,7 @@ def chat(
     intelligence_preference: str = 'auto',
     teacher_avatar_id=None,
     draft_first=None,
+    device_id=None,
     **kwargs
 ) -> dict[str, Any]:
     """
@@ -752,6 +753,10 @@ def chat(
     # into that avatar's recorded voice.  Sent only when a caller has one.
     if teacher_avatar_id is not None:
         payload["teacher_avatar_id"] = teacher_avatar_id
+    # The device the turn came from: HARTOS stamps it on the mirrored turn so
+    # that device drops its own turns from the cross-device feed.
+    if device_id:
+        payload["device_id"] = str(device_id)
     # Per-request draft override: HARTOS /chat honours `draft_first` in the
     # body.  Sent only when a caller sets it, so every other caller keeps
     # HARTOS's default.

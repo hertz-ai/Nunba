@@ -4734,6 +4734,10 @@ def broadcast_sse_event(event_type, data, user_id=None):
                 publish_local(f'com.hertzai.pupit.{user_id}', wamp_data)
             elif event_type == 'notification':
                 publish_local(f'com.hertzai.hevolve.social.{user_id}', wamp_data)
+            elif event_type == 'chat.new':
+                # A persisted turn row, not a chat bubble: its own topic,
+                # where crossbarWorker.js subscribes for cross-device sync.
+                publish_local(f'com.hertzai.hevolve.chat.new.{user_id}', wamp_data)
             else:
                 publish_local(f'com.hertzai.hevolve.chat.{user_id}', wamp_data)
     except Exception:

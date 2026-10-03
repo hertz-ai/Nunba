@@ -2638,6 +2638,9 @@ def _chat_turn(data):
     agent_id = data.get('agent_id', 'local_assistant')
     agent_type = data.get('agent_type', 'local')  # Default to local
     teacher_avatar_id = data.get('teacher_avatar_id')
+    # The device the turn came from: HARTOS records it on the mirrored turn
+    # (chat.new / chat-sync), so each device tells its own turns apart.
+    device_id = data.get('device_id')
     conversation_id = data.get('conversation_id')
     video_req = data.get('video_req', False)
     request_id = data.get('request_id', str(int(time.time())))
@@ -3154,6 +3157,7 @@ def _chat_turn(data):
                     intelligence_preference=intelligence_preference,
                     teacher_avatar_id=teacher_avatar_id,
                     draft_first=draft_first,
+                    device_id=device_id,
                 )
                 # Surface explicit LangChain errors (guardrails, prompt injection, etc.)
                 if result.get('error') and not (result.get('text') or result.get('response')):
