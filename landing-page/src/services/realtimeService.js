@@ -797,7 +797,8 @@ export function subscribeTtsLangEvents(callback) {
 // Callers MUST drop events whose `device_id` matches their local
 // device id; otherwise messages will appear twice (once from the
 // optimistic /chat-response write path, once from this WAMP path).
-// NunbaChatProvider.jsx is the canonical consumer + filter site.
+// isRemoteChatTurn below is the ONE filter; NunbaChatProvider and
+// Demopage both use it.
 
 // A worker DATA_RECEIVED message carries {sourceTopic, data}; deliver `data`
 // to `listeners` when the topic starts with `prefix`.
@@ -833,6 +834,22 @@ addWorkerRoute(({type, payload}) => {
 export function subscribeChatNew(callback) {
   _chatNewListeners.add(callback);
   return () => _chatNewListeners.delete(callback);
+}
+
+/**
+ * Is this chat.new row a chat turn from ANOTHER device that a chat view
+ * should show?  A user/assistant turn with text, on the ordinary chat
+ * channel (a row from a call or an external room carries its own
+ * channel_type, e.g. 'livekit:<call>', and is not a chat bubble), and not
+ * sent from `localDeviceId` -- this device's own turns are already on
+ * screen from its /chat reply.
+ */
+export function isRemoteChatTurn(row, localDeviceId) {
+  if (!row || typeof row !== 'object' || !row.msg_id) return false;
+  if (row.role !== 'user' && row.role !== 'assistant') return false;
+  if (typeof row.content !== 'string' || !row.content) return false;
+  if (row.channel_type && row.channel_type !== 'chat') return false;
+  return !localDeviceId || row.device_id !== localDeviceId;
 }
 
 // ── BLE encounter match + icebreaker (J204, J209-J210) ──────────────

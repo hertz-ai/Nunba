@@ -707,6 +707,20 @@ describe('chat.new turns from other devices', () => {
   const ROW = {msg_id: '0123456789abcdef', role: 'user', content: 'hi from phone',
     user_id: 'u1', device_id: 'phone-1', agent_id: 'a1', prompt_id: null};
 
+  test('the one filter keeps another device\'s chat turn and drops the rest', () => {
+    const {isRemoteChatTurn} = require('../../services/realtimeService');
+    expect(isRemoteChatTurn(ROW, 'desk-1')).toBe(true);
+    expect(isRemoteChatTurn({...ROW, channel_type: 'chat'}, 'desk-1')).toBe(true);
+    // this device's own turn is already on screen from its /chat reply
+    expect(isRemoteChatTurn({...ROW, device_id: 'desk-1'}, 'desk-1')).toBe(false);
+    // a call transcript / external room row is not a chat bubble
+    expect(isRemoteChatTurn({...ROW, device_id: 'adapter:livekit',
+      channel_type: 'livekit:call-9'}, 'desk-1')).toBe(false);
+    expect(isRemoteChatTurn({...ROW, role: 'system'}, 'desk-1')).toBe(false);
+    expect(isRemoteChatTurn({...ROW, content: ''}, 'desk-1')).toBe(false);
+    expect(isRemoteChatTurn({...ROW, msg_id: undefined}, 'desk-1')).toBe(false);
+  });
+
   test('an SSE chat.new frame reaches subscribeChatNew, and is not an agent card', () => {
     const {default: rt, subscribeChatNew} = require('../../services/realtimeService');
     const rows = jest.fn();

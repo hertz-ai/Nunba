@@ -13,6 +13,7 @@ import useCameraFrameStream from '../../../../hooks/useCameraFrameStream';
 import useComputerActivity from '../../../../hooks/useComputerActivity';
 import {useTTS} from '../../../../hooks/useTTS';
 import realtimeService, {
+  isRemoteChatTurn,
   subscribeChatNew,
 } from '../../../../services/realtimeService';
 import {chatApi, dashboardApi} from '../../../../services/socialApi';
@@ -21,7 +22,7 @@ import {
   getBackoff,
   makeMsgId,
 } from '../../../../utils/chatRetry';
-import {getStableDeviceId} from '../../../../utils/deviceId';
+import {getStableDeviceIdOnce} from '../../../../utils/deviceId';
 import {rememberServerPromptId} from '../../../../utils/promptId';
 
 import React, {
@@ -1030,12 +1031,10 @@ export default function NunbaChatProvider({children}) {
   // live chat.new useEffect and the cloud-pull useEffect dispatch
   // every remote message through this callback.
   const handleRemoteMessage = useCallback((event, localDeviceId) => {
-    if (!event || typeof event !== 'object') return;
-    if (localDeviceId && event.device_id === localDeviceId) return;
+    if (!isRemoteChatTurn(event, localDeviceId)) return;
     const msgId = event.msg_id;
     const role = event.role;
     const content = event.content;
-    if (!msgId || !role || typeof content !== 'string') return;
     const ts = event.created_at
       ? Date.parse(event.created_at) || Date.now()
       : Date.now();
@@ -1068,7 +1067,7 @@ export default function NunbaChatProvider({children}) {
     (async () => {
       let localDeviceId = null;
       try {
-        localDeviceId = await getStableDeviceId();
+        localDeviceId = await getStableDeviceIdOnce();
       } catch (err) {
         console.warn('chat.new: getStableDeviceId failed:', err);
       }
@@ -1103,7 +1102,7 @@ export default function NunbaChatProvider({children}) {
     (async () => {
       let localDeviceId = null;
       try {
-        localDeviceId = await getStableDeviceId();
+        localDeviceId = await getStableDeviceIdOnce();
       } catch (err) {
         console.warn('chat-sync pull: getStableDeviceId failed:', err);
       }
