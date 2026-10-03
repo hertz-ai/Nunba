@@ -125,3 +125,30 @@ test('the browser fallback takes the pinned language over the preference, else t
   });
   expect(lastRecognition.lang).toBe('de-DE');
 });
+
+// The wake word ("Hey Nunba") listener restarts itself on every end.  Its
+// restart read the React state it was created with (true), so turning the
+// wake word off -- whose stop() fires onend -- restarted it, unreferenced and
+// unstoppable until reload.  The owner's mic button then did nothing.
+test('a continuous listener restarts on end until stopped, never after', () => {
+  const {startContinuousRecognition} = require('../../hooks/useSpeechRecognition');
+  let starts = 0;
+  class Rec {
+    start() { starts += 1; }
+    stop() { if (this.onend) this.onend(); }   // a real recognizer ends on stop
+  }
+  const onResult = () => {};
+  const listener = startContinuousRecognition(Rec, 'en-US', onResult);
+  expect(starts).toBe(1);
+  expect(listener.recognition.lang).toBe('en-US');
+  expect(listener.recognition.continuous).toBe(true);
+  expect(listener.recognition.onresult).toBe(onResult);
+
+  listener.recognition.onend();          // silence timeout: keep listening
+  expect(starts).toBe(2);
+
+  listener.stop();                       // owner turns the wake word off
+  expect(starts).toBe(2);
+  listener.recognition.onend();          // any late end event
+  expect(starts).toBe(2);
+});

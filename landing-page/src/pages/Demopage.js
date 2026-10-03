@@ -63,7 +63,7 @@ import {getStableDeviceIdOnce} from '../utils/deviceId';
 
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
-import {sttConfigMessage} from '../hooks/useSpeechRecognition';
+import {sttConfigMessage, startContinuousRecognition} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
 import {playTtsClip} from '../services/ttsClipPlayer';
 
@@ -3657,13 +3657,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
-    const r = new SR();
-    r.continuous = true;
-    r.interimResults = false;
     // Use same BCP-47 mapping as main speech handler
     const _wkLang = localStorage.getItem('hart_language') || 'en';
-    r.lang = _sttLangMap[_wkLang] || _wkLang;
-    r.onresult = (e) => {
+    const onWakeResult = (e) => {
       const text = e.results[e.results.length - 1][0].transcript.toLowerCase().trim();
       if (!text) return;
 
@@ -3712,10 +3708,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         }
       }
     };
-    r.onend = () => { if (alwaysListening) r.start(); }; // auto-restart
-    r.start();
-    wakeListenerRef.current = r;
-    return () => { r.stop(); wakeListenerRef.current = null; };
+    const listener = startContinuousRecognition(
+      SR, _sttLangMap[_wkLang] || _wkLang, onWakeResult);
+    wakeListenerRef.current = listener;
+    return () => { listener.stop(); wakeListenerRef.current = null; };
   }, [alwaysListening]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Clipboard fetch — pulls from backend clipboard monitor ──
