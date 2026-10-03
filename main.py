@@ -4628,9 +4628,11 @@ _sse_lock = _threading.Lock()
 # than _SSE_HISTORY_TTL_S or pushed out of the last _SSE_HISTORY_LEN is in
 # neither.  Replay is idempotent: the same ?since= yields the same frames, and
 # the client drops ids it already has.
+import re as _re  # noqa: E402
 from collections import deque as _deque  # noqa: E402
 
 _SSE_EPOCH = uuid.uuid4().hex[:8]
+_SSE_SINCE_RE = _re.compile(r'([0-9a-f]{1,32})-([0-9]{1,18})')
 _SSE_HISTORY_LEN = 256
 _SSE_HISTORY_TTL_S = 60.0
 _sse_seq = 0
@@ -4671,9 +4673,12 @@ def _sse_replay(user_id, since):
     server restarted after the client's last frame, so every kept frame is
     newer than it.  Caller holds _sse_lock.
     """
-    epoch, _, seq = (since or '').partition('-')
-    if not epoch or not seq.isdigit():
+    # ASCII only and bounded: str.isdigit() accepts '²', and int() of a
+    # 4300+ digit string raises inside the stream, killing every reconnect.
+    match = _SSE_SINCE_RE.fullmatch(since or '')
+    if not match:
         return []
+    epoch, seq = match.groups()
     after = int(seq) if epoch == _SSE_EPOCH else 0
     cutoff = time.time() - _SSE_HISTORY_TTL_S
     kept = [entry for key in (user_id, None)
@@ -4917,6 +4922,7 @@ def sse_event_stream():
         except Exception:
             if not _is_local:
                 return _jsonify({"error": "Invalid or expired token"}), 401
+    uid_from_token = bool(uid)
     if not uid:
         uid = flask_request.args.get('user_id', 'guest') if _is_local else None
     if not uid:
@@ -4925,7 +4931,12 @@ def sse_event_stream():
     client_queue = _queue.Queue(maxsize=50)
     entry = (client_queue, time.time())
     # Read here: the generator runs outside the request context.
-    since = flask_request.args.get('since', '').strip()
+    # Replay hands back up to a minute of a user's PAST frames, so it needs
+    # more than the bundled-mode user_id claim: a resolved token, or this
+    # machine.  An unauthenticated LAN host claiming ?user_id= still gets the
+    # live stream (pre-existing), never the history (review of b07e025f).
+    may_replay = uid_from_token or _is_local_request()
+    since = flask_request.args.get('since', '').strip() if may_replay else ''
 
     def generate():
         # Register INSIDE the generator, inside the try, so the add and

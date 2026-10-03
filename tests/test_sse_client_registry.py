@@ -53,14 +53,19 @@ def main_mod():
     return main
 
 
+def _clear_sse_state(main_mod):
+    with main_mod._sse_lock:
+        main_mod._sse_clients.clear()
+        main_mod._sse_history.clear()
+        main_mod._sse_lagged.clear()
+
+
 @pytest.fixture(autouse=True)
 def _clean_registry(main_mod):
-    """Every test starts and ends with an empty registry."""
-    with main_mod._sse_lock:
-        main_mod._sse_clients.clear()
+    """Every test starts and ends with an empty registry and replay window."""
+    _clear_sse_state(main_mod)
     yield
-    with main_mod._sse_lock:
-        main_mod._sse_clients.clear()
+    _clear_sse_state(main_mod)
 
 
 @pytest.fixture(autouse=True)
@@ -76,15 +81,17 @@ def _local_mode(monkeypatch):
     monkeypatch.setenv('NUNBA_BUNDLED', '1')
 
 
-def _open_stream(main_mod, uid, since=None):
+def _open_stream(main_mod, uid, since=None, remote_addr='127.0.0.1'):
     """Call the real SSE view and hand back its response generator.
 
     Deliberately NOT via ``app.test_client()`` — the test client buffers
     the whole body and this endpoint streams forever.
     """
-    query = f'user_id={uid}' + (f'&since={since}' if since else '')
+    from urllib.parse import quote
+    query = f'user_id={uid}' + (f'&since={quote(since)}' if since else '')
     with main_mod.app.test_request_context(
-            f'/api/social/events/stream?{query}'):
+            f'/api/social/events/stream?{query}',
+            environ_base={'REMOTE_ADDR': remote_addr}):
         resp = main_mod.sse_event_stream()
     # A Flask view may return (body, status) on the auth-reject path.
     if isinstance(resp, tuple):
@@ -214,18 +221,6 @@ def _read_until_connected(gen):
     pytest.fail(f"stream ended before its connected frame: {frames!r}")
 
 
-@pytest.fixture(autouse=False)
-def _clean_history(main_mod):
-    with main_mod._sse_lock:
-        main_mod._sse_history.clear()
-        main_mod._sse_lagged.clear()
-    yield
-    with main_mod._sse_lock:
-        main_mod._sse_history.clear()
-        main_mod._sse_lagged.clear()
-
-
-@pytest.mark.usefixtures('_clean_history')
 class TestReplayWhatTheStreamMissed:
     """A frame published while a stream is away reaches it when it returns,
     exactly once, and only for its own user."""
@@ -324,7 +319,9 @@ class TestReplayWhatTheStreamMissed:
 
     def test_malformed_since_replays_nothing(self, main_mod):
         main_mod.broadcast_sse_event('tts', {'audio_url': '/x.wav'}, user_id='u1')
-        for bad in ('garbage', '-5', 'abc-', 'abc-1x'):
+        # Review of b07e025f: str.isdigit() took '²', and a 5000-digit seq
+        # made int() raise inside the stream on every reconnect.
+        for bad in ('garbage', '-5', 'abc-', 'abc-1x', 'abc-²', 'abc-' + '9' * 5000):
             gen = _open_stream(main_mod, 'u1', since=bad)
             frames = _read_until_connected(gen)
             gen.close()
@@ -347,7 +344,103 @@ class TestReplayWhatTheStreamMissed:
         assert len(main_mod._sse_history['u1']) == main_mod._SSE_HISTORY_LEN
 
 
-@pytest.mark.usefixtures('_clean_history')
+class TestReplayNeedsMoreThanAClaimedUserId:
+    """Review of b07e025f: bundled mode takes ?user_id= without a token, so
+    a LAN host could pull a user's last minute of frames by naming them."""
+
+    def test_lan_host_without_token_gets_no_replay(self, main_mod):
+        gen = _open_stream(main_mod, 'u1')
+        cursor = _resume_id(_read_until_connected(gen)[-1])
+        gen.close()
+        main_mod.broadcast_sse_event('chat.response', {'text': 'private'}, user_id='u1')
+
+        gen = _open_stream(main_mod, 'u1', since=cursor, remote_addr='192.168.0.77')
+        frames = _read_until_connected(gen)
+        gen.close()
+        assert len(frames) == 1 and 'private' not in ''.join(frames), frames
+
+    def test_this_machine_still_gets_replay(self, main_mod):
+        gen = _open_stream(main_mod, 'u1')
+        cursor = _resume_id(_read_until_connected(gen)[-1])
+        gen.close()
+        main_mod.broadcast_sse_event('chat.response', {'text': 'mine'}, user_id='u1')
+
+        gen = _open_stream(main_mod, 'u1', since=cursor)
+        body = ''.join(_read_until_connected(gen))
+        gen.close()
+        assert 'mine' in body
+
+
+class TestOneLockHold:
+    """Review of b07e025f: moving the enqueue, the record or the replay
+    snapshot out of their lock hold passed every other test here."""
+
+    def _ids(self, frames):
+        return [int(_frame_id(f).split('-')[1]) for f in frames if _frame_id(f)]
+
+    def test_concurrent_publishers_deliver_in_id_order(self, main_mod):
+        import threading
+        q = _queue.Queue()
+        with main_mod._sse_lock:
+            main_mod._sse_clients['u1'] = [(q, time.time())]
+
+        def publish(n):
+            for i in range(300):
+                main_mod.broadcast_sse_event('tick', {'p': n, 'i': i}, user_id='u1')
+
+        threads = [threading.Thread(target=publish, args=(n,)) for n in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        frames = []
+        while not q.empty():
+            frames.append(q.get_nowait())
+        ids = self._ids(frames)
+        assert len(ids) == 1200
+        assert ids == sorted(ids), "frames reached the queue out of id order"
+
+    def test_stream_opened_mid_publish_misses_and_repeats_nothing(self, main_mod):
+        import threading
+        gen = _open_stream(main_mod, 'u1')
+        cursor = _resume_id(_read_until_connected(gen)[-1])
+        gen.close()
+        start = threading.Event()
+
+        def publish(n):
+            start.wait()
+            for i in range(12):
+                main_mod.broadcast_sse_event('tick', {'p': n, 'i': i}, user_id='u1')
+
+        threads = [threading.Thread(target=publish, args=(n,)) for n in range(4)]
+        for t in threads:
+            t.start()
+        start.set()
+        gen = _open_stream(main_mod, 'u1', since=cursor)
+        replayed = _read_until_connected(gen)
+        for t in threads:
+            t.join()
+        with main_mod._sse_lock:
+            q = main_mod._sse_clients['u1'][0][0]
+        live = []
+        while not q.empty():
+            live.append(q.get_nowait())
+        gen.close()
+
+        ids = self._ids(replayed) + self._ids(live)
+        assert len(ids) == 48, f"{len(ids)} delivered of 48"
+        assert len(set(ids)) == 48, "a frame was both replayed and delivered live"
+
+    def test_idle_users_are_swept_from_history(self, main_mod, monkeypatch):
+        main_mod.broadcast_sse_event('tick', {}, user_id='gone')
+        later = time.time() + main_mod._SSE_HISTORY_TTL_S + 1
+        monkeypatch.setattr(main_mod.time, 'time', lambda: later)
+        for _ in range(main_mod._SSE_HISTORY_LEN):
+            main_mod.broadcast_sse_event('tick', {}, user_id='active')
+        assert 'gone' not in main_mod._sse_history
+
+
 class TestFullQueueResumesInsteadOfLosing:
     """A dropped frame on a full queue ends the stream; the client resumes
     from its last id and the replay window returns the dropped frame."""
