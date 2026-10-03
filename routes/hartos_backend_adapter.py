@@ -1489,10 +1489,17 @@ def create_inprocess_dispatch_blueprint():
 
     def _forward_kwargs():
         if flask_request.files:
+            # The caller's own credential goes with an upload.  HARTOS's CSRF
+            # check refuses a non-JSON POST that carries no Bearer: measured
+            # 2026-10-03 against HARTOS's real app, a multipart upload got
+            # 403 'CSRF token required' without it, 200 with the phone's.
+            # JSON rows are unchanged (HARTOS's CSRF check passes JSON).
+            auth = flask_request.headers.get('Authorization')
             data = {k: v for k, v in flask_request.form.items()}
             for name, f in flask_request.files.items():
                 data[name] = (f.stream, f.filename, f.mimetype)
-            return {'data': data, 'content_type': 'multipart/form-data'}
+            return {'data': data, 'content_type': 'multipart/form-data',
+                    'headers': {'Authorization': auth} if auth else {}}
         return {'json': flask_request.get_json(silent=True) or {}}
 
     def _dispatcher(path):

@@ -389,7 +389,8 @@ def hartos_stt(monkeypatch):
         f = request.files.get('audio')
         got.append({'audio': f.read() if f else None,
                     'filename': f.filename if f else None,
-                    'form': dict(request.form)})
+                    'form': dict(request.form),
+                    'auth': request.headers.get('Authorization')})
         return jsonify({'text': 'hello'}), 200
 
     monkeypatch.setattr(adapter, '_hevolve_app', fake)
@@ -427,15 +428,19 @@ def test_multipart_audio_reaches_hartos_intact(hartos_stt):
     assert resp.status_code == 200
     assert resp.get_json() == {'text': 'hello'}
     assert hartos_stt == [{'audio': WAV, 'filename': 'call.wav',
-                           'form': {'source': 'call'}}]
+                           'form': {'source': 'call'}, 'auth': None}]
 
 
 def test_an_admitted_phone_on_the_lan_reaches_hartos_stt(hartos_stt):
     resp = _nunba_with_device_gate(admitted=True).post(
         '/api/voice/transcribe', data=_phone_upload(),
-        content_type='multipart/form-data', environ_overrides=LAN)
+        content_type='multipart/form-data', environ_overrides=LAN,
+        headers={'Authorization': 'Bearer phone-device-token'})
     assert resp.status_code == 200
     assert len(hartos_stt) == 1 and hartos_stt[0]['audio'] == WAV
+    # HARTOS's CSRF check refuses a multipart POST with no Bearer (measured
+    # 403 against its real app), so the phone's credential must go with it.
+    assert hartos_stt[0]['auth'] == 'Bearer phone-device-token'
 
 
 def test_a_lan_phone_the_gate_did_not_admit_is_refused(hartos_stt):
