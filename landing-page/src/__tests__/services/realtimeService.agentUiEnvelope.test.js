@@ -101,7 +101,7 @@ function openSse({shared = false} = {}) {
       realtimeService = require('../../services/realtimeService').default;
     });
   }
-  realtimeService.init(null, {userId: 'owner-1'});
+  realtimeService.setIdentity({userId: 'owner-1'});
   const es = FakeEventSource.instances[0];
   es._simulateOpen();
   const seen = [];

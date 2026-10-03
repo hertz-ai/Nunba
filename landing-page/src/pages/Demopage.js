@@ -2722,7 +2722,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         activeWorker = crossbarWorker;
         setWorker(crossbarWorker);
         initGameRealtime(crossbarWorker);
-        realtimeService.init(crossbarWorker);
+        realtimeService.attachWorker(crossbarWorker);
 
         if (decryptedUserId) {
           logger.log(
@@ -2777,9 +2777,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       } catch (error) {
         console.error('❌ Worker initialization error:', error);
         setConnectionStatus('Failed to Initialize');
-        // SSE must open even if crossbar worker fails — local TTS/agent events
-        // only arrive via SSE, not WAMP. Pass null worker, SSE opens immediately.
-        realtimeService.init(null);
+        // No stream to open here: RealtimeProvider owns the SSE stream that
+        // carries local TTS/agent events, and it does not depend on this
+        // worker, so a failed worker cannot take the reply audio down.
       } finally {
         isInitializing = false;
       }
@@ -2792,15 +2792,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     return () => {
       logger.log('🧹 Cleanup: Terminating worker');
       if (activeWorker) {
+        realtimeService.detachWorker(activeWorker);
         activeWorker.terminate();
       }
       isInitializing = false;
     };
   }, [decryptedUserId]);
 
-  // SSE identity is owned by RealtimeProvider. This component only
-  // attaches its Crossbar worker to the shared transport above; keeping user
-  // identity in one owner prevents auth hydration from racing two rotations.
+  // SSE identity is owned by RealtimeProvider (realtimeService.setIdentity).
+  // This component only attaches and detaches its Crossbar worker, which
+  // never opens or re-keys the stream, so the two cannot race.
 
   // ── Realtime event subscriptions (transport-agnostic) ─────────────────
   // All events arrive via realtimeService (WAMP primary, SSE fallback).

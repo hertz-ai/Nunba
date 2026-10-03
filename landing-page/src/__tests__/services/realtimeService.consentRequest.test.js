@@ -54,7 +54,7 @@ beforeEach(() => {
 
 function openSse() {
   const {default: realtimeService} = require('../../services/realtimeService');
-  realtimeService.init(null, {userId: 'owner-1'});
+  realtimeService.setIdentity({userId: 'owner-1'});
   const es = FakeEventSource.instances[0];
   es._simulateOpen();
   const seen = [];

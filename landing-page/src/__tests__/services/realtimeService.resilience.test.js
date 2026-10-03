@@ -1,22 +1,22 @@
 /**
- * realtimeService.resilience.test.js — #211 SSE resilience.
+ * realtimeService.resilience.test.js — stream identity, rotation and the
+ * worker attachment contract.
  *
- * Two invariants under test:
- *   A) connect(newToken) MUST NOT close the live EventSource.  Token
- *      refresh is a credential rotation, not an identity change; the
- *      server already auth'd this connection at open time and routes
- *      events by the uid it bound to.
- *   B) init({userId: newUid}) when uid actually changes MUST open a
- *      NEW EventSource FIRST, await its onopen, THEN close the old.
- *      Eliminates the 3s SSE_RECONNECT_DELAY gap that previously
- *      dropped HARTOS broadcasts (especially TTS audio_url) when the
- *      broker had `client_count=0` during the swap.
+ * Invariants under test:
+ *   A) setIdentity({token}) with the same credential mode MUST NOT close the
+ *      live EventSource (#211). A token refresh is a credential rotation, not
+ *      an identity change.
+ *   B) An identity change opens a NEW EventSource first, waits for its onopen,
+ *      THEN closes the old one, so no broadcast lands in an empty broker.
+ *   C) setIdentity() is the only way a stream is opened or re-keyed.  The
+ *      crossbar worker is attached and detached separately and never opens,
+ *      closes or re-keys the stream.
  *
  * Subject under test: landing-page/src/services/realtimeService.js
- *   - connect(token)               (#211 — no _closeSSE on token change)
- *   - init({userId})               (#211 — calls _rotateSSE on uid change)
- *   - _rotateSSE()                 (#211 — overlap reconnect)
  */
+
+const fs = require('fs');
+const path = require('path');
 
 class FakeEventSource {
   constructor(url) {
@@ -59,87 +59,91 @@ class FakeEventSource {
 FakeEventSource.instances = [];
 global.EventSource = FakeEventSource;
 
+// Same surface realtimeService uses on the real crossbar Worker.
+class FakeWorker {
+  constructor() {
+    this._messageListeners = new Set();
+    this.postMessage = jest.fn();
+  }
+
+  addEventListener(type, fn) {
+    if (type === 'message') this._messageListeners.add(fn);
+  }
+
+  removeEventListener(type, fn) {
+    if (type === 'message') this._messageListeners.delete(fn);
+  }
+
+  _emit(data) {
+    this._messageListeners.forEach((fn) => fn({data}));
+  }
+}
+
+const openStreams = () => FakeEventSource.instances.filter((es) => !es.closed);
+
 beforeEach(() => {
   jest.resetModules();
   FakeEventSource.reset();
 });
 
-describe('#211 SSE resilience — connect(token)', () => {
+describe('#211 SSE resilience — token refresh', () => {
   test('token refresh on live SSE: does NOT close the existing connection', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
 
-    // Open the initial SSE
-    realtimeService.connect('jwt-v1');
+    realtimeService.setIdentity({token: 'jwt-v1'});
     expect(FakeEventSource.instances).toHaveLength(1);
     const initial = FakeEventSource.instances[0];
     initial._simulateOpen();
-    expect(initial.closed).toBe(false);
 
     // Token refresh — silentGuestRefresh path
-    realtimeService.connect('jwt-v2');
+    realtimeService.setIdentity({token: 'jwt-v2'});
 
-    // The original EventSource must still be open and live.
     expect(initial.closed).toBe(false);
-    // No new EventSource was created — same connection, new token cached.
     expect(FakeEventSource.instances).toHaveLength(1);
   });
 
-  test('null/undefined token leaves cached _token unchanged', () => {
+  test('an identity without a token key leaves the cached token unchanged', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.connect('jwt-original');
+    realtimeService.setIdentity({token: 'jwt-original'});
     FakeEventSource.instances[0]._simulateOpen();
 
-    realtimeService.connect(null);
-    realtimeService.connect(undefined);
+    realtimeService.setIdentity({});
 
-    // Still no churn.
     expect(FakeEventSource.instances).toHaveLength(1);
     expect(FakeEventSource.instances[0].closed).toBe(false);
   });
 });
 
-describe('#211 SSE resilience — init({userId}) overlap rotate', () => {
+describe('#211 SSE resilience — overlap rotate', () => {
   test('uid change: opens NEW SSE first, closes OLD only after new onopen', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
 
-    // Initial bind as 'guest' sentinel
-    realtimeService.init(null, {userId: 'guest'});
+    realtimeService.setIdentity({userId: 'guest'});
     expect(FakeEventSource.instances).toHaveLength(1);
     const oldEs = FakeEventSource.instances[0];
     expect(oldEs.url).toMatch(/user_id=guest/);
     oldEs._simulateOpen();
-    expect(oldEs.closed).toBe(false);
 
-    // Real uid arrives (guestRegister returned per-guest UUID).
-    realtimeService.init(null, {userId: 'd68c9dee'});
+    realtimeService.setIdentity({userId: 'd68c9dee'});
 
-    // NEW EventSource is created immediately, but OLD is still live.
     expect(FakeEventSource.instances).toHaveLength(2);
     const newEs = FakeEventSource.instances[1];
     expect(newEs.url).toMatch(/user_id=d68c9dee/);
-    expect(newEs.closed).toBe(false);
-    expect(oldEs.closed).toBe(false);  // critical — overlap window
+    expect(oldEs.closed).toBe(false); // overlap window
 
-    // Server delivers an event for the new uid during overlap.
-    // (Real broker keys subscribers by uid; both connections coexist
-    // briefly, server routes each event to whichever matches.)
-
-    // Fire newEs.onopen — this is when the swap completes.
     newEs._simulateOpen();
 
-    // OLD closed, NEW is the live one.
     expect(oldEs.closed).toBe(true);
     expect(newEs.closed).toBe(false);
   });
 
   test('uid unchanged: no rotate, no churn', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.init(null, {userId: 'guest_abc'});
+    realtimeService.setIdentity({userId: 'guest_abc'});
     FakeEventSource.instances[0]._simulateOpen();
 
-    // Same uid again (e.g. session re-sync useEffect re-firing).
-    realtimeService.init(null, {userId: 'guest_abc'});
-    realtimeService.init(null, {userId: 'guest_abc'});
+    realtimeService.setIdentity({userId: 'guest_abc'});
+    realtimeService.setIdentity({userId: 'guest_abc'});
 
     expect(FakeEventSource.instances).toHaveLength(1);
     expect(FakeEventSource.instances[0].closed).toBe(false);
@@ -147,29 +151,36 @@ describe('#211 SSE resilience — init({userId}) overlap rotate', () => {
 
   test('rotate when new EventSource fails to open: keeps OLD alive', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.init(null, {userId: 'guest'});
+    realtimeService.setIdentity({userId: 'guest'});
     const oldEs = FakeEventSource.instances[0];
     oldEs._simulateOpen();
 
-    realtimeService.init(null, {userId: 'real-uid'});
-    expect(FakeEventSource.instances).toHaveLength(2);
+    realtimeService.setIdentity({userId: 'real-uid'});
     const newEs = FakeEventSource.instances[1];
-
-    // Simulate the new connection failing to establish.
     newEs._simulateError();
 
-    // newEs was closed by the rotate's onerror handler.
     expect(newEs.closed).toBe(true);
-    // OLD must still be live — multitenancy: events for 'guest' still
-    // get delivered until the next rotate attempt succeeds.
     expect(oldEs.closed).toBe(false);
+  });
+
+  test('a new stream base rotates onto that base', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.setIdentity({userId: 'u1', sseBase: 'http://a/api/social'});
+    const first = FakeEventSource.instances[0];
+    expect(first.url).toMatch(/^http:\/\/a\/api\/social\/events\/stream/);
+    first._simulateOpen();
+
+    realtimeService.setIdentity({userId: 'u1', sseBase: 'http://b/api/social'});
+
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[1].url).toMatch(/^http:\/\/b\/api\/social\/events\/stream/);
   });
 });
 
-describe('#211 SSE resilience — disconnect() still works', () => {
+describe('SSE resilience — disconnect()', () => {
   test('explicit disconnect closes the live EventSource', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.connect('jwt-1');
+    realtimeService.setIdentity({token: 'jwt-1'});
     FakeEventSource.instances[0]._simulateOpen();
 
     realtimeService.disconnect();
@@ -181,25 +192,23 @@ describe('#211 SSE resilience — disconnect() still works', () => {
 describe('computer-use commentary SSE channel', () => {
   test('registers the existing chat.social named event on the one SSE source', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.init(null, {userId: 'local-user'});
+    realtimeService.setIdentity({userId: 'local-user'});
     const source = FakeEventSource.instances[0];
 
     expect(source._listeners['chat.social']).toHaveLength(1);
     expect(source._listeners.notification).toHaveLength(1);
-    // No second EventSource or parallel subscription is created.
     expect(FakeEventSource.instances).toHaveLength(1);
   });
 });
 
-
 describe('canonical credential-mode transitions', () => {
   test('explicit guest mode rotates off a cached cloud token without a delivery gap', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.init(null, {userId: 'cloud-user', token: 'opaque-cloud-token'});
+    realtimeService.setIdentity({userId: 'cloud-user', token: 'opaque-cloud-token'});
     const cloudEs = FakeEventSource.instances[0];
     cloudEs._simulateOpen();
 
-    realtimeService.init(null, {userId: 'guest-uuid', token: null});
+    realtimeService.setIdentity({userId: 'guest-uuid', token: null});
 
     expect(FakeEventSource.instances).toHaveLength(2);
     const guestEs = FakeEventSource.instances[1];
@@ -212,20 +221,19 @@ describe('canonical credential-mode transitions', () => {
     expect(guestEs.closed).toBe(false);
   });
 
-  // Measured live 2026-10-03 on /local (bundle main.378a478c.js): the chat
-  // page's worker init opened the stream with no identity, RealtimeProvider's
-  // identity arrived while that stream was still connecting, and the server
-  // registered `uid=guest` for good while every /chat from the page was
-  // user 10202 -- so the page never received its own reply audio.
+  // Measured live 2026-10-03 on /local (bundle main.378a478c.js): the stream
+  // opened with no identity, the real identity arrived while it was still
+  // connecting, and the server registered `uid=guest` for good while every
+  // /chat from the page was user 10202 -- so the page never received its own
+  // reply audio.
   test('identity that arrives while the first stream is still connecting rotates it', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.init(null);
+    realtimeService.setIdentity({});
     expect(FakeEventSource.instances).toHaveLength(1);
     const anonEs = FakeEventSource.instances[0];
     expect(anonEs.url).toMatch(/user_id=guest/);
 
-    // Not opened yet -- the provider's identity lands in the connect window.
-    realtimeService.init(null, {userId: '10202', token: 'tok'});
+    realtimeService.setIdentity({userId: '10202', token: 'tok'});
 
     expect(FakeEventSource.instances).toHaveLength(2);
     const ownEs = FakeEventSource.instances[1];
@@ -239,44 +247,218 @@ describe('canonical credential-mode transitions', () => {
 
   test('a second identity change supersedes the first pending stream', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.init(null, {userId: 'guest'});
+    realtimeService.setIdentity({userId: 'guest'});
     const guestEs = FakeEventSource.instances[0];
 
-    realtimeService.init(null, {userId: 'A'});
-    realtimeService.init(null, {userId: 'B', token: 'tok'});
+    realtimeService.setIdentity({userId: 'A'});
+    realtimeService.setIdentity({userId: 'B', token: 'tok'});
     const [, aEs, bEs] = FakeEventSource.instances;
     expect(aEs.closed).toBe(true);
 
     // A late open from the superseded stream must not become the live one.
     aEs._simulateOpen();
     bEs._simulateOpen();
-    const open = FakeEventSource.instances.filter((es) => !es.closed);
-    expect(open).toEqual([bEs]);
+    expect(openStreams()).toEqual([bEs]);
     expect(guestEs.closed).toBe(true);
   });
 
   test('disconnect also closes a stream still waiting to replace the old one', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.init(null, {userId: 'guest'});
-    realtimeService.init(null, {userId: '10202', token: 'tok'});
+    realtimeService.setIdentity({userId: 'guest'});
+    realtimeService.setIdentity({userId: '10202', token: 'tok'});
     const pendingEs = FakeEventSource.instances[1];
 
     realtimeService.disconnect();
     pendingEs._simulateOpen();
 
-    expect(FakeEventSource.instances.filter((es) => !es.closed)).toEqual([]);
+    expect(openStreams()).toEqual([]);
   });
 
   test('disconnect clears the previous bearer before a local guest reconnect', () => {
     const {default: realtimeService} = require('../../services/realtimeService');
-    realtimeService.connect('opaque-cloud-token');
+    realtimeService.setIdentity({token: 'opaque-cloud-token'});
     FakeEventSource.instances[0]._simulateOpen();
 
     realtimeService.disconnect();
-    realtimeService.init(null, {userId: 'guest-uuid'});
+    realtimeService.setIdentity({userId: 'guest-uuid'});
 
     expect(FakeEventSource.instances).toHaveLength(2);
     expect(FakeEventSource.instances[1].url).toMatch(/user_id=guest-uuid/);
     expect(FakeEventSource.instances[1].url).not.toMatch(/[?&]token=/);
+  });
+});
+
+describe('crossbar worker attachment never touches the stream', () => {
+  test('attaching a worker opens no stream', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.attachWorker(new FakeWorker());
+    expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
+  // The worker's connection status used to open the stream with whatever
+  // identity was cached -- `guest` before the provider had set one, or the
+  // old owner after disconnect().
+  test('worker connection status opens no stream', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+
+    worker._emit({type: 'CONNECTION_STATUS', payload: 'Connected'});
+    worker._emit({type: 'CONNECTION_STATUS', payload: 'Disconnected'});
+
+    expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
+  test('worker connection status does not reopen a stream closed by disconnect', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+    realtimeService.setIdentity({userId: 'u1', token: 'tok'});
+    realtimeService.disconnect();
+
+    worker._emit({type: 'CONNECTION_STATUS', payload: 'Disconnected'});
+
+    expect(openStreams()).toEqual([]);
+  });
+
+  test('worker social events reach subscribers', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+    const cb = jest.fn();
+    realtimeService.on('agent_message', cb);
+
+    worker._emit({type: 'SOCIAL_EVENT', payload: {type: 'agent_message', msg_id: 'm1'}});
+
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  // disconnect() is the stream's auth boundary.  It used to also strip the
+  // chat page's worker listener, silently cutting its cloud events.
+  test('disconnect keeps the attached worker delivering', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+    realtimeService.setIdentity({userId: 'u1'});
+    const cb = jest.fn();
+    realtimeService.on('agent_message', cb);
+
+    realtimeService.disconnect();
+    worker._emit({type: 'SOCIAL_EVENT', payload: {type: 'agent_message', msg_id: 'm2'}});
+
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  test('a detached worker no longer delivers and no longer counts as connected', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+    worker._emit({type: 'CONNECTION_STATUS', payload: 'Connected'});
+    expect(realtimeService.connected).toBe(true);
+    const cb = jest.fn();
+    realtimeService.on('agent_message', cb);
+
+    realtimeService.detachWorker(worker);
+    worker._emit({type: 'SOCIAL_EVENT', payload: {type: 'agent_message', msg_id: 'm3'}});
+
+    expect(cb).not.toHaveBeenCalled();
+    expect(realtimeService.connected).toBe(false);
+  });
+
+  test('detaching a worker that is not attached changes nothing', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const current = new FakeWorker();
+    realtimeService.attachWorker(current);
+    const cb = jest.fn();
+    realtimeService.on('agent_message', cb);
+
+    realtimeService.detachWorker(new FakeWorker());
+    current._emit({type: 'SOCIAL_EVENT', payload: {type: 'agent_message', msg_id: 'm4'}});
+
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  // The chat page replaces its worker whenever the signed-in user changes.
+  // Subscribers registered before that kept listening to the terminated one.
+  test('subscribers keep receiving after the worker is replaced', () => {
+    const {
+      default: realtimeService, subscribeChatNew, subscribeCommunity,
+    } = require('../../services/realtimeService');
+    const first = new FakeWorker();
+    realtimeService.attachWorker(first);
+    const onChat = jest.fn();
+    const onCommunity = jest.fn();
+    subscribeChatNew(onChat);
+    subscribeCommunity('c1', onCommunity);
+
+    realtimeService.detachWorker(first);
+    const second = new FakeWorker();
+    realtimeService.attachWorker(second);
+    second._emit({
+      type: 'DATA_RECEIVED',
+      payload: {sourceTopic: 'com.hertzai.hevolve.chat.new.u1', data: {msg_id: 'x'}},
+    });
+    second._emit({type: 'COMMUNITY_EVENT', payload: {communityId: 'c1', type: 'presence'}});
+    first._emit({
+      type: 'DATA_RECEIVED',
+      payload: {sourceTopic: 'com.hertzai.hevolve.chat.new.u1', data: {msg_id: 'y'}},
+    });
+
+    expect(onChat).toHaveBeenCalledTimes(1);
+    expect(onChat).toHaveBeenCalledWith({msg_id: 'x'});
+    expect(onCommunity).toHaveBeenCalledTimes(1);
+  });
+
+  test('a subscriber registered before any worker receives once one attaches', () => {
+    const {default: realtimeService, subscribeEncounterMatch} =
+      require('../../services/realtimeService');
+    const onMatch = jest.fn();
+    subscribeEncounterMatch(onMatch);
+
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+    worker._emit({
+      type: 'DATA_RECEIVED',
+      payload: {sourceTopic: 'com.hevolve.encounter.match.u1', data: {id: 7}},
+    });
+
+    expect(onMatch).toHaveBeenCalledWith({id: 7});
+  });
+});
+
+// One owner per concern, enforced on the source rather than hoped for.
+describe('single owner of the stream identity', () => {
+  const SRC = path.resolve(__dirname, '../..');
+
+  function sourceFiles(dir) {
+    return fs.readdirSync(dir, {withFileTypes: true}).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        return entry.name === '__tests__' ? [] : sourceFiles(full);
+      }
+      return /\.(js|jsx)$/.test(entry.name) ? [full] : [];
+    });
+  }
+
+  function callersOf(pattern) {
+    return sourceFiles(SRC)
+      .filter((file) => pattern.test(fs.readFileSync(file, 'utf8')))
+      .map((file) => path.relative(SRC, file).split(path.sep).join('/'))
+      .sort();
+  }
+
+  test('only RealtimeProvider and the embed transport set the identity', () => {
+    expect(callersOf(/\.setIdentity\(/)).toEqual([
+      'contexts/RealtimeContext.js',
+      'embed/transports/gatewayTransport.js',
+    ]);
+  });
+
+  test('only the chat page attaches and detaches the crossbar worker', () => {
+    expect(callersOf(/\.(attachWorker|detachWorker)\(/)).toEqual(['pages/Demopage.js']);
+  });
+
+  test('the removed combined entry points have no callers', () => {
+    expect(callersOf(/realtimeService\.(init|connect)\(|\brt\.(init|connect)\(/)).toEqual([]);
   });
 });
