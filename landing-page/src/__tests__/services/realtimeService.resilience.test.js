@@ -719,6 +719,8 @@ describe('chat.new turns from other devices', () => {
     expect(isRemoteChatTurn({...ROW, role: 'system'}, 'desk-1')).toBe(false);
     expect(isRemoteChatTurn({...ROW, content: ''}, 'desk-1')).toBe(false);
     expect(isRemoteChatTurn({...ROW, msg_id: undefined}, 'desk-1')).toBe(false);
+    // no local device id yet: own turns can't be told apart, so none shown
+    expect(isRemoteChatTurn(ROW, null)).toBe(false);
   });
 
   test('an SSE chat.new frame reaches subscribeChatNew, and is not an agent card', () => {

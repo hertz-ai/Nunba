@@ -849,7 +849,9 @@ export function isRemoteChatTurn(row, localDeviceId) {
   if (row.role !== 'user' && row.role !== 'assistant') return false;
   if (typeof row.content !== 'string' || !row.content) return false;
   if (row.channel_type && row.channel_type !== 'chat') return false;
-  return !localDeviceId || row.device_id !== localDeviceId;
+  // No local id yet: cannot tell our own turns apart, so show nothing
+  // rather than echo them.
+  return Boolean(localDeviceId) && row.device_id !== localDeviceId;
 }
 
 // ── BLE encounter match + icebreaker (J204, J209-J210) ──────────────

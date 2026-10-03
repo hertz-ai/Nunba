@@ -2990,7 +2990,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     let deviceId = null;
     getStableDeviceIdOnce().then((id) => { deviceId = id; }, () => {});
     return subscribeChatNew((row) => {
-      if (!deviceId || !isRemoteChatTurn(row, deviceId)) return;
+      if (!isRemoteChatTurn(row, deviceId)) return;
       const openAgent = String(currentAgentRef.current?.prompt_id || '');
       if (String(row.prompt_id || '') !== openAgent) return;
       setMessages((prev) => {
