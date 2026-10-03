@@ -293,6 +293,96 @@ class TestDirectories:
 
 
 # ===========================================================================
+# FT — the app's own page gets the microphone without a prompt
+# ===========================================================================
+
+class TestOwnPageMicrophone:
+    """pywebview 6.1 sets no PermissionRequested handler, so WebView2 shows
+    its own prompt and getUserMedia waits on it.  The owner never saw that
+    prompt: the main-window mic click showed no Stop button until a grant
+    appeared in the profile (media_stream_mic, 2026-10-03 18:49 IST)."""
+
+    PORT = 5000
+
+    @pytest.mark.parametrize('uri', [
+        'http://localhost:5000/local',
+        'http://127.0.0.1:5000/voice-orb?surface=floating',
+    ])
+    def test_own_page_mic_is_granted(self, uri):
+        assert pu.is_own_page_mic_request(uri, 'Microphone', self.PORT)
+
+    @pytest.mark.parametrize('uri,kind', [
+        ('http://localhost:5000/local', 'Camera'),          # mic only
+        ('http://localhost:5001/local', 'Microphone'),      # another app's port
+        ('https://localhost:5000/local', 'Microphone'),
+        ('http://evil.example:5000/', 'Microphone'),
+        ('http://localhost.evil.example:5000/', 'Microphone'),
+        ('', 'Microphone'),
+        (None, 'Microphone'),
+        ('http://localhost:notaport/', 'Microphone'),
+    ])
+    def test_anything_else_is_left_to_webview2(self, uri, kind):
+        assert not pu.is_own_page_mic_request(uri, kind, self.PORT)
+
+    def _fake_window(self, monkeypatch):
+        allow = object()
+        core_mod = mock.MagicMock()
+        core_mod.CoreWebView2PermissionState.Allow = allow
+        monkeypatch.setitem(sys.modules, 'Microsoft', mock.MagicMock())
+        monkeypatch.setitem(sys.modules, 'Microsoft.Web', mock.MagicMock())
+        monkeypatch.setitem(sys.modules, 'Microsoft.Web.WebView2', mock.MagicMock())
+        monkeypatch.setitem(sys.modules, 'Microsoft.Web.WebView2.Core', core_mod)
+
+        class _Event:
+            def __init__(self):
+                self.handlers = []
+
+            def __iadd__(self, h):
+                self.handlers.append(h)
+                return self
+
+        core = MagicMock()
+        core.PermissionRequested = _Event()
+        native = MagicMock()
+        native.InvokeRequired = False
+        native.browser.webview.CoreWebView2 = core
+        return native, core, allow
+
+    def test_hook_allows_own_page_mic_and_leaves_the_rest(self, monkeypatch):
+        native, core, allow = self._fake_window(monkeypatch)
+        assert pu.allow_own_page_microphone(native, self.PORT) is True
+        (handler,) = core.PermissionRequested.handlers
+
+        own = MagicMock(Uri='http://localhost:5000/local', PermissionKind='Microphone')
+        own.State = 'default'
+        handler(None, own)
+        assert own.State is allow
+
+        camera = MagicMock(Uri='http://localhost:5000/local', PermissionKind='Camera')
+        camera.State = 'default'
+        handler(None, camera)
+        assert camera.State == 'default'
+
+    def test_window_hook_adds_the_handler_once_across_reloads(self, monkeypatch):
+        native, core, _allow = self._fake_window(monkeypatch)
+        monkeypatch.setattr(pu, 'IS_WINDOWS', True)
+        loaded = []
+        window = MagicMock(native=native)
+        window.events.loaded.__iadd__ = lambda self_, h: (loaded.append(h), self_)[1]
+        pu.hook_own_page_microphone(window, self.PORT)
+        (on_loaded,) = loaded
+        on_loaded()
+        on_loaded()
+        assert len(core.PermissionRequested.handlers) == 1
+
+    def test_no_webview_yet_hooks_nothing(self, monkeypatch):
+        native, _core, _allow = self._fake_window(monkeypatch)
+        native.browser.webview.CoreWebView2 = None
+        assert pu.allow_own_page_microphone(native, self.PORT) is False
+        assert pu.allow_own_page_microphone(None, self.PORT) is False
+
+
+# ===========================================================================
 # FT — open_file_browser
 # ===========================================================================
 

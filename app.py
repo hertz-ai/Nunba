@@ -8484,6 +8484,9 @@ def main():
                 _companion_raise()
             if _companion_window:
                 _companion_window.events.loaded += _on_companion_loaded
+                # Same origin as the main window, same mic rule.
+                from desktop.platform_utils import hook_own_page_microphone
+                hook_own_page_microphone(_companion_window, args.port)
 
             def _companion_fg_monitor():
                 """Follow the owner's foreground window, not just page events.
@@ -9310,6 +9313,11 @@ def main():
                     logger.warning(f"[MEDIA] Permission injection failed: {e}")
 
             _window.events.loaded += _on_loaded_media_permissions
+
+        # Windows: the app's own page gets the microphone without WebView2's
+        # prompt, which never reached the owner (platform_utils has why).
+        from desktop.platform_utils import hook_own_page_microphone
+        hook_own_page_microphone(_window, args.port)
 
         # Delayed React mount check — if HTML loads but React never mounts
         # (e.g. JS bundle failed, import error), the loaded event fires but
