@@ -197,6 +197,12 @@ describe('requested topics survive the session lifecycle', () => {
       type: 'TTS_LANG_EVENT',
       payload: {requested_lang: 'ta', kind: 'unsupported'},
     });
+
+    // Unparseable or empty payloads are dropped, not turned into a toast.
+    const before = posted.filter((m) => m.type === 'TTS_LANG_EVENT').length;
+    session.handlers['com.hertzai.hevolve.tts.lang_unsupported'](['not json']);
+    session.handlers['com.hertzai.hevolve.tts.lang_unsupported']([null]);
+    expect(posted.filter((m) => m.type === 'TTS_LANG_EVENT')).toHaveLength(before);
   });
 
   test('a released topic is unsubscribed and stays gone after a reopen', async () => {

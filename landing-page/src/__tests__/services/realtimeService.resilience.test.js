@@ -521,7 +521,9 @@ describe('resume from the last frame id', () => {
 
     realtimeService.setIdentity({userId: '10202'});
     const newEs = FakeEventSource.instances[1];
-    newEs._message({type: 'connected', resume: 'E-10'});
+    // With the id on the hello too (an older server's shape): the client must
+    // still not mark it seen.  Without it this test passed on 3e536fb4.
+    newEs._message({type: 'connected', resume: 'E-10'}, 'E-10');
     oldEs._fire('chat.response', {msg_id: 'r10', text: 'late'}, 'E-10');
 
     expect(seen).toHaveBeenCalledTimes(1);

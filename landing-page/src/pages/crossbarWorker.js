@@ -1134,11 +1134,12 @@ onmessage = function (e) {
       // 'lang_mismatch' -> 'mismatch', 'lang_unsupported' -> 'unsupported'.
       (payload?.topics || []).forEach((topic) => {
         const kind = topic.split('.').pop().replace(/^lang_/, '');
-        requestTopic(topic, (msg) =>
-          postWorkerMessage('TTS_LANG_EVENT', {
-            ...(typeof msg === 'string' ? parseStringPayload(msg, topic) : msg),
-            kind,
-          }));
+        requestTopic(topic, (msg) => {
+          const data = typeof msg === 'string' ? parseStringPayload(msg, topic) : msg;
+          // An unparseable or empty payload would become a garbled toast.
+          if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+          postWorkerMessage('TTS_LANG_EVENT', {...data, kind});
+        });
       });
       break;
     }

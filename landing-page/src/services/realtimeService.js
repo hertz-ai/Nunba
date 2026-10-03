@@ -339,7 +339,9 @@ class RealtimeService {
 
   // Note an event frame's id.  False when that id was already dispatched: a
   // replay overlapping what the previous stream delivered.  Frames from a
-  // server that sends no ids always pass.
+  // server that sends no ids always pass.  Contract: once a stream sends an
+  // id, every later event frame on it must carry its own -- per the SSE spec
+  // a frame without one inherits the previous id and would be dropped here.
   _acceptFrame(es, e) {
     const id = e && e.lastEventId;
     if (!id) return true;
