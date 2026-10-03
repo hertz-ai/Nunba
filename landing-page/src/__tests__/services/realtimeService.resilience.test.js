@@ -567,6 +567,138 @@ describe('resume from the last frame id', () => {
   });
 });
 
+// Liquid UI cards and consent asks ride the same stream as everything else,
+// so the frame ids and the replay must not lose or repeat them.  HARTOS
+// sends an ask, and its answer from any device of the user, as a
+// 'notification' frame (consent_service._emit -> on_notification); an agent
+// card as an 'agent.ui.update' envelope.  AgentOverlay renders the ask from
+// agent.ui.update and closes it on consent.granted / consent.revoked.
+describe('Liquid UI cards and consent over the stream', () => {
+  const ASK = {type: 'consent.request', msg_id: 'consent.request:7',
+    consent_type: 'computer_control', scope: '*', agent_id: '42'};
+  const ANSWER = {type: 'consent.granted', msg_id: 'n-answer-1',
+    consent_type: 'computer_control', scope: '*', agent_id: null};
+
+  function page(rt) {
+    const cards = jest.fn();
+    const answers = jest.fn();
+    rt.on('agent.ui.update', cards);
+    rt.on('consent.granted', answers);
+    return {cards, answers};
+  }
+
+  // Past the 10s msg_id window, so only the frame id can drop a copy.
+  function later(fn) {
+    const realNow = Date.now;
+    Date.now = () => realNow() + 10 * 60 * 1000;
+    try {
+      fn();
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
+  test('an agent card envelope reaches the overlay unwrapped', () => {
+    const {default: rt} = require('../../services/realtimeService');
+    const {cards} = page(rt);
+    rt.setIdentity({userId: 'u1'});
+    const es = FakeEventSource.instances[0];
+    es._simulateOpen();
+
+    es._fire('agent.ui.update', {type: 'agent.ui.update', msg_id: 'c1', agent_id: 'a1',
+      component: {type: 'metric', label: 'CPU', value: 3}}, 'ep-1');
+
+    expect(cards).toHaveBeenCalledTimes(1);
+    expect(cards.mock.calls[0][0]).toMatchObject({type: 'metric', label: 'CPU', msg_id: 'c1'});
+  });
+
+  test('an ask shows as a card and its answer closes it', () => {
+    const {default: rt} = require('../../services/realtimeService');
+    const {cards, answers} = page(rt);
+    rt.setIdentity({userId: 'u1'});
+    const es = FakeEventSource.instances[0];
+    es._simulateOpen();
+
+    es._fire('notification', ASK, 'ep-1');
+    es._fire('notification', ANSWER, 'ep-2');
+
+    expect(cards).toHaveBeenCalledTimes(1);
+    expect(cards.mock.calls[0][0]).toMatchObject({type: 'consent.request', msg_id: ASK.msg_id});
+    expect(answers).toHaveBeenCalledTimes(1);
+    expect(answers.mock.calls[0][0]).toMatchObject({consent_type: 'computer_control'});
+  });
+
+  // The answer was given on another device while this page was reconnecting.
+  // The replay brings the ask again (already shown) and the answer (new).
+  test('an answer given while this page was away closes the card on resume, once', () => {
+    jest.useFakeTimers();
+    try {
+      const {default: rt} = require('../../services/realtimeService');
+      const {cards, answers} = page(rt);
+      rt.setIdentity({userId: 'u1'});
+      const first = FakeEventSource.instances[0];
+      first._simulateOpen();
+      first._message({type: 'connected', resume: 'ep-0'});
+      first._fire('notification', ASK, 'ep-1');
+
+      first._simulateError();
+      jest.advanceTimersByTime(3000);
+      const second = FakeEventSource.instances[1];
+      expect(new URL(second.url, 'http://x').searchParams.get('since')).toBe('ep-1');
+      second._simulateOpen();
+      later(() => {
+        second._fire('notification', ASK, 'ep-1');
+        second._fire('notification', ANSWER, 'ep-2');
+        second._fire('notification', ANSWER, 'ep-2');
+      });
+
+      expect(cards).toHaveBeenCalledTimes(1);
+      expect(answers).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // A waiting gate re-sends its ask with the same msg_id; each re-send is a
+  // new frame.  After "Not now" the card must be able to come back.
+  test('a re-sent ask is a new frame and still reaches the overlay', () => {
+    const {default: rt} = require('../../services/realtimeService');
+    const {cards} = page(rt);
+    rt.setIdentity({userId: 'u1'});
+    const es = FakeEventSource.instances[0];
+    es._simulateOpen();
+
+    es._fire('notification', ASK, 'ep-1');
+    later(() => es._fire('notification', ASK, 'ep-5'));
+
+    expect(cards).toHaveBeenCalledTimes(2);
+  });
+
+  // Every page of the user gets the answer and closes its own card: the
+  // seen-id memory is per page, never shared across them.
+  test('one answer reaches every page of the user', () => {
+    const pages = [];
+    for (let i = 0; i < 2; i += 1) {
+      jest.isolateModules(() => {
+        const {default: rt} = require('../../services/realtimeService');
+        const p = page(rt);
+        rt.setIdentity({userId: 'u1'});
+        pages.push(p);
+      });
+    }
+    FakeEventSource.instances.forEach((es) => {
+      es._simulateOpen();
+      es._fire('notification', ASK, 'ep-1');
+      es._fire('notification', ANSWER, 'ep-2');
+    });
+
+    pages.forEach(({cards, answers}) => {
+      expect(cards).toHaveBeenCalledTimes(1);
+      expect(answers).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
 describe('one retry at a time', () => {
   // Review of bf57124e: a failed rotation scheduled a retry, a newer identity
   // rotated at once, and the stale retry rotated again 3s later.

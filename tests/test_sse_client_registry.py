@@ -371,6 +371,43 @@ class TestReplayNeedsMoreThanAClaimedUserId:
         assert 'mine' in body
 
 
+class TestConsentReachesEveryClientOfTheUser:
+    """A consent ask and its answer go to every stream the user has open, so
+    an answer given on one client closes the card on all of them
+    (consent_service._emit -> on_notification -> this broadcast)."""
+
+    ANSWER = {'type': 'consent.granted', 'consent_type': 'computer_control',
+              'scope': '*', 'agent_id': None}
+
+    def test_answer_reaches_every_open_stream_of_the_user_only(self, main_mod):
+        streams = [_open_stream(main_mod, uid) for uid in ('u1', 'u1', 'u2')]
+        for gen in streams:
+            _read_until_connected(gen)
+
+        main_mod.broadcast_sse_event('notification', self.ANSWER, user_id='u1')
+
+        got = [next(gen) for gen in streams[:2]]
+        with main_mod._sse_lock:
+            other = main_mod._sse_clients['u2'][0][0]
+        for gen in streams:
+            gen.close()
+        assert all('consent.granted' in f for f in got), got
+        assert _frame_id(got[0]) == _frame_id(got[1]), "the two clients got different frames"
+        assert other.empty(), "another user's stream got this user's answer"
+
+    def test_client_away_when_answered_gets_the_answer_on_resume(self, main_mod):
+        gen = _open_stream(main_mod, 'u1')
+        cursor = _resume_id(_read_until_connected(gen)[-1])
+        gen.close()
+
+        main_mod.broadcast_sse_event('notification', self.ANSWER, user_id='u1')
+
+        gen = _open_stream(main_mod, 'u1', since=cursor)
+        body = ''.join(_read_until_connected(gen))
+        gen.close()
+        assert body.count('consent.granted') == 1, body
+
+
 class TestOneLockHold:
     """Review of b07e025f: moving the enqueue, the record or the replay
     snapshot out of their lock hold passed every other test here."""
