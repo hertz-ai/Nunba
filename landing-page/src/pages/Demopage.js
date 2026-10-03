@@ -58,7 +58,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/l
 
 // ── Use existing Nunba API services for local/global integration ──
 import {chatApi, usersApi, agentApi, consentApi} from '../services/socialApi';
-import { initGameRealtime } from '../services/gameRealtimeService';
 import realtimeService from '../services/realtimeService';
 
 // ── TTS hook for offline text-to-speech ──
@@ -2689,11 +2688,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               break;
 
             case 'GAME_EVENT':
-              // Handled by gameRealtimeService (initGameRealtime binds its own listener)
+              // Handled by gameRealtimeService via realtimeService.attachWorker
               break;
 
             case 'SOCIAL_EVENT':
-              // Handled by realtimeService (init binds its own listener)
+              // Handled by realtimeService (attachWorker binds its listener)
               break;
 
             case 'COMMUNITY_EVENT':
@@ -2721,7 +2720,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         activeWorker = crossbarWorker;
         setWorker(crossbarWorker);
-        initGameRealtime(crossbarWorker);
         realtimeService.attachWorker(crossbarWorker);
 
         if (decryptedUserId) {

@@ -34,27 +34,62 @@ let _sseReconnectTimer = null;
 // or disconnect() can close it; otherwise it opened later as an orphan.
 let _pendingRotateEs = null;
 
+// Resume point for the server's replay window (main.py REPLAY).  Every frame
+// carries `id: <epoch>-<seq>`.  _sseCursor is the latest id and the stream URL
+// that delivered it; _sseFirstId is the first id this page saw.  Ids already
+// dispatched are remembered so a replayed copy is dropped.
+let _sseCursor = null; // {streamUrl, id}
+let _sseFirstId = null;
+const _seenFrameIds = new Set();
+const _streamUrlOf = new WeakMap(); // EventSource -> stream URL without since
+
 // Every consumer of crossbar worker messages registers a route here.  Exactly
 // one 'message' listener sits on the attached worker and fans out to all
 // routes, so every consumer follows the worker when the page replaces it.
 const _workerRoutes = new Set();
+// Run on every attach so each consumer re-sends its subscriptions to the
+// new worker (a replacement worker starts with none).
+const _attachHooks = new Set();
 
-function _onWorkerMessage(e) {
-  const message = (e && e.data) || {};
-  _workerRoutes.forEach((route) => {
+function _runEach(fns, arg, label) {
+  fns.forEach((fn) => {
     try {
-      route(message);
+      fn(arg);
     } catch (err) {
-      console.warn('Realtime worker route error:', err);
+      console.warn(`${label} error:`, err);
     }
   });
 }
 
-function _postToWorker(type, payload) {
-  if (_worker) _worker.postMessage({type, payload});
+function _onWorkerMessage(e) {
+  _runEach(_workerRoutes, (e && e.data) || {}, 'Realtime worker route');
+}
+
+/** Route every crossbar worker message to `route`.  Returns an unregister. */
+export function addWorkerRoute(route) {
+  _workerRoutes.add(route);
+  return () => _workerRoutes.delete(route);
+}
+
+/** Run `hook` each time a worker attaches, to re-send subscriptions. */
+export function onWorkerAttach(hook) {
+  _attachHooks.add(hook);
+  return () => _attachHooks.delete(hook);
+}
+
+/** Post to the attached worker.  False when there is none. */
+export function postToWorker(type, payload) {
+  if (!_worker) return false;
+  _worker.postMessage({type, payload});
+  return true;
+}
+
+export function hasWorker() {
+  return Boolean(_worker);
 }
 
 const SSE_RECONNECT_DELAY = 3000; // 3s retry on SSE disconnect
+const SSE_SEEN_IDS_MAX = 1024; // covers the server's 2 x 256-frame replay
 const DEDUP_WINDOW_MS = 10000; // 10s dedup window
 const DEDUP_MAX_SIZE = 200; // max tracked message IDs
 
@@ -101,7 +136,7 @@ class RealtimeService {
     this._userId = null; // fallback user_id for guest/local SSE
     this._seenIds = new Map(); // request_id → timestamp (dedup)
     this._sseBase = null; // null = SOCIAL_API_URL (the app); set by the embed
-    _workerRoutes.add((message) => this._onWorkerMessage(message));
+    addWorkerRoute((message) => this._onWorkerMessage(message));
   }
 
   /**
@@ -175,6 +210,7 @@ class RealtimeService {
     _worker.addEventListener('message', _onWorkerMessage);
     // A fresh worker has not reported a connection yet.
     this._setCrossbarConnected(false, {silent: true});
+    _runEach(_attachHooks, undefined, 'Realtime worker attach hook');
   }
 
   /**
@@ -272,8 +308,39 @@ class RealtimeService {
   // Attach the standard handler set (onmessage, named events, onerror)
   // to an EventSource.  Extracted so both _openSSE and _rotateSSE wire
   // up the same listeners.
+  // A new EventSource for `url`, resuming from the cursor: the last id when
+  // this stream URL delivered it, else the page's first id (a different
+  // identity has missed everything since the page opened; the server keeps
+  // only its replay window).  No id yet = a fresh page: nothing to replay.
+  _newEventSource(url) {
+    const since = _sseCursor && _sseCursor.streamUrl === url
+      ? _sseCursor.id
+      : _sseFirstId;
+    const es = new EventSource(
+      since ? `${url}&since=${encodeURIComponent(since)}` : url);
+    _streamUrlOf.set(es, url);
+    return es;
+  }
+
+  // Note a frame's id.  False when that id was already dispatched: a replay
+  // overlapping what the previous stream delivered.  Frames from a server
+  // that sends no ids always pass.
+  _acceptFrame(es, e) {
+    const id = e && e.lastEventId;
+    if (!id) return true;
+    if (!_sseFirstId) _sseFirstId = id;
+    _sseCursor = {streamUrl: _streamUrlOf.get(es), id};
+    if (_seenFrameIds.has(id)) return false;
+    _seenFrameIds.add(id);
+    if (_seenFrameIds.size > SSE_SEEN_IDS_MAX) {
+      _seenFrameIds.delete(_seenFrameIds.values().next().value);
+    }
+    return true;
+  }
+
   _attachSSEHandlers(es) {
     es.onmessage = (e) => {
+      if (!this._acceptFrame(es, e)) return;
       try {
         const payload = JSON.parse(e.data);
         if (payload.type === 'connected') return; // initial heartbeat
@@ -330,6 +397,7 @@ class RealtimeService {
       'capability_update',
     ].forEach((name) => {
       es.addEventListener(name, (e) => {
+        if (!this._acceptFrame(es, e)) return;
         try {
           const payload = JSON.parse(e.data);
           this._dispatchSocialPayload({type: name, ...payload});
@@ -357,9 +425,8 @@ class RealtimeService {
       _sseReconnectTimer = null;
     }
 
-    const url = this._buildSSEUrl();
     try {
-      _eventSource = new EventSource(url);
+      _eventSource = this._newEventSource(this._buildSSEUrl());
     } catch {
       return; // EventSource not available (e.g. SSR)
     }
@@ -387,8 +454,12 @@ class RealtimeService {
       return;
     }
 
+    // This rotation supersedes a retry still waiting from a failed one.
+    if (_sseReconnectTimer) {
+      clearTimeout(_sseReconnectTimer);
+      _sseReconnectTimer = null;
+    }
     const oldEs = _eventSource;
-    const newUrl = this._buildSSEUrl();
     if (_pendingRotateEs) {
       try { _pendingRotateEs.close(); } catch { /* noop */ }
       _pendingRotateEs = null;
@@ -396,7 +467,7 @@ class RealtimeService {
 
     let newEs;
     try {
-      newEs = new EventSource(newUrl);
+      newEs = this._newEventSource(this._buildSSEUrl());
     } catch {
       // EventSource unavailable — keep old running.  Caller has
       // already updated _userId/_token; next reconnect (if old dies)
@@ -571,29 +642,30 @@ class RealtimeService {
 // ── Worker-routed subscriptions ──────────────────────────────────────
 // Each subscription below is one route on the shared worker fan-out
 // (_workerRoutes), so it keeps working across worker replacement and
-// whether it is subscribed before or after the worker attaches.
+// whether it is subscribed before or after the worker attaches.  Topic
+// subscriptions are re-sent from an attach hook; the worker ignores a topic
+// it already holds, so re-sending is safe.
 
 function _notifyAll(listeners, data, label) {
-  listeners.forEach((cb) => {
-    try {
-      cb(data);
-    } catch (err) {
-      console.warn(`${label} handler error:`, err);
-    }
-  });
+  _runEach(listeners, data, `${label} handler`);
 }
 
 // ── Community topic handler ──────────────────────────────────────────
 
 const _communityListeners = new Map(); // communityId → Set<callback>
 
-_workerRoutes.add(({type, payload}) => {
+addWorkerRoute(({type, payload}) => {
   if (type !== 'COMMUNITY_EVENT' || !payload) return;
   const communityId = payload.communityId || payload.community_id;
   const callbacks = _communityListeners.get(communityId);
   if (callbacks) _notifyAll(callbacks, payload, 'Community event');
   const wildcardCbs = _communityListeners.get('*');
   if (wildcardCbs) _notifyAll(wildcardCbs, payload, 'Community event');
+});
+
+onWorkerAttach(() => {
+  _communityListeners.forEach((_, communityId) =>
+    postToWorker('COMMUNITY_SUBSCRIBE', {communityId}));
 });
 
 /**
@@ -612,7 +684,7 @@ export function subscribeCommunity(communityId, callback) {
   _communityListeners.get(communityId).add(callback);
 
   // Tell worker to subscribe to WAMP community topic
-  _postToWorker('COMMUNITY_SUBSCRIBE', {communityId});
+  postToWorker('COMMUNITY_SUBSCRIBE', {communityId});
 
   // Return unsubscribe function
   return () => {
@@ -620,7 +692,7 @@ export function subscribeCommunity(communityId, callback) {
     if (_communityListeners.get(communityId)?.size === 0) {
       _communityListeners.delete(communityId);
       // Unsubscribe from WAMP if no more listeners
-      _postToWorker('COMMUNITY_UNSUBSCRIBE', {communityId});
+      postToWorker('COMMUNITY_UNSUBSCRIBE', {communityId});
     }
   };
 }
@@ -634,10 +706,22 @@ export function subscribeCommunity(communityId, callback) {
 // English mumbling instead of silently mis-routing.
 
 const _ttsLangListeners = new Set();
+// The worker relays as
+// `{type:'TTS_LANG_EVENT', payload:{kind:'mismatch'|'unsupported', ...}}`
+const _TTS_LANG_TOPICS = [
+  'com.hertzai.hevolve.tts.lang_mismatch',
+  'com.hertzai.hevolve.tts.lang_unsupported',
+];
 
-_workerRoutes.add(({type, payload}) => {
+addWorkerRoute(({type, payload}) => {
   if (type === 'TTS_LANG_EVENT' && payload) {
     _notifyAll(_ttsLangListeners, payload, 'TTS lang event');
+  }
+});
+
+onWorkerAttach(() => {
+  if (_ttsLangListeners.size > 0) {
+    postToWorker('TTS_LANG_SUBSCRIBE', {topics: _TTS_LANG_TOPICS});
   }
 });
 
@@ -649,14 +733,7 @@ _workerRoutes.add(({type, payload}) => {
  */
 export function subscribeTtsLangEvents(callback) {
   if (_ttsLangListeners.size === 0) {
-    // Ask the worker to subscribe to both topics.  The worker relays as
-    // `{type:'TTS_LANG_EVENT', payload:{kind:'mismatch'|'unsupported', ...}}`
-    _postToWorker('TTS_LANG_SUBSCRIBE', {
-      topics: [
-        'com.hertzai.hevolve.tts.lang_mismatch',
-        'com.hertzai.hevolve.tts.lang_unsupported',
-      ],
-    });
+    postToWorker('TTS_LANG_SUBSCRIBE', {topics: _TTS_LANG_TOPICS});
   }
   _ttsLangListeners.add(callback);
   return () => _ttsLangListeners.delete(callback);
@@ -680,7 +757,7 @@ export function subscribeTtsLangEvents(callback) {
 // A worker DATA_RECEIVED message carries {sourceTopic, data}; deliver `data`
 // to `listeners` when the topic starts with `prefix`.
 function _addTopicRoute(prefix, listeners, label) {
-  _workerRoutes.add(({type, payload}) => {
+  addWorkerRoute(({type, payload}) => {
     if (type !== 'DATA_RECEIVED' || !payload) return;
     const {sourceTopic, data} = payload;
     if (typeof sourceTopic === 'string' && sourceTopic.startsWith(prefix)) {

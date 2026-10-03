@@ -52,6 +52,18 @@ class FakeEventSource {
     if (this.onerror) this.onerror({});
   }
 
+  // Test helper — a named frame, with the `id:` the server stamps on it
+  _fire(name, payload, lastEventId = '') {
+    (this._listeners[name] || []).forEach((fn) =>
+      fn({data: JSON.stringify(payload), lastEventId}),
+    );
+  }
+
+  // Test helper — an unnamed frame (the server's 'connected' hello)
+  _message(payload, lastEventId = '') {
+    if (this.onmessage) this.onmessage({data: JSON.stringify(payload), lastEventId});
+  }
+
   static reset() {
     FakeEventSource.instances = [];
   }
@@ -426,6 +438,187 @@ describe('crossbar worker attachment never touches the stream', () => {
   });
 });
 
+// The server stamps every frame `id: <epoch>-<seq>` and replays what a stream
+// missed when it reopens with ?since=<id> (main.py REPLAY).
+describe('resume from the last frame id', () => {
+  const since = (es) => new URL(es.url, 'http://x').searchParams.get('since');
+
+  test('a fresh page asks for no replay', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.setIdentity({userId: 'u1'});
+    expect(since(FakeEventSource.instances[0])).toBeNull();
+  });
+
+  test('a reconnect after an error resumes from the last id it saw', () => {
+    jest.useFakeTimers();
+    try {
+      const {default: realtimeService} = require('../../services/realtimeService');
+      realtimeService.setIdentity({userId: 'u1'});
+      const first = FakeEventSource.instances[0];
+      first._simulateOpen();
+      first._message({type: 'connected'}, 'ep-5');
+      first._fire('chat.response', {msg_id: 'r1', text: 'hi'}, 'ep-7');
+
+      first._simulateError();
+      jest.advanceTimersByTime(3000);
+
+      expect(FakeEventSource.instances).toHaveLength(2);
+      expect(since(FakeEventSource.instances[1])).toBe('ep-7');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // The new identity's frames went to nobody until its stream opened; the
+  // page's first id bounds the replay to what happened while it was open.
+  test('an identity switch resumes the new identity from the page start', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    realtimeService.setIdentity({userId: 'guest'});
+    const guestEs = FakeEventSource.instances[0];
+    guestEs._simulateOpen();
+    guestEs._message({type: 'connected'}, 'ep-3');
+    guestEs._fire('notification', {msg_id: 'n1'}, 'ep-4');
+
+    realtimeService.setIdentity({userId: '10202', token: 'tok'});
+
+    expect(since(FakeEventSource.instances[1])).toBe('ep-3');
+  });
+
+  test('a frame replayed on the next stream is dispatched once', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const seen = jest.fn();
+    realtimeService.on('chat.response', seen);
+    realtimeService.setIdentity({userId: 'guest'});
+    const oldEs = FakeEventSource.instances[0];
+    oldEs._simulateOpen();
+    oldEs._fire('chat.response', {msg_id: 'r9', text: 'once'}, 'ep-9');
+
+    realtimeService.setIdentity({userId: '10202'});
+    const newEs = FakeEventSource.instances[1];
+    newEs._simulateOpen();
+    // Past the 10s msg_id window: only the frame id can catch this copy.
+    const realNow = Date.now;
+    Date.now = () => realNow() + 10 * 60 * 1000;
+    try {
+      newEs._fire('chat.response', {msg_id: 'r9', text: 'once'}, 'ep-9');
+    } finally {
+      Date.now = realNow;
+    }
+
+    expect(seen).toHaveBeenCalledTimes(1);
+  });
+
+  test('frames without an id (an older server) are still delivered', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const seen = jest.fn();
+    realtimeService.on('chat.response', seen);
+    realtimeService.setIdentity({userId: 'u1'});
+    const es = FakeEventSource.instances[0];
+    es._simulateOpen();
+    es._fire('chat.response', {msg_id: 'a'});
+    es._fire('chat.response', {msg_id: 'b'});
+
+    expect(seen).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('one retry at a time', () => {
+  // Review of bf57124e: a failed rotation scheduled a retry, a newer identity
+  // rotated at once, and the stale retry rotated again 3s later.
+  test('a newer identity cancels the retry of a failed rotation', () => {
+    jest.useFakeTimers();
+    try {
+      const {default: realtimeService} = require('../../services/realtimeService');
+      realtimeService.setIdentity({userId: 'guest'});
+      FakeEventSource.instances[0]._simulateOpen();
+      realtimeService.setIdentity({userId: 'A'});
+      FakeEventSource.instances[1]._simulateError();
+
+      realtimeService.setIdentity({userId: 'B'});
+      expect(FakeEventSource.instances).toHaveLength(3);
+      jest.advanceTimersByTime(3000);
+
+      expect(FakeEventSource.instances).toHaveLength(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe('worker topic subscriptions follow the worker', () => {
+  const subscribesTo = (worker, type) =>
+    worker.postMessage.mock.calls.map(([m]) => m).filter((m) => m.type === type);
+
+  test('a community subscription is re-sent to a replacement worker', () => {
+    const {default: realtimeService, subscribeCommunity} =
+      require('../../services/realtimeService');
+    const first = new FakeWorker();
+    realtimeService.attachWorker(first);
+    subscribeCommunity('c1', jest.fn());
+    realtimeService.detachWorker(first);
+
+    const second = new FakeWorker();
+    realtimeService.attachWorker(second);
+
+    expect(subscribesTo(second, 'COMMUNITY_SUBSCRIBE'))
+      .toEqual([{type: 'COMMUNITY_SUBSCRIBE', payload: {communityId: 'c1'}}]);
+  });
+
+  test('a subscription made before any worker is sent when one attaches', () => {
+    const {default: realtimeService, subscribeCommunity} =
+      require('../../services/realtimeService');
+    subscribeCommunity('c2', jest.fn());
+
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+
+    expect(subscribesTo(worker, 'COMMUNITY_SUBSCRIBE')).toHaveLength(1);
+  });
+
+  test('a released subscription is not re-sent', () => {
+    const {default: realtimeService, subscribeCommunity} =
+      require('../../services/realtimeService');
+    const unsubscribe = subscribeCommunity('c3', jest.fn());
+    unsubscribe();
+
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+
+    expect(subscribesTo(worker, 'COMMUNITY_SUBSCRIBE')).toEqual([]);
+  });
+
+  test('re-attaching the same worker sends nothing twice', () => {
+    const {default: realtimeService, subscribeCommunity} =
+      require('../../services/realtimeService');
+    subscribeCommunity('c4', jest.fn());
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+    realtimeService.attachWorker(worker);
+
+    expect(subscribesTo(worker, 'COMMUNITY_SUBSCRIBE')).toHaveLength(1);
+  });
+
+  test('game sessions ride the same worker wiring', () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const {default: game} = require('../../services/gameRealtimeService');
+    const onMove = jest.fn();
+    expect(game.isAvailable()).toBe(false);
+    game.subscribe('s1', onMove);
+
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+    expect(game.isAvailable()).toBe(true);
+    expect(subscribesTo(worker, 'GAME_SUBSCRIBE'))
+      .toEqual([{type: 'GAME_SUBSCRIBE', payload: {sessionId: 's1'}}]);
+    worker._emit({type: 'GAME_EVENT', payload: {sessionId: 's1', type: 'move'}});
+    expect(onMove).toHaveBeenCalledTimes(1);
+
+    realtimeService.detachWorker(worker);
+    expect(game.isAvailable()).toBe(false);
+    expect(game.publish('s1', {type: 'move'})).toBe(false);
+  });
+});
+
 // One owner per concern, enforced on the source rather than hoped for.
 describe('single owner of the stream identity', () => {
   const SRC = path.resolve(__dirname, '../..');
@@ -460,5 +653,13 @@ describe('single owner of the stream identity', () => {
 
   test('the removed combined entry points have no callers', () => {
     expect(callersOf(/realtimeService\.(init|connect)\(|\brt\.(init|connect)\(/)).toEqual([]);
+  });
+
+  // The game service had its own listener on the chat page's worker, bound
+  // once and never moved to a replacement worker.
+  test('the game service binds no worker listener of its own', () => {
+    expect(callersOf(/initGameRealtime/)).toEqual([]);
+    const game = fs.readFileSync(path.join(SRC, 'services/gameRealtimeService.js'), 'utf8');
+    expect(game).not.toMatch(/addEventListener|postMessage/);
   });
 });

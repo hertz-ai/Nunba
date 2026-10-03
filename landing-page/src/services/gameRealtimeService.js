@@ -1,60 +1,51 @@
 /**
  * gameRealtimeService — Bridges crossbar WAMP pub/sub with multiplayer game sync.
  *
- * Sends messages to the crossbar Web Worker for game session pub/sub.
- * Falls back to REST polling if crossbar isn't connected.
+ * Rides realtimeService's worker wiring: GAME_EVENT messages arrive through
+ * its single worker listener, and session subscriptions are re-sent each time
+ * the chat page attaches a new worker, so play keeps flowing across a worker
+ * replacement and a session joined before any worker exists still connects.
+ * Falls back to REST polling (useMultiplayerSync) if no worker is attached.
  *
  * Usage:
  *   gameRealtimeService.subscribe('session-123', (event) => { ... });
  *   gameRealtimeService.publish('session-123', { type: 'game_move', ... });
  *   gameRealtimeService.unsubscribe('session-123');
  */
+import {
+  addWorkerRoute,
+  hasWorker,
+  onWorkerAttach,
+  postToWorker,
+} from './realtimeService';
 
-let _worker = null;
 const _listeners = new Map(); // sessionId → Set<callback>
-let _workerMessageHandler = null;
 
-/**
- * Initialize with the crossbar worker reference.
- * Called once from Demopage.js after the worker is created.
- */
-export function initGameRealtime(crossbarWorker) {
-  if (_worker === crossbarWorker) return;
-  _worker = crossbarWorker;
-
-  // Clean up old handler
-  if (_workerMessageHandler && _worker) {
-    _worker.removeEventListener('message', _workerMessageHandler);
-  }
-
-  _workerMessageHandler = (e) => {
-    const {type, payload} = e.data;
-    if (type === 'GAME_EVENT' && payload) {
-      const sessionId = payload.sessionId || payload.session_id;
-      const callbacks = _listeners.get(sessionId);
-      if (callbacks) {
-        callbacks.forEach((cb) => {
-          try {
-            cb(payload);
-          } catch (err) {
-            console.warn('Game event handler error:', err);
-          }
-        });
-      }
-      // Also broadcast to wildcard listeners
-      const wildcardCbs = _listeners.get('*');
-      if (wildcardCbs) {
-        wildcardCbs.forEach((cb) => {
-          try {
-            cb(payload);
-          } catch (_) {}
-        });
-      }
+function _notify(callbacks, payload) {
+  callbacks.forEach((cb) => {
+    try {
+      cb(payload);
+    } catch (err) {
+      console.warn('Game event handler error:', err);
     }
-  };
-
-  _worker.addEventListener('message', _workerMessageHandler);
+  });
 }
+
+addWorkerRoute(({type, payload}) => {
+  if (type !== 'GAME_EVENT' || !payload) return;
+  const sessionId = payload.sessionId || payload.session_id;
+  const callbacks = _listeners.get(sessionId);
+  if (callbacks) _notify(callbacks, payload);
+  // Also broadcast to wildcard listeners
+  const wildcardCbs = _listeners.get('*');
+  if (wildcardCbs) _notify(wildcardCbs, payload);
+});
+
+onWorkerAttach(() => {
+  _listeners.forEach((_, sessionId) => {
+    if (sessionId !== '*') postToWorker('GAME_SUBSCRIBE', {sessionId});
+  });
+});
 
 /**
  * Subscribe to real-time events for a game session.
@@ -68,12 +59,7 @@ export function subscribe(sessionId, callback) {
   _listeners.get(sessionId).add(callback);
 
   // Tell worker to subscribe to WAMP topic
-  if (_worker && sessionId !== '*') {
-    _worker.postMessage({
-      type: 'GAME_SUBSCRIBE',
-      payload: {sessionId},
-    });
-  }
+  if (sessionId !== '*') postToWorker('GAME_SUBSCRIBE', {sessionId});
 }
 
 /**
@@ -92,11 +78,8 @@ export function unsubscribe(sessionId, callback) {
   }
 
   // If no more listeners for this session, unsubscribe from WAMP
-  if (!_listeners.has(sessionId) && _worker && sessionId !== '*') {
-    _worker.postMessage({
-      type: 'GAME_UNSUBSCRIBE',
-      payload: {sessionId},
-    });
+  if (!_listeners.has(sessionId) && sessionId !== '*') {
+    postToWorker('GAME_UNSUBSCRIBE', {sessionId});
   }
 }
 
@@ -107,25 +90,18 @@ export function unsubscribe(sessionId, callback) {
  * @returns {boolean} true if published, false if no worker/connection
  */
 export function publish(sessionId, event) {
-  if (!_worker) return false;
-
-  _worker.postMessage({
-    type: 'GAME_PUBLISH',
-    payload: {
-      sessionId,
-      event: {...event, sessionId, ts: Date.now()},
-    },
+  return postToWorker('GAME_PUBLISH', {
+    sessionId,
+    event: {...event, sessionId, ts: Date.now()},
   });
-  return true;
 }
 
 /** Whether the crossbar worker is available */
 export function isAvailable() {
-  return !!_worker;
+  return hasWorker();
 }
 
 const gameRealtimeService = {
-  init: initGameRealtime,
   subscribe,
   unsubscribe,
   publish,
