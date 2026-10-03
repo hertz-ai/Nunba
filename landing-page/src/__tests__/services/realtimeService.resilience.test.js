@@ -699,6 +699,60 @@ describe('Liquid UI cards and consent over the stream', () => {
   });
 });
 
+// A persisted chat turn (HARTOS chat_messages.publish_new) reaches the page
+// on SSE as a 'chat.new' frame and on the crossbar worker as DATA_RECEIVED on
+// com.hertzai.hevolve.chat.new.<uid>.  It used to reach neither: SSE had no
+// listener for it, and Demopage never subscribed.
+describe('chat.new turns from other devices', () => {
+  const ROW = {msg_id: '0123456789abcdef', role: 'user', content: 'hi from phone',
+    user_id: 'u1', device_id: 'phone-1', agent_id: 'a1', prompt_id: null};
+
+  test('an SSE chat.new frame reaches subscribeChatNew, and is not an agent card', () => {
+    const {default: rt, subscribeChatNew} = require('../../services/realtimeService');
+    const rows = jest.fn();
+    const cards = jest.fn();
+    subscribeChatNew(rows);
+    rt.on('agent.ui.update', cards);
+    rt.setIdentity({userId: 'u1'});
+    const es = FakeEventSource.instances[0];
+    es._simulateOpen();
+
+    es._fire('chat.new', ROW, 'ep-1');
+
+    expect(rows).toHaveBeenCalledTimes(1);
+    expect(rows.mock.calls[0][0]).toMatchObject({content: 'hi from phone'});
+    expect(cards).not.toHaveBeenCalled();
+  });
+
+  test('the same turn on SSE and the worker is delivered once', () => {
+    const {default: rt, subscribeChatNew} = require('../../services/realtimeService');
+    const rows = jest.fn();
+    subscribeChatNew(rows);
+    const worker = new FakeWorker();
+    rt.attachWorker(worker);
+    rt.setIdentity({userId: 'u1'});
+    const es = FakeEventSource.instances[0];
+    es._simulateOpen();
+
+    es._fire('chat.new', ROW, 'ep-1');
+    worker._emit({type: 'DATA_RECEIVED',
+      payload: {sourceTopic: 'com.hertzai.hevolve.chat.new.u1', data: {...ROW}}});
+
+    expect(rows).toHaveBeenCalledTimes(1);
+  });
+
+  test('a row without a msg_id is not delivered', () => {
+    const {default: rt, subscribeChatNew} = require('../../services/realtimeService');
+    const rows = jest.fn();
+    subscribeChatNew(rows);
+    rt.setIdentity({userId: 'u1'});
+    const es = FakeEventSource.instances[0];
+    es._simulateOpen();
+    es._fire('chat.new', {...ROW, msg_id: undefined}, 'ep-2');
+    expect(rows).not.toHaveBeenCalled();
+  });
+});
+
 describe('one retry at a time', () => {
   // Review of bf57124e: a failed rotation scheduled a retry, a newer identity
   // rotated at once, and the stale retry rotated again 3s later.

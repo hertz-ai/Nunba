@@ -58,7 +58,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/l
 
 // ── Use existing Nunba API services for local/global integration ──
 import {chatApi, usersApi, agentApi, consentApi} from '../services/socialApi';
-import realtimeService from '../services/realtimeService';
+import realtimeService, {subscribeChatNew} from '../services/realtimeService';
+import {getStableDeviceIdOnce} from '../utils/deviceId';
 
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
@@ -2979,6 +2980,33 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       unsubChatResponse();
     };
   }, [handleDataReceived]);
+
+  // A turn this user made on another device (phone, another window) for the
+  // agent open here.  HARTOS publishes every persisted turn as chat.new with
+  // the device it came from; this device's own turns are already on screen
+  // from its /chat reply, so they are dropped by device id, and a turn that
+  // arrives twice (SSE and WAMP, or a replay) is dropped by its msg_id.
+  useEffect(() => {
+    let deviceId = null;
+    getStableDeviceIdOnce().then((id) => { deviceId = id; }, () => {});
+    return subscribeChatNew((row) => {
+      if (!row || (row.role !== 'user' && row.role !== 'assistant')) return;
+      if (typeof row.content !== 'string' || !row.content) return;
+      if (!deviceId || row.device_id === deviceId) return;
+      const openAgent = String(currentAgentRef.current?.prompt_id || '');
+      if (String(row.prompt_id || '') !== openAgent) return;
+      setMessages((prev) => {
+        if (prev.some((m) => m.messageId === row.msg_id)) return prev;
+        return [...prev, {
+          type: row.role,
+          content: row.content,
+          messageId: row.msg_id,
+          sourceDevice: row.device_id || 'another device',
+        }];
+      });
+      setShouldScroll(true);
+    });
+  }, []);
 
   useEffect(() => {
     if (requestId && worker) {

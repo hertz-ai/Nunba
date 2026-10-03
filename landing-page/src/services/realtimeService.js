@@ -432,6 +432,16 @@ class RealtimeService {
       });
     });
 
+    // A persisted chat turn (HARTOS chat_messages.publish_new).  Not routed
+    // through _dispatchSocialPayload: a row carries agent_id, which that
+    // path would also announce on agent.ui.update as a card.
+    es.addEventListener('chat.new', (e) => {
+      if (!this._acceptFrame(es, e)) return;
+      try {
+        this._deliverChatNew(JSON.parse(e.data));
+      } catch { /* ignore */ }
+    });
+
     es.onerror = () => {
       // Only react if THIS es is still the live one — during a rotate
       // the old es's onerror may fire on close(), which is expected
@@ -602,6 +612,14 @@ class RealtimeService {
       }
     }
     return false;
+  }
+
+  // One chat.new row, from SSE or the crossbar worker, to the subscribeChatNew
+  // listeners once: both transports carry the row's own msg_id.
+  _deliverChatNew(row) {
+    if (!row || typeof row !== 'object' || !row.msg_id) return;
+    if (this._isDuplicate(row)) return;
+    _notifyAll(_chatNewListeners, row, 'chat.new event');
   }
 
   _dispatchSocialPayload(payload) {
@@ -794,7 +812,15 @@ function _addTopicRoute(prefix, listeners, label) {
 }
 
 const _chatNewListeners = new Set();
-_addTopicRoute('com.hertzai.hevolve.chat.new.', _chatNewListeners, 'chat.new event');
+const _CHAT_NEW_PREFIX = 'com.hertzai.hevolve.chat.new.';
+addWorkerRoute(({type, payload}) => {
+  if (type !== 'DATA_RECEIVED' || !payload) return;
+  const {sourceTopic, data} = payload;
+  if (typeof sourceTopic === 'string' && sourceTopic.startsWith(_CHAT_NEW_PREFIX)) {
+    // eslint-disable-next-line no-use-before-define
+    realtimeService._deliverChatNew(data);
+  }
+});
 
 /**
  * Subscribe to chat.new WAMP events.  Callback receives the persisted

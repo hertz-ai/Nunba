@@ -8,6 +8,7 @@ import {
   CLOUD_API_URL,
   MAILER_BASE_URL,
 } from '../config/apiBase';
+import {getStableDeviceIdOnce} from '../utils/deviceId';
 
 const socialApi = createApiClient(SOCIAL_API_URL);
 
@@ -844,7 +845,14 @@ export const chatApi = {
   // Chat with agent — runs under a progress-resettable deadline (#119) instead
   // of the fixed 180s timeout, so a turn that keeps emitting thinking-traces is
   // not force-aborted; a turn that goes silent still aborts after CHAT_DEADLINE_MS.
-  chat: (data, config = {}) => {
+  chat: async (data, config = {}) => {
+    // The sending device, so the mirrored turn can be told apart from the
+    // same user's turns on other devices (chat.new / chat-sync).
+    let deviceId = data && data.device_id;
+    if (!deviceId) {
+      try { deviceId = await getStableDeviceIdOnce(); } catch { deviceId = null; }
+    }
+    if (deviceId) data = {...data, device_id: deviceId};
     const controller = new AbortController();
     let timer = setTimeout(() => controller.abort(), CHAT_DEADLINE_MS);
     const deadline = {
