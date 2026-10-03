@@ -4613,6 +4613,75 @@ import threading as _threading
 _sse_clients = {}   # {user_id: [(Queue, connected_at), ...]}
 _sse_lock = _threading.Lock()
 
+# REPLAY — what a stream missed while it was not connected (the 3s reconnect
+# gap, an identity switch, a lagging client).
+#
+# Every frame carries `id: <epoch>-<seq>`.  seq only grows within one process;
+# epoch changes on restart.  The last _SSE_HISTORY_LEN frames per user (key
+# None = broadcast-to-all) are kept for _SSE_HISTORY_TTL_S.  A stream opened
+# with ?since=<id> gets the kept frames after that id, then live ones.
+#
+# Exactly once: a publish assigns its seq, appends to history, snapshots its
+# targets and enqueues in ONE lock hold; a stream registers and snapshots its
+# replay in ONE lock hold.  So each frame lands in the replay snapshot or in
+# the queue, never both, and in order.  The window is bounded: a frame older
+# than _SSE_HISTORY_TTL_S or pushed out of the last _SSE_HISTORY_LEN is in
+# neither.  Replay is idempotent: the same ?since= yields the same frames, and
+# the client drops ids it already has.
+from collections import deque as _deque  # noqa: E402
+
+_SSE_EPOCH = uuid.uuid4().hex[:8]
+_SSE_HISTORY_LEN = 256
+_SSE_HISTORY_TTL_S = 60.0
+_sse_seq = 0
+_sse_history = {}         # {user_id | None: deque[(seq, ts, frame)]}
+_sse_lagged = set()       # queues that missed a frame; their stream ends so the client resumes
+_sse_records_since_sweep = 0
+
+
+def _sse_record(user_id, body):
+    """Give `body` the next id, keep it for replay, return the frame.
+
+    Caller holds _sse_lock.
+    """
+    global _sse_seq, _sse_records_since_sweep
+    _sse_seq += 1
+    now = time.time()
+    frame = f"id: {_SSE_EPOCH}-{_sse_seq}\n{body}"
+    history = _sse_history.get(user_id)
+    if history is None:
+        history = _sse_history[user_id] = _deque(maxlen=_SSE_HISTORY_LEN)
+    history.append((_sse_seq, now, frame))
+    # Users who stopped receiving frames are dropped every
+    # _SSE_HISTORY_LEN records, so the dict holds only recent users.
+    _sse_records_since_sweep += 1
+    if _sse_records_since_sweep >= _SSE_HISTORY_LEN:
+        _sse_records_since_sweep = 0
+        cutoff = now - _SSE_HISTORY_TTL_S
+        for key in [k for k, h in _sse_history.items() if h[-1][1] < cutoff]:
+            del _sse_history[key]
+    return frame
+
+
+def _sse_replay(user_id, since):
+    """Kept frames for `user_id` and for everyone, published after `since`.
+
+    `since` is the last id the client holds.  Absent or malformed means a
+    fresh page: nothing is replayed.  An id from another epoch means the
+    server restarted after the client's last frame, so every kept frame is
+    newer than it.  Caller holds _sse_lock.
+    """
+    epoch, _, seq = (since or '').partition('-')
+    if not epoch or not seq.isdigit():
+        return []
+    after = int(seq) if epoch == _SSE_EPOCH else 0
+    cutoff = time.time() - _SSE_HISTORY_TTL_S
+    kept = [entry for key in (user_id, None)
+            for entry in _sse_history.get(key, ())
+            if entry[0] > after and entry[1] >= cutoff]
+    kept.sort(key=lambda entry: entry[0])
+    return [frame for _seq, _ts, frame in kept]
+
 # MEMBERSHIP HAS EXACTLY ONE AUTHORITY: the stream's own lifecycle.
 #
 # An entry is added when a stream starts and removed when it ends, both
@@ -4666,19 +4735,30 @@ def broadcast_sse_event(event_type, data, user_id=None):
         pass  # WAMP router not available — SSE is the primary transport
 
     import json
-    msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    body = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
     # Delivery ONLY.  This function must never add or remove a
     # subscription — membership belongs to generate()'s try/finally.
-    # Snapshot under the lock, then deliver outside it: put_nowait
-    # cannot block, and holding the lock for only a dict read keeps a
-    # slow subscriber from stalling the publisher or a stream teardown.
+    # Id assignment, the history append, the target snapshot and the
+    # enqueue share ONE lock hold (see REPLAY above): put_nowait cannot
+    # block, and enqueueing outside the hold let two publishers deliver
+    # seq 8 before 7, so a stream dying between them resumed past 7.
+    lagged = []
     with _sse_lock:
+        msg = _sse_record(user_id, body)
         if user_id is not None:
             targets = list(_sse_clients.get(user_id, []))
         else:
             targets = [e for entries in _sse_clients.values() for e in entries]
         total = sum(len(v) for v in _sse_clients.values())
+        for q, _connected_at in targets:
+            try:
+                q.put_nowait(msg)
+            except _queue.Full:
+                lagged.append(q)
+        # Still registered here (same hold), so the stream's finally has
+        # not run and will discard the flag.
+        _sse_lagged.update(lagged)
 
     # Report the TARGETED queue count, not merely the global total.  The
     # previous line logged only the global sum, so it printed a
@@ -4688,21 +4768,16 @@ def broadcast_sse_event(event_type, data, user_id=None):
     logging.info(f"broadcast_sse_event: type={event_type}, user_id={user_id}, "
                  f"targeted={len(targets)}, total_clients={total}")
 
-    dropped = 0
-    for q, _connected_at in targets:
-        try:
-            q.put_nowait(msg)
-        except _queue.Full:
-            dropped += 1
-    if dropped:
+    if lagged:
         # A full queue is a SLOW consumer, not a dead one.  The previous
         # code silently un-subscribed it by omitting it from `alive`, so
-        # one burst of backpressure deafened a client permanently.  Drop
-        # the message, keep the subscription, and say so out loud.
+        # one burst of backpressure deafened a client permanently.  Now
+        # the stream is ended at its next read: the client reconnects
+        # with ?since= and the replay window hands back what it missed.
         logging.warning(
-            f"broadcast_sse_event: type={event_type} dropped for "
-            f"{dropped}/{len(targets)} subscriber(s) with a full queue "
-            f"(subscription retained)")
+            f"broadcast_sse_event: type={event_type} queue full for "
+            f"{len(lagged)}/{len(targets)} subscriber(s); their streams "
+            f"end and resume from the replay window")
 
 
 # Expose on __main__ so HARTOS can find it via `import __main__`.
@@ -4849,6 +4924,8 @@ def sse_event_stream():
 
     client_queue = _queue.Queue(maxsize=50)
     entry = (client_queue, time.time())
+    # Read here: the generator runs outside the request context.
+    since = flask_request.args.get('since', '').strip()
 
     def generate():
         # Register INSIDE the generator, inside the try, so the add and
@@ -4866,16 +4943,34 @@ def sse_event_stream():
         # Those leaks are why an age sweeper felt necessary: it was
         # compensating for the split scope instead of closing it.
         try:
+            # Registration and the replay snapshot share one lock hold, so
+            # every frame is in `replay` or arrives on the queue (REPLAY above).
             with _sse_lock:
                 _sse_clients.setdefault(uid, []).append(entry)
+                replay = _sse_replay(uid, since)
+                head = f"{_SSE_EPOCH}-{_sse_seq}"
                 uid_clients = len(_sse_clients.get(uid, []))
                 total_clients = sum(len(v) for v in _sse_clients.values())
             logging.info(
-                "SSE: client registered uid=%s uid_clients=%s total_clients=%s",
-                uid, uid_clients, total_clients,
+                "SSE: client registered uid=%s uid_clients=%s total_clients=%s "
+                "replayed=%s",
+                uid, uid_clients, total_clients, len(replay),
             )
-            yield "data: {\"type\": \"connected\"}\n\n"
+            yield from replay
+            # Carries the id the client resumes from, in the data and NOT as
+            # an `id:` line: head is the last id recorded for ANY user, so as
+            # a frame id it collided with a real frame still queued on the
+            # client's other stream, which the client then dropped as a
+            # duplicate (review of 3e536fb4).  Sent after the replay: a
+            # stream that dies mid-replay leaves the client on the last
+            # replayed id, not past frames it never got.
+            yield ("data: " + json.dumps({"type": "connected", "resume": head})
+                   + "\n\n")
             while True:
+                # A frame was dropped on this full queue: end the stream so
+                # the client resumes from its last id via the replay window.
+                if client_queue in _sse_lagged:
+                    return
                 try:
                     msg = client_queue.get(timeout=30)
                     yield msg
@@ -4887,6 +4982,7 @@ def sse_event_stream():
                     yield ": heartbeat\n\n"
         finally:
             with _sse_lock:
+                _sse_lagged.discard(client_queue)
                 remaining = [
                     e for e in _sse_clients.get(uid, [])
                     if e[0] is not client_queue

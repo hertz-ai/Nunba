@@ -42,7 +42,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Pinned here, not read from _INPROCESS_DISPATCH_ROUTES: a test that takes its
 # expected set from the code under test still passes when a route is dropped.
-PATHS = ('/api/vlm/stop', '/time_agent', '/visual_agent', '/api/agent/approval')
+PATHS = ('/api/vlm/stop', '/time_agent', '/visual_agent', '/api/agent/approval',
+         '/api/voice/transcribe')
 
 EVIL = 'https://evil.example'
 LAN = {'REMOTE_ADDR': '192.168.0.50'}
@@ -366,3 +367,90 @@ def test_source_guard_the_dispatch_table_is_the_only_door():
     assert not doubled, (
         'these routes are served through _INPROCESS_DISPATCH_ROUTES; a second '
         f'declaration is a second door: {doubled}')
+
+
+# -- phone calls: multipart audio, and a device HARTOS's gate admitted -----------
+#
+# Measured 2026-10-02 on 731864e3: the phone's call recognizer
+# (DesktopTranscriber) and the watch relay POST a WAV to /api/voice/transcribe
+# and got 404, so the call fell back to Google with billing off.
+
+WAV = b'RIFF\x24\x00\x00\x00WAVEfmt ' + b'\x00' * 24
+
+
+@pytest.fixture
+def hartos_stt(monkeypatch):
+    """HARTOS's voice_transcribe stand-in: records the upload it was given."""
+    got = []
+    fake = Flask('fake_hartos_stt')
+
+    @fake.route('/api/voice/transcribe', methods=['POST'])
+    def _transcribe():
+        f = request.files.get('audio')
+        got.append({'audio': f.read() if f else None,
+                    'filename': f.filename if f else None,
+                    'form': dict(request.form)})
+        return jsonify({'text': 'hello'}), 200
+
+    monkeypatch.setattr(adapter, '_hevolve_app', fake)
+    monkeypatch.setattr(adapter, '_hartos_backend_available', True)
+    _clean_auth_env(monkeypatch)
+    return got
+
+
+def _nunba_with_device_gate(admitted):
+    """Nunba's app with a stand-in for HARTOS's API gate: what
+    security/middleware.py sets on g when ConsentService admitted the phone."""
+    from flask import g
+    app = Flask('nunba_gated')
+
+    @app.before_request
+    def _gate():
+        if admitted:
+            g.auth_source = 'device'
+            g.jwt_payload = {'user_id': '7'}
+            g.device_public_key = 'ab' * 32
+
+    app.register_blueprint(adapter.create_inprocess_dispatch_blueprint())
+    return app.test_client()
+
+
+def _phone_upload():
+    """The body DesktopTranscriber.postMultipart sends."""
+    import io
+    return {'audio': (io.BytesIO(WAV), 'call.wav', 'audio/wav'), 'source': 'call'}
+
+
+def test_multipart_audio_reaches_hartos_intact(hartos_stt):
+    resp = _nunba_client().post('/api/voice/transcribe', data=_phone_upload(),
+                                content_type='multipart/form-data')
+    assert resp.status_code == 200
+    assert resp.get_json() == {'text': 'hello'}
+    assert hartos_stt == [{'audio': WAV, 'filename': 'call.wav',
+                           'form': {'source': 'call'}}]
+
+
+def test_an_admitted_phone_on_the_lan_reaches_hartos_stt(hartos_stt):
+    resp = _nunba_with_device_gate(admitted=True).post(
+        '/api/voice/transcribe', data=_phone_upload(),
+        content_type='multipart/form-data', environ_overrides=LAN)
+    assert resp.status_code == 200
+    assert len(hartos_stt) == 1 and hartos_stt[0]['audio'] == WAV
+
+
+def test_a_lan_phone_the_gate_did_not_admit_is_refused(hartos_stt):
+    resp = _nunba_with_device_gate(admitted=False).post(
+        '/api/voice/transcribe', data=_phone_upload(),
+        content_type='multipart/form-data', environ_overrides=LAN)
+    assert resp.status_code == 401
+    assert hartos_stt == []
+
+
+@pytest.mark.parametrize('path', PATHS)
+def test_an_admitted_phone_reaches_every_row(nunba, received, path):
+    """One consent gate: a phone HARTOS's gate admitted (ConsentService) is not
+    asked a second question here, on any row."""
+    client = _nunba_with_device_gate(admitted=True)
+    resp = client.post(path, json={'user_id': '7'}, environ_overrides=LAN)
+    assert resp.status_code == 200
+    assert received == [(path, {'user_id': '7'})]

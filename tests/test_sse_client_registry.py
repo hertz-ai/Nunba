@@ -76,14 +76,15 @@ def _local_mode(monkeypatch):
     monkeypatch.setenv('NUNBA_BUNDLED', '1')
 
 
-def _open_stream(main_mod, uid):
+def _open_stream(main_mod, uid, since=None):
     """Call the real SSE view and hand back its response generator.
 
     Deliberately NOT via ``app.test_client()`` — the test client buffers
     the whole body and this endpoint streams forever.
     """
+    query = f'user_id={uid}' + (f'&since={since}' if since else '')
     with main_mod.app.test_request_context(
-            f'/api/social/events/stream?user_id={uid}'):
+            f'/api/social/events/stream?{query}'):
         resp = main_mod.sse_event_stream()
     # A Flask view may return (body, status) on the auth-reject path.
     if isinstance(resp, tuple):
@@ -184,3 +185,189 @@ class TestRegistrationIsAtomicWithTheStream:
         assert '/a.wav' in str(payload), (
             f"published event never reached the open stream: {payload!r}")
         gen.close()
+
+
+def _frame_id(frame):
+    """The `id:` line of an SSE frame, or None."""
+    for line in str(frame).splitlines():
+        if line.startswith('id: '):
+            return line[4:]
+    return None
+
+
+def _resume_id(frame):
+    """The resume id a 'connected' frame carries in its data."""
+    import json
+    for line in str(frame).splitlines():
+        if line.startswith('data: '):
+            return json.loads(line[6:]).get('resume')
+    return None
+
+
+def _read_until_connected(gen):
+    """Frames up to and including the 'connected' frame."""
+    frames = []
+    for frame in gen:
+        frames.append(frame)
+        if '"connected"' in frame:
+            return frames
+    pytest.fail(f"stream ended before its connected frame: {frames!r}")
+
+
+@pytest.fixture(autouse=False)
+def _clean_history(main_mod):
+    with main_mod._sse_lock:
+        main_mod._sse_history.clear()
+        main_mod._sse_lagged.clear()
+    yield
+    with main_mod._sse_lock:
+        main_mod._sse_history.clear()
+        main_mod._sse_lagged.clear()
+
+
+@pytest.mark.usefixtures('_clean_history')
+class TestReplayWhatTheStreamMissed:
+    """A frame published while a stream is away reaches it when it returns,
+    exactly once, and only for its own user."""
+
+    def _cursor(self, main_mod, uid):
+        """Open a stream, take the id it hands out, close it."""
+        gen = _open_stream(main_mod, uid)
+        frames = _read_until_connected(gen)
+        gen.close()
+        cursor = _resume_id(frames[-1])
+        assert cursor, f"connected frame carries no resume id: {frames[-1]!r}"
+        return cursor
+
+    def test_connected_frame_has_no_frame_id(self, main_mod):
+        """Its resume point is the last id recorded for ANY user; as an
+        `id:` line it collided with a real frame still queued on the
+        client's other stream (review of 3e536fb4)."""
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/x.wav'}, user_id='other')
+        gen = _open_stream(main_mod, 'u1')
+        connected = _read_until_connected(gen)[-1]
+        gen.close()
+        assert _frame_id(connected) is None, connected
+        assert _resume_id(connected), connected
+
+    def test_every_frame_carries_an_id(self, main_mod):
+        q = _queue.Queue(maxsize=50)
+        with main_mod._sse_lock:
+            main_mod._sse_clients['u1'] = [(q, time.time())]
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/a.wav'}, user_id='u1')
+        assert _frame_id(q.get_nowait()), "a published frame has no id line"
+
+    def test_missed_frame_is_replayed_on_return(self, main_mod):
+        cursor = self._cursor(main_mod, 'u1')
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/gap.wav'}, user_id='u1')
+
+        gen = _open_stream(main_mod, 'u1', since=cursor)
+        frames = _read_until_connected(gen)
+        gen.close()
+
+        assert any('/gap.wav' in f for f in frames), (
+            f"the frame published during the gap was not replayed: {frames!r}")
+
+    def test_fresh_stream_without_since_replays_nothing(self, main_mod):
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/old.wav'}, user_id='u1')
+        gen = _open_stream(main_mod, 'u1')
+        frames = _read_until_connected(gen)
+        gen.close()
+        assert len(frames) == 1 and '"connected"' in frames[0], frames
+
+    def test_replay_is_idempotent(self, main_mod):
+        cursor = self._cursor(main_mod, 'u1')
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/once.wav'}, user_id='u1')
+
+        runs = []
+        for _ in range(2):
+            gen = _open_stream(main_mod, 'u1', since=cursor)
+            runs.append([f for f in _read_until_connected(gen)
+                         if '"connected"' not in f])
+            gen.close()
+        assert runs[0] == runs[1] and len(runs[0]) == 1, runs
+
+    def test_frame_is_replayed_or_live_never_both(self, main_mod):
+        cursor = self._cursor(main_mod, 'u1')
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/before.wav'}, user_id='u1')
+        gen = _open_stream(main_mod, 'u1', since=cursor)
+        frames = _read_until_connected(gen)
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/after.wav'}, user_id='u1')
+        frames.append(next(gen))
+        gen.close()
+
+        body = ''.join(frames)
+        assert body.count('/before.wav') == 1, frames
+        assert body.count('/after.wav') == 1, frames
+        ids = [_frame_id(f) for f in frames if _frame_id(f)]
+        assert len(ids) == len(set(ids)), f"an id was delivered twice: {ids}"
+
+    def test_replay_never_crosses_users(self, main_mod):
+        cursor = self._cursor(main_mod, 'u1')
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/other.wav'}, user_id='u2')
+        main_mod.broadcast_sse_event('system.health', {'ok': True}, user_id=None)
+
+        gen = _open_stream(main_mod, 'u1', since=cursor)
+        body = ''.join(_read_until_connected(gen))
+        gen.close()
+
+        assert '/other.wav' not in body, "u2's frame was replayed to u1"
+        assert 'system.health' in body, "a broadcast-to-all frame was not replayed"
+
+    def test_restart_replays_everything_kept(self, main_mod):
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/after-restart.wav'},
+                                     user_id='u1')
+        gen = _open_stream(main_mod, 'u1', since='deadbeef-999999')
+        body = ''.join(_read_until_connected(gen))
+        gen.close()
+        assert '/after-restart.wav' in body
+
+    def test_malformed_since_replays_nothing(self, main_mod):
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/x.wav'}, user_id='u1')
+        for bad in ('garbage', '-5', 'abc-', 'abc-1x'):
+            gen = _open_stream(main_mod, 'u1', since=bad)
+            frames = _read_until_connected(gen)
+            gen.close()
+            assert len(frames) == 1, (bad, frames)
+
+    def test_expired_frames_are_not_replayed(self, main_mod, monkeypatch):
+        cursor = self._cursor(main_mod, 'u1')
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/stale.wav'}, user_id='u1')
+        later = time.time() + main_mod._SSE_HISTORY_TTL_S + 1
+        monkeypatch.setattr(main_mod.time, 'time', lambda: later)
+
+        gen = _open_stream(main_mod, 'u1', since=cursor)
+        body = ''.join(_read_until_connected(gen))
+        gen.close()
+        assert '/stale.wav' not in body
+
+    def test_history_is_bounded_per_user(self, main_mod):
+        for i in range(main_mod._SSE_HISTORY_LEN + 10):
+            main_mod.broadcast_sse_event('tick', {'i': i}, user_id='u1')
+        assert len(main_mod._sse_history['u1']) == main_mod._SSE_HISTORY_LEN
+
+
+@pytest.mark.usefixtures('_clean_history')
+class TestFullQueueResumesInsteadOfLosing:
+    """A dropped frame on a full queue ends the stream; the client resumes
+    from its last id and the replay window returns the dropped frame."""
+
+    def test_full_queue_ends_stream_and_frame_is_replayable(self, main_mod):
+        gen = _open_stream(main_mod, 'slow')
+        cursor = _resume_id(_read_until_connected(gen)[-1])
+        with main_mod._sse_lock:
+            q = main_mod._sse_clients['slow'][0][0]
+        while not q.full():
+            q.put_nowait(': filler\n\n')
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/dropped.wav'},
+                                     user_id='slow')
+
+        with pytest.raises(StopIteration):
+            next(gen)
+        assert 'slow' not in main_mod._sse_clients, "lagged stream stayed registered"
+        assert not main_mod._sse_lagged, "lag flag outlived its stream"
+
+        gen = _open_stream(main_mod, 'slow', since=cursor)
+        body = ''.join(_read_until_connected(gen))
+        gen.close()
+        assert '/dropped.wav' in body, "the dropped frame was not replayed"
