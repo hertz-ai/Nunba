@@ -488,6 +488,59 @@ const subscribeToTopic = (session, topic) => {
   });
 };
 
+// Topics the page asked for on top of the per-user set (game sessions,
+// communities), each with the handler that relays its messages.  A request
+// that arrives before the session opens, or outlives a dropped session, is
+// subscribed on the next onopen.  Each topic is subscribed at most once per
+// session however often it is asked for: activeSubscriptions holds the done
+// ones, pendingTopics the ones whose reply is still in flight (keyed to the
+// session that sent them, so a late reply from a dead session cannot clear
+// the marker of a live one).
+const requestedTopics = new Map(); // topic -> handler(msg)
+const pendingTopics = new Map(); // topic -> session
+
+const subscribeRequestedTopic = (topic) => {
+  const session = connectionInstance?.session;
+  if (!session?.isOpen || activeSubscriptions.has(topic) || pendingTopics.has(topic)) {
+    return;
+  }
+  pendingTopics.set(topic, session);
+  const settle = () => {
+    if (pendingTopics.get(topic) === session) pendingTopics.delete(topic);
+  };
+  session
+    .subscribe(topic, ([msg]) => requestedTopics.get(topic)?.(msg))
+    .then((sub) => {
+      settle();
+      // Released, or the session was replaced, while the reply was in flight.
+      if (!requestedTopics.has(topic) || session !== connectionInstance?.session) {
+        session.unsubscribe(sub).catch(() => {});
+        return;
+      }
+      activeSubscriptions.set(topic, sub);
+      logResponse('TOPIC_SUBSCRIBED', {topic, status: 'success'});
+    })
+    .catch((err) => {
+      settle();
+      logResponse('TOPIC_SUBSCRIPTION_FAILED', {topic, reason: err.message});
+    });
+};
+
+const requestTopic = (topic, handler) => {
+  requestedTopics.set(topic, handler);
+  subscribeRequestedTopic(topic);
+};
+
+const releaseTopic = (topic) => {
+  requestedTopics.delete(topic);
+  const sub = activeSubscriptions.get(topic);
+  if (!sub) return;
+  activeSubscriptions.delete(topic);
+  if (connectionInstance?.session?.isOpen) {
+    connectionInstance.session.unsubscribe(sub).catch(() => {});
+  }
+};
+
 const verifyBaseTopic = async () => {
   // 1. Make sure userId is available
   if (!currentUserId || typeof currentUserId !== 'string') {
@@ -808,6 +861,10 @@ function initCrossbar({
 
       startPeriodicStatusCheck();
 
+      // Game sessions and communities the page asked for, possibly before
+      // this session existed.
+      requestedTopics.forEach((_, topic) => subscribeRequestedTopic(topic));
+
       try {
         console.log('Connection opened, registering base action topic...');
         await registerBaseActionTopic(session);
@@ -890,6 +947,7 @@ function initCrossbar({
       // CLEAR SUBSCRIPTIONS AND PROCEDURES ON DISCONNECT
       console.log('🗑️ Clearing active subscriptions and procedures');
       activeSubscriptions?.clear();
+      pendingTopics.clear();
       isProcedureRegistered = {
         execute: false,
         screenshot: false,
@@ -1030,21 +1088,8 @@ onmessage = function (e) {
     case 'GAME_SUBSCRIBE': {
       // Subscribe to a game session topic for real-time sync
       const {sessionId} = payload;
-      const gameTopic = `com.hertzai.hevolve.game.${sessionId}`;
-      if (connectionInstance?.session?.isOpen) {
-        connectionInstance.session
-          .subscribe(gameTopic, ([msg]) => {
-            postWorkerMessage('GAME_EVENT', msg);
-          })
-          .then((sub) => {
-            if (!activeSubscriptions) activeSubscriptions = new Map();
-            activeSubscriptions.set(gameTopic, sub);
-            logResponse('GAME_SUBSCRIBED', {sessionId, topic: gameTopic});
-          })
-          .catch((err) => {
-            logResponse('GAME_SUBSCRIBE_ERROR', {error: err.message});
-          });
-      }
+      requestTopic(`com.hertzai.hevolve.game.${sessionId}`, (msg) =>
+        postWorkerMessage('GAME_EVENT', msg));
       break;
     }
 
@@ -1066,50 +1111,20 @@ onmessage = function (e) {
 
     case 'GAME_UNSUBSCRIBE': {
       // Unsubscribe from a game session topic
-      const {sessionId: usid} = payload;
-      const utopic = `com.hertzai.hevolve.game.${usid}`;
-      const sub = activeSubscriptions?.get(utopic);
-      if (sub && connectionInstance?.session?.isOpen) {
-        connectionInstance.session.unsubscribe(sub).catch(() => {});
-        activeSubscriptions.delete(utopic);
-        logResponse('GAME_UNSUBSCRIBED', {sessionId: usid});
-      }
+      releaseTopic(`com.hertzai.hevolve.game.${payload.sessionId}`);
       break;
     }
 
     // ── Community Real-Time Pub/Sub via WAMP ─────────────────────
     case 'COMMUNITY_SUBSCRIBE': {
       const {communityId} = payload;
-      const communityTopic = `com.hertzai.hevolve.community.${communityId}`;
-      if (connectionInstance?.session?.isOpen) {
-        connectionInstance.session
-          .subscribe(communityTopic, ([msg]) => {
-            postWorkerMessage('COMMUNITY_EVENT', {...msg, communityId});
-          })
-          .then((sub) => {
-            if (!activeSubscriptions) activeSubscriptions = new Map();
-            activeSubscriptions.set(communityTopic, sub);
-            logResponse('COMMUNITY_SUBSCRIBED', {
-              communityId,
-              topic: communityTopic,
-            });
-          })
-          .catch((err) => {
-            logResponse('COMMUNITY_SUBSCRIBE_ERROR', {error: err.message});
-          });
-      }
+      requestTopic(`com.hertzai.hevolve.community.${communityId}`, (msg) =>
+        postWorkerMessage('COMMUNITY_EVENT', {...msg, communityId}));
       break;
     }
 
     case 'COMMUNITY_UNSUBSCRIBE': {
-      const {communityId: ucid} = payload;
-      const ucTopic = `com.hertzai.hevolve.community.${ucid}`;
-      const cSub = activeSubscriptions?.get(ucTopic);
-      if (cSub && connectionInstance?.session?.isOpen) {
-        connectionInstance.session.unsubscribe(cSub).catch(() => {});
-        activeSubscriptions.delete(ucTopic);
-        logResponse('COMMUNITY_UNSUBSCRIBED', {communityId: ucid});
-      }
+      releaseTopic(`com.hertzai.hevolve.community.${payload.communityId}`);
       break;
     }
 
