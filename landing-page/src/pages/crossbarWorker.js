@@ -1128,6 +1128,21 @@ onmessage = function (e) {
       break;
     }
 
+    // ── TTS language warnings (tts_engine lang_mismatch / lang_unsupported)
+    case 'TTS_LANG_SUBSCRIBE': {
+      // The topic's last segment names the kind ToastProvider switches on:
+      // 'lang_mismatch' -> 'mismatch', 'lang_unsupported' -> 'unsupported'.
+      (payload?.topics || []).forEach((topic) => {
+        const kind = topic.split('.').pop().replace(/^lang_/, '');
+        requestTopic(topic, (msg) =>
+          postWorkerMessage('TTS_LANG_EVENT', {
+            ...(typeof msg === 'string' ? parseStringPayload(msg, topic) : msg),
+            kind,
+          }));
+      });
+      break;
+    }
+
     default:
       logResponse('UNKNOWN_MESSAGE_TYPE', type);
   }

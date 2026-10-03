@@ -456,7 +456,7 @@ describe('resume from the last frame id', () => {
       realtimeService.setIdentity({userId: 'u1'});
       const first = FakeEventSource.instances[0];
       first._simulateOpen();
-      first._message({type: 'connected'}, 'ep-5');
+      first._message({type: 'connected', resume: 'ep-5'});
       first._fire('chat.response', {msg_id: 'r1', text: 'hi'}, 'ep-7');
 
       first._simulateError();
@@ -476,7 +476,7 @@ describe('resume from the last frame id', () => {
     realtimeService.setIdentity({userId: 'guest'});
     const guestEs = FakeEventSource.instances[0];
     guestEs._simulateOpen();
-    guestEs._message({type: 'connected'}, 'ep-3');
+    guestEs._message({type: 'connected', resume: 'ep-3'});
     guestEs._fire('notification', {msg_id: 'n1'}, 'ep-4');
 
     realtimeService.setIdentity({userId: '10202', token: 'tok'});
@@ -506,6 +506,49 @@ describe('resume from the last frame id', () => {
     }
 
     expect(seen).toHaveBeenCalledTimes(1);
+  });
+
+  // Review of 3e536fb4 (B1): the new stream's hello carried the last id the
+  // server recorded for ANY user.  Marked as seen, it made the old stream's
+  // real frame with that id -- still on its way -- look like a duplicate.
+  test("the hello's resume point never swallows a real frame", () => {
+    const {default: realtimeService} = require('../../services/realtimeService');
+    const seen = jest.fn();
+    realtimeService.on('chat.response', seen);
+    realtimeService.setIdentity({userId: 'guest'});
+    const oldEs = FakeEventSource.instances[0];
+    oldEs._simulateOpen();
+
+    realtimeService.setIdentity({userId: '10202'});
+    const newEs = FakeEventSource.instances[1];
+    newEs._message({type: 'connected', resume: 'E-10'});
+    oldEs._fire('chat.response', {msg_id: 'r10', text: 'late'}, 'E-10');
+
+    expect(seen).toHaveBeenCalledTimes(1);
+  });
+
+  // Review of 3e536fb4 (M1): a token refresh is not an identity change, so
+  // the next reconnect resumes from the last id, not the page start.
+  test('a token refresh keeps resuming from the last id', () => {
+    jest.useFakeTimers();
+    try {
+      const {default: realtimeService} = require('../../services/realtimeService');
+      realtimeService.setIdentity({userId: 'u1', token: 't1'});
+      const es = FakeEventSource.instances[0];
+      es._simulateOpen();
+      es._message({type: 'connected', resume: 'ep-1'});
+      es._fire('chat.response', {msg_id: 'r400'}, 'ep-400');
+      es._fire('chat.response', {msg_id: 'r500'}, 'ep-500');
+
+      realtimeService.setIdentity({userId: 'u1', token: 't2'});
+      expect(FakeEventSource.instances).toHaveLength(1);
+      es._simulateError();
+      jest.advanceTimersByTime(3000);
+
+      expect(since(FakeEventSource.instances[1])).toBe('ep-500');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('frames without an id (an older server) are still delivered', () => {

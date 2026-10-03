@@ -34,14 +34,16 @@ let _sseReconnectTimer = null;
 // or disconnect() can close it; otherwise it opened later as an orphan.
 let _pendingRotateEs = null;
 
-// Resume point for the server's replay window (main.py REPLAY).  Every frame
-// carries `id: <epoch>-<seq>`.  _sseCursor is the latest id and the stream URL
-// that delivered it; _sseFirstId is the first id this page saw.  Ids already
-// dispatched are remembered so a replayed copy is dropped.
-let _sseCursor = null; // {streamUrl, id}
+// Resume point for the server's replay window (main.py REPLAY).  Every event
+// frame carries `id: <epoch>-<seq>`; the 'connected' frame carries the
+// stream's starting point as `resume` in its data.  _sseCursor is the latest
+// point and the stream key (base + user) it belongs to; _sseFirstId is the
+// first point this page saw.  Event ids already dispatched are remembered so
+// a replayed copy is dropped.
+let _sseCursor = null; // {key, id}
 let _sseFirstId = null;
 const _seenFrameIds = new Set();
-const _streamUrlOf = new WeakMap(); // EventSource -> stream URL without since
+const _streamKeyOf = new WeakMap(); // EventSource -> stream key
 
 // Every consumer of crossbar worker messages registers a route here.  Exactly
 // one 'message' listener sits on the attached worker and fans out to all
@@ -305,31 +307,43 @@ class RealtimeService {
     return `${base}/events/stream?user_id=${encodeURIComponent(uid)}`;
   }
 
-  // Attach the standard handler set (onmessage, named events, onerror)
-  // to an EventSource.  Extracted so both _openSSE and _rotateSSE wire
-  // up the same listeners.
-  // A new EventSource for `url`, resuming from the cursor: the last id when
-  // this stream URL delivered it, else the page's first id (a different
-  // identity has missed everything since the page opened; the server keeps
-  // only its replay window).  No id yet = a fresh page: nothing to replay.
-  _newEventSource(url) {
-    const since = _sseCursor && _sseCursor.streamUrl === url
+  // Who the stream delivers for: base + user.  The cursor is keyed on this,
+  // not on the URL, because a token refresh in the same mode is not an
+  // identity change (#211) and must keep resuming from its last id.
+  _streamKey() {
+    return `${this._sseBase || SOCIAL_API_URL}|${this._userId || 'guest'}`;
+  }
+
+  // A new EventSource for the current identity, resuming from the cursor:
+  // the last point when it belongs to this stream key, else the page's first
+  // point (a different identity has missed everything since the page opened;
+  // the server keeps only its replay window).  No point yet = a fresh page:
+  // nothing to replay.
+  _newEventSource() {
+    const key = this._streamKey();
+    const since = _sseCursor && _sseCursor.key === key
       ? _sseCursor.id
       : _sseFirstId;
+    const url = this._buildSSEUrl();
     const es = new EventSource(
       since ? `${url}&since=${encodeURIComponent(since)}` : url);
-    _streamUrlOf.set(es, url);
+    _streamKeyOf.set(es, key);
     return es;
   }
 
-  // Note a frame's id.  False when that id was already dispatched: a replay
-  // overlapping what the previous stream delivered.  Frames from a server
-  // that sends no ids always pass.
+  // Move the resume point to `id`, delivered by `es`.
+  _advanceCursor(es, id) {
+    if (!_sseFirstId) _sseFirstId = id;
+    _sseCursor = {key: _streamKeyOf.get(es), id};
+  }
+
+  // Note an event frame's id.  False when that id was already dispatched: a
+  // replay overlapping what the previous stream delivered.  Frames from a
+  // server that sends no ids always pass.
   _acceptFrame(es, e) {
     const id = e && e.lastEventId;
     if (!id) return true;
-    if (!_sseFirstId) _sseFirstId = id;
-    _sseCursor = {streamUrl: _streamUrlOf.get(es), id};
+    this._advanceCursor(es, id);
     if (_seenFrameIds.has(id)) return false;
     _seenFrameIds.add(id);
     if (_seenFrameIds.size > SSE_SEEN_IDS_MAX) {
@@ -338,16 +352,27 @@ class RealtimeService {
     return true;
   }
 
+  // Attach the standard handler set (onmessage, named events, onerror)
+  // to an EventSource.  Extracted so both _openSSE and _rotateSSE wire
+  // up the same listeners.
   _attachSSEHandlers(es) {
     es.onmessage = (e) => {
-      if (!this._acceptFrame(es, e)) return;
+      let payload;
       try {
-        const payload = JSON.parse(e.data);
-        if (payload.type === 'connected') return; // initial heartbeat
-        this._dispatchSocialPayload(payload);
+        payload = JSON.parse(e.data);
       } catch {
-        // ignore parse errors (heartbeats etc.)
+        return; // ignore parse errors (heartbeats etc.)
       }
+      // The hello carries the stream's starting point in its data.  It only
+      // moves the cursor: it is not an event, and its point is the last id
+      // recorded for ANY user, so marking it seen would drop a real frame
+      // with that id still queued on this page's other stream.
+      if (payload.type === 'connected') {
+        if (payload.resume) this._advanceCursor(es, payload.resume);
+        return;
+      }
+      if (!this._acceptFrame(es, e)) return;
+      this._dispatchSocialPayload(payload);
     };
 
     // Named SSE event types from backend.  EventSource silently drops
@@ -426,7 +451,7 @@ class RealtimeService {
     }
 
     try {
-      _eventSource = this._newEventSource(this._buildSSEUrl());
+      _eventSource = this._newEventSource();
     } catch {
       return; // EventSource not available (e.g. SSR)
     }
@@ -467,7 +492,7 @@ class RealtimeService {
 
     let newEs;
     try {
-      newEs = this._newEventSource(this._buildSSEUrl());
+      newEs = this._newEventSource();
     } catch {
       // EventSource unavailable — keep old running.  Caller has
       // already updated _userId/_token; next reconnect (if old dies)

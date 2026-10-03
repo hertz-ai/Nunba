@@ -179,6 +179,26 @@ describe('requested topics survive the session lifecycle', () => {
     expect(subscribedTo(session, GAME)).toBe(0);
   });
 
+  // Review of 3e536fb4: the page re-sent TTS_LANG_SUBSCRIBE, but the worker
+  // had no case for it, so the "voice changed / unavailable" toast could
+  // never fire.
+  test('TTS language warnings are subscribed and relayed with their kind', async () => {
+    send('TTS_LANG_SUBSCRIBE', {topics: [
+      'com.hertzai.hevolve.tts.lang_mismatch',
+      'com.hertzai.hevolve.tts.lang_unsupported',
+    ]});
+    const conn = await openConnection();
+    const session = await openSession(conn);
+
+    expect(subscribedTo(session, 'com.hertzai.hevolve.tts.lang_mismatch')).toBe(1);
+    session.handlers['com.hertzai.hevolve.tts.lang_unsupported'](
+      [JSON.stringify({requested_lang: 'ta'})]);
+    expect(posted).toContainEqual({
+      type: 'TTS_LANG_EVENT',
+      payload: {requested_lang: 'ta', kind: 'unsupported'},
+    });
+  });
+
   test('a released topic is unsubscribed and stays gone after a reopen', async () => {
     const conn = await openConnection();
     const session = await openSession(conn);
