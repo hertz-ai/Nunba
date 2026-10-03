@@ -68,14 +68,14 @@ class TestCompanionForegroundDetection(unittest.TestCase):
         self.assertFalse(is_main_window_foreground(0))
 
     @patch('desktop.platform_utils.IS_WINDOWS', True)
-    def test_a_minimized_main_window_is_not_in_front(self):
-        """Minimized Nunba -> the companion SHOWS.
+    def test_a_minimized_main_window_behind_another_app_is_not_in_front(self):
+        """Minimized Nunba while another app took the foreground -> SHOWS.
 
-        Modelled the way Windows really reports it: something else holds
-        the foreground, because a minimized window cannot hold it.
+        The case where the minimized window kept the foreground is the next
+        test; Windows produces both.
         """
         from desktop.platform_utils import is_main_window_foreground
-        with patch('ctypes.windll.user32', desktop_where(9999)):
+        with patch('ctypes.windll.user32', desktop_where(9999, minimized={1001})):
             self.assertFalse(is_main_window_foreground(1001))
 
     @patch('desktop.platform_utils.IS_WINDOWS', True)
