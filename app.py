@@ -6088,8 +6088,11 @@ def start_flask():
                         # ImportError when HARTOS isn't on PYTHONPATH, or any
                         # transient DB issue — log and continue.  The cloud
                         # signin still propagates via user_data.json + the React
-                        # useStorageSync hook.
-                        logger.debug(
+                        # useStorageSync hook.  WARNING, not DEBUG: without the
+                        # local User row the cloud token does not resolve, the
+                        # SSE stream falls back to 'guest', and consent cards
+                        # never reach the signed-in user.
+                        logger.warning(
                             "Cloud user DB sync skipped: "
                             f"{type(_db_err).__name__}: {_db_err}")
 
