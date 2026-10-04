@@ -63,6 +63,7 @@ Public API
     get_guest_id_file_path() -> str  # absolute path to guest_id.json
     get_user_data_file_path() -> str # the signed-in user's user_data.json
     get_desktop_owner_id() -> str    # signed-in user_id, else the guest id
+    sync_owner_identity_env() -> str # export it to HEVOLVE_OWNER_USER_ID
     _derive_guest_id() -> (str, str) # (id, source) — no cache, for tests
 """
 
@@ -358,6 +359,45 @@ def get_desktop_owner_id() -> str | None:
     except Exception as e:  # noqa: BLE001
         logger.warning("desktop owner: guest id unavailable (%s)", e)
         return None
+
+
+# The env var every HARTOS consent gate reads to know whose machine this is
+# (middleware, vision, vlm safety, agent daemon, crossbar, whisper, ...).
+_OWNER_ENV = 'HEVOLVE_OWNER_USER_ID'
+# Marks a value Nunba itself exported.  A restarted or child process inherits
+# it, and must keep syncing rather than mistake it for an operator pin.
+_OWNER_SOURCE_ENV = 'HEVOLVE_OWNER_USER_ID_SOURCE'
+_OWNER_SOURCE = 'nunba-desktop'
+
+
+def sync_owner_identity_env() -> str | None:
+    """Export the current desktop owner to HEVOLVE_OWNER_USER_ID.
+
+    The ONE writer of that variable in Nunba: main.py calls it at boot and
+    app.py's /api/storage/set calls it on every sign-in and sign-out.  It used
+    to be a setdefault at import, so a sign-in after boot never reached the
+    gates: consent asks went to the boot-time guest (no subscriber) while the
+    grant was stored under the real user id, and the ask repeated forever.
+
+    A value set outside Nunba (no source marker) is an operator pin and is
+    returned untouched, as the old setdefault honoured it.  Returns the owner
+    now in effect, or None when there is none (the variable is then cleared,
+    so no gate keeps acting for a stale owner).
+    """
+    current = os.environ.get(_OWNER_ENV)
+    if current and os.environ.get(_OWNER_SOURCE_ENV) != _OWNER_SOURCE:
+        return current
+    owner = get_desktop_owner_id()
+    if owner:
+        os.environ[_OWNER_ENV] = owner
+        os.environ[_OWNER_SOURCE_ENV] = _OWNER_SOURCE
+    else:
+        os.environ.pop(_OWNER_ENV, None)
+        os.environ.pop(_OWNER_SOURCE_ENV, None)
+    if owner != current:
+        logger.info("desktop owner is now %s (was %s)",
+                    owner or '<none>', current or '<none>')
+    return owner
 
 
 def reset_cache_for_tests() -> None:

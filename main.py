@@ -386,14 +386,16 @@ def _export_owner_identity():
     get_data_dir()/storage, which nothing writes, so the signed-in user was
     never exported and asks went to the guest id, which the signed-in
     clients do not subscribe to (live 2026-09-14: targeted=0 of 2).
+
+    Boot is only the FIRST export: /api/storage/set re-exports on every
+    sign-in and sign-out through the same writer, so the owner never freezes
+    at the boot-time guest.
     """
     try:
-        from desktop.guest_identity import get_desktop_owner_id
-        owner = get_desktop_owner_id()
-        if owner:
-            os.environ.setdefault('HEVOLVE_OWNER_USER_ID', owner)
-    except Exception:
-        pass
+        from desktop.guest_identity import sync_owner_identity_env
+        sync_owner_identity_env()
+    except Exception as e:
+        logging.warning(f"desktop owner export failed at boot: {e}")
 
 
 _export_owner_identity()

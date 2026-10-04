@@ -6018,6 +6018,15 @@ def start_flask():
                     f"user_data.json merged — set={set_keys} "
                     f"cleared={_cleared} now={list(stored.keys())}")
 
+                # This file IS the sign-in record, so every write can change
+                # who owns the desktop.  Re-export it so the consent gates act
+                # for the person signed in NOW, not the boot-time guest.
+                try:
+                    from desktop.guest_identity import sync_owner_identity_env
+                    sync_owner_identity_env()
+                except Exception as _own_err:
+                    logger.warning(f"desktop owner re-export failed: {_own_err}")
+
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']
                 url_updated = False
