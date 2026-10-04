@@ -2869,22 +2869,26 @@ def _chat_turn(data):
                 return None
         return None
 
-    def _resolve_agent(_prompt_id, _agent_id_legacy):
+    def _resolve_agent(_prompt_id, _agent_id_legacy, _creating):
         """Return (agent_config, resolved_agent_id, resolved_type, resolved_prompt_id).
 
         Resolution order:
           1. prompt_id > 0 with prompt file -> user agent (type='local').
           2. agent_id_legacy in registry (LOCAL_AGENTS/CLOUD_AGENTS) -> built-in.
           3. agent_id_legacy as digit with prompt file -> user agent.
-          4. Caller sent a real prompt_id but no recipe is on disk
-             (cross-device user, recipe missing locally) -> PRESERVE
-             prompt_id + signal create-mode so HARTOS enters
-             gather_info / create_recipe instead of casually chatting
-             with local_assistant in disguise.  See chat-routing
-             trace 2026-05-04 (Speech Therapy from Recents): prior
-             behaviour silently swapped prompt_id to None and routed
-             to local_assistant, hiding the recipe-missing fact from
-             both the user and the dispatcher.
+          4. Caller sent a real prompt_id but no recipe is on disk:
+             - the turn is creating an agent (``_creating``: create_agent
+               or autonomous_creation) -> PRESERVE prompt_id + signal
+               create-mode, so HARTOS creates the agent under the id the
+               page minted for it;
+             - otherwise the agent exists only in the cloud -> type
+               'cloud', and the CLOUD branch forwards the turn there.
+               Owner rule 2026-10-04: an agent with an id on this node
+               runs here, a cloud-only agent runs in the cloud.  This
+               used to force create-mode for every unknown id too, which
+               minted local placeholder agents ("Agent 54", goal = the
+               user's first message) for cloud agents picked from the
+               left pane.
           5. No prompt_id at all -> silent fallback to default
              (no 400, the casual-chat case).
 
@@ -2924,11 +2928,10 @@ def _chat_turn(data):
                 return ({'id': _aid_int, 'type': 'local'}, _aid_int,
                         'local', _aid_int, False)
         # 4. Caller sent a real numeric prompt_id but the recipe
-        #    isn't local. Preserve it + force create-mode so HARTOS
-        #    enters the gather_info -> create_recipe pipeline.  No
-        #    casual chat during agent creation - that's the design
-        #    intent for cross-device users (recipe was created on
-        #    another device and hasn't synced yet).
+        #    isn't local.  A creating turn keeps the id here in
+        #    create-mode (HARTOS gather_info -> create_recipe); any
+        #    other turn goes to the cloud, the only place that agent
+        #    exists.
         #
         #    NOTE: this branch is intentionally narrow to the
         #    numeric-prompt_id case.  We do NOT force-create for a
@@ -2941,22 +2944,31 @@ def _chat_turn(data):
         #    with a bogus identifier and produce an agent the user
         #    never asked for.  Synthetic strings fall through to step 5.
         if _pid_int is not None and _pid_int > 0:
-            logger.warning(
-                'Recipe missing locally for prompt_id=%s - forcing '
-                'create_agent=True so HARTOS routes to gather_info / '
-                'create_recipe (was previously silently falling back '
-                'to local_assistant which hid the cross-device sync '
-                'gap from the user)', _pid_int)
-            return ({'id': _pid_int, 'type': 'local'}, _pid_int,
-                    'local', _pid_int, True)
+            if _creating:
+                logger.info(
+                    'prompt_id=%s has no recipe on this node yet - '
+                    'creating it here', _pid_int)
+                return ({'id': _pid_int, 'type': 'local'}, _pid_int,
+                        'local', _pid_int, True)
+            logger.info(
+                'prompt_id=%s has no recipe on this node - cloud-only '
+                'agent, forwarding the turn to the cloud', _pid_int)
+            return ({'id': _pid_int, 'type': 'cloud'}, _pid_int,
+                    'cloud', _pid_int, False)
         # 5. No usable prompt_id and either no agent_id_legacy OR a
         #    synthetic string we can't resolve -> default casual chat
         #    under Hevolve, per the lines 2329-2331 contract.
         return (_default_agent, _default_agent['id'],
                 _default_agent.get('type', 'local'), None, False)
 
+    # agent_id is an alias of prompt_id.  The 'local_assistant' default
+    # above only labels the arrival log line: resolved with it, a turn that
+    # named its agent by prompt_id alone (/custom_gpt sends no agent_id) ran
+    # as local_assistant instead (measured, tests/test_chatbot_routes.py
+    # TestAgentRouting).
     agent_config, agent_id, agent_type, prompt_id, _force_create_agent = \
-        _resolve_agent(prompt_id, agent_id)
+        _resolve_agent(prompt_id, data.get('agent_id'),
+                       bool(create_agent or autonomous_creation))
     # When _resolve_agent had to fall back due to missing recipe (step 4),
     # force create_agent=True so HARTOS hard-routes to autogen instead of
     # casually chatting via the draft-first path.  Per design intent: no
@@ -2995,6 +3007,65 @@ def _chat_turn(data):
             "memory/project_agent_id_int_collapse.md)",
             _client_type, agent_type, agent_id, prompt_id,
         )
+
+    # ============== CLOUD AGENT ==============
+    # A cloud agent's turn goes to the cloud.  When the cloud does not answer
+    # it (offline, not signed in, an error), local_assistant answers it here:
+    # no turn is refused.
+    if agent_type == 'cloud':
+        logger.info(f'Chat with CLOUD agent: {agent_id}')
+        auth_header = request.headers.get('Authorization')
+        api_key = os.environ.get('HEVOLVE_LLM_API_KEY')
+        if not check_internet_connection():
+            _cloud_miss = 'no internet'
+        elif not auth_header and not api_key:
+            _cloud_miss = 'not signed in'
+        else:
+            cloud_endpoint = CLOUD_API_CONFIG['chat_endpoint']
+            if agent_config and agent_config.get('cloud_endpoint'):
+                cloud_endpoint = agent_config['cloud_endpoint']
+            payload = {
+                'text': text,
+                'user_id': user_id,
+                'teacher_avatar_id': teacher_avatar_id or 1,
+                'request_id': request_id,
+                'video_req': video_req
+            }
+            # The cloud finds the agent by its id (chatbot_pipeline
+            # chatbot.py custom_gpt: getprompt/?prompt_id=).
+            if prompt_id:
+                payload['prompt_id'] = prompt_id
+            cloud_headers = {'Content-Type': 'application/json'}
+            if auth_header:
+                cloud_headers['Authorization'] = auth_header
+            if api_key and 'Authorization' not in cloud_headers:
+                cloud_headers['Authorization'] = f'Bearer {api_key}'
+            try:
+                response = requests.post(
+                    cloud_endpoint,
+                    json=payload,
+                    # Tiered timeout: 5s connect, 60s total.  Single int timeout
+                    # leaves connect-time budget conflated with read-time budget;
+                    # a stuck DNS resolution then burns the full 60s before any
+                    # data flows.  Cloud chat is on the user-facing hot path.
+                    timeout=(5, 60),
+                    headers=cloud_headers
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    result['agent_id'] = agent_id
+                    result['agent_type'] = 'cloud'
+                    result['source'] = 'hevolve_cloud'
+                    return jsonify(result)
+                _cloud_miss = f'HTTP {response.status_code}'
+            except Exception as e:
+                _cloud_miss = str(e)
+        logger.warning(
+            'Cloud agent %s not answered by the cloud (%s) - answering here '
+            'as %s', agent_id, _cloud_miss, _default_agent['id'])
+        agent_config, agent_id = _default_agent, _default_agent['id']
+        agent_type = _default_agent.get('type', 'local')
+        prompt_id = None
 
     # ============== LOCAL AGENT ==============
     if agent_type == 'local':
@@ -3671,107 +3742,6 @@ def _chat_turn(data):
             'retry_hint_seconds': 6,
             'success': False,
         })
-
-    # ============== CLOUD AGENT ==============
-    elif agent_type == 'cloud':
-        logger.info(f'Chat with CLOUD agent: {agent_id}')
-
-        # Check internet
-        if not check_internet_connection():
-            return jsonify({
-                'text': 'Cloud agent requires internet connection.',
-                'agent_id': agent_id,
-                'agent_type': 'cloud',
-                'error': 'no_internet',
-                'success': False
-            })
-
-        # Check auth — cloud agents require a signed-in user (not guest)
-        auth_header = request.headers.get('Authorization')
-        api_key = os.environ.get('HEVOLVE_LLM_API_KEY')
-        if not auth_header and not api_key:
-            return jsonify({
-                'text': 'Cloud agents require sign-in. Please log in or use a local agent like Hevolve.',
-                'agent_id': agent_id,
-                'agent_type': 'cloud',
-                'error': 'auth_required',
-                'success': False
-            })
-
-        # Get cloud endpoint
-        cloud_endpoint = CLOUD_API_CONFIG['chat_endpoint']
-        if agent_config and agent_config.get('cloud_endpoint'):
-            cloud_endpoint = agent_config['cloud_endpoint']
-
-        try:
-            # Call hevolve.ai cloud endpoint
-            payload = {
-                'text': text,
-                'user_id': user_id,
-                'teacher_avatar_id': teacher_avatar_id or 1,
-                'request_id': request_id,
-                'video_req': video_req
-            }
-
-            cloud_headers = {'Content-Type': 'application/json'}
-            if auth_header:
-                cloud_headers['Authorization'] = auth_header
-            if api_key and 'Authorization' not in cloud_headers:
-                cloud_headers['Authorization'] = f'Bearer {api_key}'
-
-            response = requests.post(
-                cloud_endpoint,
-                json=payload,
-                # Tiered timeout: 5s connect, 60s total.  Single int timeout
-                # leaves connect-time budget conflated with read-time budget;
-                # a stuck DNS resolution then burns the full 60s before any
-                # data flows.  Cloud chat is on the user-facing hot path.
-                timeout=(5, 60),
-                headers=cloud_headers
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                result['agent_id'] = agent_id
-                result['agent_type'] = 'cloud'
-                result['source'] = 'hevolve_cloud'
-                return jsonify(result)
-            elif response.status_code in (401, 403):
-                logger.warning(f'Cloud API auth error: {response.status_code}')
-                return jsonify({
-                    'text': 'Cloud authentication failed. Please sign in again or use a local agent.',
-                    'agent_id': agent_id,
-                    'agent_type': 'cloud',
-                    'error': 'auth_failed',
-                    'success': False
-                })
-            else:
-                logger.error(f'Cloud API error: {response.status_code}')
-                return jsonify({
-                    'text': 'Cloud service temporarily unavailable. Try a local agent.',
-                    'agent_id': agent_id,
-                    'agent_type': 'cloud',
-                    'error': 'cloud_unavailable',
-                    'success': False
-                })
-
-        except requests.exceptions.Timeout:
-            return jsonify({
-                'text': 'Cloud request timed out. Try again or use a local agent.',
-                'agent_id': agent_id,
-                'agent_type': 'cloud',
-                'error': 'timeout',
-                'success': False
-            })
-        except Exception as e:
-            logger.error(f'Cloud chat error: {e}')
-            return jsonify({
-                'text': f'Cloud error: {str(e)}',
-                'agent_id': agent_id,
-                'agent_type': 'cloud',
-                'error': str(e),
-                'success': False
-            })
 
     # Unreachable in practice: _resolve_agent always returns type ∈
     # {'local', 'cloud'} (its default fallback covers everything,
