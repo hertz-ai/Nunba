@@ -170,19 +170,11 @@ describe('Demopage: a turn that ends without a reply says why', () => {
       .not.toMatch(/setIsRequestInFlight\(false\)/);
   });
 
-  it('a cloud send stays open until its pushed reply lands or the wait ends', () => {
-    expect(between('const response = await fetch(endpoint', 'if (!response.ok) {'))
-      .not.toMatch(/setIsRequestInFlight\(false\)/);
-    const accepted = between('// Success', '} catch (err) {');
-    expect(accepted).toMatch(/awaitPushedReply\(msgId, sentAt\)/);
-    expect(accepted).not.toMatch(/setIsRequestInFlight\(false\)/);
-    expect(src).not.toMatch(/Response is taking longer than expected/);
-  });
-
   it('the pushed-reply wait marks an unanswered message with the reason', () => {
     const wait = between('const awaitPushedReply = ', 'const handleSend = async');
     expect(wait).toMatch(/turnHasReply\(/);
     expect(wait).toMatch(/PUSHED_REPLY_MISSING_REASON/);
+    expect(src).not.toMatch(/Response is taking longer than expected/);
   });
 
   it('an empty local reply, an empty plan run and a signed-out send say why', () => {
@@ -196,6 +188,29 @@ describe('Demopage: a turn that ends without a reply says why', () => {
 
   it('decides "answered" with the one shared predicate', () => {
     expect(src).toMatch(/import \{[^}]*\bturnHasReply\b[^}]*\} from '\.\.\/utils\/chatRetry'/);
+  });
+});
+
+// 2026-10-04, owner rule: every turn goes to this node's /chat, which runs it
+// here or forwards a cloud-only agent's turn to the cloud.  The page used to
+// pick a backend itself from a flag on the agent object (isLocalAgent) and
+// post cloud-flagged agents' turns to azurekong, whose reply never reached
+// the window (measured 2026-10-03, agents 54/49/5).
+describe('Demopage: every send goes to this node', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf-8',
+  );
+
+  it('has no page-side cloud send', () => {
+    expect(src).not.toMatch(/CUSTOM_GPT_URL|PERSONALISED_LEARNING_URL/);
+    expect(src).not.toMatch(/useLocalBackend|isLocalAgent/);
+  });
+
+  it('sends the Local | Hybrid | Hive choice with the turn', () => {
+    const start = src.indexOf('const localResult = await chatApi.chat({');
+    expect(start).toBeGreaterThan(-1);
+    const payload = src.slice(start, src.indexOf('});', start));
+    expect(payload).toMatch(/intelligence_preference: intelligencePreference/);
   });
 });
 

@@ -622,30 +622,6 @@ describe('Agent Creation & Types E2E', () => {
       });
     });
 
-    it('isLocalAgent() logic: agent with _isLocal=true is local', () => {
-      // Replicate the isLocalAgent function defined in Demopage.js
-      const isLocalAgent = (agent) => {
-        if (!agent) return false;
-        return agent._isLocal === true || agent.create_agent === true;
-      };
-
-      // Local agent (tagged by the app after fetch)
-      const localAgent = {...localAgentsFixture.prompts[0], _isLocal: true};
-      expect(isLocalAgent(localAgent)).to.be.true;
-
-      // Cloud agent (no _isLocal, create_agent=false)
-      const cloudAgent = cloudPublicAgentsFixture[0];
-      expect(isLocalAgent(cloudAgent)).to.be.false;
-
-      // Edge: agent with create_agent=true but no _isLocal
-      const createAgentTrue = {create_agent: true};
-      expect(isLocalAgent(createAgentTrue)).to.be.true;
-
-      // Edge: null/undefined
-      expect(isLocalAgent(null)).to.be.false;
-      expect(isLocalAgent(undefined)).to.be.false;
-    });
-
     it('GET /prompts returns agents with correct structure (prompt_id, name, prompt)', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait(3000); // Allow time for /prompts fetch (non-blocking)

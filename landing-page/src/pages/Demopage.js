@@ -24,7 +24,7 @@ import {
   Clock,
   ChevronLeft,
 } from 'lucide-react';
-import { BOOK_PARSING_URL, UPLOAD_FILE_URL, UPLOAD_NATIVE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
+import { BOOK_PARSING_URL, UPLOAD_FILE_URL, UPLOAD_NATIVE_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { rememberServerPromptId } from '../utils/promptId';
 import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isBackgroundRequest } from '../constants/chatBubble';
@@ -138,15 +138,6 @@ function mergeCarriedSetupCards(loaded, carried) {
   );
   return [...loadedWithoutDupes, ...carried];
 }
-
-/**
- * Determine if an agent is local (created via LLM pipeline)
- * vs cloud-only (fetched from mailer.hertzai.com).
- */
-const isLocalAgent = (agent) => {
-  if (!agent) return false;
-  return agent._isLocal === true || agent.create_agent === true;
-};
 
 /* TypeWriterForSubtitle and ThinkingProcessContainer extracted to ./chat/ */
 
@@ -642,10 +633,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const [guestNameConflict, setGuestNameConflict] = useState(null);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [screenWidth, setScreenWidth] = useState(window.innerWidth);
-  const [sessionExpiredMessage, setSessionExpiredMessage] = useState('');
+  const [sessionExpiredMessage] = useState('');
   // (token + setToken are now hoisted above the auto-refresh useEffect
   // to avoid the TDZ error — see comment near line 222.)
-  const refresh_token = localStorage.getItem('refresh_token');
   const isAuthenticated = (decryptedUserId && token) || isGuestMode;
   // Always fall back to 'guest' so we never ship empty/null user_id to chat
   // OR camera-frame POST.  Earlier behavior left this nullable, which caused
@@ -4213,14 +4203,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setCurrentThinkingId(null);
     setThinkingStartTime(null);
 
-    const isPersonalisedEndpoint =
-      (origin === 'https://hertzai.com' &&
-        (pathname === '/' || pathname === '')) ||
-      pathname.includes('hevolve') ||
-      pathname.includes('personalised');
-
-    logger.log(isPersonalisedEndpoint, 'isPersonalisedEndpoint');
-
     if (!inputMessage.trim() && !fileUrl && !userImage) return;
     // Queue message when:
     //   - A previous user-initiated request is in flight (loading) AND it's
@@ -4308,28 +4290,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     logger.log('agentdata', agentData);
     logger.log('currentagent', currentAgent);
 
-    const dataToSend = JSON.stringify({
-      text: inputMessage,
-      user_id: effectiveUserId,
-      teacher_avatar_id: agentData?.teacher_avatar_id || null,
-      conversation_id: conversationId,
-      request_id: generatedRequestId,
-      prompt_id: currentAgent?.prompt_id ?? 0,
-      bot_type: currentAgent?.name || '',
-      create_agent: currentAgent?.create_agent || false,
-      autonomous_creation: currentAgent?.autonomous_creation || false,
-      image_url: userImage || null,
-      file_url: fileUrl || null,
-      preferred_lang: localStorage.getItem('hart_language') || 'en',
-      // User tier ladder: 'local_only' | 'auto' | 'hive_preferred' (from
-      // the intelligence toggle on this page).  Forwarded through
-      // /chat → hevolve_chat → HARTOS adapter → HARTOS dispatcher so
-      // `hive_preferred` can consult the MoE HiveMind (hevolveai
-      // `hive_mind.fuse_thoughts`) instead of the single expert model.
-      // Default 'auto' preserves today's behavior end-to-end.
-      intelligence_preference: intelligencePreference,
-    });
-
     // Clear form data
     setUploadedPdf(null);
     setUserImage(null);
@@ -4352,16 +4312,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         return;
       }
 
-      // ── Dual-mode routing: local LLM backend vs cloud API ──
-      const useLocalBackend =
-        intelligencePreference === 'local_only' ||
-        (intelligencePreference === 'auto' &&
-          backendHealth !== 'offline' &&
-          (isGuestMode || isLocalAgent(currentAgent) || !navigator.onLine));
-
-      if (useLocalBackend) {
-        // Route to local Flask /chat via existing chatApi service with persistent retry
-        logger.log('Routing to LOCAL backend via chatApi');
+      // Every turn goes to this node's /chat, which runs it here or forwards
+      // a cloud-only agent's turn to the cloud (chatbot_routes
+      // _resolve_agent).  The page used to post cloud-flagged agents' turns
+      // to azurekong itself and never showed the reply (2026-10-03).
+      logger.log('Routing to LOCAL backend via chatApi');
         let localSuccess = false;
         let retryCount = 0;
         let lastLocalReason = '';
@@ -4425,6 +4380,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               image_url: userImage || null,
               file_url: fileUrl || null,
               preferred_lang: localStorage.getItem('hart_language') || 'en',
+              // Local | Hybrid | Hive from the toggle: a Hive turn runs here
+              // first and escalates (HARTOS speculative_dispatcher).
+              intelligence_preference: intelligencePreference,
             });
             // isRequestInFlight is cleared below, once the reply (or the
             // reason there is none) is on screen.
@@ -4734,200 +4692,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               return;
             }
 
-            // If online and not forced local_only, fall through to cloud after first attempt
-            if (navigator.onLine && intelligencePreference !== 'local_only') {
-              logger.log('Falling back to cloud API...');
-              updateMessageStatus(msgId, { status: 'sending', error: null });
-              break; // exit retry loop, fall through to cloud path
-            }
-
-            // Offline or local_only: keep retrying with backoff
             retryCount++;
             // Loop continues...
           }
         }
 
-        if (localSuccess) return; // already handled above
+      if (localSuccess) return; // already handled above
 
-        // #125 — exhausted retries on local-only path.  Mark the
-        // message failed with the last known reason so the user can
-        // see why it's stuck + retry via handleRetryMessage button.
-        if (intelligencePreference === 'local_only') {
-          updateMessageStatus(msgId, {
-            status: 'failed',
-            error: `${lastLocalReason || 'Backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
-          });
-          setLoading(false);
-          setIsRequestInFlight(false);
-          return;
-        }
-        // Otherwise fall through to cloud path (intelligencePreference='auto')
-      }
-
-      // Cloud API path (fallback or direct)
-      logger.log('Routing to CLOUD backend');
-      let cloudRetryCount = 0;
-      let lastCloudReason = '';
-      let guestRecoverAttempted = false;
-
-      // Guest-aware silent 401 recovery — #207 / #209.  When /chat returns
-      // 401 mid-request (e.g. HARTOS-issued guest JWT TTL expired during a
-      // long inference) and the caller is in guest mode, re-register
-      // silently to mint a fresh token and replay the same request without
-      // nuking the session.  Cloud logged-in users still hit the clearAuth
-      // + login modal path because their refresh requires interactive
-      // credentials.  silentGuestRefresh is the canonical helper in
-      // useAuthSession.js — same call shared with the mount-time
-      // auto-refresh useEffect and the SocialContext auth:expired handler.
-      const tryGuestRecover = async () => {
-        if (!isGuestMode) return null;
-        if (guestRecoverAttempted) return null;  // one-shot per request
-        guestRecoverAttempted = true;
-        const result = await silentGuestRefresh();
-        if (!result) {
-          logger.log('[GUEST] 401 silent recover failed');
-          return null;
-        }
-        setToken(result.token);  // Same-tab React state mirror (Fix B)
-        logger.log('[GUEST] 401 mid-chat — silent recover succeeded, retrying request');
-        return result.token;
-      };
-
-      while (cloudRetryCount <= MAX_RETRIES) {  // #125 — terminal retry cap
-        if (cloudRetryCount > 0) {
-          setIsRequestInFlight(false);
-          const totalSec = Math.max(1, Math.round(getBackoff(cloudRetryCount - 1) / 1000));
-          let aborted = false;
-          for (let sec = totalSec; sec > 0; sec--) {
-            updateMessageStatus(msgId, {
-              status: 'retrying',
-              error: `${lastCloudReason} — retrying in ${sec}s...`,
-              retryCount: cloudRetryCount,
-            });
-            await new Promise((r) => setTimeout(r, 1000));
-            const stillExists = messagesRef.current.find(m => m.messageId === msgId);
-            if (!stillExists) { aborted = true; break; }
-          }
-          if (aborted) { setLoading(false); return; }
-        }
-
-        try {
-          setIsRequestInFlight(true);
-          updateMessageStatus(msgId, { status: 'sending', error: null });
-
-          const endpoint = isPersonalisedEndpoint
-            ? PERSONALISED_LEARNING_URL
-            : CUSTOM_GPT_URL;
-
-          // Live token read — picks up a fresh JWT minted by
-          // tryGuestRecover() in the previous loop iteration.  Closure-
-          // captured `token` from useState would be stale until the
-          // next render.
-          const liveToken = localStorage.getItem('access_token') || token;
-
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${liveToken}`,
-            },
-            body: dataToSend,
-          });
-
-          if (!response.ok) {
-            setIsRequestInFlight(false);
-            let errorResponse = {};
-            try { errorResponse = await response.json(); } catch (err) { console.error('Failed to parse error response:', err); }
-            console.error('API call failed:', response.status, response.statusText);
-
-            const isInvalidToken = (
-              errorResponse.error === 'invalid_token' ||
-              errorResponse.error_description === 'The access token is invalid or has expired'
-            );
-
-            if (response.status === 401 || isInvalidToken) {
-              // Guest-aware path — silently re-register and retry once
-              // before falling through to the nuke-session UX.
-              const recovered = await tryGuestRecover();
-              if (recovered) {
-                lastCloudReason = 'Session refreshed';
-                cloudRetryCount++;
-                continue;
-              }
-
-              if (response.status === 401 && !refresh_token) {
-                setSessionExpiredMessage('Session expired. Please log in again.');
-                setIsModalOpen(true);
-                updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
-                setLoading(false);
-                return;
-              }
-
-              if (isInvalidToken) {
-                // Phase 4d — canonical 401 invalidation.  clearAuth
-                // covers the original 4 keys (expire_token + access_token
-                // + user_id + email_address) plus 8 more cloud-related
-                // keys.  HART node identity preserved (per 4-layer model)
-                // so on next signin the user lands back in the same HART
-                // shell.
-                clearAuth();
-                setIsModalOpen(true);
-                updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
-                setLoading(false);
-                return;
-              }
-            }
-
-            // Other HTTP errors — retry
-            lastCloudReason = `Cloud API error (${response.status})`;
-            cloudRetryCount++;
-            continue;
-          }
-
-          // Success: the cloud accepted the message.  Its reply is pushed to
-          // this window (handleDataReceived), not returned here, so the turn
-          // stays open until that reply lands or the wait runs out.  Ending
-          // the turn on this accept showed "Thought for X" with no reply
-          // (2026-10-02).
-          updateMessageStatus(msgId, { status: 'sent', error: null, retryCount: undefined });
-
-          const dataJson = await response.json();
-          awaitPushedReply(msgId, sentAt);
-
-          if (dataJson.status === 'no_content') {
-            logger.log('No content from API. Awaiting Crossbar message...');
-            return;
-          }
-
-          logger.log('API Response received successfully');
-          logger.log('Request ID:', dataJson.request_id);
-
-          setUserImage(null);
-          setLoading(false);
-          return; // done
-
-        } catch (err) {
-          setIsRequestInFlight(false);
-          console.error('Cloud request error:', err);
-          const { reason, retryable } = classifyError(err);
-          lastCloudReason = reason;
-
-          if (!retryable) {
-            updateMessageStatus(msgId, { status: 'failed', error: reason });
-            setLoading(false);
-            return;
-          }
-
-          cloudRetryCount++;
-          // Loop continues...
-        }
-      }
-
-      // #125 — exhausted cloud retries.  Surface failure with last
-      // known reason so the user can manually retry.
+      // #125 — exhausted retries.  Mark the message failed with the last
+      // known reason so the user can see why it's stuck + retry via the
+      // handleRetryMessage button.
       updateMessageStatus(msgId, {
         status: 'failed',
-        error: `${lastCloudReason || 'Cloud backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
+        error: `${lastLocalReason || 'Backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
       });
       setLoading(false);
       setIsRequestInFlight(false);
