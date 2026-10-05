@@ -1263,6 +1263,36 @@ def _tutor_opening(goals, learner_text):
             f'the first step only, simply, then one quick check question.')
 
 
+#: The agent that serves Teach Yourself on this node once it is built (owner
+#: ruling 2026-09-14: Teach Yourself is a created agent).  54 is the prompt_id
+#: of the Nunba chat page's "Personalised Learning" agent (Demopage.js), the
+#: one its sidebar launches, so the phone and the desktop talk to the SAME
+#: agent.  NUNBA_TEACH_AGENT_ID overrides it; an empty value turns it off.
+TEACH_AGENT_PROMPT_ID = '54'
+
+
+def _teach_agent_prompt_id():
+    """The Teach Yourself agent's prompt_id when it is built, else None.
+
+    "Built" is HARTOS's own question (core.flow_recipe_optimizer.recipe_exists:
+    the flow-0 recipe is in the prompts dir /chat reads).  Until it is, the
+    turn names no agent: /chat given the id of an agent that has a config and
+    no recipe starts BUILDING it (measured 2026-10-05 on id 54: "I need your
+    input to finish building this agent"), which is not what a learner's turn
+    should do.
+    """
+    pid = os.environ.get('NUNBA_TEACH_AGENT_ID', TEACH_AGENT_PROMPT_ID).strip()
+    if not pid:
+        return None
+    try:
+        from core.flow_recipe_optimizer import recipe_exists
+        return pid if recipe_exists(pid, 0) else None
+    except Exception:
+        logger.warning('Teach Yourself agent %s: cannot tell whether it is '
+                       'built; serving the turn without it', pid, exc_info=True)
+        return None
+
+
 def teachme2():
     """POST /chat/teachme2: central's Teach Yourself turn, served here.
 
@@ -1274,9 +1304,9 @@ def teachme2():
     The topic and its "continue" option travel in the reply's dynamic_data,
     like any agent's own fields.
 
-    TRANSITIONAL (owner ruling 2026-09-14): Teach Yourself is to become a
-    created agent.  This route has no agent id and is retired when that agent
-    builds.
+    TRANSITIONAL (owner ruling 2026-09-14): Teach Yourself is a created
+    agent.  The turn names it (_teach_agent_prompt_id) once its recipe is
+    built; until then it runs without an agent id, as before.
     """
     data = request.get_json(silent=True) or {}
     user_id = str(data.get('user_id', 'guest'))
@@ -1304,14 +1334,18 @@ def teachme2():
     if not text.strip():
         return _agent_reply({'text': "Please enter something as response.."},
                             request_id, dynamic_data=teach_data, status=400)
-    body, status = _run_turn({
+    turn = {
         'text': text,
         'user_id': user_id,
         'request_id': request_id,
         'conversation_id': f'teachme_{user_id}',
         'teacher_avatar_id': data.get('teacher_avatar_id'),
         'draft_first': False,
-    })
+    }
+    agent = _teach_agent_prompt_id()
+    if agent:
+        turn['prompt_id'] = agent
+    body, status = _run_turn(turn)
     if not body:
         return _agent_reply({'text': _TURN_FAILED_TEXT}, request_id,
                             dynamic_data=teach_data, status=status)

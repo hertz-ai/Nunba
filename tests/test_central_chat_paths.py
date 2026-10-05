@@ -64,6 +64,13 @@ def turns():
 
 
 @pytest.fixture(autouse=True)
+def _no_teach_agent(monkeypatch):
+    """Routing /chat/teachme2 to a built Teach Yourself agent is off unless a
+    test turns it on, so what this machine has on disk decides nothing."""
+    monkeypatch.setenv('NUNBA_TEACH_AGENT_ID', '')
+
+
+@pytest.fixture(autouse=True)
 def _fresh_sessions():
     with cr._sessions_lock:
         saved = dict(cr.sessions)
@@ -368,3 +375,69 @@ def test_a_multi_part_reply_keeps_every_part(client, turns):
     body = client.post('/chat/custom_gpt', json=ANDROID_CUSTOM_BOT).get_json()
     assert body['answerList'] == ['first', 'second']
     assert body['text'] == 'first\nsecond'   # a string, as central sends
+
+
+# ── /chat/teachme2 served by the built Teach Yourself agent ───────────
+#
+# Owner ruling 2026-09-14: Teach Yourself is a created agent, and the route
+# has no agent id until it builds.  Once the agent's recipe is on disk the
+# turn names it, so HARTOS /chat runs it the way it runs the sidebar's
+# "Personalised Learning" (prompt_id 54); until then the turn is unchanged.
+
+@pytest.fixture
+def prompts_dir(tmp_path, monkeypatch):
+    """The prompts dir HARTOS reads recipes from, as a temp dir."""
+    import core.platform_paths as pp
+    monkeypatch.setattr(pp, 'resolve_recipe_prompts_dir',
+                        lambda _d=None: str(tmp_path))
+    return tmp_path
+
+
+def test_a_built_teach_agent_serves_the_turn(client, turns, prompts_dir, monkeypatch):
+    monkeypatch.delenv('NUNBA_TEACH_AGENT_ID', raising=False)
+    (prompts_dir / '54_0_recipe.json').write_text('{}')
+    seen, _ = turns
+    body = _teach(client, text=['teach me'], goals={
+        'name': 'Photosynthesis', 'scope': 'topic'}).get_json()
+    assert seen[0]['prompt_id'] == '54'
+    assert not seen[0].get('create_agent')
+    # the topic framing and the reply shape are the route's, unchanged
+    assert seen[0]['text'].startswith('teach me\nYou are my patient tutor.')
+    assert body['dynamic_data']['options'] == ['continue'] and body['teachme'] is True
+
+
+def test_until_the_agent_is_built_the_turn_names_no_agent(client, turns, prompts_dir,
+                                                          monkeypatch):
+    """/chat with the id of an agent that has config and no recipe starts
+    BUILDING it; a learner's turn must not."""
+    monkeypatch.delenv('NUNBA_TEACH_AGENT_ID', raising=False)
+    (prompts_dir / '54.json').write_text('{}')
+    seen, _ = turns
+    _teach(client, text=['teach me'])
+    assert 'prompt_id' not in seen[0]
+
+
+def test_the_teach_agent_id_is_one_setting(client, turns, prompts_dir, monkeypatch):
+    seen, _ = turns
+    (prompts_dir / '777_0_recipe.json').write_text('{}')
+    monkeypatch.setenv('NUNBA_TEACH_AGENT_ID', '777')
+    _teach(client, text=['teach me'])
+    assert seen[0]['prompt_id'] == '777'
+    (prompts_dir / '54_0_recipe.json').write_text('{}')
+    monkeypatch.setenv('NUNBA_TEACH_AGENT_ID', '')
+    _teach(client, text=['teach me'])
+    assert 'prompt_id' not in seen[1], 'an empty setting turns the routing off'
+
+
+def test_a_built_check_that_cannot_answer_serves_the_turn_without_the_agent(
+        client, turns, monkeypatch):
+    import core.flow_recipe_optimizer as fro
+    monkeypatch.delenv('NUNBA_TEACH_AGENT_ID', raising=False)
+
+    def boom(*_a, **_k):
+        raise OSError('prompts dir unreadable')
+    monkeypatch.setattr(fro, 'recipe_exists', boom)
+    seen, _ = turns
+    resp = _teach(client, text=['teach me'])
+    assert resp.status_code == 200
+    assert 'prompt_id' not in seen[0]
