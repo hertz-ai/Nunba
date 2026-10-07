@@ -298,6 +298,24 @@ EMBED_DEPS = {
     # imports it), whose last release loops forever on a crafted content
     # stream (CVE-2023-36464, reproduced 2026-09-13).
     "pypdfium2": "5.13.0",
+    # LiveKit: voice with your agent in a call (HARTOS #186 C1, owner approved
+    # bundling both 2026-10-07).  livekit-api signs the room tokens
+    # (integrations/social/livekit_service.py: without it every token is
+    # 'livekit_pending' and no one can join); livekit (rtc) is the agent's
+    # ears and mouth in the room (agent_voice_bridge, livekit_audio_publisher,
+    # livekit_transcript_subscriber: without it a call's replies are logged,
+    # never heard).  Here and not in CORE_DEPS for pypdfium2's reason: only
+    # HARTOS imports them, and rtc loads a native FFI library from its own
+    # package directory (livekit/rtc/resources).  livekit-protocol is
+    # livekit-api's one LiveKit dependency, and rtc imports aiofiles at
+    # module load (livekit/rtc/participant.py); both pinned here so the
+    # --no-deps installs and Gate B cover them.  protobuf (>=4.25), numpy
+    # (>=1.26) and aiohttp (>=3.9) already ship.  Versions measured working
+    # together on this bundle's Python 3.12 with its protobuf 7.36.2.
+    "livekit": "1.1.10",
+    "livekit-api": "1.0.7",
+    "livekit-protocol": "1.1.8",
+    "aiofiles": "25.1.0",
     # ML
     "scikit-learn": "1.7.2",
     # Tokenization
@@ -482,13 +500,19 @@ _EMBED_DIR_EXCEPTIONS = {
     'sentence-transformers': 'sentence_transformers',
     'langchain-core': 'langchain_core',
     'tiktoken': 'tiktoken',
+    # The three LiveKit distributions share one `livekit` namespace
+    # directory, so each is present when ITS subpackage is.
+    'livekit': 'livekit/rtc',
+    'livekit-api': 'livekit/api',
+    'livekit-protocol': 'livekit/protocol',
     # descript-audio-codec → 'dac' mapping not needed in EMBED_DEPS
     # (installed at runtime by install_backend_full, not build-time)
 }
 
 
 def embed_package_dir_name(pkg_name: str) -> str:
-    """Map a pip package name to its import/site-packages directory name."""
+    """Map a pip package name to its import/site-packages directory name,
+    relative to site-packages ('/'-separated where it is nested)."""
     return _EMBED_DIR_EXCEPTIONS.get(pkg_name, pkg_name.replace('-', '_'))
 
 
@@ -504,7 +528,8 @@ def missing_embed_packages(site_packages_dir: str) -> list[str]:
     missing = []
     for name in EMBED_DEPS:
         dir_name = embed_package_dir_name(name)
-        if not os.path.isdir(os.path.join(site_packages_dir, dir_name)):
+        if not os.path.isdir(os.path.join(site_packages_dir,
+                                          *dir_name.split('/'))):
             missing.append(name)
     return missing
 

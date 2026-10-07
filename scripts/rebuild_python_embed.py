@@ -1151,6 +1151,17 @@ def _run_rebuild_steps():
             [python_exe, "-c", HART_BACKEND_CANARY],
             critical=_hart_backend_installed)
 
+    # LiveKit, for voice with your agent in a call (deps.py EMBED_DEPS says
+    # why it is here).  rtc loads its native FFI library only when its first
+    # client is made (livekit/rtc/_ffi_client.py, FfiClient.__init__), so
+    # the import alone would pass with an unloadable library: load it.
+    # livekit 1.1.10 is pinned, so the private module path is stable.
+    _verify("livekit import + FFI library load",
+            [python_exe, "-c",
+             "from livekit import api, rtc; "
+             "from livekit.rtc._ffi_client import get_ffi_lib; get_ffi_lib(); "
+             "print('livekit api + rtc OK')"])
+
     # Informational — package count + python version
     pkg_list = run([python_exe, "-m", "pip", "list", "--format=columns"],
                    check=False, capture_output=True, text=True)
@@ -1170,12 +1181,16 @@ def _run_rebuild_steps():
             for ln in err.splitlines()[:4]:
                 print(f"        {ln}")
         print()
-        print("  HevolveAI submodule failure means Nunba's visual encoder")
-        print("  would silently fall back to numpy at runtime.  Refusing")
-        print("  to ship.")
-        print("  Look for .cp*-win_amd64.pyd files in")
-        print(f"  {EMBED_DIR}/Lib/site-packages/hevolveai/")
-        print("  whose ABI tag != cp312.")
+        if any(label.startswith('hevolveai') for label, _ in _failures):
+            print("  HevolveAI submodule failure means Nunba's visual encoder")
+            print("  would silently fall back to numpy at runtime.  Refusing")
+            print("  to ship.")
+            print("  Look for .cp*-win_amd64.pyd files in")
+            print(f"  {EMBED_DIR}/Lib/site-packages/hevolveai/")
+            print("  whose ABI tag != cp312.")
+        else:
+            print("  Refusing to ship a python-embed whose dependencies do")
+            print("  not import (see the failures above).")
         sys.exit(1)
 
     # 9. Atomic swap — verification passed, promote scratch to live.

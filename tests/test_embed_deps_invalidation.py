@@ -123,7 +123,7 @@ def test_missing_embed_packages_regex_specifically(tmp_path):
     for name in deps.EMBED_DEPS:
         if name == 'regex':
             continue
-        (tmp_path / deps.embed_package_dir_name(name)).mkdir()
+        (tmp_path / deps.embed_package_dir_name(name)).mkdir(parents=True)
 
     missing = deps.missing_embed_packages(str(tmp_path))
     assert missing == ['regex'], (
@@ -135,8 +135,39 @@ def test_missing_embed_packages_all_present(tmp_path):
     """When every package directory exists, nothing missing."""
     import deps
     for name in deps.EMBED_DEPS:
-        (tmp_path / deps.embed_package_dir_name(name)).mkdir()
+        (tmp_path / deps.embed_package_dir_name(name)).mkdir(parents=True)
     assert deps.missing_embed_packages(str(tmp_path)) == []
+
+
+def test_each_livekit_distribution_is_present_only_with_its_own_subpackage(tmp_path):
+    """livekit, livekit-api and livekit-protocol share one `livekit`
+    directory.  Each is present when ITS subpackage is: rtc alone does not
+    make the token signer present, and the shared folder alone makes none
+    of them present."""
+    import deps
+    livekit = ['livekit', 'livekit-api', 'livekit-protocol']
+    (tmp_path / 'livekit').mkdir()
+    missing = deps.missing_embed_packages(str(tmp_path))
+    assert [n for n in livekit if n in missing] == livekit
+    (tmp_path / 'livekit' / 'rtc').mkdir()
+    missing = deps.missing_embed_packages(str(tmp_path))
+    assert [n for n in livekit if n in missing] == ['livekit-api', 'livekit-protocol']
+    (tmp_path / 'livekit' / 'api').mkdir()
+    (tmp_path / 'livekit' / 'protocol').mkdir()
+    (tmp_path / 'aiofiles').mkdir()
+    missing = deps.missing_embed_packages(str(tmp_path))
+    assert not set(livekit + ['aiofiles']) & set(missing)
+
+
+def test_a_call_needs_livekit_in_python_embed():
+    """What python-embed installs (rebuild_python_embed step 6 and build.py's
+    Gate B top-up both read get_embed_install_list) carries the pinned
+    LiveKit set HARTOS imports for calls (#186 C1)."""
+    import deps
+    specs = deps.get_embed_install_list()
+    for spec in ('livekit==1.1.10', 'livekit-api==1.0.7',
+                 'livekit-protocol==1.1.8', 'aiofiles==25.1.0'):
+        assert spec in specs
 
 
 def test_embed_package_dir_name_handles_exceptions():
