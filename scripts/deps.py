@@ -309,9 +309,17 @@ EMBED_DEPS = {
     # package directory (livekit/rtc/resources).  livekit-protocol is
     # livekit-api's one LiveKit dependency, and rtc imports aiofiles at
     # module load (livekit/rtc/participant.py); both pinned here so the
-    # --no-deps installs and Gate B cover them.  protobuf (>=4.25), numpy
-    # (>=1.26) and aiohttp (>=3.9) already ship.  Versions measured working
-    # together on this bundle's Python 3.12 with its protobuf 7.36.2.
+    # --no-deps installs and Gate B cover them.
+    # Their other dependencies come from lib/, not from here: HARTOS runs
+    # inside Nunba.exe, whose sys.path has lib/ first and python-embed last
+    # (app.py), so protobuf (the whole package, setup_freeze_nunba.py
+    # packages[]), PyJWT (CORE_DEPS), numpy and aiohttp are lib/'s copies.
+    # python-embed's own protobuf, PyJWT and types-protobuf come unpinned
+    # from the full rebuild's dependency pass and are not what Nunba.exe
+    # loads.  Measured together 2026-10-08 in a cx_Freeze exe with lib/
+    # first: protobuf 6.33.5, PyJWT 2.14.0, numpy 1.26.4, aiohttp 3.13.3.
+    # app.py --validate checks livekit in Nunba.exe itself on every
+    # Windows build.
     "livekit": "1.1.10",
     "livekit-api": "1.0.7",
     "livekit-protocol": "1.1.8",
@@ -528,8 +536,7 @@ def missing_embed_packages(site_packages_dir: str) -> list[str]:
     missing = []
     for name in EMBED_DEPS:
         dir_name = embed_package_dir_name(name)
-        if not os.path.isdir(os.path.join(site_packages_dir,
-                                          *dir_name.split('/'))):
+        if not os.path.isdir(os.path.join(site_packages_dir, dir_name)):
             missing.append(name)
     return missing
 

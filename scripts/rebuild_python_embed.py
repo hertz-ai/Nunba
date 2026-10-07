@@ -1156,6 +1156,11 @@ def _run_rebuild_steps():
     # client is made (livekit/rtc/_ffi_client.py, FfiClient.__init__), so
     # the import alone would pass with an unloadable library: load it.
     # livekit 1.1.10 is pinned, so the private module path is stable.
+    # This proves python-embed's own install, so a broken one is never
+    # swapped in.  It does NOT prove a call works: HARTOS runs in Nunba.exe,
+    # where lib/ shadows python-embed's protobuf and the rest, and this
+    # passed on a bundle where Nunba.exe could not import livekit.  The gate
+    # for that is app.py --validate (Phase 2b), run inside the frozen exe.
     _verify("livekit import + FFI library load",
             [python_exe, "-c",
              "from livekit import api, rtc; "

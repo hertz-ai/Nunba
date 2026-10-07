@@ -2695,6 +2695,38 @@ if getattr(args, 'validate', False):
                 _fail.append((_mod_name, f"Health check crashed: {_e}"))
                 _vprint(f"  [FAIL] {_mod_name} health check: {_e}")
 
+    # ── Phase 2b: LiveKit in THIS process (HARTOS calls) ──
+    # HARTOS signs call room tokens and voices an agent in a call from inside
+    # this process, where lib/ comes first on sys.path and python-embed's
+    # site-packages last (appended above).  The rebuild's own check runs under
+    # python-embed's interpreter and passed on a bundle where this process
+    # could not import livekit: lib/ held a traced, partial protobuf with no
+    # timestamp_pb2 that shadowed python-embed's complete one (review of Nunba
+    # 15139f15, 2026-10-08).  HARTOS swallows that ImportError, so a call is
+    # silent with nothing failing; only this check sees it.  rtc loads its
+    # native library on first use, so the import alone is not enough.
+    # Windows bundles carry livekit (build_windows installs EMBED_DEPS into
+    # python-embed), so there a failure fails the build; the macOS and Linux
+    # builds do not install EMBED_DEPS, so there it is a warning.
+    _vprint(f"\n{'─'*40}")
+    _vprint("LIVEKIT (calls: room tokens, the agent's voice)")
+    _vprint(f"{'─'*40}")
+    os.environ.pop('LIVEKIT_LIB_PATH', None)  # judge the bundled library only
+    try:
+        importlib.import_module('livekit.api')
+        importlib.import_module('livekit.rtc')
+        importlib.import_module('livekit.rtc._ffi_client').get_ffi_lib()
+        _ok.append('livekit')
+        _vprint("  [OK]   livekit api + rtc import, FFI library loads")
+    except Exception as _e:
+        _lk_err = f"{type(_e).__name__}: {_e}"
+        if sys.platform == 'win32':
+            _fail.append(('livekit', f"calls would be silent: {_lk_err}"))
+            _vprint(f"  [FAIL] livekit: {_lk_err}")
+        else:
+            _warn.append(('livekit', f"this bundle does not voice calls: {_lk_err}"))
+            _vprint(f"  [WARN] livekit: {_lk_err}")
+
     # ── Phase 3: Config file checks ──
     _vprint(f"\n{'─'*40}")
     _vprint("CONFIG FILE CHECKS")
