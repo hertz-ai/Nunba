@@ -820,6 +820,25 @@ class PiperTTS:
                 "is a missing engine.")
         return None
 
+    # Loaded voices, keyed by model path + mtime, shared by every PiperTTS
+    # instance.  PiperVoice.load measured 8.5-13.3 s against 1.8 s of
+    # synthesis (2026-10-03) and holds the GIL while onnxruntime builds the
+    # session, so loading per reply froze the whole app before each clip.
+    _voices: dict = {}
+    _voices_lock = threading.Lock()
+
+    @classmethod
+    def _loaded_voice(cls, piper_voice_cls, model_path: Path):
+        """(voice, lock) for ``model_path``, loading it on first use only.
+        A re-downloaded model has a new mtime and is loaded afresh."""
+        key = (str(model_path), os.path.getmtime(model_path))
+        with cls._voices_lock:
+            entry = cls._voices.get(key)
+            if entry is None:
+                entry = (piper_voice_cls.load(str(model_path)), threading.Lock())
+                cls._voices[key] = entry
+            return entry
+
     def _synthesize_with_module(self,
                                 text: str,
                                 output_path: str,
@@ -862,7 +881,7 @@ class PiperTTS:
         """
         from piper import PiperVoice
 
-        voice = PiperVoice.load(str(model_path))
+        voice, voice_lock = self._loaded_voice(PiperVoice, model_path)
 
         # Build synthesis config with speed control
         syn_config = None
@@ -898,11 +917,12 @@ class PiperTTS:
             # chunk.  This is the API contract added in piper-tts
             # 1.x; older releases ignore the kwarg gracefully (they
             # just re-set the same values we already set).
-            voice.synthesize_wav(
-                text, wav_file,
-                syn_config=syn_config,
-                set_wav_format=False,
-            )
+            with voice_lock:
+                voice.synthesize_wav(
+                    text, wav_file,
+                    syn_config=syn_config,
+                    set_wav_format=False,
+                )
 
             n_frames = wav_file.getnframes()
 

@@ -389,3 +389,38 @@ class TestCacheHoldsOnlyWholeAudio:
             tts._synthesize_with_module = _die_mid_write
             assert tts.synthesize('Count the apples.') is None
             assert self._cache_files(tts) == []
+
+
+class TestVoiceLoadedOnce:
+    """A voice model is loaded once per process, not once per reply.
+
+    Live 2026-10-03: PiperVoice.load took 8.5-13.3 s (measured in the
+    installed python-embed) while synthesis itself took 1.8 s, and py-spy
+    caught the TTS thread holding the GIL in onnxruntime session creation
+    for 212 of its 234 samples -- the window went "Not responding" before
+    every reply's audio.
+    """
+
+    def test_second_reply_reuses_the_loaded_voice(self):
+        from tts.piper_tts import PiperTTS
+        loads = []
+
+        class _Voice:
+            config = MagicMock(sample_rate=22050)
+
+            def synthesize_wav(self, text, wav_file, **_kw):
+                wav_file.writeframes(b'\x01\x00' * 100)
+
+        fake_piper = MagicMock()
+        fake_piper.PiperVoice.load.side_effect = lambda p: loads.append(p) or _Voice()
+        PiperTTS._voices.clear()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(PiperTTS, '_init_piper'):
+                tts = PiperTTS(voices_dir=tmpdir, cache_dir=tmpdir)
+            model = Path(tmpdir) / 'v.onnx'
+            model.write_bytes(b'm')
+            with patch.dict('sys.modules', {'piper': fake_piper}):
+                tts._synthesize_with_module('one', os.path.join(tmpdir, 'a.wav'), model, 1.0)
+                tts._synthesize_with_module('two', os.path.join(tmpdir, 'b.wav'), model, 1.0)
+        PiperTTS._voices.clear()
+        assert len(loads) == 1, f'voice loaded {len(loads)} times for 2 replies'
