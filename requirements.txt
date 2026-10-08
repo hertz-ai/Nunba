@@ -36,6 +36,7 @@ langsmith==0.7.6
 piper-tts==1.4.1
 onnxruntime==1.24.1
 soundfile==0.13.1
+av==16.1.0
 sentry-sdk[flask]==2.52.0
 google-auth==2.48.0
 cachetools==7.0.1

@@ -86,6 +86,13 @@ CORE_DEPS = {
     "piper-tts": "1.4.1",
     "onnxruntime": "1.24.1",
     "soundfile": "0.13.1",
+    # av: faster-whisper (python-embed, installed --no-deps) imports it from the
+    # frozen lib/ and calls av.open(metadata_errors=...), which PyAV 19.0.1
+    # rejects.  av was pinned nowhere here, so the 10-07 nightly froze 19.0.1
+    # and every local transcription answered "No STT engine available"
+    # (measured 2026-10-09 on the installed 1bff9fc; 16.1.0 to 18.0.0 decode).
+    # 16.1.0 is what requirements-lock.txt already pins.
+    "av": "16.1.0",
     # Monitoring
     "sentry-sdk[flask]": "2.52.0",
     # Auth
