@@ -95,6 +95,10 @@ const SSE_SEEN_IDS_MAX = 1024; // covers the server's 2 x 256-frame replay
 const DEDUP_WINDOW_MS = 10000; // 10s dedup window
 const DEDUP_MAX_SIZE = 200; // max tracked message IDs
 
+// An A2UI envelope's own type, in both spellings HARTOS uses (see
+// unwrapAgentUiEnvelope).
+const AGENT_UI_ENVELOPE_TYPES = new Set(['agent.ui.update', 'agent_ui_update']);
+
 /**
  * The card inside a HARTOS A2UI envelope, flat, or null when `payload` is
  * not one.
@@ -123,8 +127,6 @@ const DEDUP_MAX_SIZE = 200; // max tracked message IDs
  * rule, so a 'notification' that happens to carry a `component` field stays
  * a notification.
  */
-const AGENT_UI_ENVELOPE_TYPES = new Set(['agent.ui.update', 'agent_ui_update']);
-
 export function unwrapAgentUiEnvelope(payload) {
   if (!payload || !AGENT_UI_ENVELOPE_TYPES.has(payload.type)) return null;
   const card = payload.component;
