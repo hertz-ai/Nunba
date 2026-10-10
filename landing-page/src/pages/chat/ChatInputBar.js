@@ -1,4 +1,6 @@
 /* eslint-disable no-unused-vars */
+import {hasNativeFilePicker} from '../../utils/nativeFilePicker';
+
 import {
   SendHorizontal,
   Image,
@@ -264,7 +266,7 @@ const ChatInputBar = ({
 
         <button
           onClick={() => {
-            if (window.pywebview && window.pywebview.api) {
+            if (hasNativeFilePicker()) {
               handleImageSelect({target: {files: []}});
             } else {
               document.getElementById('fileInput').click();
@@ -278,7 +280,7 @@ const ChatInputBar = ({
 
         <button
           onClick={() => {
-            if (window.pywebview && window.pywebview.api) {
+            if (hasNativeFilePicker()) {
               handlePdfSelect({target: {files: []}});
             } else {
               document.getElementById('pdfInput').click();

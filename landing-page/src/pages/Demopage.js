@@ -24,7 +24,8 @@ import {
   Clock,
   ChevronLeft,
 } from 'lucide-react';
-import { BOOK_PARSING_URL, UPLOAD_FILE_URL, UPLOAD_NATIVE_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
+import { WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
+import { selectPdf, selectImage } from '../utils/attachmentUpload';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { rememberServerPromptId } from '../utils/promptId';
 import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isBackgroundRequest } from '../constants/chatBubble';
@@ -3937,155 +3938,29 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     const duration = event.target.duration;
     setDuration(duration);
   };
-  const handlePdfSelect = async (event) => {
-    // Use native file picker when running inside pywebview (macOS WKWebView)
-    if (window.pywebview && window.pywebview.api) {
-      try {
-        const filePath = await window.pywebview.api.native_file_pick('pdf');
-        if (!filePath) return;
-        const fileName = filePath.split('/').pop();
-        setPdfFile({ name: fileName });
-        const response = await fetch(UPLOAD_NATIVE_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath, user_id: decryptedUserId, request_id: uuidv4() }),
-        });
-        if (response.ok) {
-          const result = await response.json();
-          setRequestId(result.request_id);
-          setpdfFileUrl(result.file_url);
-        } else {
-          console.error('Failed to upload PDF:', response.status);
-        }
-      } catch (error) {
-        console.error('Error during PDF upload process:', error);
-      }
-      return;
-    }
-
-    const file = event.target.files[0];
-
-    if (!file) {
-      console.error('No file selected.');
-      return;
-    }
-    if (file && file.type === 'application/pdf') {
-      const previewUrl = URL.createObjectURL(file);
-      setPdfurl(previewUrl);
-    }
-
-    try {
-      // Set the selected PDF file
-      setPdfFile(file);
-
-      const formdata = new FormData();
-      formdata.append('bot_type', 'book_parsing');
-      formdata.append('user_id', decryptedUserId);
-      formdata.append('request_id', uuidv4());
-      formdata.append('file', file, file.name);
-
-      const requestOptions = {
-        method: 'POST',
-        body: formdata,
-        redirect: 'follow',
-      };
-
-      fetch(
-        BOOK_PARSING_URL,
-        requestOptions
-      )
-        .then(async (response) => {
-          if (!response.ok) {
-            console.error(
-              'Failed to upload PDF:',
-              response.status,
-              response.statusText
-            );
-            return;
-          }
-
-          const result = await response.json();
-          setRequestId(result.request_id);
-
-          setpdfFileUrl(result.file_url);
-        })
-        .catch((error) => {
-          console.error('Error during PDF upload process:', error);
-        });
-    } catch (error) {
-      console.error('Error during PDF upload process:', error);
-    }
-  };
+  // PDF / image attach.  The two flows (native dialog where the shell has one,
+  // the browser file input otherwise) live in utils/attachmentUpload.js, which
+  // is tested without mounting this component; this hands them our setters.
+  const handlePdfSelect = (event) => selectPdf(event, {
+    userId: decryptedUserId,
+    setPdfFile,
+    setpdfFileUrl,
+    setRequestId,
+    setPdfurl,
+    notify: pushNotification,
+  });
 
   const handleRemovePdf = () => {
     setPdfFile(null);
     setpdfFileUrl(null);
   };
 
-  const handleImageSelect = async (event) => {
-    // Use native file picker when running inside pywebview (macOS WKWebView)
-    if (window.pywebview && window.pywebview.api) {
-      setIsImageUploading(true);
-      try {
-        const filePath = await window.pywebview.api.native_file_pick('image');
-        if (!filePath) { setIsImageUploading(false); return; }
-        const response = await fetch(UPLOAD_NATIVE_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath, user_id: decryptedUserId, request_id: uuidv4() }),
-        });
-        if (response.ok) {
-          const result = await response.json();
-          setUserImage(result.file_url);
-        } else {
-          console.error('Failed to upload image:', response.status);
-        }
-      } catch (error) {
-        console.error('Error uploading image:', error);
-      } finally {
-        setIsImageUploading(false);
-      }
-      return;
-    }
-
-    const file = event.target.files[0];
-
-    if (file) {
-      setIsImageUploading(true);
-      setUserImage(URL.createObjectURL(file));
-
-      const formData = new FormData();
-      formData.append('user_id', decryptedUserId);
-      formData.append('file', file, file.name);
-      formData.append('request_id', uuidv4());
-
-      try {
-        const response = await fetch(
-          UPLOAD_FILE_URL,
-          {
-            method: 'POST',
-            body: formData,
-            redirect: 'follow',
-          }
-        );
-
-        if (response.ok) {
-          const result = await response.json();
-          setUserImage(result.file_url);
-        } else {
-          console.error(
-            'Failed to upload image:',
-            response.status,
-            response.statusText
-          );
-        }
-      } catch (error) {
-        console.error('Error uploading image:', error);
-      } finally {
-        setIsImageUploading(false);
-      }
-    }
-  };
+  const handleImageSelect = (event) => selectImage(event, {
+    userId: decryptedUserId,
+    setUserImage,
+    setIsImageUploading,
+    notify: pushNotification,
+  });
 
   const handleRemoveImage = () => {
     setUserImage(null);
