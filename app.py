@@ -7859,15 +7859,13 @@ def main():
         logger.info(f"[STARTUP] pywebview loaded successfully in {_wv_elapsed:.1f}s")
         _trace(f"pywebview loaded in {_wv_elapsed:.1f}s")
 
-        # ── Native mic + file picker fallback (macOS WKWebView only) ──
-        # Belt-and-suspenders for when WKWebView's media patch fails or
-        # the browser file-input is broken: exposes a Python→JS bridge
-        # the frontend can detect via `window.pywebview.api.native_*`.
-        # Windows WebView2 + Linux WebKitGTK don't need this; the
-        # class + js_api kwarg are darwin-gated so Windows/Linux retain
-        # main's existing behavior (no js_api → window.pywebview.api is
-        # undefined → ChatInputBar's `if (window.pywebview && ...)`
-        # check evaluates falsey → browser File API path runs).
+        # ── Native mic + camera fallback (macOS WKWebView only) ──
+        # Belt-and-suspenders for when WKWebView's media patch fails:
+        # exposes a Python→JS bridge the frontend can detect via
+        # `window.pywebview.api.native_mic_*` / `native_camera_*`.
+        # Windows WebView2 + Linux WebKitGTK don't need this, so the class
+        # is darwin-gated.  The native FILE dialog is not: it is on the
+        # js_api of every OS (desktop.native_api_window.FilePickerApi).
         _native_api = None
         if sys.platform == 'darwin':
             class NunbaNativeApi:
@@ -8071,32 +8069,6 @@ def main():
                         self._cam_running = False
                     return 'ok'
 
-                def native_file_pick(self, accept='image'):
-                    """Open native macOS NSOpenPanel via pywebview.
-                    accept: 'image', 'pdf', or 'any' (currently unused —
-                    pywebview's create_file_dialog doesn't expose MIME
-                    filters; selection is unrestricted, server-side
-                    validation in /upload/native enforces type).
-                    Returns selected file path string or '' if cancelled."""
-                    try:
-                        wv = get_webview()
-                        windows = wv.windows
-                        if not windows:
-                            return ''
-                        win = windows[0]
-                        result = win.create_file_dialog(
-                            wv.OPEN_DIALOG,
-                            allow_multiple=False,
-                        )
-                        if result and len(result) > 0:
-                            path = result[0]
-                            logger.info(f"[NATIVE-FILE] Picked: {path}")
-                            return str(path)
-                        return ''
-                    except Exception as e:
-                        logger.error(f"[NATIVE-FILE] Error: {e}")
-                        return ''
-
             _native_api = NunbaNativeApi()
 
         # ── Custom titlebar (TB-1/TB-2) ──
@@ -8104,18 +8076,20 @@ def main():
         # component can call window.pywebview.api.window_minimize / _toggle_maximize
         # / _close / _start_drag.  WindowApi uses a getter so it can reference
         # the (yet-uncreated) window — bound below right after create_window.
-        from desktop.native_api_window import WindowApi, use_frameless
-        _window_api = WindowApi(lambda: _window)
+        from desktop.native_api_window import (
+            FilePickerApi,
+            WindowApi,
+            compose_js_api,
+            use_frameless,
+        )
         _use_frameless = use_frameless()
-        if _native_api is None:
-            _native_api = _window_api
-        else:
-            # Compose: mix WindowApi methods into the existing NunbaNativeApi.
-            for _attr in ('window_minimize', 'window_toggle_maximize',
-                          'window_close', 'window_start_drag',
-                          'window_begin_resize', 'window_platform',
-                          'window_is_maximized'):
-                setattr(_native_api, _attr, getattr(_window_api, _attr))
+        # One js_api for every OS: the window controls and the native file
+        # dialog, on top of NunbaNativeApi (mic, camera) where macOS has it.
+        _native_api = compose_js_api(
+            WindowApi(lambda: _window),
+            FilePickerApi(lambda: _window),
+            _native_api,
+        )
 
         # Create window with conditional hidden status and frameless design.
         # frameless=True on Win+Linux: dark NunbaTitleBar replaces native chrome.
@@ -8133,9 +8107,8 @@ def main():
             text_select=True,
             easy_drag=False,  # Disable since we handle dragging in custom title bar
             background_color='#0F0E17',  # canon bg — matches NunbaTitleBar gradient
-            # js_api is None on Windows/Linux UNLESS the WindowApi wiring above
-            # supplied one.  On macOS this also exposes window.pywebview.api.
-            # native_mic_record / native_file_pick for the WKWebView fallback.
+            # window_* (titlebar) + native_file_pick on every OS; on macOS
+            # also native_mic_* / native_camera_* for the WKWebView fallback.
             js_api=_native_api,
         )
 

@@ -1,5 +1,6 @@
 """WindowApi — minimize / maximize / close / drag bindings for the frameless
-custom titlebar (Teams-style chrome).
+custom titlebar (Teams-style chrome), and FilePickerApi — the native file
+dialog; compose_js_api builds the one js_api object from them.
 
 Exposed to the React SPA as `window.pywebview.api.window_*`.  Cross-platform:
 pywebview's window API uniformly handles Win / Linux / macOS, but we only
@@ -361,6 +362,75 @@ class WindowApi:
         except Exception as exc:
             logger.debug('gtk begin_resize_drag failed: %s', exc)
             return False
+
+
+# Every window_* method WindowApi has, read off the class so a new one cannot
+# be left out when the api is composed onto a platform api (compose_js_api).
+WINDOW_API_METHODS = tuple(sorted(
+    name for name in dir(WindowApi)
+    if name.startswith('window_') and callable(getattr(WindowApi, name))))
+
+
+class FilePickerApi:
+    """JS-facing native open-file dialog: `window.pywebview.api.native_file_pick`.
+
+    The SPA's PDF / image buttons use it where it exists and the browser's
+    own file input everywhere else (landing-page utils/nativeFilePicker.js).
+    It is on every desktop, not only macOS: until 2026-10-10 it lived in the
+    darwin-only class in app.py, so on Windows the api had only window_*
+    methods and the buttons uploaded nothing.
+    """
+
+    def __init__(self, get_window):
+        """get_window: zero-arg callable returning the live pywebview Window
+        (a getter for the same reason as WindowApi: the window is created
+        after the api)."""
+        self._get_window = get_window
+
+    @staticmethod
+    def _open_dialog_type():
+        import webview
+        file_dialog = getattr(webview, 'FileDialog', None)
+        # pywebview 6 deprecates the module-level OPEN_DIALOG (it logs a
+        # warning on every read); older builds only have OPEN_DIALOG.
+        return file_dialog.OPEN if file_dialog is not None else webview.OPEN_DIALOG
+
+    def native_file_pick(self, accept='image') -> str:
+        """Open the OS file dialog; return the chosen path, or '' when the
+        person cancels or no dialog could be shown.
+
+        `accept` ('image' | 'pdf' | 'any') is not applied: the dialog is
+        unrestricted and /upload/native checks the type on the server.
+        """
+        try:
+            window = self._get_window()
+            if window is None:
+                return ''
+            chosen = window.create_file_dialog(
+                self._open_dialog_type(), allow_multiple=False)
+            if not chosen:
+                return ''
+            path = str(chosen[0])
+            logger.info('[NATIVE-FILE] Picked: %s', path)
+            return path
+        except Exception as exc:
+            logger.error('[NATIVE-FILE] Error: %s', exc)
+            return ''
+
+
+def compose_js_api(window_api, file_picker, platform_api=None):
+    """The one object handed to create_window(js_api=...).
+
+    pywebview exposes the bound methods it finds on that object, so the window
+    controls and the picker are set on it as bound methods.  With a
+    platform_api (macOS: mic, camera) that object is the base and keeps its
+    own methods; otherwise window_api is.  Returns the base.
+    """
+    api = platform_api if platform_api is not None else window_api
+    for name in WINDOW_API_METHODS:
+        setattr(api, name, getattr(window_api, name))
+    api.native_file_pick = file_picker.native_file_pick
+    return api
 
 
 def use_frameless() -> bool:
