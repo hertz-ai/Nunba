@@ -175,9 +175,10 @@ describe('the A2UI envelope reaches the overlay as its component', () => {
     expect(seen[0].action).toBe('enable_camera');
   });
 
-  test('only the agent.ui.update channel is unwrapped', () => {
-    // A frame on another channel that happens to carry a `component` field
-    // is that channel's event, not an agent card.
+  test('a frame whose own type is not an envelope is not unwrapped', () => {
+    // A frame that happens to carry a `component` field is its own event,
+    // not an agent card: the rule is the envelope's type (either spelling),
+    // never the field.
     const {es, seen, bell} = openSse();
     es._fire('notification', {
       type: 'notification', title: 'Build finished', msg_id: 'n-1',

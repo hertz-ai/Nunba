@@ -112,7 +112,8 @@ const AGENT_UI_ENVELOPE_TYPES = new Set(['agent.ui.update', 'agent_ui_update']);
  * fell through to printing raw JSON.  Owner ruling 2026-09-26: this overlay
  * IS Liquid UI on the desktop.
  *
- * The envelope's msg_id stays the dedup key.  For agent_id and user_id the
+ * The shell envelope's msg_id stays the dedup key (on the user's channel the
+ * envelope's id is the bus's, see below).  For agent_id and user_id the
  * component's own value wins and the envelope's only fills a gap: an
  * approval card names the agent it asks about, and a card can name the
  * person it concerns (the camera consent card's user_id is what AgentOverlay
@@ -137,7 +138,15 @@ export function unwrapAgentUiEnvelope(payload) {
     ...card,
     agent_id: card.agent_id != null ? card.agent_id : payload.agent_id,
     user_id: card.user_id != null ? card.user_id : payload.user_id,
-    msg_id: payload.msg_id != null ? payload.msg_id : card.msg_id,
+    // The shell envelope's msg_id is the producer's own and names the card.
+    // On the user's channel the envelope's msg_id is the bus's transport
+    // stamp: HARTOS MessageBus._route_crossbar sets it on the WAMP copy and
+    // _route_sse sends the SSE copy without one, so one push would get two
+    // identities and show twice.  That card keeps its own id, if any, and
+    // both copies are deduped by its content and push time.
+    msg_id: payload.type === 'agent.ui.update' && payload.msg_id != null
+      ? payload.msg_id
+      : card.msg_id,
   };
 }
 

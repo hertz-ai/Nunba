@@ -64,6 +64,28 @@ class FakeEventSource {
 FakeEventSource.instances = [];
 global.EventSource = FakeEventSource;
 
+/** The crossbar worker as realtimeService.attachWorker sees it. */
+class FakeWorker {
+  constructor() {
+    this._listeners = [];
+  }
+
+  addEventListener(type, fn) {
+    if (type === 'message') this._listeners.push(fn);
+  }
+
+  removeEventListener(type, fn) {
+    this._listeners = this._listeners.filter((f) => f !== fn);
+  }
+
+  postMessage() {}
+
+  /** The worker posting one message to the page. */
+  _emit(data) {
+    this._listeners.forEach((fn) => fn({data}));
+  }
+}
+
 jest.mock('../../config/apiBase', () => ({
   API_BASE_URL: '',
   SOCIAL_API_URL: '/api/social',
@@ -162,8 +184,25 @@ describe("a card on the user's own chat.social stream", () => {
     expect(seen.filter((c) => c.type === 'cart').map((c) => c.total)).toEqual([28, 56]);
   });
 
-  test('the same card delivered twice is one card', () => {
-    // WAMP and SSE both carry one publish: the same dict, the same _ts.
+  test('one push on both transports is one card', () => {
+    // HARTOS MessageBus.publish sends one per-user push down two legs with
+    // different shapes: the SSE leg (_route_sse) carries the dict as is, the
+    // crossbar leg (_route_crossbar) stamps the bus msg_id on its copy
+    // (data.setdefault('msg_id', ...)).  The page gets both, from the stream
+    // and from the worker; the same card, the same _ts, one with an id.
+    const {realtimeService, es, seen} = openSse();
+    const worker = new FakeWorker();
+    realtimeService.attachWorker(worker);
+
+    es._fire('chat.social', perUserEnvelope());
+    worker._emit({type: 'SOCIAL_EVENT',
+      payload: perUserEnvelope({}, {msg_id: '3f2a9c1e5b7d4e60'})});
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].name).toBe('Toned Milk 500 ml');
+  });
+
+  test('the same stream frame twice is one card', () => {
     const {es, seen} = openSse();
     es._fire('chat.social', perUserEnvelope());
     es._fire('chat.social', perUserEnvelope());
