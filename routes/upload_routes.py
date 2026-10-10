@@ -58,6 +58,8 @@ IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
 AUDIO_EXTS = {'.wav', '.mp3', '.ogg', '.m4a', '.webm', '.flac'}
 PDF_EXTS = {'.pdf'}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+#: /upload/native's copy cap for a remote token holder; a local caller has none.
+NATIVE_REMOTE_MAX_BYTES = 100 * 1024 * 1024
 
 
 # ── Helpers ──
@@ -439,7 +441,9 @@ def upload_native():
       bypass.  Confines accepted paths to user file-picker dirs
       (Documents, Desktop, Downloads, Pictures, Movies, Music, Public,
       OneDrive).  Symlinks rejected (anti-evasion).
-    - 100MB copy cap: refuses disk-fill DoS via huge source files.
+    - NATIVE_REMOTE_MAX_BYTES copy cap for a remote token holder: refuses
+      disk-fill DoS via huge source files.  A local caller (this machine)
+      has no cap (owner 2026-10-10: "local need not have a cap").
 
     Cross-OS: pywebview create_file_dialog returns a string path on
     every OS; this view consumes it uniformly.
@@ -466,18 +470,19 @@ def upload_native():
         dest = FILE_DIR / name
     else:
         dest = FILE_DIR / name
-    # Cap copy size — refuse to ingest files >100MB to prevent disk-fill
-    # DoS via a malicious local process pointing at a giant local file.
-    _MAX_COPY_BYTES = 100 * 1024 * 1024
-    try:
-        if src.stat().st_size > _MAX_COPY_BYTES:
-            return jsonify({
-                'error': 'file too large',
-                'size_bytes': src.stat().st_size,
-                'max_bytes': _MAX_COPY_BYTES,
-            }), 413
-    except OSError as e:
-        return jsonify({'error': f'stat failed: {e}'}), 500
+    # A remote token holder copies at most NATIVE_REMOTE_MAX_BYTES (disk-fill
+    # DoS); a local caller has no cap (owner 2026-10-10).
+    from routes.auth import _is_local_request
+    if not _is_local_request():
+        try:
+            if src.stat().st_size > NATIVE_REMOTE_MAX_BYTES:
+                return jsonify({
+                    'error': 'file too large',
+                    'size_bytes': src.stat().st_size,
+                    'max_bytes': NATIVE_REMOTE_MAX_BYTES,
+                }), 413
+        except OSError as e:
+            return jsonify({'error': f'stat failed: {e}'}), 500
     shutil.copy2(str(src), str(dest))
     logger.info(f"upload_native: {name} ({ftype}) from {src}")
 
