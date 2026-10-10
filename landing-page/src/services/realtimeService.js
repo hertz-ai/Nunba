@@ -113,9 +113,20 @@ const DEDUP_MAX_SIZE = 200; // max tracked message IDs
  * approval card names the agent it asks about, and a card can name the
  * person it concerns (the camera consent card's user_id is what AgentOverlay
  * hands NUNBA_CAMERA_CONSENT).
+ *
+ * The same card reaches the user's OWN stream from HARTOS
+ * liquid_ui_service.push_agent_ui's per-user leg, the only leg a node
+ * without a shell has (the cloud gateway behind the McGroce embed), as
+ * {type: 'agent_ui_update', agent_id, component, user_id} on `chat.social`,
+ * with no msg_id (measured 2026-10-10, HARTOS #132).  An envelope is known by
+ * its own type, in either spelling; the channel it arrived on is not the
+ * rule, so a 'notification' that happens to carry a `component` field stays
+ * a notification.
  */
+const AGENT_UI_ENVELOPE_TYPES = new Set(['agent.ui.update', 'agent_ui_update']);
+
 export function unwrapAgentUiEnvelope(payload) {
-  if (!payload || payload.type !== 'agent.ui.update') return null;
+  if (!payload || !AGENT_UI_ENVELOPE_TYPES.has(payload.type)) return null;
   const card = payload.component;
   if (!card || typeof card !== 'object' || Array.isArray(card) || !card.type) {
     return null;
@@ -596,7 +607,11 @@ class RealtimeService {
         (payload.generated_audio_url || payload.agent_id || '') + '|' +
         (payload.message || payload.content || payload.text || '').slice(0, 100) + '|' +
         (Array.isArray(payload.ids) ? payload.ids.join(',') : '') + '|' +
-        (payload.capability || '') + ':' + (payload.name || '');
+        (payload.capability || '') + ':' + (payload.name || '') + '|' +
+        // A card pushed without an id carries its push time: two cart cards
+        // seconds apart differ in nothing else this key reads, while the
+        // same card on two transports (WAMP + SSE) shares it.
+        (payload._ts || '');
       id = '_h:' + key;
     }
     const now = Date.now();
@@ -623,16 +638,19 @@ class RealtimeService {
   }
 
   _dispatchSocialPayload(payload) {
-    if (this._isDuplicate(payload)) return;
-
     // A HARTOS A2UI envelope is an agent card and nothing else: the overlay
     // gets the card, and it is NOT re-announced on the card's own type
     // channel (a 'notification' card would otherwise reach the bell too).
+    // Dedup keys on the CARD, not the envelope: the per-user envelope has no
+    // msg_id, and hashed whole (type + agent id, nothing of the card) every
+    // card from one agent inside the window counted as a repeat of the first.
     const card = unwrapAgentUiEnvelope(payload);
     if (card) {
+      if (this._isDuplicate(card)) return;
       this._emit('agent.ui.update', card);
       return;
     }
+    if (this._isDuplicate(payload)) return;
 
     // Normalize event type from any payload shape
     let eventType = payload.type || payload.event_type || payload.action || 'message';
