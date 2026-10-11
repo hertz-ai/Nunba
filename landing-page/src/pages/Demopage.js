@@ -264,13 +264,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // sticky-true for the session.  See hooks/useLocalEngineReady.js for
   // the zero-regression contract.
   const engineReady = useLocalEngineReady();
+  // requestId (state) feeds the worker's SET_REQUEST_ID effect; requestIdRef
+  // is the current turn's id as handleDataReceived and the TTS player read it
+  // (isOtherTurnEnvelope) without re-creating those callbacks per turn.
+  // chatRetry.startTurn, at the send, is the ref's only writer.  There is no
+  // state-sync effect: one wrote the state's value back after a later send
+  // had already moved the ref on (two sends inside one frame, measured on a
+  // copy in review), so for a moment the ref named the previous turn.
   const [requestId, setRequestId] = useState(null);
   const requestIdRef = useRef(null);
-  // The current turn's id, read by handleDataReceived and the TTS player
-  // (isOtherTurnEnvelope) without re-creating those callbacks per turn.
-  // handleSend writes the ref at the send; this keeps it in step with the
-  // state for every other reader of requestId.
-  useEffect(() => { requestIdRef.current = requestId; }, [requestId]);
   // Per-msg_id dedup map.  The same priority=49 thinking trace can
   // arrive at handleDataReceived via THREE paths for a single chat
   // turn:

@@ -98,10 +98,13 @@ test('every envelope reader in the main window consults the one rule', () => {
   const thinking = src.indexOf('parsed.action === CHAT_ACTION_THINKING', status + 1);
   expect(status).toBeGreaterThan(-1);
   expect(thinking).toBeGreaterThan(status);
+  // The whole condition, so a flipped rule (`if (!isOtherTurnEnvelope(`)
+  // fails here: review of d0cd9390 showed the unanchored match let that
+  // mutant through with every test green.
   expect(src.slice(status, thinking))
-    .toMatch(/isOtherTurnEnvelope\(parsed\.request_id, requestIdRef\.current\)/);
+    .toMatch(/if \(isOtherTurnEnvelope\(parsed\.request_id, requestIdRef\.current\)\) \{/);
   expect(src.slice(thinking, thinking + 1500))
-    .toMatch(/isOtherTurnEnvelope\(parsed\.request_id, currentReqId\)/);
+    .toMatch(/if \(isOtherTurnEnvelope\(parsed\.request_id, currentReqId\)\) \{/);
   const rules = src.match(/isOtherTurnEnvelope\(/g) || [];
   expect(rules.length).toBe(2); // the two trace branches; the player goes through ttsGuards
   expect(src).not.toMatch(/request_id !== requestIdRef\.current/);

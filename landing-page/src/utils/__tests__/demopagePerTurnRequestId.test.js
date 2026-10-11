@@ -43,11 +43,12 @@ describe('Demopage starts a turn per send', () => {
     expect(start).toBeGreaterThan(-1);
     expect(state).toBeGreaterThan(start);
     expect(post).toBeGreaterThan(state);
-    // handleSend owns the ref through the helper; no site assigns it by hand
-    // except the state-sync effect.
-    const refWrites = SRC.match(/requestIdRef\.current = /g) || [];
-    expect(refWrites).toEqual(['requestIdRef.current = ']);
-    expect(SRC).toMatch(/useEffect\(\(\) => \{ requestIdRef\.current = requestId; \}, \[requestId\]\);/);
+    // startTurn is the ref's only writer: no hand assignment and no
+    // state-sync effect.  Such an effect wrote the state's value back after
+    // a later send had already moved the ref on (two sends inside one
+    // frame, measured on a copy in the review of d0cd9390), so for a moment
+    // the ref named the previous turn.
+    expect(SRC).not.toMatch(/requestIdRef\.current = /);
   });
 
   test('the send is the only writer of the page\'s request id', () => {
