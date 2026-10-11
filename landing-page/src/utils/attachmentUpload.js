@@ -36,7 +36,7 @@ export async function uploadFailureMessage(response, noun) {
 const tell = (ctx, message) => ctx.notify({type: 'error', message, duration: NOTE_MS});
 
 export async function selectPdf(event, ctx) {
-  const {userId, setPdfFile, setpdfFileUrl, setRequestId, setPdfurl} = ctx;
+  const {userId, setPdfFile, setpdfFileUrl, setPdfurl} = ctx;
 
   const refused = async (response) => {
     console.error('Failed to upload PDF:', response.status);
@@ -61,7 +61,6 @@ export async function selectPdf(event, ctx) {
       });
       if (!response.ok) return await refused(response);
       const result = await response.json();
-      setRequestId(result.request_id);
       setpdfFileUrl(result.file_url);
     } catch (error) {
       broke(error);
@@ -96,7 +95,6 @@ export async function selectPdf(event, ctx) {
     if (!response.ok) return await refused(response);
 
     const result = await response.json();
-    setRequestId(result.request_id);
     setpdfFileUrl(result.file_url);
   } catch (error) {
     broke(error);

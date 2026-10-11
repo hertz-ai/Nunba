@@ -28,7 +28,7 @@ import { WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBas
 import { selectPdf, selectImage } from '../utils/attachmentUpload';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { rememberServerPromptId } from '../utils/promptId';
-import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isBackgroundRequest } from '../constants/chatBubble';
+import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -266,8 +266,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const engineReady = useLocalEngineReady();
   const [requestId, setRequestId] = useState(null);
   const requestIdRef = useRef(null);
-  // Keep ref in sync — handleDataReceived (useCallback) reads the ref to filter
-  // daemon thinking traces without re-creating the callback on every request.
+  // The current turn's id, read by handleDataReceived and the TTS player
+  // (isOtherTurnEnvelope) without re-creating those callbacks per turn.
+  // handleSend writes the ref at the send; this keeps it in step with the
+  // state for every other reader of requestId.
   useEffect(() => { requestIdRef.current = requestId; }, [requestId]);
   // Per-msg_id dedup map.  The same priority=49 thinking trace can
   // arrive at handleDataReceived via THREE paths for a single chat
@@ -2016,8 +2018,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // play() and the reply was never heard.
   const playPushedTts = useCallback((data) => {
     if (!data || !data.generated_audio_url) return;
-    if (data.request_id && requestIdRef.current && data.request_id !== requestIdRef.current) {
-      console.log('[TTS] Skipped stale:', data.request_id, '!= current:', requestIdRef.current);
+    // Another turn's clip: an earlier turn of this page (each turn carries
+    // its own id, so a reply that lands after the next send is not spoken
+    // over it) or a background agent's.
+    if (isOtherTurnEnvelope(data.request_id, requestIdRef.current)) {
+      console.log('[TTS] Skipped another turn\'s clip:', data.request_id, 'current:', requestIdRef.current);
       return;
     }
     const el = getTtsAudioElement();
@@ -2184,11 +2189,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       // is reserved for the model's ACTUAL reasoning, so canned milestones no
       // longer masquerade as Thought-process steps.
       if (Number(parsed.priority) === CHAT_BUBBLE_PRIORITY && parsed.action === CHAT_ACTION_STATUS) {
-        const statusReqId = parsed.request_id || 'unknown';
-        const curReqId = requestIdRef.current;
-        if (isBackgroundRequest(statusReqId)
-            || (curReqId && statusReqId !== 'unknown' && statusReqId !== curReqId)) {
-          return; // daemon/background status — not this user's turn
+        if (isOtherTurnEnvelope(parsed.request_id, requestIdRef.current)) {
+          return; // a background agent's, or an earlier turn's — not this turn
         }
         try {
           const rawText = Array.isArray(parsed.text) ? parsed.text[0] : (parsed.text || '');
@@ -2206,17 +2208,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (Number(parsed.priority) === CHAT_BUBBLE_PRIORITY && parsed.action === CHAT_ACTION_THINKING) {
         const traceRequestId = parsed.request_id || 'unknown';
 
-        // Only show thinking traces that belong to the current user chat request.
-        // Daemon/background agent tasks use different request_ids — drop them
-        // so they don't leak into the user's conversation UI.
-        // A daemon turn's id is dropped even before this window has a turn of
-        // its own: requestIdRef starts null, and the comparison below lets
-        // everything through then.  Those traces now reach this topic
-        // (HARTOS trace_audience) and belong on the floating window only.
+        // Only show thinking traces that belong to the current turn.  A
+        // background agent's traces reach this topic too (HARTOS
+        // trace_audience) and belong on the floating window only; they are
+        // dropped even before this window has a turn of its own.  An earlier
+        // turn's late traces are dropped once a newer turn was sent: each
+        // turn carries its own id, so they no longer land in the newer
+        // turn's container.
         const currentReqId = requestIdRef.current;
-        if (isBackgroundRequest(traceRequestId)
-            || (currentReqId && traceRequestId !== 'unknown' && traceRequestId !== currentReqId)) {
-          logger.log(`Dropping daemon thinking trace (req=${traceRequestId}, current=${currentReqId})`);
+        if (isOtherTurnEnvelope(traceRequestId, currentReqId)) {
+          logger.log(`Dropping another turn's thinking trace (req=${traceRequestId}, current=${currentReqId})`);
           return;
         }
 
@@ -2830,10 +2831,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
     const unsubTts = realtimeService.on('tts', (data) => {
       console.log('[TTS] Event received:', data.generated_audio_url, 'req:', data.request_id);
-      if (data.request_id && requestIdRef.current && data.request_id !== requestIdRef.current) {
-        console.log('[TTS] Skipped stale:', data.request_id, '!= current:', requestIdRef.current);
-        return;
-      }
+      // playPushedTts decides whose turn the clip is; this listener only
+      // hands it over, as the WAMP path does.
       playPushedTts(data);
     });
 
@@ -2997,6 +2996,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     });
   }, []);
 
+  // Once per turn, since each turn has its own id: the worker's confirmation
+  // publish (com.hertzai.hevolve.confirmation) names the turn it is for.
   useEffect(() => {
     if (requestId && worker) {
       logger.log('📋 Sending request ID to worker:', requestId);
@@ -3945,7 +3946,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     userId: decryptedUserId,
     setPdfFile,
     setpdfFileUrl,
-    setRequestId,
     setPdfurl,
     notify: pushNotification,
   });
@@ -4072,9 +4072,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
     logger.log(origin, pathname, 'origin and pathname');
 
-    const generatedRequestId = requestId || uuidv4();
-    setRequestId(generatedRequestId);
-
     setCurrentThinkingId(null);
     setThinkingStartTime(null);
 
@@ -4140,6 +4137,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setShowAgentMentionList(false);
 
     const msgId = makeMsgId();
+    // The turn's request id is its message id, minted here for this send and
+    // carried nowhere else (NunbaChatProvider sends the same id).  One page
+    // used to mint one uuid and keep it for every later turn, so the
+    // stale-turn rule (isOtherTurnEnvelope) never separated two turns of the
+    // same page and the thinking container keyed on `_after_user_N` to tell
+    // them apart; measured 2026-10-11, two voice turns 29 s apart reached
+    // HARTOS under one id.  The ref is set here, not only in the state
+    // effect, so an envelope that lands before the next render is judged
+    // against this turn.
+    const generatedRequestId = msgId;
+    requestIdRef.current = generatedRequestId;
+    setRequestId(generatedRequestId);
     const userMessage = {
       type: 'user',
       content: inputMessage,

@@ -35,7 +35,6 @@ const makeCtx = () => ({
   userId: 'u1',
   setPdfFile: jest.fn(),
   setpdfFileUrl: jest.fn(),
-  setRequestId: jest.fn(),
   setPdfurl: jest.fn(),
   setUserImage: jest.fn(),
   setIsImageUploading: jest.fn(),
@@ -98,7 +97,9 @@ describe('selectPdf on Windows (an api with no native_file_pick)', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0][0]).toBe(BOOK_PARSING_URL);
     expect(ctx.setpdfFileUrl).toHaveBeenCalledWith('/uploads/files/b.pdf');
-    expect(ctx.setRequestId).toHaveBeenCalledWith('r9');
+    // The upload's request id stays with the upload (the book row and its
+    // parse job carry it); the chat turn that follows mints its own.
+    expect(ctx.notify).not.toHaveBeenCalled();
   });
 });
 
