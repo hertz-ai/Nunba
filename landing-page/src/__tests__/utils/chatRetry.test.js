@@ -116,3 +116,48 @@ describe('a chat turn and its reply', () => {
     expect(turnHasReply(msgs, 2)).toBe(true);
   });
 });
+
+// The id a chat turn is sent under.  Demopage.handleSend starts every send
+// with this; the id is the turn's message id and its request_id (what
+// NunbaChatProvider sends), and the ref is what the envelope readers
+// (isOtherTurnEnvelope) compare against.  Measured 2026-10-11: one page sent
+// two voice turns 29 s apart under one id, because the page minted a uuid
+// once and reused it; review of e578848d then showed the inline mint could
+// regress to `ref.current || makeMsgId()` with every test green.
+describe('startTurn: every send is a new turn', () => {
+  const {startTurn} = require('../../utils/chatRetry');
+
+  test('two sends of one page get two ids, and the ref follows the latest', () => {
+    const ref = {current: null};
+    const first = startTurn(ref);
+    expect(ref.current).toBe(first);
+    const second = startTurn(ref);
+    expect(second).not.toBe(first);
+    expect(ref.current).toBe(second);
+  });
+
+  test('an id already held by the ref is never reused', () => {
+    const held = 'msg_1760160492473_k3j9x1';
+    const ref = {current: held};
+    const id = startTurn(ref);
+    expect(id).not.toBe(held);
+    expect(ref.current).toBe(id);
+  });
+
+  test('the turn id is a message id, so one id names the bubble and the request', () => {
+    expect(startTurn({current: null})).toMatch(/^msg_\d+_[a-z0-9]+$/);
+  });
+
+  test('the ref is written before the id is returned to the caller', () => {
+    // The POST and the first trace can race the next render; the reader's
+    // ref must already name this turn when startTurn returns.
+    let seen = null;
+    const ref = {};
+    Object.defineProperty(ref, 'current', {
+      set(v) { seen = v; },
+      get() { return seen; },
+    });
+    const id = startTurn(ref);
+    expect(seen).toBe(id);
+  });
+});

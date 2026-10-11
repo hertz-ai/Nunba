@@ -32,8 +32,8 @@ import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOther
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
-import { classifyError, getBackoff, makeMsgId, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
-import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload } from '../utils/ttsGuards';
+import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
+import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip } from '../utils/ttsGuards';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
 import VoiceVisualizer from '../components/VoiceVisualizer';
@@ -2017,12 +2017,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // (services/ttsClipPlayer.js).  Two inline players aborted each other's
   // play() and the reply was never heard.
   const playPushedTts = useCallback((data) => {
-    if (!data || !data.generated_audio_url) return;
-    // Another turn's clip: an earlier turn of this page (each turn carries
-    // its own id, so a reply that lands after the next send is not spoken
-    // over it) or a background agent's.
-    if (isOtherTurnEnvelope(data.request_id, requestIdRef.current)) {
-      console.log('[TTS] Skipped another turn\'s clip:', data.request_id, 'current:', requestIdRef.current);
+    // Only the current turn's clip plays (utils/ttsGuards.shouldPlayPushedClip):
+    // an earlier turn of this page (each turn carries its own id, so a reply
+    // that lands after the next send is not spoken over it) or a background
+    // agent's is skipped.
+    if (!shouldPlayPushedClip(data, requestIdRef.current)) {
+      if (data && data.generated_audio_url) {
+        console.log('[TTS] Skipped another turn\'s clip:', data.request_id, 'current:', requestIdRef.current);
+      }
       return;
     }
     const el = getTtsAudioElement();
@@ -2216,7 +2218,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // turn carries its own id, so they no longer land in the newer
         // turn's container.
         const currentReqId = requestIdRef.current;
-        if (isOtherTurnEnvelope(traceRequestId, currentReqId)) {
+        if (isOtherTurnEnvelope(parsed.request_id, currentReqId)) {
           logger.log(`Dropping another turn's thinking trace (req=${traceRequestId}, current=${currentReqId})`);
           return;
         }
@@ -4136,19 +4138,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }
     setShowAgentMentionList(false);
 
-    const msgId = makeMsgId();
-    // The turn's request id is its message id, minted here for this send and
-    // carried nowhere else (NunbaChatProvider sends the same id).  One page
-    // used to mint one uuid and keep it for every later turn, so the
-    // stale-turn rule (isOtherTurnEnvelope) never separated two turns of the
-    // same page and the thinking container keyed on `_after_user_N` to tell
-    // them apart; measured 2026-10-11, two voice turns 29 s apart reached
-    // HARTOS under one id.  The ref is set here, not only in the state
-    // effect, so an envelope that lands before the next render is judged
-    // against this turn.
-    const generatedRequestId = msgId;
-    requestIdRef.current = generatedRequestId;
-    setRequestId(generatedRequestId);
+    // This send is a new turn.  startTurn (utils/chatRetry) mints its id,
+    // which is the user bubble's message id and the request_id the POST
+    // carries (NunbaChatProvider sends the same id), and writes requestIdRef
+    // before anything else runs, so an envelope that lands before the next
+    // render is judged against this turn.  One page used to mint one uuid
+    // and keep it for every later turn, so the stale-turn rule
+    // (isOtherTurnEnvelope) never separated two turns of the same page and
+    // the thinking container keyed on `_after_user_N` to tell them apart;
+    // measured 2026-10-11, two voice turns 29 s apart reached HARTOS under
+    // one id.
+    const msgId = startTurn(requestIdRef);
+    setRequestId(msgId);
     const userMessage = {
       type: 'user',
       content: inputMessage,
@@ -4253,7 +4254,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             const localResult = await chatApi.chat({
               text: inputMessage,
               user_id: effectiveUserId,
-              request_id: generatedRequestId,
+              request_id: msgId,
               agent_id: _agentIdForBackend,
               agent_type: _agentTypeForBackend,
               conversation_id: conversationId,

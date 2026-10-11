@@ -47,6 +47,22 @@ export function makeMsgId() {
 }
 
 /**
+ * Start a chat turn: mint its id and make it the page's current turn.
+ *
+ * The id is the turn's message id and the request_id its POST carries
+ * (NunbaChatProvider sends the same id).  `currentTurnRef.current` is
+ * written here, at the send, so an envelope that lands before the next
+ * render is judged against this turn (constants/chatBubble.
+ * isOtherTurnEnvelope).  Every call is a new turn: nothing is carried over
+ * from the previous one, whatever the ref already holds.
+ */
+export function startTurn(currentTurnRef) {
+  const id = makeMsgId();
+  currentTurnRef.current = id;
+  return id;
+}
+
+/**
  * True for a message the user reads as an answer: assistant text, or a card
  * that answers in its place.  ChatMessageList renders llm_setup_card and
  * plan_card only when their payload is present, so they count only then.

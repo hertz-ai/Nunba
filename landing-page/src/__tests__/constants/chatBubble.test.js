@@ -66,9 +66,16 @@ describe('isOtherTurnEnvelope: whose turn an envelope belongs to', () => {
     ['missing', undefined],
     ['null', null],
     ['empty', ''],
-    ['the renderer\'s placeholder for a missing id', 'unknown'],
   ])('an envelope with no id (%s) cannot be told apart, so it is this turn\'s', (_label, id) => {
     expect(isOtherTurnEnvelope(id, second)).toBe(false);
+  });
+
+  test('a literal id that is not this turn\'s is another turn\'s, placeholders included', () => {
+    // The renderer substitutes 'unknown' for a missing id in its log lines
+    // and container keys only; the rule is given the raw id and treats any
+    // other literal as another turn's.
+    expect(isOtherTurnEnvelope('unknown', second)).toBe(true);
+    expect(isOtherTurnEnvelope('123456', second)).toBe(true);
   });
 
   test('before the page has a turn of its own, a person\'s envelope is let through', () => {
@@ -79,10 +86,12 @@ describe('isOtherTurnEnvelope: whose turn an envelope belongs to', () => {
 
 test('every envelope reader in the main window consults the one rule', () => {
   // Source guard: Demopage cannot be rendered cheaply in jsdom.  The Status
-  // and Thinking branches and the TTS player must each ask isOtherTurnEnvelope
-  // with the live ref, and none may compare request ids by hand: a second
-  // copy of the rule is how the daemon case was missed before (a fresh
-  // window, no turn yet, let daemon traces into the conversation).
+  // and Thinking branches must each ask isOtherTurnEnvelope with the RAW id
+  // and the live ref (the clip player asks through ttsGuards.
+  // shouldPlayPushedClip, guarded in utils/__tests__/demopagePerTurnRequestId),
+  // and none may compare request ids by hand: a second copy of the rule is
+  // how the daemon case was missed before (a fresh window, no turn yet, let
+  // daemon traces into the conversation).
   const src = fs.readFileSync(
     path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf8');
   const status = src.indexOf('parsed.action === CHAT_ACTION_STATUS');
@@ -92,11 +101,9 @@ test('every envelope reader in the main window consults the one rule', () => {
   expect(src.slice(status, thinking))
     .toMatch(/isOtherTurnEnvelope\(parsed\.request_id, requestIdRef\.current\)/);
   expect(src.slice(thinking, thinking + 1500))
-    .toMatch(/isOtherTurnEnvelope\(traceRequestId, currentReqId\)/);
-  const player = src.indexOf('const playPushedTts = useCallback(');
-  expect(player).toBeGreaterThan(-1);
-  expect(src.slice(player, player + 600))
-    .toMatch(/isOtherTurnEnvelope\(data\.request_id, requestIdRef\.current\)/);
+    .toMatch(/isOtherTurnEnvelope\(parsed\.request_id, currentReqId\)/);
+  const rules = src.match(/isOtherTurnEnvelope\(/g) || [];
+  expect(rules.length).toBe(2); // the two trace branches; the player goes through ttsGuards
   expect(src).not.toMatch(/request_id !== requestIdRef\.current/);
   expect(src).not.toMatch(/!== cur(rent)?ReqId\)/);
 });

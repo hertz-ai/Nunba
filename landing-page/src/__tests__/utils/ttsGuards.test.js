@@ -10,6 +10,7 @@ const {
   shouldSpeakLocalReply,
   isDraftReply,
   hasServerAudioPayload,
+  shouldPlayPushedClip,
 } = require('../../utils/ttsGuards');
 
 
@@ -117,5 +118,41 @@ describe('#206 shouldSpeakLocalReply', () => {
       hasServerAudio: true,
       realtimeConnected: true,
     })).toBe(false);
+  });
+});
+
+
+// Whether a server-pushed clip (SSE 'tts' or WAMP, Demopage.playPushedTts)
+// plays: only the current turn's.  Each turn carries its own id, so a reply
+// that lands after the next send is not spoken over it (measured 2026-10-11:
+// two voice turns 29 s apart, two clips, one page id).  The one rule for
+// whose turn an envelope is lives in constants/chatBubble.isOtherTurnEnvelope.
+describe('shouldPlayPushedClip', () => {
+  const first = 'msg_1760160492473_k3j9x1';
+  const second = 'msg_1760160521422_a1b2c3';
+  const clip = (requestId) => ({generated_audio_url: '/tts/audio/a.wav', request_id: requestId});
+
+  test('the current turn\'s clip plays', () => {
+    expect(shouldPlayPushedClip(clip(second), second)).toBe(true);
+  });
+
+  test('an earlier turn\'s clip does not play once a newer turn was sent', () => {
+    expect(shouldPlayPushedClip(clip(first), second)).toBe(false);
+  });
+
+  test('a background agent\'s clip never plays, with or without a turn of our own', () => {
+    expect(shouldPlayPushedClip(clip('daemon_goal_20260412_235046_b18bba6f'), second)).toBe(false);
+    expect(shouldPlayPushedClip(clip('daemon_goal_20260412_235046_b18bba6f'), null)).toBe(false);
+  });
+
+  test('a clip with no id, or one arriving before the page has a turn, plays', () => {
+    expect(shouldPlayPushedClip(clip(undefined), second)).toBe(true);
+    expect(shouldPlayPushedClip(clip(first), null)).toBe(true);
+  });
+
+  test('nothing plays without a clip url', () => {
+    expect(shouldPlayPushedClip({request_id: second}, second)).toBe(false);
+    expect(shouldPlayPushedClip(null, second)).toBe(false);
+    expect(shouldPlayPushedClip(undefined, null)).toBe(false);
   });
 });
