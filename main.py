@@ -880,8 +880,17 @@ def after_request(response):
             and request.headers.get('Access-Control-Request-Private-Network') == 'true'):
         response.headers['Access-Control-Allow-Private-Network'] = 'true'
 
-    # Security headers — desktop app, never iframed, no external scripts
-    response.headers['X-Frame-Options'] = 'DENY'
+    # Security headers — no external scripts; framed by ONE ancestor only,
+    # the page's own origin.  Under HART OS the shell (hart-liquid-ui on
+    # :6800) frames Nunba's routes (the pinned assistant bubble, agents,
+    # recipes, communities) through its same-origin proxy over
+    # unix:/run/hart/nunba.sock, so to the browser Nunba IS the shell's
+    # origin.  DENY made every one of those panels paint blank with no
+    # error anywhere (HART OS generation 18, 2026-10-11: the iframe loaded
+    # the bundle, the browser refused to render it).  The standalone
+    # desktop app is its own origin and is unaffected; every other site is
+    # refused exactly as before.
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     # Content-Security-Policy — desktop app talks to:
@@ -937,10 +946,12 @@ def after_request(response):
         # `default-src 'self'` and was blocked outright — the logged-out
         # landing page rendered that section as an empty min-h-screen box
         # (a full viewport of black) instead of the video.  Scoped to the
-        # two YouTube embed origins only; frame-ancestors 'none' below is
-        # untouched, so nothing may embed US.
+        # two YouTube embed origins only.  frame-ancestors 'self' below
+        # mirrors X-Frame-Options SAMEORIGIN above (this directive wins
+        # when both are present): only the page's own origin may embed
+        # US, which is how the HART OS shell shows Nunba in its panels.
         "frame-src https://www.youtube.com https://www.youtube-nocookie.com; "
-        "frame-ancestors 'none'; "
+        "frame-ancestors 'self'; "
         "base-uri 'self'; "
         "form-action 'self'"
     )
