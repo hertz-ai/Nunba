@@ -1,6 +1,11 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 import React, {useState, useRef, useEffect, useCallback} from 'react';
 
+// Tick cadence for the clock-driven mode. The index is computed from elapsed
+// time on every tick, so this only bounds how often the DOM updates; it never
+// sets the typing speed.
+const TICK_MS = 50;
+
 const TypeWriterForSubtitle = ({
   text,
   duration,
@@ -48,7 +53,13 @@ const TypeWriterForSubtitle = ({
     }
   }, [audioPosition, audioDuration, text, isIdle, shouldStart, onComplete]);
 
-  // Interval-driven mode (fallback when no audio position)
+  // Clock-driven mode (fallback when no audio position).
+  //
+  // The index is where the clock says it should be, never one step per tick.
+  // The first version appended one character per setInterval tick, so a late
+  // tick (busy main thread, software WebKit on the HART OS node) stretched the
+  // subtitle past its own audio and made the reply read as "slow typing".
+  // Computing the index from elapsed time means a late tick catches up.
   const startAnimation = useCallback(() => {
     if (
       hasCompletedRef.current ||
@@ -62,25 +73,30 @@ const TypeWriterForSubtitle = ({
 
     stopAnimation();
 
-    const charDelay = (duration * 1000) / text.length;
-    let currentText = '';
+    const charDelay = Math.max(1, (duration * 1000) / text.length);
+    // Resume from the current index (a duration refinement mid-line keeps the
+    // characters already shown instead of blanking the subtitle).
+    const started = Date.now() - charIndexRef.current * charDelay;
 
     intervalRef.current = setInterval(() => {
-      if (charIndexRef.current >= text.length) {
+      const idx = Math.min(
+        text.length,
+        Math.floor((Date.now() - started) / charDelay),
+      );
+      if (idx > charIndexRef.current) {
+        charIndexRef.current = idx;
+        setDisplayText(text.slice(0, idx));
+      }
+      if (idx >= text.length) {
         stopAnimation();
         hasCompletedRef.current = true;
         onComplete?.();
-        return;
       }
-
-      currentText += text[charIndexRef.current];
-      setDisplayText(currentText);
-      charIndexRef.current += 1;
-    }, charDelay);
+    }, Math.min(charDelay, TICK_MS));
   }, [text, duration, isIdle, shouldStart, onComplete, stopAnimation]);
 
   useEffect(() => {
-    // Skip interval mode when audio-driven
+    // Skip the clock mode when audio-driven
     if (audioPosition != null && audioDuration != null) return;
 
     if (text !== prevTextRef.current) {
