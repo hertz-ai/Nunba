@@ -653,6 +653,8 @@ def chat(
     teacher_avatar_id=None,
     draft_first=None,
     device_id=None,
+    attachments=None,
+    goal_tags=None,
     **kwargs
 ) -> dict[str, Any]:
     """
@@ -757,6 +759,14 @@ def chat(
     # that device drops its own turns from the cross-device feed.
     if device_id:
         payload["device_id"] = str(device_id)
+    # The turn's file references (refs into the user file store) and its
+    # agent-creation hint.  HARTOS /chat parses both (core.chat_attachments;
+    # goal_tags against the user-assignable tags), so they go as given, and
+    # only when a caller has them: every other caller's body is unchanged.
+    if attachments:
+        payload["attachments"] = attachments
+    if goal_tags:
+        payload["goal_tags"] = goal_tags
     # Per-request draft override: HARTOS /chat honours `draft_first` in the
     # body.  Sent only when a caller sets it, so every other caller keeps
     # HARTOS's default.

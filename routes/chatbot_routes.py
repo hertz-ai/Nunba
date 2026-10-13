@@ -1161,6 +1161,46 @@ def _turn_text(data):
 #: itself: exception text and backend envelopes are not for the user.
 _TURN_FAILED_TEXT = "Sorry, I couldn't answer that just now. Please try again."
 
+#: A request id a client may name for its own turn.  The phone mints one per
+#: turn so that a reply arriving after its wait (the push, file_list recovery)
+#: finds the bubble waiting for it.  The id keys the turn's state on this
+#: desktop (HARTOS's per-turn caches, the user file store's turn binding), so
+#: only this alphabet and length are taken from a client.
+_CLIENT_REQUEST_ID = re.compile(r'[A-Za-z0-9_-]{8,64}')
+
+
+def _turn_request_id(data):
+    """The id a /custom_gpt turn runs under: the body's own when it is a
+    well-formed id (_CLIENT_REQUEST_ID), else a fresh one.
+
+    A fresh id also replaces one carrying HARTOS's background tag
+    (core.chat_client.DAEMON_PREFIX, its one spelling): HARTOS reads a
+    ``daemon_<goal>`` turn as the agent daemon's own work
+    (dispatch.is_genuine_user_request) and books it to that goal
+    (create_recipe, daemon_goal_id), so no client may name one.
+    """
+    fresh = str(int(time.time() * 1000))
+    sent = data.get('request_id')
+    if sent in (None, '') or (sent == 0 and not isinstance(sent, bool)):
+        return fresh                      # no id: the turn gets one
+    rid = (str(sent) if isinstance(sent, (str, int))
+           and not isinstance(sent, bool) else None)
+    if rid and _CLIENT_REQUEST_ID.fullmatch(rid):
+        try:
+            from core.chat_client import DAEMON_PREFIX
+            if not rid.startswith(DAEMON_PREFIX):
+                return rid
+        except Exception:
+            # Without HARTOS's tag a person's turn cannot be told from the
+            # daemon's, so the client's id is not taken.
+            logger.warning('custom_gpt: core.chat_client unavailable; not '
+                           'taking the request id the body names', exc_info=True)
+    # Shape only, never the value: it is whatever the client sent.
+    logger.info('custom_gpt: the body names an unusable request id (%s, '
+                'length %s); the turn runs as %s', type(sent).__name__,
+                len(rid) if rid else '-', fresh)
+    return fresh
+
 
 def _run_turn(turn):
     """(body, status) of one turn run by _chat_turn, the body of /chat.
@@ -1199,10 +1239,15 @@ def custom_gpt():
     in the one agent reply shape (_agent_reply).  draft_first is off because
     these screens show only this synchronous reply, and a draft's standby
     ("let me check...") would otherwise be the whole answer.
+
+    The phone names each turn's request_id, kept when well formed
+    (_turn_request_id) so a late push or file_list recovery finds its
+    bubble, and a Reel Studio turn carries attachments and goal_tags, which
+    go to HARTOS as sent; the `media` HARTOS answers with is in the reply.
     """
     data = request.get_json(silent=True) or {}
     user_id = data.get('user_id', 'guest')
-    request_id = data.get('request_id') or str(int(time.time() * 1000))
+    request_id = _turn_request_id(data)
     text = _turn_text(data)
     if not text.strip():
         return _agent_reply(
@@ -1221,7 +1266,11 @@ def custom_gpt():
     }
     if prompt_id not in (None, '', 0, '0'):
         turn['prompt_id'] = prompt_id
-    for key in ('preferred_lang', 'language', 'media_mode'):
+    # attachments (the phone's refs into this desktop's file store) and
+    # goal_tags (the agent-creation hint) ride to HARTOS as sent: HARTOS
+    # parses both, so they are copied here, never read.
+    for key in ('preferred_lang', 'language', 'media_mode',
+                'attachments', 'goal_tags'):
         if data.get(key):
             turn[key] = data[key]
     body, status = _run_turn(turn)
@@ -2675,6 +2724,11 @@ def _chat_turn(data):
     # The device the turn came from: HARTOS records it on the mirrored turn
     # (chat.new / chat-sync), so each device tells its own turns apart.
     device_id = data.get('device_id')
+    # The turn's file references (refs into this desktop's user file store)
+    # and the agent-creation hint.  HARTOS /chat parses and binds both, so
+    # they go to it as sent, and nowhere else: the cloud leg never has them.
+    attachments = data.get('attachments')
+    goal_tags = data.get('goal_tags')
     conversation_id = data.get('conversation_id')
     video_req = data.get('video_req', False)
     request_id = data.get('request_id', str(int(time.time())))
@@ -3263,6 +3317,8 @@ def _chat_turn(data):
                     teacher_avatar_id=teacher_avatar_id,
                     draft_first=draft_first,
                     device_id=device_id,
+                    attachments=attachments,
+                    goal_tags=goal_tags,
                 )
                 # Surface explicit LangChain errors (guardrails, prompt injection, etc.)
                 if result.get('error') and not (result.get('text') or result.get('response')):
@@ -3415,6 +3471,11 @@ def _chat_turn(data):
                                 }
                         except (ValueError, _json.JSONDecodeError):
                             pass  # Not JSON — leave as text
+                    # Media the turn delivered (a reel: HARTOS's /chat reply
+                    # carries it as `media`).  The phone renders it from this
+                    # reply when the turn finishes inside its wait.
+                    if result.get('media'):
+                        response_json['media'] = result['media']
                     # #171 — thinking traces stream live via SSE 'chat.response'
                     # (EventBus.emit fan-out, commit 29ac1b9).  No HTTP-batch
                     # attach: each trace was already delivered in real-time,
