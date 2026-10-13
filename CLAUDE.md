@@ -38,12 +38,15 @@ MiniCPM VLM) to end users.  Ships as a cx_Freeze installer on
 Windows, standalone on macOS/Linux.
 
 **Relationship to HARTOS:** Nunba imports HARTOS (`hart-backend`
-pip package).  HARTOS's `core/`, `integrations/`, `security/`
-packages are bundled inside Nunba's `python-embed/Lib/site-packages`.
+pip package).  HARTOS's `core/`, `integrations/`, `security/` and
+`hartos/` packages are copied whole into the bundle root (and, on
+Windows only, pip-installed into `python-embed/Lib/site-packages`);
+HARTOS `CLAUDE.md` Gate 6 has the rule for new HARTOS modules.
 **Nunba must NOT create its own `core/`, `integrations/`, `security/`,
-or `models/` directories** — namespace collision under cx_Freeze
+or `hartos/` directories** — namespace collision under cx_Freeze
 silently hides whichever package's `__init__.py` loads second (see
-`memory/feedback_frozen_build_pitfalls.md` Rule 2).
+`memory/feedback_frozen_build_pitfalls.md` Rule 2).  Nunba's own
+`models/` is fine: HARTOS has no `models/`.
 
 ## Branch Discipline — MAIN BRANCH ONLY (MANDATORY)
 
@@ -315,17 +318,23 @@ mechanically, not by hoping.
 
 ### Gate 6 — cx_Freeze Bundle Accounting (BLOCKING for new modules)
 
-Every new `.py` file that will be imported at runtime in a bundled
-install MUST be listed in `scripts/setup_freeze_nunba.py` `packages[]`.
+Every new Nunba `.py` file that will be imported at runtime in a
+bundled install MUST be listed in `packages[]` of every
+`scripts/setup_freeze_*.py` (Windows, Linux, macOS).
 cx_Freeze's module tracer only follows static `import` statements —
 it misses runtime-dynamic imports (builtins registration,
 `importlib.import_module`, `__main__` lookup).
 
+HARTOS modules (`core/`, `integrations/`, `security/`, `hartos/`) are
+the exception: they never go in `packages[]`.  Their rule is HARTOS
+`CLAUDE.md` Gate 6.
+
 Checklist:
-- [ ] New module declared in `packages[]`
+- [ ] New Nunba module declared in every platform's `packages[]`
 - [ ] `__init__.py` present in every new package directory
 - [ ] No name collision with HARTOS packages (Nunba must NOT have
-      its own `core/`, `integrations/`, `security/`, `models/`)
+      its own `core/`, `integrations/`, `security/`, `hartos/`;
+      Nunba's `models/` is its own, HARTOS has none)
 - [ ] Local `python scripts/build.py` boot-tested (or at minimum
       `python -c "from new.module import X"` against frozen python-embed)
 

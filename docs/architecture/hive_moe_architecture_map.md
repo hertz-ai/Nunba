@@ -48,7 +48,7 @@ Hevolve (web SPA) ── REST / WAMP ──▶ HARTOS regional/central (hevolve.
 Hevolve_React_Native ── native Java WAMP ──▶ HARTOS regional/central
 ```
 
-Nunba **must not** own its own `core/`, `integrations/`, `security/`, or `models/` packages — those live in HARTOS and are imported through `site-packages`. Namespace collision under cx_Freeze silently hides whichever `__init__.py` loads second (see the repo's agent-guidance doc, Gate 6, and `memory/feedback_frozen_build_pitfalls.md`).
+Nunba **must not** own its own `core/`, `integrations/`, `security/`, or `hartos/` packages — those live in HARTOS and ship into the bundle whole (HARTOS's root agent-guidance doc, Gate 6, has the rule for new HARTOS modules). Namespace collision under cx_Freeze silently hides whichever `__init__.py` loads second (see the repo's agent-guidance doc, Gate 6, and `memory/feedback_frozen_build_pitfalls.md`). Nunba's own `models/` (see §4.1) does not collide: HARTOS has no `models/`.
 
 ### 1.3 Topology tiers
 
@@ -521,7 +521,7 @@ Security: JWT auth on media routes via `_get_user_id_from_request()`, path-trave
 
 **Fail signals:**
 - Wizard dies without writing `first_run: false` → next launch will re-open wizard.
-- `logs/frozen_debug.log` reports `ModuleNotFoundError: No module named 'core.X'` → cx_Freeze missed a module in `scripts/setup_freeze_nunba.py` packages[] (Gate 6 regression).
+- `logs/frozen_debug.log` reports `ModuleNotFoundError: No module named 'core.X'` → a HARTOS module did not reach the bundle (Gate 6 regression; HARTOS modules never go in `packages[]`, see HARTOS's root agent-guidance doc, Gate 6).
 - First chat turn exceeds 2 s → draft not pinned or draft not responding.
 
 **Cross-repo touchpoints:** Nunba (`app.py`, `main.py`, `desktop/ai_installer`), HARTOS (pip loaded, `hart_intelligence_entry`), Hevolve_Database (migrations).
@@ -1087,7 +1087,7 @@ All work on this ecosystem follows the 10-gate Change Protocol in the repo root'
 | 3 | ✓ | SRP Gate — no `and` in function names, no compute + I/O mixed |
 | 4 | ✓ | Parallel-Path Gate — one writer per persisted value, one source of truth per constant, one dispatch path per verb |
 | 5 | ✓ | Test-First — non-trivial change means write the failing test first |
-| 6 | ✓ | cx_Freeze Bundle Accounting — every new runtime-imported module in `scripts/setup_freeze_nunba.py` `packages[]` |
+| 6 | ✓ | cx_Freeze Bundle Accounting — every new runtime-imported Nunba module in each `scripts/setup_freeze_*.py` `packages[]`; HARTOS modules never (HARTOS's root agent-guidance doc, Gate 6) |
 | 7 |  | Multi-OS / Multi-Topology — Windows/macOS/Linux, flat/regional/central; no `os.popen`, all network calls with timeouts |
 | 8 |  | Review Perspectives — architect, reviewer, ciso, sre, perf, product, test-generator |
 | 9 |  | Commit Discipline — atomic, conventional-commits, no AI co-author trailers, no `--no-verify` |
