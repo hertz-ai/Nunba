@@ -269,21 +269,58 @@ class TestF_Vision:
         assert 'Qwen3.5-0.8B' in src
         assert 'unsloth/Qwen3.5-0.8B-GGUF' in src
 
-    def test_f1_qwen08b_is_available_file_aware(self):
-        """is_available() returns True when model files exist locally,
-        so get_vision_backend() picks qwen08b instead of falling through
-        to MiniCPM."""
+    def test_f1_qwen08b_is_available_file_aware(self, tmp_path, monkeypatch):
+        """is_available() is True when the 0.8B's weights are in Nunba's
+        models folder with the caption server down, so get_vision_backend()
+        picks qwen08b instead of falling through to MiniCPM.
+
+        Behavioural, across both repos: HARTOS's real Qwen08BBackend finds
+        the weights through Nunba's real LlamaInstaller.resolve_models_dir
+        (here NUNBA_MODELS_DIR) and the real catalog row, and calls them
+        whole by HARTOS's one completeness rule.  This test used to grep
+        is_available's source for the literal file name; HARTOS 23848e35a
+        moved that lookup into the launch's own _model_files, the grep went
+        red, and a red grep invites the second lookup back."""
         hartos = REPO.parent / 'HARTOS'
         if not hartos.is_dir():
             pytest.skip('HARTOS sibling missing')
-        src = (hartos / 'integrations' / 'vision' /
-               'lightweight_backend.py').read_text(encoding='utf-8')
-        fn_start = src.find('class Qwen08BBackend')
-        is_avail = src.find('def is_available', fn_start)
-        nxt = src.find('def ', is_avail + 1)
-        body = src[is_avail:nxt]
-        assert 'Qwen3.5-0.8B-UD-Q4_K_XL.gguf' in body, \
-            'is_available must check for local model file'
+        monkeypatch.syspath_prepend(str(hartos))
+        # An import of HARTOS that failed earlier in this process (no sibling
+        # on the path then) leaves 'integrations' bound as a namespace
+        # package to whatever empty integrations/ folder sits in this
+        # checkout, and HARTOS's own package is then never found.  Set that
+        # stale binding aside for this test (monkeypatch puts it back).
+        stale = sys.modules.get('integrations')
+        if stale is not None and getattr(stale, '__file__', None) is None:
+            monkeypatch.delitem(sys.modules, 'integrations')
+        lvb = pytest.importorskip('integrations.vision.lightweight_backend')
+        mc = pytest.importorskip('integrations.service_tools.model_catalog')
+        # This machine's own ~/.nunba and ~/.trueflow models stay out of it.
+        monkeypatch.setenv('USERPROFILE', str(tmp_path / 'home'))
+        monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+        models = tmp_path / 'chosen_models'
+        models.mkdir()
+        monkeypatch.setenv('NUNBA_MODELS_DIR', str(models))
+        # The real catalog row (HARTOS's LLM populator), in a catalog of its
+        # own: the shared one populates every subsystem.
+        catalog = mc.ModelCatalog(catalog_path=str(tmp_path / 'catalog.json'))
+        catalog._populate_llm_models()
+        monkeypatch.setattr(mc, 'get_catalog', lambda: catalog)
+        weights = catalog.get(lvb.Qwen08BBackend.CATALOG_ID).files['model']
+        # Whole is a kilobyte here: the registered size and the rule's
+        # 100 MB floor scaled down, the rule itself untouched.
+        monkeypatch.setitem(mc.MODEL_WEIGHT_BYTES, weights, (1000, 'test: scaled'))
+        monkeypatch.setattr(mc, 'GGUF_MIN_BYTES', 0)
+
+        def server_down(url, **kw):
+            raise ConnectionError('caption server not running')
+        monkeypatch.setattr(lvb, 'pooled_get', server_down)
+        backend = lvb.Qwen08BBackend(port=18493)
+
+        assert backend.is_available() is False, 'selectable with no weights'
+        (models / weights).write_bytes(b'GGUF' + b'\0' * 996)
+        assert backend.is_available() is True, (
+            "whole weights in Nunba's models folder were not selectable")
 
 
 # ═══════════════════════════════════════════════════════════════════════
