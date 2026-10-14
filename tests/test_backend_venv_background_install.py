@@ -10,7 +10,10 @@ requests above the bundled python-embed's), and install_into_venv is the one
 way a backend venv gets its packages.  These tests drive the real
 install_in_background with install_into_venv faked (no pip, no network):
 one install per backend at a time, its outcome readable afterwards, and a
-failure (a False result or a raise) reported, never lost.
+failure (a False result or a raise) reported, never lost.  And the worker's
+pins are verified by the names they import as (pysocks -> socks, pillow ->
+PIL, pycryptodomex -> Cryptodome), through the real install_into_venv with
+pip faked.
 
     python -m pytest tests/test_backend_venv_background_install.py -q
 """
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -130,3 +134,51 @@ def test_the_status_is_a_copy(fake_install):
     status = _wait_until_done(BACKEND)
     status["ok"] = "tampered"
     assert backend_venv.background_install(BACKEND)["ok"] is True
+
+
+# The trends worker's pins whose import name is not their distribution name
+# (HARTOS integrations/trends/daily_job.WORKER_PACKAGES), with instagrapi.
+WORKER_PINS = ["pysocks==1.7.1", "pillow==12.2.0", "pycryptodomex==3.23.0",
+               "instagrapi==3.0.24"]
+
+
+def test_the_trends_pins_are_verified_by_the_names_they_import_as(monkeypatch, tmp_path):
+    """install_into_venv imports each spec it installed to verify it
+    (tts.package_installer._canonical_import_name).  Verified as 'pysocks',
+    'pillow' and 'pycryptodomex', a good install of the trends worker's
+    pins read as failed, which is why HARTOS c17513ec4 left those three
+    unpinned (review of c17513ec4).  The real install_into_venv, with pip
+    and the venv's import probe faked."""
+    importable = {"socks", "PIL", "Cryptodome", "instagrapi"}
+    probed = []
+    pyexe = tmp_path / "python.exe"
+    pyexe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(backend_venv, "ensure_venv", lambda b, *a, **k: pyexe)
+    monkeypatch.setattr(backend_venv, "_venv_log_path", lambda b: tmp_path / "venv.log")
+
+    def _probe(backend, module, args, timeout=None, _probe_mode=False):
+        probed.append(module)
+        return (0, "", "") if module in importable else (1, "", f"No module named {module!r}")
+
+    class _Popen:
+        def __init__(self, cmd, **kwargs):
+            self.args, self.returncode = cmd, 0
+
+        def communicate(self, timeout=None):
+            return "", ""
+    monkeypatch.setattr(backend_venv, "invoke_in_venv", _probe)
+    monkeypatch.setattr(backend_venv.subprocess, "run",
+                        lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(backend_venv.subprocess, "Popen", _Popen)
+    ok, msg = backend_venv.install_into_venv(BACKEND, WORKER_PINS)
+    assert ok, msg
+    assert probed == ["socks", "PIL", "Cryptodome", "instagrapi"]
+
+
+def test_a_missing_import_heals_by_its_distribution_name():
+    """The same table read the other way (pip_name_for_import, the self-heal
+    paths): a traceback naming PIL, socks or Cryptodome installs the
+    distribution, not a PyPI name that is something else or nothing."""
+    from tts.package_installer import pip_name_for_import
+    assert [pip_name_for_import(m) for m in ("PIL", "socks", "Cryptodome")] == [
+        "pillow", "pysocks", "pycryptodomex"]
