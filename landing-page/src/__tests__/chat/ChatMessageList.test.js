@@ -555,4 +555,63 @@ describe('ChatMessageList', () => {
     // Only the changed bubble re-parsed.
     expect(Markdown.calls.filter((c) => c === 'BBB more')).toHaveLength(1);
   });
+
+  // ── "Thought for X" pill ─────────────────────────────────────────────────
+  //
+  // Reported 2026-10-02: "✦ Thought for X" showed with no reply.  The pill
+  // reports how long a request took to produce its reply, so a request that
+  // ends without one (failed, empty, a thinking trace only) shows nothing
+  // here: the reason is on the message.
+  describe('"Thought for" pill', () => {
+    const asked = {type: 'user', content: 'hi', messageId: 'm1'};
+    let now;
+    let nowSpy;
+
+    beforeEach(() => {
+      now = 1000000;
+      nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    });
+
+    afterEach(() => {
+      nowSpy.mockRestore();
+    });
+
+    // One request: in flight with `before`, then over 4.2 s later with `after`.
+    const request = (before, after) => {
+      const {rerender} = render(
+        <ChatMessageList {...defaultProps} isRequestInFlight messages={before} />
+      );
+      now += 4200;
+      rerender(
+        <ChatMessageList {...defaultProps} isRequestInFlight={false} messages={after} />
+      );
+    };
+
+    it('shows how long the reply took', () => {
+      request([asked], [asked, {type: 'assistant', content: 'Hello!'}]);
+      expect(screen.getByText('✦ Thought for 4.2s')).toBeInTheDocument();
+    });
+
+    it('shows nothing when the request ended without a reply', () => {
+      request([asked], [{...asked, status: 'failed', error: 'Request timed out'}]);
+      expect(screen.queryByText(/Thought for/)).not.toBeInTheDocument();
+    });
+
+    it('a thinking trace alone is not a reply', () => {
+      const trace = {type: 'thinking_container', id: 't1', thinkingSteps: [], isCompleted: false};
+      request([asked], [asked, trace]);
+      expect(screen.queryByText(/Thought for/)).not.toBeInTheDocument();
+    });
+
+    it('an empty assistant bubble is not a reply', () => {
+      request([asked], [asked, {type: 'assistant', content: ''}]);
+      expect(screen.queryByText(/Thought for/)).not.toBeInTheDocument();
+    });
+
+    it('a reply from before the request does not count for it', () => {
+      const answered = [asked, {type: 'assistant', content: 'Hello!'}];
+      request(answered, answered);
+      expect(screen.queryByText(/Thought for/)).not.toBeInTheDocument();
+    });
+  });
 });

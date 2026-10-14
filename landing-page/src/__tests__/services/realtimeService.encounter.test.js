@@ -25,11 +25,9 @@
  *
  * Test strategy:
  *   - Build a FakeWorker exposing addEventListener('message', fn).
- *   - Stub global EventSource (realtimeService.init opens SSE
- *     unconditionally on the first call — we don't care about SSE
- *     here; we only need the service to wire its internal _worker
- *     reference so the encounter handlers can attach).
- *   - realtimeService.init(fakeWorker) wires the worker.
+ *   - Stub global EventSource (not the subject here; attaching a worker
+ *     opens no stream, the stub only keeps the module loadable).
+ *   - realtimeService.attachWorker(fakeWorker) wires the worker.
  *   - Subscribe via the function under test, dispatch a synthetic
  *     'message' event on the FakeWorker, assert callback fires (or
  *     does NOT fire) per case.
@@ -46,9 +44,8 @@
  *     d) same 3 cases for the icebreaker topic prefix
  */
 
-// Stub EventSource BEFORE the service is required — init() opens SSE
-// and that's not the subject under test.  The mock instances are kept
-// minimal: only the surface init() touches.
+// Stub EventSource BEFORE the service is required.  The stream is not the
+// subject under test; the mock keeps only the surface the service touches.
 class FakeEventSource {
   constructor(url) {
     this.url = url;
@@ -120,7 +117,7 @@ describe('subscribeEncounterMatch', () => {
     const {default: realtimeService, subscribeEncounterMatch} =
       require('../../services/realtimeService');
     const worker = new FakeWorker();
-    realtimeService.init(worker);
+    realtimeService.attachWorker(worker);
 
     const cb = jest.fn();
     subscribeEncounterMatch(cb);
@@ -151,7 +148,7 @@ describe('subscribeEncounterMatch', () => {
     const {default: realtimeService, subscribeEncounterMatch} =
       require('../../services/realtimeService');
     const worker = new FakeWorker();
-    realtimeService.init(worker);
+    realtimeService.attachWorker(worker);
 
     const cb = jest.fn();
     subscribeEncounterMatch(cb);
@@ -171,7 +168,7 @@ describe('subscribeEncounterMatch', () => {
     const {default: realtimeService, subscribeEncounterMatch} =
       require('../../services/realtimeService');
     const worker = new FakeWorker();
-    realtimeService.init(worker);
+    realtimeService.attachWorker(worker);
 
     const cb = jest.fn();
     const unsubscribe = subscribeEncounterMatch(cb);
@@ -208,7 +205,7 @@ describe('subscribeEncounterIcebreaker', () => {
     const {default: realtimeService, subscribeEncounterIcebreaker} =
       require('../../services/realtimeService');
     const worker = new FakeWorker();
-    realtimeService.init(worker);
+    realtimeService.attachWorker(worker);
 
     const cb = jest.fn();
     subscribeEncounterIcebreaker(cb);
@@ -236,7 +233,7 @@ describe('subscribeEncounterIcebreaker', () => {
     const {default: realtimeService, subscribeEncounterIcebreaker} =
       require('../../services/realtimeService');
     const worker = new FakeWorker();
-    realtimeService.init(worker);
+    realtimeService.attachWorker(worker);
 
     const cb = jest.fn();
     subscribeEncounterIcebreaker(cb);
@@ -259,7 +256,7 @@ describe('subscribeEncounterIcebreaker', () => {
     const {default: realtimeService, subscribeEncounterIcebreaker} =
       require('../../services/realtimeService');
     const worker = new FakeWorker();
-    realtimeService.init(worker);
+    realtimeService.attachWorker(worker);
 
     const cb = jest.fn();
     subscribeEncounterIcebreaker(cb);
@@ -279,7 +276,7 @@ describe('subscribeEncounterIcebreaker', () => {
     const {default: realtimeService, subscribeEncounterIcebreaker} =
       require('../../services/realtimeService');
     const worker = new FakeWorker();
-    realtimeService.init(worker);
+    realtimeService.attachWorker(worker);
 
     const cb = jest.fn();
     const unsubscribe = subscribeEncounterIcebreaker(cb);
@@ -314,7 +311,7 @@ describe('encounter handlers ignore non-DATA_RECEIVED messages', () => {
     const {default: realtimeService, subscribeEncounterMatch} =
       require('../../services/realtimeService');
     const worker = new FakeWorker();
-    realtimeService.init(worker);
+    realtimeService.attachWorker(worker);
 
     const cb = jest.fn();
     subscribeEncounterMatch(cb);
@@ -329,7 +326,7 @@ describe('encounter handlers ignore non-DATA_RECEIVED messages', () => {
     const {default: realtimeService, subscribeEncounterIcebreaker} =
       require('../../services/realtimeService');
     const worker = new FakeWorker();
-    realtimeService.init(worker);
+    realtimeService.attachWorker(worker);
 
     const cb = jest.fn();
     subscribeEncounterIcebreaker(cb);

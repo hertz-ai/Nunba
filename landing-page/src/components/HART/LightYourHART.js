@@ -18,6 +18,8 @@
  * "Every word spoken matters.", The human who built this.
  */
 
+import TypedTextBase from './TypedText';
+
 import { API_BASE_URL } from '../../config/apiBase';
 import { applyHartSeal } from '../../hooks/useAuthSession';
 import { consentApi } from '../../services/socialApi';
@@ -706,43 +708,14 @@ function _webSpeech(text, lang) {
 
 // ════════════════════════════════════════════════════════════════════
 // LETTER-BY-LETTER TEXT RENDERER
+// The renderer itself is ./TypedText.js (clock-driven: the visible length
+// follows elapsed time, so a late tick catches up instead of crawling, and
+// the line is one text node, not one <span> per character). This wrapper only
+// applies the ceremony's PA typography.
 // ════════════════════════════════════════════════════════════════════
 
-function TypedText({ text, delay = 40, onComplete, sx = {} }) {
-  const [visible, setVisible] = useState(0);
-
-  useEffect(() => {
-    if (!text) return;
-    setVisible(0);
-    let i = 0;
-    const timer = setInterval(() => {
-      i++;
-      setVisible(i);
-      if (i >= text.length) {
-        clearInterval(timer);
-        if (onComplete) setTimeout(onComplete, 300);
-      }
-    }, delay);
-    return () => clearInterval(timer);
-  }, [text, delay, onComplete]);
-
-  if (!text) return null;
-
-  return (
-    <Typography sx={{ ...styles.paText, ...sx }}>
-      {text.split('').map((ch, i) => (
-        <span
-          key={i}
-          style={{
-            opacity: i < visible ? 1 : 0,
-            transition: `opacity 0.3s ease ${i * 0.02}s`,
-          }}
-        >
-          {ch}
-        </span>
-      ))}
-    </Typography>
-  );
+function TypedText({ sx = {}, ...props }) {
+  return <TypedTextBase {...props} sx={{ ...styles.paText, ...sx }} />;
 }
 
 // ════════════════════════════════════════════════════════════════════

@@ -34,3 +34,17 @@ export const DAEMON_REQUEST_PREFIX = 'daemon_';
 export function isBackgroundRequest(requestId) {
   return typeof requestId === 'string' && requestId.startsWith(DAEMON_REQUEST_PREFIX);
 }
+
+// True for an envelope that is not the current turn's: a background agent's
+// (whatever the page is doing), or an earlier turn's once the page has sent
+// a newer one.  Every chat turn a page sends carries its own id (Demopage
+// handleSend via chatRetry.startTurn, NunbaChatProvider: the turn's message
+// id), so a reply, step or clip that lands after the next send is told apart
+// from that send's.  Callers pass the envelope's raw request_id: one with no
+// id, or one arriving before this page has a turn of its own, cannot be told
+// apart and is treated as this turn's.
+export function isOtherTurnEnvelope(requestId, currentRequestId) {
+  if (isBackgroundRequest(requestId)) return true;
+  if (!currentRequestId || !requestId) return false;
+  return requestId !== currentRequestId;
+}

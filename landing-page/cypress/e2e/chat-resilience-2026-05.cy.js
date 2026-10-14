@@ -88,10 +88,10 @@ describe('#211 SSE resilience: token refresh does not drop the connection', () =
       const realtimeService = win.__nunba_realtime__ ||
                               require('../../src/services/realtimeService').default;
       // Initial bind as 'guest'
-      realtimeService.init(null, {userId: 'guest'});
+      realtimeService.setIdentity({userId: 'guest'});
       cy.wait(500);
       // Rotate to real uid
-      realtimeService.init(null, {userId: 'd68c9dee-real-uid'});
+      realtimeService.setIdentity({userId: 'd68c9dee-real-uid'});
       // During overlap, both connections should briefly coexist
       cy.wait(200);
       expect(realtimeService._sseConnected).to.equal(true);

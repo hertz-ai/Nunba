@@ -528,6 +528,12 @@ def is_main_window_foreground(main_window_handle, companion_window_handle=None):
             m_hwnd = _resolve_handle(main_window_handle)
             if not m_hwnd:
                 return False
+            # A minimized window can still BE the foreground window: minimize
+            # with nothing else to activate and GetForegroundWindow keeps
+            # returning it (measured 2026-10-03, IsIconic=1).  Minimized is
+            # not "the owner is looking at it", so the orb must show.
+            if user32.IsIconic(_hwnd(m_hwnd)):
+                return False
             return _root(m_hwnd) == fg_root
         except Exception as e:
             logger.debug('is_main_window_foreground failed on Windows: %s', e)

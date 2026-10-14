@@ -43,8 +43,8 @@ const ThinkingProcessContainer = ({
   // header (the parent shows an <ElapsedTimer> in the hourglass-row
   // spinner during in-flight, so the container's own ticker would be a
   // duplicate).  Completion summary (totalDuration) stays visible —
-  // it's informative after the hourglass row disappears.  Also stops
-  // the 300ms ticker interval when true, saving cycles.
+  // it's informative after the hourglass row disappears.  The count
+  // keeps running while hidden (see the ticker effect below).
   hideTimer = false,
 }) => {
   const thinkingContentRef = useRef(null);
@@ -94,9 +94,10 @@ const ThinkingProcessContainer = ({
       logger.log('Stopping timer - thinking completed');
       return;
     }
-    // #508 — parent owns the live ticker via <ElapsedTimer>; skip ours.
-    if (hideTimer) return;
-
+    // Counts even while hideTimer hides the display (#508): the count is
+    // the completed summary when steps carry no durations, and it trips the
+    // #208 stale ceiling.  Since 2026-10-02 a request stays in flight through
+    // its thinking traces, so the display is hidden for the whole turn.
     const interval = setInterval(() => {
       setLiveTime((prev) => prev + 0.3);
     }, 300);
@@ -104,7 +105,7 @@ const ThinkingProcessContainer = ({
     return () => {
       clearInterval(interval);
     };
-  }, [isReallyCompleted, hideTimer]);
+  }, [isReallyCompleted]);
 
   useEffect(() => {
     if (!isReallyCompleted && thinkingMessages.length > 0 && liveTime === 0) {

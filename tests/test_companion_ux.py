@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def desktop_where(foreground, owned=None):
+def desktop_where(foreground, owned=None, minimized=()):
     """A fake user32 for a desktop whose foreground window is `foreground`.
 
     `GetAncestor` resolves a window to its ROOT OWNER: itself for a
@@ -34,13 +34,14 @@ def desktop_where(foreground, owned=None):
         companion a window the OS reports as owned by main, which is the
         only arrangement in which that branch decides anything.
 
-    IsIconic / IsWindowVisible are deliberately NOT modelled.  The function
-    stopped consulting them when the gate became "is the foreground window
-    the main window's root" (04339b3c): a minimized or hidden window cannot
-    BE the foreground window, so the OS answers that on its own, and
-    mocking those two only described a mechanism the code no longer has.
+    `minimized` is the windows IsIconic reports.  04339b3c dropped that
+    check on the belief that a minimized window cannot BE the foreground
+    window.  Measured 2026-10-03 with the app's own window kwargs: right
+    after minimize, GetForegroundWindow returned the main window with
+    IsIconic=1, the gate read "in front", and the orb stayed hidden.
     """
     roots = dict(owned or {})
+    iconic = set(minimized)
     user32 = MagicMock()
     user32.GetForegroundWindow.return_value = foreground
 
@@ -49,6 +50,7 @@ def desktop_where(foreground, owned=None):
         return roots.get(h, h)
 
     user32.GetAncestor.side_effect = ancestor
+    user32.IsIconic.side_effect = lambda h: int(getattr(h, 'value', h) in iconic)
     return user32
 
 
@@ -66,15 +68,24 @@ class TestCompanionForegroundDetection(unittest.TestCase):
         self.assertFalse(is_main_window_foreground(0))
 
     @patch('desktop.platform_utils.IS_WINDOWS', True)
-    def test_a_minimized_main_window_is_not_in_front(self):
-        """Minimized Nunba -> the companion SHOWS.
+    def test_a_minimized_main_window_behind_another_app_is_not_in_front(self):
+        """Minimized Nunba while another app took the foreground -> SHOWS.
 
-        Modelled the way Windows really reports it: something else holds
-        the foreground, because a minimized window cannot hold it.
+        The case where the minimized window kept the foreground is the next
+        test; Windows produces both.
         """
         from desktop.platform_utils import is_main_window_foreground
-        with patch('ctypes.windll.user32', desktop_where(9999)):
+        with patch('ctypes.windll.user32', desktop_where(9999, minimized={1001})):
             self.assertFalse(is_main_window_foreground(1001))
+
+    @patch('desktop.platform_utils.IS_WINDOWS', True)
+    def test_minimized_main_still_holding_the_foreground_is_not_in_front(self):
+        """Minimize with nothing else to activate: Windows keeps reporting
+        the minimized main window as the foreground (measured 2026-10-03),
+        and the orb must still show."""
+        from desktop.platform_utils import is_main_window_foreground
+        with patch('ctypes.windll.user32', desktop_where(1001, minimized={1001})):
+            self.assertFalse(is_main_window_foreground(1001, 2002))
 
     @patch('desktop.platform_utils.IS_WINDOWS', True)
     def test_a_desktop_with_no_foreground_window_is_not_in_front(self):

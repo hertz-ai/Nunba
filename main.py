@@ -386,14 +386,16 @@ def _export_owner_identity():
     get_data_dir()/storage, which nothing writes, so the signed-in user was
     never exported and asks went to the guest id, which the signed-in
     clients do not subscribe to (live 2026-09-14: targeted=0 of 2).
+
+    Boot is only the FIRST export: /api/storage/set re-exports on every
+    sign-in and sign-out through the same writer, so the owner never freezes
+    at the boot-time guest.
     """
     try:
-        from desktop.guest_identity import get_desktop_owner_id
-        owner = get_desktop_owner_id()
-        if owner:
-            os.environ.setdefault('HEVOLVE_OWNER_USER_ID', owner)
-    except Exception:
-        pass
+        from desktop.guest_identity import sync_owner_identity_env
+        sync_owner_identity_env()
+    except Exception as e:
+        logging.warning(f"desktop owner export failed at boot: {e}")
 
 
 _export_owner_identity()
@@ -878,8 +880,17 @@ def after_request(response):
             and request.headers.get('Access-Control-Request-Private-Network') == 'true'):
         response.headers['Access-Control-Allow-Private-Network'] = 'true'
 
-    # Security headers — desktop app, never iframed, no external scripts
-    response.headers['X-Frame-Options'] = 'DENY'
+    # Security headers — no external scripts; framed by ONE ancestor only,
+    # the page's own origin.  Under HART OS the shell (hart-liquid-ui on
+    # :6800) frames Nunba's routes (the pinned assistant bubble, agents,
+    # recipes, communities) through its same-origin proxy over
+    # unix:/run/hart/nunba.sock, so to the browser Nunba IS the shell's
+    # origin.  DENY made every one of those panels paint blank with no
+    # error anywhere (HART OS generation 18, 2026-10-11: the iframe loaded
+    # the bundle, the browser refused to render it).  The standalone
+    # desktop app is its own origin and is unaffected; every other site is
+    # refused exactly as before.
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     # Content-Security-Policy — desktop app talks to:
@@ -935,10 +946,12 @@ def after_request(response):
         # `default-src 'self'` and was blocked outright — the logged-out
         # landing page rendered that section as an empty min-h-screen box
         # (a full viewport of black) instead of the video.  Scoped to the
-        # two YouTube embed origins only; frame-ancestors 'none' below is
-        # untouched, so nothing may embed US.
+        # two YouTube embed origins only.  frame-ancestors 'self' below
+        # mirrors X-Frame-Options SAMEORIGIN above (this directive wins
+        # when both are present): only the page's own origin may embed
+        # US, which is how the HART OS shell shows Nunba in its panels.
         "frame-src https://www.youtube.com https://www.youtube-nocookie.com; "
-        "frame-ancestors 'none'; "
+        "frame-ancestors 'self'; "
         "base-uri 'self'; "
         "form-action 'self'"
     )
@@ -2201,82 +2214,16 @@ def llm_switch_model():
 
 @app.route('/api/harthash', methods=["GET"])
 def harthash():
-    """@HARTHASH — returns git commit hashes of all repos at build time.
+    """@HARTHASH — git commit hashes of the repos this build came from.
 
-    Frozen builds: reads BUILD_INFO.txt (written by scripts/build.py
-    post-cx_Freeze).  Source of truth.  Also tries the legacy
-    build_hashes.json for backwards compat with older installs.
-    Dev mode: live `git rev-parse HEAD` per sibling repo.
-
-    Always returns a JSON object — never errors.  Missing fields
-    surface as 'unknown' so the client can flag misconfigured
-    builds without a 500.
+    desktop.boot_record.build_identity is the one reader: BUILD_INFO.txt
+    beside a frozen exe (written by scripts/build.py), the legacy
+    build_hashes.json, else live git in a source run.  The same values are
+    logged as '[BUILD]' on every boot.  Always a JSON object; a value that
+    cannot be read is 'unknown', never a 500.
     """
-    import json as _json
-    _install_dir = os.path.dirname(os.path.abspath(
-        sys.executable if getattr(sys, 'frozen', False) else __file__,
-    ))
-
-    # 1) BUILD_INFO.txt — the actual artifact every freeze ships.  Format
-    #    is `KEY=VALUE` lines (BUILD_SHA, HARTOS_SHA, BUILD_TIME,
-    #    BUILD_PLATFORM).  Normalize key names to match the JSON schema
-    #    legacy callers expect.
-    _info_file = os.path.join(_install_dir, 'BUILD_INFO.txt')
-    if os.path.isfile(_info_file):
-        try:
-            kv: dict = {}
-            with open(_info_file, encoding='utf-8') as _f:
-                for _ln in _f:
-                    if '=' in _ln:
-                        _k, _v = _ln.strip().split('=', 1)
-                        kv[_k.strip()] = _v.strip()
-            return jsonify({
-                'nunba': kv.get('BUILD_SHA', 'unknown'),
-                'hartos': kv.get('HARTOS_SHA', 'unknown'),
-                'hevolveai': kv.get('HEVOLVEAI_SHA', 'unknown'),
-                'hevolve_database': kv.get('HEVOLVE_DATABASE_SHA', 'unknown'),
-                'build_time': kv.get('BUILD_TIME', 'unknown'),
-                'build_platform': kv.get('BUILD_PLATFORM', sys.platform),
-                'source': 'BUILD_INFO.txt',
-            })
-        except Exception as _e:
-            logging.warning(f"harthash: BUILD_INFO.txt parse failed: {_e}")
-
-    # 2) Legacy build_hashes.json (older installs / dev tree)
-    _hash_file = os.path.join(_install_dir, 'build_hashes.json')
-    if os.path.isfile(_hash_file):
-        try:
-            with open(_hash_file) as f:
-                _data = _json.load(f)
-            _data.setdefault('source', 'build_hashes.json')
-            return jsonify(_data)
-        except Exception:
-            pass
-
-    # 3) Dev mode — live git rev-parse on sibling repos
-    import subprocess
-    hashes: dict = {}
-    repos = {
-        'nunba': os.path.dirname(os.path.abspath(__file__)),
-        'hartos': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'HARTOS'),
-        'hevolve_database': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Hevolve_Database'),
-        'hevolveai': os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hevolveai'),
-    }
-    # Four repos x one git spawn each = up to four console flashes on Windows
-    # without the hide flags.  Resolve them once outside the loop.
-    from desktop.platform_utils import get_subprocess_flags
-    _win_flags = get_subprocess_flags()
-    for name, path in repos.items():
-        try:
-            r = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
-                               capture_output=True, text=True, cwd=path, timeout=5,
-                               **_win_flags)
-            hashes[name] = r.stdout.strip() if r.returncode == 0 else 'unknown'
-        except Exception:
-            hashes[name] = 'unknown'
-    hashes['build_time'] = 'dev-mode'
-    hashes['source'] = 'live-git'
-    return jsonify(hashes)
+    from desktop.boot_record import build_identity
+    return jsonify(build_identity())
 
 
 @app.route('/api/admin/models', methods=["GET"])
@@ -4613,6 +4560,80 @@ import threading as _threading
 _sse_clients = {}   # {user_id: [(Queue, connected_at), ...]}
 _sse_lock = _threading.Lock()
 
+# REPLAY — what a stream missed while it was not connected (the 3s reconnect
+# gap, an identity switch, a lagging client).
+#
+# Every frame carries `id: <epoch>-<seq>`.  seq only grows within one process;
+# epoch changes on restart.  The last _SSE_HISTORY_LEN frames per user (key
+# None = broadcast-to-all) are kept for _SSE_HISTORY_TTL_S.  A stream opened
+# with ?since=<id> gets the kept frames after that id, then live ones.
+#
+# Exactly once: a publish assigns its seq, appends to history, snapshots its
+# targets and enqueues in ONE lock hold; a stream registers and snapshots its
+# replay in ONE lock hold.  So each frame lands in the replay snapshot or in
+# the queue, never both, and in order.  The window is bounded: a frame older
+# than _SSE_HISTORY_TTL_S or pushed out of the last _SSE_HISTORY_LEN is in
+# neither.  Replay is idempotent: the same ?since= yields the same frames, and
+# the client drops ids it already has.
+import re as _re  # noqa: E402
+from collections import deque as _deque  # noqa: E402
+
+_SSE_EPOCH = uuid.uuid4().hex[:8]
+_SSE_SINCE_RE = _re.compile(r'([0-9a-f]{1,32})-([0-9]{1,18})')
+_SSE_HISTORY_LEN = 256
+_SSE_HISTORY_TTL_S = 60.0
+_sse_seq = 0
+_sse_history = {}         # {user_id | None: deque[(seq, ts, frame)]}
+_sse_lagged = set()       # queues that missed a frame; their stream ends so the client resumes
+_sse_records_since_sweep = 0
+
+
+def _sse_record(user_id, body):
+    """Give `body` the next id, keep it for replay, return the frame.
+
+    Caller holds _sse_lock.
+    """
+    global _sse_seq, _sse_records_since_sweep
+    _sse_seq += 1
+    now = time.time()
+    frame = f"id: {_SSE_EPOCH}-{_sse_seq}\n{body}"
+    history = _sse_history.get(user_id)
+    if history is None:
+        history = _sse_history[user_id] = _deque(maxlen=_SSE_HISTORY_LEN)
+    history.append((_sse_seq, now, frame))
+    # Users who stopped receiving frames are dropped every
+    # _SSE_HISTORY_LEN records, so the dict holds only recent users.
+    _sse_records_since_sweep += 1
+    if _sse_records_since_sweep >= _SSE_HISTORY_LEN:
+        _sse_records_since_sweep = 0
+        cutoff = now - _SSE_HISTORY_TTL_S
+        for key in [k for k, h in _sse_history.items() if h[-1][1] < cutoff]:
+            del _sse_history[key]
+    return frame
+
+
+def _sse_replay(user_id, since):
+    """Kept frames for `user_id` and for everyone, published after `since`.
+
+    `since` is the last id the client holds.  Absent or malformed means a
+    fresh page: nothing is replayed.  An id from another epoch means the
+    server restarted after the client's last frame, so every kept frame is
+    newer than it.  Caller holds _sse_lock.
+    """
+    # ASCII only and bounded: str.isdigit() accepts '²', and int() of a
+    # 4300+ digit string raises inside the stream, killing every reconnect.
+    match = _SSE_SINCE_RE.fullmatch(since or '')
+    if not match:
+        return []
+    epoch, seq = match.groups()
+    after = int(seq) if epoch == _SSE_EPOCH else 0
+    cutoff = time.time() - _SSE_HISTORY_TTL_S
+    kept = [entry for key in (user_id, None)
+            for entry in _sse_history.get(key, ())
+            if entry[0] > after and entry[1] >= cutoff]
+    kept.sort(key=lambda entry: entry[0])
+    return [frame for _seq, _ts, frame in kept]
+
 # MEMBERSHIP HAS EXACTLY ONE AUTHORITY: the stream's own lifecycle.
 #
 # An entry is added when a stream starts and removed when it ends, both
@@ -4660,25 +4681,40 @@ def broadcast_sse_event(event_type, data, user_id=None):
                 publish_local(f'com.hertzai.pupit.{user_id}', wamp_data)
             elif event_type == 'notification':
                 publish_local(f'com.hertzai.hevolve.social.{user_id}', wamp_data)
+            elif event_type == 'chat.new':
+                # A persisted turn row, not a chat bubble: its own topic,
+                # where crossbarWorker.js subscribes for cross-device sync.
+                publish_local(f'com.hertzai.hevolve.chat.new.{user_id}', wamp_data)
             else:
                 publish_local(f'com.hertzai.hevolve.chat.{user_id}', wamp_data)
     except Exception:
         pass  # WAMP router not available — SSE is the primary transport
 
     import json
-    msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    body = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
     # Delivery ONLY.  This function must never add or remove a
     # subscription — membership belongs to generate()'s try/finally.
-    # Snapshot under the lock, then deliver outside it: put_nowait
-    # cannot block, and holding the lock for only a dict read keeps a
-    # slow subscriber from stalling the publisher or a stream teardown.
+    # Id assignment, the history append, the target snapshot and the
+    # enqueue share ONE lock hold (see REPLAY above): put_nowait cannot
+    # block, and enqueueing outside the hold let two publishers deliver
+    # seq 8 before 7, so a stream dying between them resumed past 7.
+    lagged = []
     with _sse_lock:
+        msg = _sse_record(user_id, body)
         if user_id is not None:
             targets = list(_sse_clients.get(user_id, []))
         else:
             targets = [e for entries in _sse_clients.values() for e in entries]
         total = sum(len(v) for v in _sse_clients.values())
+        for q, _connected_at in targets:
+            try:
+                q.put_nowait(msg)
+            except _queue.Full:
+                lagged.append(q)
+        # Still registered here (same hold), so the stream's finally has
+        # not run and will discard the flag.
+        _sse_lagged.update(lagged)
 
     # Report the TARGETED queue count, not merely the global total.  The
     # previous line logged only the global sum, so it printed a
@@ -4688,21 +4724,16 @@ def broadcast_sse_event(event_type, data, user_id=None):
     logging.info(f"broadcast_sse_event: type={event_type}, user_id={user_id}, "
                  f"targeted={len(targets)}, total_clients={total}")
 
-    dropped = 0
-    for q, _connected_at in targets:
-        try:
-            q.put_nowait(msg)
-        except _queue.Full:
-            dropped += 1
-    if dropped:
+    if lagged:
         # A full queue is a SLOW consumer, not a dead one.  The previous
         # code silently un-subscribed it by omitting it from `alive`, so
-        # one burst of backpressure deafened a client permanently.  Drop
-        # the message, keep the subscription, and say so out loud.
+        # one burst of backpressure deafened a client permanently.  Now
+        # the stream is ended at its next read: the client reconnects
+        # with ?since= and the replay window hands back what it missed.
         logging.warning(
-            f"broadcast_sse_event: type={event_type} dropped for "
-            f"{dropped}/{len(targets)} subscriber(s) with a full queue "
-            f"(subscription retained)")
+            f"broadcast_sse_event: type={event_type} queue full for "
+            f"{len(lagged)}/{len(targets)} subscriber(s); their streams "
+            f"end and resume from the replay window")
 
 
 # Expose on __main__ so HARTOS can find it via `import __main__`.
@@ -4842,6 +4873,7 @@ def sse_event_stream():
         except Exception:
             if not _is_local:
                 return _jsonify({"error": "Invalid or expired token"}), 401
+    uid_from_token = bool(uid)
     if not uid:
         uid = flask_request.args.get('user_id', 'guest') if _is_local else None
     if not uid:
@@ -4849,6 +4881,13 @@ def sse_event_stream():
 
     client_queue = _queue.Queue(maxsize=50)
     entry = (client_queue, time.time())
+    # Read here: the generator runs outside the request context.
+    # Replay hands back up to a minute of a user's PAST frames, so it needs
+    # more than the bundled-mode user_id claim: a resolved token, or this
+    # machine.  An unauthenticated LAN host claiming ?user_id= still gets the
+    # live stream (pre-existing), never the history (review of b07e025f).
+    may_replay = uid_from_token or _is_local_request()
+    since = flask_request.args.get('since', '').strip() if may_replay else ''
 
     def generate():
         # Register INSIDE the generator, inside the try, so the add and
@@ -4866,16 +4905,34 @@ def sse_event_stream():
         # Those leaks are why an age sweeper felt necessary: it was
         # compensating for the split scope instead of closing it.
         try:
+            # Registration and the replay snapshot share one lock hold, so
+            # every frame is in `replay` or arrives on the queue (REPLAY above).
             with _sse_lock:
                 _sse_clients.setdefault(uid, []).append(entry)
+                replay = _sse_replay(uid, since)
+                head = f"{_SSE_EPOCH}-{_sse_seq}"
                 uid_clients = len(_sse_clients.get(uid, []))
                 total_clients = sum(len(v) for v in _sse_clients.values())
             logging.info(
-                "SSE: client registered uid=%s uid_clients=%s total_clients=%s",
-                uid, uid_clients, total_clients,
+                "SSE: client registered uid=%s uid_clients=%s total_clients=%s "
+                "replayed=%s",
+                uid, uid_clients, total_clients, len(replay),
             )
-            yield "data: {\"type\": \"connected\"}\n\n"
+            yield from replay
+            # Carries the id the client resumes from, in the data and NOT as
+            # an `id:` line: head is the last id recorded for ANY user, so as
+            # a frame id it collided with a real frame still queued on the
+            # client's other stream, which the client then dropped as a
+            # duplicate (review of 3e536fb4).  Sent after the replay: a
+            # stream that dies mid-replay leaves the client on the last
+            # replayed id, not past frames it never got.
+            yield ("data: " + json.dumps({"type": "connected", "resume": head})
+                   + "\n\n")
             while True:
+                # A frame was dropped on this full queue: end the stream so
+                # the client resumes from its last id via the replay window.
+                if client_queue in _sse_lagged:
+                    return
                 try:
                     msg = client_queue.get(timeout=30)
                     yield msg
@@ -4887,6 +4944,7 @@ def sse_event_stream():
                     yield ": heartbeat\n\n"
         finally:
             with _sse_lock:
+                _sse_lagged.discard(client_queue)
                 remaining = [
                     e for e in _sse_clients.get(uid, [])
                     if e[0] is not client_queue
@@ -6653,6 +6711,14 @@ if __name__ == '__main__':
         logging.info(f"Python version: {sys.version}")
         logging.info(f"Running from: {os.path.abspath(__file__)}")
         logging.info(f"Hevolve build directory: {LANDING_PAGE_BUILD_DIR}")
+        # Which commits this run comes from.  app.py names the build for the
+        # installed app; `python main.py` never runs app.py.  Never fatal: the
+        # except below this block exits the server.
+        try:
+            from desktop.boot_record import record_build_identity
+            record_build_identity()
+        except Exception as _bi_err:
+            logging.warning(f"[BUILD] build identity not logged: {_bi_err}")
 
         start_background_services()
 

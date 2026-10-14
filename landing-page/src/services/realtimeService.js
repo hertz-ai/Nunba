@@ -13,18 +13,91 @@
  *
  * Guest/local mode: SSE opens without JWT using ?user_id=guest param.
  * No transport-specific code should exist outside this file.
+ *
+ * Ownership — one entry point per concern, so callers cannot race each other:
+ *   - setIdentity() is the only way the SSE stream is opened or re-keyed.
+ *     RealtimeProvider calls it in the app; the <hart-agent> embed calls it on
+ *     host pages, which have no provider.
+ *   - attachWorker()/detachWorker() only wire the crossbar worker.  The page
+ *     that creates and terminates the worker calls them.  They never open,
+ *     close or re-key the stream.
+ *   - disconnect() only closes the stream and forgets its credentials.
+ *   The result is the same whichever of identity and worker arrives first.
  */
 
 import {SOCIAL_API_URL} from '../config/apiBase';
 
 let _worker = null;
-let _workerMessageHandler = null;
 let _eventSource = null;
 let _sseReconnectTimer = null;
+// The rotated stream waiting for its onopen.  Held here so a newer identity
+// or disconnect() can close it; otherwise it opened later as an orphan.
+let _pendingRotateEs = null;
+
+// Resume point for the server's replay window (main.py REPLAY).  Every event
+// frame carries `id: <epoch>-<seq>`; the 'connected' frame carries the
+// stream's starting point as `resume` in its data.  _sseCursor is the latest
+// point and the stream key (base + user) it belongs to; _sseFirstId is the
+// first point this page saw.  Event ids already dispatched are remembered so
+// a replayed copy is dropped.
+let _sseCursor = null; // {key, id}
+let _sseFirstId = null;
+const _seenFrameIds = new Set();
+const _streamKeyOf = new WeakMap(); // EventSource -> stream key
+
+// Every consumer of crossbar worker messages registers a route here.  Exactly
+// one 'message' listener sits on the attached worker and fans out to all
+// routes, so every consumer follows the worker when the page replaces it.
+const _workerRoutes = new Set();
+// Run on every attach so each consumer re-sends its subscriptions to the
+// new worker (a replacement worker starts with none).
+const _attachHooks = new Set();
+
+function _runEach(fns, arg, label) {
+  fns.forEach((fn) => {
+    try {
+      fn(arg);
+    } catch (err) {
+      console.warn(`${label} error:`, err);
+    }
+  });
+}
+
+function _onWorkerMessage(e) {
+  _runEach(_workerRoutes, (e && e.data) || {}, 'Realtime worker route');
+}
+
+/** Route every crossbar worker message to `route`.  Returns an unregister. */
+export function addWorkerRoute(route) {
+  _workerRoutes.add(route);
+  return () => _workerRoutes.delete(route);
+}
+
+/** Run `hook` each time a worker attaches, to re-send subscriptions. */
+export function onWorkerAttach(hook) {
+  _attachHooks.add(hook);
+  return () => _attachHooks.delete(hook);
+}
+
+/** Post to the attached worker.  False when there is none. */
+export function postToWorker(type, payload) {
+  if (!_worker) return false;
+  _worker.postMessage({type, payload});
+  return true;
+}
+
+export function hasWorker() {
+  return Boolean(_worker);
+}
 
 const SSE_RECONNECT_DELAY = 3000; // 3s retry on SSE disconnect
+const SSE_SEEN_IDS_MAX = 1024; // covers the server's 2 x 256-frame replay
 const DEDUP_WINDOW_MS = 10000; // 10s dedup window
 const DEDUP_MAX_SIZE = 200; // max tracked message IDs
+
+// An A2UI envelope's own type, in both spellings HARTOS uses (see
+// unwrapAgentUiEnvelope).
+const AGENT_UI_ENVELOPE_TYPES = new Set(['agent.ui.update', 'agent_ui_update']);
 
 /**
  * The card inside a HARTOS A2UI envelope, flat, or null when `payload` is
@@ -39,14 +112,24 @@ const DEDUP_MAX_SIZE = 200; // max tracked message IDs
  * fell through to printing raw JSON.  Owner ruling 2026-09-26: this overlay
  * IS Liquid UI on the desktop.
  *
- * The envelope's msg_id stays the dedup key.  For agent_id and user_id the
+ * The shell envelope's msg_id stays the dedup key (on the user's channel the
+ * envelope's id is the bus's, see below).  For agent_id and user_id the
  * component's own value wins and the envelope's only fills a gap: an
  * approval card names the agent it asks about, and a card can name the
  * person it concerns (the camera consent card's user_id is what AgentOverlay
  * hands NUNBA_CAMERA_CONSENT).
+ *
+ * The same card reaches the user's OWN stream from HARTOS
+ * liquid_ui_service.push_agent_ui's per-user leg, the only leg a node
+ * without a shell has (the cloud gateway behind the McGroce embed), as
+ * {type: 'agent_ui_update', agent_id, component, user_id} on `chat.social`,
+ * with no msg_id (measured 2026-10-10, HARTOS #132).  An envelope is known by
+ * its own type, in either spelling; the channel it arrived on is not the
+ * rule, so a 'notification' that happens to carry a `component` field stays
+ * a notification.
  */
 export function unwrapAgentUiEnvelope(payload) {
-  if (!payload || payload.type !== 'agent.ui.update') return null;
+  if (!payload || !AGENT_UI_ENVELOPE_TYPES.has(payload.type)) return null;
   const card = payload.component;
   if (!card || typeof card !== 'object' || Array.isArray(card) || !card.type) {
     return null;
@@ -55,7 +138,15 @@ export function unwrapAgentUiEnvelope(payload) {
     ...card,
     agent_id: card.agent_id != null ? card.agent_id : payload.agent_id,
     user_id: card.user_id != null ? card.user_id : payload.user_id,
-    msg_id: payload.msg_id != null ? payload.msg_id : card.msg_id,
+    // The shell envelope's msg_id is the producer's own and names the card.
+    // On the user's channel the envelope's msg_id is the bus's transport
+    // stamp: HARTOS MessageBus._route_crossbar sets it on the WAMP copy and
+    // _route_sse sends the SSE copy without one, so one push would get two
+    // identities and show twice.  That card keeps its own id, if any, and
+    // both copies are deduped by its content and push time.
+    msg_id: payload.type === 'agent.ui.update' && payload.msg_id != null
+      ? payload.msg_id
+      : card.msg_id,
   };
 }
 
@@ -69,157 +160,104 @@ class RealtimeService {
     this._userId = null; // fallback user_id for guest/local SSE
     this._seenIds = new Map(); // request_id → timestamp (dedup)
     this._sseBase = null; // null = SOCIAL_API_URL (the app); set by the embed
+    addWorkerRoute((message) => this._onWorkerMessage(message));
   }
 
   /**
-   * Initialize with the crossbar worker reference.
-   * Called from Demopage.js after the worker is created.
-   * Also opens SSE immediately for guest/local mode (no JWT needed).
-   * @param {Worker} crossbarWorker
-   * @param {Object} [opts]
-   * @param {string} [opts.userId] - user_id for guest/local SSE (no JWT)
-   * @param {string} [opts.sseBase] - base the SSE stream hangs off
+   * Set who the SSE stream belongs to, opening it if none is open.
+   *
+   * The only entry point that opens or re-keys the stream.  Idempotent: the
+   * same identity again changes nothing, so callers may re-assert it on
+   * every render.
+   *
+   * @param {Object} [identity]
+   * @param {string} [identity.userId] - user_id the stream registers under.
+   *   Absent or null keeps the current one.
+   * @param {?string} [identity.token] - tri-state: absent leaves the cached
+   *   credential alone, a string selects authenticated SSE, and null selects
+   *   the local user_id channel.  The distinction matters after a cloud user
+   *   signs out or a persisted guest session wins auth resolution: keeping
+   *   the old token makes _buildSSEUrl ignore the new guest UUID and the
+   *   server registers the stream under the previous token owner.
+   * @param {string} [identity.sseBase] - base the stream hangs off
    *   (`<base>/events/stream`).  Absent = SOCIAL_API_URL, which is what the
    *   app always uses; the <hart-agent> embed passes its runtime gateway,
    *   since a host page's gateway is only known at element connect time.
    */
-  init(crossbarWorker, opts = {}) {
-    if (opts.sseBase) this._sseBase = opts.sseBase;
-    // `token` is tri-state here: omitted means "leave the current credential
-    // alone", a string selects authenticated SSE, and explicit null selects
-    // the local user_id channel. The distinction matters after a cloud user
-    // signs out or a persisted guest session wins auth resolution: keeping the
-    // old token makes _buildSSEUrl ignore the new guest UUID and the server
-    // registers the stream under the previous token owner.
-    const hasExplicitToken = Object.prototype.hasOwnProperty.call(opts, 'token');
-    const previousTokenMode = Boolean(this._token);
-    if (hasExplicitToken) {
-      this._token = opts.token || null;
-    }
-    const credentialModeChanged = previousTokenMode !== Boolean(this._token);
+  setIdentity(identity = {}) {
+    let changed = false;
 
-    // Detect userId change — when the user transitions from "anonymous
-    // visitor" (effectiveUserId='' → SSE registered as literal 'guest')
-    // to "registered guest" (guest_user_id UUID populated post-
-    // authApi.guestRegister), an open SSE connection is stale and must
-    // reconnect with the new uid in the ?user_id= query param.
-    // Without this, the broker keeps storing chat.pupit events under
-    // 'guest' while HARTOS publishes TTS to the per-guest UUID, and
-    // the audio event silently never reaches the client.
-    // Live evidence 2026-05-12: SSE registered uid='guest', TTS event
-    // arrived for uid='d68c9dee-b324-…' — payload filter dropped it.
-    //
-    // #211 — uid change uses OVERLAP rotation, not close+reopen.
-    // _rotateSSE opens a fresh EventSource with the new uid bound in
-    // the URL, awaits its onopen, THEN closes the old one.  The server
-    // briefly sees two subscribers (one per uid) — its uid-keyed
-    // delivery routes each broadcast to the matching subscriber, so
-    // multitenancy is preserved (no event for old uid leaks to new uid
-    // and vice versa).  Eliminates the 3-second SSE_RECONNECT_DELAY
-    // gap during which HARTOS broadcasts (TTS audio especially)
-    // landed in an empty broker (`client_count=0` in frozen_debug.log
-    // — root cause of #206 silent TTS).
-    const userIdChanged = (
-      opts.userId !== undefined
-      && opts.userId !== null
-      && opts.userId !== this._userId
-    );
-    if (userIdChanged) {
-      this._userId = opts.userId;
-    } else if (opts.userId) {
-      this._userId = opts.userId;
+    if (identity.sseBase && identity.sseBase !== this._sseBase) {
+      this._sseBase = identity.sseBase;
+      changed = true;
     }
 
-    // A user-id change and a token<->local transition are both identity
-    // changes. Rotate once, after both fields have been updated, so the new
-    // EventSource is built from one coherent identity snapshot.
-    if ((userIdChanged || credentialModeChanged) && this._sseConnected) {
+    // #211 — a token refresh within the same credential mode is NOT an
+    // identity change: the server authenticated this EventSource at open
+    // time and routes by the uid it bound to.  Rotating on every refresh
+    // (silentGuestRefresh mints a fresh JWT for the SAME guest) opened a
+    // window where broadcasts hit an empty broker — #206's silent TTS.
+    if (Object.prototype.hasOwnProperty.call(identity, 'token')) {
+      const token = identity.token || null;
+      if (Boolean(token) !== Boolean(this._token)) changed = true;
+      this._token = token;
+    }
+
+    // A stream registered as literal 'guest' while HARTOS publishes TTS to
+    // the real uid never receives it (live 2026-05-12: SSE uid='guest', TTS
+    // for 'd68c9dee-…'; live 2026-10-03: SSE uid='guest', /chat as 10202).
+    const {userId} = identity;
+    if (userId !== undefined && userId !== null && userId !== this._userId) {
+      this._userId = userId;
+      changed = true;
+    }
+
+    // #211 — an identity change uses OVERLAP rotation: the new stream opens
+    // and only its onopen closes the old one, so no broadcast lands in an
+    // empty broker.  A stream that is still connecting counts too.
+    if (changed && _eventSource) {
       this._rotateSSE();
-    }
-
-    // Always open SSE — even if worker is null (failed to create).
-    // Local events (TTS audio, agent UI) only arrive via SSE.
-    if (!this._sseConnected) {
-      this._openSSE();
-    }
-
-    if (crossbarWorker && _worker !== crossbarWorker) {
-      // Clean up old handler on the OLD worker before overwriting
-      const oldWorker = _worker;
-      _worker = crossbarWorker;
-      if (_workerMessageHandler && oldWorker) {
-        oldWorker.removeEventListener('message', _workerMessageHandler);
-      }
-
-      _workerMessageHandler = (e) => {
-        const {type, payload} = e.data;
-
-        if (type === 'CONNECTION_STATUS') {
-          const isConnected = payload === 'Connected';
-          this._crossbarConnected = isConnected;
-          this._connected = isConnected || this._sseConnected;
-          this._emit(isConnected ? 'connected' : 'disconnected', {
-            connected: this._connected,
-          });
-
-          // SSE stays open even when crossbar connects.
-          // Crossbar connects to CLOUD router (aws_rasa.hertzai.com) — handles
-          // remote events. SSE connects to LOCAL Flask — handles TTS audio,
-          // setup progress, agent UI updates from the local HARTOS backend.
-          // Both transports coexist; dedup prevents double delivery.
-          if (!this._sseConnected) {
-            this._openSSE();
-          }
-        }
-
-        if (type === 'SOCIAL_EVENT' && payload) {
-          this._dispatchSocialPayload(payload);
-        }
-      };
-
-      _worker.addEventListener('message', _workerMessageHandler);
-    }
-
-    // Open SSE immediately if crossbar isn't connected.
-    // Guest/local mode works without JWT (uses user_id param).
-    if (!this._crossbarConnected) {
+    } else {
       this._openSSE();
     }
   }
 
   /**
-   * connect(token) — called by RealtimeContext / SocialContext.
-   *
-   * Sets JWT for authenticated SSE.  #211 — token refresh is NOT an
-   * identity change: the server already auth'd this EventSource at
-   * open time and routes by the uid it bound to.  Rotating the SSE
-   * on every token refresh (e.g. silentGuestRefresh minting a fresh
-   * JWT for the SAME guest user_id) created a 3-second window where
-   * HARTOS broadcasts hit an empty broker — that was the root cause
-   * of #206's silent TTS.  Now we just update the cached token; the
-   * existing SSE keeps delivering.  Explicit logout still calls
-   * disconnect() which fully tears down + de-auths.
+   * Wire the crossbar worker's messages into the dispatch pipeline.
+   * Replaces any previously attached worker.  Opens no stream.
+   * @param {Worker} worker
    */
-  connect(token) {
-    if (token) {
-      this.init(null, {token});
-      return;
-    }
-    if (this._crossbarConnected) return;
-    if (!this._sseConnected) this._openSSE();
+  attachWorker(worker) {
+    if (!worker || worker === _worker) return;
+    if (_worker) _worker.removeEventListener('message', _onWorkerMessage);
+    _worker = worker;
+    _worker.addEventListener('message', _onWorkerMessage);
+    // A fresh worker has not reported a connection yet.
+    this._setCrossbarConnected(false, {silent: true});
+    _runEach(_attachHooks, undefined, 'Realtime worker attach hook');
   }
 
+  /**
+   * Unwire `worker` if it is the attached one.  Call before terminating it.
+   * @param {Worker} worker
+   */
+  detachWorker(worker) {
+    if (!worker || worker !== _worker) return;
+    _worker.removeEventListener('message', _onWorkerMessage);
+    _worker = null;
+    this._setCrossbarConnected(false, {silent: !this._crossbarConnected});
+  }
+
+  /**
+   * Close the stream and forget its credentials.  The auth boundary (logout,
+   * provider unmount): a later guest/local identity must not reuse the
+   * previous owner's bearer.  The crossbar worker belongs to the page that
+   * attached it and stays attached.
+   */
   disconnect() {
-    this._connected = false;
     this._closeSSE();
-    // Explicit disconnect is the auth boundary (logout/provider unmount).
-    // Do not let a later guest/local init reuse the previous owner's bearer.
     this._token = null;
     this._userId = null;
-    if (_workerMessageHandler && _worker) {
-      _worker.removeEventListener('message', _workerMessageHandler);
-      _workerMessageHandler = null;
-    }
   }
 
   get connected() {
@@ -238,7 +276,41 @@ class RealtimeService {
     this._listeners.get(eventType)?.delete(callback);
   }
 
+  // ── Internal: crossbar worker ───────────────────────────────────────
+
+  _onWorkerMessage({type, payload}) {
+    if (type === 'CONNECTION_STATUS') {
+      this._setCrossbarConnected(payload === 'Connected');
+    } else if (type === 'SOCIAL_EVENT' && payload) {
+      this._dispatchSocialPayload(payload);
+    }
+  }
+
+  // The worker reaches the CLOUD router; SSE reaches the LOCAL Flask.  Both
+  // coexist (dedup prevents double delivery), so either one keeps the
+  // service connected.  `silent` skips the event for bookkeeping-only
+  // changes that no status message caused.
+  _setCrossbarConnected(isConnected, {silent = false} = {}) {
+    this._crossbarConnected = isConnected;
+    this._connected = isConnected || this._sseConnected;
+    if (!silent) {
+      this._emit(isConnected ? 'connected' : 'disconnected', {
+        connected: this._connected,
+      });
+    }
+  }
+
   // ── Internal: SSE transport ─────────────────────────────────────────
+
+  // One pending retry at a time: a second schedule replaces the first, so
+  // overlapping failures cannot stack timers and open duplicate streams.
+  _scheduleSSE(fn) {
+    if (_sseReconnectTimer) clearTimeout(_sseReconnectTimer);
+    _sseReconnectTimer = setTimeout(() => {
+      _sseReconnectTimer = null;
+      fn();
+    }, SSE_RECONNECT_DELAY);
+  }
 
   // Build the SSE URL from current auth state.
   // Prefer JWT when available, otherwise bind by guest user_id.
@@ -257,18 +329,74 @@ class RealtimeService {
     return `${base}/events/stream?user_id=${encodeURIComponent(uid)}`;
   }
 
+  // Who the stream delivers for: base + user.  The cursor is keyed on this,
+  // not on the URL, because a token refresh in the same mode is not an
+  // identity change (#211) and must keep resuming from its last id.
+  _streamKey() {
+    return `${this._sseBase || SOCIAL_API_URL}|${this._userId || 'guest'}`;
+  }
+
+  // A new EventSource for the current identity, resuming from the cursor:
+  // the last point when it belongs to this stream key, else the page's first
+  // point (a different identity has missed everything since the page opened;
+  // the server keeps only its replay window).  No point yet = a fresh page:
+  // nothing to replay.
+  _newEventSource() {
+    const key = this._streamKey();
+    const since = _sseCursor && _sseCursor.key === key
+      ? _sseCursor.id
+      : _sseFirstId;
+    const url = this._buildSSEUrl();
+    const es = new EventSource(
+      since ? `${url}&since=${encodeURIComponent(since)}` : url);
+    _streamKeyOf.set(es, key);
+    return es;
+  }
+
+  // Move the resume point to `id`, delivered by `es`.
+  _advanceCursor(es, id) {
+    if (!_sseFirstId) _sseFirstId = id;
+    _sseCursor = {key: _streamKeyOf.get(es), id};
+  }
+
+  // Note an event frame's id.  False when that id was already dispatched: a
+  // replay overlapping what the previous stream delivered.  Frames from a
+  // server that sends no ids always pass.  Contract: once a stream sends an
+  // id, every later event frame on it must carry its own -- per the SSE spec
+  // a frame without one inherits the previous id and would be dropped here.
+  _acceptFrame(es, e) {
+    const id = e && e.lastEventId;
+    if (!id) return true;
+    this._advanceCursor(es, id);
+    if (_seenFrameIds.has(id)) return false;
+    _seenFrameIds.add(id);
+    if (_seenFrameIds.size > SSE_SEEN_IDS_MAX) {
+      _seenFrameIds.delete(_seenFrameIds.values().next().value);
+    }
+    return true;
+  }
+
   // Attach the standard handler set (onmessage, named events, onerror)
   // to an EventSource.  Extracted so both _openSSE and _rotateSSE wire
   // up the same listeners.
   _attachSSEHandlers(es) {
     es.onmessage = (e) => {
+      let payload;
       try {
-        const payload = JSON.parse(e.data);
-        if (payload.type === 'connected') return; // initial heartbeat
-        this._dispatchSocialPayload(payload);
+        payload = JSON.parse(e.data);
       } catch {
-        // ignore parse errors (heartbeats etc.)
+        return; // ignore parse errors (heartbeats etc.)
       }
+      // The hello carries the stream's starting point in its data.  It only
+      // moves the cursor: it is not an event, and its point is the last id
+      // recorded for ANY user, so marking it seen would drop a real frame
+      // with that id still queued on this page's other stream.
+      if (payload.type === 'connected') {
+        if (payload.resume) this._advanceCursor(es, payload.resume);
+        return;
+      }
+      if (!this._acceptFrame(es, e)) return;
+      this._dispatchSocialPayload(payload);
     };
 
     // Named SSE event types from backend.  EventSource silently drops
@@ -318,11 +446,22 @@ class RealtimeService {
       'capability_update',
     ].forEach((name) => {
       es.addEventListener(name, (e) => {
+        if (!this._acceptFrame(es, e)) return;
         try {
           const payload = JSON.parse(e.data);
           this._dispatchSocialPayload({type: name, ...payload});
         } catch { /* ignore */ }
       });
+    });
+
+    // A persisted chat turn (HARTOS chat_messages.publish_new).  Not routed
+    // through _dispatchSocialPayload: a row carries agent_id, which that
+    // path would also announce on agent.ui.update as a card.
+    es.addEventListener('chat.new', (e) => {
+      if (!this._acceptFrame(es, e)) return;
+      try {
+        this._deliverChatNew(JSON.parse(e.data));
+      } catch { /* ignore */ }
     });
 
     es.onerror = () => {
@@ -333,19 +472,20 @@ class RealtimeService {
       this._closeSSE();
       // Always reconnect SSE — local events (TTS, agent UI) need it
       // even when cloud crossbar is connected.
-      _sseReconnectTimer = setTimeout(
-        () => this._openSSE(),
-        SSE_RECONNECT_DELAY
-      );
+      this._scheduleSSE(() => this._openSSE());
     };
   }
 
   _openSSE() {
     if (_eventSource) return; // already open
+    // Opening now supersedes a pending reconnect.
+    if (_sseReconnectTimer) {
+      clearTimeout(_sseReconnectTimer);
+      _sseReconnectTimer = null;
+    }
 
-    const url = this._buildSSEUrl();
     try {
-      _eventSource = new EventSource(url);
+      _eventSource = this._newEventSource();
     } catch {
       return; // EventSource not available (e.g. SSR)
     }
@@ -373,12 +513,20 @@ class RealtimeService {
       return;
     }
 
+    // This rotation supersedes a retry still waiting from a failed one.
+    if (_sseReconnectTimer) {
+      clearTimeout(_sseReconnectTimer);
+      _sseReconnectTimer = null;
+    }
     const oldEs = _eventSource;
-    const newUrl = this._buildSSEUrl();
+    if (_pendingRotateEs) {
+      try { _pendingRotateEs.close(); } catch { /* noop */ }
+      _pendingRotateEs = null;
+    }
 
     let newEs;
     try {
-      newEs = new EventSource(newUrl);
+      newEs = this._newEventSource();
     } catch {
       // EventSource unavailable — keep old running.  Caller has
       // already updated _userId/_token; next reconnect (if old dies)
@@ -392,11 +540,13 @@ class RealtimeService {
     // window; after swap the standard onerror takes over via the
     // `es !== _eventSource` check it already does.
     this._attachSSEHandlers(newEs);
+    _pendingRotateEs = newEs;
 
     let switched = false;
     newEs.onopen = () => {
-      if (switched) return;
+      if (switched || newEs !== _pendingRotateEs) return;
       switched = true;
+      _pendingRotateEs = null;
       // Swap the module pointer BEFORE closing the old one so any
       // concurrent onerror on `oldEs` sees `oldEs !== _eventSource`
       // and skips the reconnect path (handler check in
@@ -417,19 +567,15 @@ class RealtimeService {
         // Post-swap error on the new (now active) connection —
         // standard reconnect flow.
         this._closeSSE();
-        _sseReconnectTimer = setTimeout(
-          () => this._openSSE(),
-          SSE_RECONNECT_DELAY
-        );
+        this._scheduleSSE(() => this._openSSE());
         return;
       }
       // Failed to open the rotated connection — keep OLD running and
       // retry the rotate after the standard delay.
       try { newEs.close(); } catch { /* noop */ }
-      _sseReconnectTimer = setTimeout(
-        () => this._rotateSSE(),
-        SSE_RECONNECT_DELAY
-      );
+      if (newEs !== _pendingRotateEs) return; // superseded or disconnected
+      _pendingRotateEs = null;
+      this._scheduleSSE(() => this._rotateSSE());
     };
   }
 
@@ -441,6 +587,10 @@ class RealtimeService {
     if (_eventSource) {
       _eventSource.close();
       _eventSource = null;
+    }
+    if (_pendingRotateEs) {
+      try { _pendingRotateEs.close(); } catch { /* noop */ }
+      _pendingRotateEs = null;
     }
     this._sseConnected = false;
     if (!this._crossbarConnected) {
@@ -468,7 +618,11 @@ class RealtimeService {
         (payload.generated_audio_url || payload.agent_id || '') + '|' +
         (payload.message || payload.content || payload.text || '').slice(0, 100) + '|' +
         (Array.isArray(payload.ids) ? payload.ids.join(',') : '') + '|' +
-        (payload.capability || '') + ':' + (payload.name || '');
+        (payload.capability || '') + ':' + (payload.name || '') + '|' +
+        // A card pushed without an id carries its push time: two cart cards
+        // seconds apart differ in nothing else this key reads, while the
+        // same card on two transports (WAMP + SSE) shares it.
+        (payload._ts || '');
       id = '_h:' + key;
     }
     const now = Date.now();
@@ -486,17 +640,28 @@ class RealtimeService {
     return false;
   }
 
-  _dispatchSocialPayload(payload) {
-    if (this._isDuplicate(payload)) return;
+  // One chat.new row, from SSE or the crossbar worker, to the subscribeChatNew
+  // listeners once: both transports carry the row's own msg_id.
+  _deliverChatNew(row) {
+    if (!row || typeof row !== 'object' || !row.msg_id) return;
+    if (this._isDuplicate(row)) return;
+    _notifyAll(_chatNewListeners, row, 'chat.new event');
+  }
 
+  _dispatchSocialPayload(payload) {
     // A HARTOS A2UI envelope is an agent card and nothing else: the overlay
     // gets the card, and it is NOT re-announced on the card's own type
     // channel (a 'notification' card would otherwise reach the bell too).
+    // Dedup keys on the CARD, not the envelope: the per-user envelope has no
+    // msg_id, and hashed whole (type + agent id, nothing of the card) every
+    // card from one agent inside the window counted as a repeat of the first.
     const card = unwrapAgentUiEnvelope(payload);
     if (card) {
+      if (this._isDuplicate(card)) return;
       this._emit('agent.ui.update', card);
       return;
     }
+    if (this._isDuplicate(payload)) return;
 
     // Normalize event type from any payload shape
     let eventType = payload.type || payload.event_type || payload.action || 'message';
@@ -548,48 +713,34 @@ class RealtimeService {
   }
 }
 
+// ── Worker-routed subscriptions ──────────────────────────────────────
+// Each subscription below is one route on the shared worker fan-out
+// (_workerRoutes), so it keeps working across worker replacement and
+// whether it is subscribed before or after the worker attaches.  Topic
+// subscriptions are re-sent from an attach hook; the worker ignores a topic
+// it already holds, so re-sending is safe.
+
+function _notifyAll(listeners, data, label) {
+  _runEach(listeners, data, `${label} handler`);
+}
+
 // ── Community topic handler ──────────────────────────────────────────
 
-let _communityWorker = null;
 const _communityListeners = new Map(); // communityId → Set<callback>
-let _communityWorkerHandler = null;
 
-/**
- * Initialize community realtime with the crossbar worker reference.
- * Called lazily by subscribeCommunity if not already set.
- */
-function _ensureCommunityWorker() {
-  if (_communityWorkerHandler || !_worker) return;
-  _communityWorker = _worker;
+addWorkerRoute(({type, payload}) => {
+  if (type !== 'COMMUNITY_EVENT' || !payload) return;
+  const communityId = payload.communityId || payload.community_id;
+  const callbacks = _communityListeners.get(communityId);
+  if (callbacks) _notifyAll(callbacks, payload, 'Community event');
+  const wildcardCbs = _communityListeners.get('*');
+  if (wildcardCbs) _notifyAll(wildcardCbs, payload, 'Community event');
+});
 
-  _communityWorkerHandler = (e) => {
-    const {type, payload} = e.data;
-    if (type === 'COMMUNITY_EVENT' && payload) {
-      const communityId = payload.communityId || payload.community_id;
-      const callbacks = _communityListeners.get(communityId);
-      if (callbacks) {
-        callbacks.forEach((cb) => {
-          try {
-            cb(payload);
-          } catch (err) {
-            console.warn('Community event handler error:', err);
-          }
-        });
-      }
-      // Wildcard listeners
-      const wildcardCbs = _communityListeners.get('*');
-      if (wildcardCbs) {
-        wildcardCbs.forEach((cb) => {
-          try {
-            cb(payload);
-          } catch (_) {}
-        });
-      }
-    }
-  };
-
-  _worker.addEventListener('message', _communityWorkerHandler);
-}
+onWorkerAttach(() => {
+  _communityListeners.forEach((_, communityId) =>
+    postToWorker('COMMUNITY_SUBSCRIBE', {communityId}));
+});
 
 /**
  * Subscribe to real-time events for a community.
@@ -601,20 +752,13 @@ function _ensureCommunityWorker() {
  * @returns {Function} unsubscribe function
  */
 export function subscribeCommunity(communityId, callback) {
-  _ensureCommunityWorker();
-
   if (!_communityListeners.has(communityId)) {
     _communityListeners.set(communityId, new Set());
   }
   _communityListeners.get(communityId).add(callback);
 
   // Tell worker to subscribe to WAMP community topic
-  if (_worker) {
-    _worker.postMessage({
-      type: 'COMMUNITY_SUBSCRIBE',
-      payload: {communityId},
-    });
-  }
+  postToWorker('COMMUNITY_SUBSCRIBE', {communityId});
 
   // Return unsubscribe function
   return () => {
@@ -622,12 +766,7 @@ export function subscribeCommunity(communityId, callback) {
     if (_communityListeners.get(communityId)?.size === 0) {
       _communityListeners.delete(communityId);
       // Unsubscribe from WAMP if no more listeners
-      if (_worker) {
-        _worker.postMessage({
-          type: 'COMMUNITY_UNSUBSCRIBE',
-          payload: {communityId},
-        });
-      }
+      postToWorker('COMMUNITY_UNSUBSCRIBE', {communityId});
     }
   };
 }
@@ -641,35 +780,24 @@ export function subscribeCommunity(communityId, callback) {
 // English mumbling instead of silently mis-routing.
 
 const _ttsLangListeners = new Set();
-let _ttsLangWorkerHandler = null;
+// The worker relays as
+// `{type:'TTS_LANG_EVENT', payload:{kind:'mismatch'|'unsupported', ...}}`
+const _TTS_LANG_TOPICS = [
+  'com.hertzai.hevolve.tts.lang_mismatch',
+  'com.hertzai.hevolve.tts.lang_unsupported',
+];
 
-function _ensureTtsLangWorker() {
-  if (_ttsLangWorkerHandler || !_worker) return;
-  _ttsLangWorkerHandler = (e) => {
-    const {type, payload} = e.data || {};
-    if (type === 'TTS_LANG_EVENT' && payload) {
-      _ttsLangListeners.forEach((cb) => {
-        try {
-          cb(payload);
-        } catch (err) {
-          console.warn('TTS lang event handler error:', err);
-        }
-      });
-    }
-  };
-  _worker.addEventListener('message', _ttsLangWorkerHandler);
-  // Ask the worker to subscribe to both topics.  The worker relays as
-  // `{type:'TTS_LANG_EVENT', payload:{kind:'mismatch'|'unsupported', ...}}`
-  _worker.postMessage({
-    type: 'TTS_LANG_SUBSCRIBE',
-    payload: {
-      topics: [
-        'com.hertzai.hevolve.tts.lang_mismatch',
-        'com.hertzai.hevolve.tts.lang_unsupported',
-      ],
-    },
-  });
-}
+addWorkerRoute(({type, payload}) => {
+  if (type === 'TTS_LANG_EVENT' && payload) {
+    _notifyAll(_ttsLangListeners, payload, 'TTS lang event');
+  }
+});
+
+onWorkerAttach(() => {
+  if (_ttsLangListeners.size > 0) {
+    postToWorker('TTS_LANG_SUBSCRIBE', {topics: _TTS_LANG_TOPICS});
+  }
+});
 
 /**
  * Subscribe to TTS language-mismatch / unsupported events.
@@ -678,7 +806,9 @@ function _ensureTtsLangWorker() {
  * @returns {Function} unsubscribe
  */
 export function subscribeTtsLangEvents(callback) {
-  _ensureTtsLangWorker();
+  if (_ttsLangListeners.size === 0) {
+    postToWorker('TTS_LANG_SUBSCRIBE', {topics: _TTS_LANG_TOPICS});
+  }
   _ttsLangListeners.add(callback);
   return () => _ttsLangListeners.delete(callback);
 }
@@ -696,33 +826,31 @@ export function subscribeTtsLangEvents(callback) {
 // Callers MUST drop events whose `device_id` matches their local
 // device id; otherwise messages will appear twice (once from the
 // optimistic /chat-response write path, once from this WAMP path).
-// NunbaChatProvider.jsx is the canonical consumer + filter site.
+// isRemoteChatTurn below is the ONE filter; NunbaChatProvider and
+// Demopage both use it.
 
-const _chatNewListeners = new Set();
-let _chatNewWorkerHandler = null;
-
-function _ensureChatNewWorker() {
-  if (_chatNewWorkerHandler || !_worker) return;
-  _chatNewWorkerHandler = (e) => {
-    const {type, payload} = e.data || {};
+// A worker DATA_RECEIVED message carries {sourceTopic, data}; deliver `data`
+// to `listeners` when the topic starts with `prefix`.
+function _addTopicRoute(prefix, listeners, label) {
+  addWorkerRoute(({type, payload}) => {
     if (type !== 'DATA_RECEIVED' || !payload) return;
     const {sourceTopic, data} = payload;
-    if (
-      typeof sourceTopic !== 'string' ||
-      !sourceTopic.startsWith('com.hertzai.hevolve.chat.new.')
-    ) {
-      return;
+    if (typeof sourceTopic === 'string' && sourceTopic.startsWith(prefix)) {
+      _notifyAll(listeners, data, label);
     }
-    _chatNewListeners.forEach((cb) => {
-      try {
-        cb(data);
-      } catch (err) {
-        console.warn('chat.new event handler error:', err);
-      }
-    });
-  };
-  _worker.addEventListener('message', _chatNewWorkerHandler);
+  });
 }
+
+const _chatNewListeners = new Set();
+const _CHAT_NEW_PREFIX = 'com.hertzai.hevolve.chat.new.';
+addWorkerRoute(({type, payload}) => {
+  if (type !== 'DATA_RECEIVED' || !payload) return;
+  const {sourceTopic, data} = payload;
+  if (typeof sourceTopic === 'string' && sourceTopic.startsWith(_CHAT_NEW_PREFIX)) {
+    // eslint-disable-next-line no-use-before-define
+    realtimeService._deliverChatNew(data);
+  }
+});
 
 /**
  * Subscribe to chat.new WAMP events.  Callback receives the persisted
@@ -733,9 +861,26 @@ function _ensureChatNewWorker() {
  * @returns {Function} unsubscribe
  */
 export function subscribeChatNew(callback) {
-  _ensureChatNewWorker();
   _chatNewListeners.add(callback);
   return () => _chatNewListeners.delete(callback);
+}
+
+/**
+ * Is this chat.new row a chat turn from ANOTHER device that a chat view
+ * should show?  A user/assistant turn with text, on the ordinary chat
+ * channel (a row from a call or an external room carries its own
+ * channel_type, e.g. 'livekit:<call>', and is not a chat bubble), and not
+ * sent from `localDeviceId` -- this device's own turns are already on
+ * screen from its /chat reply.
+ */
+export function isRemoteChatTurn(row, localDeviceId) {
+  if (!row || typeof row !== 'object' || !row.msg_id) return false;
+  if (row.role !== 'user' && row.role !== 'assistant') return false;
+  if (typeof row.content !== 'string' || !row.content) return false;
+  if (row.channel_type && row.channel_type !== 'chat') return false;
+  // No local id yet: cannot tell our own turns apart, so show nothing
+  // rather than echo them.
+  return Boolean(localDeviceId) && row.device_id !== localDeviceId;
 }
 
 // ── BLE encounter match + icebreaker (J204, J209-J210) ──────────────
@@ -746,30 +891,7 @@ export function subscribeChatNew(callback) {
 // dispatch to typed listeners.
 
 const _encounterMatchListeners = new Set();
-let _encounterMatchWorkerHandler = null;
-
-function _ensureEncounterMatchWorker() {
-  if (_encounterMatchWorkerHandler || !_worker) return;
-  _encounterMatchWorkerHandler = (e) => {
-    const {type, payload} = e.data || {};
-    if (type !== 'DATA_RECEIVED' || !payload) return;
-    const {sourceTopic, data} = payload;
-    if (
-      typeof sourceTopic !== 'string' ||
-      !sourceTopic.startsWith('com.hevolve.encounter.match.')
-    ) {
-      return;
-    }
-    _encounterMatchListeners.forEach((cb) => {
-      try {
-        cb(data);
-      } catch (err) {
-        console.warn('encounter.match handler error:', err);
-      }
-    });
-  };
-  _worker.addEventListener('message', _encounterMatchWorkerHandler);
-}
+_addTopicRoute('com.hevolve.encounter.match.', _encounterMatchListeners, 'encounter.match');
 
 /**
  * Subscribe to BLE encounter match events.  Callback receives the
@@ -782,37 +904,17 @@ function _ensureEncounterMatchWorker() {
  * @returns {Function} unsubscribe
  */
 export function subscribeEncounterMatch(callback) {
-  _ensureEncounterMatchWorker();
   _encounterMatchListeners.add(callback);
   return () => _encounterMatchListeners.delete(callback);
 }
 
 
 const _encounterIcebreakerListeners = new Set();
-let _encounterIcebreakerWorkerHandler = null;
-
-function _ensureEncounterIcebreakerWorker() {
-  if (_encounterIcebreakerWorkerHandler || !_worker) return;
-  _encounterIcebreakerWorkerHandler = (e) => {
-    const {type, payload} = e.data || {};
-    if (type !== 'DATA_RECEIVED' || !payload) return;
-    const {sourceTopic, data} = payload;
-    if (
-      typeof sourceTopic !== 'string' ||
-      !sourceTopic.startsWith('com.hevolve.encounter.icebreaker.')
-    ) {
-      return;
-    }
-    _encounterIcebreakerListeners.forEach((cb) => {
-      try {
-        cb(data);
-      } catch (err) {
-        console.warn('encounter.icebreaker handler error:', err);
-      }
-    });
-  };
-  _worker.addEventListener('message', _encounterIcebreakerWorkerHandler);
-}
+_addTopicRoute(
+  'com.hevolve.encounter.icebreaker.',
+  _encounterIcebreakerListeners,
+  'encounter.icebreaker',
+);
 
 /**
  * Subscribe to BLE encounter icebreaker state-change events.
@@ -825,7 +927,6 @@ function _ensureEncounterIcebreakerWorker() {
  * @returns {Function} unsubscribe
  */
 export function subscribeEncounterIcebreaker(callback) {
-  _ensureEncounterIcebreakerWorker();
   _encounterIcebreakerListeners.add(callback);
   return () => _encounterIcebreakerListeners.delete(callback);
 }

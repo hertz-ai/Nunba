@@ -243,6 +243,26 @@ describe('ThinkingProcessContainer', () => {
     expect(screen.getByText('900ms')).toBeInTheDocument();
   });
 
+  it('keeps counting while the parent hides its timer, for the completed summary', () => {
+    // While a request is in flight the hourglass row owns the visible timer
+    // (hideTimer).  The container still counts, so steps that carry no
+    // durations end with the real time instead of "0ms".
+    const steps = [{id: 's1', content: 'Working', isCompleted: false, isExpanded: false}];
+    const {rerender} = renderThinking({hideTimer: true, thinkingMessages: steps});
+    act(() => {
+      jest.advanceTimersByTime(900);
+    });
+    expect(screen.queryByText('900ms')).not.toBeInTheDocument();
+    rerender(
+      <ThinkingProcessContainer
+        {...defaultProps}
+        isContainerCompleted={true}
+        thinkingMessages={[{...steps[0], isCompleted: true}]}
+      />
+    );
+    expect(screen.getAllByText(/900ms/).length).toBeGreaterThan(0);
+  });
+
   it('stops live timer when completed', () => {
     const {rerender} = renderThinking({
       isContainerCompleted: false,

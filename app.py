@@ -1017,6 +1017,17 @@ if getattr(sys, 'frozen', False):
         _trace_log.flush()
     except Exception:
         pass
+    # Native crashes (access violation in cv2.pyd, 2026-10-01 20:21) kill the
+    # process before Python can log anything; frozen_debug.log is a Python
+    # object with no fd, so faulthandler needs its own real file.  The handle
+    # stays open for the life of the process.
+    try:
+        import faulthandler as _faulthandler
+        _native_crash_log = open(os.path.join(_frozen_log_dir, 'native_crash.log'),
+                                 'a', encoding='utf-8')
+        _faulthandler.enable(file=_native_crash_log, all_threads=True)
+    except (OSError, RuntimeError, ValueError):
+        pass  # read-only log dir: crash forensics are best-effort
     _trace("=== Nunba startup trace ===")
     _trace(f"argv: {sys.argv}")
     _trace(f"frozen: {getattr(sys, 'frozen', False)}")
@@ -2684,6 +2695,38 @@ if getattr(args, 'validate', False):
                 _fail.append((_mod_name, f"Health check crashed: {_e}"))
                 _vprint(f"  [FAIL] {_mod_name} health check: {_e}")
 
+    # ── Phase 2b: LiveKit in THIS process (HARTOS calls) ──
+    # HARTOS signs call room tokens and voices an agent in a call from inside
+    # this process, where lib/ comes first on sys.path and python-embed's
+    # site-packages last (appended above).  The rebuild's own check runs under
+    # python-embed's interpreter and passed on a bundle where this process
+    # could not import livekit: lib/ held a traced, partial protobuf with no
+    # timestamp_pb2 that shadowed python-embed's complete one (review of Nunba
+    # 15139f15, 2026-10-08).  HARTOS swallows that ImportError, so a call is
+    # silent with nothing failing; only this check sees it.  rtc loads its
+    # native library on first use, so the import alone is not enough.
+    # Windows bundles carry livekit (build_windows installs EMBED_DEPS into
+    # python-embed), so there a failure fails the build; the macOS and Linux
+    # builds do not install EMBED_DEPS, so there it is a warning.
+    _vprint(f"\n{'─'*40}")
+    _vprint("LIVEKIT (calls: room tokens, the agent's voice)")
+    _vprint(f"{'─'*40}")
+    os.environ.pop('LIVEKIT_LIB_PATH', None)  # judge the bundled library only
+    try:
+        importlib.import_module('livekit.api')
+        importlib.import_module('livekit.rtc')
+        importlib.import_module('livekit.rtc._ffi_client').get_ffi_lib()
+        _ok.append('livekit')
+        _vprint("  [OK]   livekit api + rtc import, FFI library loads")
+    except Exception as _e:
+        _lk_err = f"{type(_e).__name__}: {_e}"
+        if sys.platform == 'win32':
+            _fail.append(('livekit', f"calls would be silent: {_lk_err}"))
+            _vprint(f"  [FAIL] livekit: {_lk_err}")
+        else:
+            _warn.append(('livekit', f"this bundle does not voice calls: {_lk_err}"))
+            _vprint(f"  [WARN] livekit: {_lk_err}")
+
     # ── Phase 3: Config file checks ──
     _vprint(f"\n{'─'*40}")
     _vprint("CONFIG FILE CHECKS")
@@ -3166,6 +3209,13 @@ if not args.background:
 # Create a logger for install/setup phases (before NunbaGUI logger at line 592)
 _setup_logger = logging.getLogger('NunbaSetup')
 _setup_logger.info(f"=== Nunba startup === args={sys.argv}")
+# Which Nunba and HARTOS commits this boot runs: one '[BUILD]' line here, and
+# a 'build' entry in boot_record.jsonl, which outlives this log's rotation.
+try:
+    from desktop.boot_record import record_build_identity
+    record_build_identity()
+except Exception as _bi_err:
+    _setup_logger.warning(f"[BUILD] build identity not logged: {_bi_err}")
 
 # Handle --install-ai: download ALL AI components and exit
 if getattr(args, 'install_ai', False):
@@ -6000,6 +6050,15 @@ def start_flask():
                     f"user_data.json merged — set={set_keys} "
                     f"cleared={_cleared} now={list(stored.keys())}")
 
+                # This file IS the sign-in record, so every write can change
+                # who owns the desktop.  Re-export it so the consent gates act
+                # for the person signed in NOW, not the boot-time guest.
+                try:
+                    from desktop.guest_identity import sync_owner_identity_env
+                    sync_owner_identity_env()
+                except Exception as _own_err:
+                    logger.warning(f"desktop owner re-export failed: {_own_err}")
+
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']
                 url_updated = False
@@ -6061,8 +6120,11 @@ def start_flask():
                         # ImportError when HARTOS isn't on PYTHONPATH, or any
                         # transient DB issue — log and continue.  The cloud
                         # signin still propagates via user_data.json + the React
-                        # useStorageSync hook.
-                        logger.debug(
+                        # useStorageSync hook.  WARNING, not DEBUG: without the
+                        # local User row the cloud token does not resolve, the
+                        # SSE stream falls back to 'guest', and consent cards
+                        # never reach the signed-in user.
+                        logger.warning(
                             "Cloud user DB sync skipped: "
                             f"{type(_db_err).__name__}: {_db_err}")
 
@@ -7797,15 +7859,13 @@ def main():
         logger.info(f"[STARTUP] pywebview loaded successfully in {_wv_elapsed:.1f}s")
         _trace(f"pywebview loaded in {_wv_elapsed:.1f}s")
 
-        # ── Native mic + file picker fallback (macOS WKWebView only) ──
-        # Belt-and-suspenders for when WKWebView's media patch fails or
-        # the browser file-input is broken: exposes a Python→JS bridge
-        # the frontend can detect via `window.pywebview.api.native_*`.
-        # Windows WebView2 + Linux WebKitGTK don't need this; the
-        # class + js_api kwarg are darwin-gated so Windows/Linux retain
-        # main's existing behavior (no js_api → window.pywebview.api is
-        # undefined → ChatInputBar's `if (window.pywebview && ...)`
-        # check evaluates falsey → browser File API path runs).
+        # ── Native mic + camera fallback (macOS WKWebView only) ──
+        # Belt-and-suspenders for when WKWebView's media patch fails:
+        # exposes a Python→JS bridge the frontend can detect via
+        # `window.pywebview.api.native_mic_*` / `native_camera_*`.
+        # Windows WebView2 + Linux WebKitGTK don't need this, so the class
+        # is darwin-gated.  The native FILE dialog is not: it is on the
+        # js_api of every OS (desktop.native_api_window.FilePickerApi).
         _native_api = None
         if sys.platform == 'darwin':
             class NunbaNativeApi:
@@ -8009,32 +8069,6 @@ def main():
                         self._cam_running = False
                     return 'ok'
 
-                def native_file_pick(self, accept='image'):
-                    """Open native macOS NSOpenPanel via pywebview.
-                    accept: 'image', 'pdf', or 'any' (currently unused —
-                    pywebview's create_file_dialog doesn't expose MIME
-                    filters; selection is unrestricted, server-side
-                    validation in /upload/native enforces type).
-                    Returns selected file path string or '' if cancelled."""
-                    try:
-                        wv = get_webview()
-                        windows = wv.windows
-                        if not windows:
-                            return ''
-                        win = windows[0]
-                        result = win.create_file_dialog(
-                            wv.OPEN_DIALOG,
-                            allow_multiple=False,
-                        )
-                        if result and len(result) > 0:
-                            path = result[0]
-                            logger.info(f"[NATIVE-FILE] Picked: {path}")
-                            return str(path)
-                        return ''
-                    except Exception as e:
-                        logger.error(f"[NATIVE-FILE] Error: {e}")
-                        return ''
-
             _native_api = NunbaNativeApi()
 
         # ── Custom titlebar (TB-1/TB-2) ──
@@ -8042,18 +8076,20 @@ def main():
         # component can call window.pywebview.api.window_minimize / _toggle_maximize
         # / _close / _start_drag.  WindowApi uses a getter so it can reference
         # the (yet-uncreated) window — bound below right after create_window.
-        from desktop.native_api_window import WindowApi, use_frameless
-        _window_api = WindowApi(lambda: _window)
+        from desktop.native_api_window import (
+            FilePickerApi,
+            WindowApi,
+            compose_js_api,
+            use_frameless,
+        )
         _use_frameless = use_frameless()
-        if _native_api is None:
-            _native_api = _window_api
-        else:
-            # Compose: mix WindowApi methods into the existing NunbaNativeApi.
-            for _attr in ('window_minimize', 'window_toggle_maximize',
-                          'window_close', 'window_start_drag',
-                          'window_begin_resize', 'window_platform',
-                          'window_is_maximized'):
-                setattr(_native_api, _attr, getattr(_window_api, _attr))
+        # One js_api for every OS: the window controls and the native file
+        # dialog, on top of NunbaNativeApi (mic, camera) where macOS has it.
+        _native_api = compose_js_api(
+            WindowApi(lambda: _window),
+            FilePickerApi(lambda: _window),
+            _native_api,
+        )
 
         # Create window with conditional hidden status and frameless design.
         # frameless=True on Win+Linux: dark NunbaTitleBar replaces native chrome.
@@ -8071,9 +8107,8 @@ def main():
             text_select=True,
             easy_drag=False,  # Disable since we handle dragging in custom title bar
             background_color='#0F0E17',  # canon bg — matches NunbaTitleBar gradient
-            # js_api is None on Windows/Linux UNLESS the WindowApi wiring above
-            # supplied one.  On macOS this also exposes window.pywebview.api.
-            # native_mic_record / native_file_pick for the WKWebView fallback.
+            # window_* (titlebar) + native_file_pick on every OS; on macOS
+            # also native_mic_* / native_camera_* for the WKWebView fallback.
             js_api=_native_api,
         )
 

@@ -294,10 +294,10 @@ export default function useMultiplayerSync({
       }
     };
 
-    // Register crossbar WAMP listener (lowest latency)
-    if (gameRealtimeService.isAvailable()) {
-      gameRealtimeService.subscribe(sessionId, handleEvent);
-    }
+    // Register crossbar WAMP listener (lowest latency).  Unconditional: a
+    // worker that attaches later is sent the session on attach, so a game
+    // joined before the chat page's worker exists still goes live.
+    gameRealtimeService.subscribe(sessionId, handleEvent);
 
     // Register SSE listener (server-pushed fallback)
     if (realtimeService && typeof realtimeService.on === 'function') {
