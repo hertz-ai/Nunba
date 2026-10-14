@@ -47,6 +47,17 @@ def test_l1_wamp_router_requires_auth(project_root, source_text):
 def test_l2_flask_emits_security_headers(project_root, source_text):
     """FAILS if Nunba Flask app doesn't set CSP + X-Frame-Options.
     Task #229 landed this — regression guard.
+
+    FAILS too if the frame policy denies the page's own origin.  Under
+    HART OS the shell (hart-liquid-ui) frames Nunba's routes through its
+    same-origin proxy over unix:/run/hart/nunba.sock; the standalone
+    desktop app is its own origin.  Measured on the Samsung node,
+    HART OS generation 18 (2026-10-11): the assistant panel loaded
+    Nunba's index and bundle (proxy logged 200) and painted nothing,
+    because X-Frame-Options DENY + frame-ancestors 'none' make the
+    browser refuse the frame without a word in any log.  SAMEORIGIN and
+    frame-ancestors 'self' admit the one ancestor that is the page
+    itself and refuse every other site exactly as before.
     """
     src = source_text(project_root / "main.py")
     required = ("Content-Security-Policy", "X-Frame-Options")
@@ -54,6 +65,16 @@ def test_l2_flask_emits_security_headers(project_root, source_text):
     assert not missing, (
         f"Flask missing security headers: {missing} (task #229 regression)"
     )
+    assert "response.headers['X-Frame-Options'] = 'SAMEORIGIN'" in src, (
+        "X-Frame-Options must be SAMEORIGIN: the HART OS shell frames "
+        "Nunba under its own origin, and DENY blanks every route panel"
+    )
+    assert "response.headers['X-Frame-Options'] = 'DENY'" not in src
+    assert "frame-ancestors 'self'" in src, (
+        "CSP frame-ancestors must be 'self' for the same reason; the CSP "
+        "directive wins over X-Frame-Options when both are present"
+    )
+    assert "frame-ancestors 'none'" not in src
 
 
 def test_l3_mcp_token_writes_outside_program_files(project_root, source_text):

@@ -49,7 +49,7 @@ export function RealtimeProvider({children}) {
       : sessionToken;
 
     if (token || localBackend) {
-      realtimeService.init(null, {userId, token});
+      realtimeService.setIdentity({userId, token});
     } else {
       // Remote anonymous sessions cannot authenticate SSE. Crossing this
       // boundary must clear any previous owner's cached credentials.

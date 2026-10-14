@@ -110,14 +110,22 @@ export function createGatewayTransport({
     }
   }
 
+  // The one place this transport tells the broker who it is.  A token is
+  // passed only when there is one, so a later setUser() keeps the cached
+  // credential instead of dropping to the anonymous channel.
+  function syncIdentity(token) {
+    rt.setIdentity({
+      userId: userId || undefined,
+      sseBase: joinUrl(gatewayUrl, '/api/social'),
+      ...(token ? {token} : {}),
+    });
+  }
+
   function connect() {
     let token = null;
     Promise.resolve(getToken ? getToken() : null).then((t) => {
       token = t;
-    }).catch(() => {}).finally(() => {
-      if (token) rt.connect(token);
-      rt.init(null, {userId: userId || undefined, sseBase: joinUrl(gatewayUrl, '/api/social')});
-    });
+    }).catch(() => {}).finally(() => syncIdentity(token));
     unsubs.push(rt.on('agent.ui.update', (p) => sink.fragment(p)));
     const onExpert = (data) => {
       if (!data || !data.speculation_id) return;
@@ -210,7 +218,7 @@ export function createGatewayTransport({
     handleAction,
     setUser(id) {
       userId = id || null;
-      rt.init(null, {userId: userId || undefined, sseBase: joinUrl(gatewayUrl, '/api/social')});
+      syncIdentity(null);
     },
     disconnect() {
       unsubs.splice(0).forEach((u) => u && u());

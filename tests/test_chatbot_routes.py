@@ -221,20 +221,6 @@ class TestChatRoute:
                 data = response.get_json()
                 assert data is not None
 
-    def test_chat_unknown_agent_type_returns_400(self, client):
-        """Unknown agent_type with unknown agent_id should return 400."""
-        # Must also set agent_id to a non-existent ID so that agent_config is None
-        # and the explicit agent_type is used (not overridden by config lookup).
-        response = client.post("/chat", json={
-            "text": "hello",
-            "user_id": "test_user",
-            "agent_id": "nonexistent_agent_xyz",
-            "agent_type": "quantum_ai",
-        })
-        assert response.status_code == 400
-        data = response.get_json()
-        assert "error" in data
-
     def test_resolve_agent_fallback_block_sets_BOTH_create_and_autonomous(self):
         """Source-level regression guard: when _resolve_agent step 4 fires,
         the route MUST force BOTH create_agent=True AND
@@ -291,6 +277,84 @@ class TestChatRoute:
             "recipe + free-text-task case (e.g. 'open notepad and "
             "type hi' on 2026-05-06 17:04:51 — request f8794588)."
         )
+
+
+class TestAgentRouting:
+    """Owner rule 2026-10-04: an id with a recipe here runs here, a
+    cloud-only id goes to the cloud, and no turn is refused."""
+
+    @pytest.fixture
+    def node(self, tmp_path, monkeypatch):
+        (tmp_path / '54.json').write_text('{}')     # a placeholder recipe
+        state = {'online': True, 'cloud_status': 200, 'cloud': [], 'hartos': []}
+        monkeypatch.delenv('HEVOLVE_LLM_API_KEY', raising=False)
+
+        def cloud_post(url, json=None, headers=None, **_kw):
+            state['cloud'].append(json)
+            if isinstance(state['cloud_status'], Exception):
+                raise state['cloud_status']
+            return MagicMock(status_code=state['cloud_status'],
+                             json=lambda: {'text': 'cloud says hi'})
+
+        def hartos_chat(**kwargs):
+            state['hartos'].append(kwargs)
+            return {'text': 'local says hi'}
+
+        import routes.chatbot_routes as cr
+        with patch('core.platform_paths.get_prompts_dir',
+                   return_value=str(tmp_path)), \
+                patch('llama.llama_config.LlamaConfig'), \
+                patch.object(cr, 'check_internet_connection',
+                             side_effect=lambda: state['online']), \
+                patch.object(cr.requests, 'post', side_effect=cloud_post), \
+                patch.object(cr, 'HEVOLVE_CHAT_AVAILABLE', True), \
+                patch.object(cr, 'hevolve_chat', hartos_chat, create=True), \
+                patch('routes.hartos_backend_adapter._ensure_hartos',
+                      return_value=True), \
+                patch.object(cr, '_fire_nunba_tts'), \
+                patch.dict(sys.modules, {'models.orchestrator': None}):
+            yield state
+
+    @staticmethod
+    def _send(client, signed_in=True, **body):
+        headers = {'Authorization': 'Bearer t'} if signed_in else {}
+        return client.post('/chat', headers=headers, json={
+            'text': 'hi', 'user_id': '10202', 'preferred_lang': 'en',
+            'media_mode': 'text', **body}).get_json()
+
+    def test_an_id_with_a_recipe_here_runs_here_in_hive_mode_too(self, client, node):
+        body = self._send(client, prompt_id=54,
+                          intelligence_preference='hive_preferred')
+        assert body['text'] == 'local says hi' and node['cloud'] == []
+        assert node['hartos'][0]['agent_id'] == 54
+        assert node['hartos'][0]['intelligence_preference'] == 'hive_preferred'
+
+    def test_an_id_only_the_cloud_has_is_answered_by_the_cloud(self, client, node):
+        body = self._send(client, prompt_id=49)
+        assert body['text'] == 'cloud says hi' and node['hartos'] == []
+        assert node['cloud'][0]['prompt_id'] == 49
+
+    @pytest.mark.parametrize('miss', ['offline', 'signed out', 401, 'timeout'])
+    def test_a_turn_the_cloud_does_not_answer_is_answered_here(
+            self, client, node, miss):
+        if miss == 'offline':
+            node['online'] = False
+        elif miss != 'signed out':
+            node['cloud_status'] = 401 if miss == 401 else TimeoutError(miss)
+        body = self._send(client, signed_in=miss != 'signed out', prompt_id=49)
+        assert body['text'] == 'local says hi'
+        assert body['agent_id'] == 'local_assistant'
+
+    def test_an_unknown_agent_is_answered_by_local_assistant(self, client, node):
+        body = self._send(client, agent_id='nonexistent_agent_xyz',
+                          agent_type='quantum_ai')
+        assert body['agent_id'] == 'local_assistant' and node['cloud'] == []
+
+    def test_creating_an_agent_keeps_its_new_id_here(self, client, node):
+        self._send(client, prompt_id=1759990000123, create_agent=True)
+        assert node['cloud'] == []
+        assert node['hartos'][0]['agent_id'] == 1759990000123
+
 
 
 class TestBackendHealthRoute:

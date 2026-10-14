@@ -5,6 +5,7 @@ import { chatApi } from "../../services/socialApi";
 import { matchAgentBySlug } from "../../utils/agentSlug";
 import { decrypt } from "../../utils/encryption";
 import { logger } from '../../utils/logger';
+import { postToShell } from '../../utils/shellBridge';
 import LightYourHART from "../HART/LightYourHART";
 
 import React, { useEffect, useState, useCallback } from "react";
@@ -166,6 +167,9 @@ const AgentPage = () => {
     // deleted, so reviving this callback would have resurrected them.
     const handleHartComplete = useCallback((result) => {
         logger.log('HART sealed:', result?.name);
+        // HART OS: the desktop's first-run overlay hosts this page and closes on
+        // this signal (HARTOS static/hartOnboarding.js). Standalone: a no-op.
+        postToShell('nunba:onboarding', { state: 'sealed', language: result?.language || null });
         // Local mirror only — applyHartSeal's nunba:storage_hydrated event
         // already drives session.hart.sealed; this keeps the documented
         // no-1s-lag immediacy (see the mirror rationale above).

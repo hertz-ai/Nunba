@@ -612,6 +612,18 @@ build_exe_options = {
         "sql.bookparsing",
         # HARTOS runtime deps (top-level imports in helper.py / hart_intelligence)
         "aiohttp",
+        # The WHOLE protobuf package, not the part the tracer follows.  lib/
+        # is ahead of python-embed on Nunba.exe's sys.path (app.py inserts
+        # lib/ at the front and APPENDS python-embed's site-packages), so the
+        # traced subset here shadows python-embed's complete protobuf.  That
+        # subset has no timestamp_pb2, and livekit (HARTOS's calls: room
+        # tokens, the agent's voice in a call) imports it: measured 2026-10-08
+        # on the installed build with Nunba.exe's path order, `from livekit
+        # import api, rtc` raised "cannot import name 'timestamp_pb2' from
+        # 'google.protobuf' (...\Nunba\lib\google\protobuf\__init__.pyc)".
+        # With a complete protobuf there, the same import, the FFI load and a
+        # token signature passed (review of Nunba 15139f15).
+        "google.protobuf",
         "dotenv",
         "cryptography",
         "redis",
@@ -624,8 +636,9 @@ build_exe_options = {
         # here is defensive per Gate 6 (feedback_frozen_build_pitfalls.md
         # Rule 1): any runtime-discovered module must be declared.  The
         # real install target for sympy is python-embed/Lib/site-packages/
-        # (see EMBED_DEPS in scripts/deps.py); cx_Freeze will skip it in
-        # lib/ because the main exe's sys.path resolves python-embed first.
+        # (see EMBED_DEPS in scripts/deps.py).  Nunba.exe itself resolves
+        # lib/ FIRST and python-embed last (app.py appends it), so a copy
+        # here is the one the main exe imports.
         "sympy",
     ],
     "zip_includes": [],

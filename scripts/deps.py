@@ -86,6 +86,13 @@ CORE_DEPS = {
     "piper-tts": "1.4.1",
     "onnxruntime": "1.24.1",
     "soundfile": "0.13.1",
+    # av: faster-whisper (python-embed, installed --no-deps) imports it from the
+    # frozen lib/ and calls av.open(metadata_errors=...), which PyAV 19.0.1
+    # rejects.  av was pinned nowhere here, so the 10-07 nightly froze 19.0.1
+    # and every local transcription answered "No STT engine available"
+    # (measured 2026-10-09 on the installed 1bff9fc; 16.1.0 to 18.0.0 decode).
+    # 16.1.0 is what requirements-lock.txt already pins.
+    "av": "16.1.0",
     # Monitoring
     "sentry-sdk[flask]": "2.52.0",
     # Auth
@@ -221,6 +228,32 @@ EMBED_DEPS = {
     "ddgs": "9.16.0",
     "primp": "2.0.0",   # ddgs's HTTP layer; the TLS-impersonation part that works
     "lxml": "6.1.2",    # ddgs SERP parsing
+    # grep-ast / tree-sitter / tree-sitter-language-pack / diff-match-patch /
+    # pathspec: the imports of HARTOS's in-process coding backend
+    # (integrations/coding_agent/aider_core: repomap.py:15 `from grep_ast`,
+    # :19 `from tree_sitter`, coders/search_replace.py:11 `from
+    # diff_match_patch`).  Pinned in HARTOS requirements.txt:348-351 but not
+    # here, and EMBED_DEPS is what fills python-embed, so they shipped missing.
+    # Measured 2026-10-01 on the install: `python-embed\python.exe` raised
+    # ModuleNotFoundError for grep_ast and diff_match_patch, so
+    # AiderNativeBackend.is_installed() was False, get_available_backends()
+    # was empty, and every daemon coding goal returned "No coding tools
+    # installed. Install one: kilocode, claude (Claude Code), or opencode."
+    # (the 2026-10-01 gui_app.log shows ~300 requires_breakdown / pending /
+    # error rounds and consent-wait replies from that string).  Same class
+    # as the einops note above.  Versions match HARTOS requirements.txt.
+    "grep-ast": "0.9.0",
+    "tree-sitter": "0.23.2",
+    "tree-sitter-language-pack": "0.6.0",
+    "diff-match-patch": "20230430",
+    # tree-sitter-language-pack 0.6.0 imports these three at module load
+    # (tree_sitter_language_pack/__init__.py:9 `import tree_sitter_c_sharp`);
+    # the embed install is --no-deps, so a missing one makes grep_ast.tsl fall
+    # through to the absent tree_sitter_languages and aider_core stays dead.
+    "tree-sitter-c-sharp": "0.23.5",
+    "tree-sitter-embedded-template": "0.25.0",
+    "tree-sitter-yaml": "0.7.2",
+    "pathspec": "0.12.1",   # grep-ast's one pure-python dep
     # NOTE: descript-audio-codec (dac) is NOT here — it pulls a massive
     # transitive tree (descript-audiotools → librosa → scipy → matplotlib).
     # It's installed at RUNTIME by install_backend_full('indic_parler')
@@ -272,6 +305,32 @@ EMBED_DEPS = {
     # imports it), whose last release loops forever on a crafted content
     # stream (CVE-2023-36464, reproduced 2026-09-13).
     "pypdfium2": "5.13.0",
+    # LiveKit: voice with your agent in a call (HARTOS #186 C1, owner approved
+    # bundling both 2026-10-07).  livekit-api signs the room tokens
+    # (integrations/social/livekit_service.py: without it every token is
+    # 'livekit_pending' and no one can join); livekit (rtc) is the agent's
+    # ears and mouth in the room (agent_voice_bridge, livekit_audio_publisher,
+    # livekit_transcript_subscriber: without it a call's replies are logged,
+    # never heard).  Here and not in CORE_DEPS for pypdfium2's reason: only
+    # HARTOS imports them, and rtc loads a native FFI library from its own
+    # package directory (livekit/rtc/resources).  livekit-protocol is
+    # livekit-api's one LiveKit dependency, and rtc imports aiofiles at
+    # module load (livekit/rtc/participant.py); both pinned here so the
+    # --no-deps installs and Gate B cover them.
+    # Their other dependencies come from lib/, not from here: HARTOS runs
+    # inside Nunba.exe, whose sys.path has lib/ first and python-embed last
+    # (app.py), so protobuf (the whole package, setup_freeze_nunba.py
+    # packages[]), PyJWT (CORE_DEPS), numpy and aiohttp are lib/'s copies.
+    # python-embed's own protobuf, PyJWT and types-protobuf come unpinned
+    # from the full rebuild's dependency pass and are not what Nunba.exe
+    # loads.  Measured together 2026-10-08 in a cx_Freeze exe with lib/
+    # first: protobuf 6.33.5, PyJWT 2.14.0, numpy 1.26.4, aiohttp 3.13.3.
+    # app.py --validate checks livekit in Nunba.exe itself on every
+    # Windows build.
+    "livekit": "1.1.10",
+    "livekit-api": "1.0.7",
+    "livekit-protocol": "1.1.8",
+    "aiofiles": "25.1.0",
     # ML
     "scikit-learn": "1.7.2",
     # Tokenization
@@ -456,13 +515,19 @@ _EMBED_DIR_EXCEPTIONS = {
     'sentence-transformers': 'sentence_transformers',
     'langchain-core': 'langchain_core',
     'tiktoken': 'tiktoken',
+    # The three LiveKit distributions share one `livekit` namespace
+    # directory, so each is present when ITS subpackage is.
+    'livekit': 'livekit/rtc',
+    'livekit-api': 'livekit/api',
+    'livekit-protocol': 'livekit/protocol',
     # descript-audio-codec → 'dac' mapping not needed in EMBED_DEPS
     # (installed at runtime by install_backend_full, not build-time)
 }
 
 
 def embed_package_dir_name(pkg_name: str) -> str:
-    """Map a pip package name to its import/site-packages directory name."""
+    """Map a pip package name to its import/site-packages directory name,
+    relative to site-packages ('/'-separated where it is nested)."""
     return _EMBED_DIR_EXCEPTIONS.get(pkg_name, pkg_name.replace('-', '_'))
 
 

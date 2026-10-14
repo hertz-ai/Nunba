@@ -24,20 +24,23 @@ import {
   Clock,
   ChevronLeft,
 } from 'lucide-react';
-import { BOOK_PARSING_URL, UPLOAD_FILE_URL, UPLOAD_NATIVE_URL, PERSONALISED_LEARNING_URL, CUSTOM_GPT_URL, WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
+import { WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBase';
+import { selectPdf, selectImage } from '../utils/attachmentUpload';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { rememberServerPromptId } from '../utils/promptId';
-import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isBackgroundRequest } from '../constants/chatBubble';
+import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
-import { classifyError, getBackoff, makeMsgId, MAX_RETRIES } from '../utils/chatRetry';
-import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload } from '../utils/ttsGuards';
+import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
+import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip } from '../utils/ttsGuards';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
+import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
+import { isEmbeddedInShell, onShellMessage, postToShell } from '../utils/shellBridge';
 import { matchAgentBySlug } from '../utils/agentSlug';
 
 // NewHome is only loaded when user is not logged in (landing page)
@@ -57,13 +60,14 @@ pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/l
 
 // ── Use existing Nunba API services for local/global integration ──
 import {chatApi, usersApi, agentApi, consentApi} from '../services/socialApi';
-import { initGameRealtime } from '../services/gameRealtimeService';
-import realtimeService from '../services/realtimeService';
+import realtimeService, {isRemoteChatTurn, subscribeChatNew} from '../services/realtimeService';
+import {getStableDeviceIdOnce} from '../utils/deviceId';
 
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
-import {sttConfigMessage} from '../hooks/useSpeechRecognition';
+import {sttConfigMessage, startContinuousRecognition} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
+import {playTtsClip} from '../services/ttsClipPlayer';
 
 // ── Local engine readiness — gates messageQueue while local LLM is booting.
 //    Returns true in steady-state and on health-endpoint failure (optimistic),
@@ -98,6 +102,11 @@ const HOSTED_URL = 'https://hevolve.hertzai.com';
 // engineReady gate; the hook is realtime-reconciled, NOT sticky-true).
 const ENGINE_BOOT_GRACE_MS = 20000;
 
+// How long a send whose reply is pushed later (the cloud path, or a local
+// `no_content`) stays open waiting for that push before the message says no
+// reply came.  The same 2 minutes the cloud branch waited before.
+const PUSHED_REPLY_WAIT_MS = 120000;
+
 // Setup/install cards (CUDA torch, GPU-whisper ctranslate2, model downloads,
 // TTS engine setup) report SYSTEM-global state — they are NOT tied to the
 // selected agent.  But the Demopage chat is per-agent: switching agents saves
@@ -131,15 +140,6 @@ function mergeCarriedSetupCards(loaded, carried) {
   );
   return [...loadedWithoutDupes, ...carried];
 }
-
-/**
- * Determine if an agent is local (created via LLM pipeline)
- * vs cloud-only (fetched from mailer.hertzai.com).
- */
-const isLocalAgent = (agent) => {
-  if (!agent) return false;
-  return agent._isLocal === true || agent.create_agent === true;
-};
 
 /* TypeWriterForSubtitle and ThinkingProcessContainer extracted to ./chat/ */
 
@@ -265,11 +265,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // sticky-true for the session.  See hooks/useLocalEngineReady.js for
   // the zero-regression contract.
   const engineReady = useLocalEngineReady();
+  // requestId (state) feeds the worker's SET_REQUEST_ID effect; requestIdRef
+  // is the current turn's id as handleDataReceived and the TTS player read it
+  // (isOtherTurnEnvelope) without re-creating those callbacks per turn.
+  // chatRetry.startTurn, at the send, is the ref's only writer.  There is no
+  // state-sync effect: one wrote the state's value back after a later send
+  // had already moved the ref on (two sends inside one frame, measured on a
+  // copy in review), so for a moment the ref named the previous turn.
   const [requestId, setRequestId] = useState(null);
   const requestIdRef = useRef(null);
-  // Keep ref in sync — handleDataReceived (useCallback) reads the ref to filter
-  // daemon thinking traces without re-creating the callback on every request.
-  useEffect(() => { requestIdRef.current = requestId; }, [requestId]);
   // Per-msg_id dedup map.  The same priority=49 thinking trace can
   // arrive at handleDataReceived via THREE paths for a single chat
   // turn:
@@ -314,6 +318,38 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // pins them at their start-of-capture values (both false) and the gate never
   // fires. Same reason handleSendRef exists two lines up.
   const ttsActiveRef = useRef(false);
+
+  // ── HART OS shell bridge (utils/shellBridge) ──
+  // Inside HART OS this page is the desktop's one chat surface: the shell frames
+  // it in its pinned assistant panel and routes the orb / command bar / "Ask"
+  // menu text here with nunba:compose, and mirrors the turn state we post back
+  // on its orb lamp. Standalone Nunba has no parent window, so all of this is
+  // a no-op there. The send itself goes through handleSendRef on the render
+  // AFTER the composer state landed, exactly as handleRetryMessage does.
+  const shellSendPendingRef = useRef(false);
+  useEffect(() => {
+    if (!isEmbeddedInShell()) return undefined;
+    postToShell('nunba:ready', { route: window.location.pathname });
+    return onShellMessage((msg) => {
+      if (msg.type !== 'nunba:compose') return;
+      const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+      if (!text) return;
+      shellSendPendingRef.current = !!msg.send;
+      setInputMessage(text);
+      if (textareaRef.current) {
+        try { textareaRef.current.focus(); } catch { /* detached */ }
+      }
+    });
+  }, []);
+  useEffect(() => {
+    if (!shellSendPendingRef.current || !inputMessage.trim()) return;
+    shellSendPendingRef.current = false;
+    if (handleSendRef.current) handleSendRef.current();
+  }, [inputMessage]);
+  useEffect(() => {
+    if (!isEmbeddedInShell()) return;
+    postToShell('nunba:turn', { state: loading ? 'start' : 'done' });
+  }, [loading]);
   const [duration, setDuration] = useState(0);
   const [showTooltip, setShowTooltip] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -635,10 +671,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const [guestNameConflict, setGuestNameConflict] = useState(null);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [screenWidth, setScreenWidth] = useState(window.innerWidth);
-  const [sessionExpiredMessage, setSessionExpiredMessage] = useState('');
+  const [sessionExpiredMessage] = useState('');
   // (token + setToken are now hoisted above the auto-refresh useEffect
   // to avoid the TDZ error — see comment near line 222.)
-  const refresh_token = localStorage.getItem('refresh_token');
   const isAuthenticated = (decryptedUserId && token) || isGuestMode;
   // Always fall back to 'guest' so we never ship empty/null user_id to chat
   // OR camera-frame POST.  Earlier behavior left this nullable, which caused
@@ -1038,9 +1073,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // ── Message queue: auto-send next queued message when loading finishes ──
   // Also fires when engineReady transitions true→ (i.e., when a local-engine
   // boot completes), so messages typed during boot autopush exactly the same
-  // way as messages typed during a previous in-flight request.
+  // way as messages typed during a previous in-flight request — and when the
+  // agent list has named the agent a send routes as (agentsLoading).
   useEffect(() => {
-    if (!loading && engineReady && messageQueue.length > 0) {
+    if (!loading && engineReady && !agentsLoading && messageQueue.length > 0) {
       const [next, ...rest] = messageQueue;
       setMessageQueue(rest);
       // Directly set inputMessage and call handleSend via ref on next tick
@@ -1049,7 +1085,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         if (handleSendRef.current) handleSendRef.current();
       }, 50);
     }
-  }, [loading, engineReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loading, engineReady, agentsLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Safety: force-drain a stuck queue ──
   // The normal drain (effect above) only runs when `!loading && engineReady`.
@@ -1211,6 +1247,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   useEffect(() => {
+    // restore-on-mount: the stored chat for the last active agent is in
+    // localStorage already; waiting for /prompts + /agents/sync to return
+    // left the chat empty for as long as boot made those slow (3-7 s warm,
+    // far longer while HARTOS loads).  Merge, never replace: a message sent
+    // in the meantime is newer than storage.  Routes that name an agent, and
+    // embeds, keep the existing restore (the agent switch loads its own).
+    if (agentName || embeddedMode) return;
+    const activeId = localStorage.getItem('active_agent_id');
+    const stored = readLocalMessages(activeId);
+    if (stored && stored.length > 0) {
+      setMessages((prev) => mergeRestoredMessages(stored, prev));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     return () => {
       // Save messages when component unmounts (using refs to avoid stale closure)
       const _unmountId = currentAgentRef.current?.prompt_id || currentAgentRef.current?.id;
@@ -1274,42 +1325,52 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // Local /prompts already merges HARTOS + cloud agents — no separate cloud call needed
 
         // Multi-device agent sync (authenticated users only)
-        if (decryptedUserId && !isGuestMode) {
-          try {
-            const syncRes = await chatApi.getAgentSync();
-            const syncAgents = syncRes?.agents || [];
-            syncAgents.forEach((syncAgent) => {
-              const exists = allAgents.some(
-                (a) => String(a.prompt_id) === String(syncAgent.prompt_id)
-              );
-              if (!exists) {
-                allAgents.push({ ...syncAgent, _isSynced: true });
-              } else {
-                // Merge: prefer newer updated_at
-                const idx = allAgents.findIndex(
+        const mergeSyncedAgents = async () => {
+          if (decryptedUserId && !isGuestMode) {
+            try {
+              const syncRes = await chatApi.getAgentSync();
+              const syncAgents = syncRes?.agents || [];
+              syncAgents.forEach((syncAgent) => {
+                const exists = allAgents.some(
                   (a) => String(a.prompt_id) === String(syncAgent.prompt_id)
                 );
-                if (idx >= 0 && syncAgent.updated_at > (allAgents[idx].updated_at || '')) {
-                  allAgents[idx] = { ...allAgents[idx], ...syncAgent, _isSynced: true };
+                if (!exists) {
+                  allAgents.push({ ...syncAgent, _isSynced: true });
+                } else {
+                  // Merge: prefer newer updated_at
+                  const idx = allAgents.findIndex(
+                    (a) => String(a.prompt_id) === String(syncAgent.prompt_id)
+                  );
+                  if (idx >= 0 && syncAgent.updated_at > (allAgents[idx].updated_at || '')) {
+                    allAgents[idx] = { ...allAgents[idx], ...syncAgent, _isSynced: true };
+                  }
                 }
-              }
-            });
-            logger.log('Synced agents from server:', syncAgents.length);
-          } catch (syncErr) {
-            console.warn('Agent sync not available:', syncErr.message);
+              });
+              logger.log('Synced agents from server:', syncAgents.length);
+            } catch (syncErr) {
+              console.warn('Agent sync not available:', syncErr.message);
+            }
           }
-        }
+        };
+
+        // Choose the agent as soon as the local list names it; wait for the
+        // sync only when the saved agent may exist on another device alone.
+        // Measured 2026-10-02: /agents/sync took 2 min 15 s after a restart,
+        // and until an agent is chosen sends wait in the queue (agentsLoading).
+        const savedAgentId = localStorage.getItem('active_agent_id');
+        const isSavedAgent = (a) =>
+          String(a.prompt_id) === String(savedAgentId) ||
+          String(a.id) === String(savedAgentId);
+        const knownLocally = allAgents.length > 0 &&
+          (!savedAgentId || allAgents.some(isSavedAgent));
+        if (!knownLocally) await mergeSyncedAgents();
 
         logger.log('Total merged agents:', allAgents);
         setAllAgents(allAgents);
 
         // Restore last active agent from localStorage
-        const savedAgentId = localStorage.getItem('active_agent_id');
         if (savedAgentId && allAgents.length > 0) {
-          const savedAgent = allAgents.find(
-            (a) => String(a.prompt_id) === String(savedAgentId) ||
-                   String(a.id) === String(savedAgentId)
-          );
+          const savedAgent = allAgents.find(isSavedAgent);
           if (savedAgent) {
             logger.log('Restoring active agent:', savedAgent.name);
             setCurrentAgent(savedAgent);
@@ -1376,7 +1437,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // If still no current agent, prefer the built-in default (local_assistant).
         // Never auto-select a user-created agent — those have full agentic prompts
         // that would make a simple "hi" trigger an autonomous agent workflow.
-        if (!savedAgentId || !allAgents.find(a => String(a.prompt_id) === String(savedAgentId) || String(a.id) === String(savedAgentId))) {
+        if (!savedAgentId || !allAgents.find(isSavedAgent)) {
           if (allAgents.length > 0) {
             const defaultAgent =
               allAgents.find(a => a.id === 'local_assistant') ||
@@ -1404,6 +1465,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               setMessages((prev) => mergeRestoredMessages(savedMessages, prev));
             }
           }
+        }
+
+        // The agent is chosen: release queued sends now, then merge the
+        // other-device agents into the list without choosing again.
+        setAgentsLoading(false);
+        if (knownLocally) {
+          allAgents = [...allAgents];
+          await mergeSyncedAgents();
+          setAllAgents(allAgents);
         }
       } catch (error) {
         console.error('Error fetching agents:', error);
@@ -1733,10 +1803,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     } catch (_) {}
   };
 
-  const loadMessagesFromStorage = (promptId) => {
-    if (!promptId) return [];
+  // localStorage only — no network.  Returns null when nothing is stored (or
+  // the stored value cannot be read), so the caller can fall back to the
+  // server DB.  The mount-time restore uses this alone: the server fallback is
+  // a synchronous XHR and must not run on the main thread during boot.
+  const readLocalMessages = (promptId) => {
+    if (!promptId) return null;
 
-    // Try localStorage first (fastest)
     try {
       const storageKey = getChatStorageKey(promptId);
       const savedData = localStorage.getItem(storageKey);
@@ -1771,11 +1844,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `📥 Loaded ${sanitized.length} messages for agent ${promptId}`
         );
-        return sanitized;
+        return normalizeRestoredMessages(sanitized);
       }
     } catch (error) {
       console.error('Failed to load messages from localStorage:', error);
     }
+    return null;
+  };
+
+  const loadMessagesFromStorage = (promptId) => {
+    if (!promptId) return [];
+
+    const local = readLocalMessages(promptId);
+    if (local !== null) return local;
 
     // Fallback: load from server DB (survives WebView reset / reinstall)
     try {
@@ -1788,12 +1869,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         if (Array.isArray(convs) && convs.length > 0) {
           const restored = [];
           convs.forEach((c) => {
-            if (c.request) restored.push({ role: 'user', text: c.request });
-            if (c.response) restored.push({ role: 'assistant', text: c.response });
+            if (c.request) restored.push({ type: 'user', content: c.request });
+            if (c.response) restored.push({ type: 'assistant', content: c.response });
           });
           if (restored.length > 0) {
             logger.log(`Restored ${restored.length} messages from server DB for agent ${promptId}`);
-            return restored;
+            return normalizeRestoredMessages(restored);
           }
         }
       }
@@ -1965,6 +2046,43 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }
   };
 
+  // THE TTS player for this page.  A clip arrives over SSE ('tts' listener) and
+  // over WAMP (handleDataReceived); both call this, which skips a clip for a
+  // superseded request and loads the shared element at most once per clip
+  // (services/ttsClipPlayer.js).  Two inline players aborted each other's
+  // play() and the reply was never heard.
+  const playPushedTts = useCallback((data) => {
+    // Only the current turn's clip plays (utils/ttsGuards.shouldPlayPushedClip):
+    // an earlier turn of this page (each turn carries its own id, so a reply
+    // that lands after the next send is not spoken over it) or a background
+    // agent's is skipped.
+    if (!shouldPlayPushedClip(data, requestIdRef.current)) {
+      if (data && data.generated_audio_url) {
+        console.log('[TTS] Skipped another turn\'s clip:', data.request_id, 'current:', requestIdRef.current);
+      }
+      return;
+    }
+    const el = getTtsAudioElement();
+    const outcome = playTtsClip(el, data.generated_audio_url, {
+      onStart: () => {
+        // Wire to audioRef so VoiceVisualizer can animate
+        audioRef.current = el;
+        setIsPlayingResponse(true);
+      },
+      onEnd: () => setIsPlayingResponse(false),
+      onError: (err) => {
+        console.error('[TTS] Play FAILED:', err && err.message);
+        setIsPlayingResponse(false);
+        const resumeAudio = () => {
+          el.play().catch(() => {});
+          document.removeEventListener('click', resumeAudio);
+        };
+        document.addEventListener('click', resumeAudio, { once: true });
+      },
+    });
+    console.log('[TTS] Clip', outcome + ':', data.generated_audio_url);
+  }, []);
+
   const handleDataReceived = useCallback((data) => {
     logger.log('🚦 handleDataReceived START');
     logger.log('📥 Raw data:', data);
@@ -1986,9 +2104,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const parsed = safeParsePayload(rawPayload);
 
       if (parsed?.error === 'parse_failed') {
+        // Not the end of the turn: an unreadable push need not even belong
+        // to it.  The turn still ends with its reply, or with the reason on
+        // the message (handleSend / awaitPushedReply).
         console.error('Payload parsing failed, aborting message handling');
-        setLoading(false);
-        setIsRequestInFlight(false);
         return;
       }
 
@@ -2051,6 +2170,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         return;
       }
 
+      // Declared before its first use, the draft replacement below.  It was
+      // declared further down, so that branch read the const in its temporal
+      // dead zone and an expert reply never replaced its draft (#581).
+      const extractedText = parsed.text?.[0] || '';
+
       // Draft-replacement: if the WAMP message carries a speculation_id,
       // find the draft bubble and replace its content in-place instead of
       // appending a second message. This prevents the "two bubbles" confusion.
@@ -2087,22 +2211,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         return;
       }
 
-      // TTS audio pushed from backend — play immediately
+      // TTS audio pushed from backend (the WAMP copy of a clip the SSE 'tts'
+      // listener also receives): the same single player, deduped by URL.
       if (parsed.action === 'TTS' && parsed.generated_audio_url) {
         logger.log('TTS AUDIO RECEIVED:', parsed.generated_audio_url);
-        try {
-          // The one shared element, already unlocked by the user's send
-          // gesture.  A fresh `new Audio()` is rejected by WebView2's
-          // autoplay policy and the rejection used to be swallowed, so a
-          // reply was synthesized and nobody heard it.
-          const audio = getTtsAudioElement() || new Audio();
-          audio.src = parsed.generated_audio_url;
-          audio.play().catch((err) => {
-            console.warn('[TTS] Play FAILED (pushed audio):', err && err.message);
-          });
-        } catch (e) {
-          logger.log('TTS audio play failed:', e);
-        }
+        playPushedTts(parsed);
         return;
       }
 
@@ -2113,11 +2226,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       // is reserved for the model's ACTUAL reasoning, so canned milestones no
       // longer masquerade as Thought-process steps.
       if (Number(parsed.priority) === CHAT_BUBBLE_PRIORITY && parsed.action === CHAT_ACTION_STATUS) {
-        const statusReqId = parsed.request_id || 'unknown';
-        const curReqId = requestIdRef.current;
-        if (isBackgroundRequest(statusReqId)
-            || (curReqId && statusReqId !== 'unknown' && statusReqId !== curReqId)) {
-          return; // daemon/background status — not this user's turn
+        if (isOtherTurnEnvelope(parsed.request_id, requestIdRef.current)) {
+          return; // a background agent's, or an earlier turn's — not this turn
         }
         try {
           const rawText = Array.isArray(parsed.text) ? parsed.text[0] : (parsed.text || '');
@@ -2135,17 +2245,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (Number(parsed.priority) === CHAT_BUBBLE_PRIORITY && parsed.action === CHAT_ACTION_THINKING) {
         const traceRequestId = parsed.request_id || 'unknown';
 
-        // Only show thinking traces that belong to the current user chat request.
-        // Daemon/background agent tasks use different request_ids — drop them
-        // so they don't leak into the user's conversation UI.
-        // A daemon turn's id is dropped even before this window has a turn of
-        // its own: requestIdRef starts null, and the comparison below lets
-        // everything through then.  Those traces now reach this topic
-        // (HARTOS trace_audience) and belong on the floating window only.
+        // Only show thinking traces that belong to the current turn.  A
+        // background agent's traces reach this topic too (HARTOS
+        // trace_audience) and belong on the floating window only; they are
+        // dropped even before this window has a turn of its own.  An earlier
+        // turn's late traces are dropped once a newer turn was sent: each
+        // turn carries its own id, so they no longer land in the newer
+        // turn's container.
         const currentReqId = requestIdRef.current;
-        if (isBackgroundRequest(traceRequestId)
-            || (currentReqId && traceRequestId !== 'unknown' && traceRequestId !== currentReqId)) {
-          logger.log(`Dropping daemon thinking trace (req=${traceRequestId}, current=${currentReqId})`);
+        if (isOtherTurnEnvelope(parsed.request_id, currentReqId)) {
+          logger.log(`Dropping another turn's thinking trace (req=${traceRequestId}, current=${currentReqId})`);
           return;
         }
 
@@ -2254,11 +2363,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         setCurrentThinkingId(containerRequestId);
         setLoading(false);
-        setIsRequestInFlight(false);
+        // isRequestInFlight stays on: a trace is progress, not the reply, so
+        // the spinner and its live stage text run until the reply lands.
+        // Clearing it here showed "Thought for X" with no reply (2026-10-02).
         return;
       }
 
-      const extractedText = parsed.text?.[0] || '';
       const responseVideoUrl = parsed.video_link?.video || '';
       const responseAudioUrl = parsed.video_link?.aud_url || '';
 
@@ -2460,9 +2570,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         setUploadedImage(parsed.page_image_url);
       }
     } catch (err) {
+      // Not the end of the turn either (see parse_failed above).
       console.error('Error processing data:', err);
-      setLoading(false);
-      setIsRequestInFlight(false);
     }
   }, []);
 
@@ -2609,11 +2718,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               break;
 
             case 'GAME_EVENT':
-              // Handled by gameRealtimeService (initGameRealtime binds its own listener)
+              // Handled by gameRealtimeService via realtimeService.attachWorker
               break;
 
             case 'SOCIAL_EVENT':
-              // Handled by realtimeService (init binds its own listener)
+              // Handled by realtimeService (attachWorker binds its listener)
               break;
 
             case 'COMMUNITY_EVENT':
@@ -2641,8 +2750,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         activeWorker = crossbarWorker;
         setWorker(crossbarWorker);
-        initGameRealtime(crossbarWorker);
-        realtimeService.init(crossbarWorker);
+        realtimeService.attachWorker(crossbarWorker);
 
         if (decryptedUserId) {
           logger.log(
@@ -2697,9 +2805,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       } catch (error) {
         console.error('❌ Worker initialization error:', error);
         setConnectionStatus('Failed to Initialize');
-        // SSE must open even if crossbar worker fails — local TTS/agent events
-        // only arrive via SSE, not WAMP. Pass null worker, SSE opens immediately.
-        realtimeService.init(null);
+        // No stream to open here: RealtimeProvider owns the SSE stream that
+        // carries local TTS/agent events, and it does not depend on this
+        // worker, so a failed worker cannot take the reply audio down.
       } finally {
         isInitializing = false;
       }
@@ -2712,15 +2820,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     return () => {
       logger.log('🧹 Cleanup: Terminating worker');
       if (activeWorker) {
+        realtimeService.detachWorker(activeWorker);
         activeWorker.terminate();
       }
       isInitializing = false;
     };
   }, [decryptedUserId]);
 
-  // SSE identity is owned by RealtimeProvider. This component only
-  // attaches its Crossbar worker to the shared transport above; keeping user
-  // identity in one owner prevents auth hydration from racing two rotations.
+  // SSE identity is owned by RealtimeProvider (realtimeService.setIdentity).
+  // This component only attaches and detaches its Crossbar worker, which
+  // never opens or re-keys the stream, so the two cannot race.
 
   // ── Realtime event subscriptions (transport-agnostic) ─────────────────
   // All events arrive via realtimeService (WAMP primary, SSE fallback).
@@ -2759,30 +2868,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
     const unsubTts = realtimeService.on('tts', (data) => {
       console.log('[TTS] Event received:', data.generated_audio_url, 'req:', data.request_id);
-      if (data.request_id && requestIdRef.current && data.request_id !== requestIdRef.current) {
-        console.log('[TTS] Skipped stale:', data.request_id, '!= current:', requestIdRef.current);
-        return;
-      }
-      if (data.generated_audio_url && ttsAudio) {
-        console.log('[TTS] Playing audio:', data.generated_audio_url);
-        ttsAudio.src = data.generated_audio_url;
-        // Wire to audioRef so VoiceVisualizer can animate
-        audioRef.current = ttsAudio;
-        setIsPlayingResponse(true);
-        ttsAudio.onended = () => setIsPlayingResponse(false);
-        ttsAudio.onerror = () => setIsPlayingResponse(false);
-        ttsAudio.play().then(() => {
-          console.log('[TTS] Audio playing OK');
-        }).catch((err) => {
-          console.error('[TTS] Play FAILED:', err.message);
-          setIsPlayingResponse(false);
-          const resumeAudio = () => {
-            ttsAudio.play().catch(() => {});
-            document.removeEventListener('click', resumeAudio);
-          };
-          document.addEventListener('click', resumeAudio, { once: true });
-        });
-      }
+      // playPushedTts decides whose turn the clip is; this listener only
+      // hands it over, as the WAMP path does.
+      playPushedTts(data);
     });
 
     // Setup progress — TTS engine install, model downloads.
@@ -2920,6 +3008,33 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     };
   }, [handleDataReceived]);
 
+  // A turn this user made on another device (phone, another window) for the
+  // agent open here.  HARTOS publishes every persisted turn as chat.new with
+  // the device it came from; this device's own turns are already on screen
+  // from its /chat reply, so they are dropped by device id, and a turn that
+  // arrives twice (SSE and WAMP, or a replay) is dropped by its msg_id.
+  useEffect(() => {
+    let deviceId = null;
+    getStableDeviceIdOnce().then((id) => { deviceId = id; }, () => {});
+    return subscribeChatNew((row) => {
+      if (!isRemoteChatTurn(row, deviceId)) return;
+      const openAgent = String(currentAgentRef.current?.prompt_id || '');
+      if (String(row.prompt_id || '') !== openAgent) return;
+      setMessages((prev) => {
+        if (prev.some((m) => m.messageId === row.msg_id)) return prev;
+        return [...prev, {
+          type: row.role,
+          content: row.content,
+          messageId: row.msg_id,
+          sourceDevice: row.device_id || 'another device',
+        }];
+      });
+      setShouldScroll(true);
+    });
+  }, []);
+
+  // Once per turn, since each turn has its own id: the worker's confirmation
+  // publish (com.hertzai.hevolve.confirmation) names the turn it is for.
   useEffect(() => {
     if (requestId && worker) {
       logger.log('📋 Sending request ID to worker:', requestId);
@@ -3571,13 +3686,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
-    const r = new SR();
-    r.continuous = true;
-    r.interimResults = false;
     // Use same BCP-47 mapping as main speech handler
     const _wkLang = localStorage.getItem('hart_language') || 'en';
-    r.lang = _sttLangMap[_wkLang] || _wkLang;
-    r.onresult = (e) => {
+    const onWakeResult = (e) => {
       const text = e.results[e.results.length - 1][0].transcript.toLowerCase().trim();
       if (!text) return;
 
@@ -3626,10 +3737,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         }
       }
     };
-    r.onend = () => { if (alwaysListening) r.start(); }; // auto-restart
-    r.start();
-    wakeListenerRef.current = r;
-    return () => { r.stop(); wakeListenerRef.current = null; };
+    const listener = startContinuousRecognition(
+      SR, _sttLangMap[_wkLang] || _wkLang, onWakeResult);
+    wakeListenerRef.current = listener;
+    return () => { listener.stop(); wakeListenerRef.current = null; };
   }, [alwaysListening]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Clipboard fetch — pulls from backend clipboard monitor ──
@@ -3865,155 +3976,28 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     const duration = event.target.duration;
     setDuration(duration);
   };
-  const handlePdfSelect = async (event) => {
-    // Use native file picker when running inside pywebview (macOS WKWebView)
-    if (window.pywebview && window.pywebview.api) {
-      try {
-        const filePath = await window.pywebview.api.native_file_pick('pdf');
-        if (!filePath) return;
-        const fileName = filePath.split('/').pop();
-        setPdfFile({ name: fileName });
-        const response = await fetch(UPLOAD_NATIVE_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath, user_id: decryptedUserId, request_id: uuidv4() }),
-        });
-        if (response.ok) {
-          const result = await response.json();
-          setRequestId(result.request_id);
-          setpdfFileUrl(result.file_url);
-        } else {
-          console.error('Failed to upload PDF:', response.status);
-        }
-      } catch (error) {
-        console.error('Error during PDF upload process:', error);
-      }
-      return;
-    }
-
-    const file = event.target.files[0];
-
-    if (!file) {
-      console.error('No file selected.');
-      return;
-    }
-    if (file && file.type === 'application/pdf') {
-      const previewUrl = URL.createObjectURL(file);
-      setPdfurl(previewUrl);
-    }
-
-    try {
-      // Set the selected PDF file
-      setPdfFile(file);
-
-      const formdata = new FormData();
-      formdata.append('bot_type', 'book_parsing');
-      formdata.append('user_id', decryptedUserId);
-      formdata.append('request_id', uuidv4());
-      formdata.append('file', file, file.name);
-
-      const requestOptions = {
-        method: 'POST',
-        body: formdata,
-        redirect: 'follow',
-      };
-
-      fetch(
-        BOOK_PARSING_URL,
-        requestOptions
-      )
-        .then(async (response) => {
-          if (!response.ok) {
-            console.error(
-              'Failed to upload PDF:',
-              response.status,
-              response.statusText
-            );
-            return;
-          }
-
-          const result = await response.json();
-          setRequestId(result.request_id);
-
-          setpdfFileUrl(result.file_url);
-        })
-        .catch((error) => {
-          console.error('Error during PDF upload process:', error);
-        });
-    } catch (error) {
-      console.error('Error during PDF upload process:', error);
-    }
-  };
+  // PDF / image attach.  The two flows (native dialog where the shell has one,
+  // the browser file input otherwise) live in utils/attachmentUpload.js, which
+  // is tested without mounting this component; this hands them our setters.
+  const handlePdfSelect = (event) => selectPdf(event, {
+    userId: decryptedUserId,
+    setPdfFile,
+    setpdfFileUrl,
+    setPdfurl,
+    notify: pushNotification,
+  });
 
   const handleRemovePdf = () => {
     setPdfFile(null);
     setpdfFileUrl(null);
   };
 
-  const handleImageSelect = async (event) => {
-    // Use native file picker when running inside pywebview (macOS WKWebView)
-    if (window.pywebview && window.pywebview.api) {
-      setIsImageUploading(true);
-      try {
-        const filePath = await window.pywebview.api.native_file_pick('image');
-        if (!filePath) { setIsImageUploading(false); return; }
-        const response = await fetch(UPLOAD_NATIVE_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath, user_id: decryptedUserId, request_id: uuidv4() }),
-        });
-        if (response.ok) {
-          const result = await response.json();
-          setUserImage(result.file_url);
-        } else {
-          console.error('Failed to upload image:', response.status);
-        }
-      } catch (error) {
-        console.error('Error uploading image:', error);
-      } finally {
-        setIsImageUploading(false);
-      }
-      return;
-    }
-
-    const file = event.target.files[0];
-
-    if (file) {
-      setIsImageUploading(true);
-      setUserImage(URL.createObjectURL(file));
-
-      const formData = new FormData();
-      formData.append('user_id', decryptedUserId);
-      formData.append('file', file, file.name);
-      formData.append('request_id', uuidv4());
-
-      try {
-        const response = await fetch(
-          UPLOAD_FILE_URL,
-          {
-            method: 'POST',
-            body: formData,
-            redirect: 'follow',
-          }
-        );
-
-        if (response.ok) {
-          const result = await response.json();
-          setUserImage(result.file_url);
-        } else {
-          console.error(
-            'Failed to upload image:',
-            response.status,
-            response.statusText
-          );
-        }
-      } catch (error) {
-        console.error('Error uploading image:', error);
-      } finally {
-        setIsImageUploading(false);
-      }
-    }
-  };
+  const handleImageSelect = (event) => selectImage(event, {
+    userId: decryptedUserId,
+    setUserImage,
+    setIsImageUploading,
+    notify: pushNotification,
+  });
 
   const handleRemoveImage = () => {
     setUserImage(null);
@@ -4050,6 +4034,26 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setMessages(prev => prev.map(msg =>
       msg.messageId === messageId ? { ...msg, ...updates } : msg
     ));
+  };
+
+  // ── A reply that comes by push, not in the HTTP response ──
+  // The cloud (and a local `no_content`) only accepts the message; its reply
+  // is pushed to handleDataReceived, which ends the turn.  Until then the turn
+  // stays open (spinner).  If no reply has landed after PUSHED_REPLY_WAIT_MS,
+  // the message says so.  sentAt is this send's lastMessageSentAtRef value:
+  // a newer send owns the spinner, so only the latest send's wait closes it.
+  const awaitPushedReply = (msgId, sentAt) => {
+    setTimeout(() => {
+      const msgs = messagesRef.current;
+      const idx = msgs.findIndex((m) => m.messageId === msgId);
+      if (idx !== -1 && !turnHasReply(msgs, idx)) {
+        updateMessageStatus(msgId, { status: 'failed', error: PUSHED_REPLY_MISSING_REASON });
+      }
+      if (lastMessageSentAtRef.current === sentAt) {
+        setLoading(false);
+        setIsRequestInFlight(false);
+      }
+    }, PUSHED_REPLY_WAIT_MS);
   };
 
   const handleSend = async () => {
@@ -4105,19 +4109,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
     logger.log(origin, pathname, 'origin and pathname');
 
-    const generatedRequestId = requestId || uuidv4();
-    setRequestId(generatedRequestId);
-
     setCurrentThinkingId(null);
     setThinkingStartTime(null);
-
-    const isPersonalisedEndpoint =
-      (origin === 'https://hertzai.com' &&
-        (pathname === '/' || pathname === '')) ||
-      pathname.includes('hevolve') ||
-      pathname.includes('personalised');
-
-    logger.log(isPersonalisedEndpoint, 'isPersonalisedEndpoint');
 
     if (!inputMessage.trim() && !fileUrl && !userImage) return;
     // Queue message when:
@@ -4142,12 +4135,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // 10s safety-flush below only armed while `loading`).  So the engine gate
     // only holds for ENGINE_BOOT_GRACE_MS — long enough to auto-flush a real
     // cold boot, after which we trust the backend's own readiness handling.
+    //
+    // agentsLoading: until the agent list names the agent, currentAgent is
+    // the route's placeholder (Agent.js's cloud "Hevolve"), so a send would
+    // route as that agent.  Measured 2026-10-02: the first message after a
+    // restart went to the cloud and no reply came back.  The queue drains
+    // once the agent is chosen.
     const timeSinceLastMsg = Date.now() - lastMessageSentAtRef.current;
     const withinEngineBootGrace =
       Date.now() - chatMountAtRef.current < ENGINE_BOOT_GRACE_MS;
     if (
       (loading && lastMessageSentAtRef.current > 0 && timeSinceLastMsg < 10000) ||
-      (!engineReady && withinEngineBootGrace)
+      (!engineReady && withinEngineBootGrace) ||
+      agentsLoading
     ) {
       setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
       setInputMessage('');
@@ -4173,7 +4173,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }
     setShowAgentMentionList(false);
 
-    const msgId = makeMsgId();
+    // This send is a new turn.  startTurn (utils/chatRetry) mints its id,
+    // which is the user bubble's message id and the request_id the POST
+    // carries (NunbaChatProvider sends the same id), and writes requestIdRef
+    // before anything else runs, so an envelope that lands before the next
+    // render is judged against this turn.  One page used to mint one uuid
+    // and keep it for every later turn, so the stale-turn rule
+    // (isOtherTurnEnvelope) never separated two turns of the same page and
+    // the thinking container keyed on `_after_user_N` to tell them apart;
+    // measured 2026-10-11, two voice turns 29 s apart reached HARTOS under
+    // one id.
+    const msgId = startTurn(requestIdRef);
+    setRequestId(msgId);
     const userMessage = {
       type: 'user',
       content: inputMessage,
@@ -4185,7 +4196,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
     setMessages((prevMessages) => [...prevMessages, userMessage]);
     setLoading(true);
-    lastMessageSentAtRef.current = Date.now();
+    const sentAt = Date.now();
+    lastMessageSentAtRef.current = sentAt;
     // Force-clear the textarea DOM value immediately.  React's controlled
     // rerender is enough in theory, but WKWebView occasionally ignores the
     // rerender when another source (wake-listener, STT) writes to the same
@@ -4197,28 +4209,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setWaitingText(null);
     logger.log('agentdata', agentData);
     logger.log('currentagent', currentAgent);
-
-    const dataToSend = JSON.stringify({
-      text: inputMessage,
-      user_id: effectiveUserId,
-      teacher_avatar_id: agentData?.teacher_avatar_id || null,
-      conversation_id: conversationId,
-      request_id: generatedRequestId,
-      prompt_id: currentAgent?.prompt_id ?? 0,
-      bot_type: currentAgent?.name || '',
-      create_agent: currentAgent?.create_agent || false,
-      autonomous_creation: currentAgent?.autonomous_creation || false,
-      image_url: userImage || null,
-      file_url: fileUrl || null,
-      preferred_lang: localStorage.getItem('hart_language') || 'en',
-      // User tier ladder: 'local_only' | 'auto' | 'hive_preferred' (from
-      // the intelligence toggle on this page).  Forwarded through
-      // /chat → hevolve_chat → HARTOS adapter → HARTOS dispatcher so
-      // `hive_preferred` can consult the MoE HiveMind (hevolveai
-      // `hive_mind.fuse_thoughts`) instead of the single expert model.
-      // Default 'auto' preserves today's behavior end-to-end.
-      intelligence_preference: intelligencePreference,
-    });
 
     // Clear form data
     setUploadedPdf(null);
@@ -4236,21 +4226,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     try {
       if (!token && !isGuestMode) {
         console.error('Authorization token is missing.');
+        updateMessageStatus(msgId, { status: 'failed', error: 'Not sent: log in first' });
         setLoading(false);
         setIsModalOpen(true);
         return;
       }
 
-      // ── Dual-mode routing: local LLM backend vs cloud API ──
-      const useLocalBackend =
-        intelligencePreference === 'local_only' ||
-        (intelligencePreference === 'auto' &&
-          backendHealth !== 'offline' &&
-          (isGuestMode || isLocalAgent(currentAgent) || !navigator.onLine));
-
-      if (useLocalBackend) {
-        // Route to local Flask /chat via existing chatApi service with persistent retry
-        logger.log('Routing to LOCAL backend via chatApi');
+      // Every turn goes to this node's /chat, which runs it here or forwards
+      // a cloud-only agent's turn to the cloud (chatbot_routes
+      // _resolve_agent).  The page used to post cloud-flagged agents' turns
+      // to azurekong itself and never showed the reply (2026-10-03).
+      logger.log('Routing to LOCAL backend via chatApi');
         let localSuccess = false;
         let retryCount = 0;
         let lastLocalReason = '';
@@ -4303,7 +4289,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             const localResult = await chatApi.chat({
               text: inputMessage,
               user_id: effectiveUserId,
-              request_id: generatedRequestId,
+              request_id: msgId,
               agent_id: _agentIdForBackend,
               agent_type: _agentTypeForBackend,
               conversation_id: conversationId,
@@ -4314,8 +4300,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               image_url: userImage || null,
               file_url: fileUrl || null,
               preferred_lang: localStorage.getItem('hart_language') || 'en',
+              // Local | Hybrid | Hive from the toggle: a Hive turn runs here
+              // first and escalates (HARTOS speculative_dispatcher).
+              intelligence_preference: intelligencePreference,
             });
-            setIsRequestInFlight(false);
+            // isRequestInFlight is cleared below, once the reply (or the
+            // reason there is none) is on screen.
             const resultData = localResult || {};
             logger.log('Local backend response:', resultData);
 
@@ -4495,7 +4485,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // Skip assistant message when a card already consumed the text
             const responseText = resultData.text || resultData.response;
             const cardConsumedText = !!(resultData.llm_setup_card || (resultData.agentic_plan && resultData.agent_status === 'Plan Mode'));
-            if (!cardConsumedText && resultData.status !== 'no_content' && responseText) {
+            // no_content: the reply is pushed to this window later, as on the
+            // cloud path, so the turn stays open for it (awaitPushedReply).
+            const replyPushed = resultData.status === 'no_content';
+            if (!cardConsumedText && !replyPushed && responseText) {
               const assistantMessage = {
                 type: 'assistant',
                 content: responseText,
@@ -4587,6 +4580,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
                 });
               }
+            } else if (!cardConsumedText && !replyPushed) {
+              // A 200 with no text and no card: say so on the message
+              // rather than end the turn with nothing on screen.
+              updateMessageStatus(msgId, { status: 'failed', error: EMPTY_REPLY_REASON });
             }
             // Auto-save after each response (survives force-quit)
             const _saveId = currentAgent?.prompt_id || currentAgent?.id;
@@ -4594,7 +4591,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               setTimeout(() => saveMessagesToStorage(messagesRef.current, _saveId), 100);
             }
             setLoading(false);
-            setIsRequestInFlight(false);
+            if (replyPushed) {
+              awaitPushedReply(msgId, sentAt);
+            } else {
+              setIsRequestInFlight(false);
+            }
             setUserImage(null);
             setPdfFile(null);
             return;
@@ -4611,211 +4612,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               return;
             }
 
-            // If online and not forced local_only, fall through to cloud after first attempt
-            if (navigator.onLine && intelligencePreference !== 'local_only') {
-              logger.log('Falling back to cloud API...');
-              updateMessageStatus(msgId, { status: 'sending', error: null });
-              break; // exit retry loop, fall through to cloud path
-            }
-
-            // Offline or local_only: keep retrying with backoff
             retryCount++;
             // Loop continues...
           }
         }
 
-        if (localSuccess) return; // already handled above
+      if (localSuccess) return; // already handled above
 
-        // #125 — exhausted retries on local-only path.  Mark the
-        // message failed with the last known reason so the user can
-        // see why it's stuck + retry via handleRetryMessage button.
-        if (intelligencePreference === 'local_only') {
-          updateMessageStatus(msgId, {
-            status: 'failed',
-            error: `${lastLocalReason || 'Backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
-          });
-          setLoading(false);
-          setIsRequestInFlight(false);
-          return;
-        }
-        // Otherwise fall through to cloud path (intelligencePreference='auto')
-      }
-
-      // Cloud API path (fallback or direct)
-      logger.log('Routing to CLOUD backend');
-      let cloudRetryCount = 0;
-      let lastCloudReason = '';
-      let guestRecoverAttempted = false;
-
-      // Guest-aware silent 401 recovery — #207 / #209.  When /chat returns
-      // 401 mid-request (e.g. HARTOS-issued guest JWT TTL expired during a
-      // long inference) and the caller is in guest mode, re-register
-      // silently to mint a fresh token and replay the same request without
-      // nuking the session.  Cloud logged-in users still hit the clearAuth
-      // + login modal path because their refresh requires interactive
-      // credentials.  silentGuestRefresh is the canonical helper in
-      // useAuthSession.js — same call shared with the mount-time
-      // auto-refresh useEffect and the SocialContext auth:expired handler.
-      const tryGuestRecover = async () => {
-        if (!isGuestMode) return null;
-        if (guestRecoverAttempted) return null;  // one-shot per request
-        guestRecoverAttempted = true;
-        const result = await silentGuestRefresh();
-        if (!result) {
-          logger.log('[GUEST] 401 silent recover failed');
-          return null;
-        }
-        setToken(result.token);  // Same-tab React state mirror (Fix B)
-        logger.log('[GUEST] 401 mid-chat — silent recover succeeded, retrying request');
-        return result.token;
-      };
-
-      while (cloudRetryCount <= MAX_RETRIES) {  // #125 — terminal retry cap
-        if (cloudRetryCount > 0) {
-          setIsRequestInFlight(false);
-          const totalSec = Math.max(1, Math.round(getBackoff(cloudRetryCount - 1) / 1000));
-          let aborted = false;
-          for (let sec = totalSec; sec > 0; sec--) {
-            updateMessageStatus(msgId, {
-              status: 'retrying',
-              error: `${lastCloudReason} — retrying in ${sec}s...`,
-              retryCount: cloudRetryCount,
-            });
-            await new Promise((r) => setTimeout(r, 1000));
-            const stillExists = messagesRef.current.find(m => m.messageId === msgId);
-            if (!stillExists) { aborted = true; break; }
-          }
-          if (aborted) { setLoading(false); return; }
-        }
-
-        try {
-          setIsRequestInFlight(true);
-          updateMessageStatus(msgId, { status: 'sending', error: null });
-
-          const endpoint = isPersonalisedEndpoint
-            ? PERSONALISED_LEARNING_URL
-            : CUSTOM_GPT_URL;
-
-          // Live token read — picks up a fresh JWT minted by
-          // tryGuestRecover() in the previous loop iteration.  Closure-
-          // captured `token` from useState would be stale until the
-          // next render.
-          const liveToken = localStorage.getItem('access_token') || token;
-
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${liveToken}`,
-            },
-            body: dataToSend,
-          });
-
-          setIsRequestInFlight(false);
-
-          if (!response.ok) {
-            let errorResponse = {};
-            try { errorResponse = await response.json(); } catch (err) { console.error('Failed to parse error response:', err); }
-            console.error('API call failed:', response.status, response.statusText);
-
-            const isInvalidToken = (
-              errorResponse.error === 'invalid_token' ||
-              errorResponse.error_description === 'The access token is invalid or has expired'
-            );
-
-            if (response.status === 401 || isInvalidToken) {
-              // Guest-aware path — silently re-register and retry once
-              // before falling through to the nuke-session UX.
-              const recovered = await tryGuestRecover();
-              if (recovered) {
-                lastCloudReason = 'Session refreshed';
-                cloudRetryCount++;
-                continue;
-              }
-
-              if (response.status === 401 && !refresh_token) {
-                setSessionExpiredMessage('Session expired. Please log in again.');
-                setIsModalOpen(true);
-                updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
-                setLoading(false);
-                return;
-              }
-
-              if (isInvalidToken) {
-                // Phase 4d — canonical 401 invalidation.  clearAuth
-                // covers the original 4 keys (expire_token + access_token
-                // + user_id + email_address) plus 8 more cloud-related
-                // keys.  HART node identity preserved (per 4-layer model)
-                // so on next signin the user lands back in the same HART
-                // shell.
-                clearAuth();
-                setIsModalOpen(true);
-                updateMessageStatus(msgId, { status: 'failed', error: 'Session expired' });
-                setLoading(false);
-                return;
-              }
-            }
-
-            // Other HTTP errors — retry
-            lastCloudReason = `Cloud API error (${response.status})`;
-            cloudRetryCount++;
-            continue;
-          }
-
-          // Success
-          updateMessageStatus(msgId, { status: 'sent', error: null, retryCount: undefined });
-
-          const dataJson = await response.json();
-
-          if (dataJson.status === 'no_content') {
-            logger.log('No content from API. Awaiting Crossbar message...');
-            setIsRequestInFlight(false);
-            // Timeout fallback: if Crossbar doesn't deliver within 120s, clear loading
-            setTimeout(() => {
-              setLoading((current) => {
-                if (current) {
-                  setIsRequestInFlight(false);
-                  setMessages((prev) => [...prev, {
-                    type: 'system',
-                    content: 'Response is taking longer than expected. The AI backend may still be processing. Please try again if no response appears.',
-                  }]);
-                  return false;
-                }
-                return current;
-              });
-            }, 120000);
-            return;
-          }
-
-          logger.log('API Response received successfully');
-          logger.log('Request ID:', dataJson.request_id);
-
-          setUserImage(null);
-          setLoading(false);
-          return; // done
-
-        } catch (err) {
-          setIsRequestInFlight(false);
-          console.error('Cloud request error:', err);
-          const { reason, retryable } = classifyError(err);
-          lastCloudReason = reason;
-
-          if (!retryable) {
-            updateMessageStatus(msgId, { status: 'failed', error: reason });
-            setLoading(false);
-            return;
-          }
-
-          cloudRetryCount++;
-          // Loop continues...
-        }
-      }
-
-      // #125 — exhausted cloud retries.  Surface failure with last
-      // known reason so the user can manually retry.
+      // #125 — exhausted retries.  Mark the message failed with the last
+      // known reason so the user can see why it's stuck + retry via the
+      // handleRetryMessage button.
       updateMessageStatus(msgId, {
         status: 'failed',
-        error: `${lastCloudReason || 'Cloud backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
+        error: `${lastLocalReason || 'Backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
       });
       setLoading(false);
       setIsRequestInFlight(false);
@@ -4877,6 +4686,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           servedBy: resultData.served_by,
           nodeTier: resultData.node_tier,
         }]);
+      } else {
+        // No text back: say so, rather than end the run with nothing shown.
+        setMessages((prev) => [...prev, { type: 'system', content: EMPTY_REPLY_REASON }]);
       }
       // Track agent status from execution response
       if (resultData.agent_status) {

@@ -163,6 +163,9 @@
     "moduleNameMapper": {
       "^axios$": "axios/dist/node/axios.cjs"
     },
+    "transformIgnorePatterns": [
+      "[/\\\\]node_modules[/\\\\](?!uuid[/\\\\]).+\\.(js|jsx|mjs|cjs|ts|tsx)$"
+    ],
     "resetMocks": false
   }
 }

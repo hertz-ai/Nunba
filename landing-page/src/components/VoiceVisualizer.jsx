@@ -112,6 +112,24 @@ export function computeOrbEdge(containerW, containerH, size, canvasMax) {
   return Math.max(1, Math.floor(Math.min.apply(null, bounds)));
 }
 
+// ── Frame budget ───────────────────────────────────────────────────────
+// Measured on the HART OS node (generation 22, 2026-10-12, software-painted
+// WebKit on a 2012 Ivy Bridge): the assistant panel holding this orb at REST
+// cost the web process a whole core (96%); closing the panel took it to 3%.
+// The loop asked for a fresh frame, with four radial gradients, on EVERY
+// animation frame whether or not anything was happening. The resting breath
+// is a slow sine (idleWaveAt), so 12 frames a second draw it as smoothly as
+// 60; speech still gets every frame. A hidden or off-screen canvas earns no
+// frame at all, and a person who asked for reduced motion gets one still frame.
+// One policy, consulted by the loop; the tests pin it.
+export const IDLE_FRAME_MS = 80;
+
+export function nextFramePolicy({ isActive, hidden, reducedMotion }) {
+  if (hidden || reducedMotion) return { mode: 'none', delayMs: 0 };
+  if (isActive) return { mode: 'raf', delayMs: 0 };
+  return { mode: 'timeout', delayMs: IDLE_FRAME_MS };
+}
+
 const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, fill, idleGain }) {
   // `size` is an optional CAP, not the orb's size.  Deliberately NOT defaulted
   // (it used to be `size || 200`): the orb is driven by the box it lives in,
@@ -223,10 +241,34 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
     const s = stateRef.current;
     const oR = outerR.current;
 
+    // The frame budget's inputs (see nextFramePolicy above). `hidden` follows
+    // the document, `onScreen` the canvas itself (a panel scrolled away or a
+    // minimised window keeps the document visible).
+    const reducedMotion = !!(typeof window !== 'undefined' && window.matchMedia
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    let hidden = !!(typeof document !== 'undefined' && document.hidden);
+    let onScreen = true;
+    let idleTimer = null;
+    function cancelNext() {
+      if (animRef.current) { cancelAnimationFrame(animRef.current); animRef.current = null; }
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    }
+    function scheduleNext() {
+      const policy = nextFramePolicy({ isActive, hidden: hidden || !onScreen, reducedMotion });
+      if (policy.mode === 'raf') {
+        animRef.current = requestAnimationFrame(render);
+      } else if (policy.mode === 'timeout') {
+        idleTimer = setTimeout(function() {
+          idleTimer = null;
+          animRef.current = requestAnimationFrame(render);
+        }, policy.delayMs);
+      }
+    }
+
     if (isActive) connectAnalyser();
 
     function render() {
-      animRef.current = requestAnimationFrame(render);
+      scheduleNext();
       // Per-frame geometry (#627): W/H track the CURRENT backing store, so a
       // canvas resized by the layout measure re-rasterises at the right size
       // and centre on the very next frame.
@@ -244,7 +286,13 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
       // rectified ~200 (all bands saturated) it asked for 0.75W on a canvas
       // whose half-extent is 0.5W, i.e. it CLIPPED. This cannot.
       const peakHeadroom = Math.max(0, maxR - baseR);
-      s.time += 0.02;
+      // Wall-clock time (0.02 per 16.7 ms frame was the old pace): the breath
+      // and the simulated speech keep their tempo at 12 fps as at 60, and a
+      // pause (hidden, off-screen) does not fast-forward them on resume.
+      const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const dt = s.lastMs ? Math.min(0.1, (nowMs - s.lastMs) / 1000) : (1 / 60);
+      s.lastMs = nowMs;
+      s.time += dt * 1.2;
       // Reconnect if audio element changed (new pre-synth line)
       if (isActive && audioRef && audioRef.current && lastAudioEl.current !== audioRef.current) {
         connectAnalyser();
@@ -392,8 +440,30 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
       ctx.beginPath(); ctx.arc(cx, cy, dotR, 0, Math.PI * 2); ctx.fill();
     }
 
+    function onVisibility() {
+      hidden = !!document.hidden;
+      cancelNext();
+      if (!hidden) render();
+    }
+    document.addEventListener('visibilitychange', onVisibility);
+    let io = null;
+    if (typeof IntersectionObserver === 'function') {
+      io = new IntersectionObserver(function(entries) {
+        const visible = entries.some(function(e) { return e.isIntersecting; });
+        if (visible === onScreen) return;
+        onScreen = visible;
+        cancelNext();
+        if (visible) render();
+      });
+      io.observe(canvas);
+    }
+
     render();
-    return function() { if (animRef.current) cancelAnimationFrame(animRef.current); };
+    return function() {
+      cancelNext();
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (io) io.disconnect();
+    };
     // `fill` sizes baseR + peakHeadroom, both captured by the render closure,
     // so a change must re-run this effect or the orb keeps drawing at the old
     // proportion (the stale-closure shape that made the echo gate inert in

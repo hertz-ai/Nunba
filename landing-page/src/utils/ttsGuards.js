@@ -25,7 +25,12 @@
  *
  * isDraftReply / hasServerAudioPayload extract the booleans from a
  * raw backend response so callers can pass the resultData straight in.
+ *
+ * shouldPlayPushedClip(data, currentRequestId) is the other half: whether
+ * a clip the server pushed (SSE 'tts' or WAMP) is this turn's to play.
  */
+
+import {isOtherTurnEnvelope} from '../constants/chatBubble';
 
 
 export function isDraftReply(resultData) {
@@ -41,6 +46,20 @@ export function hasServerAudioPayload(resultData) {
     || resultData.aud_url
     || resultData.video_link?.aud_url,
   );
+}
+
+
+/**
+ * Whether a server-pushed clip plays: only a clip with a url, and only the
+ * current turn's.  Each turn carries its own request id (chatRetry.
+ * startTurn), so an earlier turn's clip that lands after the next send is
+ * not spoken over it, and a background agent's clip never plays.  The one
+ * rule for whose turn an envelope is lives in
+ * constants/chatBubble.isOtherTurnEnvelope.
+ */
+export function shouldPlayPushedClip(data, currentRequestId) {
+  if (!data || !data.generated_audio_url) return false;
+  return !isOtherTurnEnvelope(data.request_id, currentRequestId);
 }
 
 
