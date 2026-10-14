@@ -155,6 +155,28 @@ def drain_thinking_traces(request_id=None):
         return user_traces
 
 
+def _capturing_thinking(publish):
+    """``publish`` (HARTOS's publish_async, or a recipe module's delegate to
+    it) wrapped so that each message it publishes also reaches
+    _capture_thinking.
+
+    ``skip_crossbar`` is publish_async's own flag: it keeps a message on this
+    node's own legs and off central's crossbar, which is how HARTOS pushes a
+    finished Reel Studio reel (amendment A9 e).  The wrapper forwards it only
+    when it is set.  Every other message reaches ``publish`` exactly as
+    before, as (topic, message, timeout).  A publisher that predates the flag
+    therefore still takes every other message, and refuses a push that needs
+    the flag, so HARTOS reports that push undelivered rather than sending it
+    over the crossbar.
+    """
+    def _publish(topic, message, timeout=2.0, skip_crossbar=False):
+        flags = {'skip_crossbar': True} if skip_crossbar else {}
+        result = publish(topic, message, timeout, **flags)
+        _capture_thinking(message)
+        return result
+    return _publish
+
+
 # ── Non-blocking HARTOS import — starts immediately, doesn't block main.py ──
 # LangChain + helper imports take 30s. Instead of blocking module load,
 # we start the import in a background thread immediately. By the time the
@@ -221,28 +243,15 @@ def _attempt_hartos_init():
             logger.info("BACKEND ADAPTER: Tier-1 ACTIVE — hart-backend loaded (background)")
             logger.info("=" * 60)
 
-            # Patch publish_async for thinking traces
+            # Patch publish_async for thinking traces (_capturing_thinking,
+            # which also forwards publish_async's skip_crossbar flag)
             import hart_intelligence as _lgapi  # noqa: TID251
-            _orig = _lgapi.publish_async
-
-            def _patched(topic, message, timeout=2.0):
-                _orig(topic, message, timeout)
-                _capture_thinking(message)
-
-            _lgapi.publish_async = _patched
+            _lgapi.publish_async = _capturing_thinking(_lgapi.publish_async)
 
             for _mod_name in ('create_recipe', 'reuse_recipe'):
                 try:
                     _mod = __import__(_mod_name)
-                    _orig_fn = _mod.publish_async
-
-                    def _make_patch(orig):
-                        def _p(topic, message, timeout=2.0):
-                            orig(topic, message, timeout)
-                            _capture_thinking(message)
-                        return _p
-
-                    _mod.publish_async = _make_patch(_orig_fn)
+                    _mod.publish_async = _capturing_thinking(_mod.publish_async)
                 except ImportError:
                     pass
 
