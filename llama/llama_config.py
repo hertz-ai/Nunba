@@ -2847,11 +2847,27 @@ class LlamaConfig:
         # minute by different parent processes (the boot thread and the
         # vlm_caption.requested subscriber each build their own LlamaConfig);
         # the loser could not bind but held its VRAM.
-        lock_file = self.config_dir / f".caption_server_starting.{port}.lock"
+        #
+        # HARTOS reads this same lock before it would spawn its own 0.8B on
+        # the port (Qwen08BBackend._launch_owner), so the lock's name and the
+        # age under which it means "a start is in progress" are ONE
+        # definition, HARTOS's: Qwen08BBackend.start_lock_path and
+        # START_LOCK_STALE_S.  This file kept its own spelling and a literal
+        # 120; at 300 every test here still passed while HARTOS aged the lock
+        # at 120 (review of HARTOS 77a8b166b).  No fallback copy: without
+        # HARTOS nothing here can tell a start in progress from a dead one,
+        # and starting anyway is the incident above, so this start refuses.
+        try:
+            from integrations.vision.lightweight_backend import Qwen08BBackend
+        except Exception as e:
+            logger.error(f"Caption server on port {port} not started: HARTOS's "
+                         f"caption start-lock rule is not importable ({e})")
+            return False
+        lock_file = Path(Qwen08BBackend.start_lock_path(port, self.config_dir))
         if lock_file.exists():
             try:
                 lock_age = time.time() - lock_file.stat().st_mtime
-                if lock_age < 120:
+                if lock_age < Qwen08BBackend.START_LOCK_STALE_S:
                     logger.info(f"Caption server start on port {port} already in "
                                 f"progress (lock age: {lock_age:.0f}s) — waiting...")
                     for _ in range(120):
