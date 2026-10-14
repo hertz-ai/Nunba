@@ -1,5 +1,5 @@
-"""Reel Studio: the phone's custom-bot turn reaches HARTOS whole, and the reel
-HARTOS hands back reaches the phone.
+"""Reel Studio: the phone's custom-bot turn reaches HARTOS whole and bounded,
+and the reel HARTOS hands back reaches the phone.
 
 The phone posts every turn to its Reel Studio agent as
 
@@ -8,33 +8,48 @@ The phone posts every turn to its Reel Studio agent as
        file_id: 0, conversation_id, prompt_name, prompt_id, device_id,
        create_agent, request_id (minted by the phone, one per turn),
        goal_tags: ["reel_studio"] (while it is creating the agent),
-       attachments: [{kind: "peerlink_file", ref: <sha256>, purpose, name,
-                      mime, size, duration_ms}],
+       attachments: [{file_id: <store xid = sha256>, sha256, name, mime,
+                      size, purpose, captured_at, duration_ms}],
        media_mode: "text"}
+
+(the ONE /chat attachments shape, amendment A9 a: the chat mirror's U9 row
+{file_id, sha256, name, mime, size} plus the optional purpose and meta)
 
 over the PeerLink device link; HARTOS's mobile adapter runs this node's
 route with that body unchanged.  This node must:
 
-  * keep the phone's request_id when it is well formed, so a reply that
-    arrives late (the push, file_list recovery) finds the phone's bubble,
-    and replace one that is not;
-  * hand attachments, goal_tags and media_mode to HARTOS /chat as sent:
-    HARTOS parses them (core.chat_attachments, the user-assignable goal
-    tags), so this node neither reads nor reshapes them;
+  * keep the phone's request_id when a client may name the turn
+    (_turn_request_id: [A-Za-z0-9_-]{8,64}, without HARTOS's daemon_ tag),
+    and replace any other; /chat and /chat/teachme2 judge their bodies' ids
+    by the same rule;
+  * forward attachments and goal_tags to HARTOS /chat, bounded here: an
+    attachment only in the shape HARTOS's contract names
+    (integrations.reel_studio.contracts.validate_attachment), at most
+    core.chat_attachments.MAX_ATTACHMENTS (10) and 16 KB, contract fields
+    only; a goal tag only when a user may assign it
+    (marketing_tools.USER_ASSIGNABLE_GOAL_TAGS; none when that set cannot be
+    read).  HARTOS's chat() reads both: it binds the attachments to the turn
+    (core.chat_attachments.parse_inbound, then bind_inbound) and holds the
+    tags as the agent-creation hint (marketing_tools.hold_goal_tag_hint,
+    which keeps user_assignable_goal_tags);
   * put the `media` HARTOS's /chat reply carries into the reply the phone
-    reads (the custom_gpt reply, and /chat's own);
+    reads (the custom_gpt reply, and /chat's own), only in the reply-media
+    shape (contracts.validate_media_item), with or without reply text;
   * never write the owner's intelligence_preference: the phone sends none.
 
 Mocked boundaries only: HARTOS's in-process app (a stand-in Flask app
 answering /chat, reached through the same test_client() transport
 routes.hartos_backend_adapter.chat uses), the model gate
-(models.orchestrator), LlamaConfig, server TTS and the cloud HTTP leg.
-custom_gpt, _run_turn, _chat_turn, _agent_reply and the adapter's chat()
-are the real code.
+(models.orchestrator), LlamaConfig, server TTS, the local llama probes and
+the cloud HTTP leg.  custom_gpt, teachme2, chat_route, _run_turn,
+_chat_turn, _agent_reply and the adapter's chat() are the real code, and
+the contract validators are HARTOS's own.
 
     python -m pytest tests/test_reel_attachments_passthrough.py -q
 """
 import hashlib
+import json
+import logging
 import os
 import re
 import sys
@@ -42,11 +57,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import requests
 from flask import Flask, jsonify, request
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+from integrations.reel_studio import contracts  # noqa: E402
 
 import routes.chatbot_routes as cr  # noqa: E402
 import routes.hartos_backend_adapter as hba  # noqa: E402
@@ -60,14 +78,18 @@ def _sha(label):
 
 #: A request id the phone mints for one turn (the bubble's local id).
 PHONE_RID = 'rb_1760300000123_7f3a'
+#: The ids the clients send today (audit 2026-10-13): Android's and Wear's
+#: UUID.randomUUID(), the web page's chatRetry.makeMsgId().
+UUID_RID = '3f1c2b7e-9a4d-4c1e-8f2a-0b6d5e4c3a21'
+WEB_RID = 'msg_1760300000123_k3j9xq'
 
 PROMPT_ID = 987654
 
 ATTACHMENTS = [
-    {'kind': 'peerlink_file', 'ref': _sha('clip-1'), 'purpose': 'reel_source',
+    {'file_id': _sha('clip-1'), 'sha256': _sha('clip-1'), 'purpose': 'reel_source',
      'name': 'VID_20261012_101500.mp4', 'mime': 'video/mp4',
-     'size': 123456789, 'duration_ms': 15000},
-    {'kind': 'peerlink_file', 'ref': _sha('logo'), 'purpose': 'logo',
+     'size': 123456789, 'duration_ms': 15000, 'captured_at': 1760250000123},
+    {'file_id': _sha('logo'), 'sha256': _sha('logo'), 'purpose': 'logo',
      'name': 'logo.png', 'mime': 'image/png', 'size': 48213},
 ]
 
@@ -119,6 +141,30 @@ MEDIA = [{
 #: The shape any id this node uses for a turn must have (plan rev 2, WS-10).
 WELL_FORMED_RID = re.compile(r'[A-Za-z0-9_-]{8,64}')
 
+#: Goal tags no client may assign: the reviewer's probe of 80f561d2.
+HOSTILE_TAGS = ['self_build', 'finance', 'revenue', 'daemon', 'admin']
+
+#: The three routes whose body names its turn's id.
+ID_ROUTES = ('/chat/custom_gpt', '/chat/teachme2', '/chat')
+
+
+def _attachment(**change):
+    return {**ATTACHMENTS[0], **change}
+
+
+def _clip(label, **change):
+    """A valid clip row for the stored file ``label`` (file_id == sha256)."""
+    return _attachment(file_id=_sha(label), sha256=_sha(label), **change)
+
+
+def _log(caplog, logger=None):
+    return '\n'.join(r.getMessage() for r in caplog.records
+                     if logger is None or r.name == logger)
+
+
+#: The adapter's logger: where the reel field bounds log what they dropped.
+ADAPTER_LOG = 'routes.hartos_backend_adapter'
+
 
 # ── fixtures ─────────────────────────────────────────────────────────
 
@@ -136,7 +182,9 @@ def client(app):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_sessions():
+def _fresh_sessions(monkeypatch):
+    # teachme2 names no agent (its agent lookup reads no recipe dir).
+    monkeypatch.setenv('NUNBA_TEACH_AGENT_ID', '')
     with cr._sessions_lock:
         saved = dict(cr.sessions)
         cr.sessions.clear()
@@ -177,6 +225,9 @@ def llama_config(monkeypatch):
             type(self).writes.append(value)
 
     monkeypatch.setattr(lc, 'LlamaConfig', FakeLlamaConfig)
+    # The legs below Tier-1 never reach a real server: the 0.8B draft probe
+    # and the 4B completion are requests.post, the health probe is this.
+    monkeypatch.setattr(lc, 'check_llama_health', lambda: False)
     return FakeLlamaConfig
 
 
@@ -193,7 +244,7 @@ def hartos(monkeypatch, prompts_dir, llama_config):
         seen.append(request.get_json())
         return jsonify(state['reply'])
 
-    # The real adapter is what custom_gpt's turn calls.
+    # The real adapter is what the turn calls.
     assert cr.hevolve_chat is hba.chat
     monkeypatch.setattr(hba, '_hartos_initialized', True)
     monkeypatch.setattr(hba, '_hartos_backend_available', True)
@@ -205,6 +256,11 @@ def hartos(monkeypatch, prompts_dir, llama_config):
     monkeypatch.setattr(cr, '_fire_nunba_tts', lambda *a, **k: spoken.append(a))
     # The model gate fails closed to "nothing missing" without probing a server.
     monkeypatch.setitem(sys.modules, 'models.orchestrator', None)
+
+    def no_network(*args, **kwargs):
+        raise requests.exceptions.ConnectionError('no network in tests')
+
+    monkeypatch.setattr(cr.requests, 'post', no_network)
     return SimpleNamespace(seen=seen, state=state, spoken=spoken,
                            prompts_dir=prompts_dir)
 
@@ -225,6 +281,33 @@ def turns():
 def _built(prompts_dir, prompt_id=PROMPT_ID):
     """The agent exists on this node (its config is in the prompts dir)."""
     (prompts_dir / f'{prompt_id}.json').write_text('{}', encoding='utf-8')
+
+
+def _post_turn(client, path, request_id=..., **fields):
+    """One turn on `path` with the body that route's clients send."""
+    if path == '/chat/teachme2':
+        body = {'user_id': '7', 'text': ['teach me fractions'],
+                'teacher_avatar_id': 2933, **fields}
+    elif path == '/chat':
+        body = {'text': 'hello', 'user_id': 'd68c', 'media_mode': 'text',
+                'conversation_id': 'conv1', **fields}
+    else:
+        body = {**PHONE_REEL_CREATE_TURN, **fields}
+        body.pop('request_id')
+    if request_id is not ...:
+        body['request_id'] = request_id
+    return client.post(path, json=body)
+
+
+# ── the fixtures are the contract's shapes ───────────────────────────
+
+def test_the_fixture_attachments_and_media_are_what_the_contract_accepts():
+    """Every attachment and media item these tests call valid is valid by
+    HARTOS's own validators, so a change to the contract fails here first."""
+    for item in ATTACHMENTS:
+        assert contracts.validate_attachment(item) == []
+    for item in MEDIA:
+        assert contracts.validate_media_item(item) == []
 
 
 # ── custom_gpt: the turn ─────────────────────────────────────────────
@@ -285,6 +368,7 @@ def test_the_chat_route_hands_hartos_the_same_fields(client, hartos):
     body = hartos.seen[0]
     assert body['attachments'] == ATTACHMENTS
     assert body['goal_tags'] == ['reel_studio']
+    assert body['request_id'] == PHONE_RID
 
 
 def test_a_turn_without_reel_fields_sends_hartos_no_new_keys(client, hartos):
@@ -295,6 +379,229 @@ def test_a_turn_without_reel_fields_sends_hartos_no_new_keys(client, hartos):
     for body in hartos.seen:
         assert 'attachments' not in body
         assert 'goal_tags' not in body
+
+
+# ── attachments: only the contract's shape crosses ───────────────────
+
+_WIN_PATH = 'C:\\Users\\sathi\\Documents\\secret.txt'
+
+BAD_ATTACHMENTS = [
+    _attachment(file_id=_WIN_PATH, sha256=_WIN_PATH),              # a path, not a store id
+    _attachment(file_id=_sha('x').upper(), sha256=_sha('x').upper()),  # not lowercase hex
+    _attachment(sha256=_sha('another file')),                      # sha256 is not the file_id
+    _attachment(name='../../prompts/x.mp4'),                       # not a bare name
+    _attachment(name='C:\\Users\\sathi\\Videos\\secret.mp4'),
+    _attachment(mime='application/x-msdownload'),                  # not for this purpose
+    _attachment(purpose='reel'),                                   # an outbound purpose
+    _attachment(size=-1),
+    _attachment(captured_at=0),
+    {k: v for k, v in ATTACHMENTS[0].items() if k != 'sha256'},
+    # The pre-A9 row (amendment A9 a): not an attachment.
+    {'kind': 'peerlink_file', 'ref': _sha('clip-1'), 'purpose': 'reel_source',
+     'name': 'VID_20261012_101500.mp4', 'mime': 'video/mp4', 'size': 123456789},
+    'C:/Windows/win.ini',
+    ['file_id'],
+    None,
+]
+
+
+@pytest.mark.parametrize('bad', BAD_ATTACHMENTS)
+def test_an_attachment_outside_the_contract_never_reaches_hartos(client, hartos, bad):
+    client.post('/chat/custom_gpt', json={
+        **PHONE_REEL_CREATE_TURN, 'attachments': [bad, ATTACHMENTS[1]]})
+    assert hartos.seen[0]['attachments'] == [ATTACHMENTS[1]]
+
+
+def test_dropped_attachments_are_logged_by_count_never_by_value(client, hartos, caplog):
+    sent = [BAD_ATTACHMENTS[0], ATTACHMENTS[0], *BAD_ATTACHMENTS[3:5],
+            *BAD_ATTACHMENTS[11:], ATTACHMENTS[1]]
+    caplog.set_level(logging.INFO)
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'attachments': sent})
+    assert hartos.seen[0]['attachments'] == ATTACHMENTS
+    log = _log(caplog)
+    assert 'secret' not in log and 'win.ini' not in log and 'prompts' not in log
+    assert f'{len(sent) - 2} of {len(sent)} attachments' in log
+
+
+def test_an_attachment_carries_only_the_contracts_fields(client, hartos):
+    """A row crosses as an opaque store id with its contract fields: a key
+    the contract does not name (a path, a blob, the pre-A9 kind) stays on
+    this node."""
+    extra = _attachment(path='C:\\Users\\sathi\\Videos\\VID.mp4',
+                        blob='x' * 4000, uri='content://media/external/1',
+                        kind='peerlink_file')
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'attachments': [extra]})
+    assert hartos.seen[0]['attachments'] == [ATTACHMENTS[0]]
+
+
+def test_a_mirror_row_without_a_purpose_crosses_as_it_is(client, hartos):
+    """A9 a: one shape in and out.  The chat mirror's U9 row (no purpose,
+    no meta) is an attachment as it stands."""
+    row = {'file_id': _sha('diagram'), 'sha256': _sha('diagram'),
+           'name': 'diagram.png', 'mime': 'image/png', 'size': 2048}
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'attachments': [row]})
+    assert hartos.seen[0]['attachments'] == [row]
+
+
+def test_the_reviewers_ten_megabyte_probe_forwards_nothing(client, hartos, caplog):
+    big = [{'kind': 'peerlink_file', 'ref': _WIN_PATH, 'file_id': _WIN_PATH,
+            'blob': 'x' * 200000} for _ in range(50)]
+    caplog.set_level(logging.INFO)
+    resp = client.post('/chat/custom_gpt', json={
+        **PHONE_REEL_CREATE_TURN, 'attachments': big, 'goal_tags': HOSTILE_TAGS})
+    assert resp.status_code == 200
+    body = hartos.seen[0]
+    assert 'attachments' not in body and 'goal_tags' not in body
+    log = _log(caplog)
+    assert 'secret.txt' not in log and 'xxxxxxxxxx' not in log
+
+
+def test_at_most_ten_attachments_cross(client, hartos):
+    many = [_clip(f'clip-{i}') for i in range(12)]
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'attachments': many})
+    assert hartos.seen[0]['attachments'] == many[:10]
+
+
+@pytest.mark.parametrize('chat_attachments, crossing', [
+    (SimpleNamespace(MAX_ATTACHMENTS=3), 3),       # HARTOS's cap decides
+    (None, 10),                                    # cannot be read: 10
+    (SimpleNamespace(MAX_ATTACHMENTS='3'), 10),    # not a count: 10
+])
+def test_the_cap_is_hartos_own(client, hartos, monkeypatch, chat_attachments, crossing):
+    monkeypatch.setitem(sys.modules, 'core.chat_attachments', chat_attachments)
+    many = [_clip(f'clip-{i}') for i in range(12)]
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'attachments': many})
+    assert hartos.seen[0]['attachments'] == many[:crossing]
+
+
+def test_a_row_wider_than_any_attachment_is_not_checked(client, hartos):
+    wide = _attachment(**{f'k{i}': i for i in range(40)})
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'attachments': [wide, ATTACHMENTS[1]]})
+    assert hartos.seen[0]['attachments'] == [ATTACHMENTS[1]]
+
+
+def test_the_attachments_a_turn_forwards_stay_under_16_kb(client, hartos):
+    """Each entry is contract-valid, yet ten of them with 1,500-digit sizes
+    would be 17 KB: the forwarded list stops at the byte budget."""
+    huge = [_clip(f'clip-{i}', size=10 ** 1500) for i in range(10)]
+    assert all(contracts.validate_attachment(a) == [] for a in huge)
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'attachments': huge})
+    sent = hartos.seen[0]['attachments']
+    assert 0 < len(sent) < 10
+    assert sent == huge[:len(sent)]
+    assert len(json.dumps(sent)) <= 16 * 1024
+
+
+def test_attachments_that_are_not_a_list_are_dropped(client, hartos, caplog):
+    caplog.set_level(logging.INFO)
+    client.post('/chat/custom_gpt', json={
+        **PHONE_REEL_CREATE_TURN, 'attachments': 'C:/Windows/win.ini',
+        'goal_tags': 'reel_studio'})
+    body = hartos.seen[0]
+    assert 'attachments' not in body and 'goal_tags' not in body
+    assert 'win.ini' not in _log(caplog)
+
+
+def test_without_hartos_contract_no_attachment_crosses(client, hartos, monkeypatch, caplog):
+    """Fail closed: a node that cannot load the contract forwards none."""
+    monkeypatch.setitem(sys.modules, 'integrations.reel_studio.contracts', None)
+    caplog.set_level(logging.INFO)
+    resp = client.post('/chat/custom_gpt', json=PHONE_REEL_CREATE_TURN)
+    assert resp.status_code == 200
+    body = hartos.seen[0]
+    assert 'attachments' not in body
+    assert body['goal_tags'] == ['reel_studio']        # tags do not need it
+    assert 'integrations.reel_studio.contracts' in _log(caplog)
+
+
+def test_a_validator_that_raises_drops_the_entry(client, hartos, monkeypatch):
+    def boom(item):
+        raise RuntimeError('validator bug')
+
+    monkeypatch.setattr(contracts, 'validate_attachment', boom)
+    client.post('/chat/custom_gpt', json=PHONE_REEL_CREATE_TURN)
+    assert 'attachments' not in hartos.seen[0]
+
+
+# ── goal_tags: only what a user may assign ───────────────────────────
+
+def test_only_user_assignable_goal_tags_reach_hartos(client, hartos, caplog):
+    caplog.set_level(logging.INFO)
+    client.post('/chat/custom_gpt', json={
+        **PHONE_REEL_CREATE_TURN,
+        'goal_tags': [*HOSTILE_TAGS, 'reel_studio', 'reel_studio', 7, None]})
+    assert hartos.seen[0]['goal_tags'] == ['reel_studio']
+    log = _log(caplog, ADAPTER_LOG)
+    assert '8 of 9 goal_tags' in log
+    assert not any(t in log for t in HOSTILE_TAGS)
+
+
+def test_no_assignable_tag_sends_no_goal_tags(client, hartos):
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'goal_tags': HOSTILE_TAGS})
+    assert 'goal_tags' not in hartos.seen[0]
+
+
+def test_hartos_user_assignable_set_is_the_one_read(client, hartos, monkeypatch):
+    """When HARTOS defines USER_ASSIGNABLE_GOAL_TAGS (marketing_tools), that
+    set decides, not a copy here."""
+    monkeypatch.setitem(
+        sys.modules, 'integrations.agent_engine.marketing_tools',
+        SimpleNamespace(USER_ASSIGNABLE_GOAL_TAGS=frozenset({'reel_studio', 'news'})))
+    client.post('/chat/custom_gpt', json={
+        **PHONE_REEL_CREATE_TURN, 'goal_tags': ['news', 'finance', 'reel_studio']})
+    assert hartos.seen[0]['goal_tags'] == ['news', 'reel_studio']
+
+
+@pytest.mark.parametrize('marketing_tools', [
+    None,                                                     # cannot be imported
+    SimpleNamespace(),                                        # defines no set
+    SimpleNamespace(USER_ASSIGNABLE_GOAL_TAGS='reel_studio, finance'),  # not a set
+])
+def test_without_hartos_set_no_goal_tag_crosses(
+        client, hartos, monkeypatch, caplog, marketing_tools):
+    """Fail closed (amendment A9 e): HARTOS's USER_ASSIGNABLE_GOAL_TAGS is the
+    one list.  A node that cannot read it as a set of names forwards no tag,
+    keeps no list of its own, and says so by count, never by value."""
+    monkeypatch.setitem(sys.modules, 'integrations.agent_engine.marketing_tools',
+                        marketing_tools)
+    caplog.set_level(logging.INFO)
+    resp = client.post('/chat/custom_gpt', json={
+        **PHONE_REEL_CREATE_TURN, 'goal_tags': ['finance', 'reel_studio', 'studio']})
+    assert resp.status_code == 200
+    body = hartos.seen[0]
+    assert 'goal_tags' not in body
+    assert body['attachments'] == ATTACHMENTS          # attachments do not need it
+    log = _log(caplog, ADAPTER_LOG)
+    assert 'USER_ASSIGNABLE_GOAL_TAGS' in log and '3 goal_tags' in log
+    assert 'finance' not in log
+
+
+def test_hartos_reads_every_ref_and_tag_this_node_forwards(client, hartos):
+    """What crosses is what HARTOS's chat() reads: every forwarded attachment
+    row survives core.chat_attachments.parse_inbound (the read before
+    bind_inbound) and every forwarded tag survives
+    marketing_tools.user_assignable_goal_tags (the read in
+    hold_goal_tag_hint).  HARTOS's own readers, not copies."""
+    from core.chat_attachments import parse_inbound
+    from integrations.agent_engine.marketing_tools import user_assignable_goal_tags
+    client.post('/chat/custom_gpt', json={
+        **PHONE_REEL_CREATE_TURN,
+        'attachments': [ATTACHMENTS[0], BAD_ATTACHMENTS[0], ATTACHMENTS[1]],
+        'goal_tags': ['reel_studio', *HOSTILE_TAGS]})
+    body = hartos.seen[0]
+    assert body['attachments'] == ATTACHMENTS
+    assert parse_inbound(body['attachments']) == [
+        {'file_id': a['file_id'], 'purpose': a['purpose']} for a in ATTACHMENTS]
+    assert body['goal_tags'] == ['reel_studio']
+    assert user_assignable_goal_tags(body['goal_tags']) == body['goal_tags']
 
 
 # ── HARTOS reply media -> the phone ──────────────────────────────────
@@ -322,6 +629,30 @@ def test_hartos_media_reaches_the_chat_reply(client, hartos):
     assert resp.get_json()['media'] == MEDIA
 
 
+def test_a_media_only_reply_keeps_its_media_on_the_phone(client, hartos):
+    """A reply with the reel and no words is an answer, not a failed turn."""
+    _built(hartos.prompts_dir)
+    hartos.state['reply'] = {'response': '', 'media': MEDIA}
+    resp = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN)
+    assert resp.status_code == 200
+    reply = resp.get_json()
+    assert reply['media'] == MEDIA
+    assert reply['answerList'] == ['']          # Android reads answerList.get(0)
+    assert 'Starting the local AI engine' not in json.dumps(reply)
+
+
+def test_a_media_only_reply_keeps_its_media_on_chat(client, hartos):
+    _built(hartos.prompts_dir)
+    hartos.state['reply'] = {'response': '', 'media': MEDIA}
+    resp = client.post('/chat', json={
+        'text': "make today's one", 'user_id': '10202',
+        'prompt_id': PROMPT_ID, 'request_id': PHONE_RID, 'media_mode': 'text'})
+    reply = resp.get_json()
+    assert reply['media'] == MEDIA
+    assert reply['success'] is True and not reply.get('llm_starting')
+    assert reply['text'] == ''
+
+
 def test_a_reply_without_media_has_no_media_key(client, hartos):
     _built(hartos.prompts_dir)
     hartos.state['reply'] = {'response': 'Which clips should I use?'}
@@ -330,14 +661,52 @@ def test_a_reply_without_media_has_no_media_key(client, hartos):
     assert reply['answerList'] == ['Which clips should I use?']
 
 
-# ── request_id: the phone's, when it is well formed ──────────────────
+@pytest.mark.parametrize('media', [
+    'not-a-list',
+    {'kind': 'video'},
+    [{'kind': 'video', 'xid': 'b' * 64}],                          # half an item
+    [{**MEDIA[0], 'qa': {'passed': False, 'failed': ['fps']}}],   # failed QA
+    [{**MEDIA[0], 'xid': 'C:\\reels\\r.mp4'}],
+    ['C:/reels/r.mp4'],
+])
+def test_media_not_in_the_reply_media_shape_is_dropped(client, hartos, media, caplog):
+    _built(hartos.prompts_dir)
+    hartos.state['reply'] = {'response': 'Your reel is ready.', 'media': media}
+    caplog.set_level(logging.INFO)
+    reply = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN).get_json()
+    assert 'media' not in reply
+    assert reply['answerList'] == ['Your reel is ready.']
+    assert 'r.mp4' not in _log(caplog)
+
+
+def test_only_the_valid_media_items_are_kept(client, hartos):
+    _built(hartos.prompts_dir)
+    broken = {**MEDIA[0], 'width': 1920, 'height': 1080}
+    hartos.state['reply'] = {'response': 'Two reels.', 'media': [broken, *MEDIA]}
+    reply = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN).get_json()
+    assert reply['media'] == MEDIA
+
+
+def test_without_hartos_contract_no_media_crosses(client, hartos, monkeypatch):
+    _built(hartos.prompts_dir)
+    monkeypatch.setitem(sys.modules, 'integrations.reel_studio.contracts', None)
+    hartos.state['reply'] = {'response': 'Your reel is ready.', 'media': MEDIA}
+    reply = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN).get_json()
+    assert 'media' not in reply
+    assert reply['answerList'] == ['Your reel is ready.']
+
+
+# ── request_id: a client's, when a client may name the turn ──────────
 
 @pytest.mark.parametrize('sent', [
     PHONE_RID,
     1760300000123,                                  # a Java long
-    '3f1c2b7e-9a4d-4c1e-8f2a-0b6d5e4c3a21',         # a UUID
+    UUID_RID,                                       # Android / Wear
+    WEB_RID,                                        # the web page
     'abcdefgh',                                     # shortest allowed
     'A' * 64,                                       # longest allowed
+    'DAEMON_4242abcd',                              # HARTOS's tag is lower case:
+    'Daemon_4242abcd',                              # these are user turns there
 ])
 def test_a_well_formed_phone_id_names_the_turn_everywhere(client, hartos, sent):
     reply = client.post('/chat/custom_gpt', json={
@@ -346,18 +715,33 @@ def test_a_well_formed_phone_id_names_the_turn_everywhere(client, hartos, sent):
     assert reply['request_id'] == str(sent)
 
 
-@pytest.mark.parametrize('sent', [
+@pytest.mark.parametrize('path', ID_ROUTES)
+@pytest.mark.parametrize('sent', [UUID_RID, WEB_RID, 'DAEMON_4242abcd', 'Daemon_4242abcd'])
+def test_every_route_keeps_a_clients_well_formed_id(client, hartos, path, sent):
+    resp = _post_turn(client, path, request_id=sent)
+    assert resp.status_code == 200
+    assert hartos.seen[0]['request_id'] == sent
+    if path != '/chat':                       # /chat's reply names no id
+        assert resp.get_json()['request_id'] == sent
+
+
+MALFORMED_IDS = [
     'short1',                     # under 8
     'a' * 65,                     # over 64
     '../../prompts/x',            # a path
     'rid with space',
     'abcdefgh\n',                 # a trailing newline
+    'abcdefgh\r\nFAKE LOG LINE',  # a forged log line
     'tamil_தமிழ்_id',             # outside the id alphabet
     'daemon_4242abcd',            # HARTOS's background-turn tag
+    'daemon_',
     True,
     ['abcdefghij'],
     {'id': 'abcdefghij'},
-])
+]
+
+
+@pytest.mark.parametrize('sent', MALFORMED_IDS)
 def test_a_malformed_or_reserved_id_is_replaced_by_a_fresh_one(client, hartos, sent):
     reply = client.post('/chat/custom_gpt', json={
         **PHONE_REEL_CREATE_TURN, 'request_id': sent}).get_json()
@@ -369,6 +753,24 @@ def test_a_malformed_or_reserved_id_is_replaced_by_a_fresh_one(client, hartos, s
     assert reply['request_id'] == used
 
 
+@pytest.mark.parametrize('path', ['/chat/teachme2', '/chat'])
+@pytest.mark.parametrize('sent', ['daemon_4242abcd', 'daemon_goal-7', '../../prompts/x',
+                                  'abcdefgh\r\nFAKE LOG LINE', ['abcdefghij']])
+def test_teachme2_and_chat_never_run_a_turn_under_a_reserved_or_malformed_id(
+        client, hartos, path, sent, caplog):
+    """B2: a client's daemon_<goal> id would make HARTOS keep that goal's
+    lane, skip marking user activity and book escalations to the goal."""
+    caplog.set_level(logging.INFO)
+    resp = _post_turn(client, path, request_id=sent)
+    assert resp.status_code == 200
+    used = hartos.seen[0]['request_id']
+    assert isinstance(used, str) and WELL_FORMED_RID.fullmatch(used)
+    assert not used.startswith('daemon_') and used != sent
+    if path != '/chat':
+        assert resp.get_json()['request_id'] == used
+    assert 'FAKE LOG LINE' not in _log(caplog)
+
+
 @pytest.mark.parametrize('sent', [None, '', 0])
 def test_a_turn_with_no_id_gets_a_fresh_one(client, hartos, sent):
     body = {**PHONE_REEL_CREATE_TURN, 'request_id': sent}
@@ -378,6 +780,17 @@ def test_a_turn_with_no_id_gets_a_fresh_one(client, hartos, sent):
     assert reply['request_id'] == used
 
 
+@pytest.mark.parametrize('path, minted', [
+    ('/chat/custom_gpt', '1760000000500'),    # central's paths: milliseconds
+    ('/chat/teachme2', '1760000000500'),
+    ('/chat', '1760000000'),                  # /chat: seconds, the rule
+])                                            # core.chat_client.mint_request_id mirrors
+def test_a_turn_without_an_id_is_minted_as_before(client, hartos, monkeypatch, path, minted):
+    monkeypatch.setattr(cr.time, 'time', lambda: 1760000000.5)
+    _post_turn(client, path)
+    assert hartos.seen[0]['request_id'] == minted
+
+
 def test_a_daemon_tag_is_refused_by_the_one_spelling_hartos_reads():
     """The reserved prefix is HARTOS's own constant, not a copy here."""
     from core.chat_client import DAEMON_PREFIX
@@ -385,6 +798,34 @@ def test_a_daemon_tag_is_refused_by_the_one_spelling_hartos_reads():
         assert cr._turn_request_id({'request_id': 'bgjob_12345678'}) != 'bgjob_12345678'
         assert cr._turn_request_id(
             {'request_id': f'{DAEMON_PREFIX}12345678'}) == f'{DAEMON_PREFIX}12345678'
+
+
+@pytest.mark.parametrize('path', ID_ROUTES)
+def test_without_hartos_daemon_tag_no_client_id_is_taken(
+        client, hartos, monkeypatch, caplog, path):
+    """Fail closed: when core.chat_client cannot be imported, a person's turn
+    cannot be told from the daemon's, so no client names the turn.  The log
+    says that, and does not call the well-formed id malformed."""
+    monkeypatch.setitem(sys.modules, 'core.chat_client', None)
+    caplog.set_level(logging.INFO)
+    resp = _post_turn(client, path, request_id=UUID_RID)
+    assert resp.status_code == 200
+    used = hartos.seen[0]['request_id']
+    assert used != UUID_RID and WELL_FORMED_RID.fullmatch(used)
+    if path != '/chat':
+        assert resp.get_json()['request_id'] == used     # one id for the turn
+    log = _log(caplog)
+    assert 'core.chat_client' in log
+    assert 'unusable' not in log and 'not a request id' not in log
+
+
+def test_a_malformed_id_is_logged_by_shape_never_by_value(client, hartos, caplog):
+    caplog.set_level(logging.INFO)
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'request_id': 'SECRETVALUE-xyz/0123'})
+    log = _log(caplog)
+    assert 'SECRETVALUE' not in log
+    assert 'not a request id' in log
 
 
 # ── the owner's settings ─────────────────────────────────────────────
@@ -434,13 +875,15 @@ def test_refs_and_tags_never_ride_the_cloud_leg(client, hartos, monkeypatch):
 
 # ── the adapter's /chat body ─────────────────────────────────────────
 
-def test_the_adapter_forwards_refs_and_tags_as_given_and_only_when_given(hartos):
+def test_the_adapter_forwards_bounded_refs_and_tags_only_when_given(hartos):
     hba.chat(text='hi', user_id='u')
     hba.chat(text='hi', user_id='u', attachments=[], goal_tags=[])
     hba.chat(text='make it', user_id='u', agent_id=PROMPT_ID,
              attachments=ATTACHMENTS, goal_tags=['reel_studio'])
-    plain, empty, reel = hartos.seen
-    for body in (plain, empty):
+    hba.chat(text='make it', user_id='u', agent_id=PROMPT_ID,
+             attachments=[_attachment(file_id='../x')], goal_tags=['finance'])
+    plain, empty, reel, hostile = hartos.seen
+    for body in (plain, empty, hostile):
         assert 'attachments' not in body and 'goal_tags' not in body
     assert reel['attachments'] == ATTACHMENTS
     assert reel['goal_tags'] == ['reel_studio']

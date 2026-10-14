@@ -19,6 +19,8 @@ Usage:
     from routes.hartos_backend_adapter import chat, get_prompts, social_api
 """
 
+import importlib
+import json
 import logging
 import os
 import sys
@@ -632,6 +634,179 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
     }
 
 
+# ── Reel Studio fields at the HARTOS boundary ───────────────────────────
+# A Reel Studio turn (the phone's custom_gpt body, or /chat) carries
+# `attachments` (refs into this desktop's user file store) and `goal_tags`
+# (the agent-creation hint) for HARTOS, and HARTOS's /chat reply carries
+# `media` (the reel) for the phone.  HARTOS's chat() reads both inbound
+# fields (since HARTOS 4ec01b499, 2026-10-14): it binds the attachments to
+# the turn (core.chat_attachments parse_inbound, then bind_inbound) and, for
+# a turn that names its agent (prompt_id), holds the user-assignable tags as
+# that agent's creation hint (marketing_tools.hold_goal_tag_hint).  This
+# node passes on only what HARTOS's own contracts accept
+# (integrations.reel_studio.contracts and
+# marketing_tools.USER_ASSIGNABLE_GOAL_TAGS, read from there, never copied),
+# and a node that cannot read them passes on nothing.  What is dropped is
+# logged by count and type, never by value: it is whatever the client sent.
+
+#: How many attachments ride one turn when HARTOS's own cap
+#: (core.chat_attachments.MAX_ATTACHMENTS, read first) cannot be read
+#: (plan rev 2, 4.2(e)).  Only that many entries are checked, so a long list
+#: costs no more than a short one.
+_FALLBACK_MAX_ATTACHMENTS = 10
+#: The attachments one turn forwards, serialized, stay within this many bytes.
+TURN_ATTACHMENTS_MAX_BYTES = 16 * 1024
+#: A row with more keys than this is not checked at all: no attachment row
+#: is that wide, and each key costs one contract call (_contract_fields).
+_ATTACHMENT_MAX_KEYS = 32
+#: A value no contract field accepts (_contract_fields).
+_UNACCEPTABLE = object()
+_REEL_CONTRACTS = 'integrations.reel_studio.contracts'
+#: Where HARTOS names the goal tags a user may assign (turn_goal_tags).
+_GOAL_TAG_OWNER = 'integrations.agent_engine.marketing_tools'
+
+
+def _hartos_name(module, name):
+    """HARTOS's own ``module.name``, or None when this node cannot load it."""
+    try:
+        return getattr(importlib.import_module(module), name, None)
+    except Exception:
+        return None
+
+
+def _contract_accepts(validate, item) -> bool:
+    """Whether HARTOS's contract validator ``validate`` (which returns a list
+    of problems) finds none in ``item``.  A validator that raises accepts
+    nothing."""
+    try:
+        return isinstance(item, dict) and not validate(item)
+    except Exception:
+        return False
+
+
+def _contract_validator(name, what, raw):
+    """contracts.``name`` for a non-empty ``raw`` list, or None (logged) when
+    ``raw`` is not a list or the contract cannot be loaded here."""
+    if not isinstance(raw, list):
+        logger.warning("Reel Studio %s: a %s, not a list; none passed on",
+                       what, type(raw).__name__)
+        return None
+    validate = _hartos_name(_REEL_CONTRACTS, name)
+    if not callable(validate):
+        logger.warning("Reel Studio %s: %s is not loadable on this node, so "
+                       "none of %d is passed on", what, _REEL_CONTRACTS, len(raw))
+        return None
+    return validate
+
+
+def _max_attachments() -> int:
+    """HARTOS's cap on a turn's attachments (core.chat_attachments), else
+    _FALLBACK_MAX_ATTACHMENTS."""
+    cap = _hartos_name('core.chat_attachments', 'MAX_ATTACHMENTS')
+    if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0:
+        return cap
+    return _FALLBACK_MAX_ATTACHMENTS
+
+
+def _contract_fields(validate, item) -> dict:
+    """The fields of ``item`` that HARTOS's attachment contract governs: each
+    one whose value the contract refuses once it is replaced by a value no
+    field accepts.  The contract stays the one list of an attachment's
+    fields (amendment A9 a: {file_id, sha256, name, mime, size} plus the
+    optional purpose and INBOUND_META_KEYS); any other key, a path, the
+    bytes, a field the contract does not name, stays on this node."""
+    return {key: value for key, value in item.items()
+            if not _contract_accepts(validate, {**item, key: _UNACCEPTABLE})}
+
+
+def turn_attachments(raw) -> list:
+    """The `attachments` a turn may hand HARTOS.
+
+    The first _max_attachments() rows are checked against HARTOS's contract
+    (contracts.validate_attachment); each row it accepts crosses as its
+    contract fields only (_contract_fields), a row the contract accepts as
+    it crosses, while the total stays within TURN_ATTACHMENTS_MAX_BYTES.
+    Everything else is dropped and counted.
+    """
+    if not raw:
+        return []
+    validate = _contract_validator('validate_attachment', 'attachments', raw)
+    if validate is None:
+        return []
+    cap = _max_attachments()
+    kept, used = [], 2                      # 2: the list's brackets
+    for item in raw[:cap]:
+        if not (isinstance(item, dict) and len(item) <= _ATTACHMENT_MAX_KEYS
+                and _contract_accepts(validate, item)):
+            continue
+        entry = _contract_fields(validate, item)
+        if not _contract_accepts(validate, entry):
+            continue
+        try:
+            cost = len(json.dumps(entry)) + (2 if kept else 0)
+        except (TypeError, ValueError):
+            continue
+        if used + cost <= TURN_ATTACHMENTS_MAX_BYTES:
+            used += cost
+            kept.append(entry)
+    if len(kept) < len(raw):
+        logger.warning(
+            "Reel Studio attachments: %d of %d attachments dropped (outside "
+            "HARTOS's attachment contract, past %d, or past %d bytes); %d "
+            "passed on", len(raw) - len(kept), len(raw), cap,
+            TURN_ATTACHMENTS_MAX_BYTES, len(kept))
+    return kept
+
+
+def turn_goal_tags(raw) -> list:
+    """The `goal_tags` a turn may hand HARTOS: the ones a user may assign.
+
+    HARTOS's own USER_ASSIGNABLE_GOAL_TAGS (marketing_tools) is the one list
+    (amendment A9 e); this node keeps none of its own.  When that set cannot
+    be read as a set of names, no tag is passed on (fail closed).  Kept in
+    order, each once.
+    """
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        logger.warning("Reel Studio goal_tags: a %s, not a list; none passed on",
+                       type(raw).__name__)
+        return []
+    allowed = _hartos_name(_GOAL_TAG_OWNER, 'USER_ASSIGNABLE_GOAL_TAGS')
+    if not (isinstance(allowed, (set, frozenset, list, tuple))
+            and all(isinstance(t, str) for t in allowed)):
+        logger.warning("Reel Studio goal_tags: %s.USER_ASSIGNABLE_GOAL_TAGS is "
+                       "not readable on this node, so none of %d goal_tags is "
+                       "passed on", _GOAL_TAG_OWNER, len(raw))
+        return []
+    kept = []
+    for tag in raw:
+        if isinstance(tag, str) and tag in allowed and tag not in kept:
+            kept.append(tag)
+    if len(kept) < len(raw):
+        logger.warning("Reel Studio goal_tags: %d of %d goal_tags dropped (not "
+                       "user-assignable); %d passed on",
+                       len(raw) - len(kept), len(raw), len(kept))
+    return kept
+
+
+def reply_media(raw) -> list:
+    """The `media` of a HARTOS /chat reply that may reach the phone: the
+    items HARTOS's reply-media contract (contracts.validate_media_item)
+    accepts.  Anything else is dropped and counted."""
+    if not raw:
+        return []
+    validate = _contract_validator('validate_media_item', 'reply media', raw)
+    if validate is None:
+        return []
+    kept = [item for item in raw if _contract_accepts(validate, item)]
+    if len(kept) < len(raw):
+        logger.warning("Reel Studio reply media: %d of %d media items dropped "
+                       "(outside HARTOS's reply-media contract); %d passed on",
+                       len(raw) - len(kept), len(raw), len(kept))
+    return kept
+
+
 @with_fallback(_fallback_chat)
 def chat(
     text: str,
@@ -759,12 +934,16 @@ def chat(
     # that device drops its own turns from the cross-device feed.
     if device_id:
         payload["device_id"] = str(device_id)
-    # The turn's file references (refs into the user file store) and its
-    # agent-creation hint.  HARTOS /chat parses both (core.chat_attachments;
-    # goal_tags against the user-assignable tags), so they go as given, and
-    # only when a caller has them: every other caller's body is unchanged.
+    # The turn's file references (refs into this desktop's user file store)
+    # and its agent-creation hint, as far as HARTOS's contracts accept them
+    # (turn_attachments, turn_goal_tags), and only when a caller has them:
+    # every other caller's body is unchanged.  HARTOS's chat() binds the
+    # references to the turn and holds the hint (see the Reel Studio block
+    # above turn_attachments).
+    attachments = turn_attachments(attachments)
     if attachments:
         payload["attachments"] = attachments
+    goal_tags = turn_goal_tags(goal_tags)
     if goal_tags:
         payload["goal_tags"] = goal_tags
     # Per-request draft override: HARTOS /chat honours `draft_first` in the

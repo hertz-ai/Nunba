@@ -21,7 +21,7 @@ import time
 from functools import wraps
 
 import requests
-from flask import jsonify, request
+from flask import g, has_request_context, jsonify, request
 
 from models.catalog import ModelType
 
@@ -170,7 +170,7 @@ HEVOLVE_PROMPTS_AVAILABLE = False
 # on Windows which can cause I/O errors if the import fails partway through
 try:
     from routes.hartos_backend_adapter import chat as hevolve_chat
-    from routes.hartos_backend_adapter import drain_thinking_traces, get_prompts
+    from routes.hartos_backend_adapter import drain_thinking_traces, get_prompts, reply_media
     from routes.hartos_backend_adapter import zeroshot as hevolve_zeroshot
     HEVOLVE_CHAT_AVAILABLE = True
     HEVOLVE_PROMPTS_AVAILABLE = True
@@ -1163,52 +1163,83 @@ _TURN_FAILED_TEXT = "Sorry, I couldn't answer that just now. Please try again."
 
 #: A request id a client may name for its own turn.  The phone mints one per
 #: turn so that a reply arriving after its wait (the push, file_list recovery)
-#: finds the bubble waiting for it.  The id keys the turn's state on this
-#: desktop (HARTOS's per-turn caches, the user file store's turn binding), so
-#: only this alphabet and length are taken from a client.
+#: finds the bubble waiting for it; the web page and the watch send one per
+#: turn too.  The id keys the turn's state on this desktop (HARTOS's per-turn
+#: caches, and the user file store's binding of the turn's attachments:
+#: core.chat_attachments.bind_inbound), so only this alphabet and length are
+#: taken from a client.
 _CLIENT_REQUEST_ID = re.compile(r'[A-Za-z0-9_-]{8,64}')
 
 
-def _turn_request_id(data):
-    """The id a /custom_gpt turn runs under: the body's own when it is a
-    well-formed id (_CLIENT_REQUEST_ID), else a fresh one.
+def _turn_request_id(data, fresh=None):
+    """The id a turn runs under: the body's own request_id when a client may
+    name the turn, else ``fresh`` (by default a new millisecond id, the
+    shape central's paths mint).
 
-    A fresh id also replaces one carrying HARTOS's background tag
-    (core.chat_client.DAEMON_PREFIX, its one spelling): HARTOS reads a
-    ``daemon_<goal>`` turn as the agent daemon's own work
-    (dispatch.is_genuine_user_request) and books it to that goal
-    (create_recipe, daemon_goal_id), so no client may name one.
+    The ONE rule for every turn a body names: custom_gpt and teachme2 settle
+    their body's id where it arrives (their replies carry it), and
+    _chat_turn, the body of /chat, settles /chat's.  Settled once per
+    request: the id this request already settled passes through untouched
+    (core.chat_client: passthrough, never re-mint), so a turn custom_gpt or
+    teachme2 hands _chat_turn keeps its one id.
+
+    A client may name a turn with a well-formed id (_CLIENT_REQUEST_ID) that
+    does not carry HARTOS's background tag (core.chat_client.DAEMON_PREFIX,
+    its one spelling): HARTOS reads a ``daemon_<goal>`` turn as the agent
+    daemon's own work (dispatch.is_genuine_user_request), so it would keep
+    that goal's lane, not mark the person active, and book escalations to
+    the goal (create_recipe, daemon_goal_id).  When the tag cannot be read,
+    no client names a turn.  An id that is not taken is logged by its shape,
+    never by its value.
     """
-    fresh = str(int(time.time() * 1000))
     sent = data.get('request_id')
+    in_request = has_request_context()
+    if in_request and sent is not None and g.get('turn_request_id') == sent:
+        return sent                       # this request already settled it
+    rid = _settle_request_id(sent, fresh or str(int(time.time() * 1000)),
+                             request.path if in_request else 'turn')
+    if in_request:
+        g.turn_request_id = rid
+    return rid
+
+
+def _settle_request_id(sent, fresh, route):
+    """_turn_request_id's rule for one body's ``sent`` id (see there)."""
     if sent in (None, '') or (sent == 0 and not isinstance(sent, bool)):
         return fresh                      # no id: the turn gets one
     rid = (str(sent) if isinstance(sent, (str, int))
            and not isinstance(sent, bool) else None)
-    if rid and _CLIENT_REQUEST_ID.fullmatch(rid):
+    if not (rid and _CLIENT_REQUEST_ID.fullmatch(rid)):
+        why = 'is not a request id'
+    else:
         try:
             from core.chat_client import DAEMON_PREFIX
-            if not rid.startswith(DAEMON_PREFIX):
-                return rid
         except Exception:
-            # Without HARTOS's tag a person's turn cannot be told from the
-            # daemon's, so the client's id is not taken.
-            logger.warning('custom_gpt: core.chat_client unavailable; not '
-                           'taking the request id the body names', exc_info=True)
+            # Fail closed: without HARTOS's tag a person's turn cannot be told
+            # from the daemon's, so no client's id is taken, well formed or not.
+            logger.warning("%s: core.chat_client is unavailable, so a person's "
+                           "turn cannot be told from the daemon's; the turn "
+                           "runs as %s, not under the id the body names",
+                           route, fresh, exc_info=True)
+            return fresh
+        if not rid.startswith(DAEMON_PREFIX):
+            return rid
+        why = "carries HARTOS's background tag"
     # Shape only, never the value: it is whatever the client sent.
-    logger.info('custom_gpt: the body names an unusable request id (%s, '
-                'length %s); the turn runs as %s', type(sent).__name__,
-                len(rid) if rid else '-', fresh)
+    logger.info("%s: the body's request_id (%s, length %s) %s; the turn runs "
+                "as %s", route, type(sent).__name__, len(rid) if rid else '-',
+                why, fresh)
     return fresh
 
 
 def _run_turn(turn):
     """(body, status) of one turn run by _chat_turn, the body of /chat.
 
-    A turn that failed, or answered with neither text nor a Liquid UI
+    A turn that failed, or answered with neither text, nor a Liquid UI
     payload (dynamic_layout / dynamic_data: a reply can be the overlay
-    alone), comes back as an empty body with a non-2xx status; why stays
-    in the log, never in the reply.
+    alone), nor `media` (a reel can be the whole answer), comes back as an
+    empty body with a non-2xx status; why stays in the log, never in the
+    reply.
     """
     try:
         result = _chat_turn(turn)
@@ -1224,7 +1255,7 @@ def _run_turn(turn):
     if status >= 400:
         return {}, status
     if not (_reply_parts(body) or body.get('dynamic_layout')
-            or body.get('dynamic_data')):
+            or body.get('dynamic_data') or body.get('media')):
         return {}, 502
     return body, status
 
@@ -1240,10 +1271,12 @@ def custom_gpt():
     these screens show only this synchronous reply, and a draft's standby
     ("let me check...") would otherwise be the whole answer.
 
-    The phone names each turn's request_id, kept when well formed
-    (_turn_request_id) so a late push or file_list recovery finds its
-    bubble, and a Reel Studio turn carries attachments and goal_tags, which
-    go to HARTOS as sent; the `media` HARTOS answers with is in the reply.
+    The phone names each turn's request_id, kept when a client may name the
+    turn (_turn_request_id) so a late push or file_list recovery finds its
+    bubble.  A Reel Studio turn carries attachments and goal_tags, which the
+    adapter forwards to HARTOS as far as HARTOS's contracts accept them
+    (turn_attachments, turn_goal_tags); the reel HARTOS answers with
+    (`media`, reply_media) is in the reply.
     """
     data = request.get_json(silent=True) or {}
     user_id = data.get('user_id', 'guest')
@@ -1266,9 +1299,11 @@ def custom_gpt():
     }
     if prompt_id not in (None, '', 0, '0'):
         turn['prompt_id'] = prompt_id
-    # attachments (the phone's refs into this desktop's file store) and
-    # goal_tags (the agent-creation hint) ride to HARTOS as sent: HARTOS
-    # parses both, so they are copied here, never read.
+    # attachments (the phone's refs into this desktop's user file store) and
+    # goal_tags (the agent-creation hint) go on the turn as sent; the
+    # adapter's chat() bounds them by HARTOS's contracts on the way to
+    # HARTOS /chat (turn_attachments, turn_goal_tags), whose chat() binds the
+    # refs to the turn and holds the hint.
     for key in ('preferred_lang', 'language', 'media_mode',
                 'attachments', 'goal_tags'):
         if data.get(key):
@@ -1356,10 +1391,13 @@ def teachme2():
     TRANSITIONAL (owner ruling 2026-09-14): Teach Yourself is a created
     agent.  The turn names it (_teach_agent_prompt_id) once its recipe is
     built; until then it runs without an agent id, as before.
+
+    The body's request_id names the turn only when a client may name one
+    (_turn_request_id, the rule custom_gpt and /chat use).
     """
     data = request.get_json(silent=True) or {}
     user_id = str(data.get('user_id', 'guest'))
-    request_id = data.get('request_id') or str(int(time.time() * 1000))
+    request_id = _turn_request_id(data)
     text = _turn_text(data)
     goals = data.get('goals')
     if isinstance(goals, dict) and goals.get('scope') in _KIDS_TRANSPORT_SCOPES:
@@ -2725,13 +2763,20 @@ def _chat_turn(data):
     # (chat.new / chat-sync), so each device tells its own turns apart.
     device_id = data.get('device_id')
     # The turn's file references (refs into this desktop's user file store)
-    # and the agent-creation hint.  HARTOS /chat parses and binds both, so
-    # they go to it as sent, and nowhere else: the cloud leg never has them.
+    # and the agent-creation hint.  They go to HARTOS /chat only, bounded by
+    # HARTOS's contracts in the adapter (turn_attachments, turn_goal_tags);
+    # HARTOS's chat() binds the refs to the turn (core.chat_attachments) and
+    # holds the hint (marketing_tools.hold_goal_tag_hint).  The cloud leg
+    # never has them.
     attachments = data.get('attachments')
     goal_tags = data.get('goal_tags')
     conversation_id = data.get('conversation_id')
     video_req = data.get('video_req', False)
-    request_id = data.get('request_id', str(int(time.time())))
+    # The body's id names the turn only when a client may name one (the rule
+    # custom_gpt and teachme2 apply; their turns arrive here already settled).
+    # A /chat body with no id runs under a new seconds id, the shape this
+    # route has always minted (core.chat_client.mint_request_id mirrors it).
+    request_id = _turn_request_id(data, str(int(time.time())))
     # The turn's arrival, on record before any branch can return.  Until this
     # line existed a request that never reached here and one that returned
     # before its first log line read the same in every log (2026-10-02: a
@@ -3352,8 +3397,13 @@ def _chat_turn(data):
                     return jsonify(error_response)
 
                 response_text = result.get('text') or result.get('response')
-                if response_text and not result.get('error'):
-                    logger.info(f'LangChain local response: {response_text[:100]}...')
+                # The reel the turn delivered (HARTOS's /chat reply `media`),
+                # as far as HARTOS's reply-media contract accepts it.  It is
+                # an answer with or without words: a reply that is the reel
+                # alone is served, not mistaken for a dead model below.
+                media = reply_media(result.get('media'))
+                if (response_text or media) and not result.get('error'):
+                    logger.info(f'LangChain local response: {(response_text or "")[:100]}...')
                     # Correction intent: the HARTOS draft-first dispatcher's
                     # Qwen3.5-0.8B classifier tags every default chat turn
                     # with is_correction (true/false) inside the /chat
@@ -3372,9 +3422,9 @@ def _chat_turn(data):
                     # the next turn's correction classifier has context. Kept
                     # tiny (last message only) — no transcript buffering here.
                     with _sessions_lock:
-                        sessions.setdefault(str(user_id), {})['last_assistant_text'] = response_text[:4000]
+                        sessions.setdefault(str(user_id), {})['last_assistant_text'] = (response_text or '')[:4000]
                     response_json = {
-                        'text': response_text,
+                        'text': response_text or '',
                         'agent_id': agent_id,
                         'agent_type': 'local',
                         'source': 'langchain_local',
@@ -3471,11 +3521,10 @@ def _chat_turn(data):
                                 }
                         except (ValueError, _json.JSONDecodeError):
                             pass  # Not JSON — leave as text
-                    # Media the turn delivered (a reel: HARTOS's /chat reply
-                    # carries it as `media`).  The phone renders it from this
-                    # reply when the turn finishes inside its wait.
-                    if result.get('media'):
-                        response_json['media'] = result['media']
+                    # The phone renders the reel from this reply when the turn
+                    # finishes inside its wait (custom_gpt's reply keeps it).
+                    if media:
+                        response_json['media'] = media
                     # #171 — thinking traces stream live via SSE 'chat.response'
                     # (EventBus.emit fan-out, commit 29ac1b9).  No HTTP-batch
                     # attach: each trace was already delivered in real-time,
