@@ -375,7 +375,13 @@ def test_the_completeness_gate_uses_the_true_byte_count(monkeypatch):
     2910 as MiB and demanded 2,746,220,544 bytes of a file that is
     2,912,109,728.  The docstring blamed "4-7% preset estimate drift";
     2910/2777.2 = 1.0478 is exactly the MB-to-MiB ratio.
+
+    The floor and the check are HARTOS's one completeness rule
+    (model_catalog.gguf_min_bytes / gguf_complete); Nunba's private
+    _is_gguf_complete is gone, so the check is observed there.
     """
+    import integrations.service_tools.model_catalog as _rule
+
     import models.catalog as _mc
     from llama.llama_installer import LlamaInstaller
 
@@ -386,8 +392,8 @@ def test_the_completeness_gate_uses_the_true_byte_count(monkeypatch):
     # threshold arithmetic is what is under test.
     monkeypatch.setattr(_mc, 'get_catalog',
                         lambda: (_ for _ in ()).throw(RuntimeError('no catalog')))
-    monkeypatch.setattr(LlamaInstaller, '_is_gguf_complete',
-                        staticmethod(lambda path, min_bytes: seen.append(min_bytes) or False))
+    monkeypatch.setattr(_rule, 'gguf_complete',
+                        lambda path, min_bytes=0: seen.append(min_bytes) or False)
     monkeypatch.setattr(LlamaInstaller, '_find_file_in_dirs',
                         lambda self, name, min_size=1000: seen.append(min_size) or None)
 
