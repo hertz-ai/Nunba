@@ -207,6 +207,44 @@ def test_only_chat_attachments_are_served(file_sync, store):
     assert store.resolve('user_a', xid) is not None
 
 
+@pytest.mark.parametrize('purpose,name,mime,data', [
+    ('reel_source', 'VID_1.mp4', 'video/mp4', b'\x00\x00\x00\x18ftypmp42 her clip'),
+    ('logo', 'logo.png', 'image/png', b'\x89PNG\r\n\x1a\n her logo'),
+    ('song_audio', 'song.mp3', 'audio/mpeg', b'ID3 her song'),
+])
+def test_a_push_of_bytes_held_for_another_purpose_leaves_that_purpose_whole(
+        file_sync, store, monkeypatch, purpose, name, mime, data):
+    """Her clip (bound to her reel turn), logo or song, sent over her phone's
+    device link, is pushed again through this door: it becomes her chat
+    attachment too, and stays usable for what it was sent for, also after
+    she deletes the attachment."""
+    from core import chat_attachments
+    monkeypatch.setattr(chat_attachments, 'get_user_file_store', lambda: store)
+    xid = store.put_file('user_a', data, name=name, mime=mime, purpose=purpose)['xid']
+    store.bind('user_a', [xid], prompt_id='55', request_id='r1', purpose=purpose)
+
+    def still_hers():
+        assert [f.xid for f in store.query_inbox('user_a', purpose=purpose,
+                                                 unconsumed_only=False)] == [xid]
+        assert [f['xid'] for f in chat_attachments.latest_inbound(
+            'user_a', '55', request_id='r1', purpose=purpose)] == [xid]
+
+    meta = file_sync.store('user_a', data, name='sent.bin', mime=mime)
+
+    assert meta['file_id'] == xid and meta['name'] == 'sent.bin'
+    assert [m['file_id'] for m in file_sync.list_since('user_a', 0)] == [xid]
+    still_hers()
+
+    assert file_sync.delete('user_a', xid) is True
+
+    assert file_sync.fetch('user_a', xid) == (None, None)
+    assert file_sync.list_since('user_a', 0) == []
+    assert file_sync.usage('user_a')['files'] == 0
+    still_hers()
+    held = store.resolve('user_a', xid, purpose=purpose)
+    assert held is not None and _read(held.path) == data
+
+
 def test_list_since_orders_ascending_and_filters(file_sync):
     meta_1 = file_sync.store('user_a', b'one', name='1.txt', mime='text/plain')
     meta_2 = file_sync.store('user_a', b'two', name='2.txt', mime='text/plain')

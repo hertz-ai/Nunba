@@ -24,20 +24,27 @@ and song audio her phone sends over its device link, so a /chat turn binds
 its file_id like any of those (core.chat_attachments).
 
 What the store decides, and this door inherits:
-  * file_id is the sha256 of the bytes, computed by the store; a client
-    never names it.
+  * file_id is the sha256 of the bytes, computed by the store, as 64
+    lowercase hex; a client never names it, and pull and delete take it as
+    push returned it.
   * Each user's files sit in a folder named by a hash of the user id
     (core.user_file_store.user_dir_name), so no id can steer a path, and
     there is no cross-user dedup (that would leak existence).
   * The MIME type must be one the purpose lists: images, PDF and office
-    documents, plain text and CSV, audio and video.  Never a page (HTML,
-    SVG, script) or a program, so nothing served back can run; and a
-    download is named so it never ends in a program's extension
+    documents, plain text, Markdown and CSV, audio (a phone's voice notes
+    too) and video.  Never a page (HTML, SVG, script), a program or an
+    archive, and never a file of no stated type (application/octet-stream,
+    what a client that names no type sends), so nothing served back can
+    run; and a download is named so it never ends in a program's extension
     (fetch's ``download_name``).
   * 50 MB per file and 500 MB per user (the purpose's limits); a chat
     attachment is kept until she deletes it.
-Only chat attachments cross this door: her reel clips, logo and songs are
-not served, listed or deleted here.
+  * One file, one claim per purpose.  This door reads and writes only the
+    'chat_attachment' claim: it serves, lists, counts and deletes her chat
+    attachments, never her clips, logo or songs.  Bytes she already holds
+    for one of those (a clip she also sends in chat) become her chat
+    attachment as well, and stay what they were: deleting the attachment
+    here leaves the clip on her reel turn, the logo on her reels.
 
 Gate 2: does NOT duplicate ``routes/upload_routes.py``, which handles
 one-shot Qwen-Vision inference on chat turns and keeps nothing.
@@ -55,10 +62,10 @@ from typing import Any, BinaryIO
 
 # HARTOS's one store.  When HARTOS is not importable, importing this module
 # fails and the routes answer 501 file_sync_unavailable.
-from core.user_file_store import get_user_file_store, is_xid
+from core.user_file_store import CHAT_ATTACHMENT, get_user_file_store, is_xid
 
 #: The store purpose of a file sent through these routes.
-PURPOSE = 'chat_attachment'
+PURPOSE = CHAT_ATTACHMENT
 
 #: What each refusal of the store means, in words for the client.
 _REASONS = {
@@ -100,11 +107,11 @@ def _meta(held) -> dict[str, Any]:
 
 
 def _held(user_id, file_id):
-    """This user's chat attachment ``file_id``, or None."""
+    """This user's chat attachment ``file_id`` (the file as its
+    chat-attachment claim sees it), or None."""
     if not is_xid(file_id):
         return None
-    held = _store().resolve(user_id, file_id, box='in')
-    return held if held is not None and held.purpose == PURPOSE else None
+    return _store().resolve(user_id, file_id, purpose=PURPOSE)
 
 
 def _download_name(held) -> str:
@@ -129,9 +136,11 @@ def store(
     ``{file_id, sha256, name, mime, size, created_at}``.
 
     ``file_id`` is the sha256 of the content.  The same content stored again
-    by the same user is one file, recorded under the latest name.  Raises
-    FileRefused (a ValueError) with the store's ``reason`` when the store
-    refuses it, and ValueError for an empty user id.
+    by the same user is one file, recorded under the latest name; content
+    she holds as a clip, logo or song becomes her chat attachment too and
+    stays what it was.  Raises FileRefused (a ValueError) with the store's
+    ``reason`` when the store refuses it, and ValueError for an empty user
+    id.
     """
     reply = _store().put_file(user_id, stream_or_bytes, name=name, mime=mime,
                               purpose=PURPOSE)
@@ -172,9 +181,11 @@ def list_since(user_id: str, since_ms: int = 0,
 
 
 def delete(user_id: str, file_id: str) -> bool:
-    """Delete one chat attachment and its record.  True when it was there
-    and is gone; False for an absent file, another purpose's file or a
-    malformed id (never an error)."""
+    """Delete one chat attachment.  The file goes with it unless she holds
+    the same bytes for another purpose (her clip, logo or song), which stays.
+    True when the attachment was there and is gone; False for an absent
+    file, one that is not her chat attachment, or a malformed id (never an
+    error)."""
     return is_xid(file_id) and _store().delete(user_id, file_id, purpose=PURPOSE)
 
 

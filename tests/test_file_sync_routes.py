@@ -105,6 +105,35 @@ def test_a_refused_push_says_why_and_keeps_nothing(client, store, data, name, mi
     assert store.usage(USER) == 0
 
 
+def test_a_push_of_her_bound_reel_clip_leaves_her_reel_turn_its_clip(client, store,
+                                                                     monkeypatch):
+    """Her clip came over the device link and is bound to her reel turn
+    (prompt 55).  Pushing the same bytes through the door, then deleting the
+    attachment, never takes the clip from that turn."""
+    from core import chat_attachments
+    monkeypatch.setattr(chat_attachments, 'get_user_file_store', lambda: store)
+    clip = b'\x00\x00\x00\x18ftypmp42' + b'her bridal clip' * 20
+    xid = store.put_file(USER, clip, name='VID_1.mp4', mime='video/mp4',
+                         purpose='reel_source')['xid']
+    store.bind(USER, [xid], prompt_id='55', request_id='r1')
+
+    def reel_turn_clips():
+        return [f['xid'] for f in chat_attachments.latest_inbound(USER, '55')]
+
+    pushed = _push(client, clip, 'clip.mp4', 'video/mp4')
+    assert pushed.status_code == 200, pushed.get_json()
+    assert pushed.get_json()['file_id'] == xid
+    assert reel_turn_clips() == [xid]
+
+    deleted = client.delete('/api/chat-sync/files/' + xid, headers=AUTH)
+    assert deleted.get_json() == {'deleted': True}
+    assert reel_turn_clips() == [xid]
+    gone = client.get('/api/chat-sync/files/pull?file_id=' + xid, headers=AUTH)
+    assert gone.status_code == 404
+    assert client.get('/api/chat-sync/files/pull?since=0', headers=AUTH).get_json() == \
+        {'files': []}
+
+
 def test_without_a_token_nothing_is_stored(client, store):
     refused = client.post('/api/chat-sync/files/push',
                           data={'file': (io.BytesIO(PDF), 'quote.pdf', 'application/pdf')},
