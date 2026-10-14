@@ -9,8 +9,10 @@ dependency with conflicting pins lives (instagrapi pins pydantic and
 requests above the bundled python-embed's), and install_into_venv is the one
 way a backend venv gets its packages.  These tests drive the real
 install_in_background with install_into_venv faked (no pip, no network):
-one install per backend at a time, its outcome readable afterwards, and a
-failure (a False result or a raise) reported, never lost.  And the worker's
+one install per backend at a time (in this process, and across processes
+through the install lock install_backend_full takes), its outcome readable
+afterwards, and a failure (a False result or a raise, or another process
+installing the same venv) reported, never lost.  And the worker's
 pins are verified by the names they import as (pysocks -> socks, pillow ->
 PIL, pycryptodomex -> Cryptodome), through the real install_into_venv with
 pip faked.
@@ -42,10 +44,15 @@ def _wait_until_done(backend: str, timeout: float = 10.0) -> dict:
 
 
 @pytest.fixture
-def fake_install(monkeypatch):
+def fake_install(monkeypatch, tmp_path):
     """install_into_venv replaced: each call blocks until released, then
-    answers what the test set (a (ok, msg) pair, or an exception)."""
-    state = {"calls": [], "release": threading.Event(), "answer": (True, "installed")}
+    answers what the test set (a (ok, msg) pair, or an exception).  The
+    cross-process install lock lives in a temp dir, never the real
+    ~/.nunba."""
+    from tts import package_installer
+    monkeypatch.setattr(package_installer, "_INSTALL_LOCK_DIR", str(tmp_path / "locks"))
+    state = {"calls": [], "release": threading.Event(), "answer": (True, "installed"),
+             "lock_dir": tmp_path / "locks"}
 
     def _install(backend, packages, timeout_per_package=1800):
         state["calls"].append((backend, list(packages), threading.current_thread().name))
@@ -126,6 +133,38 @@ def test_an_empty_package_list_is_refused(fake_install):
 
 def test_nothing_asked_reads_as_none(fake_install):
     assert backend_venv.background_install(BACKEND) is None
+
+
+def test_the_install_holds_the_cross_process_lock_install_backend_full_takes(fake_install):
+    """Review of 5b64a0eb: install_in_background deduped per process only.
+    It now holds the same file lock install_backend_full takes
+    (tts.package_installer._acquire_file_lock('install_<backend>')) while
+    install_into_venv runs, and lets it go afterwards."""
+    import os
+    lock = fake_install["lock_dir"] / f".install_{BACKEND}.lock"
+    assert backend_venv.install_in_background(BACKEND, PACKAGES) == "started"
+    deadline = time.monotonic() + 10
+    while not fake_install["calls"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert fake_install["calls"], "the install never started"
+    assert lock.read_text().strip() == str(os.getpid())     # held while it runs
+    fake_install["release"].set()
+    assert _wait_until_done(BACKEND)["ok"] is True
+    assert not lock.exists()                                # and let go after
+
+
+def test_another_process_installing_the_same_venv_is_reported_not_raced(
+        fake_install, monkeypatch):
+    """Another process (a second app instance, or install_backend_full in
+    one) holds the venv's install lock: nothing is installed alongside it,
+    and the outcome says why, so the caller tries again later."""
+    from tts import package_installer
+    monkeypatch.setattr(package_installer, "_acquire_file_lock", lambda name: False)
+    fake_install["release"].set()
+    assert backend_venv.install_in_background(BACKEND, PACKAGES) == "started"
+    status = _wait_until_done(BACKEND)
+    assert status["ok"] is False and "another" in status["message"]
+    assert fake_install["calls"] == []
 
 
 def test_the_status_is_a_copy(fake_install):

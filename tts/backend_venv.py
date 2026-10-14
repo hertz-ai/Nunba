@@ -646,7 +646,14 @@ def install_into_venv(
 # daemon's tick, which starts no thread of its own (owner ruling U6) --
 # hands the install off here and asks background_install how it went on a
 # later tick.  The install itself is install_into_venv: one way a backend
-# venv gets its packages, whoever asks.
+# venv gets its packages, whoever asks.  _background_installs dedupes asks
+# inside this process; across processes the install holds the same file
+# lock install_backend_full takes (tts.package_installer._acquire_file_lock
+# 'install_<backend>'), so two processes never pip into one venv at once.
+# That lock's own rules apply: one older than _INSTALL_LOCK_STALE_S is taken
+# over, and so is one whose holder is not alive -- which only Windows checks
+# (tasklist); on macOS and Linux the check cannot run and every lock is
+# taken over, so there the lock does not hold yet.
 
 _background_lock = threading.Lock()
 # backend -> {'running', 'ok', 'message', 'started_at', 'finished_at'} of
@@ -660,9 +667,10 @@ def install_in_background(backend: str, packages: list[str]) -> str:
     and return at once: ``'started'``, or ``'running'`` when an install of
     this backend is already in flight (nothing new is started then).
 
-    ``background_install(backend)`` reports how it went.  Raises ValueError
-    for an unsafe backend name or an empty package list, before anything
-    starts.
+    ``background_install(backend)`` reports how it went: a failure when
+    another process holds this venv's install lock (nothing is installed
+    beside it; ask again later).  Raises ValueError for an unsafe backend
+    name or an empty package list, before anything starts.
     """
     _validate_backend_name(backend)
     specs = [str(p) for p in (packages or []) if str(p).strip()]
@@ -677,8 +685,17 @@ def install_in_background(backend: str, packages: list[str]) -> str:
         _background_installs[backend] = record
 
     def _run() -> None:
+        lock_name = f"install_{backend}"
         try:
-            ok, message = install_into_venv(backend, specs)
+            from tts.package_installer import _acquire_file_lock, _release_file_lock
+            if not _acquire_file_lock(lock_name):
+                ok, message = False, (f"venv {backend!r} is being installed by another "
+                                      f"process; not installed alongside it")
+            else:
+                try:
+                    ok, message = install_into_venv(backend, specs)
+                finally:
+                    _release_file_lock(lock_name)
         except Exception as exc:  # noqa: BLE001 -- reported, never lost
             logger.warning("background install of venv %r failed: %s", backend, exc,
                            exc_info=True)
