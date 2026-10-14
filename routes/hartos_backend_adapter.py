@@ -643,11 +643,14 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
 # the turn (core.chat_attachments parse_inbound, then bind_inbound) and, for
 # a turn that names its agent (prompt_id), holds the user-assignable tags as
 # that agent's creation hint (marketing_tools.hold_goal_tag_hint).  This
-# node passes on only what HARTOS's own contracts accept
-# (integrations.reel_studio.contracts and
-# marketing_tools.USER_ASSIGNABLE_GOAL_TAGS, read from there, never copied),
-# and a node that cannot read them passes on nothing.  What is dropped is
-# logged by count and type, never by value: it is whatever the client sent.
+# node passes on only what HARTOS's own rules accept, read from there, never
+# copied: an attachment row by core.chat_attachments.validate_attachment,
+# the ONE /chat attachments rule that parse_inbound reads by (amendment
+# A9 a; a chat attachment needs no Reel Studio package), reply media by
+# integrations.reel_studio.contracts.validate_media_item, and a goal tag by
+# marketing_tools.USER_ASSIGNABLE_GOAL_TAGS.  A node that cannot read a rule
+# passes on nothing it governs.  What is dropped is logged by count and
+# type, never by value: it is whatever the client sent.
 
 #: How many attachments ride one turn when HARTOS's own cap
 #: (core.chat_attachments.MAX_ATTACHMENTS, read first) cannot be read
@@ -661,6 +664,9 @@ TURN_ATTACHMENTS_MAX_BYTES = 16 * 1024
 _ATTACHMENT_MAX_KEYS = 32
 #: A value no contract field accepts (_contract_fields).
 _UNACCEPTABLE = object()
+#: Where HARTOS keeps a chat turn's attachments rule and cap (turn_attachments).
+_CHAT_ATTACHMENTS = 'core.chat_attachments'
+#: Where HARTOS keeps the reply-media contract (reply_media).
 _REEL_CONTRACTS = 'integrations.reel_studio.contracts'
 #: Where HARTOS names the goal tags a user may assign (turn_goal_tags).
 _GOAL_TAG_OWNER = 'integrations.agent_engine.marketing_tools'
@@ -684,17 +690,18 @@ def _contract_accepts(validate, item) -> bool:
         return False
 
 
-def _contract_validator(name, what, raw):
-    """contracts.``name`` for a non-empty ``raw`` list, or None (logged) when
-    ``raw`` is not a list or the contract cannot be loaded here."""
+def _contract_validator(module, name, what, raw):
+    """HARTOS's validator ``module.name`` for a non-empty ``raw`` list, or
+    None (logged) when ``raw`` is not a list or the validator cannot be
+    loaded here."""
     if not isinstance(raw, list):
         logger.warning("Reel Studio %s: a %s, not a list; none passed on",
                        what, type(raw).__name__)
         return None
-    validate = _hartos_name(_REEL_CONTRACTS, name)
+    validate = _hartos_name(module, name)
     if not callable(validate):
-        logger.warning("Reel Studio %s: %s is not loadable on this node, so "
-                       "none of %d is passed on", what, _REEL_CONTRACTS, len(raw))
+        logger.warning("Reel Studio %s: %s.%s is not loadable on this node, so "
+                       "none of %d is passed on", what, module, name, len(raw))
         return None
     return validate
 
@@ -702,19 +709,19 @@ def _contract_validator(name, what, raw):
 def _max_attachments() -> int:
     """HARTOS's cap on a turn's attachments (core.chat_attachments), else
     _FALLBACK_MAX_ATTACHMENTS."""
-    cap = _hartos_name('core.chat_attachments', 'MAX_ATTACHMENTS')
+    cap = _hartos_name(_CHAT_ATTACHMENTS, 'MAX_ATTACHMENTS')
     if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0:
         return cap
     return _FALLBACK_MAX_ATTACHMENTS
 
 
 def _contract_fields(validate, item) -> dict:
-    """The fields of ``item`` that HARTOS's attachment contract governs: each
-    one whose value the contract refuses once it is replaced by a value no
-    field accepts.  The contract stays the one list of an attachment's
-    fields (amendment A9 a: {file_id, sha256, name, mime, size} plus the
-    optional purpose and INBOUND_META_KEYS); any other key, a path, the
-    bytes, a field the contract does not name, stays on this node."""
+    """The fields of ``item`` that HARTOS's attachments rule governs: each
+    one whose value the rule refuses once it is replaced by a value no field
+    accepts.  The rule stays the one list of an attachment's fields
+    (amendment A9 a: {file_id, sha256, name, mime, size} plus the optional
+    purpose, captured_at and duration_ms); any other key, a path, the bytes,
+    a field the rule does not name, stays on this node."""
     return {key: value for key, value in item.items()
             if not _contract_accepts(validate, {**item, key: _UNACCEPTABLE})}
 
@@ -722,15 +729,18 @@ def _contract_fields(validate, item) -> dict:
 def turn_attachments(raw) -> list:
     """The `attachments` a turn may hand HARTOS.
 
-    The first _max_attachments() rows are checked against HARTOS's contract
-    (contracts.validate_attachment); each row it accepts crosses as its
-    contract fields only (_contract_fields), a row the contract accepts as
-    it crosses, while the total stays within TURN_ATTACHMENTS_MAX_BYTES.
-    Everything else is dropped and counted.
+    The first _max_attachments() rows are checked against HARTOS's ONE
+    attachments rule (core.chat_attachments.validate_attachment, which
+    /chat's parse_inbound reads by, so what is dropped here HARTOS would
+    drop too); each row it accepts crosses as its rule's fields only
+    (_contract_fields), a row the rule accepts as it crosses, while the
+    total stays within TURN_ATTACHMENTS_MAX_BYTES.  Everything else is
+    dropped and counted.
     """
     if not raw:
         return []
-    validate = _contract_validator('validate_attachment', 'attachments', raw)
+    validate = _contract_validator(_CHAT_ATTACHMENTS, 'validate_attachment',
+                                   'attachments', raw)
     if validate is None:
         return []
     cap = _max_attachments()
@@ -796,7 +806,8 @@ def reply_media(raw) -> list:
     accepts.  Anything else is dropped and counted."""
     if not raw:
         return []
-    validate = _contract_validator('validate_media_item', 'reply media', raw)
+    validate = _contract_validator(_REEL_CONTRACTS, 'validate_media_item',
+                                   'reply media', raw)
     if validate is None:
         return []
     kept = [item for item in raw if _contract_accepts(validate, item)]
@@ -935,7 +946,7 @@ def chat(
     if device_id:
         payload["device_id"] = str(device_id)
     # The turn's file references (refs into this desktop's user file store)
-    # and its agent-creation hint, as far as HARTOS's contracts accept them
+    # and its agent-creation hint, as far as HARTOS's own rules accept them
     # (turn_attachments, turn_goal_tags), and only when a caller has them:
     # every other caller's body is unchanged.  HARTOS's chat() binds the
     # references to the turn and holds the hint (see the Reel Studio block

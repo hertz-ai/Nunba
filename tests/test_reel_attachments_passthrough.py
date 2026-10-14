@@ -23,10 +23,12 @@ route with that body unchanged.  This node must:
     and replace any other; /chat and /chat/teachme2 judge their bodies' ids
     by the same rule;
   * forward attachments and goal_tags to HARTOS /chat, bounded here: an
-    attachment only in the shape HARTOS's contract names
-    (integrations.reel_studio.contracts.validate_attachment), at most
-    core.chat_attachments.MAX_ATTACHMENTS (10) and 16 KB, contract fields
-    only; a goal tag only when a user may assign it
+    attachment only in the ONE shape, judged by HARTOS's one rule
+    (core.chat_attachments.validate_attachment, which
+    integrations.reel_studio.contracts.validate_attachment is, and which
+    /chat's parse_inbound reads by: what this node drops HARTOS drops), at
+    most core.chat_attachments.MAX_ATTACHMENTS (10) and 16 KB, the rule's
+    fields only; a goal tag only when a user may assign it
     (marketing_tools.USER_ASSIGNABLE_GOAL_TAGS; none when that set cannot be
     read).  HARTOS's chat() reads both: it binds the attachments to the turn
     (core.chat_attachments.parse_inbound, then bind_inbound) and holds the
@@ -466,13 +468,18 @@ def test_at_most_ten_attachments_cross(client, hartos):
     assert hartos.seen[0]['attachments'] == many[:10]
 
 
-@pytest.mark.parametrize('chat_attachments, crossing', [
-    (SimpleNamespace(MAX_ATTACHMENTS=3), 3),       # HARTOS's cap decides
-    (None, 10),                                    # cannot be read: 10
-    (SimpleNamespace(MAX_ATTACHMENTS='3'), 10),    # not a count: 10
+@pytest.mark.parametrize('cap, crossing', [
+    (3, 3),                                        # HARTOS's cap decides
+    ('3', 10),                                     # not a count: 10
+    (None, 10),                                    # not there: 10
 ])
-def test_the_cap_is_hartos_own(client, hartos, monkeypatch, chat_attachments, crossing):
-    monkeypatch.setitem(sys.modules, 'core.chat_attachments', chat_attachments)
+def test_the_cap_is_hartos_own(client, hartos, monkeypatch, cap, crossing):
+    """core.chat_attachments.MAX_ATTACHMENTS decides how many cross; when it
+    is not a count, _FALLBACK_MAX_ATTACHMENTS (10) does."""
+    module = SimpleNamespace(validate_attachment=contracts.validate_attachment)
+    if cap is not None:
+        module.MAX_ATTACHMENTS = cap
+    monkeypatch.setitem(sys.modules, 'core.chat_attachments', module)
     many = [_clip(f'clip-{i}') for i in range(12)]
     client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
                                           'attachments': many})
@@ -509,23 +516,55 @@ def test_attachments_that_are_not_a_list_are_dropped(client, hartos, caplog):
     assert 'win.ini' not in _log(caplog)
 
 
-def test_without_hartos_contract_no_attachment_crosses(client, hartos, monkeypatch, caplog):
-    """Fail closed: a node that cannot load the contract forwards none."""
-    monkeypatch.setitem(sys.modules, 'integrations.reel_studio.contracts', None)
+def test_without_hartos_attachment_rule_no_attachment_crosses(
+        client, hartos, monkeypatch, caplog):
+    """Fail closed: a node that cannot load HARTOS's attachments rule
+    (core.chat_attachments) forwards none, and says which module."""
+    monkeypatch.setitem(sys.modules, 'core.chat_attachments', None)
     caplog.set_level(logging.INFO)
     resp = client.post('/chat/custom_gpt', json=PHONE_REEL_CREATE_TURN)
     assert resp.status_code == 200
     body = hartos.seen[0]
     assert 'attachments' not in body
     assert body['goal_tags'] == ['reel_studio']        # tags do not need it
-    assert 'integrations.reel_studio.contracts' in _log(caplog)
+    assert 'core.chat_attachments' in _log(caplog)
+
+
+def test_a_node_without_reel_studio_still_forwards_her_attachments(
+        client, hartos, monkeypatch):
+    """A chat attachment (a PDF, a picture) is a chat thing, not a Reel
+    Studio one (owner ruling A10a: one upload service for every purpose):
+    its rule is core.chat_attachments', so it crosses without the Reel
+    Studio package."""
+    monkeypatch.setitem(sys.modules, 'integrations.reel_studio.contracts', None)
+    pdf = {'file_id': _sha('menu.pdf'), 'sha256': _sha('menu.pdf'), 'name': 'menu.pdf',
+           'mime': 'application/pdf', 'size': 2048, 'purpose': 'chat_attachment'}
+    client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                          'attachments': [*ATTACHMENTS, pdf]})
+    assert hartos.seen[0]['attachments'] == [*ATTACHMENTS, pdf]
+
+
+def test_the_attachment_rule_is_hartos_own(client, hartos, monkeypatch):
+    """HARTOS's one rule (core.chat_attachments.validate_attachment) decides
+    which rows cross, not a copy here and not a second reader."""
+    import core.chat_attachments as chat_attachments
+    rule = chat_attachments.validate_attachment
+
+    def no_logo_today(item):
+        return rule(item) or (['no logo today'] if item.get('purpose') == 'logo' else [])
+
+    monkeypatch.setattr(chat_attachments, 'validate_attachment', no_logo_today)
+    client.post('/chat/custom_gpt', json=PHONE_REEL_CREATE_TURN)
+    assert hartos.seen[0]['attachments'] == [ATTACHMENTS[0]]
 
 
 def test_a_validator_that_raises_drops_the_entry(client, hartos, monkeypatch):
+    import core.chat_attachments as chat_attachments
+
     def boom(item):
         raise RuntimeError('validator bug')
 
-    monkeypatch.setattr(contracts, 'validate_attachment', boom)
+    monkeypatch.setattr(chat_attachments, 'validate_attachment', boom)
     client.post('/chat/custom_gpt', json=PHONE_REEL_CREATE_TURN)
     assert 'attachments' not in hartos.seen[0]
 
@@ -602,6 +641,17 @@ def test_hartos_reads_every_ref_and_tag_this_node_forwards(client, hartos):
         {'file_id': a['file_id'], 'purpose': a['purpose']} for a in ATTACHMENTS]
     assert body['goal_tags'] == ['reel_studio']
     assert user_assignable_goal_tags(body['goal_tags']) == body['goal_tags']
+
+
+@pytest.mark.parametrize('bad', [b for b in BAD_ATTACHMENTS if isinstance(b, dict)])
+def test_hartos_drops_every_row_this_node_drops(bad):
+    """Inbound == outbound across the boundary (amendment A9 a): a row this
+    node keeps back is one HARTOS's /chat would not read either
+    (core.chat_attachments.parse_inbound), so a client that reaches HARTOS
+    some other way gets no more bound than through here."""
+    from core.chat_attachments import parse_inbound
+    assert hba.turn_attachments([bad]) == []
+    assert parse_inbound([bad]) == []
 
 
 # ── HARTOS reply media -> the phone ──────────────────────────────────
