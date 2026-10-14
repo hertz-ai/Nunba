@@ -36,12 +36,21 @@ call here is best-effort.
 Bounded.  The file is trimmed to the most recent ``MAX_LINES`` so it cannot
 grow without limit on a machine that boots often, while still holding far
 more history than a rotating debug log.
+
+WHICH BUILD BOOTED
+------------------
+``build_identity`` is the one reader of the commits a build came from, and
+``record_build_identity`` names them once per boot.  Owner 10-03: a 17:53
+boot answered a 'hi' that the 20:08 boot of the next install did not, and
+no log said which Nunba or HARTOS commit either build was made from.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -142,3 +151,123 @@ def read_recent(event: str | None = None, limit: int = 20) -> list:
     except Exception as e:
         logger.debug('boot_record read skipped: %s', e)
         return []
+
+
+#: The record event that names the build, once per boot.
+BUILD_EVENT = 'build'
+
+_UNKNOWN = 'unknown'
+
+
+def _source_root() -> str:
+    """Nunba's source tree: this file is desktop/boot_record.py."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def build_identity(install_dir: str | None = None,
+                   repo_root: str | None = None) -> dict:
+    """The commits this app was built from.  The one reader.
+
+    Read order (the order /api/harthash has always used; it now calls this):
+      1. BUILD_INFO.txt in ``install_dir`` -- scripts/build.py writes it
+         beside the exe on every freeze (BUILD_SHA, HARTOS_SHA, BUILD_TIME,
+         BUILD_PLATFORM).
+      2. build_hashes.json there -- installs from before 2026-04-27.
+      3. ``git rev-parse --short HEAD`` in the source tree and its sibling
+         repos under ``repo_root``'s parent -- a source run has no
+         BUILD_INFO.txt.
+
+    ``install_dir`` defaults to the exe's folder when frozen, else the
+    source tree.  Never raises; a value that cannot be read is 'unknown'.
+    """
+    if install_dir is None:
+        install_dir = (os.path.dirname(os.path.abspath(sys.executable))
+                       if getattr(sys, 'frozen', False) else _source_root())
+
+    info_file = os.path.join(install_dir, 'BUILD_INFO.txt')
+    if os.path.isfile(info_file):
+        try:
+            kv: dict = {}
+            with open(info_file, encoding='utf-8') as fh:
+                for ln in fh:
+                    if '=' in ln:
+                        k, v = ln.strip().split('=', 1)
+                        kv[k.strip()] = v.strip()
+            return {
+                'nunba': kv.get('BUILD_SHA', _UNKNOWN),
+                'hartos': kv.get('HARTOS_SHA', _UNKNOWN),
+                'hevolveai': kv.get('HEVOLVEAI_SHA', _UNKNOWN),
+                'hevolve_database': kv.get('HEVOLVE_DATABASE_SHA', _UNKNOWN),
+                'build_time': kv.get('BUILD_TIME', _UNKNOWN),
+                'build_platform': kv.get('BUILD_PLATFORM', sys.platform),
+                'source': 'BUILD_INFO.txt',
+            }
+        except Exception as e:
+            logger.warning('build identity: BUILD_INFO.txt parse failed: %s', e)
+
+    legacy = os.path.join(install_dir, 'build_hashes.json')
+    if os.path.isfile(legacy):
+        try:
+            with open(legacy, encoding='utf-8') as fh:
+                data = json.load(fh)
+            data.setdefault('source', 'build_hashes.json')
+            return data
+        except Exception as e:
+            logger.debug('build identity: build_hashes.json unreadable: %s', e)
+
+    root = repo_root or _source_root()
+    repos = {
+        'nunba': root,
+        'hartos': os.path.join(root, '..', 'HARTOS'),
+        'hevolve_database': os.path.join(root, '..', 'Hevolve_Database'),
+        'hevolveai': os.path.join(root, '..', 'hevolveai'),
+    }
+    # One git spawn per repo; without the hide flags each one flashes a
+    # console window on Windows.
+    try:
+        from desktop.platform_utils import get_subprocess_flags
+        flags = get_subprocess_flags()
+    except Exception:
+        flags = {}
+    hashes: dict = {}
+    for name, path in repos.items():
+        try:
+            r = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
+                               capture_output=True, text=True, cwd=path,
+                               timeout=5, **flags)
+            hashes[name] = r.stdout.strip() if r.returncode == 0 else _UNKNOWN
+        except Exception:
+            hashes[name] = _UNKNOWN
+    hashes['build_time'] = 'dev-mode'
+    hashes['source'] = 'live-git'
+    return hashes
+
+
+def record_build_identity(install_dir: str | None = None) -> dict:
+    """Name the commits this boot runs: one '[BUILD]' log line and one
+    'build' record.  Returns what was read, or {} if nothing could be.
+
+    Called once per boot -- app.py right after its startup line, main.py
+    when run on its own.  gui_app.log rotates within about a day, so the
+    record is the copy that is still there when the question is asked.
+    Never raises.
+    """
+    try:
+        info = build_identity(install_dir)
+        nunba = info.get('nunba') or _UNKNOWN
+        hartos = info.get('hartos') or _UNKNOWN
+        parts = [f'nunba={nunba}', f'hartos={hartos}']
+        for extra in ('hevolveai', 'hevolve_database'):
+            if info.get(extra) not in (None, '', _UNKNOWN):
+                parts.append(f'{extra}={info[extra]}')
+        built = info.get('build_time', _UNKNOWN)
+        source = info.get('source', _UNKNOWN)
+        parts += [f'built={built}', f'source={source}']
+        line = ' '.join(parts)
+        logger.info('[BUILD] %s', line)
+        record(BUILD_EVENT, _UNKNOWN not in (nunba, hartos), detail=line,
+               nunba=nunba, hartos=hartos, build_time=built, source=source)
+        return info
+    except Exception as e:
+        logger.warning('[BUILD] build identity not recorded: %s', e)
+        return {}

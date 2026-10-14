@@ -95,3 +95,35 @@ def test_a_hartos_tree_without_the_writer_never_breaks_ensure_venv(
     assert pyexe.is_file()
     assert not _pth(BACKEND).exists()
     assert any("parent packages" in r.getMessage() for r in caplog.records)
+
+
+def test_every_venv_pip_install_skips_the_path_scan(venv_root, monkeypatch, tmp_path):
+    """pip's scripts-not-on-PATH warning resolves every PATH entry.  On the
+    owner's box a junction on PATH (OpenAI Codex\\bin) raised WinError 448
+    there, pip rolled the install back, and chatterbox_turbo never installed
+    (14 failures in venv_chatterbox_turbo.log, 2026-10-03)."""
+    pip_cmds = []
+    pyexe = tmp_path / "python.exe"
+    pyexe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(backend_venv, "ensure_venv", lambda b, *a, **k: pyexe)
+    monkeypatch.setattr(backend_venv, "invoke_in_venv", lambda *a, **k: (0, "", ""))
+
+    def _run(cmd, **kwargs):
+        pip_cmds.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    class _Popen:
+        def __init__(self, cmd, **kwargs):
+            pip_cmds.append(list(cmd))
+            self.args, self.returncode = cmd, 0
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(backend_venv.subprocess, "run", _run)
+    monkeypatch.setattr(backend_venv.subprocess, "Popen", _Popen)
+    ok, _msg = backend_venv.install_into_venv(BACKEND, ["soundfile"])
+    installs = [c for c in pip_cmds if c[1:4] == ["-m", "pip", "install"]]
+    assert ok and len(installs) == 2
+    for cmd in installs:
+        assert "--no-warn-script-location" in cmd, cmd

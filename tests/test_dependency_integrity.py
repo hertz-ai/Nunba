@@ -121,6 +121,24 @@ class TestRequirementsLock:
         )
 
 
+class TestAvStaysBelow19:
+    """PyAV 19.0.1 dropped av.open(metadata_errors=...), which faster-whisper
+    1.2.1 passes on every decode.  av was in no pin here, so the 10-07 nightly
+    froze 19.0.1 into lib/ and every local transcription answered "No STT
+    engine available".  The build venv is filled from requirements.txt, which
+    scripts/deps.py generates, so the pin lives in CORE_DEPS."""
+
+    def test_av_is_pinned_exact_below_19_and_agrees_with_the_lock(self):
+        from packaging.version import Version
+        top = _parse_requirements_txt(REQ)
+        lock = _parse_requirements_txt(REQ_LOCK)
+        assert top.get('av', '').startswith('=='), (
+            f'av must be pinned exact in requirements.txt, got {top.get("av")!r}')
+        assert top['av'] == lock.get('av'), (
+            f'requirements.txt pins av {top["av"]} but the lock says {lock.get("av")}')
+        assert Version(top['av'][2:]) < Version('19'), top['av']
+
+
 class TestRequirementsVsLock:
     def test_top_level_packages_appear_in_lock(self):
         """Most packages in requirements.txt should also be in the lock

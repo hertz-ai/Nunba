@@ -56,6 +56,27 @@ export function sttConfigMessage(language) {
   return language ? {type: 'config', language} : {type: 'config'};
 }
 
+// A browser recognizer that keeps listening: it restarts on every end
+// (silence timeout, network blip) until stop() is called.  The restart reads
+// this listener's own flag.  The wake-word listener used to read the React
+// state it was created with, which stayed true after the owner turned it off:
+// stop() fires onend, onend restarted it, and the orphaned listener held the
+// mic until a reload (2026-10-03: the mic button then did nothing).
+export function startContinuousRecognition(Recognition, lang, onResult) {
+  let stopped = false;
+  const recognition = new Recognition();
+  recognition.continuous = true;
+  recognition.interimResults = false;
+  recognition.lang = lang;
+  recognition.onresult = onResult;
+  recognition.onend = () => { if (!stopped) recognition.start(); };
+  recognition.start();
+  return {
+    recognition,
+    stop: () => { stopped = true; recognition.stop(); },
+  };
+}
+
 export default function useSpeechRecognition(config = {}) {
   const {
     language: defaultLanguage = null,

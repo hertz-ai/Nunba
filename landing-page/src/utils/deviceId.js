@@ -53,6 +53,17 @@ export const getStableDeviceId = async () => {
 };
 
 /**
+ * getStableDeviceId, asked once per page.  Every /chat stamps this id on its
+ * turn (HARTOS records it on the mirrored row) and the chat views drop rows
+ * carrying it as their own, so all of them must read the same value.
+ */
+let _onceForThisPage = null;
+export const getStableDeviceIdOnce = () => {
+  if (!_onceForThisPage) _onceForThisPage = getStableDeviceId();
+  return _onceForThisPage;
+};
+
+/**
  * Synchronous read of the cached device_id without touching the
  * backend.  Use this when you're inside a synchronous code path
  * (e.g., an event handler) and can tolerate a cache-miss uuid fallback.

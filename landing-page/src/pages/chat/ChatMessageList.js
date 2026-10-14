@@ -3,6 +3,7 @@ import TypeWriterForSubtitle from './TypeWriterSubtitle';
 
 import hourglassAnimation from '../../assets/hourglass-lottie.json';
 import RelativeTime from '../../components/Common/RelativeTime';
+import {isReplyMessage} from '../../utils/chatRetry';
 import {formatTier} from '../../utils/tier';
 
 import Lottie from 'lottie-react';
@@ -235,6 +236,9 @@ const ChatMessageList = ({
   showThinkingTraces = true,
 }) => {
   const isIdleVideo = (url) => url === idleVideoUrl;
+  // Replies so far.  The hourglass row compares it across a request to tell
+  // a request that got its reply from one that ended without one.
+  const replyCount = messages.filter(isReplyMessage).length;
 
   return (
     <div className="w-full px-3 py-4 space-y-6" role="log" aria-live="polite" aria-label="Chat messages">
@@ -811,6 +815,7 @@ const ChatMessageList = ({
       <ThinkingHourglassRow
         isRequestInFlight={isRequestInFlight}
         latestThinkingText={latestThinkingText}
+        replyCount={replyCount}
       />
 
       <div ref={messagesEndRef} />
@@ -837,29 +842,35 @@ function formatThoughtMs(ms) {
  * Standby (post-request):  no Lottie, no animation — just
  *   "Thought for 4s" pill, matching Claude Code's silent end-state.
  *   Persists until the next request starts, then collapses.
+ *   Only for a request that got its reply (replyCount grew while it was
+ *   in flight).  One that ended without a reply shows nothing here; its
+ *   reason is on the message.  Reported 2026-10-02: the pill showed with
+ *   no reply.
  *
  * Implementation is kept INSIDE ChatMessageList.js so the existing prop
  * surface (isRequestInFlight, latestThinkingText) drives both states
- * without threading new props from Demopage.  The total-elapsed
- * capture is local: we observe the in-flight transition and snapshot
- * the duration on the trailing edge.
+ * without threading new props from Demopage (replyCount is counted from
+ * `messages` above).  The total-elapsed capture is local: we observe the
+ * in-flight transition and snapshot the duration on the trailing edge.
  */
-function ThinkingHourglassRow({isRequestInFlight, latestThinkingText}) {
+function ThinkingHourglassRow({isRequestInFlight, latestThinkingText, replyCount}) {
   const [lastThoughtMs, setLastThoughtMs] = useState(0);
   const prevInFlightRef = useRef(false);
   const startMsRef = useRef(null);
+  const startReplyCountRef = useRef(0);
 
   useEffect(() => {
     if (isRequestInFlight && !prevInFlightRef.current) {
       // false → true: new request starting, reset the standby pill.
       startMsRef.current = Date.now();
+      startReplyCountRef.current = replyCount;
       setLastThoughtMs(0);
     } else if (!isRequestInFlight && prevInFlightRef.current) {
-      // true → false: capture the cumulative thinking duration.
-      if (startMsRef.current) {
+      // true → false: capture the duration, if the request got its reply.
+      if (startMsRef.current && replyCount > startReplyCountRef.current) {
         setLastThoughtMs(Date.now() - startMsRef.current);
-        startMsRef.current = null;
       }
+      startMsRef.current = null;
     }
     prevInFlightRef.current = isRequestInFlight;
   }, [isRequestInFlight]);

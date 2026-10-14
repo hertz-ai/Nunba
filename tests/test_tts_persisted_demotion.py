@@ -404,3 +404,41 @@ def test_hydrate_seeds_consecutive_failures_counter(state_path):
 
     eng = TTSEngine(auto_init=False)
     assert eng._consecutive_failures.get('chatterbox_turbo') == 5
+
+
+# ────────────────────────────────────────────────────────────────────
+# 8. Regression — a later save must not restart an older entry's TTL
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_save_keeps_an_older_entrys_original_timestamps(state_path):
+    """``_save_persisted_demotions`` used to write ``now`` and
+    ``now + TTL`` for EVERY entry on every save.  Demoting one more
+    backend, or a hydrate that dropped one expired row, restarted the
+    7-day clock of all the others, so a demotion written for a cause
+    long since fixed never expired (seven engines carried the identical
+    first_demoted_at, the time of the LAST save)."""
+    import time
+
+    from tts.tts_engine import TTSEngine
+
+    t0 = time.time() - 5 * 86400
+    state_path.write_text(json.dumps({
+        'schema': 1,
+        'updated_at': t0,
+        'demoted': {'kokoro': {
+            'first_demoted_at': t0,
+            'expires_at': t0 + 7 * 86400,
+            'failures_at_demotion': 1,
+        }},
+    }))
+
+    eng = TTSEngine(auto_init=False)
+    assert 'kokoro' in eng._demoted_backends   # hydrated
+    eng._demoted_backends.add('f5')            # a new demotion
+    eng._save_persisted_demotions()
+
+    written = json.loads(state_path.read_text())['demoted']
+    assert written['kokoro']['first_demoted_at'] == pytest.approx(t0)
+    assert written['kokoro']['expires_at'] == pytest.approx(t0 + 7 * 86400)
+    assert written['f5']['first_demoted_at'] > t0 + 4 * 86400   # new row is now

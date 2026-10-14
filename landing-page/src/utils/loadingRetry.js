@@ -12,7 +12,7 @@
 // Pure + exported so it is unit-testable without rendering the (large) Demopage
 // component — the React wiring (setTimeout + cleanup ref) lives in Demopage and
 // consumes this single source for the delay decision.
-export const LOADING_RETRY_SCHEDULE_MS = [5000, 12000, 25000, 45000, 70000];
+export const LOADING_RETRY_SCHEDULE_MS = [5000, 12000, 25000, 45000, 70000, 90000, 120000];
 export const MAX_LOADING_RETRIES = LOADING_RETRY_SCHEDULE_MS.length;
 
 // attempt is 0-based (0 = the first retry). Returns the delay in ms before the

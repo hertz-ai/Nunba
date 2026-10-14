@@ -2839,6 +2839,60 @@ class LlamaConfig:
             logger.info(f"Caption server already running on port {port}")
             return True
 
+        # One spawn per port across processes: the same lock protocol
+        # start_server uses, scoped to this port.  The probe above is not a
+        # lock: a model takes seconds to load and answers nothing while it
+        # does, so two callers probing in that window both spawned.  Measured
+        # 2026-09-26 02:11 IST: two 0.8B servers on :8081 started in the same
+        # minute by different parent processes (the boot thread and the
+        # vlm_caption.requested subscriber each build their own LlamaConfig);
+        # the loser could not bind but held its VRAM.
+        lock_file = self.config_dir / f".caption_server_starting.{port}.lock"
+        if lock_file.exists():
+            try:
+                lock_age = time.time() - lock_file.stat().st_mtime
+                if lock_age < 120:
+                    logger.info(f"Caption server start on port {port} already in "
+                                f"progress (lock age: {lock_age:.0f}s) — waiting...")
+                    for _ in range(120):
+                        time.sleep(0.5)
+                        if self.check_server_running(port):
+                            logger.info("Caption server started by another "
+                                        "process — reusing")
+                            return True
+                        if not lock_file.exists():
+                            break
+                    if self.check_server_running(port):
+                        return True
+                    logger.warning("Caption server start by another process "
+                                   "timed out")
+                    return False
+                logger.warning(f"Stale caption server lock ({lock_age:.0f}s old) "
+                               "— removing")
+                lock_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            lock_file.parent.mkdir(parents=True, exist_ok=True)
+            lock_file.write_text(str(os.getpid()))
+        except Exception:
+            pass
+        try:
+            # The other process may have finished between our probe and
+            # our lock; ask again now that nobody else can be spawning.
+            if self.check_server_running(port):
+                logger.info(f"Caption server came up on port {port} while "
+                            "we waited for the lock — reusing")
+                return True
+            return self._do_start_caption_server(port)
+        finally:
+            try:
+                lock_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _do_start_caption_server(self, port: int) -> bool:
+        """The spawn itself; start_caption_server holds the per-port lock."""
         # Find the 0.8B preset
         preset = None
         for p in MODEL_PRESETS:

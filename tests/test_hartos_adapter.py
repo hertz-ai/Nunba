@@ -386,6 +386,13 @@ class TestChatPayloadOptionalFields:
         assert self._payload(draft_first='false')['draft_first'] is False
         assert self._payload(draft_first='true')['draft_first'] is True
 
+    def test_the_sending_device_reaches_hartos(self):
+        """HARTOS stamps it on the mirrored turn, so a device drops its own
+        turns from the cross-device feed.  It was dropped here, and every
+        turn was recorded with no device."""
+        assert 'device_id' not in self._payload()
+        assert self._payload(device_id='dev-1')['device_id'] == 'dev-1'
+
 
 class TestProxyChatKeepsAvatarAndAgentApart:
     """teacher_avatar_id is the avatar, shared by many agents; the proxy /chat

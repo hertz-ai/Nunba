@@ -1,0 +1,91 @@
+/**
+ * utils/shellBridge: the postMessage contract between Nunba and the HART OS
+ * desktop shell that frames it. Drives the real module in jsdom: standalone
+ * (parent === window) every call is a no-op; embedded, messages leave to the
+ * page's own origin and only same-origin, prefixed messages come back in.
+ */
+import {
+  SHELL_MESSAGE_PREFIX, isEmbeddedInShell, onShellMessage, postToShell,
+} from '../../utils/shellBridge';
+
+function withParent(parent, fn) {
+  const desc = Object.getOwnPropertyDescriptor(window, 'parent');
+  Object.defineProperty(window, 'parent', { configurable: true, value: parent });
+  try {
+    return fn();
+  } finally {
+    if (desc) Object.defineProperty(window, 'parent', desc);
+    else Object.defineProperty(window, 'parent', { configurable: true, value: window });
+  }
+}
+
+function deliver(data, init) {
+  window.dispatchEvent(new MessageEvent('message', {
+    data, origin: window.location.origin, ...(init || {}),
+  }));
+}
+
+describe('standalone Nunba (no parent window)', () => {
+  test('is not embedded and posts nothing', () => {
+    expect(isEmbeddedInShell()).toBe(false);
+    expect(postToShell('nunba:ready', { route: '/local' })).toBe(false);
+  });
+});
+
+describe('embedded in the HART OS shell', () => {
+  test('posts prefixed messages to the parent at our own origin only', () => {
+    const parent = { postMessage: jest.fn() };
+    withParent(parent, () => {
+      expect(isEmbeddedInShell()).toBe(true);
+      expect(postToShell('nunba:turn', { state: 'start' })).toBe(true);
+      expect(parent.postMessage).toHaveBeenCalledWith(
+        { type: 'nunba:turn', state: 'start' }, window.location.origin,
+      );
+      // Not our namespace: never leaves.
+      expect(postToShell('hart:action', { kind: 'x' })).toBe(false);
+      expect(parent.postMessage).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  test('a parent that throws on postMessage is reported, not thrown', () => {
+    const parent = { postMessage: () => { throw new Error('closed'); } };
+    withParent(parent, () => {
+      expect(postToShell('nunba:ready', {})).toBe(false);
+    });
+  });
+
+  test('hands the handler same-origin prefixed messages and nothing else', () => {
+    const seen = [];
+    const off = onShellMessage((msg) => seen.push(msg));
+
+    deliver({ type: 'nunba:compose', text: 'hello', send: true });
+    deliver({ type: 'hart:action', kind: 'cart.add' });        // another protocol
+    deliver('nunba:compose');                                  // not an object
+    deliver({ type: 'nunba:compose', text: 'evil' }, { origin: 'https://attacker.example' });
+
+    expect(seen).toEqual([{ type: 'nunba:compose', text: 'hello', send: true }]);
+    expect(seen[0].type.indexOf(SHELL_MESSAGE_PREFIX)).toBe(0);
+
+    off();
+    deliver({ type: 'nunba:compose', text: 'after unsubscribe' });
+    expect(seen).toHaveLength(1);
+  });
+
+  test('a message from a window that is not the parent is ignored', () => {
+    const seen = [];
+    const off = onShellMessage((msg) => seen.push(msg));
+    // The listener accepts a null source (jsdom, some embedders deliver none)
+    // and rejects a non-parent one. A sibling frame's window is such a source.
+    const sibling = document.createElement('iframe');
+    document.body.appendChild(sibling);
+    deliver({ type: 'nunba:compose', text: 'from a sibling' }, { source: sibling.contentWindow });
+    expect(seen).toEqual([]);
+    sibling.remove();
+    off();
+  });
+
+  test('a non-function handler yields a harmless unsubscribe', () => {
+    expect(typeof onShellMessage(null)).toBe('function');
+    expect(() => onShellMessage(null)()).not.toThrow();
+  });
+});

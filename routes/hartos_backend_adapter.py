@@ -652,6 +652,7 @@ def chat(
     intelligence_preference: str = 'auto',
     teacher_avatar_id=None,
     draft_first=None,
+    device_id=None,
     **kwargs
 ) -> dict[str, Any]:
     """
@@ -752,6 +753,10 @@ def chat(
     # into that avatar's recorded voice.  Sent only when a caller has one.
     if teacher_avatar_id is not None:
         payload["teacher_avatar_id"] = teacher_avatar_id
+    # The device the turn came from: HARTOS stamps it on the mirrored turn so
+    # that device drops its own turns from the cross-device feed.
+    if device_id:
+        payload["device_id"] = str(device_id)
     # Per-request draft override: HARTOS /chat honours `draft_first` in the
     # body.  Sent only when a caller sets it, so every other caller keeps
     # HARTOS's default.
@@ -1444,7 +1449,10 @@ _INPROCESS_DISPATCH_ROUTES = (
     ('/time_agent', ('POST',)),          # scheduled recipe actions
     ('/visual_agent', ('POST',)),        # scheduled visual (VLM) actions
     ('/api/agent/approval', ('POST',)),  # consent card Approve / Deny
+    ('/api/voice/transcribe', ('POST',)),  # phone call STT + watch relay (multipart WAV)
 )
+# /api/voice/transcribe measured 2026-10-02 on 731864e3: 404, so the phone's
+# call fell back to Google (billing off) and heard nothing.
 
 
 def create_inprocess_dispatch_blueprint():
@@ -1467,16 +1475,39 @@ def create_inprocess_dispatch_blueprint():
     127.0.0.1 with no Origin, so HARTOS's own guard on /api/vlm/stop never sees
     the real caller.  require_local_or_token_csrf_safe passes the scheduler
     and call_stop_api (local, no Origin) and refuses cross-origin pages.
+
+    ONE CONSENT GATE.  A phone is let in by HARTOS's API gate on this app
+    (security/middleware.py, install_api_gate): ConsentService decides, and
+    an admitted device acts only as its token's user (#51).  The gate marks
+    that request g.auth_source == 'device', and the door takes its word
+    rather than asking a second question.
+
+    A multipart body (an audio upload) is forwarded as multipart, files and
+    form fields intact; anything else as JSON, as before.
     """
-    from flask import Blueprint, Response, jsonify
+    from flask import Blueprint, Response, g, jsonify
     from flask import request as flask_request
 
     from routes.auth import require_local_or_token_csrf_safe
 
     bp = Blueprint('hevolve_inprocess_dispatch', __name__)
 
+    def _forward_kwargs():
+        if flask_request.files:
+            # The caller's own credential goes with an upload.  HARTOS's CSRF
+            # check refuses a non-JSON POST that carries no Bearer: measured
+            # 2026-10-03 against HARTOS's real app, a multipart upload got
+            # 403 'CSRF token required' without it, 200 with the phone's.
+            # JSON rows are unchanged (HARTOS's CSRF check passes JSON).
+            auth = flask_request.headers.get('Authorization')
+            data = {k: v for k, v in flask_request.form.items()}
+            for name, f in flask_request.files.items():
+                data[name] = (f.stream, f.filename, f.mimetype)
+            return {'data': data, 'content_type': 'multipart/form-data',
+                    'headers': {'Authorization': auth} if auth else {}}
+        return {'json': flask_request.get_json(silent=True) or {}}
+
     def _dispatcher(path):
-        @require_local_or_token_csrf_safe
         def dispatch():
             if not (_hartos_backend_available and _hevolve_app):
                 return jsonify({
@@ -1485,10 +1516,18 @@ def create_inprocess_dispatch_blueprint():
                 }), 503
             with _hevolve_app.test_client() as client:
                 resp = client.open(path, method=flask_request.method,
-                                   json=flask_request.get_json(silent=True) or {})
+                                   **_forward_kwargs())
                 return Response(resp.get_data(), status=resp.status_code,
                                 content_type=resp.content_type)
-        return dispatch
+
+        guarded = require_local_or_token_csrf_safe(dispatch)
+
+        def device_or_guarded():
+            if (getattr(g, 'auth_source', None) == 'device'
+                    and getattr(g, 'device_public_key', None)):
+                return dispatch()
+            return guarded()
+        return device_or_guarded
 
     for path, methods in _INPROCESS_DISPATCH_ROUTES:
         bp.add_url_rule(path, endpoint='dispatch_' + path.strip('/'),
