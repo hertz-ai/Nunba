@@ -53,8 +53,21 @@ What the store decides, and this door inherits:
     attachment as well, and stay what they were: deleting the attachment
     here leaves the clip on her reel turn, the logo on her reels.
 
-Gate 2: does NOT duplicate ``routes/upload_routes.py``, which handles
-one-shot Qwen-Vision inference on chat turns and keeps nothing.
+Not every upload goes through the store.  ``routes/upload_routes.py``
+KEEPS what it is sent (the web chat's images through /upload/file and
+/upload/native, avatars, voice samples, the images /upload/vision reads),
+as does HARTOS's /upload/parse_pdf (a book for the library,
+integrations/learning/api_books.py): under the uploads dir
+(core.platform_paths.get_uploads_dir()), never expired, each handed back
+as a /uploads/<path> URL.  upload_routes.serve_upload serves that URL to
+any caller the app admits, with no per-user check (this machine's own
+callers need no credential); the web chat shows it, and
+resolve_uploaded_image and the book tools read it back as a file.  The
+store keeps its files OUT of that dir on purpose: one is reached only
+through these routes, as the Bearer token's user, by its xid.  So the two
+are not one contract, and those routes stay outside the store until the
+owner rules on their URL and auth contract (duplicates inventory D29,
+2026-10-14).
 
 Until 2026-10-14 this module wrote its own blobs under
 get_data_dir()/file_sync/ with a quota of its own.  No client used it, so
