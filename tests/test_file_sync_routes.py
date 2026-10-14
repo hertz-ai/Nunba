@@ -134,6 +134,26 @@ def test_a_push_of_her_bound_reel_clip_leaves_her_reel_turn_its_clip(client, sto
         {'files': []}
 
 
+def test_a_push_names_the_purpose_a_chat_row_echoes(client, store):
+    pushed = _push(client)
+    assert pushed.status_code == 200, pushed.get_json()
+    assert pushed.get_json()['purpose'] == 'chat_attachment'
+    listed = client.get('/api/chat-sync/files/pull?since=0', headers=AUTH).get_json()
+    assert [f['purpose'] for f in listed['files']] == ['chat_attachment']
+
+
+def test_a_push_whose_file_went_meanwhile_is_a_conflict(client, store, monkeypatch):
+    """A delete raced the push (the record is gone when the door reads it):
+    409 with the store's reason, in words, rather than a bare 400."""
+    monkeypatch.setattr(store, 'resolve', lambda *a, **k: None)
+
+    refused = _push(client)
+
+    assert refused.status_code == 409
+    body = refused.get_json()
+    assert body['error'] == 'not_found' and body['message'] != 'not_found'
+
+
 def test_without_a_token_nothing_is_stored(client, store):
     refused = client.post('/api/chat-sync/files/push',
                           data={'file': (io.BytesIO(PDF), 'quote.pdf', 'application/pdf')},

@@ -8,10 +8,17 @@ ChatMessage.attachments rows.  When a device sends a message with an
 attached image/PDF/audio, the payload flows:
 
     user -> POST /api/chat-sync/files/push   (store(): the bytes go into the store)
-         -> /chat with attachments=[{file_id, sha256, name, mime, size}]
+         -> /chat with attachments=[{file_id, sha256, name, mime, size, purpose}]
          -> chat.new WAMP event fanned to all that user's devices
          -> other device -> GET /api/chat-sync/files/pull?file_id=<sha256>
             (fetch(): the stored file, which the route sends)
+
+The /chat row is the U9 shape; ``purpose`` is optional there, and push
+answers with it ('chat_attachment') so a client can echo it.  A row without
+it binds her chat attachment to the turn unless it is bound to another turn
+already; a row that names it moves the attachment to the turn she sent it in
+again (HARTOS core.user_file_store.UserFileStore.bind).  Either way her clip,
+logo or song made of the same bytes stays on its own turn.
 
 ONE upload service (owner ruling A10a, 2026-10-14).  The bytes, their
 record, the size cap, the per-user quota and retention all belong to
@@ -76,6 +83,7 @@ _REASONS = {
     'quota': 'quota exceeded',
     'no_space': 'the desktop has no room for it',
     'busy': 'the desktop is busy with this file; try again',
+    'not_found': 'the file was deleted while it was being stored; send it again',
 }
 
 
@@ -95,13 +103,15 @@ def _store():
 
 
 def _meta(held) -> dict[str, Any]:
-    """The route's shape of a stored file: ``created_at`` in epoch ms."""
+    """The route's shape of a stored file: ``created_at`` in epoch ms, and
+    the store purpose a /chat row may echo."""
     return {
         'file_id': held.xid,
         'sha256': held.sha256,
         'name': held.name,
         'mime': held.mime,
         'size': held.size,
+        'purpose': PURPOSE,
         'created_at': int(held.created_at * 1000),
     }
 
@@ -133,14 +143,14 @@ def store(
     mime: str = 'application/octet-stream',
 ) -> dict[str, Any]:
     """Put a file into the store for ``user_id`` and return its metadata
-    ``{file_id, sha256, name, mime, size, created_at}``.
+    ``{file_id, sha256, name, mime, size, purpose, created_at}``.
 
     ``file_id`` is the sha256 of the content.  The same content stored again
     by the same user is one file, recorded under the latest name; content
     she holds as a clip, logo or song becomes her chat attachment too and
     stays what it was.  Raises FileRefused (a ValueError) with the store's
-    ``reason`` when the store refuses it, and ValueError for an empty user
-    id.
+    ``reason`` when the store refuses it ('not_found' when a delete took the
+    file before its record was read), and ValueError for an empty user id.
     """
     reply = _store().put_file(user_id, stream_or_bytes, name=name, mime=mime,
                               purpose=PURPOSE)

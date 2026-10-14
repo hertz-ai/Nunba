@@ -55,6 +55,7 @@ def test_store_returns_metadata_with_sha256_file_id(file_sync):
     assert meta['name'] == 'note.pdf'
     assert meta['mime'] == 'application/pdf'
     assert isinstance(meta['created_at'], int)
+    assert meta['purpose'] == 'chat_attachment'      # what a client echoes in its /chat row
 
 
 def test_store_then_fetch_roundtrip(file_sync):
@@ -107,6 +108,63 @@ def test_a_pushed_file_can_be_attached_to_a_chat_turn(file_sync, store, monkeypa
                                           chat_attachments.parse_inbound([row]))
 
     assert [b['xid'] for b in bound] == [meta['file_id']]
+
+
+def test_a_bare_row_binds_her_chat_attachment_and_leaves_her_reel_clip(file_sync, store,
+                                                                       monkeypatch):
+    """The review's probe of HARTOS e475b8cd1 through this door: her video
+    pushed here ('party.mp4'), then her phone offers the same bytes as a reel
+    clip and binds them to her reel turn (55) by purpose, then the desktop's
+    /chat turn (77) sends the documented bare row.  Her reel agent keeps its
+    clip; turn 77 gets her chat attachment."""
+    from core import chat_attachments
+    monkeypatch.setattr(chat_attachments, 'get_user_file_store', lambda: store)
+    clip = b'\x00\x00\x00\x18ftypmp42 party and reel'
+    meta = file_sync.store('user_a', clip, name='party.mp4', mime='video/mp4')
+    xid = meta['file_id']
+    assert store.offer('user_a', 'VID_9.mp4', len(clip), xid, 'video/mp4',
+                       'reel_source') == {'type': 'file_have', 'xid': xid}
+    store.bind('user_a', [xid], prompt_id='55', request_id='r1', purpose='reel_source')
+    bare = {k: meta[k] for k in ('file_id', 'sha256', 'name', 'mime', 'size')}
+
+    bound = chat_attachments.bind_inbound('user_a', '77', 'r2',
+                                          chat_attachments.parse_inbound([bare]))
+
+    assert [(b['xid'], b['purpose'], b['name']) for b in bound] == \
+        [(xid, 'chat_attachment', 'party.mp4')]
+    assert [f['xid'] for f in chat_attachments.latest_inbound('user_a', '55')] == [xid]
+
+
+def test_a_file_sent_again_in_a_later_turn_moves_there_by_its_echoed_purpose(
+        file_sync, store, monkeypatch):
+    """A row that echoes the purpose push answered with moves her chat
+    attachment to the turn she sent it in again; a bare row leaves it on
+    the turn it is bound to."""
+    from core import chat_attachments
+    monkeypatch.setattr(chat_attachments, 'get_user_file_store', lambda: store)
+    meta = file_sync.store('user_a', PDF + b'menu', name='menu.pdf', mime='application/pdf')
+    row = {k: meta[k] for k in ('file_id', 'sha256', 'name', 'mime', 'size', 'purpose')}
+    bare = {k: v for k, v in row.items() if k != 'purpose'}
+    chat_attachments.bind_inbound('user_a', '77', 'r2', chat_attachments.parse_inbound([bare]))
+
+    assert chat_attachments.bind_inbound('user_a', '88', 'r3',
+                                         chat_attachments.parse_inbound([bare])) == []
+    moved = chat_attachments.bind_inbound('user_a', '88', 'r3',
+                                          chat_attachments.parse_inbound([row]))
+
+    assert [(b['xid'], b['prompt_id'], b['request_id']) for b in moved] == \
+        [(meta['file_id'], '88', 'r3')]
+
+
+def test_a_file_deleted_while_it_was_stored_is_refused_in_words(file_sync, store,
+                                                                monkeypatch):
+    """The file went (a delete raced the push) between the store's put and
+    the read of its record: the refusal says so, not a bare reason code."""
+    monkeypatch.setattr(store, 'resolve', lambda *a, **k: None)
+    with pytest.raises(file_sync.FileRefused) as refused:
+        file_sync.store('user_a', PDF + b'gone', name='gone.pdf', mime='application/pdf')
+    assert refused.value.reason == 'not_found'
+    assert str(refused.value) != 'not_found' and 'again' in str(refused.value)
 
 
 def test_the_same_content_stored_again_is_one_file(file_sync):

@@ -1519,7 +1519,9 @@ def api_chat_sync_pull_since():
 # 'chat_attachment') and keep no storage of their own.
 
 #: The HTTP status of each refusal the store gives a push (else 400).
-_FILE_REFUSAL_STATUS = {'too_large': 413, 'quota': 413, 'no_space': 507, 'busy': 503}
+#: not_found: a delete took the file before the push read its record.
+_FILE_REFUSAL_STATUS = {'too_large': 413, 'quota': 413, 'no_space': 507, 'busy': 503,
+                        'not_found': 409}
 
 
 @app.route('/api/chat-sync/files/push', methods=['POST'])
@@ -1527,9 +1529,11 @@ def api_chat_sync_files_push():
     """Upload a binary for cross-device replication.
 
     multipart/form-data with a single file field 'file'.
-    Response: {file_id, sha256, size, name, mime, created_at}; a refusal is
-    {'error': <the store's reason>, 'message'}: 400 bad_offer/bad_name/
-    bad_mime, 413 too_large/quota, 507 no_space, 503 busy.
+    Response: {file_id, sha256, size, name, mime, purpose, created_at}
+    (purpose 'chat_attachment', for the client to echo in its /chat row); a
+    refusal is {'error': <the store's reason>, 'message'}: 400 bad_offer/
+    bad_name/bad_mime, 413 too_large/quota, 507 no_space, 503 busy,
+    409 not_found (deleted while it was being stored).
     """
     uid, err = _chat_sync_resolve_uid()
     if err:
@@ -1624,7 +1628,9 @@ def api_chat_sync_files_usage():
 
 @app.route('/api/chat-sync/files/<file_id>', methods=['DELETE'])
 def api_chat_sync_files_delete(file_id):
-    """Remove one blob + sidecar.  Returns {'deleted': bool}."""
+    """Delete one of her chat attachments (desktop.file_sync.delete): the
+    file stays while she holds the same bytes for another purpose (a clip,
+    logo or song).  Returns {'deleted': bool}."""
     uid, err = _chat_sync_resolve_uid()
     if err:
         return err
