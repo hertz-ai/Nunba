@@ -655,17 +655,15 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
 # node passes on only what HARTOS's own rules accept, read from there, never
 # copied: an attachment row by core.chat_attachments.validate_attachment,
 # the ONE /chat attachments rule that parse_inbound reads by (amendment
-# A9 a; a chat attachment needs no Reel Studio package), reply media by
-# integrations.reel_studio.contracts.validate_media_item, and a goal tag by
-# marketing_tools.USER_ASSIGNABLE_GOAL_TAGS.  A node that cannot read a rule
-# passes on nothing it governs.  What is dropped is logged by count and
-# type, never by value: it is whatever the client sent.
+# A9 a; a chat attachment needs no Reel Studio package), and as many rows as
+# its MAX_ATTACHMENTS; reply media by
+# integrations.reel_studio.contracts.validate_media_item; and goal tags by
+# marketing_tools.user_assignable_goal_tags, the filter HARTOS's chat()
+# holds the creation hint by.  This node keeps no copy of any of them, not
+# even a fallback: a node that cannot read a rule passes on nothing it
+# governs.  What is dropped is logged by count and type, never by value: it
+# is whatever the client sent.
 
-#: How many attachments ride one turn when HARTOS's own cap
-#: (core.chat_attachments.MAX_ATTACHMENTS, read first) cannot be read
-#: (plan rev 2, 4.2(e)).  Only that many entries are checked, so a long list
-#: costs no more than a short one.
-_FALLBACK_MAX_ATTACHMENTS = 10
 #: The attachments one turn forwards, serialized, stay within this many bytes.
 TURN_ATTACHMENTS_MAX_BYTES = 16 * 1024
 #: A row with more keys than this is not checked at all: no attachment row
@@ -677,7 +675,7 @@ _UNACCEPTABLE = object()
 _CHAT_ATTACHMENTS = 'core.chat_attachments'
 #: Where HARTOS keeps the reply-media contract (reply_media).
 _REEL_CONTRACTS = 'integrations.reel_studio.contracts'
-#: Where HARTOS names the goal tags a user may assign (turn_goal_tags).
+#: Where HARTOS filters the goal tags a user may assign (turn_goal_tags).
 _GOAL_TAG_OWNER = 'integrations.agent_engine.marketing_tools'
 
 
@@ -715,13 +713,14 @@ def _contract_validator(module, name, what, raw):
     return validate
 
 
-def _max_attachments() -> int:
-    """HARTOS's cap on a turn's attachments (core.chat_attachments), else
-    _FALLBACK_MAX_ATTACHMENTS."""
+def _max_attachments():
+    """HARTOS's cap on a turn's attachments
+    (core.chat_attachments.MAX_ATTACHMENTS, plan rev 2, 4.2(e)), or None
+    when this node cannot read it as a count (an int >= 0, not a bool)."""
     cap = _hartos_name(_CHAT_ATTACHMENTS, 'MAX_ATTACHMENTS')
     if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0:
         return cap
-    return _FALLBACK_MAX_ATTACHMENTS
+    return None
 
 
 def _contract_fields(validate, item) -> dict:
@@ -744,7 +743,9 @@ def turn_attachments(raw) -> list:
     drop too); each row it accepts crosses as its rule's fields only
     (_contract_fields), a row the rule accepts as it crosses, while the
     total stays within TURN_ATTACHMENTS_MAX_BYTES.  Everything else is
-    dropped and counted.
+    dropped and counted.  Only that many rows are checked, so a long list
+    costs no more than a short one; when HARTOS's cap cannot be read, none
+    is checked and none crosses.
     """
     if not raw:
         return []
@@ -753,6 +754,11 @@ def turn_attachments(raw) -> list:
     if validate is None:
         return []
     cap = _max_attachments()
+    if cap is None:
+        logger.warning("Reel Studio attachments: %s.MAX_ATTACHMENTS is not a "
+                       "count on this node, so none of %d is passed on",
+                       _CHAT_ATTACHMENTS, len(raw))
+        return []
     kept, used = [], 2                      # 2: the list's brackets
     for item in raw[:cap]:
         if not (isinstance(item, dict) and len(item) <= _ATTACHMENT_MAX_KEYS
@@ -780,10 +786,12 @@ def turn_attachments(raw) -> list:
 def turn_goal_tags(raw) -> list:
     """The `goal_tags` a turn may hand HARTOS: the ones a user may assign.
 
-    HARTOS's own USER_ASSIGNABLE_GOAL_TAGS (marketing_tools) is the one list
-    (amendment A9 e); this node keeps none of its own.  When that set cannot
-    be read as a set of names, no tag is passed on (fail closed).  Kept in
-    order, each once.
+    HARTOS's own filter decides: marketing_tools.user_assignable_goal_tags,
+    the one HARTOS's chat() holds the creation hint by (hold_goal_tag_hint;
+    amendment A9 e).  What it keeps crosses as it answers (sorted, each
+    once); this node keeps no list or filter of its own.  When that filter
+    cannot be loaded, raises, or answers with anything but a list of names,
+    no tag is passed on (fail closed).
     """
     if not raw:
         return []
@@ -791,17 +799,16 @@ def turn_goal_tags(raw) -> list:
         logger.warning("Reel Studio goal_tags: a %s, not a list; none passed on",
                        type(raw).__name__)
         return []
-    allowed = _hartos_name(_GOAL_TAG_OWNER, 'USER_ASSIGNABLE_GOAL_TAGS')
-    if not (isinstance(allowed, (set, frozenset, list, tuple))
-            and all(isinstance(t, str) for t in allowed)):
-        logger.warning("Reel Studio goal_tags: %s.USER_ASSIGNABLE_GOAL_TAGS is "
-                       "not readable on this node, so none of %d goal_tags is "
+    keep = _hartos_name(_GOAL_TAG_OWNER, 'user_assignable_goal_tags')
+    try:
+        kept = keep(raw) if callable(keep) else None
+    except Exception:
+        kept = None
+    if not (isinstance(kept, list) and all(isinstance(t, str) for t in kept)):
+        logger.warning("Reel Studio goal_tags: %s.user_assignable_goal_tags is "
+                       "not usable on this node, so none of %d goal_tags is "
                        "passed on", _GOAL_TAG_OWNER, len(raw))
         return []
-    kept = []
-    for tag in raw:
-        if isinstance(tag, str) and tag in allowed and tag not in kept:
-            kept.append(tag)
     if len(kept) < len(raw):
         logger.warning("Reel Studio goal_tags: %d of %d goal_tags dropped (not "
                        "user-assignable); %d passed on",

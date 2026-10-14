@@ -27,13 +27,15 @@ route with that body unchanged.  This node must:
     (core.chat_attachments.validate_attachment, which
     integrations.reel_studio.contracts.validate_attachment is, and which
     /chat's parse_inbound reads by: what this node drops HARTOS drops), at
-    most core.chat_attachments.MAX_ATTACHMENTS (10) and 16 KB, the rule's
-    fields only; a goal tag only when a user may assign it
-    (marketing_tools.USER_ASSIGNABLE_GOAL_TAGS; none when that set cannot be
-    read).  HARTOS's chat() reads both: it binds the attachments to the turn
-    (core.chat_attachments.parse_inbound, then bind_inbound) and holds the
-    tags as the agent-creation hint (marketing_tools.hold_goal_tag_hint,
-    which keeps user_assignable_goal_tags);
+    most core.chat_attachments.MAX_ATTACHMENTS (10; none when that cap
+    cannot be read as a count) and 16 KB, the rule's fields only; a goal
+    tag only when HARTOS's own filter keeps it
+    (marketing_tools.user_assignable_goal_tags, in its order; none when
+    that filter cannot be used).  HARTOS's chat() reads both: it binds the
+    attachments to the turn (core.chat_attachments.parse_inbound, then
+    bind_inbound) and holds the tags as the agent-creation hint
+    (marketing_tools.hold_goal_tag_hint, which keeps
+    user_assignable_goal_tags);
   * put the `media` HARTOS's /chat reply carries into the reply the phone
     reads (the custom_gpt reply, and /chat's own), only in the reply-media
     shape (contracts.validate_media_item), with or without reply text;
@@ -468,22 +470,42 @@ def test_at_most_ten_attachments_cross(client, hartos):
     assert hartos.seen[0]['attachments'] == many[:10]
 
 
-@pytest.mark.parametrize('cap, crossing', [
-    (3, 3),                                        # HARTOS's cap decides
-    ('3', 10),                                     # not a count: 10
-    (None, 10),                                    # not there: 10
-])
-def test_the_cap_is_hartos_own(client, hartos, monkeypatch, cap, crossing):
-    """core.chat_attachments.MAX_ATTACHMENTS decides how many cross; when it
-    is not a count, _FALLBACK_MAX_ATTACHMENTS (10) does."""
-    module = SimpleNamespace(validate_attachment=contracts.validate_attachment)
-    if cap is not None:
-        module.MAX_ATTACHMENTS = cap
-    monkeypatch.setitem(sys.modules, 'core.chat_attachments', module)
+def test_the_cap_is_hartos_own(client, hartos, monkeypatch):
+    """core.chat_attachments.MAX_ATTACHMENTS decides how many cross."""
+    monkeypatch.setitem(sys.modules, 'core.chat_attachments', SimpleNamespace(
+        validate_attachment=contracts.validate_attachment, MAX_ATTACHMENTS=3))
     many = [_clip(f'clip-{i}') for i in range(12)]
     client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
                                           'attachments': many})
-    assert hartos.seen[0]['attachments'] == many[:crossing]
+    assert hartos.seen[0]['attachments'] == many[:3]
+
+
+@pytest.mark.parametrize('cap', [
+    '3',                                           # not a count
+    True,                                          # a bool is not a count
+    -1,
+    ...,                                           # not there
+])
+def test_without_hartos_cap_no_attachment_crosses(
+        client, hartos, monkeypatch, caplog, cap):
+    """Fail closed (inventory D28): HARTOS's MAX_ATTACHMENTS is the one cap.
+    A node that loads the attachments rule but cannot read that cap as a
+    count forwards no attachment and keeps no number of its own (it used to
+    let ten cross), and says which name it could not read."""
+    module = SimpleNamespace(validate_attachment=contracts.validate_attachment)
+    if cap is not ...:
+        module.MAX_ATTACHMENTS = cap
+    monkeypatch.setitem(sys.modules, 'core.chat_attachments', module)
+    caplog.set_level(logging.INFO)
+    many = [_clip(f'clip-{i}') for i in range(12)]
+    resp = client.post('/chat/custom_gpt', json={**PHONE_REEL_CREATE_TURN,
+                                                 'attachments': many})
+    assert resp.status_code == 200
+    body = hartos.seen[0]
+    assert 'attachments' not in body
+    assert body['goal_tags'] == ['reel_studio']        # tags do not need it
+    log = _log(caplog, ADAPTER_LOG)
+    assert 'MAX_ATTACHMENTS' in log and '12' in log
 
 
 def test_a_row_wider_than_any_attachment_is_not_checked(client, hartos):
@@ -588,27 +610,57 @@ def test_no_assignable_tag_sends_no_goal_tags(client, hartos):
     assert 'goal_tags' not in hartos.seen[0]
 
 
-def test_hartos_user_assignable_set_is_the_one_read(client, hartos, monkeypatch):
-    """When HARTOS defines USER_ASSIGNABLE_GOAL_TAGS (marketing_tools), that
-    set decides, not a copy here."""
-    monkeypatch.setitem(
-        sys.modules, 'integrations.agent_engine.marketing_tools',
-        SimpleNamespace(USER_ASSIGNABLE_GOAL_TAGS=frozenset({'reel_studio', 'news'})))
+def test_hartos_filter_decides_and_its_order_crosses(client, hartos, monkeypatch):
+    """HARTOS's user_assignable_goal_tags (marketing_tools) is the one
+    filter (inventory D23k): its answer crosses as it is, sorted and each
+    once, the order HARTOS's own hold_goal_tag_hint keeps.  The copy this
+    node used to run kept the order sent ('reel_studio' before 'news')."""
+    from integrations.agent_engine import marketing_tools
+    monkeypatch.setattr(marketing_tools, 'USER_ASSIGNABLE_GOAL_TAGS',
+                        frozenset({'reel_studio', 'news'}))
     client.post('/chat/custom_gpt', json={
-        **PHONE_REEL_CREATE_TURN, 'goal_tags': ['news', 'finance', 'reel_studio']})
+        **PHONE_REEL_CREATE_TURN,
+        'goal_tags': ['reel_studio', 'finance', 'news', 'reel_studio']})
     assert hartos.seen[0]['goal_tags'] == ['news', 'reel_studio']
+
+
+def test_hartos_filter_is_the_one_called(client, hartos, monkeypatch):
+    """What HARTOS's filter refuses does not cross, even a tag in
+    USER_ASSIGNABLE_GOAL_TAGS: this node asks the filter, not the set."""
+    from integrations.agent_engine import marketing_tools
+    asked = []
+
+    def refuses_all(raw):
+        asked.append(list(raw))
+        return []
+
+    monkeypatch.setattr(marketing_tools, 'user_assignable_goal_tags', refuses_all)
+    client.post('/chat/custom_gpt', json=PHONE_REEL_CREATE_TURN)
+    assert asked == [['reel_studio']]
+    assert 'goal_tags' not in hartos.seen[0]
+
+
+def _raises(raw):
+    raise RuntimeError('filter bug')
 
 
 @pytest.mark.parametrize('marketing_tools', [
     None,                                                     # cannot be imported
-    SimpleNamespace(),                                        # defines no set
-    SimpleNamespace(USER_ASSIGNABLE_GOAL_TAGS='reel_studio, finance'),  # not a set
+    SimpleNamespace(),                                        # defines no filter
+    # The set alone is not the rule: this node no longer filters by it.
+    SimpleNamespace(USER_ASSIGNABLE_GOAL_TAGS=frozenset({'reel_studio'})),
+    SimpleNamespace(user_assignable_goal_tags='reel_studio'),          # not callable
+    SimpleNamespace(user_assignable_goal_tags=_raises),                # raises
+    SimpleNamespace(user_assignable_goal_tags=lambda raw: 'reel_studio'),  # not a list
+    SimpleNamespace(user_assignable_goal_tags=lambda raw: [7]),        # not names
 ])
-def test_without_hartos_set_no_goal_tag_crosses(
+def test_without_hartos_filter_no_goal_tag_crosses(
         client, hartos, monkeypatch, caplog, marketing_tools):
-    """Fail closed (amendment A9 e): HARTOS's USER_ASSIGNABLE_GOAL_TAGS is the
-    one list.  A node that cannot read it as a set of names forwards no tag,
-    keeps no list of its own, and says so by count, never by value."""
+    """Fail closed (amendment A9 e, inventory D23k): HARTOS's
+    user_assignable_goal_tags is the one filter.  A node that cannot load it,
+    whose filter raises, or that answers with anything but a list of names,
+    forwards no tag, keeps no list or filter of its own, and says so by
+    count, never by value."""
     monkeypatch.setitem(sys.modules, 'integrations.agent_engine.marketing_tools',
                         marketing_tools)
     caplog.set_level(logging.INFO)
@@ -619,7 +671,7 @@ def test_without_hartos_set_no_goal_tag_crosses(
     assert 'goal_tags' not in body
     assert body['attachments'] == ATTACHMENTS          # attachments do not need it
     log = _log(caplog, ADAPTER_LOG)
-    assert 'USER_ASSIGNABLE_GOAL_TAGS' in log and '3 goal_tags' in log
+    assert 'user_assignable_goal_tags' in log and '3 goal_tags' in log
     assert 'finance' not in log
 
 
