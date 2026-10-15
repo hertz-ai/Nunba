@@ -666,8 +666,25 @@ def _deferred_platform_init():
                 except Exception as e:
                     logging.debug(f"Caption server stop: {e}")
 
+            def _on_consent_granted(data):
+                # The owner's yes on the consent card to setting the small
+                # vision model up starts its download now, not at the next
+                # start (LlamaConfig.on_caption_setup_granted); any other
+                # grant is not ours.  On its own thread: a download takes
+                # minutes and this runs on the bus's emit thread.
+                try:
+                    from llama.llama_config import LlamaConfig
+                    if not LlamaConfig.caption_setup_granted(data):
+                        return
+                    threading.Thread(
+                        target=lambda: LlamaConfig().on_caption_setup_granted(),
+                        daemon=True, name='caption-setup-granted').start()
+                except Exception as e:
+                    logging.warning(f"Caption model setup after the owner's yes failed: {e}")
+
             bus.on('vlm_caption.requested', lambda topic, data: _on_caption_requested(data))
             bus.on('vlm_caption.stop', lambda topic, data: _on_caption_stop(data))
+            bus.on('consent.granted', lambda topic, data: _on_consent_granted(data))
             logging.info("Caption server event subscribers registered")
     except Exception as e:
         logging.debug(f"Caption server event subscription skipped: {e}")

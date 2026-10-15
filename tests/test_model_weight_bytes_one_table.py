@@ -88,6 +88,14 @@ MEASURED_BYTES = {
     'Qwen3-VL-2B-Instruct-UD-Q4_K_XL.gguf': 1_129_709_248,
 }
 
+# MEASURED 2026-10-15 — the vision projectors the table carries (by the local
+# name a catalog row's files['mmproj'] gives them).  No preset ships one as its
+# weights, so they are kept apart from MEASURED_BYTES, whose rows each name a
+# preset.  The caption start's free-disk check reads the 0.8B's.
+MEASURED_PROJECTOR_BYTES = {
+    'mmproj-Qwen3.5-0.8B-F16.gguf':           204_987_232,
+}
+
 # The literals that were typed twice, once per repo.  Neither table may
 # state them again.
 DUPLICATED_LITERALS = ('550', '1100', '1340', '2910', '6113',
@@ -257,12 +265,13 @@ def test_unmeasured_rows_declare_the_unit_they_were_typed_in():
     """
     from integrations.service_tools.model_catalog import MODEL_WEIGHT_BYTES
 
+    measured = {**MEASURED_BYTES, **MEASURED_PROJECTOR_BYTES}
     for file_name, (nbytes, provenance) in MODEL_WEIGHT_BYTES.items():
         assert isinstance(nbytes, int) and nbytes > 0, file_name
         assert provenance, f'{file_name} declares no provenance'
-        if file_name in MEASURED_BYTES:
+        if file_name in measured:
             assert provenance.startswith('measured'), file_name
-            assert nbytes == MEASURED_BYTES[file_name], file_name
+            assert nbytes == measured[file_name], file_name
         else:
             assert provenance.startswith('estimate'), file_name
             # An estimate must name the unit it was typed in.
