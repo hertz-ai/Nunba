@@ -87,6 +87,7 @@ import PdfViewer from './chat/PdfViewer';
 import ChatInputBar from './chat/ChatInputBar';
 import ChatMessageList from './chat/ChatMessageList';
 import LlmUpgradeCard from './chat/LlmUpgradeCard';
+import {withSetupProgress} from './chat/SetupProgressCard';
 import ProactiveConciergeCard from '../components/chat/ProactiveConciergeCard';
 
 const HOSTED_URL = 'https://hevolve.hertzai.com';
@@ -2848,36 +2849,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // to, the Indic Parler "installed" message flipped the banner
     // green BEFORE verification ran — and then the engine crashed
     // silently on first use (2026-04-18 sympy ModuleNotFoundError).
+    // The card's reducer lives beside the card (withSetupProgress): a card
+    // that refuses in its first event ends there, and a new run of a job
+    // starts its card over.
     const unsubSetup = realtimeService.on('setup_progress', (data) => {
       if (data.type !== 'setup_progress') return;
-      setMessages((prev) => {
-        const existingIdx = prev.findIndex(
-          (m) => m.type === 'setup_progress' && m.jobType === data.job_type
-        );
-        if (existingIdx >= 0) {
-          const updated = [...prev];
-          updated[existingIdx] = {
-            ...updated[existingIdx],
-            steps: [...updated[existingIdx].steps, data],
-            isComplete: Boolean(data.complete),
-            // When the card last CHANGED, as distinct from `timestamp` (when
-            // it first appeared, preserved by the spread above).  The card
-            // needs both: it shows first-appearance, but decides staleness
-            // from last activity — otherwise a long install that started an
-            // hour ago would demote while still actively running.
-            updatedAt: new Date(),
-          };
-          return updated;
-        }
-        return [...prev, {
-          type: 'setup_progress',
-          jobType: data.job_type,
-          steps: [data],
-          isComplete: false,
-          handshake: { status: 'pending' },
-          timestamp: new Date(),
-        }];
-      });
+      setMessages((prev) => withSetupProgress(prev, data));
     });
 
     // TTS handshake — authoritative voice-ready signal.  Fires

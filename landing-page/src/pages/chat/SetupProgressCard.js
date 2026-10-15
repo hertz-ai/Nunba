@@ -57,7 +57,68 @@ const JOB_LABELS = {
   // Non-TTS setup job (STT + LLM + model downloads) surfaced through the same
   // card by the /api/ai/bootstrap poll — give it a human label.
   bootstrap: 'AI models',
+  // The small vision model's download (llama_config.start_caption_server).
+  vlm_caption: 'Vision model',
 };
+
+/**
+ * The chat's messages with one `setup_progress` event applied — the reducer
+ * Demopage's setup_progress listener runs.  One card per job_type.
+ *
+ * - A new card is complete when its FIRST event says so: a job can refuse at
+ *   once (the vision model with no room on the disk) and end in one event.
+ *   It used to open every card with isComplete:false, so such a card pulsed
+ *   "Setting up ..." forever with no dismiss control (review of be748369).
+ * - An event for a card whose last step ended the run (complete:true), and
+ *   that carries a status of its own, is a NEW run of the job (a retry, a
+ *   later download): the card starts over with it, and is shown again if the
+ *   old run's card was dismissed.  So an earlier run's refusal cannot stand
+ *   for the new run, and a later failure is not hidden behind a card that
+ *   dismissed itself after an earlier success.  Jobs whose events carry no
+ *   status (a TTS install's steps and its end event) keep appending as before.
+ * - Otherwise the event is appended and `updatedAt` records the change.
+ */
+export function withSetupProgress(messages, data, now = new Date()) {
+  const existingIdx = messages.findIndex(
+    (m) => m.type === 'setup_progress' && m.jobType === data.job_type
+  );
+  if (existingIdx < 0) {
+    return [...messages, {
+      type: 'setup_progress',
+      jobType: data.job_type,
+      steps: [data],
+      isComplete: Boolean(data.complete),
+      handshake: { status: 'pending' },
+      timestamp: now,
+    }];
+  }
+  const card = messages[existingIdx];
+  const steps = card.steps || [];
+  const lastStep = steps[steps.length - 1];
+  const newRun = Boolean(lastStep && lastStep.complete === true
+    && typeof data.status === 'string' && data.status);
+  const updated = [...messages];
+  updated[existingIdx] = newRun
+    ? {
+      ...card,
+      steps: [data],
+      isComplete: Boolean(data.complete),
+      dismissed: false,
+      timestamp: now,
+      updatedAt: now,
+    }
+    : {
+      ...card,
+      steps: [...steps, data],
+      isComplete: Boolean(data.complete),
+      // When the card last CHANGED, as distinct from `timestamp` (when it
+      // first appeared, kept by the spread).  The card shows first
+      // appearance but decides staleness from last activity — otherwise a
+      // long install that started an hour ago would demote while running.
+      updatedAt: now,
+    };
+  return updated;
+}
 
 const ACCENT = '#6C63FF';
 const SURFACE_BG = 'rgba(15, 14, 23, 0.85)';
@@ -92,7 +153,13 @@ export default function SetupProgressCard({
 
   const label = JOB_LABELS[jobType] || jobType.replace(/^tts_setup_/, '').replace(/_/g, ' ');
   const latestStep = steps[steps.length - 1];
-  const installFailed = steps.some(s => s.message?.includes('failed') || s.message?.includes('error'));
+  // A step whose status is 'error' is a failure whatever its words say (the
+  // vision model's "was not downloaded: it needs about 0.8 GB ..."); steps that
+  // carry no status (a TTS install's log lines) are still read by their words.
+  // A new run starts the card over (withSetupProgress), so an earlier run's
+  // error does not stick to it.
+  const installFailed = steps.some(s => s?.status === 'error'
+    || s?.message?.includes('failed') || s?.message?.includes('error'));
   // Authoritative banner state. "Ready" is ONLY reached via a
   // verified handshake — install-complete alone keeps us yellow.
   const handshakeReady = handshake?.status === 'ready';
