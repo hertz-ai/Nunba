@@ -2824,6 +2824,10 @@ class LlamaConfig:
         Lazy-started by HARTOS VisionService on first camera/screen frame.
         Uses the same llama-server binary, model download, and mmproj
         handling as the main server — just a smaller model on a different port.
+        A missing model or projector is downloaded only where it fits and
+        with the owner's yes on the consent card (_fetch_missing_caption_files).
+        Without the weights this returns False and the caller's fallback
+        runs; without the projector it starts without vision, as before.
 
         Args:
             port: Caption server port (default 8081, via HEVOLVE_VLM_CAPTION_PORT)
@@ -2919,12 +2923,12 @@ class LlamaConfig:
             logger.error("No 0.8B model preset found")
             return False
 
-        # Ensure model + mmproj downloaded
+        # A missing model or projector is downloaded only where it fits and
+        # only with the owner's yes; what was not fetched is found missing
+        # below (no weights: no start; no projector: a start without vision,
+        # as when a projector download failed).
+        self._fetch_missing_caption_files(preset)
         model_path = self.installer.get_model_path(preset)
-        if not model_path:
-            logger.info(f"Downloading {preset.display_name}...")
-            self.installer.download_model(preset)
-            model_path = self.installer.get_model_path(preset)
         if not model_path:
             logger.error(f"Caption model not found: {preset.file_name}")
             return False
@@ -2932,9 +2936,6 @@ class LlamaConfig:
         mmproj_path = None
         if preset.has_vision and preset.mmproj_file:
             mmproj_path = self.installer.get_mmproj_path(preset)
-            if not mmproj_path:
-                self._download_mmproj_only(preset)
-                mmproj_path = self.installer.get_mmproj_path(preset)
 
         # Build command — same pattern as start_server but with caption-optimized flags.
         # NOTE: the installer exposes find_llama_server(), NOT get_binary_path().
@@ -3065,6 +3066,123 @@ class LlamaConfig:
         except Exception as e:
             logger.error(f"Caption server start failed: {e}")
             return False
+
+    def _fetch_missing_caption_files(self, preset) -> None:
+        """Download the caption model's missing weights or projector, only
+        where they fit and only with the owner's yes (owner ruling
+        2026-10-15).  Until then this start downloaded them silently, on
+        main.py's boot thread or its vlm_caption.requested subscriber (live
+        proof A13, finding D3).  It owns no mechanism; each step is one that
+        exists:
+
+        * Room, checked first: core.platform_paths.free_bytes (the one
+          free-disk reading at a path) where the installer downloads to,
+          against the model's catalog size, preset.size_bytes (HARTOS's
+          MODEL_WEIGHT_BYTES through model_weight_bytes).  The projector has
+          no registered size, so that one number is the need: more than a
+          projector alone takes, less than both when both are missing.
+          When it does not fit, or the disk cannot be read, the owner is
+          not asked (a yes could only end in a full disk; the order
+          integrations.trends.daily_job keeps) and the setup card says why.
+        * The yes: HARTOS's one capability consent card,
+          capability_setup.ask_owner_for_setup, scoped to the catalog row
+          this server serves (Qwen08BBackend.CATALOG_ID).  Only 'granted'
+          downloads.  'asked' (the card is waiting), 'declined',
+          'unavailable' and a consent that cannot be reached download
+          nothing, so the caller's fallback runs; the next start asks
+          again, which reads the answer once it is on file.
+        * The downloads: the installer's download_model and
+          _download_mmproj_only, as before.
+        * Progress: the setup_progress card (publish_event, the channel the
+          AMD build in _do_start_server reports on), one step per tenth of
+          each file, closed as done or error.
+        """
+        wants_mmproj = bool(preset.has_vision and preset.mmproj_file)
+        have_model = bool(self.installer.get_model_path(preset))
+        if have_model and (not wants_mmproj or self.installer.get_mmproj_path(preset)):
+            return
+
+        def card(status, message, complete=False):
+            try:
+                from integrations.social.realtime import publish_event
+                publish_event('setup_progress', {
+                    'type': 'setup_progress',
+                    'job_type': 'vlm_caption',
+                    'model_name': preset.display_name,
+                    'status': status,
+                    'complete': complete,
+                    'message': message,
+                })
+            except Exception as e:
+                logger.debug(f"setup card for {preset.display_name} not shown: {e}")
+
+        what = f"{preset.display_name} (the small vision model)"
+        need = preset.size_bytes
+        where = self.installer.models_dir
+        try:
+            from core.platform_paths import free_bytes
+            free = free_bytes(where)
+        except Exception as e:
+            why = (f"{what} was not downloaded: the free disk in {where} could not "
+                   f"be read ({e}).")
+        else:
+            why = ''
+            if not need:
+                why = (f"{what} was not downloaded: its size is not in the model "
+                       f"catalog, so whether it fits cannot be told.")
+            elif free < need:
+                why = (f"{what} was not downloaded: it needs about {need / 1e9:.1f} GB "
+                       f"free in {where} and there is {free / 1e9:.1f} GB. Free some "
+                       f"space there; it is tried again the next time it is needed.")
+        if why:
+            logger.warning(why)
+            card('error', why, complete=True)
+            return
+
+        try:
+            from integrations.agent_engine.capability_setup import ask_owner_for_setup
+            from integrations.vision.lightweight_backend import Qwen08BBackend
+            answer = ask_owner_for_setup(
+                f'model:{Qwen08BBackend.CATALOG_ID}',
+                reason=(f"{preset.display_name}, the small vision model, is not on "
+                        f"this computer yet. It reads photos and video frames here "
+                        f"(for example to choose the best moments of a reel) and can "
+                        f"give quick first replies in chat. Download it once into the "
+                        f"models folder? It is about {need / 1e9:.1f} GB, plus its "
+                        f"image projector. Until then those jobs run without it."))
+        except Exception as e:
+            logger.warning(f"{what} was not downloaded: the owner could not be "
+                           f"asked ({e})")
+            return
+        if answer != 'granted':
+            logger.info(f"{what} was not downloaded: " + {
+                'asked': "the owner's answer on the consent card is awaited",
+                'declined': 'the owner said no',
+            }.get(answer, 'there is nobody to ask on this node, or consent '
+                          'could not be reached'))
+            return
+
+        shown = [None]
+
+        def progress(done_mb, total_mb, status):
+            tenth = done_mb * 10 // total_mb if total_mb else None
+            if tenth != shown[0]:
+                shown[0] = tenth
+                card('loading', status)
+
+        card('loading', f"Downloading {what}...")
+        if not have_model:
+            logger.info(f"Downloading {preset.display_name}...")
+            self.installer.download_model(preset, progress_callback=progress)
+        if wants_mmproj and not self.installer.get_mmproj_path(preset):
+            card('loading', f"Downloading the image projector of {preset.display_name}...")
+            self._download_mmproj_only(preset)
+        if self.installer.get_model_path(preset) and (
+                not wants_mmproj or self.installer.get_mmproj_path(preset)):
+            card('done', f"{preset.display_name} is downloaded.", complete=True)
+        else:
+            card('error', f"{preset.display_name} did not finish downloading; it is "
+                          f"tried again the next time it is needed.", complete=True)
 
     def stop_caption_server(self):
         """Stop the caption server and free GPU memory."""
