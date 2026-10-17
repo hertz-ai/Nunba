@@ -410,10 +410,13 @@ def _bound_game_media(prompt_id, game_id, media_type, state='bgm',
                      level=None, user_id=None):
     """The sound memoized for a game's state, and what matched.
 
-    The memo lives in the agent's own saved data and the matching ladder
-    is HARTOS's one matcher (core/game_sound_memo.py), imported rather
-    than copied: this route must agree with the agent's own tools about
-    what a hit is, to the key (spec §4).
+    The memo lives in the agent's own saved data, and a person's own
+    choices (a take they turned down, a take of their own) in their own
+    {user_id}_{prompt_id} store (HARTOS owner ruling 2026-10-17).  The
+    matching ladder is HARTOS's one matcher (core/game_sound_memo.py),
+    imported rather than copied, and the person's store id is HARTOS's
+    person_store_for: this route must agree with the agent's own tools
+    about what a hit is, to the key (spec §4).
 
     Returns (url, matched) where matched is 'mine', 'level', 'game',
     'composing' or 'miss'.  Only music is memoized today; anything else
@@ -422,11 +425,15 @@ def _bound_game_media(prompt_id, game_id, media_type, state='bgm',
     if media_type != 'music' or not prompt_id or not game_id:
         return None, 'miss'
     try:
+        from core.agent_tools import person_store_for
         from core.cache_loaders import load_agent_data
         from core.game_sound_memo import game_state_sound
         data = load_agent_data(prompt_id) or {}
+        own = (load_agent_data(person_store_for(user_id, prompt_id)) or {}
+               if user_id else {})
         record, matched = game_state_sound(
-            data.get('games', {}), game_id, state, level, user_id)
+            data.get('games', {}), game_id, state, level,
+            own=own.get('games', {}))
         url = record.get('url')
         if url:
             logger.info(
