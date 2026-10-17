@@ -1709,19 +1709,27 @@ def create_inprocess_dispatch_blueprint():
     bp = Blueprint('hevolve_inprocess_dispatch', __name__)
 
     def _forward_kwargs():
+        # The caller's own credential goes with every request, JSON or not.
+        # HARTOS's CSRF check refuses a non-JSON POST that carries no Bearer
+        # (measured 2026-10-03 against its real app: a multipart upload got
+        # 403 'CSRF token required' without it, 200 with the phone's).  And
+        # a card answer on /api/agent/approval is recorded as the signed-in
+        # person it names, or refused (HARTOS approver_from_request): with
+        # the header dropped from JSON rows, every game-sound and commerce
+        # card answered on the desktop got 401 'sign in to answer this'
+        # (hartos-c3's review of HARTOS c48e90601, 2026-10-17).  HARTOS's
+        # gate admits this in-process caller as local either way, so the
+        # header changes who a route names, not whether it is reached.
+        auth = flask_request.headers.get('Authorization')
+        headers = {'Authorization': auth} if auth else {}
         if flask_request.files:
-            # The caller's own credential goes with an upload.  HARTOS's CSRF
-            # check refuses a non-JSON POST that carries no Bearer: measured
-            # 2026-10-03 against HARTOS's real app, a multipart upload got
-            # 403 'CSRF token required' without it, 200 with the phone's.
-            # JSON rows are unchanged (HARTOS's CSRF check passes JSON).
-            auth = flask_request.headers.get('Authorization')
             data = {k: v for k, v in flask_request.form.items()}
             for name, f in flask_request.files.items():
                 data[name] = (f.stream, f.filename, f.mimetype)
             return {'data': data, 'content_type': 'multipart/form-data',
-                    'headers': {'Authorization': auth} if auth else {}}
-        return {'json': flask_request.get_json(silent=True) or {}}
+                    'headers': headers}
+        return {'json': flask_request.get_json(silent=True) or {},
+                'headers': headers}
 
     def _dispatcher(path):
         def dispatch():
