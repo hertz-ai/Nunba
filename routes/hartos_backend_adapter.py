@@ -650,8 +650,10 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
 # `media` (the reel) for the phone.  HARTOS's chat() reads both inbound
 # fields (since HARTOS 4ec01b499, 2026-10-14): it binds the attachments to
 # the turn (core.chat_attachments parse_inbound, then bind_inbound) and, for
-# a turn that names its agent (prompt_id), holds the user-assignable tags as
-# that agent's creation hint (marketing_tools.hold_goal_tag_hint).  This
+# a turn that names its agent (prompt_id), reads the user-assignable tags as
+# that agent's creation hint for that turn alone
+# (marketing_tools.user_assignable_goal_tags; nothing is held between
+# turns, amendment A19).  This
 # node passes on only what HARTOS's own rules accept, read from there, never
 # copied: an attachment row by core.chat_attachments.validate_attachment,
 # the ONE /chat attachments rule that parse_inbound reads by (amendment
@@ -787,8 +789,9 @@ def turn_goal_tags(raw) -> list:
     """The `goal_tags` a turn may hand HARTOS: the ones a user may assign.
 
     HARTOS's own filter decides: marketing_tools.user_assignable_goal_tags,
-    the one HARTOS's chat() holds the creation hint by (hold_goal_tag_hint;
-    amendment A9 e).  What it keeps crosses as it answers (sorted, each
+    the one HARTOS's chat() reads the creation hint by (amendment A9 e;
+    nothing is held between turns, A19).  What it keeps crosses as it
+    answers (sorted, each
     once); this node keeps no list or filter of its own.  When that filter
     cannot be loaded, raises, or answers with anything but a list of names,
     no tag is passed on (fail closed).

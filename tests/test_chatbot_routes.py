@@ -382,6 +382,34 @@ class TestAgentRouting:
                               goal_tags=['marketing'])
         assert body['text'] == 'cloud says hi' and node['hartos'] == []
 
+    def test_on_the_central_tier_the_same_turn_goes_to_the_cloud(
+            self, client, node):
+        # The rule is HARTOS's (reel_studio is inert on central, amendment
+        # A8 d), so with the rule's call removed this turn would wrongly
+        # stay here: the assignable tag alone decides nothing.
+        with patch('security.key_delegation.get_node_tier', return_value='central'), \
+                patch('core.cache_loaders.load_agent_config', return_value=None):
+            body = self._send(client, prompt_id=49, create_agent=False,
+                              goal_tags=['reel_studio'])
+        assert body['text'] == 'cloud says hi' and node['hartos'] == []
+
+    def test_the_log_names_hartos_filtered_tags_never_the_raw_hint(
+            self, client, node, caplog):
+        # The log line carries user_assignable_goal_tags(hint), bounded by
+        # HARTOS's set, never the client's list (a 5 KB junk tag made a
+        # 5,156-character log line on the first cut).
+        import logging
+        junk = 'x' * 5000
+        caplog.set_level(logging.INFO)
+        with patch('core.cache_loaders.load_agent_config', return_value=None):
+            body = self._send(client, prompt_id=342, create_agent=False,
+                              goal_tags=['reel_studio', junk])
+        assert body['text'] == 'local says hi' and node['cloud'] == []
+        line = next(r.getMessage() for r in caplog.records
+                    if 'staying here so HARTOS carries on creating it' in r.getMessage())
+        assert "['reel_studio']" in line and 'xxxxxxxxxx' not in line
+        assert junk not in caplog.text
+
     def test_a_rule_that_raises_sends_the_turn_where_it_went_before(
             self, client, node, caplog):
         # HARTOS's local-only rule failing is said in the log and the turn

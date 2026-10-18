@@ -2766,8 +2766,9 @@ def _chat_turn(data):
     # and the agent-creation hint.  They go to HARTOS /chat only, bounded by
     # HARTOS's contracts in the adapter (turn_attachments, turn_goal_tags);
     # HARTOS's chat() binds the refs to the turn (core.chat_attachments) and
-    # holds the hint (marketing_tools.hold_goal_tag_hint).  The cloud leg
-    # never has them.
+    # reads the hint for that turn alone (marketing_tools
+    # .user_assignable_goal_tags; nothing is held between turns, amendment
+    # A19).  The cloud leg never has them.
     attachments = data.get('attachments')
     goal_tags = data.get('goal_tags')
     conversation_id = data.get('conversation_id')
@@ -3002,31 +3003,33 @@ def _chat_turn(data):
                 return None
         return None
 
-    def _tags_keeping_agent_here(_pid_int, _hint):
-        """The user-assignable tags of the turn's creation hint (the body's
-        goal_tags) when they keep agent ``_pid_int`` on this node, else [].
+    def _hint_keeps_agent_here(_pid_int, _hint):
+        """Does the turn's creation hint (the body's goal_tags) keep agent
+        ``_pid_int`` on this node?  ``(keeps, tags)``: the answer, and the
+        user-assignable tags of the hint for the log.
 
         HARTOS's one local-only rule decides
         (integrations.agent_engine.marketing_tools.agent_is_local_only, asked
-        with the hint alone: the agent has no record here yet), and its own
-        filter (user_assignable_goal_tags) names what is logged, so the
-        client's raw list never reaches the log.  [] for no hint, and []
-        (said in the log) when HARTOS's rule cannot be loaded or raises: the
-        turn then goes where it went before this rule, to the cloud."""
+        with the id and the hint: the agent has no record in this node's
+        prompts dir, and a record HARTOS's own dir may hold counts as the
+        rule says), and HARTOS's own filter (user_assignable_goal_tags)
+        names what is logged, so the client's raw list never reaches the
+        log.  (False, []) for no hint, and (False, []) said in the log when
+        HARTOS's rule cannot be loaded or raises: the turn then goes where
+        it went before this rule, to the cloud."""
         if not _hint:
-            return []
+            return False, []
         try:
             from integrations.agent_engine.marketing_tools import (
                 agent_is_local_only, user_assignable_goal_tags)
-            if not agent_is_local_only(str(_pid_int), _hint):
-                return []
-            return user_assignable_goal_tags(_hint)
+            keeps = bool(agent_is_local_only(str(_pid_int), _hint))
+            return keeps, (user_assignable_goal_tags(_hint) if keeps else [])
         except Exception as exc:
             logger.warning(
                 'chat: HARTOS local-only rule unavailable for prompt_id=%s '
                 '(%s: %s): the creation hint cannot keep the turn here',
                 _pid_int, type(exc).__name__, exc)
-            return []
+            return False, []
 
     def _resolve_agent(_prompt_id, _agent_id_legacy, _creating, _hint=None):
         """Return (agent_config, resolved_agent_id, resolved_type, resolved_prompt_id).
@@ -3125,12 +3128,12 @@ def _chat_turn(data):
                     'creating it here', _pid_int)
                 return ({'id': _pid_int, 'type': 'local'}, _pid_int,
                         'local', _pid_int, True)
-            _kept = _tags_keeping_agent_here(_pid_int, _hint)
-            if _kept:
+            _keeps, _kept_tags = _hint_keeps_agent_here(_pid_int, _hint)
+            if _keeps:
                 logger.info(
                     'prompt_id=%s has no recipe on this node yet and its '
                     'turn keeps to this node (goal tags %s) - staying here '
-                    'so HARTOS carries on creating it', _pid_int, _kept)
+                    'so HARTOS carries on creating it', _pid_int, _kept_tags)
                 return ({'id': _pid_int, 'type': 'local'}, _pid_int,
                         'local', _pid_int, False)
             logger.info(
@@ -3352,7 +3355,9 @@ def _chat_turn(data):
                 # Three cases _resolve_agent returns map cleanly to:
                 #   step 1 / step 3 (digit + file exists)  → pass int
                 #   step 2 (registry hit, e.g. local_assistant) → None
-                #   step 4 (forced create-mode) → keep prompt_id so
+                #   step 4 (an unknown id kept here: a creating turn,
+                #     forced create-mode, or a turn whose creation hint
+                #     keeps its agent on this node) → keep prompt_id so
                 #     HARTOS gather/create can use the same id the
                 #     user clicked instead of auto-generating a new one
                 #     and creating a stranger agent
