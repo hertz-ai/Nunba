@@ -33,9 +33,9 @@ route with that body unchanged.  This node must:
     (marketing_tools.user_assignable_goal_tags, in its order; none when
     that filter cannot be used).  HARTOS's chat() reads both: it binds the
     attachments to the turn (core.chat_attachments.parse_inbound, then
-    bind_inbound) and holds the tags as the agent-creation hint
-    (marketing_tools.hold_goal_tag_hint, which keeps
-    user_assignable_goal_tags);
+    bind_inbound) and reads the tags as the agent-creation hint for that
+    turn alone (marketing_tools.user_assignable_goal_tags; nothing is held
+    between turns, amendment A19);
   * put the `media` HARTOS's /chat reply carries into the reply the phone
     reads (the custom_gpt reply, and /chat's own), only in the reply-media
     shape (contracts.validate_media_item), with or without reply text;
@@ -613,7 +613,7 @@ def test_no_assignable_tag_sends_no_goal_tags(client, hartos):
 def test_hartos_filter_decides_and_its_order_crosses(client, hartos, monkeypatch):
     """HARTOS's user_assignable_goal_tags (marketing_tools) is the one
     filter (inventory D23k): its answer crosses as it is, sorted and each
-    once, the order HARTOS's own hold_goal_tag_hint keeps.  The copy this
+    once, the order HARTOS's own chat() reads it in.  The copy this
     node used to run kept the order sent ('reel_studio' before 'news')."""
     from integrations.agent_engine import marketing_tools
     monkeypatch.setattr(marketing_tools, 'USER_ASSIGNABLE_GOAL_TAGS',
@@ -679,8 +679,8 @@ def test_hartos_reads_every_ref_and_tag_this_node_forwards(client, hartos):
     """What crosses is what HARTOS's chat() reads: every forwarded attachment
     row survives core.chat_attachments.parse_inbound (the read before
     bind_inbound) and every forwarded tag survives
-    marketing_tools.user_assignable_goal_tags (the read in
-    hold_goal_tag_hint).  HARTOS's own readers, not copies."""
+    marketing_tools.user_assignable_goal_tags (the read HARTOS's chat()
+    makes of the turn's hint).  HARTOS's own readers, not copies."""
     from core.chat_attachments import parse_inbound
     from integrations.agent_engine.marketing_tools import user_assignable_goal_tags
     client.post('/chat/custom_gpt', json={

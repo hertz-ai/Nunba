@@ -393,6 +393,26 @@ class TestAgentRouting:
                               goal_tags=['reel_studio'])
         assert body['text'] == 'cloud says hi' and node['hartos'] == []
 
+    def test_the_decision_is_the_rules_answer_not_the_hints_tags(
+            self, client, node, caplog):
+        # The rule reads HARTOS's own store too: a record there that says
+        # reel_studio keeps the turn here even when the hint's tags alone
+        # would not (the first cut answered with the hint's tags and sent
+        # it to the cloud).  Unreachable under Nunba's main.py, where both
+        # prompts dirs are one folder and step 1 already keeps the id; it
+        # pins what the helper means.
+        import logging
+        caplog.set_level(logging.INFO)
+        with patch('core.cache_loaders.load_agent_config',
+                   return_value={'goal_tags': ['reel_studio']}):
+            body = self._send(client, prompt_id=49, create_agent=False,
+                              goal_tags=['marketing'])
+        assert body['text'] == 'local says hi' and node['cloud'] == []
+        assert node['hartos'][0]['agent_id'] == 49
+        line = next(r.getMessage() for r in caplog.records
+                    if 'staying here so HARTOS carries on creating it' in r.getMessage())
+        assert "HARTOS's stored record" in line and 'goal tags' not in line
+
     def test_the_log_names_hartos_filtered_tags_never_the_raw_hint(
             self, client, node, caplog):
         # The log line carries user_assignable_goal_tags(hint), bounded by

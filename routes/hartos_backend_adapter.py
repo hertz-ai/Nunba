@@ -661,7 +661,8 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
 # its MAX_ATTACHMENTS; reply media by
 # integrations.reel_studio.contracts.validate_media_item; and goal tags by
 # marketing_tools.user_assignable_goal_tags, the filter HARTOS's chat()
-# holds the creation hint by.  This node keeps no copy of any of them, not
+# reads the creation hint by, for that turn alone.  This node keeps no copy
+# of any of them, not
 # even a fallback: a node that cannot read a rule passes on nothing it
 # governs.  What is dropped is logged by count and type, never by value: it
 # is whatever the client sent.
@@ -968,8 +969,8 @@ def chat(
     # and its agent-creation hint, as far as HARTOS's own rules accept them
     # (turn_attachments, turn_goal_tags), and only when a caller has them:
     # every other caller's body is unchanged.  HARTOS's chat() binds the
-    # references to the turn and holds the hint (see the Reel Studio block
-    # above turn_attachments).
+    # references to the turn and reads the hint for that turn alone (see
+    # the Reel Studio block above turn_attachments).
     attachments = turn_attachments(attachments)
     if attachments:
         payload["attachments"] = attachments

@@ -1303,7 +1303,7 @@ def custom_gpt():
     # goal_tags (the agent-creation hint) go on the turn as sent; the
     # adapter's chat() bounds them by HARTOS's contracts on the way to
     # HARTOS /chat (turn_attachments, turn_goal_tags), whose chat() binds the
-    # refs to the turn and holds the hint.
+    # refs to the turn and reads the hint for that turn alone.
     for key in ('preferred_lang', 'language', 'media_mode',
                 'attachments', 'goal_tags'):
         if data.get(key):
@@ -3130,10 +3130,14 @@ def _chat_turn(data):
                         'local', _pid_int, True)
             _keeps, _kept_tags = _hint_keeps_agent_here(_pid_int, _hint)
             if _keeps:
+                # What kept it: the hint's assignable tags, else the record
+                # HARTOS's own store holds for the id (the rule read both).
                 logger.info(
                     'prompt_id=%s has no recipe on this node yet and its '
-                    'turn keeps to this node (goal tags %s) - staying here '
-                    'so HARTOS carries on creating it', _pid_int, _kept_tags)
+                    'turn keeps to this node (%s) - staying here '
+                    'so HARTOS carries on creating it', _pid_int,
+                    'goal tags %s' % (_kept_tags,) if _kept_tags
+                    else "HARTOS's stored record of the agent")
                 return ({'id': _pid_int, 'type': 'local'}, _pid_int,
                         'local', _pid_int, False)
             logger.info(
