@@ -21,6 +21,7 @@
  * Same origin only: the shell serves this bundle through its own proxy, so the
  * parent IS our origin; anything else is ignored, never answered.
  */
+import { useEffect, useRef, useState } from 'react';
 
 export const SHELL_MESSAGE_PREFIX = 'nunba:';
 
@@ -66,4 +67,59 @@ export function onShellMessage(handler) {
   };
   window.addEventListener('message', listener);
   return () => window.removeEventListener('message', listener);
+}
+
+/**
+ * A chat page's half of the bridge: announce the page, put a composed line in
+ * its composer (sending it when the shell asks), and report the turn the
+ * shell's orb lamp mirrors. Standalone it does nothing.
+ *
+ * The send goes through the page's own send (handleSendRef) on the render
+ * after the line landed, so it is the same turn a typed line makes. A counter
+ * triggers it, not the composer's text: keyed on the text, a line equal to
+ * what the composer already held rendered nothing, so the send never ran and
+ * the person's next keystroke sent whatever they had half typed (review of
+ * Nunba 22b282cf, M1).
+ *
+ * 'done' is reported only after a 'start'. On mount it turned off the lamp
+ * the shell had just lit for the line it was about to compose (same review,
+ * m1).
+ */
+export function useShellBridge({ setInputMessage, handleSendRef, textareaRef, loading }) {
+  const sendPendingRef = useRef(false);
+  const [sendRequests, setSendRequests] = useState(0);
+  const turnStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (!isEmbeddedInShell()) return undefined;
+    postToShell('nunba:ready', { route: window.location.pathname });
+    return onShellMessage((msg) => {
+      if (msg.type !== 'nunba:compose') return;
+      const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+      if (!text) return;
+      sendPendingRef.current = !!msg.send;
+      setInputMessage(text);
+      if (msg.send) setSendRequests((n) => n + 1);
+      const input = textareaRef && textareaRef.current;
+      if (input) {
+        try { input.focus(); } catch { /* detached */ }
+      }
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- a setter and two refs, all stable
+
+  useEffect(() => {
+    if (!sendPendingRef.current) return;
+    sendPendingRef.current = false;
+    if (handleSendRef && handleSendRef.current) handleSendRef.current();
+  }, [sendRequests]); // eslint-disable-line react-hooks/exhaustive-deps -- handleSendRef is a ref
+
+  useEffect(() => {
+    if (!isEmbeddedInShell()) return;
+    if (loading) {
+      turnStartedRef.current = true;
+      postToShell('nunba:turn', { state: 'start' });
+    } else if (turnStartedRef.current) {
+      postToShell('nunba:turn', { state: 'done' });
+    }
+  }, [loading]);
 }

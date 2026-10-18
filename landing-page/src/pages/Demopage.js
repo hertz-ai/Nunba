@@ -40,7 +40,7 @@ import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
-import { isEmbeddedInShell, onShellMessage, postToShell } from '../utils/shellBridge';
+import { useShellBridge } from '../utils/shellBridge';
 import { matchAgentBySlug } from '../utils/agentSlug';
 
 // NewHome is only loaded when user is not logged in (landing page)
@@ -320,37 +320,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // fires. Same reason handleSendRef exists two lines up.
   const ttsActiveRef = useRef(false);
 
-  // ── HART OS shell bridge (utils/shellBridge) ──
+  // ── HART OS shell bridge (utils/shellBridge.useShellBridge) ──
   // Inside HART OS this page is the desktop's one chat surface: the shell frames
-  // it in its pinned assistant panel and routes the orb / command bar / "Ask"
-  // menu text here with nunba:compose, and mirrors the turn state we post back
-  // on its orb lamp. Standalone Nunba has no parent window, so all of this is
-  // a no-op there. The send itself goes through handleSendRef on the render
-  // AFTER the composer state landed, exactly as handleRetryMessage does.
-  const shellSendPendingRef = useRef(false);
-  useEffect(() => {
-    if (!isEmbeddedInShell()) return undefined;
-    postToShell('nunba:ready', { route: window.location.pathname });
-    return onShellMessage((msg) => {
-      if (msg.type !== 'nunba:compose') return;
-      const text = typeof msg.text === 'string' ? msg.text.trim() : '';
-      if (!text) return;
-      shellSendPendingRef.current = !!msg.send;
-      setInputMessage(text);
-      if (textareaRef.current) {
-        try { textareaRef.current.focus(); } catch { /* detached */ }
-      }
-    });
-  }, []);
-  useEffect(() => {
-    if (!shellSendPendingRef.current || !inputMessage.trim()) return;
-    shellSendPendingRef.current = false;
-    if (handleSendRef.current) handleSendRef.current();
-  }, [inputMessage]);
-  useEffect(() => {
-    if (!isEmbeddedInShell()) return;
-    postToShell('nunba:turn', { state: loading ? 'start' : 'done' });
-  }, [loading]);
+  // it in its pinned assistant panel, routes the orb / command bar / "Ask" menu
+  // text into this composer, and mirrors the turn on its orb lamp. A composed
+  // send goes through handleSendRef, the same send a typed line takes.
+  // Standalone Nunba has no parent window, so the hook does nothing there.
+  useShellBridge({ setInputMessage, handleSendRef, textareaRef, loading });
   const [duration, setDuration] = useState(0);
   const [showTooltip, setShowTooltip] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
