@@ -355,6 +355,51 @@ class TestAgentRouting:
         assert node['cloud'] == []
         assert node['hartos'][0]['agent_id'] == 1759990000123
 
+    def test_a_turn_whose_tags_keep_it_here_stays_here_while_its_agent_is_unmade(
+            self, client, node):
+        # Reel Studio (HARTOS task #136, measured live 2026-10-18): after the
+        # first create turn the phone sends create_agent False with the
+        # agent's goal_tags on every turn, and HARTOS writes the record only
+        # when its gather completes.  Until then the turn must stay here
+        # (the cloud never has a local-only agent), so HARTOS resumes the
+        # creation; it was forwarded to the cloud (401) and a generic
+        # assistant answered instead.
+        with patch('core.cache_loaders.load_agent_config', return_value=None):
+            body = self._send(client, prompt_id=342, create_agent=False,
+                              goal_tags=['reel_studio'])
+        assert body['text'] == 'local says hi' and node['cloud'] == []
+        assert node['hartos'][0]['agent_id'] == 342
+        assert node['hartos'][0]['goal_tags'] == ['reel_studio']
+        assert node['hartos'][0]['create_agent'] is False
+
+    def test_a_turn_with_tags_that_do_not_keep_it_here_still_goes_to_the_cloud(
+            self, client, node):
+        # The rule is HARTOS's one local-only rule, not "any goal_tags":
+        # a tag that sets no preference changes nothing.  HARTOS's own
+        # record store is not read: the node's prompts dir is the fixture's.
+        with patch('core.cache_loaders.load_agent_config', return_value=None):
+            body = self._send(client, prompt_id=49, create_agent=False,
+                              goal_tags=['marketing'])
+        assert body['text'] == 'cloud says hi' and node['hartos'] == []
+
+    def test_a_rule_that_raises_sends_the_turn_where_it_went_before(
+            self, client, node, caplog):
+        # HARTOS's local-only rule failing is said in the log and the turn
+        # goes to the cloud as it did before the rule, never a 500.
+        import logging
+
+        def boom(prompt_id, hint=None):
+            raise RuntimeError('rule bug')
+
+        caplog.set_level(logging.WARNING)
+        # The dotted path resolves through sys.modules, the object the
+        # resolver's own import reads; a package attribute may be stale.
+        with patch('integrations.agent_engine.marketing_tools.agent_is_local_only', boom):
+            body = self._send(client, prompt_id=49, create_agent=False,
+                              goal_tags=['reel_studio'])
+        assert body['text'] == 'cloud says hi' and node['hartos'] == []
+        assert 'RuntimeError' in caplog.text and 'rule bug' in caplog.text
+
 
 
 class TestBackendHealthRoute:

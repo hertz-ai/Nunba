@@ -947,9 +947,8 @@ def test_the_phone_body_never_writes_the_owners_intelligence_preference(
 
 # ── the cloud leg ────────────────────────────────────────────────────
 
-def test_refs_and_tags_never_ride_the_cloud_leg(client, hartos, monkeypatch):
-    """A turn for an agent this node does not have goes to the cloud; the
-    desktop store's refs and the creation hint stay here."""
+def _cloud(monkeypatch):
+    """The cloud leg as a recorder: every body posted there, and one answer."""
     sent = []
 
     class _Resp:
@@ -965,6 +964,30 @@ def test_refs_and_tags_never_ride_the_cloud_leg(client, hartos, monkeypatch):
 
     monkeypatch.setattr(cr, 'check_internet_connection', lambda: True)
     monkeypatch.setattr(cr.requests, 'post', fake_post)
+    return sent
+
+
+def test_refs_never_ride_the_cloud_leg(client, hartos, monkeypatch):
+    """A turn for an agent this node does not have, with no creation hint
+    that keeps it here, goes to the cloud; the desktop store's refs stay
+    here."""
+    sent = _cloud(monkeypatch)
+    resp = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN,
+                       headers={'Authorization': 'Bearer t'})
+    assert resp.get_json()['answerList'] == ['cloud agent here']
+    assert hartos.seen == []
+    assert len(sent) == 1 and sent[0]['timeout']
+    assert 'attachments' not in sent[0]['json']
+    assert 'goal_tags' not in sent[0]['json']
+
+
+def test_tags_never_ride_the_cloud_leg(client, hartos, monkeypatch):
+    """On the central node reel_studio keeps nothing local (amendment A8 d:
+    marketing_tools._reel_studio_inert), so the same turn goes to the cloud
+    there; its creation hint and refs still stay here."""
+    import security.key_delegation as key_delegation
+    monkeypatch.setattr(key_delegation, 'get_node_tier', lambda: 'central')
+    sent = _cloud(monkeypatch)
     resp = client.post('/chat/custom_gpt', json={**PHONE_REEL_REUSE_TURN,
                                                  'goal_tags': ['reel_studio']},
                        headers={'Authorization': 'Bearer t'})
@@ -973,6 +996,29 @@ def test_refs_and_tags_never_ride_the_cloud_leg(client, hartos, monkeypatch):
     assert len(sent) == 1 and sent[0]['timeout']
     assert 'attachments' not in sent[0]['json']
     assert 'goal_tags' not in sent[0]['json']
+
+
+def test_a_reel_studio_turn_for_an_unmade_agent_never_goes_to_the_cloud(
+        client, hartos, monkeypatch):
+    """Her second turn: create_agent False (ReelInbox.createMode after the
+    first reply), goal_tags reel_studio, no record here yet because HARTOS
+    saves it only when its gather completes.  It stays here with its refs
+    and hint, and nothing is posted to the cloud (measured live 2026-10-18,
+    HARTOS task #136: it was forwarded, 401, and a generic assistant
+    answered)."""
+    import core.cache_loaders as cache_loaders
+    monkeypatch.setattr(cache_loaders, 'load_agent_config', lambda *a, **k: None)
+    sent = _cloud(monkeypatch)
+    resp = client.post('/chat/custom_gpt', json={**PHONE_REEL_REUSE_TURN,
+                                                 'goal_tags': ['reel_studio']},
+                       headers={'Authorization': 'Bearer t'})
+    assert resp.get_json()['answerList'] == ['On it.']
+    assert sent == []
+    assert len(hartos.seen) == 1
+    body = hartos.seen[0]
+    assert body['prompt_id'] == PROMPT_ID and body['create_agent'] is False
+    assert body['goal_tags'] == ['reel_studio']
+    assert body['attachments'] == [ATTACHMENTS[0]]
 
 
 # ── the adapter's /chat body ─────────────────────────────────────────

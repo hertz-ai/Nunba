@@ -3002,7 +3002,33 @@ def _chat_turn(data):
                 return None
         return None
 
-    def _resolve_agent(_prompt_id, _agent_id_legacy, _creating):
+    def _tags_keeping_agent_here(_pid_int, _hint):
+        """The user-assignable tags of the turn's creation hint (the body's
+        goal_tags) when they keep agent ``_pid_int`` on this node, else [].
+
+        HARTOS's one local-only rule decides
+        (integrations.agent_engine.marketing_tools.agent_is_local_only, asked
+        with the hint alone: the agent has no record here yet), and its own
+        filter (user_assignable_goal_tags) names what is logged, so the
+        client's raw list never reaches the log.  [] for no hint, and []
+        (said in the log) when HARTOS's rule cannot be loaded or raises: the
+        turn then goes where it went before this rule, to the cloud."""
+        if not _hint:
+            return []
+        try:
+            from integrations.agent_engine.marketing_tools import (
+                agent_is_local_only, user_assignable_goal_tags)
+            if not agent_is_local_only(str(_pid_int), _hint):
+                return []
+            return user_assignable_goal_tags(_hint)
+        except Exception as exc:
+            logger.warning(
+                'chat: HARTOS local-only rule unavailable for prompt_id=%s '
+                '(%s: %s): the creation hint cannot keep the turn here',
+                _pid_int, type(exc).__name__, exc)
+            return []
+
+    def _resolve_agent(_prompt_id, _agent_id_legacy, _creating, _hint=None):
         """Return (agent_config, resolved_agent_id, resolved_type, resolved_prompt_id).
 
         Resolution order:
@@ -3014,6 +3040,21 @@ def _chat_turn(data):
                or autonomous_creation) -> PRESERVE prompt_id + signal
                create-mode, so HARTOS creates the agent under the id the
                page minted for it;
+             - the turn's creation hint keeps the agent on this node
+               (``_hint``, the body's goal_tags, judged by HARTOS's one
+               local-only rule marketing_tools.agent_is_local_only; Reel
+               Studio's reel_studio) -> PRESERVE prompt_id, type 'local',
+               nothing forced: HARTOS's own ladder treats a turn for an
+               id with no record as a creation whatever the flag says,
+               and the gather it started continues from gather_info's
+               in-memory session (a one-hour idle TTL on its turn count;
+               the conversation until HARTOS restarts).  The cloud never
+               has a local-only agent (decision U4c), and her phone sends
+               create_agent False from its second turn on
+               (ReelInbox.createMode) while HARTOS's gather still asks
+               its questions, so without this the setup deadlocked:
+               forwarded to the cloud, 401, answered by the generic
+               assistant (HARTOS task #136, measured live 2026-10-18);
              - otherwise the agent exists only in the cloud -> type
                'cloud', and the CLOUD branch forwards the turn there.
                Owner rule 2026-10-04: an agent with an id on this node
@@ -3062,9 +3103,10 @@ def _chat_turn(data):
                         'local', _aid_int, False)
         # 4. Caller sent a real numeric prompt_id but the recipe
         #    isn't local.  A creating turn keeps the id here in
-        #    create-mode (HARTOS gather_info -> create_recipe); any
-        #    other turn goes to the cloud, the only place that agent
-        #    exists.
+        #    create-mode (HARTOS gather_info -> create_recipe); a turn
+        #    whose creation hint keeps the agent on this node stays here
+        #    too, with nothing forced; any other turn goes to the cloud,
+        #    the only place that agent exists.
         #
         #    NOTE: this branch is intentionally narrow to the
         #    numeric-prompt_id case.  We do NOT force-create for a
@@ -3083,6 +3125,14 @@ def _chat_turn(data):
                     'creating it here', _pid_int)
                 return ({'id': _pid_int, 'type': 'local'}, _pid_int,
                         'local', _pid_int, True)
+            _kept = _tags_keeping_agent_here(_pid_int, _hint)
+            if _kept:
+                logger.info(
+                    'prompt_id=%s has no recipe on this node yet and its '
+                    'turn keeps to this node (goal tags %s) - staying here '
+                    'so HARTOS carries on creating it', _pid_int, _kept)
+                return ({'id': _pid_int, 'type': 'local'}, _pid_int,
+                        'local', _pid_int, False)
             logger.info(
                 'prompt_id=%s has no recipe on this node - cloud-only '
                 'agent, forwarding the turn to the cloud', _pid_int)
@@ -3101,11 +3151,14 @@ def _chat_turn(data):
     # TestAgentRouting).
     agent_config, agent_id, agent_type, prompt_id, _force_create_agent = \
         _resolve_agent(prompt_id, data.get('agent_id'),
-                       bool(create_agent or autonomous_creation))
-    # When _resolve_agent had to fall back due to missing recipe (step 4),
-    # force create_agent=True so HARTOS hard-routes to autogen instead of
+                       bool(create_agent or autonomous_creation), goal_tags)
+    # When _resolve_agent kept a CREATING turn's unknown id here (step 4,
+    # create_agent or autonomous_creation on the body), force
+    # create_agent=True so HARTOS hard-routes to autogen instead of
     # casually chatting via the draft-first path.  Per design intent: no
     # point in casual chat when we know we need to (re)create an agent.
+    # A turn kept here by its creation hint alone is not forced: HARTOS's
+    # own ladder makes the creation decision for an id with no record.
     #
     # ALSO force autonomous_creation=True so HARTOS enters
     # `if autonomous:` at hart_intelligence_entry.py:6731 — that's the
