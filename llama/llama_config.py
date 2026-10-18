@@ -3195,8 +3195,7 @@ class LlamaConfig:
                       f"a reel). Download it once into the models folder? It is about "
                       f"{need / 1e9:.1f} GB. Until then those jobs run without it.")
         try:
-            from integrations.agent_engine.capability_setup import (
-                NO_OWNER_REMEDY, ask_owner_for_setup, setup_owner)
+            from integrations.agent_engine.capability_setup import NO_OWNER_REMEDY, ask_owner_for_setup, setup_owner
             from integrations.vision.lightweight_backend import Qwen08BBackend
             answer = ask_owner_for_setup(Qwen08BBackend.SETUP_CAPABILITY, reason=reason)
         except Exception as e:
