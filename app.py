@@ -9549,6 +9549,10 @@ window.addEventListener('unhandledrejection', function(e) {
 
             # Force navigation after window is visible — WebView2 sometimes drops
             # the initial URL passed to create_window, resulting in a blank page.
+            # Only a blank page is re-loaded: load_url() of the URL already
+            # shown does not navigate, and pywebview clears its ready events
+            # first, so every Python->page call then raises "Main window failed
+            # to start" (measured 2026-10-19; tests/test_shown_navigate_bridge.py).
             _shown_nav_done = [False]
             def _on_shown_navigate():
                 if _shown_nav_done[0]:
@@ -9556,7 +9560,7 @@ window.addEventListener('unhandledrejection', function(e) {
                 _shown_nav_done[0] = True
                 try:
                     _cur = _window.get_current_url() or ''
-                    if not _cur or 'about:blank' in _cur or _cur == initial_url:
+                    if not _cur or 'about:blank' in _cur:
                         logger.info(f"[SHOWN] Forcing navigation to {initial_url}")
                         _window.load_url(initial_url)
                 except Exception as _e:
