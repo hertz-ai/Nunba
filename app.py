@@ -9549,10 +9549,14 @@ window.addEventListener('unhandledrejection', function(e) {
 
             # Force navigation after window is visible — WebView2 sometimes drops
             # the initial URL passed to create_window, resulting in a blank page.
-            # Only a blank page is re-loaded: load_url() of the URL already
-            # shown does not navigate, and pywebview clears its ready events
-            # first, so every Python->page call then raises "Main window failed
-            # to start" (measured 2026-10-19; tests/test_shown_navigate_bridge.py).
+            # At initial_url the address cannot tell a failed first load from a
+            # good one, so the document's location decides (measured 2026-10-19,
+            # tests/test_shown_navigate_bridge.py):
+            #   failed (Flask not up): href is chrome-error://chromewebdata/,
+            #     and load_url(initial_url) re-navigates to the real page;
+            #   loaded: load_url(initial_url) navigates nowhere, but pywebview
+            #     has already cleared its ready events, so every Python->page
+            #     call raises "Main window failed to start" for the session.
             _shown_nav_done = [False]
             def _on_shown_navigate():
                 if _shown_nav_done[0]:
@@ -9560,7 +9564,14 @@ window.addEventListener('unhandledrejection', function(e) {
                 _shown_nav_done[0] = True
                 try:
                     _cur = _window.get_current_url() or ''
-                    if not _cur or 'about:blank' in _cur:
+                    _failed = not _cur or 'about:blank' in _cur
+                    if not _failed and _cur == initial_url:
+                        try:
+                            _href = str(_window.evaluate_js('location.href') or '')
+                            _failed = not _href.startswith(('http://', 'https://'))
+                        except Exception:
+                            _failed = True
+                    if _failed:
                         logger.info(f"[SHOWN] Forcing navigation to {initial_url}")
                         _window.load_url(initial_url)
                 except Exception as _e:

@@ -1,18 +1,21 @@
-"""The first-show navigation must not re-load the URL the page already shows.
+"""The first-show navigation re-loads a page that failed, never one that loaded.
 
 pywebview's ``Window.load_url`` clears the ``loaded`` and ``_pywebviewready``
 events before it navigates, and only a completed navigation sets them again.
-WebView2 does not navigate when told to load the URL it is already showing,
-so ``load_url(<current url>)`` leaves both events cleared for the rest of the
-session.  Every Python->page call (``evaluate_js``, including the return of
-every ``window.pywebview.api.*`` call) then waits 20 s and raises
-``WebViewException('Main window failed to start')``.
 
-Measured 2026-10-19: the installed build logged
-``[SHOWN] Forcing navigation to http://localhost:5000/local`` at boot, and the
-Upload PDF picker's chosen path never reached the page.  A standalone
-pywebview 6.1 window reproduced it: same-URL ``load_url`` -> 0 navigations,
-``evaluate_js`` raised after 20.0 s; a different URL navigated and recovered.
+Measured 2026-10-19 with pywebview 6.1 + WebView2 on this machine:
+  * page loaded fine at URL, then ``load_url(URL)``: 0 navigations, the events
+    stay cleared, every ``evaluate_js`` (including the return of every
+    ``window.pywebview.api.*`` call) waits 20 s and raises
+    ``WebViewException('Main window failed to start')``.  The installed build
+    did exactly this at boot ("[SHOWN] Forcing navigation to
+    http://localhost:5000/local"), so the Upload PDF picker's path never
+    reached the page.
+  * first load failed (server not up yet): WebView2 shows its error page,
+    ``location.href`` is ``chrome-error://chromewebdata/`` while the window
+    still reports URL; ``load_url(URL)`` then navigates and the real page
+    loads.  This is the case the reload was written for (6abacf95,
+    "Page didn't load or is blank — force navigate").
 
 The test runs the real ``_on_shown_navigate`` body from app.py against a fake
 window, so it needs neither pywebview nor WebView2.
@@ -30,15 +33,23 @@ APP_PY = os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, 'app.py')
 )
 INITIAL_URL = 'http://localhost:5000/local'
+ERROR_PAGE = 'chrome-error://chromewebdata/'
 
 
 class _FakeWindow:
-    def __init__(self, current_url):
+    def __init__(self, current_url, href=None):
         self._current_url = current_url
+        self._href = href
         self.loaded_urls = []
 
     def get_current_url(self):
         return self._current_url
+
+    def evaluate_js(self, script):
+        assert script == 'location.href'
+        if isinstance(self._href, Exception):
+            raise self._href
+        return self._href
 
     def load_url(self, url):
         self.loaded_urls.append(url)
@@ -64,8 +75,8 @@ def _shown_navigate_for(window):
     return namespace['_on_shown_navigate']
 
 
-def test_page_already_at_initial_url_is_not_reloaded():
-    window = _FakeWindow(INITIAL_URL)
+def test_page_that_loaded_is_not_reloaded():
+    window = _FakeWindow(INITIAL_URL, href=INITIAL_URL)
     _shown_navigate_for(window)()
     assert window.loaded_urls == [], (
         'load_url() of the URL already shown navigates nowhere and leaves '
@@ -73,11 +84,31 @@ def test_page_already_at_initial_url_is_not_reloaded():
         "raises 'Main window failed to start'")
 
 
+def test_failed_first_load_is_reloaded():
+    window = _FakeWindow(INITIAL_URL, href=ERROR_PAGE)
+    _shown_navigate_for(window)()
+    assert window.loaded_urls == [INITIAL_URL], (
+        'the WebView2 error page (server not up at first load) must be '
+        're-navigated; that is what the reload exists for')
+
+
+def test_unreadable_document_keeps_the_reload():
+    window = _FakeWindow(INITIAL_URL, href=RuntimeError('bridge not ready'))
+    _shown_navigate_for(window)()
+    assert window.loaded_urls == [INITIAL_URL]
+
+
 @pytest.mark.parametrize('current', ['', None, 'about:blank'])
 def test_blank_page_is_navigated_to_initial_url(current):
     window = _FakeWindow(current)
     _shown_navigate_for(window)()
     assert window.loaded_urls == [INITIAL_URL]
+
+
+def test_other_route_is_left_alone():
+    window = _FakeWindow('http://localhost:5000/social', href='http://localhost:5000/social')
+    _shown_navigate_for(window)()
+    assert window.loaded_urls == []
 
 
 def test_runs_once():
