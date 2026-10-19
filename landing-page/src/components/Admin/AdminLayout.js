@@ -1,6 +1,6 @@
 import { useSocial } from '../../contexts/SocialContext';
 import NotificationBell from '../Common/NotificationBell';
-import { useRoleAccess } from '../RoleGuard';
+import { useAccessCheck, useRoleAccess } from '../RoleGuard';
 import ErrorBoundary from '../shared/ErrorBoundary';
 
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
@@ -70,12 +70,13 @@ export default function AdminLayout({children}) {
   const location = useLocation();
   const [hoveredItem, setHoveredItem] = useState(null);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const { currentUser, loading } = useSocial();
+  const { currentUser } = useSocial();
   const { canAdmin, canNetworkAdmin } = useRoleAccess();
+  const access = useAccessCheck(canAdmin);
 
   // Redirect to social if user isn't authenticated (instead of blank page).
   // Uses <Navigate> component instead of navigate() during render (React anti-pattern).
-  if (!loading && !canAdmin) {
+  if (access === 'deny') {
     return <Navigate to="/social" replace />;
   }
 
@@ -345,7 +346,7 @@ export default function AdminLayout({children}) {
           minHeight: 'calc(100vh - 64px)',
         }}
       >
-        {loading ? (
+        {access === 'wait' ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}>
             <CircularProgress sx={{ color: '#6C63FF' }} />
           </Box>
