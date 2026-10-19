@@ -81,13 +81,21 @@ export function onShellMessage(handler) {
  * the person's next keystroke sent whatever they had half typed (review of
  * Nunba 22b282cf, M1).
  *
+ * Composed lines go one at a time, in order: each is put in the composer,
+ * sent on the render that holds it if the shell asked, and only then is the
+ * next one taken.  The shell flushes the lines it held while this page
+ * loaded back to back, and they reach one render; one pending flag sent the
+ * last of them alone, and a prefill last sent nothing (review of Nunba
+ * d16667cf, A).
+ *
  * 'done' is reported only after a 'start'. On mount it turned off the lamp
  * the shell had just lit for the line it was about to compose (same review,
  * m1).
  */
 export function useShellBridge({ setInputMessage, handleSendRef, textareaRef, loading }) {
-  const sendPendingRef = useRef(false);
-  const [sendRequests, setSendRequests] = useState(0);
+  const composedRef = useRef([]);  // lines the shell composed, oldest first
+  const landedRef = useRef(null);  // the line put in the composer, not yet sent
+  const [composeTick, setComposeTick] = useState(0);
   const turnStartedRef = useRef(false);
 
   useEffect(() => {
@@ -97,21 +105,25 @@ export function useShellBridge({ setInputMessage, handleSendRef, textareaRef, lo
       if (msg.type !== 'nunba:compose') return;
       const text = typeof msg.text === 'string' ? msg.text.trim() : '';
       if (!text) return;
-      sendPendingRef.current = !!msg.send;
-      setInputMessage(text);
-      if (msg.send) setSendRequests((n) => n + 1);
-      const input = textareaRef && textareaRef.current;
-      if (input) {
-        try { input.focus(); } catch { /* detached */ }
-      }
+      composedRef.current.push({ text, send: !!msg.send });
+      setComposeTick((n) => n + 1);
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- a setter and two refs, all stable
+  }, []);
 
   useEffect(() => {
-    if (!sendPendingRef.current) return;
-    sendPendingRef.current = false;
-    if (handleSendRef && handleSendRef.current) handleSendRef.current();
-  }, [sendRequests]); // eslint-disable-line react-hooks/exhaustive-deps -- handleSendRef is a ref
+    const landed = landedRef.current;
+    landedRef.current = null;
+    if (landed && landed.send && handleSendRef && handleSendRef.current) handleSendRef.current();
+    const next = composedRef.current.shift();
+    if (!next) return;
+    landedRef.current = next;
+    setInputMessage(next.text);
+    const input = textareaRef && textareaRef.current;
+    if (input) {
+      try { input.focus(); } catch { /* detached */ }
+    }
+    setComposeTick((n) => n + 1);
+  }, [composeTick]); // eslint-disable-line react-hooks/exhaustive-deps -- a setter and two refs, all stable
 
   useEffect(() => {
     if (!isEmbeddedInShell()) return;

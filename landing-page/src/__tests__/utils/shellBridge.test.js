@@ -4,11 +4,12 @@
  * (parent === window) every call is a no-op; embedded, messages leave to the
  * page's own origin and only same-origin, prefixed messages come back in.
  */
-import { useRef, useState } from 'react';
-import { act, renderHook } from '@testing-library/react';
 import {
   SHELL_MESSAGE_PREFIX, isEmbeddedInShell, onShellMessage, postToShell, useShellBridge,
 } from '../../utils/shellBridge';
+
+import { act, renderHook } from '@testing-library/react';
+import { useRef, useState } from 'react';
 
 function withParent(parent, fn) {
   const desc = Object.getOwnPropertyDescriptor(window, 'parent');
@@ -159,6 +160,52 @@ describe('useShellBridge inside the shell', () => {
     act(() => result.current.setInputMessage('draft this please'));
     expect(result.current.inputMessage).toBe('draft this please');
     expect(result.current.sent).toEqual([]);
+  });
+
+  test('two lines the shell flushes together are both sent, in order', () => {
+    // On first open the shell holds what was composed while this page
+    // loaded, then posts it back to back; one pending flag sent only the
+    // last (review of Nunba d16667cf, A).
+    const { result } = renderHook(() => useChatPage());
+    act(() => {
+      deliver({ type: 'nunba:compose', text: 'open my recipes', send: true });
+      deliver({ type: 'nunba:compose', text: 'play the spelling game', send: true });
+    });
+    expect(result.current.sent).toEqual(['open my recipes', 'play the spelling game']);
+  });
+
+  test('lines composed one after another are each sent once', () => {
+    const { result } = renderHook(() => useChatPage());
+    compose('open my recipes', true);
+    compose('play the spelling game', true);
+    expect(result.current.sent).toEqual(['open my recipes', 'play the spelling game']);
+  });
+
+  test('a prefill flushed after a send leaves the send sent and the prefill in the composer', () => {
+    const { result } = renderHook(() => useChatPage());
+    act(() => {
+      deliver({ type: 'nunba:compose', text: 'open my recipes', send: true });
+      deliver({ type: 'nunba:compose', text: 'tell me about', send: false });
+    });
+    expect(result.current.sent).toEqual(['open my recipes']);
+    expect(result.current.inputMessage).toBe('tell me about');
+  });
+
+  test('a composed line lands trimmed, with the composer focused', () => {
+    // Untested before (review of Nunba d16667cf, mutants M8 and M9).
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    const { result } = renderHook(() => {
+      const [inputMessage, setInputMessage] = useState('');
+      const handleSendRef = useRef(() => {});
+      const textareaRef = useRef(textarea);
+      useShellBridge({ setInputMessage, handleSendRef, textareaRef, loading: false });
+      return { inputMessage };
+    });
+    compose('  open my recipes  ', false);
+    expect(result.current.inputMessage).toBe('open my recipes');
+    expect(document.activeElement).toBe(textarea);
+    textarea.remove();
   });
 
   test('the lamp hears start and done for a turn, and no done before one', () => {
