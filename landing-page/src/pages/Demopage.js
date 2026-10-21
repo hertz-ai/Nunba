@@ -40,7 +40,7 @@ import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
-import { isEmbeddedInShell, onShellMessage, postToShell } from '../utils/shellBridge';
+import { useShellBridge } from '../utils/shellBridge';
 import { matchAgentBySlug } from '../utils/agentSlug';
 
 // NewHome is only loaded when user is not logged in (landing page)
@@ -88,6 +88,7 @@ import PdfViewer from './chat/PdfViewer';
 import ChatInputBar from './chat/ChatInputBar';
 import ChatMessageList from './chat/ChatMessageList';
 import LlmUpgradeCard from './chat/LlmUpgradeCard';
+import {withSetupProgress} from './chat/SetupProgressCard';
 import ProactiveConciergeCard from '../components/chat/ProactiveConciergeCard';
 
 const HOSTED_URL = 'https://hevolve.hertzai.com';
@@ -319,37 +320,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // fires. Same reason handleSendRef exists two lines up.
   const ttsActiveRef = useRef(false);
 
-  // ── HART OS shell bridge (utils/shellBridge) ──
+  // ── HART OS shell bridge (utils/shellBridge.useShellBridge) ──
   // Inside HART OS this page is the desktop's one chat surface: the shell frames
-  // it in its pinned assistant panel and routes the orb / command bar / "Ask"
-  // menu text here with nunba:compose, and mirrors the turn state we post back
-  // on its orb lamp. Standalone Nunba has no parent window, so all of this is
-  // a no-op there. The send itself goes through handleSendRef on the render
-  // AFTER the composer state landed, exactly as handleRetryMessage does.
-  const shellSendPendingRef = useRef(false);
-  useEffect(() => {
-    if (!isEmbeddedInShell()) return undefined;
-    postToShell('nunba:ready', { route: window.location.pathname });
-    return onShellMessage((msg) => {
-      if (msg.type !== 'nunba:compose') return;
-      const text = typeof msg.text === 'string' ? msg.text.trim() : '';
-      if (!text) return;
-      shellSendPendingRef.current = !!msg.send;
-      setInputMessage(text);
-      if (textareaRef.current) {
-        try { textareaRef.current.focus(); } catch { /* detached */ }
-      }
-    });
-  }, []);
-  useEffect(() => {
-    if (!shellSendPendingRef.current || !inputMessage.trim()) return;
-    shellSendPendingRef.current = false;
-    if (handleSendRef.current) handleSendRef.current();
-  }, [inputMessage]);
-  useEffect(() => {
-    if (!isEmbeddedInShell()) return;
-    postToShell('nunba:turn', { state: loading ? 'start' : 'done' });
-  }, [loading]);
+  // it in its pinned assistant panel, routes the orb / command bar / "Ask" menu
+  // text into this composer, and mirrors the turn on its orb lamp. A composed
+  // send goes through handleSendRef, the same send a typed line takes.
+  // Standalone Nunba has no parent window, so the hook does nothing there.
+  useShellBridge({ setInputMessage, handleSendRef, textareaRef, loading });
   const [duration, setDuration] = useState(0);
   const [showTooltip, setShowTooltip] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -2881,36 +2858,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // to, the Indic Parler "installed" message flipped the banner
     // green BEFORE verification ran — and then the engine crashed
     // silently on first use (2026-04-18 sympy ModuleNotFoundError).
+    // The card's reducer lives beside the card (withSetupProgress): a card
+    // that refuses in its first event ends there, and a new run of a job
+    // starts its card over.
     const unsubSetup = realtimeService.on('setup_progress', (data) => {
       if (data.type !== 'setup_progress') return;
-      setMessages((prev) => {
-        const existingIdx = prev.findIndex(
-          (m) => m.type === 'setup_progress' && m.jobType === data.job_type
-        );
-        if (existingIdx >= 0) {
-          const updated = [...prev];
-          updated[existingIdx] = {
-            ...updated[existingIdx],
-            steps: [...updated[existingIdx].steps, data],
-            isComplete: Boolean(data.complete),
-            // When the card last CHANGED, as distinct from `timestamp` (when
-            // it first appeared, preserved by the spread above).  The card
-            // needs both: it shows first-appearance, but decides staleness
-            // from last activity — otherwise a long install that started an
-            // hour ago would demote while still actively running.
-            updatedAt: new Date(),
-          };
-          return updated;
-        }
-        return [...prev, {
-          type: 'setup_progress',
-          jobType: data.job_type,
-          steps: [data],
-          isComplete: false,
-          handshake: { status: 'pending' },
-          timestamp: new Date(),
-        }];
-      });
+      setMessages((prev) => withSetupProgress(prev, data));
     });
 
     // TTS handshake — authoritative voice-ready signal.  Fires

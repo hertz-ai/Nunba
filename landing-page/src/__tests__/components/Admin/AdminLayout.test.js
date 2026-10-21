@@ -1,7 +1,8 @@
 import AdminLayout from '../../../components/Admin/AdminLayout';
+import SocialContext from '../../../contexts/SocialContext';
 import {renderWithProviders} from '../../testHelpers';
 
-import {screen, fireEvent} from '@testing-library/react';
+import {screen, fireEvent, act} from '@testing-library/react';
 import React from 'react';
 
 // Mock react-router-dom
@@ -10,7 +11,46 @@ jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
   useNavigate: () => mockNavigate,
   useLocation: () => ({pathname: '/admin'}),
+  // The redirect AdminLayout renders, as a marker the tests can read.
+  Navigate: ({to}) =>
+    require('react').createElement('div', {'data-testid': 'redirect'}, to),
 }));
+
+const mockFetchProfile = jest.fn();
+
+// A social context whose fetchProfile answers the way /auth/me would.
+// It starts where the desktop page was on 2026-10-19: a token, no user,
+// and the boot /auth/me unanswered (404 before HARTOS had the route).
+function AskingSocial({answer, initial, children}) {
+  const [ctx, setCtx] = React.useState({
+    currentUser: null,
+    loading: false,
+    isAuthenticated: false,
+    userRole: null,
+    isGuest: false,
+    accessTier: 'anonymous',
+    profileAnswer: 'unanswered',
+    ...initial,
+  });
+  const fetchProfile = React.useCallback(() => {
+    mockFetchProfile();
+    setCtx((c) => ({...c, profileAnswer: 'asking'}));
+    return Promise.resolve().then(() => setCtx((c) => ({...c, ...answer})));
+  }, [answer]);
+  return (
+    <SocialContext.Provider value={{...ctx, fetchProfile}}>
+      {children}
+    </SocialContext.Provider>
+  );
+}
+
+const SIGNED_IN = {
+  currentUser: {id: '10202', username: 'owner', role: 'flat'},
+  isAuthenticated: true,
+  userRole: 'flat',
+  accessTier: 'flat',
+  profileAnswer: 'answered',
+};
 
 describe('AdminLayout Component', () => {
   beforeEach(() => {
@@ -227,6 +267,56 @@ describe('AdminLayout Component', () => {
         .getAllByText('Dashboard')[0]
         .closest('[role="button"]');
       expect(dashboardButton).toHaveClass('Mui-selected');
+    });
+  });
+
+  describe('Opening Admin when /auth/me did not answer at boot', () => {
+    beforeEach(() => {
+      mockFetchProfile.mockClear();
+    });
+
+    test('asks /auth/me instead of redirecting, then shows Admin', async () => {
+      renderWithProviders(
+        <AskingSocial answer={SIGNED_IN}>
+          <AdminLayout>
+            <div data-testid="test-child">Dashboard</div>
+          </AdminLayout>
+        </AskingSocial>
+      );
+      expect(screen.queryByTestId('redirect')).toBeNull();
+      expect(mockFetchProfile).toHaveBeenCalledTimes(1);
+
+      await act(async () => {});
+
+      expect(screen.queryByTestId('redirect')).toBeNull();
+      expect(screen.getByTestId('test-child')).toBeInTheDocument();
+      expect(mockFetchProfile).toHaveBeenCalledTimes(1);
+    });
+
+    test('asks once: a second non-answer redirects to /social', async () => {
+      renderWithProviders(
+        <AskingSocial answer={{profileAnswer: 'unanswered'}}>
+          <AdminLayout>
+            <div data-testid="test-child">Dashboard</div>
+          </AdminLayout>
+        </AskingSocial>
+      );
+      await act(async () => {});
+
+      expect(screen.getByTestId('redirect').textContent).toBe('/social');
+      expect(mockFetchProfile).toHaveBeenCalledTimes(1);
+    });
+
+    test('a signed-out answer (401/403) redirects without asking again', () => {
+      renderWithProviders(
+        <AskingSocial initial={{profileAnswer: 'answered'}} answer={SIGNED_IN}>
+          <AdminLayout>
+            <div data-testid="test-child">Dashboard</div>
+          </AdminLayout>
+        </AskingSocial>
+      );
+      expect(screen.getByTestId('redirect').textContent).toBe('/social');
+      expect(mockFetchProfile).not.toHaveBeenCalled();
     });
   });
 

@@ -133,6 +133,58 @@ def test_the_consent_card_decision_reaches_hartos(nunba, received, decision):
     assert received == [('/api/agent/approval', body)]
 
 
+@pytest.mark.parametrize('path', PATHS)
+def test_the_callers_credential_reaches_hartos_on_json_rows(monkeypatch, path):
+    """A JSON row lost the caller's Authorization at this door, so HARTOS
+    named nobody: every game-sound and commerce card answered on the desktop
+    got 401 'sign in to answer this' (hartos-c3's review of HARTOS c48e90601,
+    2026-10-17).  The credential crosses for JSON exactly as for uploads."""
+    seen = []
+    fake = Flask('fake_hartos_auth')
+
+    def handler():
+        seen.append(request.headers.get('Authorization'))
+        return jsonify({}), 200
+    fake.add_url_rule(path, endpoint='h', view_func=handler, methods=['POST'])
+    monkeypatch.setattr(adapter, '_hevolve_app', fake)
+    monkeypatch.setattr(adapter, '_hartos_backend_available', True)
+    _clean_auth_env(monkeypatch)
+    client = _nunba_client()
+    assert client.post(path, json={'user_id': 'u1'},
+                       headers={'Authorization': 'Bearer signed-in'}).status_code == 200
+    assert client.post(path, json={'user_id': 'u1'}).status_code == 200
+    assert seen == ['Bearer signed-in', None]
+
+
+def test_a_signed_in_card_answer_names_its_person_on_the_hartos_side(monkeypatch):
+    """The whole hop for a card: the SPA's JSON answer with the person's
+    token goes through this door, and HARTOS's own approver rule
+    (integrations.commerce.approvals.approver_from_request, the one the
+    game-sound and commerce cards use) names that person from it."""
+    approvals = pytest.importorskip('integrations.commerce.approvals')
+    social_auth = pytest.importorskip('integrations.social.auth')
+    named = []
+    fake = Flask('fake_hartos_card')
+
+    @fake.route('/api/agent/approval', methods=['POST'])
+    def _card():
+        named.append(approvals.approver_from_request(request))
+        return jsonify({}), 200
+
+    monkeypatch.setattr(adapter, '_hevolve_app', fake)
+    monkeypatch.setattr(adapter, '_hartos_backend_available', True)
+    _clean_auth_env(monkeypatch)
+    token = social_auth.generate_jwt('visitor-1', 'visitor-1')
+    resp = _nunba_client().post(
+        '/api/agent/approval',
+        json={'agent_id': '4242', 'action': 'game_sound:eng-01:bgm',
+              'decision': 'deny'},
+        headers={'Authorization': f'Bearer {token}',
+                 'Origin': 'http://localhost:5000'})
+    assert resp.status_code == 200
+    assert named == ['visitor-1']
+
+
 def test_hartos_answer_is_returned_unchanged(monkeypatch):
     """HARTOS's agent_approval refuses 'later' with 400; the door must pass
     HARTOS's status and body through, not turn them into a success."""

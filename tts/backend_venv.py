@@ -23,6 +23,8 @@ Public API
   venv_path(backend)                          -> Path
   ensure_venv(backend, python_version="3.11") -> Path         (python exe)
   install_into_venv(backend, packages)        -> (ok, msg)
+  install_in_background(backend, packages)    -> 'started' | 'running'
+  background_install(backend)                 -> dict | None
   invoke_in_venv(backend, module, args, timeout=120)
                                                -> (rc, stdout, stderr)
   is_venv_healthy(backend)                    -> bool
@@ -47,6 +49,11 @@ Design notes
     pathlib (Scripts/python.exe on Windows, bin/python on POSIX).
   * Override hook: NUNBA_VENV_ROOT_OVERRIDE env var lets tests drop
     the venv root into tmp_path.
+  * Not only voices: any optional dependency whose pins conflict with
+    python-embed's gets its venv here.  HARTOS's trending-songs worker
+    (integrations/trends/daily_job.py, venv 'ig_trends', instagrapi) is
+    installed through install_in_background on the owner's yes, because
+    its caller is the agent daemon's tick, which never blocks.
 """
 
 from __future__ import annotations
@@ -56,6 +63,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -629,6 +637,87 @@ def install_into_venv(
     # bounds that staleness without needing four more call sites.
     invalidate_venv_probe_cache(backend)
     return True, f"installed {len(packages)} package(s) into venv {backend!r}"
+
+
+# ── install_in_background ────────────────────────────────────────────
+#
+# install_into_venv can take minutes (pip, per package up to 30).  A caller
+# that must not wait -- HARTOS's trending-songs job runs inside the agent
+# daemon's tick, which starts no thread of its own (owner ruling U6) --
+# hands the install off here and asks background_install how it went on a
+# later tick.  The install itself is install_into_venv: one way a backend
+# venv gets its packages, whoever asks.  _background_installs dedupes asks
+# inside this process; across processes the install holds the same file
+# lock install_backend_full takes (tts.package_installer._acquire_file_lock
+# 'install_<backend>'), so two processes never pip into one venv at once.
+# That lock's own rules apply: one older than _INSTALL_LOCK_STALE_S is taken
+# over, and so is one whose holder is not alive -- which only Windows checks
+# (tasklist); on macOS and Linux the check cannot run and every lock is
+# taken over, so there the lock does not hold yet.
+
+_background_lock = threading.Lock()
+# backend -> {'running', 'ok', 'message', 'started_at', 'finished_at'} of
+# this process's last install_in_background of it.  One entry per backend
+# name ever asked (bounded by the backends that exist).
+_background_installs: dict[str, dict] = {}
+
+
+def install_in_background(backend: str, packages: list[str]) -> str:
+    """Run ``install_into_venv(backend, packages)`` on its own daemon thread
+    and return at once: ``'started'``, or ``'running'`` when an install of
+    this backend is already in flight (nothing new is started then).
+
+    ``background_install(backend)`` reports how it went: a failure when
+    another process holds this venv's install lock (nothing is installed
+    beside it; ask again later).  Raises ValueError for an unsafe backend
+    name or an empty package list, before anything starts.
+    """
+    _validate_backend_name(backend)
+    specs = [str(p) for p in (packages or []) if str(p).strip()]
+    if not specs:
+        raise ValueError(f"no packages to install into venv {backend!r}")
+    with _background_lock:
+        current = _background_installs.get(backend)
+        if current is not None and current["running"]:
+            return "running"
+        record = {"running": True, "ok": None, "message": "",
+                  "started_at": time.time(), "finished_at": None}
+        _background_installs[backend] = record
+
+    def _run() -> None:
+        lock_name = f"install_{backend}"
+        try:
+            from tts.package_installer import _acquire_file_lock, _release_file_lock
+            if not _acquire_file_lock(lock_name):
+                ok, message = False, (f"venv {backend!r} is being installed by another "
+                                      f"process; not installed alongside it")
+            else:
+                try:
+                    ok, message = install_into_venv(backend, specs)
+                finally:
+                    _release_file_lock(lock_name)
+        except Exception as exc:  # noqa: BLE001 -- reported, never lost
+            logger.warning("background install of venv %r failed: %s", backend, exc,
+                           exc_info=True)
+            ok, message = False, f"{type(exc).__name__}: {exc}"
+        with _background_lock:
+            record.update(running=False, ok=bool(ok), message=str(message)[-400:],
+                          finished_at=time.time())
+        logger.info("background install of venv %r: %s", backend,
+                    "done" if ok else f"failed ({str(message)[-200:]})")
+
+    threading.Thread(target=_run, name=f"venv-install-{backend}", daemon=True).start()
+    return "started"
+
+
+def background_install(backend: str) -> dict | None:
+    """A copy of this process's last ``install_in_background(backend)``:
+    ``{'running', 'ok' (None while running), 'message', 'started_at',
+    'finished_at'}``, or None when none was asked for (an unsafe name
+    included)."""
+    with _background_lock:
+        record = _background_installs.get(backend)
+        return dict(record) if record is not None else None
 
 
 # ── invoke_in_venv ───────────────────────────────────────────────────

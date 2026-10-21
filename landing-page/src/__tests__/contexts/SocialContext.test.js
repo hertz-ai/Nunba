@@ -79,6 +79,7 @@ function TestConsumer() {
       <span data-testid="userRole">{String(ctx.userRole)}</span>
       <span data-testid="unreadCount">{ctx.unreadCount}</span>
       <span data-testid="username">{ctx.currentUser?.username || 'none'}</span>
+      <span data-testid="profileAnswer">{String(ctx.profileAnswer)}</span>
       <button data-testid="logout-btn" onClick={ctx.logout}>
         Logout
       </button>
@@ -180,7 +181,10 @@ describe('SocialContext - with token', () => {
     renderProvider();
     await flushWithTimers();
     await waitFor(() => {
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/auth/me');
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith(
+        '/auth/me',
+        expect.objectContaining({keepStatus: true})
+      );
     });
   });
 
@@ -377,5 +381,86 @@ describe('SocialContext - API errors', () => {
     await waitFor(() => {
       expect(screen.getByTestId('loading').textContent).toBe('false');
     });
+  });
+});
+
+// ── What /auth/me answered ────────────────────────────────────────────────
+// 2026-10-19: the desktop page asked /auth/me ~10 s before HARTOS registered
+// the route, got 404, and every later Admin click redirected to /social.  A
+// 404 says nothing about the token; only 200 / 401 / 403 do.
+describe('SocialContext - what /auth/me answered', () => {
+  // A cloud login's token on the desktop: 32 characters, not a JWT, so the
+  // page has no user until /auth/me answers.
+  beforeEach(() => {
+    localStorage.setItem('access_token', 'p'.repeat(32));
+  });
+
+  function meRejects(body) {
+    mockAxiosInstance.get.mockImplementation((url) =>
+      url === '/auth/me' ? Promise.reject(body) : Promise.resolve({data: {}})
+    );
+  }
+
+  it('a 200 is an answer', async () => {
+    renderProvider();
+    await flushWithTimers();
+    await waitFor(() => {
+      expect(screen.getByTestId('profileAnswer').textContent).toBe('answered');
+    });
+    expect(screen.getByTestId('accessTier').textContent).toBe('flat');
+  });
+
+  it('a 401 is an answer: signed out', async () => {
+    meRejects({success: false, needs_sign_in: true, status: 401});
+    renderProvider();
+    await flushWithTimers();
+    await waitFor(() => {
+      expect(screen.getByTestId('profileAnswer').textContent).toBe('answered');
+    });
+    expect(screen.getByTestId('accessTier').textContent).toBe('anonymous');
+  });
+
+  it('a 404 is no answer', async () => {
+    meRejects({error: 'API endpoint not found', status: 404});
+    renderProvider();
+    await flushWithTimers();
+    await waitFor(() => {
+      expect(screen.getByTestId('profileAnswer').textContent).toBe(
+        'unanswered'
+      );
+    });
+  });
+
+  it('a network failure is no answer', async () => {
+    meRejects(new Error('Network Error'));
+    renderProvider();
+    await flushWithTimers();
+    await waitFor(() => {
+      expect(screen.getByTestId('profileAnswer').textContent).toBe(
+        'unanswered'
+      );
+    });
+  });
+
+  it('a JWT user is kept when /auth/me does not answer', async () => {
+    const payload = btoa(
+      JSON.stringify({
+        user_id: 'u9',
+        username: 'jwtuser',
+        role: 'flat',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+    localStorage.setItem('access_token', `header.${payload}.sig`);
+    meRejects({error: 'API endpoint not found', status: 404});
+    renderProvider();
+    await flushWithTimers();
+    await waitFor(() => {
+      expect(screen.getByTestId('profileAnswer').textContent).toBe(
+        'unanswered'
+      );
+    });
+    expect(screen.getByTestId('username').textContent).toBe('jwtuser');
+    expect(screen.getByTestId('accessTier').textContent).toBe('flat');
   });
 });

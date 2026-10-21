@@ -150,10 +150,16 @@ curl -X POST https://hevolve.ai/api/v1/intelligence/keys/<key_id>/upgrade/phonep
   -d '{
     "target_tier": "starter",
     "mobile_number": "9876543210",
-    "redirect_url": "https://your-app.example/payment/complete",
-    "callback_url": "https://hevolve.ai/api/v1/intelligence/phonepe/callback"
+    "redirect_url": "https://your-app.example/payment/complete"
   }'
 ```
+
+`target_tier` must cost more than the key's current tier, or the route
+answers `400` before anything is charged (a tier is never lowered).
+`redirect_url` is the page your app returns the buyer to; it is optional
+(this node's own page otherwise).  The server-to-server callback is always
+this node's own and cannot be named in the body: a `callback_url` field is
+ignored.
 
 Response (`202 Accepted`):
 
@@ -171,15 +177,21 @@ Response (`202 Accepted`):
 ```
 
 Currency note: tier prices are in USD; PhonePe is INR-only.  HARTOS
-converts via `PHONEPE_USD_INR_RATE` (default 84.0).  Pass `inr_amount`
-in the request body to bypass conversion entirely with a specific INR
-amount.
+converts at the operator's `PHONEPE_USD_INR_RATE` (default 84.0) and
+records the paise it asked PhonePe for on the payment;
+`inr_amount_estimated_paise` is that number.  The price is the tier's and
+nothing in the request body changes it: an `inr_amount` field is ignored
+(it used to be honoured, and let a buyer name their own price).
 
 ### `POST /phonepe/callback` — PhonePe server-to-server webhook
 
 Receives PhonePe's payment-result notification, verifies the X-VERIFY
-signature, re-confirms via PhonePe's status API (defense in depth), then
-on success bumps the API key tier and marks the payment COMPLETED.
+signature, re-confirms via PhonePe's status API (defense in depth) and
+checks the captured amount against the paise that were sent, then on
+success bumps the API key tier and marks the payment COMPLETED.  If the
+tier write fails after the money is confirmed, the payment stays
+PROCESSING and the callback answers `500` so PhonePe delivers it again;
+past PhonePe's retries an operator finishes it from the ERROR line.
 
 This endpoint is **not authenticated** by user token — it's authenticated
 by the PhonePe X-VERIFY signature.  Operators must register this URL on

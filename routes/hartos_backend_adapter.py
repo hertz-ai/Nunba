@@ -19,6 +19,8 @@ Usage:
     from routes.hartos_backend_adapter import chat, get_prompts, social_api
 """
 
+import importlib
+import json
 import logging
 import os
 import sys
@@ -153,6 +155,28 @@ def drain_thinking_traces(request_id=None):
         return user_traces
 
 
+def _capturing_thinking(publish):
+    """``publish`` (HARTOS's publish_async, or a recipe module's delegate to
+    it) wrapped so that each message it publishes also reaches
+    _capture_thinking.
+
+    ``skip_crossbar`` is publish_async's own flag: it keeps a message on this
+    node's own legs and off central's crossbar, which is how HARTOS pushes a
+    finished Reel Studio reel (amendment A9 e).  The wrapper forwards it only
+    when it is set.  Every other message reaches ``publish`` exactly as
+    before, as (topic, message, timeout).  A publisher that predates the flag
+    therefore still takes every other message, and refuses a push that needs
+    the flag, so HARTOS reports that push undelivered rather than sending it
+    over the crossbar.
+    """
+    def _publish(topic, message, timeout=2.0, skip_crossbar=False):
+        flags = {'skip_crossbar': True} if skip_crossbar else {}
+        result = publish(topic, message, timeout, **flags)
+        _capture_thinking(message)
+        return result
+    return _publish
+
+
 # ── Non-blocking HARTOS import — starts immediately, doesn't block main.py ──
 # LangChain + helper imports take 30s. Instead of blocking module load,
 # we start the import in a background thread immediately. By the time the
@@ -219,28 +243,15 @@ def _attempt_hartos_init():
             logger.info("BACKEND ADAPTER: Tier-1 ACTIVE — hart-backend loaded (background)")
             logger.info("=" * 60)
 
-            # Patch publish_async for thinking traces
+            # Patch publish_async for thinking traces (_capturing_thinking,
+            # which also forwards publish_async's skip_crossbar flag)
             import hart_intelligence as _lgapi  # noqa: TID251
-            _orig = _lgapi.publish_async
-
-            def _patched(topic, message, timeout=2.0):
-                _orig(topic, message, timeout)
-                _capture_thinking(message)
-
-            _lgapi.publish_async = _patched
+            _lgapi.publish_async = _capturing_thinking(_lgapi.publish_async)
 
             for _mod_name in ('create_recipe', 'reuse_recipe'):
                 try:
                     _mod = __import__(_mod_name)
-                    _orig_fn = _mod.publish_async
-
-                    def _make_patch(orig):
-                        def _p(topic, message, timeout=2.0):
-                            orig(topic, message, timeout)
-                            _capture_thinking(message)
-                        return _p
-
-                    _mod.publish_async = _make_patch(_orig_fn)
+                    _mod.publish_async = _capturing_thinking(_mod.publish_async)
                 except ImportError:
                     pass
 
@@ -632,6 +643,201 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
     }
 
 
+# ── Reel Studio fields at the HARTOS boundary ───────────────────────────
+# A Reel Studio turn (the phone's custom_gpt body, or /chat) carries
+# `attachments` (refs into this desktop's user file store) and `goal_tags`
+# (the agent-creation hint) for HARTOS, and HARTOS's /chat reply carries
+# `media` (the reel) for the phone.  HARTOS's chat() reads both inbound
+# fields (since HARTOS 4ec01b499, 2026-10-14): it binds the attachments to
+# the turn (core.chat_attachments parse_inbound, then bind_inbound) and, for
+# a turn that names its agent (prompt_id), reads the user-assignable tags as
+# that agent's creation hint for that turn alone
+# (marketing_tools.user_assignable_goal_tags; nothing is held between
+# turns, amendment A19).  This
+# node passes on only what HARTOS's own rules accept, read from there, never
+# copied: an attachment row by core.chat_attachments.validate_attachment,
+# the ONE /chat attachments rule that parse_inbound reads by (amendment
+# A9 a; a chat attachment needs no Reel Studio package), and as many rows as
+# its MAX_ATTACHMENTS; reply media by
+# integrations.reel_studio.contracts.validate_media_item; and goal tags by
+# marketing_tools.user_assignable_goal_tags, the filter HARTOS's chat()
+# reads the creation hint by, for that turn alone.  This node keeps no copy
+# of any of them, not
+# even a fallback: a node that cannot read a rule passes on nothing it
+# governs.  What is dropped is logged by count and type, never by value: it
+# is whatever the client sent.
+
+#: The attachments one turn forwards, serialized, stay within this many bytes.
+TURN_ATTACHMENTS_MAX_BYTES = 16 * 1024
+#: A row with more keys than this is not checked at all: no attachment row
+#: is that wide, and each key costs one contract call (_contract_fields).
+_ATTACHMENT_MAX_KEYS = 32
+#: A value no contract field accepts (_contract_fields).
+_UNACCEPTABLE = object()
+#: Where HARTOS keeps a chat turn's attachments rule and cap (turn_attachments).
+_CHAT_ATTACHMENTS = 'core.chat_attachments'
+#: Where HARTOS keeps the reply-media contract (reply_media).
+_REEL_CONTRACTS = 'integrations.reel_studio.contracts'
+#: Where HARTOS filters the goal tags a user may assign (turn_goal_tags).
+_GOAL_TAG_OWNER = 'integrations.agent_engine.marketing_tools'
+
+
+def _hartos_name(module, name):
+    """HARTOS's own ``module.name``, or None when this node cannot load it."""
+    try:
+        return getattr(importlib.import_module(module), name, None)
+    except Exception:
+        return None
+
+
+def _contract_accepts(validate, item) -> bool:
+    """Whether HARTOS's contract validator ``validate`` (which returns a list
+    of problems) finds none in ``item``.  A validator that raises accepts
+    nothing."""
+    try:
+        return isinstance(item, dict) and not validate(item)
+    except Exception:
+        return False
+
+
+def _contract_validator(module, name, what, raw):
+    """HARTOS's validator ``module.name`` for a non-empty ``raw`` list, or
+    None (logged) when ``raw`` is not a list or the validator cannot be
+    loaded here."""
+    if not isinstance(raw, list):
+        logger.warning("Reel Studio %s: a %s, not a list; none passed on",
+                       what, type(raw).__name__)
+        return None
+    validate = _hartos_name(module, name)
+    if not callable(validate):
+        logger.warning("Reel Studio %s: %s.%s is not loadable on this node, so "
+                       "none of %d is passed on", what, module, name, len(raw))
+        return None
+    return validate
+
+
+def _max_attachments():
+    """HARTOS's cap on a turn's attachments
+    (core.chat_attachments.MAX_ATTACHMENTS, plan rev 2, 4.2(e)), or None
+    when this node cannot read it as a count (an int >= 0, not a bool)."""
+    cap = _hartos_name(_CHAT_ATTACHMENTS, 'MAX_ATTACHMENTS')
+    if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0:
+        return cap
+    return None
+
+
+def _contract_fields(validate, item) -> dict:
+    """The fields of ``item`` that HARTOS's attachments rule governs: each
+    one whose value the rule refuses once it is replaced by a value no field
+    accepts.  The rule stays the one list of an attachment's fields
+    (amendment A9 a: {file_id, sha256, name, mime, size} plus the optional
+    purpose, captured_at and duration_ms); any other key, a path, the bytes,
+    a field the rule does not name, stays on this node."""
+    return {key: value for key, value in item.items()
+            if not _contract_accepts(validate, {**item, key: _UNACCEPTABLE})}
+
+
+def turn_attachments(raw) -> list:
+    """The `attachments` a turn may hand HARTOS.
+
+    The first _max_attachments() rows are checked against HARTOS's ONE
+    attachments rule (core.chat_attachments.validate_attachment, which
+    /chat's parse_inbound reads by, so what is dropped here HARTOS would
+    drop too); each row it accepts crosses as its rule's fields only
+    (_contract_fields), a row the rule accepts as it crosses, while the
+    total stays within TURN_ATTACHMENTS_MAX_BYTES.  Everything else is
+    dropped and counted.  Only that many rows are checked, so a long list
+    costs no more than a short one; when HARTOS's cap cannot be read, none
+    is checked and none crosses.
+    """
+    if not raw:
+        return []
+    validate = _contract_validator(_CHAT_ATTACHMENTS, 'validate_attachment',
+                                   'attachments', raw)
+    if validate is None:
+        return []
+    cap = _max_attachments()
+    if cap is None:
+        logger.warning("Reel Studio attachments: %s.MAX_ATTACHMENTS is not a "
+                       "count on this node, so none of %d is passed on",
+                       _CHAT_ATTACHMENTS, len(raw))
+        return []
+    kept, used = [], 2                      # 2: the list's brackets
+    for item in raw[:cap]:
+        if not (isinstance(item, dict) and len(item) <= _ATTACHMENT_MAX_KEYS
+                and _contract_accepts(validate, item)):
+            continue
+        entry = _contract_fields(validate, item)
+        if not _contract_accepts(validate, entry):
+            continue
+        try:
+            cost = len(json.dumps(entry)) + (2 if kept else 0)
+        except (TypeError, ValueError):
+            continue
+        if used + cost <= TURN_ATTACHMENTS_MAX_BYTES:
+            used += cost
+            kept.append(entry)
+    if len(kept) < len(raw):
+        logger.warning(
+            "Reel Studio attachments: %d of %d attachments dropped (outside "
+            "HARTOS's attachment contract, past %d, or past %d bytes); %d "
+            "passed on", len(raw) - len(kept), len(raw), cap,
+            TURN_ATTACHMENTS_MAX_BYTES, len(kept))
+    return kept
+
+
+def turn_goal_tags(raw) -> list:
+    """The `goal_tags` a turn may hand HARTOS: the ones a user may assign.
+
+    HARTOS's own filter decides: marketing_tools.user_assignable_goal_tags,
+    the one HARTOS's chat() reads the creation hint by (amendment A9 e;
+    nothing is held between turns, A19).  What it keeps crosses as it
+    answers (sorted, each
+    once); this node keeps no list or filter of its own.  When that filter
+    cannot be loaded, raises, or answers with anything but a list of names,
+    no tag is passed on (fail closed).
+    """
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        logger.warning("Reel Studio goal_tags: a %s, not a list; none passed on",
+                       type(raw).__name__)
+        return []
+    keep = _hartos_name(_GOAL_TAG_OWNER, 'user_assignable_goal_tags')
+    try:
+        kept = keep(raw) if callable(keep) else None
+    except Exception:
+        kept = None
+    if not (isinstance(kept, list) and all(isinstance(t, str) for t in kept)):
+        logger.warning("Reel Studio goal_tags: %s.user_assignable_goal_tags is "
+                       "not usable on this node, so none of %d goal_tags is "
+                       "passed on", _GOAL_TAG_OWNER, len(raw))
+        return []
+    if len(kept) < len(raw):
+        logger.warning("Reel Studio goal_tags: %d of %d goal_tags dropped (not "
+                       "user-assignable); %d passed on",
+                       len(raw) - len(kept), len(raw), len(kept))
+    return kept
+
+
+def reply_media(raw) -> list:
+    """The `media` of a HARTOS /chat reply that may reach the phone: the
+    items HARTOS's reply-media contract (contracts.validate_media_item)
+    accepts.  Anything else is dropped and counted."""
+    if not raw:
+        return []
+    validate = _contract_validator(_REEL_CONTRACTS, 'validate_media_item',
+                                   'reply media', raw)
+    if validate is None:
+        return []
+    kept = [item for item in raw if _contract_accepts(validate, item)]
+    if len(kept) < len(raw):
+        logger.warning("Reel Studio reply media: %d of %d media items dropped "
+                       "(outside HARTOS's reply-media contract); %d passed on",
+                       len(raw) - len(kept), len(raw), len(kept))
+    return kept
+
+
 @with_fallback(_fallback_chat)
 def chat(
     text: str,
@@ -653,6 +859,8 @@ def chat(
     teacher_avatar_id=None,
     draft_first=None,
     device_id=None,
+    attachments=None,
+    goal_tags=None,
     **kwargs
 ) -> dict[str, Any]:
     """
@@ -757,6 +965,18 @@ def chat(
     # that device drops its own turns from the cross-device feed.
     if device_id:
         payload["device_id"] = str(device_id)
+    # The turn's file references (refs into this desktop's user file store)
+    # and its agent-creation hint, as far as HARTOS's own rules accept them
+    # (turn_attachments, turn_goal_tags), and only when a caller has them:
+    # every other caller's body is unchanged.  HARTOS's chat() binds the
+    # references to the turn and reads the hint for that turn alone (see
+    # the Reel Studio block above turn_attachments).
+    attachments = turn_attachments(attachments)
+    if attachments:
+        payload["attachments"] = attachments
+    goal_tags = turn_goal_tags(goal_tags)
+    if goal_tags:
+        payload["goal_tags"] = goal_tags
     # Per-request draft override: HARTOS /chat honours `draft_first` in the
     # body.  Sent only when a caller sets it, so every other caller keeps
     # HARTOS's default.
@@ -1493,19 +1713,27 @@ def create_inprocess_dispatch_blueprint():
     bp = Blueprint('hevolve_inprocess_dispatch', __name__)
 
     def _forward_kwargs():
+        # The caller's own credential goes with every request, JSON or not.
+        # HARTOS's CSRF check refuses a non-JSON POST that carries no Bearer
+        # (measured 2026-10-03 against its real app: a multipart upload got
+        # 403 'CSRF token required' without it, 200 with the phone's).  And
+        # a card answer on /api/agent/approval is recorded as the signed-in
+        # person it names, or refused (HARTOS approver_from_request): with
+        # the header dropped from JSON rows, every game-sound and commerce
+        # card answered on the desktop got 401 'sign in to answer this'
+        # (hartos-c3's review of HARTOS c48e90601, 2026-10-17).  HARTOS's
+        # gate admits this in-process caller as local either way, so the
+        # header changes who a route names, not whether it is reached.
+        auth = flask_request.headers.get('Authorization')
+        headers = {'Authorization': auth} if auth else {}
         if flask_request.files:
-            # The caller's own credential goes with an upload.  HARTOS's CSRF
-            # check refuses a non-JSON POST that carries no Bearer: measured
-            # 2026-10-03 against HARTOS's real app, a multipart upload got
-            # 403 'CSRF token required' without it, 200 with the phone's.
-            # JSON rows are unchanged (HARTOS's CSRF check passes JSON).
-            auth = flask_request.headers.get('Authorization')
             data = {k: v for k, v in flask_request.form.items()}
             for name, f in flask_request.files.items():
                 data[name] = (f.stream, f.filename, f.mimetype)
             return {'data': data, 'content_type': 'multipart/form-data',
-                    'headers': {'Authorization': auth} if auth else {}}
-        return {'json': flask_request.get_json(silent=True) or {}}
+                    'headers': headers}
+        return {'json': flask_request.get_json(silent=True) or {},
+                'headers': headers}
 
     def _dispatcher(path):
         def dispatch():

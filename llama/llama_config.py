@@ -181,6 +181,22 @@ def _rotate_log_if_oversized(path: str, max_bytes: int | None = None) -> bool:
         return False
 
 
+def publish_setup_progress(event: dict) -> None:
+    """Show ``event`` on the chat's setup card (the frontend's
+    SetupProgressCard: one card per ``job_type``, ``status`` 'error' a
+    failure, ``complete`` the end of a run), through HARTOS's
+    integrations.social.realtime.publish_event.  Best effort: a card that
+    cannot be shown is logged and never stops the work it reports.  The one
+    publisher of that card in this file: the AMD build (_do_start_server)
+    and the caption model's download (_fetch_missing_caption_files) each
+    used to carry their own copy of this try/import/publish."""
+    try:
+        from integrations.social.realtime import publish_event
+        publish_event('setup_progress', {'type': 'setup_progress', **event})
+    except Exception as e:
+        logger.debug(f"setup card for {event.get('job_type')} not shown: {e}")
+
+
 class ServerType:
     """Enum for server type detection"""
     NOT_RUNNING = "not_running"
@@ -2159,37 +2175,27 @@ class LlamaConfig:
                     logger.info("Zinc not installed — building for AMD GPU...")
                     def _zinc_progress(downloaded, total, msg):
                         logger.info(f"Zinc: {msg}")
-                        try:
-                            from integrations.social.realtime import publish_event
-                            publish_event('setup_progress', {
-                                'type': 'setup_progress',
-                                'job_type': 'zinc_amd',
-                                'status': 'loading',
-                                'message': msg,
-                                'model_name': 'Zinc (AMD Vulkan)',
-                            })
-                        except Exception:
-                            pass
+                        publish_setup_progress({
+                            'job_type': 'zinc_amd',
+                            'status': 'loading',
+                            'message': msg,
+                            'model_name': 'Zinc (AMD Vulkan)',
+                        })
                     _zinc_ok = _zinc.install(progress_callback=_zinc_progress)
                     # Terminal event — the card completes on
                     # Boolean(data.complete), so without this the AMD/Vulkan
                     # setup card stayed at "loading" for the rest of the
                     # session.  Both outcomes emit; a failed build has to
                     # close its card too.
-                    try:
-                        from integrations.social.realtime import publish_event
-                        publish_event('setup_progress', {
-                            'type': 'setup_progress',
-                            'job_type': 'zinc_amd',
-                            'status': 'done' if _zinc_ok else 'error',
-                            'complete': True,
-                            'model_name': 'Zinc (AMD Vulkan)',
-                            'message': ("AMD GPU acceleration ready"
-                                        if _zinc_ok else
-                                        "AMD GPU acceleration unavailable — using CPU"),
-                        })
-                    except Exception:
-                        pass
+                    publish_setup_progress({
+                        'job_type': 'zinc_amd',
+                        'status': 'done' if _zinc_ok else 'error',
+                        'complete': True,
+                        'model_name': 'Zinc (AMD Vulkan)',
+                        'message': ("AMD GPU acceleration ready"
+                                    if _zinc_ok else
+                                    "AMD GPU acceleration unavailable — using CPU"),
+                    })
                     if _zinc_ok:
                         llama_server = _zinc.find_zinc_server()
                 if llama_server:
@@ -2824,6 +2830,12 @@ class LlamaConfig:
         Lazy-started by HARTOS VisionService on first camera/screen frame.
         Uses the same llama-server binary, model download, and mmproj
         handling as the main server — just a smaller model on a different port.
+        A missing model or projector is downloaded only where both fit and
+        with the owner's yes on the consent card (_fetch_missing_caption_files).
+        Without the weights this returns False and the caller's fallback
+        runs; without the projector it starts without vision, as before, and
+        the owner's later yes fetches it at once (on_caption_setup_granted),
+        for the server's next start.
 
         Args:
             port: Caption server port (default 8081, via HEVOLVE_VLM_CAPTION_PORT)
@@ -2847,11 +2859,27 @@ class LlamaConfig:
         # minute by different parent processes (the boot thread and the
         # vlm_caption.requested subscriber each build their own LlamaConfig);
         # the loser could not bind but held its VRAM.
-        lock_file = self.config_dir / f".caption_server_starting.{port}.lock"
+        #
+        # HARTOS reads this same lock before it would spawn its own 0.8B on
+        # the port (Qwen08BBackend._launch_owner), so the lock's name and the
+        # age under which it means "a start is in progress" are ONE
+        # definition, HARTOS's: Qwen08BBackend.start_lock_path and
+        # START_LOCK_STALE_S.  This file kept its own spelling and a literal
+        # 120; at 300 every test here still passed while HARTOS aged the lock
+        # at 120 (review of HARTOS 77a8b166b).  No fallback copy: without
+        # HARTOS nothing here can tell a start in progress from a dead one,
+        # and starting anyway is the incident above, so this start refuses.
+        try:
+            from integrations.vision.lightweight_backend import Qwen08BBackend
+        except Exception as e:
+            logger.error(f"Caption server on port {port} not started: HARTOS's "
+                         f"caption start-lock rule is not importable ({e})")
+            return False
+        lock_file = Path(Qwen08BBackend.start_lock_path(port, self.config_dir))
         if lock_file.exists():
             try:
                 lock_age = time.time() - lock_file.stat().st_mtime
-                if lock_age < 120:
+                if lock_age < Qwen08BBackend.START_LOCK_STALE_S:
                     logger.info(f"Caption server start on port {port} already in "
                                 f"progress (lock age: {lock_age:.0f}s) — waiting...")
                     for _ in range(120):
@@ -2891,24 +2919,27 @@ class LlamaConfig:
             except Exception:
                 pass
 
+    @staticmethod
+    def _caption_preset():
+        """The 0.8B caption preset in MODEL_PRESETS, or None."""
+        return next((p for p in MODEL_PRESETS if '0.8B' in p.display_name), None)
+
     def _do_start_caption_server(self, port: int) -> bool:
         """The spawn itself; start_caption_server holds the per-port lock."""
-        # Find the 0.8B preset
-        preset = None
-        for p in MODEL_PRESETS:
-            if '0.8B' in p.display_name:
-                preset = p
-                break
+        preset = self._caption_preset()
         if not preset:
             logger.error("No 0.8B model preset found")
             return False
 
-        # Ensure model + mmproj downloaded
+        # A missing model or projector is downloaded only where it fits and
+        # only with the owner's yes; what was not fetched is found missing
+        # below (no weights: no start; no projector: a start without vision,
+        # as when a projector download failed).  The download keeps the
+        # per-port start lock that start_caption_server holds fresh.
+        from integrations.vision.lightweight_backend import Qwen08BBackend
+        self._fetch_missing_caption_files(
+            preset, lock_file=Path(Qwen08BBackend.start_lock_path(port, self.config_dir)))
         model_path = self.installer.get_model_path(preset)
-        if not model_path:
-            logger.info(f"Downloading {preset.display_name}...")
-            self.installer.download_model(preset)
-            model_path = self.installer.get_model_path(preset)
         if not model_path:
             logger.error(f"Caption model not found: {preset.file_name}")
             return False
@@ -2916,9 +2947,6 @@ class LlamaConfig:
         mmproj_path = None
         if preset.has_vision and preset.mmproj_file:
             mmproj_path = self.installer.get_mmproj_path(preset)
-            if not mmproj_path:
-                self._download_mmproj_only(preset)
-                mmproj_path = self.installer.get_mmproj_path(preset)
 
         # Build command — same pattern as start_server but with caption-optimized flags.
         # NOTE: the installer exposes find_llama_server(), NOT get_binary_path().
@@ -3049,6 +3077,219 @@ class LlamaConfig:
         except Exception as e:
             logger.error(f"Caption server start failed: {e}")
             return False
+
+    def _caption_files_present(self, preset) -> bool:
+        """Both of the caption model's files are on disk (weights, and the
+        projector when the preset has one)."""
+        return bool(self.installer.get_model_path(preset)) and (
+            not (preset.has_vision and preset.mmproj_file)
+            or bool(self.installer.get_mmproj_path(preset)))
+
+    def _fetch_missing_caption_files(self, preset, *, lock_file=None, serving=False) -> None:
+        """Download the caption model's missing weights or projector, only
+        where they fit and only with the owner's yes (owner ruling
+        2026-10-15).  Until then this start downloaded them silently, on
+        main.py's boot thread or its vlm_caption.requested subscriber (live
+        proof A13, finding D3).  It owns no mechanism; each step is one that
+        exists:
+
+        * Room, checked first: core.platform_paths.free_bytes (the one
+          free-disk reading at a path) where the installer downloads to,
+          against the catalog size of every file that is missing -- the
+          weights, the projector, or both -- each from HARTOS's one table
+          (model_catalog.model_weight_bytes).  A file with no registered
+          size, a disk that cannot be read, or too little room: the owner is
+          not asked (a yes could only end in a full disk; the order
+          integrations.trends.daily_job keeps) and the setup card ends as an
+          error saying how much is needed, where, and how much there is.
+          Held to the files' sizes as Nunba's other download into this
+          folder is, the hub install (main.py _gguf_install_files: the
+          weights plus the one projector, refused when free < need).
+        * The yes: HARTOS's one capability consent card,
+          capability_setup.ask_owner_for_setup, under the scope HARTOS names
+          for this model, Qwen08BBackend.SETUP_CAPABILITY; Reel Studio reads
+          the answer by the same name to say why its frames were not rated.
+          Only 'granted' downloads.  'asked', 'declined', 'unavailable' and
+          a consent that cannot be reached download nothing, so the
+          caller's fallback runs.  The owner's yes later starts the
+          download at once (on_caption_setup_granted).
+        * The download: the installer's download_model, which fetches
+          whichever of the two files is missing (it skips one that is
+          there) and reports both to its progress callback.
+        * Progress: the setup card (publish_setup_progress, job_type
+          vlm_caption): a step per tenth of each file, and always a line
+          with no size -- the installer reports 'Download failed: <why>' as
+          (0, 0, ...), and the throttle used to drop it.  The card ends as
+          done, or as an error that names the installer's failure.
+
+        ``lock_file``: the per-port start lock start_caption_server holds,
+        touched on every progress step.  Its readers age it by its mtime
+        (Qwen08BBackend.START_LOCK_STALE_S), so a download longer than that
+        was taken for a dead start: a second start removed the lock and
+        fetched the same file again.  ``serving``: the server already runs
+        without the file (the owner's yes came after a start without the
+        projector); the done card says images are read from its next start,
+        since a running server shared with draft-first chat is not restarted.
+        """
+        wants_mmproj = bool(preset.has_vision and preset.mmproj_file)
+        missing = []
+        if not self.installer.get_model_path(preset):
+            missing.append(preset.file_name)
+        if wants_mmproj and not self.installer.get_mmproj_path(preset):
+            missing.append(preset.mmproj_file)
+        if not missing:
+            return
+        what = (f"{preset.display_name} (the small vision model)"
+                if preset.file_name in missing
+                else f"the image projector of {preset.display_name}")
+
+        def card(status, message, complete=False):
+            publish_setup_progress({
+                'job_type': 'vlm_caption',
+                'model_name': preset.display_name,
+                'status': status,
+                'complete': complete,
+                'message': message,
+            })
+
+        try:
+            from integrations.service_tools.model_catalog import model_weight_bytes
+            sizes = [model_weight_bytes(name) for name in missing]
+        except Exception as e:
+            logger.warning(f"the catalog sizes of {missing} could not be read: {e}")
+            sizes = [None]
+        need = sum(sizes) if all(sizes) else 0
+        where = self.installer.models_dir
+        why = ''
+        try:
+            from core.platform_paths import free_bytes
+            free = free_bytes(where)
+        except Exception as e:
+            why = (f"{what} was not downloaded: the free disk in {where} could not "
+                   f"be read ({e}).")
+        else:
+            if not need:
+                why = (f"{what} was not downloaded: its size is not in the model "
+                       f"catalog, so whether it fits cannot be told.")
+            elif free < need:
+                both = ' (the model and its image projector)' if len(missing) > 1 else ''
+                why = (f"{what} was not downloaded: it needs about {need / 1e9:.1f} GB "
+                       f"free in {where}{both} and there is {free / 1e9:.1f} GB. Free "
+                       f"some space there; it is tried again the next time it is needed.")
+        if why:
+            logger.warning(why)
+            card('error', why, complete=True)
+            return
+
+        if preset.file_name in missing:
+            reason = (f"{preset.display_name}, the small vision model, is not on this "
+                      f"computer yet. It reads photos and video frames here (for example "
+                      f"to choose the best moments of a reel) and can give quick first "
+                      f"replies in chat. Download it once into the models folder? It is "
+                      f"about {need / 1e9:.1f} GB with its image projector. Until then "
+                      f"those jobs run without it.")
+        else:
+            reason = (f"The image projector of {preset.display_name}, the small vision "
+                      f"model, is not on this computer yet, so the model reads no photos "
+                      f"or video frames here (for example to choose the best moments of "
+                      f"a reel). Download it once into the models folder? It is about "
+                      f"{need / 1e9:.1f} GB. Until then those jobs run without it.")
+        try:
+            from integrations.agent_engine.capability_setup import NO_OWNER_REMEDY, ask_owner_for_setup, setup_owner
+            from integrations.vision.lightweight_backend import Qwen08BBackend
+            answer = ask_owner_for_setup(Qwen08BBackend.SETUP_CAPABILITY, reason=reason)
+        except Exception as e:
+            logger.warning(f"{what} was not downloaded: the owner could not be "
+                           f"asked ({e})")
+            return
+        if answer != 'granted':
+            if answer == 'asked':
+                said = "the owner's answer on the consent card is awaited"
+            elif answer == 'declined':
+                said = 'the owner said no'
+            elif not setup_owner():
+                said = NO_OWNER_REMEDY
+            else:
+                said = 'the owner could not be asked (consent was not reachable)'
+            logger.info(f"{what} was not downloaded: {said}")
+            return
+
+        shown = [None]
+        last = ['']
+
+        def progress(done_mb, total_mb, status):
+            if lock_file is not None:
+                try:
+                    os.utime(lock_file, None)       # a start in progress, not a dead one
+                except OSError:
+                    pass
+            last[0] = str(status or '')
+            tenth = done_mb * 10 // total_mb if total_mb else None
+            # A line with no size (the installer's 'Download failed: ...')
+            # is always shown; a sized one once per tenth of its file.
+            if tenth is None or tenth != shown[0]:
+                shown[0] = tenth
+                card('loading', status)
+
+        card('loading', f"Downloading {what}...")
+        logger.info(f"Downloading {what}...")
+        try:
+            done = self.installer.download_model(preset, progress_callback=progress)
+        except Exception as e:      # download_model catches its own; a bug is a failure too
+            done, last[0] = False, f"Download failed: {e}"
+        if done and self._caption_files_present(preset):
+            message = f"{preset.display_name} is downloaded."
+            if serving:
+                message += (" The small model already running here reads images from "
+                            "its next start.")
+            logger.info(message)
+            card('done', message, complete=True)
+        else:
+            failure = (last[0] if last[0].startswith('Download failed')
+                       else 'the files are not complete on disk')
+            message = (f"{what} did not finish downloading ({failure}). It is tried "
+                       f"again the next time it is needed.")
+            logger.warning(message)
+            card('error', message, complete=True)
+
+    @staticmethod
+    def caption_setup_granted(data) -> bool:
+        """True when ``data``, a consent.granted event (HARTOS
+        consent_service._announce_grant: user_id, consent_type, scope,
+        agent_id), is the owner's yes to setting the small vision model up:
+        the capability_setup consent under Qwen08BBackend.SETUP_CAPABILITY.
+        main.py's consent.granted subscriber asks this before it starts
+        anything; the download itself asks the owner's answer again."""
+        if not isinstance(data, dict):
+            return False
+        try:
+            from integrations.agent_engine.capability_setup import SETUP_CONSENT_TYPE
+            from integrations.vision.lightweight_backend import Qwen08BBackend
+        except Exception:
+            return False
+        return (data.get('consent_type') == SETUP_CONSENT_TYPE
+                and data.get('scope') == Qwen08BBackend.SETUP_CAPABILITY)
+
+    def on_caption_setup_granted(self) -> bool:
+        """The owner said yes to setting the small vision model up: act on it
+        now, not at the next boot or the next reel's start (review of
+        be748369: Allow on the card started nothing).
+
+        Server not running: start_caption_server, whose gate reads the yes,
+        downloads what is missing and launches it.  Server running (it was
+        started without its projector, before the yes): the missing file is
+        fetched now for its next start; the running server is shared with
+        draft-first chat and is not restarted.  No start lock is taken
+        there: a start runs only while the port is silent, so none can race
+        this fetch.  Returns start_caption_server's answer, or True when the
+        server already runs."""
+        port = self._caption_server_port()
+        if self.check_server_running(port):
+            preset = self._caption_preset()
+            if preset:
+                self._fetch_missing_caption_files(preset, serving=True)
+            return True
+        return self.start_caption_server(port=port)
 
     def stop_caption_server(self):
         """Stop the caption server and free GPU memory."""

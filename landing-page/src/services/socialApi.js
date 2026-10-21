@@ -50,7 +50,10 @@ const _attachReferral = (data) => {
 export const authApi = {
   login: (data) => socialApi.post('/auth/login', data),
   register: (data) => socialApi.post('/auth/register', _attachReferral(data)),
-  me: () => socialApi.get('/auth/me'),
+  // keepStatus: SocialContext tells an answer about the token (200 / 401 /
+  // 403) from no answer (404 while HARTOS registers the route at boot,
+  // 5xx, network); without it a failure rejects with the body alone.
+  me: () => socialApi.get('/auth/me', {keepStatus: true}),
   logout: () => socialApi.post('/auth/logout'),
   guestRegister: (data) =>
     socialApi.post('/auth/guest-register', _attachReferral(data)),

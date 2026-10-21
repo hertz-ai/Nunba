@@ -78,9 +78,11 @@ describe('authApi', () => {
     });
   });
 
-  it('me calls GET /auth/me', async () => {
+  it('me calls GET /auth/me, keeping the HTTP status on a failure', async () => {
     await authApi.me();
-    expect(mockAxiosInstance.get).toHaveBeenCalledWith('/auth/me');
+    expect(mockAxiosInstance.get).toHaveBeenCalledWith('/auth/me', {
+      keepStatus: true,
+    });
   });
 
   it('logout calls POST /auth/logout', async () => {

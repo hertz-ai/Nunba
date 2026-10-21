@@ -666,8 +666,25 @@ def _deferred_platform_init():
                 except Exception as e:
                     logging.debug(f"Caption server stop: {e}")
 
+            def _on_consent_granted(data):
+                # The owner's yes on the consent card to setting the small
+                # vision model up starts its download now, not at the next
+                # start (LlamaConfig.on_caption_setup_granted); any other
+                # grant is not ours.  On its own thread: a download takes
+                # minutes and this runs on the bus's emit thread.
+                try:
+                    from llama.llama_config import LlamaConfig
+                    if not LlamaConfig.caption_setup_granted(data):
+                        return
+                    threading.Thread(
+                        target=lambda: LlamaConfig().on_caption_setup_granted(),
+                        daemon=True, name='caption-setup-granted').start()
+                except Exception as e:
+                    logging.warning(f"Caption model setup after the owner's yes failed: {e}")
+
             bus.on('vlm_caption.requested', lambda topic, data: _on_caption_requested(data))
             bus.on('vlm_caption.stop', lambda topic, data: _on_caption_stop(data))
+            bus.on('consent.granted', lambda topic, data: _on_consent_granted(data))
             logging.info("Caption server event subscribers registered")
     except Exception as e:
         logging.debug(f"Caption server event subscription skipped: {e}")
@@ -1525,12 +1542,26 @@ def api_chat_sync_pull_since():
 
 
 # ─── File-Sync (U9: WhatsApp-style cross-device attachments) ────────
+# One upload service (owner ruling A10a, 2026-10-14): these four routes go
+# through desktop.file_sync to HARTOS's core.user_file_store (purpose
+# 'chat_attachment') and keep no storage of their own.
+
+#: The HTTP status of each refusal the store gives a push (else 400).
+#: not_found: a delete took the file before the push read its record.
+_FILE_REFUSAL_STATUS = {'too_large': 413, 'quota': 413, 'no_space': 507, 'busy': 503,
+                        'not_found': 409}
+
+
 @app.route('/api/chat-sync/files/push', methods=['POST'])
 def api_chat_sync_files_push():
     """Upload a binary for cross-device replication.
 
-    multipart/form-data with a single file field 'file'.  Optional
-    form fields: device_id.  Response: {file_id, sha256, size, name, mime}.
+    multipart/form-data with a single file field 'file'.
+    Response: {file_id, sha256, size, name, mime, purpose, created_at}
+    (purpose 'chat_attachment', for the client to echo in its /chat row); a
+    refusal is {'error': <the store's reason>, 'message'}: 400 bad_offer/
+    bad_name/bad_mime, 413 too_large/quota, 507 no_space, 503 busy,
+    409 not_found (deleted while it was being stored).
     """
     uid, err = _chat_sync_resolve_uid()
     if err:
@@ -1539,6 +1570,7 @@ def api_chat_sync_files_push():
     if up is None:
         return jsonify({'error': 'missing_file'}), 400
     try:
+        from desktop.file_sync import FileRefused
         from desktop.file_sync import store as _store
     except ImportError:
         return jsonify({'error': 'file_sync_unavailable'}), 501
@@ -1548,11 +1580,11 @@ def api_chat_sync_files_push():
             up.stream,
             name=up.filename or 'file',
             mime=up.mimetype or 'application/octet-stream',
-            device_id=request.form.get('device_id'),
         )
         return jsonify(meta), 200
-    except ValueError as ve:
-        return jsonify({'error': 'invalid_payload', 'message': str(ve)}), 400
+    except FileRefused as refused:
+        return (jsonify({'error': refused.reason, 'message': str(refused)}),
+                _FILE_REFUSAL_STATUS.get(refused.reason, 400))
     except Exception as e:  # noqa: BLE001
         logging.error("chat-sync files push failed for %s: %s", uid, e)
         return jsonify({'error': 'push_failed'}), 500
@@ -1560,9 +1592,11 @@ def api_chat_sync_files_push():
 
 @app.route('/api/chat-sync/files/pull', methods=['GET'])
 def api_chat_sync_files_pull():
-    """Fetch a previously-pushed blob by file_id (SHA256 hex).
+    """Fetch a previously-pushed file by file_id (SHA256 hex).
 
-    ?file_id=<sha256>  → returns the bytes with the recorded mime.
+    ?file_id=<sha256>  → the stored file with its recorded mime (nosniff),
+                         under a name that never ends in a program's
+                         extension.
     ?since=<ms>        → returns a JSON list of file metadata modified
                          after since_ms (for cursor enumeration).
     """
@@ -1577,17 +1611,18 @@ def api_chat_sync_files_pull():
 
     file_id = request.args.get('file_id')
     if file_id:
-        data, meta = _fetch(uid, file_id)
-        if data is None or meta is None:
+        path, meta = _fetch(uid, file_id)
+        if path is None or meta is None:
             return jsonify({'error': 'not_found'}), 404
-        from io import BytesIO
-        return send_file(
-            BytesIO(data),
-            mimetype=meta.get('mime') or 'application/octet-stream',
+        resp = send_file(
+            path,
+            mimetype=meta['mime'],
             as_attachment=False,
-            download_name=meta.get('name') or 'file',
+            download_name=meta['download_name'],
             max_age=0,
         )
+        resp.headers['X-Content-Type-Options'] = 'nosniff'
+        return resp
 
     try:
         since_raw = request.args.get('since', '0')
@@ -1621,7 +1656,9 @@ def api_chat_sync_files_usage():
 
 @app.route('/api/chat-sync/files/<file_id>', methods=['DELETE'])
 def api_chat_sync_files_delete(file_id):
-    """Remove one blob + sidecar.  Returns {'deleted': bool}."""
+    """Delete one of her chat attachments (desktop.file_sync.delete): the
+    file stays while she holds the same bytes for another purpose (a clip,
+    logo or song).  Returns {'deleted': bool}."""
     uid, err = _chat_sync_resolve_uid()
     if err:
         return err
