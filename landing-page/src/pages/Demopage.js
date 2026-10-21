@@ -769,6 +769,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       return false;
     }
   });
+  // playPushedTts is a []-deps callback, so it reads the toggle through this
+  // ref; the state value it would capture is the one from mount.
+  const ttsEnabledRef = useRef(ttsEnabled);
   const [ttsVoice, setTtsVoice] = useState(() => {
     return localStorage.getItem('tts_voice') || 'en_US-amy-medium';
   });
@@ -884,6 +887,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   useEffect(() => {
     localStorage.setItem('nunba_media_mode', mediaMode);
   }, [mediaMode]);
+
+  // The speaker toggle governs the clip the server pushes too (utils/
+  // ttsGuards.shouldPlayPushedClip), and turning it off silences the reply
+  // that is already playing instead of letting it finish.
+  useEffect(() => {
+    ttsEnabledRef.current = ttsEnabled;
+    if (ttsEnabled) return;
+    const el = getTtsAudioElement();
+    if (el && !el.paused) {
+      el.pause();
+      setIsPlayingResponse(false);
+    }
+  }, [ttsEnabled]);
 
   // Persist TTS settings to localStorage
   useEffect(() => {
@@ -2033,9 +2049,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // an earlier turn of this page (each turn carries its own id, so a reply
     // that lands after the next send is not spoken over it) or a background
     // agent's is skipped.
-    if (!shouldPlayPushedClip(data, requestIdRef.current)) {
+    if (!shouldPlayPushedClip(data, requestIdRef.current, ttsEnabledRef.current)) {
       if (data && data.generated_audio_url) {
-        console.log('[TTS] Skipped another turn\'s clip:', data.request_id, 'current:', requestIdRef.current);
+        if (!ttsEnabledRef.current) {
+          console.log('[TTS] Speaker off: skipped clip', data.request_id);
+        } else {
+          console.log('[TTS] Skipped another turn\'s clip:', data.request_id, 'current:', requestIdRef.current);
+        }
       }
       return;
     }

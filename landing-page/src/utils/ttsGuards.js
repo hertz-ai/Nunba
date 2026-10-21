@@ -26,8 +26,8 @@
  * isDraftReply / hasServerAudioPayload extract the booleans from a
  * raw backend response so callers can pass the resultData straight in.
  *
- * shouldPlayPushedClip(data, currentRequestId) is the other half: whether
- * a clip the server pushed (SSE 'tts' or WAMP) is this turn's to play.
+ * shouldPlayPushedClip(data, currentRequestId, ttsEnabled) is the other
+ * half: whether a clip the server pushed (SSE 'tts' or WAMP) plays at all.
  */
 
 import {isOtherTurnEnvelope} from '../constants/chatBubble';
@@ -50,14 +50,21 @@ export function hasServerAudioPayload(resultData) {
 
 
 /**
- * Whether a server-pushed clip plays: only a clip with a url, and only the
- * current turn's.  Each turn carries its own request id (chatRetry.
- * startTurn), so an earlier turn's clip that lands after the next send is
- * not spoken over it, and a background agent's clip never plays.  The one
- * rule for whose turn an envelope is lives in
+ * Whether a server-pushed clip plays: only while the speaker toggle is on,
+ * only a clip with a url, and only the current turn's.  Each turn carries its
+ * own request id (chatRetry.startTurn), so an earlier turn's clip that lands
+ * after the next send is not spoken over it, and a background agent's clip
+ * never plays.  The one rule for whose turn an envelope is lives in
  * constants/chatBubble.isOtherTurnEnvelope.
+ *
+ * `ttsEnabled` is required, not defaulted: the server synthesises every
+ * reply and pushes it whatever the toggle says, so this is the only place the
+ * toggle can silence it (measured 2026-10-21: speaker OFF, "[TTS] Clip
+ * played").  A caller that leaves it out plays nothing rather than speaking
+ * over the user's choice.
  */
-export function shouldPlayPushedClip(data, currentRequestId) {
+export function shouldPlayPushedClip(data, currentRequestId, ttsEnabled) {
+  if (ttsEnabled !== true) return false;
   if (!data || !data.generated_audio_url) return false;
   return !isOtherTurnEnvelope(data.request_id, currentRequestId);
 }
