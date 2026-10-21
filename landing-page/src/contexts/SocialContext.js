@@ -66,23 +66,33 @@ export function SocialProvider({children}) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
+  // What /auth/me said about the stored token: 'answered' (200, 401, 403),
+  // 'unanswered' (anything else), 'asking', or 'none' (never asked).
+  // 'unanswered' is not signed out: on 2026-10-19 the desktop page asked
+  // ~10 s before HARTOS registered the route, got 404, and was sent from
+  // Admin to /social for the rest of its life.  Guards ask again
+  // (RoleGuard.useAccessCheck).
+  const [profileAnswer, setProfileAnswer] = useState('none');
 
   const fetchProfile = useCallback(async () => {
+    setProfileAnswer('asking');
     try {
       setAuthError(null);
       const res = await authApi.me();
       setCurrentUser(res.data);
+      setProfileAnswer('answered');
     } catch (err) {
       const status = err?.response?.status || err?.status;
       if (status === 401 || status === 403) {
         // Token is invalid/expired — clear user
         setCurrentUser(null);
-      } else if (!status) {
-        // Network error (backend unreachable) — keep JWT-based user as fallback
+        setProfileAnswer('answered');
+      } else {
+        // No answer about the token (backend unreachable, route not there
+        // yet, server error) — keep JWT-based user as fallback
         setAuthError('Unable to connect to server');
         setCurrentUser((prev) => prev); // keep existing JWT-decoded user if any
-      } else {
-        setCurrentUser(null);
+        setProfileAnswer('unanswered');
       }
     } finally {
       setLoading(false);
@@ -306,6 +316,8 @@ export function SocialProvider({children}) {
       value={{
         currentUser,
         setCurrentUser,
+        fetchProfile,
+        profileAnswer,
         resonance,
         fetchResonance,
         onboardingProgress,

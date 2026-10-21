@@ -259,6 +259,14 @@ EMBED_DEPS = {
     # It's installed at RUNTIME by install_backend_full('indic_parler')
     # into ~/.nunba/site-packages/ via pip.  The gpu_worker subprocess
     # finds it there via sitecustomize.py path injection.
+    # NOTE: instagrapi is NOT here either (owner ruling 2026-10-14: trending
+    # songs are made on her desktop, not on central).  It needs requests
+    # above CORE_DEPS' 2.32.5, so it lives in its own venv under the data dir,
+    # <data>/data/venvs/ig_trends (core.venv_paths), the place for any
+    # dependency whose pins conflict with this bundle's.  HARTOS's trends job
+    # (integrations/trends/daily_job.py) keeps its pins in WORKER_PACKAGES and
+    # asks the owner first; on yes tts.backend_venv.install_in_background
+    # installs them through install_into_venv.
     # Vector DB
     "chromadb": "1.5.0",
     "faiss-cpu": "1.13.2",

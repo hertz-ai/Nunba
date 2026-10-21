@@ -1563,12 +1563,18 @@ class LlamaInstaller:
              Preserves cross-tool reuse — the catalog doesn't scan
              those dirs itself.
 
-        Completeness validation (applied to BOTH lookup paths):
-          - Size ≥ 90% of the registered weight size — catches partial
-            downloads of large models that the legacy 100 MB floor
-            silently accepted (e.g. 4B model at 1.5 GB out of 2.91 GB).
+        Completeness validation (applied to BOTH lookup paths) is HARTOS's
+        one rule, model_catalog.gguf_min_bytes / gguf_complete, kept beside
+        the weight table it reads (this method's own copy moved there, so
+        HARTOS's 0.8B lookup answers the same question the same way):
+          - Size ≥ 90% of the registered weight size, never under 100 MB —
+            catches partial downloads of large models that the legacy
+            100 MB floor silently accepted (e.g. 4B model at 1.5 GB out of
+            2.91 GB).
           - GGUF magic header (``b'GGUF'`` at offset 0) — catches
             truncated/corrupt files at any size.
+        Where that rule cannot be imported (no HARTOS), no file is vouched
+        complete: None, with an error.  No fallback copy of the rule.
 
         The 10% tolerance used to be justified as "preset estimate drift
         — actual GGUF size vs registered preset-size varies by 4-7%
@@ -1583,10 +1589,20 @@ class LlamaInstaller:
         Returns the absolute path string, or None if the model is
         genuinely not on disk anywhere OR is on disk but incomplete.
         """
+        try:
+            from integrations.service_tools.model_catalog import (
+                gguf_complete,
+                gguf_min_bytes,
+            )
+        except Exception as e:
+            logger.error(f"No weight file of {preset.file_name} can be vouched "
+                         f"complete: HARTOS's completeness rule is not "
+                         f"importable ({e})")
+            return None
         # ONE conversion — no path/installer passed, because measuring the
-        # file here is exactly the question being asked.
-        expected_bytes = model_size_bytes(preset) or 100 * BYTES_PER_MIB
-        min_bytes = max(100_000_000, int(expected_bytes * 0.90))
+        # file here is exactly the question being asked.  An unknown size
+        # (0) leaves the rule's 100 MB floor.
+        min_bytes = gguf_min_bytes(model_size_bytes(preset))
 
         # 1. Canonical catalog lookup first — single source of truth
         # for "is this model installed?".  Avoids the redundant
@@ -1618,7 +1634,7 @@ class LlamaInstaller:
                     continue
                 from pathlib import Path as _P
                 p = _P(local_path)
-                if self._is_gguf_complete(p, min_bytes):
+                if gguf_complete(p, min_bytes):
                     return str(p)
         except Exception as e:
             # Catalog unreachable / not yet populated — fall through
@@ -1628,29 +1644,9 @@ class LlamaInstaller:
 
         # 2. Legacy filename walk — Nunba + sibling project dirs
         result = self._find_file_in_dirs(preset.file_name, min_size=min_bytes)
-        if result and self._is_gguf_complete(result, min_bytes):
+        if result and gguf_complete(result, min_bytes):
             return str(result)
         return None
-
-    @staticmethod
-    def _is_gguf_complete(path, min_bytes: int) -> bool:
-        """Return True iff `path` exists, is at least `min_bytes`, AND
-        starts with the GGUF magic header.
-
-        Combined size + magic check — size catches partial downloads,
-        magic catches corruption/wrong-format files.  Cheap (single
-        4-byte read).
-        """
-        try:
-            if not path.is_file():
-                return False
-            if path.stat().st_size < min_bytes:
-                return False
-            with open(path, 'rb') as fh:
-                magic = fh.read(4)
-            return magic == b'GGUF'
-        except Exception:
-            return False
 
     def get_mmproj_path(self, preset: ModelPreset) -> str | None:
         """Get the full path to a downloaded mmproj file (searches Nunba + sibling dirs)"""

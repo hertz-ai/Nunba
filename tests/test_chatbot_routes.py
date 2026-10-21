@@ -355,6 +355,99 @@ class TestAgentRouting:
         assert node['cloud'] == []
         assert node['hartos'][0]['agent_id'] == 1759990000123
 
+    def test_a_turn_whose_tags_keep_it_here_stays_here_while_its_agent_is_unmade(
+            self, client, node):
+        # Reel Studio (HARTOS task #136, measured live 2026-10-18): after the
+        # first create turn the phone sends create_agent False with the
+        # agent's goal_tags on every turn, and HARTOS writes the record only
+        # when its gather completes.  Until then the turn must stay here
+        # (the cloud never has a local-only agent), so HARTOS resumes the
+        # creation; it was forwarded to the cloud (401) and a generic
+        # assistant answered instead.
+        with patch('core.cache_loaders.load_agent_config', return_value=None):
+            body = self._send(client, prompt_id=342, create_agent=False,
+                              goal_tags=['reel_studio'])
+        assert body['text'] == 'local says hi' and node['cloud'] == []
+        assert node['hartos'][0]['agent_id'] == 342
+        assert node['hartos'][0]['goal_tags'] == ['reel_studio']
+        assert node['hartos'][0]['create_agent'] is False
+
+    def test_a_turn_with_tags_that_do_not_keep_it_here_still_goes_to_the_cloud(
+            self, client, node):
+        # The rule is HARTOS's one local-only rule, not "any goal_tags":
+        # a tag that sets no preference changes nothing.  HARTOS's own
+        # record store is not read: the node's prompts dir is the fixture's.
+        with patch('core.cache_loaders.load_agent_config', return_value=None):
+            body = self._send(client, prompt_id=49, create_agent=False,
+                              goal_tags=['marketing'])
+        assert body['text'] == 'cloud says hi' and node['hartos'] == []
+
+    def test_on_the_central_tier_the_same_turn_goes_to_the_cloud(
+            self, client, node):
+        # The rule is HARTOS's (reel_studio is inert on central, amendment
+        # A8 d), so with the rule's call removed this turn would wrongly
+        # stay here: the assignable tag alone decides nothing.
+        with patch('security.key_delegation.get_node_tier', return_value='central'), \
+                patch('core.cache_loaders.load_agent_config', return_value=None):
+            body = self._send(client, prompt_id=49, create_agent=False,
+                              goal_tags=['reel_studio'])
+        assert body['text'] == 'cloud says hi' and node['hartos'] == []
+
+    def test_the_decision_is_the_rules_answer_not_the_hints_tags(
+            self, client, node, caplog):
+        # The rule reads HARTOS's own store too: a record there that says
+        # reel_studio keeps the turn here even when the hint's tags alone
+        # would not (the first cut answered with the hint's tags and sent
+        # it to the cloud).  Unreachable under Nunba's main.py, where both
+        # prompts dirs are one folder and step 1 already keeps the id; it
+        # pins what the helper means.
+        import logging
+        caplog.set_level(logging.INFO)
+        with patch('core.cache_loaders.load_agent_config',
+                   return_value={'goal_tags': ['reel_studio']}):
+            body = self._send(client, prompt_id=49, create_agent=False,
+                              goal_tags=['marketing'])
+        assert body['text'] == 'local says hi' and node['cloud'] == []
+        assert node['hartos'][0]['agent_id'] == 49
+        line = next(r.getMessage() for r in caplog.records
+                    if 'staying here so HARTOS carries on creating it' in r.getMessage())
+        assert "HARTOS's stored record" in line and 'goal tags' not in line
+
+    def test_the_log_names_hartos_filtered_tags_never_the_raw_hint(
+            self, client, node, caplog):
+        # The log line carries user_assignable_goal_tags(hint), bounded by
+        # HARTOS's set, never the client's list (a 5 KB junk tag made a
+        # 5,156-character log line on the first cut).
+        import logging
+        junk = 'x' * 5000
+        caplog.set_level(logging.INFO)
+        with patch('core.cache_loaders.load_agent_config', return_value=None):
+            body = self._send(client, prompt_id=342, create_agent=False,
+                              goal_tags=['reel_studio', junk])
+        assert body['text'] == 'local says hi' and node['cloud'] == []
+        line = next(r.getMessage() for r in caplog.records
+                    if 'staying here so HARTOS carries on creating it' in r.getMessage())
+        assert "['reel_studio']" in line and 'xxxxxxxxxx' not in line
+        assert junk not in caplog.text
+
+    def test_a_rule_that_raises_sends_the_turn_where_it_went_before(
+            self, client, node, caplog):
+        # HARTOS's local-only rule failing is said in the log and the turn
+        # goes to the cloud as it did before the rule, never a 500.
+        import logging
+
+        def boom(prompt_id, hint=None):
+            raise RuntimeError('rule bug')
+
+        caplog.set_level(logging.WARNING)
+        # The dotted path resolves through sys.modules, the object the
+        # resolver's own import reads; a package attribute may be stale.
+        with patch('integrations.agent_engine.marketing_tools.agent_is_local_only', boom):
+            body = self._send(client, prompt_id=49, create_agent=False,
+                              goal_tags=['reel_studio'])
+        assert body['text'] == 'cloud says hi' and node['hartos'] == []
+        assert 'RuntimeError' in caplog.text and 'rule bug' in caplog.text
+
 
 
 class TestBackendHealthRoute:

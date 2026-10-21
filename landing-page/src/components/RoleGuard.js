@@ -2,7 +2,7 @@ import PageSkeleton from './shared/PageSkeleton';
 
 import {useSocial} from '../contexts/SocialContext';
 
-import React from 'react';
+import React, {useEffect, useRef} from 'react';
 import {Navigate, useLocation} from 'react-router-dom';
 
 // Role hierarchy: central > regional > flat > guest > anonymous
@@ -70,4 +70,33 @@ export function useRoleAccess() {
     canAdmin: level >= ROLE_LEVELS.guest, // Device config: channels, settings, identity, workflows (guest+ on desktop)
     canNetworkAdmin: level >= ROLE_LEVELS.central, // Network admin: user mgmt, moderation (master key required)
   };
+}
+
+/**
+ * useAccessCheck - what a guard does with `allowed`: 'allow', 'deny', or
+ * 'wait' (show a spinner).
+ *
+ * A refusal that rests on a /auth/me that never answered (profileAnswer
+ * 'unanswered': 404 while HARTOS registers the route at boot, a server
+ * error, no connection) is not a signed-out user.  The guard asks /auth/me
+ * once when it mounts and decides on that answer; a second non-answer is
+ * refused as before.
+ */
+export function useAccessCheck(allowed) {
+  const {loading, profileAnswer, fetchProfile} = useSocial();
+  const asked = useRef(false);
+  const mustAsk =
+    !loading && !allowed && profileAnswer === 'unanswered' && !asked.current;
+
+  useEffect(() => {
+    if (mustAsk && !asked.current) {
+      asked.current = true;
+      fetchProfile();
+    }
+  }, [mustAsk, fetchProfile]);
+
+  if (loading) return 'wait';
+  if (allowed) return 'allow';
+  if (mustAsk || profileAnswer === 'asking') return 'wait';
+  return 'deny';
 }

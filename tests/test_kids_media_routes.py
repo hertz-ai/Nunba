@@ -1097,12 +1097,10 @@ class TestBoundGameMusic:
     The ladder is HARTOS's own matcher, imported here, so this route and
     the agent's tools agree about what a hit is."""
 
-    def _agent(self, sounds=None, mine=None):
+    def _agent(self, sounds=None):
         game = {}
         if sounds is not None:
             game['sounds'] = sounds
-        if mine is not None:
-            game['mine'] = mine
         return {"games": {"eng-01": game}}
 
     def test_a_memoized_state_is_answered_from_the_memo(self):
@@ -1124,14 +1122,32 @@ class TestBoundGameMusic:
         assert seven == ("https://node/seven.mp3", "level")
         assert eight == ("https://node/any.mp3", "game")
 
+    def _stores(self, stores):
+        """load_agent_data over these stores, keyed by store id."""
+        return lambda store_id: stores.get(str(store_id))
+
     def test_a_persons_own_correction_answers_before_the_agents(self):
+        """A person's own take lives in their own {user_id}_{prompt_id}
+        store, read under the agent's (HARTOS owner ruling 2026-10-17)."""
         from routes.kids_media_routes import _bound_game_media
-        agent = self._agent({"bgm": {"url": "https://node/agent.mp3"}},
-                            {"u9": {"bgm": {"url": "https://node/theirs.mp3"}}})
-        with patch("core.cache_loaders.load_agent_data", return_value=agent):
+        stores = {"123": self._agent({"bgm": {"url": "https://node/agent.mp3"}}),
+                  "u9_123": self._agent({"bgm": {"url": "https://node/theirs.mp3"}})}
+        with patch("core.cache_loaders.load_agent_data", side_effect=self._stores(stores)):
             theirs = _bound_game_media("123", "eng-01", "music", user_id="u9")
             anyone = _bound_game_media("123", "eng-01", "music", user_id="u8")
         assert theirs == ("https://node/theirs.mp3", "mine")
+        assert anyone == ("https://node/agent.mp3", "game")
+
+    def test_a_take_a_person_turned_down_is_not_played_to_them(self):
+        from routes.kids_media_routes import _bound_game_media
+        stores = {"123": self._agent({"bgm": {"url": "https://node/agent.mp3"}}),
+                  "u9_123": self._agent({"bgm": {
+                      "rejected_url": "https://node/agent.mp3",
+                      "rejected_at": 1.0, "rejected_reason": "too jangly"}})}
+        with patch("core.cache_loaders.load_agent_data", side_effect=self._stores(stores)):
+            theirs = _bound_game_media("123", "eng-01", "music", user_id="u9")
+            anyone = _bound_game_media("123", "eng-01", "music", user_id="u8")
+        assert theirs == (None, "miss")
         assert anyone == ("https://node/agent.mp3", "game")
 
     def test_a_state_never_reached_falls_through_to_composing(self):

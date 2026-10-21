@@ -21,7 +21,7 @@ import time
 from functools import wraps
 
 import requests
-from flask import jsonify, request
+from flask import g, has_request_context, jsonify, request
 
 from models.catalog import ModelType
 
@@ -170,7 +170,7 @@ HEVOLVE_PROMPTS_AVAILABLE = False
 # on Windows which can cause I/O errors if the import fails partway through
 try:
     from routes.hartos_backend_adapter import chat as hevolve_chat
-    from routes.hartos_backend_adapter import drain_thinking_traces, get_prompts
+    from routes.hartos_backend_adapter import drain_thinking_traces, get_prompts, reply_media
     from routes.hartos_backend_adapter import zeroshot as hevolve_zeroshot
     HEVOLVE_CHAT_AVAILABLE = True
     HEVOLVE_PROMPTS_AVAILABLE = True
@@ -1161,14 +1161,85 @@ def _turn_text(data):
 #: itself: exception text and backend envelopes are not for the user.
 _TURN_FAILED_TEXT = "Sorry, I couldn't answer that just now. Please try again."
 
+#: A request id a client may name for its own turn.  The phone mints one per
+#: turn so that a reply arriving after its wait (the push, file_list recovery)
+#: finds the bubble waiting for it; the web page and the watch send one per
+#: turn too.  The id keys the turn's state on this desktop (HARTOS's per-turn
+#: caches, and the user file store's binding of the turn's attachments:
+#: core.chat_attachments.bind_inbound), so only this alphabet and length are
+#: taken from a client.
+_CLIENT_REQUEST_ID = re.compile(r'[A-Za-z0-9_-]{8,64}')
+
+
+def _turn_request_id(data, fresh=None):
+    """The id a turn runs under: the body's own request_id when a client may
+    name the turn, else ``fresh`` (by default a new millisecond id, the
+    shape central's paths mint).
+
+    The ONE rule for every turn a body names: custom_gpt and teachme2 settle
+    their body's id where it arrives (their replies carry it), and
+    _chat_turn, the body of /chat, settles /chat's.  Settled once per
+    request: the id this request already settled passes through untouched
+    (core.chat_client: passthrough, never re-mint), so a turn custom_gpt or
+    teachme2 hands _chat_turn keeps its one id.
+
+    A client may name a turn with a well-formed id (_CLIENT_REQUEST_ID) that
+    does not carry HARTOS's background tag (core.chat_client.DAEMON_PREFIX,
+    its one spelling): HARTOS reads a ``daemon_<goal>`` turn as the agent
+    daemon's own work (dispatch.is_genuine_user_request), so it would keep
+    that goal's lane, not mark the person active, and book escalations to
+    the goal (create_recipe, daemon_goal_id).  When the tag cannot be read,
+    no client names a turn.  An id that is not taken is logged by its shape,
+    never by its value.
+    """
+    sent = data.get('request_id')
+    in_request = has_request_context()
+    if in_request and sent is not None and g.get('turn_request_id') == sent:
+        return sent                       # this request already settled it
+    rid = _settle_request_id(sent, fresh or str(int(time.time() * 1000)),
+                             request.path if in_request else 'turn')
+    if in_request:
+        g.turn_request_id = rid
+    return rid
+
+
+def _settle_request_id(sent, fresh, route):
+    """_turn_request_id's rule for one body's ``sent`` id (see there)."""
+    if sent in (None, '') or (sent == 0 and not isinstance(sent, bool)):
+        return fresh                      # no id: the turn gets one
+    rid = (str(sent) if isinstance(sent, (str, int))
+           and not isinstance(sent, bool) else None)
+    if not (rid and _CLIENT_REQUEST_ID.fullmatch(rid)):
+        why = 'is not a request id'
+    else:
+        try:
+            from core.chat_client import DAEMON_PREFIX
+        except Exception:
+            # Fail closed: without HARTOS's tag a person's turn cannot be told
+            # from the daemon's, so no client's id is taken, well formed or not.
+            logger.warning("%s: core.chat_client is unavailable, so a person's "
+                           "turn cannot be told from the daemon's; the turn "
+                           "runs as %s, not under the id the body names",
+                           route, fresh, exc_info=True)
+            return fresh
+        if not rid.startswith(DAEMON_PREFIX):
+            return rid
+        why = "carries HARTOS's background tag"
+    # Shape only, never the value: it is whatever the client sent.
+    logger.info("%s: the body's request_id (%s, length %s) %s; the turn runs "
+                "as %s", route, type(sent).__name__, len(rid) if rid else '-',
+                why, fresh)
+    return fresh
+
 
 def _run_turn(turn):
     """(body, status) of one turn run by _chat_turn, the body of /chat.
 
-    A turn that failed, or answered with neither text nor a Liquid UI
+    A turn that failed, or answered with neither text, nor a Liquid UI
     payload (dynamic_layout / dynamic_data: a reply can be the overlay
-    alone), comes back as an empty body with a non-2xx status; why stays
-    in the log, never in the reply.
+    alone), nor `media` (a reel can be the whole answer), comes back as an
+    empty body with a non-2xx status; why stays in the log, never in the
+    reply.
     """
     try:
         result = _chat_turn(turn)
@@ -1184,7 +1255,7 @@ def _run_turn(turn):
     if status >= 400:
         return {}, status
     if not (_reply_parts(body) or body.get('dynamic_layout')
-            or body.get('dynamic_data')):
+            or body.get('dynamic_data') or body.get('media')):
         return {}, 502
     return body, status
 
@@ -1199,10 +1270,17 @@ def custom_gpt():
     in the one agent reply shape (_agent_reply).  draft_first is off because
     these screens show only this synchronous reply, and a draft's standby
     ("let me check...") would otherwise be the whole answer.
+
+    The phone names each turn's request_id, kept when a client may name the
+    turn (_turn_request_id) so a late push or file_list recovery finds its
+    bubble.  A Reel Studio turn carries attachments and goal_tags, which the
+    adapter forwards to HARTOS as far as HARTOS's contracts accept them
+    (turn_attachments, turn_goal_tags); the reel HARTOS answers with
+    (`media`, reply_media) is in the reply.
     """
     data = request.get_json(silent=True) or {}
     user_id = data.get('user_id', 'guest')
-    request_id = data.get('request_id') or str(int(time.time() * 1000))
+    request_id = _turn_request_id(data)
     text = _turn_text(data)
     if not text.strip():
         return _agent_reply(
@@ -1221,7 +1299,13 @@ def custom_gpt():
     }
     if prompt_id not in (None, '', 0, '0'):
         turn['prompt_id'] = prompt_id
-    for key in ('preferred_lang', 'language', 'media_mode'):
+    # attachments (the phone's refs into this desktop's user file store) and
+    # goal_tags (the agent-creation hint) go on the turn as sent; the
+    # adapter's chat() bounds them by HARTOS's contracts on the way to
+    # HARTOS /chat (turn_attachments, turn_goal_tags), whose chat() binds the
+    # refs to the turn and reads the hint for that turn alone.
+    for key in ('preferred_lang', 'language', 'media_mode',
+                'attachments', 'goal_tags'):
         if data.get(key):
             turn[key] = data[key]
     body, status = _run_turn(turn)
@@ -1307,10 +1391,13 @@ def teachme2():
     TRANSITIONAL (owner ruling 2026-09-14): Teach Yourself is a created
     agent.  The turn names it (_teach_agent_prompt_id) once its recipe is
     built; until then it runs without an agent id, as before.
+
+    The body's request_id names the turn only when a client may name one
+    (_turn_request_id, the rule custom_gpt and /chat use).
     """
     data = request.get_json(silent=True) or {}
     user_id = str(data.get('user_id', 'guest'))
-    request_id = data.get('request_id') or str(int(time.time() * 1000))
+    request_id = _turn_request_id(data)
     text = _turn_text(data)
     goals = data.get('goals')
     if isinstance(goals, dict) and goals.get('scope') in _KIDS_TRANSPORT_SCOPES:
@@ -2675,9 +2762,22 @@ def _chat_turn(data):
     # The device the turn came from: HARTOS records it on the mirrored turn
     # (chat.new / chat-sync), so each device tells its own turns apart.
     device_id = data.get('device_id')
+    # The turn's file references (refs into this desktop's user file store)
+    # and the agent-creation hint.  They go to HARTOS /chat only, bounded by
+    # HARTOS's contracts in the adapter (turn_attachments, turn_goal_tags);
+    # HARTOS's chat() binds the refs to the turn (core.chat_attachments) and
+    # reads the hint for that turn alone (marketing_tools
+    # .user_assignable_goal_tags; nothing is held between turns, amendment
+    # A19).  The cloud leg never has them.
+    attachments = data.get('attachments')
+    goal_tags = data.get('goal_tags')
     conversation_id = data.get('conversation_id')
     video_req = data.get('video_req', False)
-    request_id = data.get('request_id', str(int(time.time())))
+    # The body's id names the turn only when a client may name one (the rule
+    # custom_gpt and teachme2 apply; their turns arrive here already settled).
+    # A /chat body with no id runs under a new seconds id, the shape this
+    # route has always minted (core.chat_client.mint_request_id mirrors it).
+    request_id = _turn_request_id(data, str(int(time.time())))
     # The turn's arrival, on record before any branch can return.  Until this
     # line existed a request that never reached here and one that returned
     # before its first log line read the same in every log (2026-10-02: a
@@ -2903,7 +3003,35 @@ def _chat_turn(data):
                 return None
         return None
 
-    def _resolve_agent(_prompt_id, _agent_id_legacy, _creating):
+    def _hint_keeps_agent_here(_pid_int, _hint):
+        """Does the turn's creation hint (the body's goal_tags) keep agent
+        ``_pid_int`` on this node?  ``(keeps, tags)``: the answer, and the
+        user-assignable tags of the hint for the log.
+
+        HARTOS's one local-only rule decides
+        (integrations.agent_engine.marketing_tools.agent_is_local_only, asked
+        with the id and the hint: the agent has no record in this node's
+        prompts dir, and a record HARTOS's own dir may hold counts as the
+        rule says), and HARTOS's own filter (user_assignable_goal_tags)
+        names what is logged, so the client's raw list never reaches the
+        log.  (False, []) for no hint, and (False, []) said in the log when
+        HARTOS's rule cannot be loaded or raises: the turn then goes where
+        it went before this rule, to the cloud."""
+        if not _hint:
+            return False, []
+        try:
+            from integrations.agent_engine.marketing_tools import (
+                agent_is_local_only, user_assignable_goal_tags)
+            keeps = bool(agent_is_local_only(str(_pid_int), _hint))
+            return keeps, (user_assignable_goal_tags(_hint) if keeps else [])
+        except Exception as exc:
+            logger.warning(
+                'chat: HARTOS local-only rule unavailable for prompt_id=%s '
+                '(%s: %s): the creation hint cannot keep the turn here',
+                _pid_int, type(exc).__name__, exc)
+            return False, []
+
+    def _resolve_agent(_prompt_id, _agent_id_legacy, _creating, _hint=None):
         """Return (agent_config, resolved_agent_id, resolved_type, resolved_prompt_id).
 
         Resolution order:
@@ -2915,6 +3043,21 @@ def _chat_turn(data):
                or autonomous_creation) -> PRESERVE prompt_id + signal
                create-mode, so HARTOS creates the agent under the id the
                page minted for it;
+             - the turn's creation hint keeps the agent on this node
+               (``_hint``, the body's goal_tags, judged by HARTOS's one
+               local-only rule marketing_tools.agent_is_local_only; Reel
+               Studio's reel_studio) -> PRESERVE prompt_id, type 'local',
+               nothing forced: HARTOS's own ladder treats a turn for an
+               id with no record as a creation whatever the flag says,
+               and the gather it started continues from gather_info's
+               in-memory session (a one-hour idle TTL on its turn count;
+               the conversation until HARTOS restarts).  The cloud never
+               has a local-only agent (decision U4c), and her phone sends
+               create_agent False from its second turn on
+               (ReelInbox.createMode) while HARTOS's gather still asks
+               its questions, so without this the setup deadlocked:
+               forwarded to the cloud, 401, answered by the generic
+               assistant (HARTOS task #136, measured live 2026-10-18);
              - otherwise the agent exists only in the cloud -> type
                'cloud', and the CLOUD branch forwards the turn there.
                Owner rule 2026-10-04: an agent with an id on this node
@@ -2963,9 +3106,10 @@ def _chat_turn(data):
                         'local', _aid_int, False)
         # 4. Caller sent a real numeric prompt_id but the recipe
         #    isn't local.  A creating turn keeps the id here in
-        #    create-mode (HARTOS gather_info -> create_recipe); any
-        #    other turn goes to the cloud, the only place that agent
-        #    exists.
+        #    create-mode (HARTOS gather_info -> create_recipe); a turn
+        #    whose creation hint keeps the agent on this node stays here
+        #    too, with nothing forced; any other turn goes to the cloud,
+        #    the only place that agent exists.
         #
         #    NOTE: this branch is intentionally narrow to the
         #    numeric-prompt_id case.  We do NOT force-create for a
@@ -2984,6 +3128,18 @@ def _chat_turn(data):
                     'creating it here', _pid_int)
                 return ({'id': _pid_int, 'type': 'local'}, _pid_int,
                         'local', _pid_int, True)
+            _keeps, _kept_tags = _hint_keeps_agent_here(_pid_int, _hint)
+            if _keeps:
+                # What kept it: the hint's assignable tags, else the record
+                # HARTOS's own store holds for the id (the rule read both).
+                logger.info(
+                    'prompt_id=%s has no recipe on this node yet and its '
+                    'turn keeps to this node (%s) - staying here '
+                    'so HARTOS carries on creating it', _pid_int,
+                    'goal tags %s' % (_kept_tags,) if _kept_tags
+                    else "HARTOS's stored record of the agent")
+                return ({'id': _pid_int, 'type': 'local'}, _pid_int,
+                        'local', _pid_int, False)
             logger.info(
                 'prompt_id=%s has no recipe on this node - cloud-only '
                 'agent, forwarding the turn to the cloud', _pid_int)
@@ -3002,11 +3158,14 @@ def _chat_turn(data):
     # TestAgentRouting).
     agent_config, agent_id, agent_type, prompt_id, _force_create_agent = \
         _resolve_agent(prompt_id, data.get('agent_id'),
-                       bool(create_agent or autonomous_creation))
-    # When _resolve_agent had to fall back due to missing recipe (step 4),
-    # force create_agent=True so HARTOS hard-routes to autogen instead of
+                       bool(create_agent or autonomous_creation), goal_tags)
+    # When _resolve_agent kept a CREATING turn's unknown id here (step 4,
+    # create_agent or autonomous_creation on the body), force
+    # create_agent=True so HARTOS hard-routes to autogen instead of
     # casually chatting via the draft-first path.  Per design intent: no
     # point in casual chat when we know we need to (re)create an agent.
+    # A turn kept here by its creation hint alone is not forced: HARTOS's
+    # own ladder makes the creation decision for an id with no record.
     #
     # ALSO force autonomous_creation=True so HARTOS enters
     # `if autonomous:` at hart_intelligence_entry.py:6731 — that's the
@@ -3200,7 +3359,9 @@ def _chat_turn(data):
                 # Three cases _resolve_agent returns map cleanly to:
                 #   step 1 / step 3 (digit + file exists)  → pass int
                 #   step 2 (registry hit, e.g. local_assistant) → None
-                #   step 4 (forced create-mode) → keep prompt_id so
+                #   step 4 (an unknown id kept here: a creating turn,
+                #     forced create-mode, or a turn whose creation hint
+                #     keeps its agent on this node) → keep prompt_id so
                 #     HARTOS gather/create can use the same id the
                 #     user clicked instead of auto-generating a new one
                 #     and creating a stranger agent
@@ -3263,6 +3424,8 @@ def _chat_turn(data):
                     teacher_avatar_id=teacher_avatar_id,
                     draft_first=draft_first,
                     device_id=device_id,
+                    attachments=attachments,
+                    goal_tags=goal_tags,
                 )
                 # Surface explicit LangChain errors (guardrails, prompt injection, etc.)
                 if result.get('error') and not (result.get('text') or result.get('response')):
@@ -3296,8 +3459,13 @@ def _chat_turn(data):
                     return jsonify(error_response)
 
                 response_text = result.get('text') or result.get('response')
-                if response_text and not result.get('error'):
-                    logger.info(f'LangChain local response: {response_text[:100]}...')
+                # The reel the turn delivered (HARTOS's /chat reply `media`),
+                # as far as HARTOS's reply-media contract accepts it.  It is
+                # an answer with or without words: a reply that is the reel
+                # alone is served, not mistaken for a dead model below.
+                media = reply_media(result.get('media'))
+                if (response_text or media) and not result.get('error'):
+                    logger.info(f'LangChain local response: {(response_text or "")[:100]}...')
                     # Correction intent: the HARTOS draft-first dispatcher's
                     # Qwen3.5-0.8B classifier tags every default chat turn
                     # with is_correction (true/false) inside the /chat
@@ -3316,9 +3484,9 @@ def _chat_turn(data):
                     # the next turn's correction classifier has context. Kept
                     # tiny (last message only) — no transcript buffering here.
                     with _sessions_lock:
-                        sessions.setdefault(str(user_id), {})['last_assistant_text'] = response_text[:4000]
+                        sessions.setdefault(str(user_id), {})['last_assistant_text'] = (response_text or '')[:4000]
                     response_json = {
-                        'text': response_text,
+                        'text': response_text or '',
                         'agent_id': agent_id,
                         'agent_type': 'local',
                         'source': 'langchain_local',
@@ -3415,6 +3583,10 @@ def _chat_turn(data):
                                 }
                         except (ValueError, _json.JSONDecodeError):
                             pass  # Not JSON — leave as text
+                    # The phone renders the reel from this reply when the turn
+                    # finishes inside its wait (custom_gpt's reply keeps it).
+                    if media:
+                        response_json['media'] = media
                     # #171 — thinking traces stream live via SSE 'chat.response'
                     # (EventBus.emit fan-out, commit 29ac1b9).  No HTTP-batch
                     # attach: each trace was already delivered in real-time,

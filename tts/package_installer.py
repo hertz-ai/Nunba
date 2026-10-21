@@ -324,6 +324,14 @@ _PIP_TO_IMPORT = {
     'coqui-tts-trainer':     'trainer',
     'melotts':               'melo',
     'pyyaml':                'yaml',
+    # HARTOS's trending-songs worker venv (integrations/trends/daily_job.py
+    # WORKER_PACKAGES, installed by backend_venv.install_into_venv, which
+    # verifies each spec by this name).  Without these three a good install
+    # read as failed, so the worker had gone unpinned (review of HARTOS
+    # c17513ec4); the self-heal direction gets the right distribution too.
+    'pysocks':               'socks',
+    'pillow':                'PIL',
+    'pycryptodomex':         'Cryptodome',
 }
 
 # Human-readable names for progress messages.  Must cover the full
