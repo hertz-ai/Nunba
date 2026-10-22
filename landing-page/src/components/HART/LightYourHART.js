@@ -21,7 +21,7 @@
 import TypedTextBase from './TypedText';
 
 import { API_BASE_URL } from '../../config/apiBase';
-import { applyHartSeal } from '../../hooks/useAuthSession';
+import { applyHartSeal, silentGuestRefresh } from '../../hooks/useAuthSession';
 import { consentApi } from '../../services/socialApi';
 import { logger } from '../../utils/logger';
 import VoiceVisualizer from '../VoiceVisualizer';
@@ -1094,6 +1094,24 @@ export default function LightYourHART({ userId, onComplete }) {
       // passion/escape via _merge_dimensions.)
       let sealedName = hartName;
       let sealedRemotely = false;
+
+      // A first-run guest has no account when the ceremony runs: the guest
+      // is registered AFTER it (silentGuestRefresh reads guest_name, which
+      // applyHartSeal back-fills from the HART name).  So every seal below
+      // answered 400 "No user_id", the loop fell through to the local seal,
+      // and the server never learned the name (measured 2026-10-21: with
+      // the guest's own JWT, /api/hart/check said has_hart=false and
+      // /api/hart/profile 404 while the screen showed @kazera).  Register
+      // the guest now, under the name being sealed, so the seal carries a
+      // bearer the server resolves.  Idempotent on device_id: a returning
+      // device gets its existing guest user back.  A signed-in user already
+      // has a token and skips this.  Failure is not fatal: the seal loop
+      // runs as before and the local seal still happens.
+      if (!localStorage.getItem('access_token')) {
+        await silentGuestRefresh({ guestName: hartName });
+        if (cancelled) return;
+      }
+
       for (const candidate of [hartName, ...hartCandidates]) {
         if (cancelled) return;
         let timer = null;

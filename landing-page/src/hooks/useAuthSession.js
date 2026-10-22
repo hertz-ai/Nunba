@@ -515,8 +515,12 @@ export function clearAccessTokenForExpiry() {
  *   - Backend returning a non-OK status
  * Callers should treat null as "couldn't refresh — fall back to login UX".
  */
-export async function silentGuestRefresh() {
-  const guestName = (() => {
+export async function silentGuestRefresh({ guestName: explicitName } = {}) {
+  // `guestName` is for the HART ceremony, which seals BEFORE guest_name is
+  // in localStorage (applyHartSeal back-fills it afterwards): it registers
+  // the guest under the name being sealed so the seal can carry a bearer.
+  // Every other caller leaves it out and refreshes the stored guest.
+  const guestName = explicitName || (() => {
     try { return localStorage.getItem('guest_name'); } catch { return null; }
   })();
   if (!guestName) return null;
