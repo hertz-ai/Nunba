@@ -9836,6 +9836,23 @@ def handle_protocol_launch():
     logger.info("=== PROTOCOL LAUNCH HANDLER COMPLETED ===")
 
 
+def _live_tk_root(root):
+    """`root` if it is a Tk root that still exists, else None.
+
+    The early splash root arms `after(45000, destroy)`, so on a cold start it
+    is gone before _show_splash reuses it.  Measured over the installed boots
+    of 2026-10-21..22: every boot that reached _show_splash 48-72 s after
+    process start failed with 'can't invoke "wm" command: application has
+    been destroyed' and showed no splash; every one at 18-37 s showed it.
+    """
+    if root is None:
+        return None
+    try:
+        return root if root.winfo_exists() else None
+    except Exception:  # TclError: application has been destroyed
+        return None
+
+
 def _show_splash():
     """Show a dark-themed splash screen with Tamil aesthetic and AI-native typography.
     Returns (root, status_var, close_fn) or (None, None, None) on failure."""
@@ -9846,8 +9863,8 @@ def _show_splash():
         import tkinter as tk
 
         logger.info("[SPLASH] Creating Tk root window...")
-        if _eroot is not None:
-            root = _eroot
+        root = _live_tk_root(_eroot)
+        if root is not None:
             root.deiconify()
         else:
             root = tk.Tk()
