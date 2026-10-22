@@ -145,15 +145,18 @@ describe('QR pairing card', () => {
     const send = mountOverlay();
     send(qr('CODE-1', 1));
     send({type: 'toast', severity: 'error', channel: 'whatsapp', msg_id: 't-1',
-      text: 'The WhatsApp link expired before it was completed.'});
+      message: 'The WhatsApp link expired before it was completed.'});
     expect(screen.queryByTestId('qr')).toBeNull();
+    // The toast's body is `message` (HARTOS COMPONENT_TYPES['toast']).
+    expect(screen.getByText('The WhatsApp link expired before it was completed.'))
+      .toBeInTheDocument();
   });
 
   test("another channel's toast leaves the QR alone", () => {
     const send = mountOverlay();
     send(qr('CODE-1', 1));
     send({type: 'toast', severity: 'error', channel: 'telegram', msg_id: 't-2',
-      text: "Telegram couldn't connect."});
+      message: "Telegram couldn't connect."});
     expect(screen.getByTestId('qr')).toHaveTextContent('CODE-1');
   });
 
