@@ -223,22 +223,63 @@ def _create_plan(language: str, gpu_info: dict) -> dict:
     return plan
 
 
+def _loaded_entries(orch, model_type: str) -> list:
+    """Every catalog entry of `model_type` the orchestrator has loaded.
+
+    The one lookup for "what is already running" -- the status refresh and
+    the bootstrap worker both ask it.  Never raises.
+    """
+    found = []
+    try:
+        entry = orch.get_loaded(model_type) if hasattr(orch, 'get_loaded') else None
+        if entry:
+            found.append(entry)
+    except Exception:
+        pass
+    try:
+        for ent in orch._catalog._models.values():
+            if ent.model_type == model_type and ent.loaded and ent not in found:
+                found.append(ent)
+    except Exception:
+        pass
+    return found
+
+
+def _loaded_entry(orch, model_type: str, model_id: str | None = None):
+    """The loaded entry of `model_type` (that exact model when `model_id` is
+    given), or None."""
+    for ent in _loaded_entries(orch, model_type):
+        if model_id is None or getattr(ent, 'id', None) == model_id:
+            return ent
+    return None
+
+
+def _serving_entry(orch, model_type: str, planned_id: str | None):
+    """A loaded model that already does this step's job, or None.
+
+    The planned model running counts for every type.  For the LLM any loaded
+    model counts too: whichever LLM is resident answers chat.  A different
+    TTS/STT does not, because it can be the wrong language for the user.
+
+    Measured 2026-10-21 on the installed app: the boot auto-start loaded the
+    planned llm-qwen3.5-2b while this step was waiting; auto_load then found
+    no model that fits the RAM left after it ("154MB budget"), returned None,
+    and the card showed "Load failed (insufficient resources?)" while chat
+    answered normally.
+    """
+    entry = _loaded_entry(orch, model_type, planned_id) if planned_id else None
+    if entry is None and model_type == ModelType.LLM:
+        entry = _loaded_entry(orch, model_type)
+    return entry
+
+
 def _refresh_steps_from_orchestrator() -> None:
     """Update step statuses from the live orchestrator (called under _lock)."""
     try:
         from models.orchestrator import get_orchestrator
         orch = get_orchestrator()
         for model_type, step in _state.steps.items():
-            entry = orch.get_loaded(model_type) if hasattr(orch, 'get_loaded') else None
-            if not entry:
-                # Fallback: scan catalog for loaded model of this type
-                try:
-                    for mid, ent in orch._catalog._models.items():
-                        if ent.model_type == model_type and ent.loaded:
-                            entry = ent
-                            break
-                except Exception:
-                    pass
+            entry = _loaded_entry(orch, model_type)
             if entry:
                 step.model_id = entry.id
                 step.model_name = entry.name
@@ -365,17 +406,34 @@ def _bootstrap_worker(language: str) -> None:
                     step.model_name or model_type, step.backend,
                     gpu_info.get('cuda_available', False))
 
+            # Planned while not yet loaded, loaded since (the boot auto-start
+            # runs alongside this worker): nothing to do.
+            running = _serving_entry(orch, model_type, step.model_id)
+            if running is not None:
+                _update_step(model_type, status='ready',
+                             detail=f'Already running: {running.name} ({running.device})',
+                             run_mode=running.device)
+                continue
+
             # Let orchestrator handle everything: download + load + VRAM + lifecycle
             _update_step(model_type, status='loading', detail=f'Starting {step.model_name}...')
             try:
                 lang = language if model_type in (ModelType.TTS, ModelType.LLM, ModelType.STT) else None
                 result = orch.auto_load(model_type, language=lang)
+                # auto_load sizes against what is free NOW, so a model that got
+                # loaded meanwhile leaves "no room" for itself: it returns None
+                # while the job is already done.
+                running = None if result else _serving_entry(orch, model_type, step.model_id)
 
                 if result:
                     _update_step(model_type, status='ready',
                                  detail=f'Running on {result.device}',
                                  run_mode=result.device)
                     _refresh_vram()
+                elif running is not None:
+                    _update_step(model_type, status='ready',
+                                 detail=f'Already running: {running.name} ({running.device})',
+                                 run_mode=running.device)
                 elif model_type in OPTIONAL_TYPES:
                     _update_step(model_type, status='skipped',
                                  detail='Could not load (optional)')
