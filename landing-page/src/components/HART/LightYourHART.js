@@ -979,6 +979,27 @@ export default function LightYourHART({ userId, onComplete }) {
     setOptions([]);
     advance('answer', { key });
 
+    // Ask for the name NOW, so the model works while the acknowledgement and
+    // pre-reveal play (~8.5s).  The server bounds its own wait to that cover
+    // plus a short tail (HARTOS NAME_WAIT_S), then answers with a curated
+    // name.  Measured 2026-10-22: sent only after those lines, on a CPU-only
+    // desktop, the request held "Your secret name is..." for 270s.
+    const token = localStorage.getItem('access_token');
+    const nameRequest = fetch(`${API_BASE_URL}/api/hart/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        language, locale,
+        passion_key: passionKey || key, // passionKey might not be set yet due to closure
+        escape_key: key,
+      }),
+    })
+      .then((resp) => (resp.ok ? resp.json() : null))
+      .catch(() => null);
+
     // PA acknowledges
     setPhase('ack_escape');
     const ack = _getLine('ack_escape', language);
@@ -998,33 +1019,15 @@ export default function LightYourHART({ userId, onComplete }) {
     setPaText('');
     setLoading(true);
 
-    try {
-      const resp = await fetch(`${API_BASE_URL}/api/hart/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(localStorage.getItem('access_token')
-            ? { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
-            : {}),
-        },
-        body: JSON.stringify({
-          language, locale,
-          passion_key: passionKey || key, // passionKey might not be set yet due to closure
-          escape_key: key,
-        }),
-      });
-      if (resp.ok) {
-        const result = await resp.json();
-        setHartName(result.name);
-        setHartTag(result.hart_tag || '');
-        setEmojiCombo(result.emoji_combo || '');
-        // Store backup candidates for race-condition seal retry
-        setHartCandidates((result.candidates || []).filter(c => c !== result.name));
-      } else {
-        // Fallback name if backend fails
-        setHartName(_fallbackName());
-      }
-    } catch {
+    const result = await nameRequest;
+    if (result && result.name) {
+      setHartName(result.name);
+      setHartTag(result.hart_tag || '');
+      setEmojiCombo(result.emoji_combo || '');
+      // Store backup candidates for race-condition seal retry
+      setHartCandidates((result.candidates || []).filter(c => c !== result.name));
+    } else {
+      // Fallback name if backend fails
       setHartName(_fallbackName());
     }
 
