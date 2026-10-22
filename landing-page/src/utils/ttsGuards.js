@@ -63,6 +63,28 @@ export function shouldPlayPushedClip(data, currentRequestId) {
 }
 
 
+/**
+ * The speaker state a page starts with, read from storage.
+ *
+ * Two keys, two meanings: `nunba_speech_consent` is the user's permission to
+ * speak at all ('granted' | 'text_only'), and `tts_enabled` is the speaker
+ * toggle's current choice inside that permission.  Speech needs both.
+ * Measured 2026-10-21: Demopage seeded the state from the consent alone, so a
+ * reload after switching the speaker off turned it back on.
+ *
+ * `read(key)` is localStorage.getItem (injected so this stays pure); a read
+ * that throws counts as off.
+ */
+export function initialTtsEnabled(read) {
+  try {
+    if (read('nunba_speech_consent') !== 'granted') return false;
+    return read('tts_enabled') !== 'false';
+  } catch (e) {
+    return false;
+  }
+}
+
+
 export function shouldSpeakLocalReply({
   ttsEnabled,
   ttsAvailable,
