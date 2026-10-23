@@ -58,6 +58,21 @@ export function SocialProvider({children}) {
   // guestRegister setItem blocks) stay on direct localStorage calls
   // and move in Phase 4.
   const _authSession = useAuthSession();
+  const [authRevision, setAuthRevision] = useState(0);
+  useEffect(() => {
+    const changed = () => {
+      apiCache.clearAll();
+      setAuthRevision(value => value + 1);
+    };
+    window.addEventListener('nunba:auth_changed', changed);
+    window.addEventListener('nunba:storage_hydrated', changed);
+    window.addEventListener('storage', changed);
+    return () => {
+      window.removeEventListener('nunba:auth_changed', changed);
+      window.removeEventListener('nunba:storage_hydrated', changed);
+      window.removeEventListener('storage', changed);
+    };
+  }, []);
 
   const [currentUser, setCurrentUser] = useState(null);
   const [resonance, setResonance] = useState(null);
@@ -75,10 +90,12 @@ export function SocialProvider({children}) {
   const [profileAnswer, setProfileAnswer] = useState('none');
 
   const fetchProfile = useCallback(async () => {
+    const requestedToken = localStorage.getItem('access_token');
     setProfileAnswer('asking');
     try {
       setAuthError(null);
       const res = await authApi.me();
+      if (localStorage.getItem('access_token') !== requestedToken) return;
       setCurrentUser(res.data);
       setProfileAnswer('answered');
     } catch (err) {
@@ -249,7 +266,8 @@ export function SocialProvider({children}) {
     } else {
       setLoading(false);
     }
-  }, [fetchProfile, fetchResonance, fetchOnboarding, fetchUnread]);
+  }, [fetchProfile, fetchResonance, fetchOnboarding, fetchUnread,
+      authRevision]);
 
   const logout = useCallback(() => {
     localStorage.removeItem('access_token');

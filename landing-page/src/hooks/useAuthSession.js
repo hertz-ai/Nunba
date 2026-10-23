@@ -516,6 +516,8 @@ export function clearAccessTokenForExpiry() {
  * Callers should treat null as "couldn't refresh — fall back to login UX".
  */
 export async function silentGuestRefresh() {
+  const startedToken = localStorage.getItem('access_token');
+  if (readAuthSession().status === 'cloud') return null;
   const guestName = (() => {
     try { return localStorage.getItem('guest_name'); } catch { return null; }
   })();
@@ -544,6 +546,10 @@ export async function silentGuestRefresh() {
     });
     const { user, token, existing } = res?.data || {};
     if (!token || !user?.id) return null;
+    // A login, logout, or another refresh wins over this old request.
+    if (localStorage.getItem('access_token') !== startedToken ||
+        localStorage.getItem('guest_name') !== guestName ||
+        readAuthSession().status === 'cloud') return null;
     setGuestIdentity({
       user_id: user.id,
       token,
