@@ -526,10 +526,14 @@ function MarkdownOverlay({ data }) {
 }
 
 function MediaOverlay({ data }) {
-  const t = data.media_type || (data.url?.match(/\.(mp4|webm)/) ? 'video' : data.url?.match(/\.(mp3|wav|ogg)/) ? 'audio' : 'image');
-  if (t === 'video') return <Box component="video" controls src={data.url} sx={{ width: '100%', borderRadius: '8px' }} />;
-  if (t === 'audio') return <Box component="audio" controls src={data.url} sx={{ width: '100%' }} />;
-  return <Box component="img" src={data.url} alt={data.alt || ''} sx={{ width: '100%', borderRadius: '8px' }} />;
+  // `src` is the media component's declared prop (HARTOS COMPONENT_TYPES
+  // ['media']) and what its producer, the game-sound review card, sends.
+  // Reading `url` left that card's player with no source.
+  const src = data.src;
+  const t = data.media_type || (src?.match(/\.(mp4|webm)/) ? 'video' : src?.match(/\.(mp3|wav|ogg)/) ? 'audio' : 'image');
+  if (t === 'video') return <Box component="video" controls src={src} sx={{ width: '100%', borderRadius: '8px' }} />;
+  if (t === 'audio') return <Box component="audio" controls src={src} sx={{ width: '100%' }} />;
+  return <Box component="img" src={src} alt={data.alt || ''} sx={{ width: '100%', borderRadius: '8px' }} />;
 }
 
 function MetricOverlay({ data }) {
