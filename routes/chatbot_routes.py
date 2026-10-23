@@ -3804,9 +3804,11 @@ def _chat_turn(data):
 
             # Emit Liquid UI notification with clickable navigate actions.
             # get_registry().get_or_none('LiquidUIService') is the accessor
-            # HARTOS's Connect_Channel and Join_External_Room tools and its
-            # QR-pair card emit use — same emit pattern, no parallel
-            # path.  (This used core.platform.service_registry, a module
+            # HARTOS's Connect_Channel and Join_External_Room tools, its
+            # QR-pair card emit and its meet_copilot card emit
+            # (integrations/social/agent_voice_bridge.py) use — same emit
+            # pattern, no parallel path.  (This used
+            # core.platform.service_registry, a module
             # HARTOS does not have: the card was never shown.)  If
             # LiquidUIService isn't registered (e.g. HARTOS daemon
             # offline), the emit no-ops and the response text below still
