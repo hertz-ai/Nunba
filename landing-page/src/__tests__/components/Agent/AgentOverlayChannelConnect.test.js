@@ -36,7 +36,7 @@ jest.mock('../../../services/socialApi', () => ({
 }));
 
 const {agentFormApi} = require('../../../services/socialApi');
-const {default: AgentOverlay} = require('../../../components/AgentOverlay/AgentOverlay');
+const {default: AgentOverlay, OverlayContent} = require('../../../components/AgentOverlay/AgentOverlay');
 
 function mountOverlay() {
   const handlers = {};
@@ -91,6 +91,38 @@ describe('FormOverlay', () => {
     const send = mountOverlay();
     send(FORM);
     expect(screen.getByLabelText('Bot token')).toHaveAttribute('type', 'password');
+  });
+
+  // Connect_Channel sends the provider's portal (HARTOS channel metadata
+  // `external_url`) so the person can get the token before pasting it.
+  const DISCORD_FORM = {
+    ...FORM, msg_id: 'form-2', title: 'Connect Discord', channel: 'discord',
+    action: '/api/social/channels/discord/connect',
+    external_url: 'https://discord.com/developers/applications',
+  };
+
+  test("the provider's portal opens from the form", () => {
+    const open = jest.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      const send = mountOverlay();
+      send(DISCORD_FORM);
+      fireEvent.click(screen.getByText('Open discord.com'));
+      expect(open).toHaveBeenCalledWith(
+        'https://discord.com/developers/applications', '_blank', 'noopener,noreferrer');
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  test('only an http(s) portal gets a button', () => {
+    const send = mountOverlay();
+    send({...DISCORD_FORM, external_url: 'javascript:alert(1)'});
+    expect(screen.queryByText(/^Open /)).toBeNull();
+  });
+
+  test('the embed shows no portal button: it never opens an agent-supplied URL', () => {
+    render(<OverlayContent data={DISCORD_FORM} onAction={jest.fn()} onDismiss={jest.fn()} />);
+    expect(screen.queryByText('Open discord.com')).toBeNull();
   });
 });
 

@@ -554,6 +554,19 @@ const LOCAL_SUBMIT_ACTIONS = {
   copy_invite_url: (values) => navigator.clipboard.writeText(values.invite_url || ''),
 };
 
+// The provider's portal a form names in `external_url` (HARTOS channel
+// metadata, e.g. the Discord developer portal), where the person gets the
+// token the form asks for.  Only an http(s) address is offered.
+function portalUrl(url) {
+  if (typeof url !== 'string') return null;
+  try {
+    const u = new URL(url);
+    return (u.protocol === 'https:' || u.protocol === 'http:') ? u : null;
+  } catch {
+    return null;
+  }
+}
+
 function FormOverlay({ data, onDismiss, onAction }) {
   // Fields may arrive pre-filled (`value`) or with a default: start from
   // those, so a read-only field shows what the producer sent.
@@ -565,6 +578,8 @@ function FormOverlay({ data, onDismiss, onAction }) {
   // Embed only: the per-field errors the host answers a submit with.
   const [errors, setErrors] = useState({});
   const [act, run] = useActionRunner(onAction);
+  // App only: the embed never opens an agent-supplied URL.
+  const portal = onAction ? null : portalUrl(data.external_url);
   // The card closes only once the server took the values.  It used to post
   // with a bare fetch (no Bearer token, so the auth-required channel routes
   // answered 401), swallow the result and close anyway: a typed bot token
@@ -609,6 +624,13 @@ function FormOverlay({ data, onDismiss, onAction }) {
   return (
     <Box>
       {data.title && <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>{data.title}</Typography>}
+      {portal && (
+        <Button size="small" variant="outlined" fullWidth
+          onClick={() => window.open(portal.href, '_blank', 'noopener,noreferrer')}
+          sx={{ mb: 1, textTransform: 'none', color: INFO_BLUE, borderColor: 'rgba(100,200,255,0.4)' }}>
+          {`Open ${portal.host}`}
+        </Button>
+      )}
       {(data.fields || []).map((f, i) => (
         <TextField key={i} label={f.label || f.name} size="small" fullWidth
           type={f.secret ? 'password' : (f.type === 'textarea' ? 'text' : (f.type || 'text'))} required={f.required}
