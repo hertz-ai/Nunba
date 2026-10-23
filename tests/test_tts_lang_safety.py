@@ -81,11 +81,26 @@ def test_cosyvoice_not_capable_for_any_indic_lang():
         )
 
 
-def test_piper_not_capable_for_any_indic_lang():
-    """Piper is English-only.  Must never appear in Indic allowlist."""
+def test_piper_capable_for_an_indic_lang_only_with_its_own_voice():
+    """Piper may serve an Indic language only through a voice OF that
+    language, never the English one.
+
+    3ae6b28 (Piper 16-language voice expansion) gave Piper real voices
+    for hi / ml / ne / te / ur (tts/piper_tts.LANG_TO_VOICE) and made it
+    capable exactly there; this test still said "Piper is English-only"
+    and failed on main.  The safety it guards is unchanged: an Indic
+    language with no Piper voice (e.g. Tamil) must never list Piper.
+    """
+    from tts.piper_tts import LANG_TO_VOICE
     from tts.tts_engine import _INDIC_LANGS
+    voiced = {k.split('_')[0] for k in LANG_TO_VOICE}
     for lang in _INDIC_LANGS:
-        assert BACKEND_PIPER not in _LANG_CAPABLE_BACKENDS[lang]
+        if lang in voiced:
+            assert LANG_TO_VOICE[lang].split('_')[0] == lang, (
+                f"{lang} maps to a voice of another language: {LANG_TO_VOICE[lang]}")
+        else:
+            assert BACKEND_PIPER not in _LANG_CAPABLE_BACKENDS[lang], (
+                f"{lang} has no Piper voice but lists Piper as capable")
 
 
 def test_normalize_lang():
