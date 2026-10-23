@@ -165,5 +165,100 @@ class TestWindowsReservedNamesNeverStopTheSiblingCopy(unittest.TestCase):
                          'real package content must not be excluded')
 
 
+class TestAVirtualenvNeverEntersTheSiblingCopy(unittest.TestCase):
+    """A virtualenv is skipped by what it IS, not by what it is called.
+
+    Measured 2026-10-21: the build sat in the HARTOS sibling copy with 18,614
+    files of HARTOS/venv-hart/ (2.5 GB, ~43k files) already copied to %TEMP%.
+    _IGNORE_HEAVY names 'venv', 'venv311' and '.venv'; fnmatch matches whole
+    names, so 'venv-hart' fell outside the list.  Every virtualenv carries
+    pyvenv.cfg at its root, so that is the test -- the same one HARTOS's code
+    hash uses (security/node_integrity._is_foreign_tree).
+
+    These run the REAL _ignore_staging from setup_freeze_nunba.py through a
+    real copytree.
+    """
+
+    @staticmethod
+    def _real_ignore():
+        import ast
+        import shutil
+        path = os.path.join(_ROOT, 'scripts', 'setup_freeze_nunba.py')
+        with open(path, encoding='utf-8') as fh:
+            tree = ast.parse(fh.read())
+        wanted = ('_WIN_RESERVED_PATTERNS', '_IGNORE_HEAVY', '_ignore_staging')
+        found = {}
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id in wanted):
+                found[node.targets[0].id] = node
+            elif isinstance(node, ast.FunctionDef) and node.name in wanted:
+                found[node.name] = node
+        missing = [w for w in wanted if w not in found]
+        if missing:
+            raise AssertionError(f'setup_freeze_nunba.py defines no {missing}')
+        ns = {'_shutil': shutil, 'os': os}
+        for name in wanted:
+            exec(compile(ast.Module(body=[found[name]], type_ignores=[]),
+                         path, 'exec'), ns)
+        return ns['_ignore_staging']
+
+    def _copy(self, layout):
+        import shutil
+        import tempfile
+        base = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, base, True)
+        src = os.path.join(base, 'HARTOS')
+        for rel in layout:
+            p = os.path.join(src, *rel.split('/'))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'w') as fh:
+                fh.write('x')
+        dst = os.path.join(base, 'copy')
+        shutil.copytree(src, dst, ignore=self._real_ignore(), symlinks=True)
+        return dst
+
+    def test_a_virtualenv_under_any_name_is_not_copied(self):
+        dst = self._copy([
+            'venv-hart/pyvenv.cfg',
+            'venv-hart/Lib/site-packages/torch/__init__.py',
+            'env_py312/pyvenv.cfg',
+            'core/__init__.py',
+        ])
+        self.assertFalse(os.path.exists(os.path.join(dst, 'venv-hart')))
+        self.assertFalse(os.path.exists(os.path.join(dst, 'env_py312')))
+        self.assertTrue(os.path.isfile(os.path.join(dst, 'core', '__init__.py')))
+
+    def test_a_package_that_merely_looks_like_a_venv_is_kept(self):
+        """No pyvenv.cfg, no exclusion: the name alone proves nothing."""
+        dst = self._copy([
+            'venv_tools/__init__.py',
+            'integrations/venvs/__init__.py',
+        ])
+        self.assertTrue(os.path.isfile(
+            os.path.join(dst, 'venv_tools', '__init__.py')))
+        self.assertTrue(os.path.isfile(
+            os.path.join(dst, 'integrations', 'venvs', '__init__.py')))
+
+    def test_the_name_patterns_still_apply(self):
+        # Device names are pinned by the class above; a real 'nul' cannot be
+        # created on Windows, so it has no place in a real-copytree fixture.
+        dst = self._copy(['.venv/x.py', 'agent_data/a.db-shm',
+                          'core/__init__.py'])
+        self.assertFalse(os.path.exists(os.path.join(dst, '.venv')))
+        self.assertFalse(os.path.exists(
+            os.path.join(dst, 'agent_data', 'a.db-shm')))
+
+    def test_the_sibling_copy_uses_it(self):
+        path = os.path.join(_ROOT, 'scripts', 'setup_freeze_nunba.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        start = src.index('def _pip_install_sibling(')
+        body = src[start:src.index('for _sib_dir, _pkg_name in _sibling_deps',
+                                   start)]
+        self.assertIn('ignore=_ignore_staging', body)
+
+
 if __name__ == '__main__':
     unittest.main()
