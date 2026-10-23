@@ -14,7 +14,14 @@ concurrency:
 
 env:
   PYTHON_VERSION: '3.12'
-  NODE_VERSION: '20'
+  # 24, not 20: the embed suite's test stack needs it.  vitest 5.0.2 wants
+  # node ^22.12 || ^24, jsdom 30.1.1 ^22.22.2 || ^24.15, undici 8.11.2
+  # >=22.19 (all added with the <hart-agent> embed, 5cf59f6).  On 20.20.2
+  # every vitest worker died at start with "webidl.util.markAsUncloneable is
+  # not a function", so `npm run test:embed` ran zero tests and failed
+  # frontend-quality on main and every PR.  The release build (build.yml)
+  # stays on 20.
+  NODE_VERSION: '24'
 
 # ── Cross-OS CI cost discipline ──
 # GitHub-hosted runner billing (public repos free; private repos billed):
@@ -511,6 +518,16 @@ jobs:
   cypress-e2e-windows:
     runs-on: windows-latest
     timeout-minutes: 30
+    # One Cypress binary location for both halves of the job.  `npm ci`'s
+    # cypress postinstall puts the binary in the Windows default
+    # (%LOCALAPPDATA%\Cypress\Cache), while cypress-io/github-action uses
+    # process.env.CYPRESS_CACHE_FOLDER || ~/.cache/Cypress.  With
+    # install: false nothing reconciled them, so every run failed with
+    # "The cypress npm package is installed, but the Cypress binary is
+    # missing" (main run 39373360257 and every PR).  Ubuntu is unaffected:
+    # ~/.cache/Cypress is already its default.
+    env:
+      CYPRESS_CACHE_FOLDER: ${{ github.workspace }}/.cypress-cache
     steps:
       - uses: actions/checkout@v4
 
