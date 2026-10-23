@@ -518,6 +518,16 @@ jobs:
   cypress-e2e-windows:
     runs-on: windows-latest
     timeout-minutes: 30
+    # One Cypress binary location for both halves of the job.  `npm ci`'s
+    # cypress postinstall puts the binary in the Windows default
+    # (%LOCALAPPDATA%\Cypress\Cache), while cypress-io/github-action uses
+    # process.env.CYPRESS_CACHE_FOLDER || ~/.cache/Cypress.  With
+    # install: false nothing reconciled them, so every run failed with
+    # "The cypress npm package is installed, but the Cypress binary is
+    # missing" (main run 39373360257 and every PR).  Ubuntu is unaffected:
+    # ~/.cache/Cypress is already its default.
+    env:
+      CYPRESS_CACHE_FOLDER: ${{ github.workspace }}/.cypress-cache
     steps:
       - uses: actions/checkout@v4
 
