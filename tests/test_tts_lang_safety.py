@@ -219,15 +219,10 @@ def test_english_falls_through_to_piper_or_kokoro():
             return fake_piper  # pretend kokoro works too, returns audio
         raise RuntimeError(f"{name} not available")
 
-    result = engine._synthesize_with_fallback(
-        text="hello world",
-        output_path="/tmp/out.wav",
-        voice=None,
-        language="en",
-    )
-    # Above runs _create_backend on each candidate; we didn't patch so
-    # it will call real _create_backend.  Do the patched version:
-    engine = _make_stub_engine(active_backend=BACKEND_CHATTERBOX_TURBO)
+    # Only ever the patched _create_backend.  An unpatched warm-up call used
+    # to run first and discard its result; it built the REAL backends, which
+    # spawn TTS worker subprocesses, and hung until pytest-timeout killed the
+    # whole python-quality run at 91% (Nunba #38 CI, 2026-10-22).
     with patch.object(engine, '_create_backend', side_effect=_create):
         result = engine._synthesize_with_fallback(
             text="hello world",
