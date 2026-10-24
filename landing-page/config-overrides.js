@@ -79,4 +79,15 @@ function override(config) {
 
 module.exports = {
   webpack: override,
+  // `npm test` runs react-app-rewired, which adds package.json's jest lists
+  // to CRA's defaults instead of replacing them.  CRA's default skips every
+  // node_modules file, so package.json's exception for uuid never applied
+  // and every suite that imports uuid failed to load.  CI's
+  // `react-scripts test` replaces the list; this makes `npm test` do the
+  // same.  The list itself stays in package.json, which both runners read.
+  jest: (config) => {
+    const { transformIgnorePatterns } = require("./package.json").jest;
+    config.transformIgnorePatterns = transformIgnorePatterns;
+    return config;
+  },
 };
