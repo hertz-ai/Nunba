@@ -114,10 +114,24 @@ describe('FormOverlay', () => {
     }
   });
 
-  test('only an http(s) portal gets a button', () => {
-    const send = mountOverlay();
-    send({...DISCORD_FORM, external_url: 'javascript:alert(1)'});
-    expect(screen.queryByText(/^Open /)).toBeNull();
+  // Only an http(s) portal gets a button.  The button is looked up by role:
+  // a URL with no host labels it "Open ", which a text match on /^Open /
+  // never finds, so that check passed with the protocol test removed.
+  test.each([
+    'javascript:alert(1)',
+    'javascript://discord.com/alert(1)',
+    'file:///C:/',
+    'data:text/html,<script>alert(1)</script>',
+  ])('a %s portal gets no button', (url) => {
+    const open = jest.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      const send = mountOverlay();
+      send({...DISCORD_FORM, external_url: url});
+      expect(screen.queryByRole('button', {name: /^open/i})).toBeNull();
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
   });
 
   test('the embed shows no portal button: it never opens an agent-supplied URL', () => {
