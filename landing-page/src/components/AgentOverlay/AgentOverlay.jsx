@@ -533,7 +533,25 @@ function MediaOverlay({ data }) {
   const t = data.media_type || (src?.match(/\.(mp4|webm)/) ? 'video' : src?.match(/\.(mp3|wav|ogg)/) ? 'audio' : 'image');
   if (t === 'video') return <Box component="video" controls src={src} sx={{ width: '100%', borderRadius: '8px' }} />;
   if (t === 'audio') return <Box component="audio" controls src={src} sx={{ width: '100%' }} />;
+  // A page an agent made.  allow-scripts alone runs it in an opaque origin:
+  // it cannot read this app's storage or call its API as the person.
+  if (t === 'html') {
+    return <Box component="iframe" src={src} title={data.alt || 'Page from your agent'} sandbox="allow-scripts"
+      sx={{ width: '100%', height: 360, border: 0, borderRadius: '8px', background: '#fff' }} />;
+  }
   return <Box component="img" src={src} alt={data.alt || ''} sx={{ width: '100%', borderRadius: '8px' }} />;
+}
+
+// The media cards for an agent message's `media` (HARTOS
+// publish_agent_message; one item per file the store vouched for, built by
+// hartos/helper.py media_items_for).  This desktop shows an item by its
+// `url`, served by the same Flask; a reel item has none (the phone fetches
+// it by xid), so it gets no card here.
+export function mediaCards(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter((it) => it && typeof it.url === 'string' && it.url)
+    .map((it) => ({ type: 'media', media_type: it.kind, src: it.url, alt: it.caption || '' }));
 }
 
 function MetricOverlay({ data }) {
