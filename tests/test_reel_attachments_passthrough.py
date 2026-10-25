@@ -786,7 +786,7 @@ def test_another_agents_picture_reaches_the_reply_as_hartos_sent_it(
         'text': 'show me page 2', 'user_id': '10202', 'prompt_id': PROMPT_ID,
         'request_id': PHONE_RID, 'media_mode': 'text'})
     assert resp.status_code == 200
-    assert resp.get_json()['media'] == [AGENT_PICTURE]
+    assert resp.get_json().get('media') == [AGENT_PICTURE]
 
 
 def test_every_media_item_hartos_sends_is_kept_in_its_order(client, hartos):
@@ -798,7 +798,7 @@ def test_every_media_item_hartos_sends_is_kept_in_its_order(client, hartos):
     sent = [refused_by_the_reel_contract, AGENT_PICTURE, *MEDIA]
     hartos.state['reply'] = {'response': 'Two reels and a page.', 'media': sent}
     reply = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN).get_json()
-    assert reply['media'] == sent
+    assert reply.get('media') == sent
 
 
 def test_a_node_without_reel_studio_still_passes_every_agents_media(
@@ -809,7 +809,7 @@ def test_a_node_without_reel_studio_still_passes_every_agents_media(
     hartos.state['reply'] = {'response': 'Your reel is ready.',
                              'media': [*MEDIA, AGENT_PICTURE]}
     reply = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN).get_json()
-    assert reply['media'] == [*MEDIA, AGENT_PICTURE]
+    assert reply.get('media') == [*MEDIA, AGENT_PICTURE]
     assert reply['answerList'] == ['Your reel is ready.']
 
 
