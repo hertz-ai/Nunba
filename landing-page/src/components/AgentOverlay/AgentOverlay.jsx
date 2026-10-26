@@ -37,7 +37,9 @@ const AUTO_DISMISS_MS = 15000;
 // qr_pair: a WhatsApp code lives ~20s and HARTOS sends the next one as it
 // rotates (replacing this card in place, see handleEvent), so the card stays
 // until the phone links or the user closes it.
-const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair']);
+// file_request: an agent waits on her files (HARTOS person_ask), so the card
+// stays until it is answered here or anywhere else (notification.read).
+const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair', 'file_request']);
 
 // The card's frosted surface is the ONE HART glass (src/theme/hartGlass,
 // mirroring HARTOS theme_service.py's emitted shell values), so an overlay
@@ -392,6 +394,109 @@ function AnswerError({ text }) {
   );
 }
 
+// ─── An agent's ask (HARTOS integrations.agent_engine.person_ask) ─────
+//
+// HARTOS puts one card in front of the person on every surface they have,
+// carrying the ask's `ask_id`, and the first answer from any of them goes back
+// to the agent that asked: POST /api/agent/approval {ask_id, answer}, the
+// caller's Bearer naming who answers (never a body field).  Answered, the
+// ask's notification row is marked read, and its notification.read fan-out
+// drops the card on every other surface (AgentOverlay below).
+
+function bearer() {
+  const token = localStorage.getItem('access_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function refusedReply(res, what) {
+  let body = {};
+  try { body = await res.json(); } catch { /* not JSON */ }
+  return Object.assign(new Error(`${what} (HTTP ${res.status})`), { body });
+}
+
+async function answerAsk(askId, answer) {
+  const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...bearer() },
+    body: JSON.stringify({ ask_id: askId, answer }),
+  });
+  if (!res.ok) throw await refusedReply(res, 'The answer was refused');
+}
+
+// One picked file into the desktop's one upload store, for the purpose the
+// ask names (her reel clip, logo or song), through the same door chat
+// attachments use (Nunba desktop/file_sync).  Answers its file id.
+async function sendAskedFile(file, purpose) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  if (purpose) form.append('purpose', purpose);
+  const res = await fetch(`${API_BASE_URL}/api/chat-sync/files/push`, {
+    method: 'POST', headers: bearer(), body: form,
+  });
+  if (!res.ok) throw await refusedReply(res, `${file.name} was not sent`);
+  const body = await res.json();
+  return body.file_id;
+}
+
+// What the picker offers for the ask's `accept`; the store decides the exact
+// types each purpose takes and refuses the rest.
+const ACCEPT_FOR = { video: 'video/*', image: 'image/*', audio: 'audio/*' };
+
+function FileRequestOverlay({ data, onDismiss }) {
+  const inputRef = useRef(null);
+  // null, {sent, total} while her files go up, or 'answering'.
+  const [phase, setPhase] = useState(null);
+  const [error, setError] = useState(data.ask_id ? null
+    : 'This request cannot be answered (it names no ask). Please report it.');
+  const max = Number.isInteger(data.max_files) && data.max_files > 0 ? data.max_files : 10;
+  const busy = phase !== null;
+
+  const onPicked = async (e) => {
+    const files = Array.from(e.target.files || []).slice(0, max);
+    e.target.value = '';
+    if (!files.length || busy || !data.ask_id) return;
+    setError(null);
+    const xids = [];
+    try {
+      for (let i = 0; i < files.length; i += 1) {
+        setPhase({ sent: i, total: files.length });
+        xids.push(await sendAskedFile(files[i], data.purpose));
+      }
+      setPhase('answering');
+      await answerAsk(data.ask_id, { xids });
+    } catch (err) {
+      console.error('[file_request] not answered', err);
+      setError(answerFailure(err));
+      setPhase(null);
+      return;
+    }
+    setPhase(null);
+    onDismiss();
+  };
+
+  const label = !busy ? (data.button_label || 'Choose files')
+    : phase === 'answering' ? 'Sending your answer…'
+      : `Sending ${phase.sent + 1} of ${phase.total}…`;
+  return (
+    <Box data-testid="liquid-file-request">
+      <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+        {data.title || 'Your agent asks for files'}
+      </Typography>
+      {data.description && (
+        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)', mb: 1.5 }}>{data.description}</Typography>
+      )}
+      {error && <AnswerError text={error} />}
+      <input ref={inputRef} type="file" hidden multiple={max > 1} accept={ACCEPT_FOR[data.accept]}
+        data-testid="liquid-file-request-input" onChange={onPicked} />
+      <Button variant="contained" size="small" fullWidth disabled={busy || !data.ask_id} aria-busy={busy}
+        onClick={() => inputRef.current && inputRef.current.click()}
+        sx={{ background: ACCENT, '&:hover': { background: ACCENT_HOVER } }}>
+        {label}
+      </Button>
+    </Box>
+  );
+}
+
 function ApprovalOverlay({ data, onDismiss, onAction }) {
   const [act, run] = useActionRunner(onAction);
   // Which decision is on its way, and why the last one did not go through.
@@ -430,20 +535,17 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
     setBusy(decision);
     setError(null);
     try {
-      // The node names the approver from the caller's Bearer (never the body).
-      const token = localStorage.getItem('access_token');
-      const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ agent_id: data.agent_id, action: data.action, decision }),
-      });
-      if (!res.ok) {
-        let body = {};
-        try { body = await res.json(); } catch { /* not JSON */ }
-        throw Object.assign(new Error(`The answer was refused (HTTP ${res.status})`), {body});
+      if (data.ask_id) {
+        // An agent's ask: the decision is its answer, back to the agent.
+        await answerAsk(data.ask_id, { decision });
+      } else {
+        // The node names the approver from the caller's Bearer (never the body).
+        const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...bearer() },
+          body: JSON.stringify({ agent_id: data.agent_id, action: data.action, decision }),
+        });
+        if (!res.ok) throw await refusedReply(res, 'The answer was refused');
       }
     } catch (e) {
       console.error('[approval] decision not recorded', e);
@@ -597,6 +699,22 @@ function FormOverlay({ data, onDismiss, onAction }) {
     }
     if (busy) return;
     const local = LOCAL_SUBMIT_ACTIONS[data.submit_action];
+    if (data.ask_id) {
+      // An agent's ask: the values are its answer, back to the agent.
+      setBusy(true);
+      setError(null);
+      try {
+        await answerAsk(data.ask_id, { values });
+      } catch (e) {
+        console.error('[form] ask not answered', e);
+        setError(answerFailure(e));
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+      onDismiss();
+      return;
+    }
     if (!data.action && !local) {
       // A form with nowhere to send its values is a producer bug; say so
       // rather than pretend the values went somewhere.
@@ -1074,6 +1192,7 @@ export function OverlayContent({ data, onDismiss, navigate, onAction }) {
     case 'progress': return <ProgressOverlay data={data} />;
     case 'agent_action': return <AgentActionOverlay data={data} />;
     case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
+    case 'file_request': return <FileRequestOverlay data={data} onDismiss={onDismiss} />;
     case 'chart': return <ChartOverlay data={data} />;
     case 'code': return <CodeOverlay data={data} />;
     case 'markdown': return <MarkdownOverlay data={data} />;
@@ -1400,6 +1519,24 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     });
   }, [forgetShowing]);
 
+  // An agent's ask answered on any surface: HARTOS marks its notification
+  // row read, and notification.read names the row, which is the ask's id
+  // (person_ask).  Its card closes here.
+  const dropAnswered = useCallback((read) => {
+    const ids = new Set((read && Array.isArray(read.ids)) ? read.ids : []);
+    if (ids.size === 0) return;
+    setOverlays((prev) => {
+      const gone = prev.filter((o) => o.ask_id && ids.has(o.ask_id));
+      if (gone.length === 0) return prev;
+      gone.forEach((o) => {
+        clearTimeout(timersRef.current[o._id]);
+        delete timersRef.current[o._id];
+        forgetShowing(o._id);
+      });
+      return prev.filter((o) => !gone.includes(o));
+    });
+  }, [forgetShowing]);
+
   const handleEvent = useCallback((payload) => {
     if (!payload) return;
     const type = payload.type || payload.component_type || 'notification';
@@ -1484,13 +1621,15 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
       : realtimeService.on('agent.ui.update', handleEvent);
     const unsubAnswers = CONSENT_ANSWER_TYPES.map(
       (t) => realtimeService.on(t, settleAsks));
+    const unsubRead = realtimeService.on('notification.read', dropAnswered);
 
     return () => {
       unsub();
       unsubAnswers.forEach((u) => u && u());
+      if (unsubRead) unsubRead();
       Object.values(timersRef.current).forEach(clearTimeout);
     };
-  }, [handleEvent, settleAsks, subscribe]);
+  }, [handleEvent, settleAsks, dropAnswered, subscribe]);
 
   if (overlays.length === 0) return null;
 

@@ -1338,7 +1338,7 @@ def api_admin_chat_config_put():
 # admin chat settings. Both gates MUST pass; a stray JWT alone isn't
 # enough. See desktop/chat_sync.py for the persistence contract.
 
-def _chat_sync_resolve_uid():
+def _chat_sync_resolve_uid(require_sync: bool = True):
     """Return (uid, err_response_or_None).
 
     Extracts the user id from Bearer token, gates on
@@ -1347,19 +1347,25 @@ def _chat_sync_resolve_uid():
 
         uid, err = _chat_sync_resolve_uid()
         if err: return err
+
+    ``require_sync=False`` skips only the cloud-sync switch, for a file that
+    answers an agent's ask (a push naming another store purpose): it is
+    stored on this node for her own agent, not synced between devices.  The
+    Bearer check always runs.
     """
     # Gate 1: cloud_sync_enabled
-    try:
-        from desktop.chat_settings import get_chat_settings
-        if not get_chat_settings().cloud_sync_enabled:
-            return None, (jsonify({
-                'error': 'sync_disabled',
-                'message': 'Enable cloud sync in admin settings first.',
-            }), 403)
-    except Exception as e:  # noqa: BLE001
-        logging.warning("chat-sync cloud_sync_enabled probe failed: %s", e)
-        # Fail-closed: if we can't confirm the toggle is on, don't sync
-        return None, (jsonify({'error': 'sync_probe_failed'}), 500)
+    if require_sync:
+        try:
+            from desktop.chat_settings import get_chat_settings
+            if not get_chat_settings().cloud_sync_enabled:
+                return None, (jsonify({
+                    'error': 'sync_disabled',
+                    'message': 'Enable cloud sync in admin settings first.',
+                }), 403)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("chat-sync cloud_sync_enabled probe failed: %s", e)
+            # Fail-closed: if we can't confirm the toggle is on, don't sync
+            return None, (jsonify({'error': 'sync_probe_failed'}), 500)
 
     # Gate 2: token → user_id, through HARTOS's resolver (a cloud login's
     # opaque token is the user's api_token; a JWT-only decode 401'd it).
@@ -1556,30 +1562,42 @@ _FILE_REFUSAL_STATUS = {'too_large': 413, 'quota': 413, 'no_space': 507, 'busy':
 def api_chat_sync_files_push():
     """Upload a binary for cross-device replication.
 
-    multipart/form-data with a single file field 'file'.
+    multipart/form-data with a single file field 'file', and optionally a
+    field 'purpose': one of the store's inbound purposes, sent when the file
+    answers an agent's ask for it (a file_request card; desktop.file_sync).
     Response: {file_id, sha256, size, name, mime, purpose, created_at}
-    (purpose 'chat_attachment', for the client to echo in its /chat row); a
-    refusal is {'error': <the store's reason>, 'message'}: 400 bad_offer/
-    bad_name/bad_mime, 413 too_large/quota, 507 no_space, 503 busy,
-    409 not_found (deleted while it was being stored).
+    (purpose 'chat_attachment' unless one was named, for the client to echo
+    in its /chat row); a refusal is {'error': <the store's reason>,
+    'message'}: 400 bad_offer/bad_name/bad_mime/bad_purpose, 413
+    too_large/quota, 507 no_space, 503 busy, 409 not_found (deleted while it
+    was being stored).
     """
-    uid, err = _chat_sync_resolve_uid()
+    try:
+        from core.user_file_store import INBOUND_PURPOSES
+        from desktop.file_sync import PURPOSE, FileRefused
+        from desktop.file_sync import store as _store
+    except ImportError:
+        return jsonify({'error': 'file_sync_unavailable'}), 501
+    purpose = request.form.get('purpose') or PURPOSE
+    if purpose not in INBOUND_PURPOSES:
+        return jsonify({'error': 'bad_purpose',
+                        'message': 'not a purpose a file can be sent for'}), 400
+    # A chat attachment is synced between her devices, so the cloud-sync
+    # switch decides it; a file for an agent's ask is stored here for her
+    # own agent, so only who she is does.
+    uid, err = _chat_sync_resolve_uid(require_sync=(purpose == PURPOSE))
     if err:
         return err
     up = request.files.get('file')
     if up is None:
         return jsonify({'error': 'missing_file'}), 400
     try:
-        from desktop.file_sync import FileRefused
-        from desktop.file_sync import store as _store
-    except ImportError:
-        return jsonify({'error': 'file_sync_unavailable'}), 501
-    try:
         meta = _store(
             uid,
             up.stream,
             name=up.filename or 'file',
             mime=up.mimetype or 'application/octet-stream',
+            purpose=purpose,
         )
         return jsonify(meta), 200
     except FileRefused as refused:

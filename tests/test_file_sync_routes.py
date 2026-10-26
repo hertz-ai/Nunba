@@ -160,3 +160,60 @@ def test_without_a_token_nothing_is_stored(client, store):
                           content_type='multipart/form-data')
     assert refused.status_code == 401
     assert store.usage(USER) == 0
+
+
+MP4 = b'\x00\x00\x00\x18ftypmp42' + b'her look, filmed' * 64
+
+
+def test_a_push_names_the_purpose_an_ask_asked_for(client, store):
+    """The desktop page answering an agent's file_request sends each pick
+    with the ask's purpose (HARTOS person_ask), so the clip lands as her reel
+    clip, the claim the asking agent reads."""
+    pushed = client.post('/api/chat-sync/files/push', headers=AUTH,
+                         data={'file': (io.BytesIO(MP4), 'look.mp4', 'video/mp4'),
+                               'purpose': 'reel_source'},
+                         content_type='multipart/form-data')
+    assert pushed.status_code == 200, pushed.get_json()
+    meta = pushed.get_json()
+    assert meta['purpose'] == 'reel_source'
+    assert store.resolve(USER, meta['file_id'], purpose='reel_source') is not None
+    assert store.resolve(USER, meta['file_id'], purpose='chat_attachment') is None
+
+
+def test_a_push_naming_no_store_purpose_is_refused(client, store):
+    refused = client.post('/api/chat-sync/files/push', headers=AUTH,
+                          data={'file': (io.BytesIO(MP4), 'look.mp4', 'video/mp4'),
+                                'purpose': 'reel'},          # the OUTBOX purpose, never sent in
+                          content_type='multipart/form-data')
+    assert refused.status_code == 400
+    assert refused.get_json()['error'] == 'bad_purpose'
+    assert store.usage(USER) == 0
+
+
+@pytest.fixture
+def sync_off_client(main_mod, store):
+    settings = SimpleNamespace(cloud_sync_enabled=False)
+    with patch('integrations.social.auth.user_id_for_token',
+               side_effect=lambda token: USER if token == TOKEN else None), \
+            patch('desktop.chat_settings.get_chat_settings', return_value=settings):
+        yield main_mod.app.test_client()
+
+
+def test_with_cloud_sync_off_a_chat_attachment_is_still_refused(sync_off_client, store):
+    refused = _push(sync_off_client)
+    assert refused.status_code == 403 and refused.get_json()['error'] == 'sync_disabled'
+    assert store.usage(USER) == 0
+
+
+def test_with_cloud_sync_off_a_file_for_an_ask_still_reaches_her_agent(sync_off_client, store):
+    """Cloud sync is about her chat attachments travelling between devices.
+    A file she picks on this desktop for her own agent's ask is stored here,
+    for that agent: the switch does not decide it.  Who she is still does."""
+    form = lambda: {'file': (io.BytesIO(MP4), 'look.mp4', 'video/mp4'), 'purpose': 'reel_source'}
+    pushed = sync_off_client.post('/api/chat-sync/files/push', headers=AUTH, data=form(),
+                                  content_type='multipart/form-data')
+    assert pushed.status_code == 200, pushed.get_json()
+    assert store.resolve(USER, pushed.get_json()['file_id'], purpose='reel_source') is not None
+    anonymous = sync_off_client.post('/api/chat-sync/files/push', data=form(),
+                                     content_type='multipart/form-data')
+    assert anonymous.status_code == 401

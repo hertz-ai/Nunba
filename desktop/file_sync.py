@@ -46,12 +46,19 @@ What the store decides, and this door inherits:
     (fetch's ``download_name``).
   * 50 MB per file and 500 MB per user (the purpose's limits); a chat
     attachment is kept until she deletes it.
-  * One file, one claim per purpose.  This door reads and writes only the
+  * One file, one claim per purpose.  This door reads only the
     'chat_attachment' claim: it serves, lists, counts and deletes her chat
     attachments, never her clips, logo or songs.  Bytes she already holds
     for one of those (a clip she also sends in chat) become her chat
     attachment as well, and stay what they were: deleting the attachment
     here leaves the clip on her reel turn, the logo on her reels.
+  * A push may name another of the store's inbound purposes: an agent's
+    ask for her files (a file_request card, HARTOS
+    integrations.agent_engine.person_ask) sends each pick with the purpose
+    the ask names, so a clip she picks on this desktop is her reel clip,
+    as one her phone sends over its device link is.  Its answer then binds
+    the files to the agent that asked.  Such a file is not her chat
+    attachment, so the reads above do not see it.
 
 Not every upload goes through the store.  ``routes/upload_routes.py``
 KEEPS what it is sent (the web chat's images through /upload/file and
@@ -115,7 +122,7 @@ def _store():
     return get_user_file_store()
 
 
-def _meta(held) -> dict[str, Any]:
+def _meta(held, purpose: str = PURPOSE) -> dict[str, Any]:
     """The route's shape of a stored file: ``created_at`` in epoch ms, and
     the store purpose a /chat row may echo."""
     return {
@@ -124,17 +131,17 @@ def _meta(held) -> dict[str, Any]:
         'name': held.name,
         'mime': held.mime,
         'size': held.size,
-        'purpose': PURPOSE,
+        'purpose': purpose,
         'created_at': int(held.created_at * 1000),
     }
 
 
-def _held(user_id, file_id):
-    """This user's chat attachment ``file_id`` (the file as its
-    chat-attachment claim sees it), or None."""
+def _held(user_id, file_id, purpose: str = PURPOSE):
+    """This user's file ``file_id`` as its ``purpose`` claim sees it (her
+    chat attachment by default), or None."""
     if not is_xid(file_id):
         return None
-    return _store().resolve(user_id, file_id, purpose=PURPOSE)
+    return _store().resolve(user_id, file_id, purpose=purpose)
 
 
 def _download_name(held) -> str:
@@ -154,6 +161,7 @@ def store(
     *,
     name: str = 'file',
     mime: str = 'application/octet-stream',
+    purpose: str = PURPOSE,
 ) -> dict[str, Any]:
     """Put a file into the store for ``user_id`` and return its metadata
     ``{file_id, sha256, name, mime, size, purpose, created_at}``.
@@ -161,18 +169,21 @@ def store(
     ``file_id`` is the sha256 of the content.  The same content stored again
     by the same user is one file, recorded under the latest name; content
     she holds as a clip, logo or song becomes her chat attachment too and
-    stays what it was.  Raises FileRefused (a ValueError) with the store's
-    ``reason`` when the store refuses it ('not_found' when a delete took the
-    file before its record was read), and ValueError for an empty user id.
+    stays what it was.  ``purpose`` is the store claim it is held under: her
+    chat attachment unless an ask named another inbound purpose (see the
+    module docstring); the store refuses one it does not have ('bad_offer').
+    Raises FileRefused (a ValueError) with the store's ``reason`` when the
+    store refuses it ('not_found' when a delete took the file before its
+    record was read), and ValueError for an empty user id.
     """
     reply = _store().put_file(user_id, stream_or_bytes, name=name, mime=mime,
-                              purpose=PURPOSE)
+                              purpose=purpose)
     if reply.get('type') != 'file_done':
         raise FileRefused(reply.get('reason', 'bad_offer'))
-    held = _held(user_id, reply['xid'])
+    held = _held(user_id, reply['xid'], purpose)
     if held is None:              # deleted between the put and this read
         raise FileRefused('not_found')
-    return _meta(held)
+    return _meta(held, purpose)
 
 
 def fetch(user_id: str, file_id: str) -> tuple[str | None, dict | None]:
