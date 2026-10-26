@@ -46,7 +46,7 @@ landing-page/
 ├── cypress/                    # E2E tests
 ├── package.json
 ├── tailwind.config.js
-├── config-overrides.js         # Webpack overrides (react-app-rewired)
+├── config-overrides.js         # react-app-rewired overrides (webpack; Jest for npm test)
 ├── .env.example                # Environment template
 └── scripts/
     ├── setup-env.sh            # Auto-decrypts production secrets
