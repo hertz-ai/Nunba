@@ -967,7 +967,9 @@ def after_request(response):
         # mirrors X-Frame-Options SAMEORIGIN above (this directive wins
         # when both are present): only the page's own origin may embed
         # US, which is how the HART OS shell shows Nunba in its panels.
-        "frame-src https://www.youtube.com https://www.youtube-nocookie.com; "
+        # 'self': a page an agent made, shown in the chat as a sandboxed
+        # iframe of /uploads/<path> (AgentOverlay MediaOverlay, html).
+        "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
         "frame-ancestors 'self'; "
         "base-uri 'self'; "
         "form-action 'self'"

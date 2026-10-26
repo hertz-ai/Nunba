@@ -3803,18 +3803,22 @@ def _chat_turn(data):
                 logger.debug(f'Active-task lookup failed (non-fatal): {_e}')
 
             # Emit Liquid UI notification with clickable navigate actions.
-            # ServiceRegistry.get('LiquidUIService') is the canonical
-            # accessor used by HARTOS Connect_Channel, Invite_Friend,
-            # meet_copilot, QR-pair etc. — same emit pattern, no parallel
-            # path.  If LiquidUIService isn't registered (e.g. HARTOS
-            # daemon offline), the emit silently no-ops and the response
-            # text below still carries the summary.
+            # get_registry().get_or_none('LiquidUIService') is the accessor
+            # HARTOS's Connect_Channel and Join_External_Room tools, its
+            # QR-pair card emit and its meet_copilot card emit
+            # (integrations/social/agent_voice_bridge.py) use — same emit
+            # pattern, no parallel path.  (This used
+            # core.platform.service_registry, a module
+            # HARTOS does not have: the card was never shown.)  If
+            # LiquidUIService isn't registered (e.g. HARTOS daemon
+            # offline), the emit no-ops and the response text below still
+            # carries the summary.  The card is FOR this turn's user: named,
+            # it reaches their stream and their phone on a node with more
+            # than one person.
             if _active_tasks:
                 try:
-                    from core.platform.service_registry import (
-                        ServiceRegistry,
-                    )
-                    _lui = ServiceRegistry.get('LiquidUIService')
+                    from core.platform.registry import get_registry
+                    _lui = get_registry().get_or_none('LiquidUIService')
                     if _lui is not None:
                         _lines = [
                             f"• {t['description'][:60]} ({t['status']})"
@@ -3843,7 +3847,7 @@ def _chat_turn(data):
                             'message': '\n'.join(_lines),
                             'severity': 'info',
                             'actions': _actions,
-                        })
+                        }, user_id=str(user_id))
                 except Exception as _e:
                     logger.debug(
                         f'Liquid UI emit failed (non-fatal): {_e}'
