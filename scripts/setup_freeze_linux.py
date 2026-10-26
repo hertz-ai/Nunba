@@ -72,7 +72,7 @@ if os.getcwd() not in sys.path:
 _scripts_dir = os.path.dirname(os.path.abspath(__file__))
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
-from deps import version_short
+from deps import tracked_files, version_short
 
 # -- Auto-install sibling project editable deps ------
 # Ensures HARTOS, hevolveai, hevolve-database, agent-ledger are
@@ -343,8 +343,9 @@ build_exe_options = {
     ],
     # Auto-discover source files
     "include_files": (
-        # 1. Auto-include ALL .py files from project root
-        [(f, f) for f in glob.glob("*.py")
+        # 1. Auto-include the git-tracked .py files from project root
+        # (untracked scratch scripts at the root shipped, 2026-10-21)
+        [(f, f) for f in tracked_files(glob.glob("*.py"))
          if f not in ("app.py", "setup.py")]
         # 2. Auto-include ALL .json config files
         + [(f, f) for f in glob.glob("*.json")]

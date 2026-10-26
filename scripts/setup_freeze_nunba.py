@@ -109,7 +109,7 @@ if os.getcwd() not in sys.path:
 _scripts_dir = os.path.dirname(os.path.abspath(__file__))
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
-from deps import version_short, version_win32
+from deps import tracked_files, version_short, version_win32
 
 # ── Auto-install sibling project editable deps ──────────────────
 # Ensures HARTOS, hevolveai, hevolve-database, agent-ledger are
@@ -779,10 +779,11 @@ build_exe_options = {
     # All .py files in project root (except app.py which is the entry point,
     # build/test scripts, and venv dirs)
     "include_files": (
-        # 1. Auto-include ALL .py files from project root
+        # 1. Auto-include the git-tracked .py files from project root
         # These are needed because app.py loads main.py via importlib (not standard import)
         # and cx_Freeze doesn't trace importlib.util.spec_from_file_location targets.
-        [(f, f) for f in glob.glob("*.py")
+        # (untracked scratch scripts at the root shipped, 2026-10-21)
+        [(f, f) for f in tracked_files(glob.glob("*.py"))
          if f not in ("app.py", "setup.py") and not f.startswith(("test_", "_test_"))]
         # 2. Auto-include ALL .json files from project root (config, templates)
         + [(f, f) for f in glob.glob("*.json")]

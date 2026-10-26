@@ -71,7 +71,7 @@ _project_root = os.path.normpath(os.path.join(_scripts_dir, '..'))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from deps import VERSION, version_short
+from deps import VERSION, tracked_files, version_short
 
 
 def ensure_icon_exists():
@@ -231,8 +231,9 @@ build_exe_options = {
     ],
     # ── Auto-discover source files (mirroring setup_freeze_nunba.py) ──
     "include_files": (
-        # 1. Auto-include ALL .py files from project root (except build/test scripts)
-        [(f, f) for f in glob.glob("*.py")
+        # 1. Auto-include the git-tracked .py files from project root, except app.py/setup.py
+        # (untracked scratch scripts at the root shipped, 2026-10-21)
+        [(f, f) for f in tracked_files(glob.glob("*.py"))
          if f not in ("app.py", "setup.py")]
         # 2. Auto-include ALL .json files from project root
         + [(f, f) for f in glob.glob("*.json")]
