@@ -114,7 +114,21 @@ jobs:
         # integrations.vision imports it at package import, so
         # tests/test_image_attachment_context.py failed collection and
         # the collection error stopped the whole run.
-        run: python -m pip install pytest pytest-html pytest-timeout pyyaml pillow flask flask-cors requests PyJWT numpy==1.26.4
+        #
+        # sqlalchemy, cryptography, json-repair and pillow come from
+        # requirements.txt (the one place their versions live), not from a
+        # second list here.  HARTOS is installed below with --no-deps, so
+        # none of its dependencies arrived: `integrations.social` needs
+        # sqlalchemy and security.node_integrity needs cryptography, so
+        # main.py saw no social platform (HARTOS_BACKEND_DIRECT = False),
+        # registered its /api/social/* proxy, and every test that logs in
+        # through the app died with ConnectionError to localhost:6777 -- 211
+        # failures in the run on PR #38.  Bare `pillow` also resolved to
+        # 13.0.0, which hart-backend (Pillow<13) rejects.
+        shell: bash
+        run: |
+          python -m pip install pytest pytest-html pytest-timeout pyyaml flask flask-cors requests PyJWT numpy==1.26.4
+          python -m pip install $(grep -E '^(pillow|sqlalchemy|cryptography|json-repair)==' requirements.txt | sort -u)
 
       # Install HARTOS (hart-backend) so `from core.*` / `from
       # integrations.*` imports in Nunba's tests resolve.  Without
