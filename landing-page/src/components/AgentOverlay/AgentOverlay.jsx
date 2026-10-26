@@ -526,10 +526,32 @@ function MarkdownOverlay({ data }) {
 }
 
 function MediaOverlay({ data }) {
-  const t = data.media_type || (data.url?.match(/\.(mp4|webm)/) ? 'video' : data.url?.match(/\.(mp3|wav|ogg)/) ? 'audio' : 'image');
-  if (t === 'video') return <Box component="video" controls src={data.url} sx={{ width: '100%', borderRadius: '8px' }} />;
-  if (t === 'audio') return <Box component="audio" controls src={data.url} sx={{ width: '100%' }} />;
-  return <Box component="img" src={data.url} alt={data.alt || ''} sx={{ width: '100%', borderRadius: '8px' }} />;
+  // `src` is the media component's declared prop (HARTOS COMPONENT_TYPES
+  // ['media']) and what its producer, the game-sound review card, sends.
+  // Reading `url` left that card's player with no source.
+  const src = data.src;
+  const t = data.media_type || (src?.match(/\.(mp4|webm)/) ? 'video' : src?.match(/\.(mp3|wav|ogg)/) ? 'audio' : 'image');
+  if (t === 'video') return <Box component="video" controls src={src} sx={{ width: '100%', borderRadius: '8px' }} />;
+  if (t === 'audio') return <Box component="audio" controls src={src} sx={{ width: '100%' }} />;
+  // A page an agent made.  allow-scripts alone runs it in an opaque origin:
+  // it cannot read this app's storage or call its API as the person.
+  if (t === 'html') {
+    return <Box component="iframe" src={src} title={data.alt || 'Page from your agent'} sandbox="allow-scripts"
+      sx={{ width: '100%', height: 360, border: 0, borderRadius: '8px', background: '#fff' }} />;
+  }
+  return <Box component="img" src={src} alt={data.alt || ''} sx={{ width: '100%', borderRadius: '8px' }} />;
+}
+
+// The media cards for an agent message's `media` (HARTOS
+// publish_agent_message; one item per file the store vouched for, built by
+// hartos/helper.py media_items_for).  This desktop shows an item by its
+// `url`, served by the same Flask; a reel item has none (the phone fetches
+// it by xid), so it gets no card here.
+export function mediaCards(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter((it) => it && typeof it.url === 'string' && it.url)
+    .map((it) => ({ type: 'media', media_type: it.kind, src: it.url, alt: it.caption || '' }));
 }
 
 function MetricOverlay({ data }) {
@@ -550,6 +572,19 @@ const LOCAL_SUBMIT_ACTIONS = {
   copy_invite_url: (values) => navigator.clipboard.writeText(values.invite_url || ''),
 };
 
+// The provider's portal a form names in `external_url` (HARTOS channel
+// metadata, e.g. the Discord developer portal), where the person gets the
+// token the form asks for.  Only an http(s) address is offered.
+function portalUrl(url) {
+  if (typeof url !== 'string') return null;
+  try {
+    const u = new URL(url);
+    return (u.protocol === 'https:' || u.protocol === 'http:') ? u : null;
+  } catch {
+    return null;
+  }
+}
+
 function FormOverlay({ data, onDismiss, onAction }) {
   // Fields may arrive pre-filled (`value`) or with a default: start from
   // those, so a read-only field shows what the producer sent.
@@ -561,6 +596,8 @@ function FormOverlay({ data, onDismiss, onAction }) {
   // Embed only: the per-field errors the host answers a submit with.
   const [errors, setErrors] = useState({});
   const [act, run] = useActionRunner(onAction);
+  // App only: the embed never opens an agent-supplied URL.
+  const portal = onAction ? null : portalUrl(data.external_url);
   // The card closes only once the server took the values.  It used to post
   // with a bare fetch (no Bearer token, so the auth-required channel routes
   // answered 401), swallow the result and close anyway: a typed bot token
@@ -605,6 +642,13 @@ function FormOverlay({ data, onDismiss, onAction }) {
   return (
     <Box>
       {data.title && <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>{data.title}</Typography>}
+      {portal && (
+        <Button size="small" variant="outlined" fullWidth
+          onClick={() => window.open(portal.href, '_blank', 'noopener,noreferrer')}
+          sx={{ mb: 1, textTransform: 'none', color: INFO_BLUE, borderColor: 'rgba(100,200,255,0.4)' }}>
+          {`Open ${portal.host}`}
+        </Button>
+      )}
       {(data.fields || []).map((f, i) => (
         <TextField key={i} label={f.label || f.name} size="small" fullWidth
           type={f.secret ? 'password' : (f.type === 'textarea' ? 'text' : (f.type || 'text'))} required={f.required}

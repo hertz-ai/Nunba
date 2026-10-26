@@ -77,6 +77,23 @@ def test_l2_flask_emits_security_headers(project_root, source_text):
     assert "frame-ancestors 'none'" not in src
 
 
+def test_l2b_csp_lets_the_chat_frame_an_agents_page(project_root, source_text):
+    """FAILS if the page's CSP cannot frame this app's own /uploads pages.
+
+    An agent can show the person a page it made (an html item in its
+    message's media, HARTOS hartos/helper.py media_items_for).  The chat
+    draws it in a sandboxed iframe of /uploads/<path>, served by this Flask;
+    with frame-src naming only the YouTube origins the browser refuses that
+    frame and the person sees an empty box.  The YouTube origins stay.
+    """
+    src = source_text(project_root / "main.py")
+    assert ("frame-src 'self' https://www.youtube.com "
+            "https://www.youtube-nocookie.com; ") in src, (
+        "CSP frame-src must admit 'self' (agent pages under /uploads) "
+        "beside the two YouTube embed origins"
+    )
+
+
 def test_l3_mcp_token_writes_outside_program_files(project_root, source_text):
     """FAILS if hmac/mcp token writes target Program Files (task #250
     regression). Must use user-writable path via core.platform_paths.

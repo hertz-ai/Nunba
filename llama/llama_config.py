@@ -2108,14 +2108,28 @@ class LlamaConfig:
 
                 return True
 
-        # Re-check the desired port — use raw TCP bind test to catch TIME_WAIT
-        # phantom sockets that HTTP health checks miss.
+        # Re-check the desired port — use raw TCP bind test to catch a socket
+        # bound to it that the HTTP health check misses (a server too busy to
+        # answer /health in 2 s reads as NOT_RUNNING there).
         def _is_port_really_free(port):
-            """Try to actually bind to the port. TIME_WAIT, phantom processes, etc. all fail."""
+            """Try to actually bind to the port: False while another socket
+            is bound to it, True past one left in TIME_WAIT.
+
+            The socket option decides both.  SO_REUSEADDR binds past
+            TIME_WAIT on every OS, and on Linux and macOS it is refused beside
+            a listening socket.  On Windows it is not: it binds beside a live
+            listener that set SO_REUSEADDR too, as llama-server's socket does,
+            so a port a llama-server was serving on read as free and the start
+            spawned a second server on it (task #936, 2026-10-21: five
+            llama-servers LISTENING on 127.0.0.1:8081).  Windows' own
+            SO_EXCLUSIVEADDRUSE is refused beside any socket bound to the port
+            and binds past TIME_WAIT (both measured on Windows 11).
+            """
             import socket
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.setsockopt(socket.SOL_SOCKET,
+                             getattr(socket, 'SO_EXCLUSIVEADDRUSE', socket.SO_REUSEADDR), 1)
                 s.bind(('127.0.0.1', port))
                 s.close()
                 return True
@@ -2135,7 +2149,7 @@ class LlamaConfig:
             elif desired_port == _caption_port:
                 logger.warning(f"Port {desired_port} is the caption server's port — finding alternative")
             elif not port_free:
-                logger.warning(f"Port {desired_port} has phantom connections (TIME_WAIT) — finding alternative")
+                logger.warning(f"Port {desired_port} is bound by another socket — finding alternative")
 
             # Find an available port (also uses bind test)
             new_port = None
