@@ -11,7 +11,7 @@ import connectedGif from '../assets/images/connected.gif';
 // the companion, the icon was always self-referential noise.
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
-import AgentOverlay from '../components/AgentOverlay/AgentOverlay';
+import AgentOverlay, {mediaCards} from '../components/AgentOverlay/AgentOverlay';
 import {Link as RouterLink, useNavigate, useParams, useLocation} from 'react-router-dom';
 import {
   ChevronDown,
@@ -140,6 +140,13 @@ function mergeCarriedSetupCards(loaded, carried) {
     (m) => !(isGlobalSetupCard(m) && carriedKeys.has(setupCardKey(m)))
   );
   return [...loadedWithoutDupes, ...carried];
+}
+
+// One chat row for an agent's card, drawn by ChatMessageList through
+// AgentOverlay's OverlayContent: the overlay's inline cards and the media an
+// agent's message carries both come in this way.
+function agentCardRow(component) {
+  return {type: 'agent_ui', component, timestamp: new Date(), sender: 'agent'};
 }
 
 /* TypeWriterForSubtitle and ThinkingProcessContainer extracted to ./chat/ */
@@ -2365,6 +2372,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
       const responseVideoUrl = parsed.video_link?.video || '';
       const responseAudioUrl = parsed.video_link?.aud_url || '';
+      // What the agent wants the person to SEE (HARTOS publish_agent_message
+      // `media`): each item a card under the agent's words.
+      const mediaRows = mediaCards(parsed.media).map(agentCardRow);
 
       if (extractedText || responseVideoUrl || responseAudioUrl) {
         const endTime = new Date();
@@ -2471,7 +2481,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
-            const newMessages = [...prev, assistantMessage];
+            const newMessages = [...prev, assistantMessage, ...mediaRows];
             setAnimatingMessageIndex(null);
             setShouldScroll(true);
             return newMessages;
@@ -2500,8 +2510,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         };
 
         setMessages((prev) => {
-          const newMessages = [...prev, assistantMessage];
-          setAnimatingMessageIndex(newMessages.length - 1);
+          const newMessages = [...prev, assistantMessage, ...mediaRows];
+          // The typewriter runs on the agent's words, not on a media row.
+          setAnimatingMessageIndex(prev.length);
           setShouldScroll(true);
           return newMessages;
         });
@@ -2545,8 +2556,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
-            const newMessages = [...prev, assistantMessage];
-            setAnimatingMessageIndex(newMessages.length - 1);
+            const newMessages = [...prev, assistantMessage, ...mediaRows];
+            setAnimatingMessageIndex(prev.length);
             setShouldScroll(true);
             return newMessages;
           });
@@ -6008,12 +6019,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       <AgentOverlay
         navigate={navigate}
         onInlineChatCard={(card) => {
-          setMessages((prev) => [...prev, {
-            type: 'agent_ui',
-            component: card,
-            timestamp: new Date(),
-            sender: 'agent',
-          }]);
+          setMessages((prev) => [...prev, agentCardRow(card)]);
         }}
       />
     </>
