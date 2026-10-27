@@ -17,10 +17,32 @@
  * slow request can never let a later step overtake it.
  */
 
-// The session answers each step at once except the reveal, which HARTOS
-// bounds itself (REVEAL_WAIT_S, then the instant path).  This only stops a
-// hung network from holding the queue, and every step behind it, forever.
-export const STEP_TIMEOUT_MS = 8000;
+import { logger } from '../../utils/logger';
+
+// The network bound on every request the ceremony makes: the session steps
+// and the seal.  The session answers each step at once except the reveal,
+// which HARTOS bounds itself (REVEAL_WAIT_S, then the instant path), so this
+// only stops a hung network from holding the queue (and every step behind
+// it) or the seal forever.  A seal that times out is retried on the next
+// launch (the absent hart_sealed flag is the retry trigger).
+export const HART_REQUEST_TIMEOUT_MS = 8000;
+
+/**
+ * fetch(), aborted after `timeoutMs`.  Rejects on abort or network failure,
+ * exactly like fetch.  The one bounded fetch for the ceremony's requests.
+ */
+export async function fetchWithin(url, init = {}, {
+  timeoutMs = HART_REQUEST_TIMEOUT_MS,
+  fetchImpl = (...args) => fetch(...args),
+} = {}) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetchImpl(url, { ...init, signal: ctl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * One session per ceremony.  `key` names it on the server: a fresh one per
@@ -33,27 +55,25 @@ export const STEP_TIMEOUT_MS = 8000;
 export function createCeremonySession({
   baseUrl,
   fetchImpl = (...args) => fetch(...args),
-  timeoutMs = STEP_TIMEOUT_MS,
+  timeoutMs = HART_REQUEST_TIMEOUT_MS,
   key = `hart-ceremony-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
 } = {}) {
   let queue = Promise.resolve(null);
 
   const send = async (action, data) => {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
-      const resp = await fetchImpl(`${baseUrl}/api/hart/advance`, {
+      const resp = await fetchWithin(`${baseUrl}/api/hart/advance`, {
         method: 'POST',
-        signal: ctl.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: action || null, data: data || {}, user_id: key }),
-      });
-      return resp.ok ? await resp.json() : null;
-    } catch {
-      return null; // offline / timeout: the ceremony carries on locally
-    } finally {
-      clearTimeout(timer);
+      }, { timeoutMs, fetchImpl });
+      if (resp.ok) return await resp.json();
+      logger.warn(`[HART] session step ${action || 'next'} answered HTTP ${resp.status}`);
+    } catch (err) {
+      // Offline / timeout: the ceremony carries on locally.
+      logger.warn(`[HART] session step ${action || 'next'} failed: ${err && err.message}`);
     }
+    return null;
   };
 
   return {

@@ -1,4 +1,4 @@
-import { createCeremonySession, nameFromReveal } from '../../../components/HART/ceremonySession';
+import { createCeremonySession, fetchWithin, HART_REQUEST_TIMEOUT_MS, nameFromReveal } from '../../../components/HART/ceremonySession';
 
 function deferred() {
   let resolve;
@@ -73,4 +73,26 @@ test('nameFromReveal reads a reveal and nothing else', () => {
   expect(nameFromReveal({ phase: 'pre_reveal' })).toBeNull();
   expect(nameFromReveal({ phase: 'reveal' })).toBeNull();
   expect(nameFromReveal(null)).toBeNull();
+});
+
+describe('fetchWithin, the one bounded fetch for the ceremony (steps and seal)', () => {
+  test('passes the answer through and sends an abort signal', async () => {
+    const fetchImpl = jest.fn(async () => ok({ sealed: true }));
+    const resp = await fetchWithin('/api/hart/seal', { method: 'POST' }, { fetchImpl });
+    expect(await resp.json()).toEqual({ sealed: true });
+    const init = fetchImpl.mock.calls[0][1];
+    expect(init.method).toBe('POST');
+    expect(init.signal).toBeDefined();
+  });
+
+  test('rejects once the time is up, like fetch on abort', async () => {
+    const fetchImpl = jest.fn((url, init) => new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+    }));
+    await expect(fetchWithin('/x', {}, { fetchImpl, timeoutMs: 20 })).rejects.toThrow('aborted');
+  });
+
+  test('the ceremony has one timeout for every request', () => {
+    expect(HART_REQUEST_TIMEOUT_MS).toBe(8000);
+  });
 });

@@ -18,7 +18,7 @@
  * "Every word spoken matters.", The human who built this.
  */
 
-import { createCeremonySession, nameFromReveal } from './ceremonySession';
+import { createCeremonySession, fetchWithin, nameFromReveal } from './ceremonySession';
 import TypedTextBase from './TypedText';
 
 import { API_BASE_URL } from '../../config/apiBase';
@@ -238,11 +238,6 @@ const _computeProfile = (() => {
   if (cores <= 4 || mem <= 4) return 'medium';
   return 'high';
 })();
-
-// Bound the /api/hart/seal call so a hung network cannot stall the
-// ceremony.  On timeout the seal is retried on the next launch (the
-// absent hart_sealed flag is the retry trigger).
-const SEAL_TIMEOUT_MS = 8000;
 
 const PARTICLE_COUNTS = { low: 25, medium: 50, high: 80 };
 const GLOW_ENABLED = _computeProfile !== 'low';
@@ -1009,6 +1004,8 @@ export default function LightYourHART({ userId, onComplete }) {
       setHartCandidates(named.candidates);
     } else {
       // Fallback name if backend fails
+      logger.warn('[HART] the reveal step gave no name; using a built-in '
+        + 'name with no backups for the seal');
       setHartName(_fallbackName());
     }
 
@@ -1080,13 +1077,11 @@ export default function LightYourHART({ userId, onComplete }) {
       let sealedRemotely = false;
       for (const candidate of [hartName, ...hartCandidates]) {
         if (cancelled) return;
-        let timer = null;
         try {
-          const ctl = new AbortController();
-          timer = setTimeout(() => ctl.abort(), SEAL_TIMEOUT_MS);
-          const sealResp = await fetch(`${API_BASE_URL}/api/hart/seal`, {
+          // Bounded (HART_REQUEST_TIMEOUT_MS) so a hung network cannot stall
+          // the ceremony; on timeout the seal is retried on the next launch.
+          const sealResp = await fetchWithin(`${API_BASE_URL}/api/hart/seal`, {
             method: 'POST',
-            signal: ctl.signal,
             headers: {
               'Content-Type': 'application/json',
               ...(localStorage.getItem('access_token')
@@ -1119,8 +1114,6 @@ export default function LightYourHART({ userId, onComplete }) {
           // dedicated "pending seal" flag would be a sixth home for a
           // fact that already has too many.
           break;
-        } finally {
-          if (timer) clearTimeout(timer);
         }
       }
       if (cancelled) return;

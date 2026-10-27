@@ -14,6 +14,7 @@
  * This renders the real component with a stub server and records every step.
  */
 import LightYourHART from '../../../components/HART/LightYourHART';
+
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import React from 'react';
 
