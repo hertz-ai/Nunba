@@ -22,9 +22,6 @@ for _p in (_NUNBA, _HARTOS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-psutil = pytest.importorskip('psutil')
-
-
 def _hartos_has_child_lifecycle() -> bool:
     try:
         import core.child_lifecycle  # noqa: F401
@@ -40,6 +37,10 @@ needs_binding = pytest.mark.skipif(
 
 @needs_binding
 def test_a_server_bound_by_llama_config_dies_when_nunba_os_exits():
+    # psutil is needed by THIS test only.  A module-level importorskip skipped
+    # the whole file where psutil is missing, including the call-site pins
+    # below, so CI never ran them (review of #34).
+    psutil = pytest.importorskip('psutil')
     script = textwrap.dedent(f"""
         import os, subprocess, sys
         for p in ({_NUNBA!r}, {_HARTOS!r}):
