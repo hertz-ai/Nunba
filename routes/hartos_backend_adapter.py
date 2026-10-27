@@ -646,8 +646,7 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
 # ── Reel Studio fields at the HARTOS boundary ───────────────────────────
 # A Reel Studio turn (the phone's custom_gpt body, or /chat) carries
 # `attachments` (refs into this desktop's user file store) and `goal_tags`
-# (the agent-creation hint) for HARTOS, and HARTOS's /chat reply carries
-# `media` (the reel) for the phone.  HARTOS's chat() reads both inbound
+# (the agent-creation hint) for HARTOS.  HARTOS's chat() reads both inbound
 # fields (since HARTOS 4ec01b499, 2026-10-14): it binds the attachments to
 # the turn (core.chat_attachments parse_inbound, then bind_inbound) and, for
 # a turn that names its agent (prompt_id), reads the user-assignable tags as
@@ -658,14 +657,15 @@ def _fallback_chat(text: str, user_id: str = None, **kwargs) -> dict[str, Any]:
 # copied: an attachment row by core.chat_attachments.validate_attachment,
 # the ONE /chat attachments rule that parse_inbound reads by (amendment
 # A9 a; a chat attachment needs no Reel Studio package), and as many rows as
-# its MAX_ATTACHMENTS; reply media by
-# integrations.reel_studio.contracts.validate_media_item; and goal tags by
+# its MAX_ATTACHMENTS; and goal tags by
 # marketing_tools.user_assignable_goal_tags, the filter HARTOS's chat()
 # reads the creation hint by, for that turn alone.  This node keeps no copy
-# of any of them, not
+# of either, not
 # even a fallback: a node that cannot read a rule passes on nothing it
 # governs.  What is dropped is logged by count and type, never by value: it
-# is whatever the client sent.
+# is whatever the client sent.  The `media` HARTOS's /chat reply carries is
+# HARTOS's own output and reaches the client as HARTOS sent it: no agent's
+# contract judges another agent's reply (owner ruling 2026-10-25).
 
 #: The attachments one turn forwards, serialized, stay within this many bytes.
 TURN_ATTACHMENTS_MAX_BYTES = 16 * 1024
@@ -676,8 +676,6 @@ _ATTACHMENT_MAX_KEYS = 32
 _UNACCEPTABLE = object()
 #: Where HARTOS keeps a chat turn's attachments rule and cap (turn_attachments).
 _CHAT_ATTACHMENTS = 'core.chat_attachments'
-#: Where HARTOS keeps the reply-media contract (reply_media).
-_REEL_CONTRACTS = 'integrations.reel_studio.contracts'
 #: Where HARTOS filters the goal tags a user may assign (turn_goal_tags).
 _GOAL_TAG_OWNER = 'integrations.agent_engine.marketing_tools'
 
@@ -816,24 +814,6 @@ def turn_goal_tags(raw) -> list:
     if len(kept) < len(raw):
         logger.warning("Reel Studio goal_tags: %d of %d goal_tags dropped (not "
                        "user-assignable); %d passed on",
-                       len(raw) - len(kept), len(raw), len(kept))
-    return kept
-
-
-def reply_media(raw) -> list:
-    """The `media` of a HARTOS /chat reply that may reach the phone: the
-    items HARTOS's reply-media contract (contracts.validate_media_item)
-    accepts.  Anything else is dropped and counted."""
-    if not raw:
-        return []
-    validate = _contract_validator(_REEL_CONTRACTS, 'validate_media_item',
-                                   'reply media', raw)
-    if validate is None:
-        return []
-    kept = [item for item in raw if _contract_accepts(validate, item)]
-    if len(kept) < len(raw):
-        logger.warning("Reel Studio reply media: %d of %d media items dropped "
-                       "(outside HARTOS's reply-media contract); %d passed on",
                        len(raw) - len(kept), len(raw), len(kept))
     return kept
 
