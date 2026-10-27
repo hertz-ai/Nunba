@@ -55,8 +55,17 @@ except ImportError:
 
 
 def _bind_child(proc) -> bool:
-    """Tie ``proc`` to Nunba's lifetime when HARTOS can.  Never raises."""
-    return bool(_bind_to_parent and _bind_to_parent(proc))
+    """Tie ``proc`` to Nunba's lifetime when HARTOS can.  Never raises.
+
+    With a HARTOS that lacks core.child_lifecycle the server spawns unbound, as
+    before, but says so: otherwise an orphan after quit has no trace in the log.
+    """
+    if _bind_to_parent is None:
+        logger.warning(
+            "llama-server not bound to Nunba's lifetime: this HARTOS has no "
+            "core.child_lifecycle, so it will outlive Nunba on quit")
+        return False
+    return bool(_bind_to_parent(proc))
 
 
 def _uses_qwen35_runtime(model_preset) -> bool:

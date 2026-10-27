@@ -66,7 +66,28 @@ def test_a_server_bound_by_llama_config_dies_when_nunba_os_exits():
             psutil.Process(pid).kill()
 
 
-def test_an_older_hartos_without_the_helper_spawns_unbound(monkeypatch):
+def test_an_older_hartos_without_the_helper_spawns_unbound_and_says_so(monkeypatch, caplog):
     import llama.llama_config as lc
     monkeypatch.setattr(lc, '_bind_to_parent', None)
-    assert lc._bind_child(object()) is False
+    with caplog.at_level('WARNING', logger=lc.logger.name):
+        assert lc._bind_child(object()) is False
+    assert any('outlive Nunba' in r.getMessage() for r in caplog.records)
+
+
+def _bind_child_calls():
+    """The arguments of every _bind_child(...) call in llama_config."""
+    import ast
+    path = os.path.join(_NUNBA, 'llama', 'llama_config.py')
+    with open(path, encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    return [ast.unparse(n.args[0]) for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and getattr(n.func, 'id', None) == '_bind_child'
+            and n.args]
+
+
+@pytest.mark.parametrize('spawned', ['self.server_process', 'self._caption_process'])
+def test_both_llama_server_spawns_are_bound(spawned):
+    """The behavioural test above calls _bind_child on a dummy child, so
+    deleting a call site left it green (review of #34).  This pins the call
+    sites themselves: the main server and the caption server."""
+    assert spawned in _bind_child_calls(), f'{spawned} is spawned but never bound'
