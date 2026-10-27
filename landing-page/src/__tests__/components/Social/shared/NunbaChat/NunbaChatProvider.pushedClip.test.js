@@ -73,3 +73,41 @@ describe('NunbaChatProvider pushed clip follows the speaker toggle', () => {
     expect(body.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Review of #37: the panel's toggle was its own `useState(false)`, never saved
+ * and never seeded from storage, so once the pushed clip obeys the toggle the
+ * panel's voice replies (which played before) were silent every session until
+ * the user clicked the speaker, and a user with the speaker on in Demopage
+ * heard nothing in the panel.  The panel now starts from the same storage
+ * reading Demopage uses (ttsGuards.initialTtsEnabled: consent granted AND the
+ * saved `tts_enabled` choice) and saves the choice when the user changes it.
+ */
+describe('NunbaChatProvider speaker toggle starts from, and saves to, storage', () => {
+  test('the initial state is initialTtsEnabled(read), not a literal false', () => {
+    expect(src).toMatch(
+      /const \[ttsEnabled, setTtsEnabled\] = useState\(\(\) =>\s*initialTtsEnabled\(\(key\) => localStorage\.getItem\(key\)\)\)/,
+    );
+    expect(src).not.toMatch(/const \[ttsEnabled, setTtsEnabled\] = useState\(false\)/);
+    expect(src).toMatch(
+      /import \{[^}]*initialTtsEnabled[^}]*\} from '..\/..\/..\/..\/utils\/ttsGuards'/,
+    );
+  });
+
+  test("the user's choice is saved to tts_enabled when it changes", () => {
+    expect(src).toMatch(/localStorage\.setItem\('tts_enabled', String\(ttsEnabled\)\)/);
+  });
+
+  test('neither the save nor the stop runs on mount, only on a change', () => {
+    // A save on mount would overwrite a stored 'true' with the false that
+    // initialTtsEnabled returns when consent is not granted yet; a stop on
+    // mount would pause the shared audio element for nothing.
+    expect(src).toMatch(/const ttsMountedRef = useRef\(false\);/);
+    const save = src.slice(src.indexOf("localStorage.setItem('tts_enabled'") - 400,
+      src.indexOf("localStorage.setItem('tts_enabled'") + 200);
+    expect(save).toMatch(/ttsMountedRef\.current/);
+    const stop = src.slice(src.indexOf('ttsEnabledRef.current = ttsEnabled;'),
+      src.indexOf('}, [ttsEnabled, stopTts]);'));
+    expect(stop).toMatch(/ttsMountedRef\.current/);
+  });
+});

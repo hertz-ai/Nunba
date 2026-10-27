@@ -26,7 +26,10 @@ import {
 } from '../../../../utils/chatRetry';
 import {getStableDeviceIdOnce} from '../../../../utils/deviceId';
 import {rememberServerPromptId} from '../../../../utils/promptId';
-import {shouldPlayPushedClip} from '../../../../utils/ttsGuards';
+import {
+  initialTtsEnabled,
+  shouldPlayPushedClip,
+} from '../../../../utils/ttsGuards';
 
 import React, {
   createContext,
@@ -273,7 +276,12 @@ export default function NunbaChatProvider({children}) {
   // currentAgent so the visible thread never jumps.
   const adoptedPromptIdRef = useRef(null);
   const [availableAgents, setAvailableAgents] = useState([]);
-  const [ttsEnabled, setTtsEnabled] = useState(false);
+  // The speaker starts from the same storage reading Demopage uses (consent
+  // granted AND the saved `tts_enabled` choice) and the choice is saved when
+  // the user changes it (effect below), so the panel does not fall silent
+  // every session, and a speaker left on in Demopage is on here.
+  const [ttsEnabled, setTtsEnabled] = useState(() =>
+    initialTtsEnabled((key) => localStorage.getItem(key)));
   // Camera frame streaming — consented via an ApprovalOverlay "camera"
   // approval.  Persisted to sessionStorage so a page nav within the
   // session keeps the consent (not localStorage — long-lived consent
@@ -341,13 +349,31 @@ export default function NunbaChatProvider({children}) {
   // the reply already playing: tts.stop() is the one stop (shared element,
   // browser PocketTTS, queue).  `stop` is a stable useCallback, hence the
   // alias in the deps.
+  //
+  // Neither the stop nor the save runs on mount, only on a change: a save on
+  // mount would overwrite a stored 'true' with the false initialTtsEnabled
+  // returns while consent is not granted yet, and a stop on mount would pause
+  // the shared audio element for nothing.
   const ttsEnabledRef = useRef(ttsEnabled);
+  const ttsMountedRef = useRef(false);
   const stopTts = tts.stop;
   useEffect(() => {
     ttsEnabledRef.current = ttsEnabled;
+    if (!ttsMountedRef.current) return;
     if (ttsEnabled) return;
     stopTts();
   }, [ttsEnabled, stopTts]);
+  useEffect(() => {
+    if (!ttsMountedRef.current) {
+      ttsMountedRef.current = true;
+      return;
+    }
+    try {
+      localStorage.setItem('tts_enabled', String(ttsEnabled));
+    } catch {
+      /* storage unavailable: the choice lasts for this session only */
+    }
+  }, [ttsEnabled]);
 
   // switchAgent must be defined BEFORE useEffects that reference it (TDZ fix)
   const switchAgent = useCallback(
