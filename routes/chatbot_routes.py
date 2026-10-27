@@ -3020,7 +3020,8 @@ def _chat_turn(data):
         if not _hint:
             return False, []
         try:
-            from integrations.agent_engine.marketing_tools import agent_is_local_only, user_assignable_goal_tags
+            from integrations.agent_engine.marketing_tools import (
+                agent_is_local_only, user_assignable_goal_tags)
             keeps = bool(agent_is_local_only(str(_pid_int), _hint))
             return keeps, (user_assignable_goal_tags(_hint) if keeps else [])
         except Exception as exc:
@@ -3135,7 +3136,7 @@ def _chat_turn(data):
                     'prompt_id=%s has no recipe on this node yet and its '
                     'turn keeps to this node (%s) - staying here '
                     'so HARTOS carries on creating it', _pid_int,
-                    f'goal tags {_kept_tags}' if _kept_tags
+                    'goal tags %s' % (_kept_tags,) if _kept_tags
                     else "HARTOS's stored record of the agent")
                 return ({'id': _pid_int, 'type': 'local'}, _pid_int,
                         'local', _pid_int, False)

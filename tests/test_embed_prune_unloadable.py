@@ -34,8 +34,8 @@ def _load_abi_helper():
     with open(_SETUP, encoding='utf-8') as fh:
         src = fh.read()
     start = src.index('def _abi_tag_of_embedded_python')
-    end = src.index('# ── end embed ABI helpers ──', start)
-    ns = {'os': os, 'sys': __import__('sys')}
+    end = src.index('# ── Post-build: copy python-embed', start)
+    ns = {'os': os}
     exec(src[start:end], ns)  # noqa: S102 - fixture, not user input
     return ns['_abi_tag_of_embedded_python']
 

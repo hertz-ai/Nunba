@@ -324,10 +324,7 @@ def vision_inference():
         saved_path, name, _ = _save_file(image_file, IMAGE_DIR)
         desc = _describe_image_via_llm(str(saved_path), prompt, cache=True)
     else:
-        # silent=True: an empty or malformed body falls through to the JSON
-        # 400 below.  force=True alone raised werkzeug's HTML 400 page, which
-        # the HARTOS Analyze_Image tool cannot parse (measured 2026-10-23).
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(force=True)
         image_b64 = data.get('image_base64')
         image_url = data.get('image_url')
         prompt = data.get('prompt')
@@ -451,9 +448,7 @@ def upload_native():
     Cross-OS: pywebview create_file_dialog returns a string path on
     every OS; this view consumes it uniformly.
     """
-    # silent=True so `or {}` can do its job: force=True alone raised an HTML
-    # 400 on an empty or malformed body before the fallback ever ran.
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(force=True) or {}
     file_path = data.get('path', '')
     user_id = data.get('user_id', '0')
     request_id = data.get('request_id', '')

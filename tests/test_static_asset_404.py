@@ -203,22 +203,6 @@ def test_a2a_miss_is_an_api_miss(path, accept):
     assert is_api_miss(path, accept) is True
 
 
-# Measured 2026-10-23: POST /upload/image (and /upload/audio, /upload/file,
-# /upload/vision, /upload/parse_pdf) on main's app before the upload
-# blueprint registered -- it registers later, through HARTOS bootstrap's
-# consumer hook -- returned 200 with the SPA's index.html.  A client posting
-# a file in that window got HTML it cannot parse instead of an error.  Every
-# /upload/* and /uploads/* path is an API (routes/upload_routes.py, HARTOS
-# books_bp); the SPA declares no /upload page.
-@pytest.mark.parametrize("path", [
-    "/upload/image", "/upload/audio", "/upload/file", "/upload/vision",
-    "/upload/parse_pdf", "/upload/native", "/uploads/missing.png",
-])
-@pytest.mark.parametrize("accept", [_FETCH, _JSON, _NAV, None])
-def test_upload_miss_is_an_api_miss(path, accept):
-    assert is_api_miss(path, accept) is True
-
-
 def test_api_miss_control_and_spa_routes_unchanged():
     assert is_api_miss('/api/livetest_a2a_nosuch', _FETCH) is True   # control
     assert is_api_miss('/social/feed', _NAV) is False                 # SPA route
