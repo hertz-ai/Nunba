@@ -91,9 +91,49 @@ class TestBuildGuards(unittest.TestCase):
     def test_a_build_whose_abi_differs_from_python_embed_stops(self):
         src = _src()
         block = src[src.index('_pre_embed_abi = _abi_tag_of_embedded_python('):]
-        block = block[:block.index('if os.path.isdir(_embed_sp):')]
-        self.assertIn('_pre_embed_abi != _abi_tag_of_this_python()', block)
+        block = block[:block.index('_skip_python_embed_copy = False')]
+        self.assertIn('_embed_abi_mismatch(_pre_embed_abi, _abi_tag_of_this_python())', block)
         self.assertIn('sys.exit(1)', block)
+
+    def test_the_abi_guard_runs_before_anything_writes_python_embed_or_freezes(self):
+        """Review of #36: the guard sat after the autorepair's `pip install
+        --target python-embed` (which wrote this venv's ABI into python-embed,
+        a folder that persists between builds) and after cx_Freeze's setup()
+        had already written build/Nunba/Nunba.exe with the wrong Python."""
+        src = _src()
+        guard = src.index('_pre_embed_abi = _abi_tag_of_embedded_python(')
+        for later in ('_src_corruption = _validate_python_embed_source()',
+                      '_autorepair_corrupt_packages(_src_corruption)',
+                      '\nsetup(\n',
+                      'def _pip_install_sibling('):
+            at = src.index(later)
+            self.assertLess(guard, at, f'ABI guard must come before {later!r}')
+
+    def test_the_old_late_guard_is_gone(self):
+        """One guard, not a second copy left behind in the pre-copy block."""
+        src = _src()
+        self.assertEqual(src.count('_pre_embed_abi = _abi_tag_of_embedded_python('), 1)
+        self.assertNotIn('sys.exit(1)\n    if os.path.isdir(_embed_sp):', src)
+
+
+class TestEmbedAbiMismatch(unittest.TestCase):
+
+    def setUp(self):
+        self.h = _helpers()
+
+    def test_same_abi_is_fine(self):
+        self.assertIsNone(self.h['_embed_abi_mismatch']('cp312', 'cp312'))
+
+    def test_a_cp311_build_venv_against_a_cp312_embed_is_refused_and_says_why(self):
+        msg = self.h['_embed_abi_mismatch']('cp312', 'cp311')
+        self.assertIn('cp311', msg)
+        self.assertIn('cp312', msg)
+        self.assertIn('PYTHON_EMBED_VERSION', msg)
+
+    def test_an_unknown_embed_abi_is_not_a_mismatch(self):
+        # No python-embed yet (first build), or no pythonXY.dll to read: the
+        # callers prune nothing on None, so the guard must not guess either.
+        self.assertIsNone(self.h['_embed_abi_mismatch'](None, 'cp311'))
 
     def test_already_present_means_loadable_and_a_stale_copy_is_replaced(self):
         src = _src()

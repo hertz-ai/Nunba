@@ -1560,6 +1560,103 @@ def _autorepair_corrupt_packages(corruption: list[tuple[str, str]]) -> int:
     return repaired
 
 
+# ── Embed ABI helpers (the pre-copy installs AND the post-build copy) ──
+def _abi_tag_of_embedded_python(embed_dir):
+    """'cp312' for the interpreter that SHIPS, read from its own pythonXY.dll.
+
+    Returns None when it cannot be determined, and every caller must then prune
+    nothing: deleting extension modules on a guess is how you ship a bundle that
+    imports on the build box and dies on the user's.
+    """
+    try:
+        for name in os.listdir(embed_dir):
+            low = name.lower()
+            if (low.startswith('python') and low.endswith('.dll')
+                    and low[6:-4].isdigit() and len(low[6:-4]) >= 2):
+                return 'cp' + low[6:-4]        # python312.dll -> cp312
+    except OSError:
+        pass
+    return None
+
+
+def _abi_tag_of_this_python():
+    """'cp311' for the interpreter running this build: the one cx_Freeze
+    freezes Nunba.exe with, and whose pip installs into python-embed below."""
+    return f'cp{sys.version_info.major}{sys.version_info.minor}'
+
+
+def _wrong_abi_orphan(name, names, abi):
+    """Base name of `name` when it is an extension module built ONLY for another
+    ABI (no `<base>.<abi>*`, `<base>.pyd` or `<base>.py` beside it), else None.
+
+    The one rule for "nothing in this directory can import that module" -- the
+    post-build copy's orphan warning and the pre-copy reinstall both ask it.
+    """
+    if not abi or not name.endswith('.pyd') or '.cp' not in name:
+        return None
+    tag = name.rsplit('.cp', 1)[1].split('-', 1)[0]
+    if f'cp{tag}' == abi:
+        return None
+    base = name.split('.cp')[0]
+    if any(o.startswith(f'{base}.{abi}') for o in names):
+        return None
+    if f'{base}.py' in names or f'{base}.pyd' in names:
+        return None
+    return base
+
+
+def _modules_without_abi_build(pkg_dir, abi):
+    """Modules under pkg_dir (relative paths) that ship only for other ABIs.
+
+    Measured 2026-10-21: python-embed (cp312) held ctranslate2 with only
+    `_ext.cp311-win_amd64.pyd`, installed by an earlier build whose venv was
+    Python 3.11.  The "already present" check skipped it on every later build,
+    the post-build copy dropped the cp311 file, and the installed app's
+    faster-whisper failed with "module 'ctranslate2' has no attribute
+    'StorageView'": voice input transcribed nothing.  [] when abi is unknown.
+    """
+    if not abi or not os.path.isdir(pkg_dir):
+        return []
+    out = []
+    for dirpath, _dirs, names in os.walk(pkg_dir):
+        for n in names:
+            base = _wrong_abi_orphan(n, names, abi)
+            if base:
+                out.append(os.path.relpath(os.path.join(dirpath, base), pkg_dir))
+    return sorted(set(out))
+
+def _embed_abi_mismatch(embed_abi, build_abi):
+    """Why this build must not run against python-embed, or None when it can.
+
+    The frozen app appends python-embed's site-packages to its path, and every
+    pip install below runs on THIS interpreter, so the build's Python and
+    python-embed's must be one ABI.  Measured 2026-10-21: a 3.11 venv against
+    the 3.12 python-embed built an installer that passed acceptance and
+    validation, and shipped without LangChain chat (uuid_utils), Piper TTS
+    (onnxruntime) or Whisper (ctranslate2).  An unknown embed ABI is not a
+    mismatch: nothing can be said about it, and callers prune nothing on None.
+    """
+    if not embed_abi or embed_abi == build_abi:
+        return None
+    return (f"this build runs on Python {sys.version.split()[0]} "
+            f"({build_abi}), but python-embed is {embed_abi}.  The installer "
+            f"would ship extension modules the app cannot load.  Recreate the "
+            f"build venv with the python-embed version (scripts/deps.py "
+            f"PYTHON_EMBED_VERSION) and build again.")
+# ── end embed ABI helpers ──
+
+# The ABI guard runs FIRST: before the integrity scan below (its autorepair and
+# sibling reinstall run `sys.executable -m pip install --target python-embed`,
+# which would write this venv's ABI into python-embed, a folder that persists
+# between builds) and long before setup() freezes Nunba.exe with this Python.
+_pre_embed_abi = None
+if ('build' in sys.argv or 'build_exe' in sys.argv):
+    _pre_embed_abi = _abi_tag_of_embedded_python(os.path.abspath("python-embed"))
+    _abi_error = _embed_abi_mismatch(_pre_embed_abi, _abi_tag_of_this_python())
+    if _abi_error:
+        print(f"ERROR: {_abi_error}")
+        sys.exit(1)
+
 _skip_python_embed_copy = False
 current_python_embed_hash = None
 if os.path.exists("python-embed"):
@@ -2004,72 +2101,6 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
                 f"won't blow up at runtime)"
             )
 
-# ── Embed ABI helpers (the pre-copy installs AND the post-build copy) ──
-def _abi_tag_of_embedded_python(embed_dir):
-    """'cp312' for the interpreter that SHIPS, read from its own pythonXY.dll.
-
-    Returns None when it cannot be determined, and every caller must then prune
-    nothing: deleting extension modules on a guess is how you ship a bundle that
-    imports on the build box and dies on the user's.
-    """
-    try:
-        for name in os.listdir(embed_dir):
-            low = name.lower()
-            if (low.startswith('python') and low.endswith('.dll')
-                    and low[6:-4].isdigit() and len(low[6:-4]) >= 2):
-                return 'cp' + low[6:-4]        # python312.dll -> cp312
-    except OSError:
-        pass
-    return None
-
-
-def _abi_tag_of_this_python():
-    """'cp311' for the interpreter running this build: the one cx_Freeze
-    freezes Nunba.exe with, and whose pip installs into python-embed below."""
-    return f'cp{sys.version_info.major}{sys.version_info.minor}'
-
-
-def _wrong_abi_orphan(name, names, abi):
-    """Base name of `name` when it is an extension module built ONLY for another
-    ABI (no `<base>.<abi>*`, `<base>.pyd` or `<base>.py` beside it), else None.
-
-    The one rule for "nothing in this directory can import that module" -- the
-    post-build copy's orphan warning and the pre-copy reinstall both ask it.
-    """
-    if not abi or not name.endswith('.pyd') or '.cp' not in name:
-        return None
-    tag = name.rsplit('.cp', 1)[1].split('-', 1)[0]
-    if f'cp{tag}' == abi:
-        return None
-    base = name.split('.cp')[0]
-    if any(o.startswith(f'{base}.{abi}') for o in names):
-        return None
-    if f'{base}.py' in names or f'{base}.pyd' in names:
-        return None
-    return base
-
-
-def _modules_without_abi_build(pkg_dir, abi):
-    """Modules under pkg_dir (relative paths) that ship only for other ABIs.
-
-    Measured 2026-10-21: python-embed (cp312) held ctranslate2 with only
-    `_ext.cp311-win_amd64.pyd`, installed by an earlier build whose venv was
-    Python 3.11.  The "already present" check skipped it on every later build,
-    the post-build copy dropped the cp311 file, and the installed app's
-    faster-whisper failed with "module 'ctranslate2' has no attribute
-    'StorageView'": voice input transcribed nothing.  [] when abi is unknown.
-    """
-    if not abi or not os.path.isdir(pkg_dir):
-        return []
-    out = []
-    for dirpath, _dirs, names in os.walk(pkg_dir):
-        for n in names:
-            base = _wrong_abi_orphan(n, names, abi)
-            if base:
-                out.append(os.path.relpath(os.path.join(dirpath, base), pkg_dir))
-    return sorted(set(out))
-# ── end embed ABI helpers ──
-
 
 # ── Pre-copy: install TTS packages into python-embed ──
 # GPU TTS backends need pip packages in python-embed's site-packages.
@@ -2079,21 +2110,6 @@ import subprocess
 
 if ('build' in sys.argv or 'build_exe' in sys.argv):
     _embed_sp = os.path.join("python-embed", "Lib", "site-packages")
-    # The frozen app appends python-embed's site-packages to its path (app.py),
-    # and every pip install below runs on THIS interpreter.  So this build's
-    # Python and python-embed's must be one ABI.  Measured 2026-10-21: a 3.11
-    # venv against the 3.12 python-embed built an installer that passed
-    # acceptance and validation, and shipped without LangChain chat
-    # (uuid_utils), Piper TTS (onnxruntime) or Whisper (ctranslate2).
-    _pre_embed_abi = _abi_tag_of_embedded_python(os.path.abspath("python-embed"))
-    if _pre_embed_abi and _pre_embed_abi != _abi_tag_of_this_python():
-        print(f"ERROR: this build runs on Python {sys.version.split()[0]} "
-              f"({_abi_tag_of_this_python()}), but python-embed is "
-              f"{_pre_embed_abi}.  The installer would ship extension modules "
-              f"the app cannot load.  Recreate the build venv with the "
-              f"python-embed version (scripts/deps.py PYTHON_EMBED_VERSION) "
-              f"and build again.")
-        sys.exit(1)
     if os.path.isdir(_embed_sp):
         # ── Always re-install HARTOS + sibling deps into python-embed ──
         # Editable install in system Python doesn't update python-embed's copy.
