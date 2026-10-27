@@ -174,6 +174,21 @@ describe('file_request', () => {
     expect(screen.queryByText('Note 1')).toBeNull();      // the oldest note went
     expect(screen.getByText('Note 4')).toBeTruthy();
   });
+
+  test('with only asks up, a new card still shows and the oldest ask goes', () => {
+    // HARTOS keeps up to three asks open for her (person_ask
+    // MAX_OPEN_PER_PERSON), as many as the page shows (review of 715e2184)
+    const send = mountOverlay();
+    for (let i = 1; i <= 3; i += 1) {
+      send({type: 'approval', msg_id: `ask${i}`, ask_id: `ask${i}`, agent_id: '342',
+            action: `step_${i}`, title: `Ask ${i}`});
+    }
+    send({type: 'notification', msg_id: 'n1', title: 'A new note', message: 'x'});
+    expect(screen.getByText('A new note')).toBeTruthy();
+    expect(screen.queryByText('Ask 1')).toBeNull();
+    expect(screen.getByText('Ask 2')).toBeTruthy();
+    expect(screen.getByText('Ask 3')).toBeTruthy();
+  });
 });
 
 describe('an ask answered anywhere', () => {

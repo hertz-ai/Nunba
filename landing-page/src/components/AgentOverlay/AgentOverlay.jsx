@@ -1600,11 +1600,13 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
         prev = prev.filter(o => !pairingOf(o));
       }
       const next = [...prev, entry];
-      // FIFO eviction if over max.  An open ask is not evicted: HARTOS sends
-      // it once, and it waits for her answer.
+      // FIFO eviction if over max, never the card that just came.  An open
+      // ask goes last: HARTOS sends it once, and it waits for her answer.
+      // HARTOS keeps up to MAX_OVERLAYS asks open for her, so when only asks
+      // are left the oldest one goes (it stays open in HARTOS and in her
+      // bell), or every newer card would be hidden behind them.
       while (next.length > MAX_OVERLAYS) {
-        const i = next.findIndex((o) => !o.ask_id);
-        if (i < 0) break;
+        const i = Math.max(0, next.slice(0, -1).findIndex((o) => !o.ask_id));
         const [evicted] = next.splice(i, 1);
         clearTimeout(timersRef.current[evicted._id]);
         delete timersRef.current[evicted._id];
