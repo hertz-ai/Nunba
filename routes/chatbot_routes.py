@@ -170,7 +170,7 @@ HEVOLVE_PROMPTS_AVAILABLE = False
 # on Windows which can cause I/O errors if the import fails partway through
 try:
     from routes.hartos_backend_adapter import chat as hevolve_chat
-    from routes.hartos_backend_adapter import drain_thinking_traces, get_prompts, reply_media
+    from routes.hartos_backend_adapter import drain_thinking_traces, get_prompts
     from routes.hartos_backend_adapter import zeroshot as hevolve_zeroshot
     HEVOLVE_CHAT_AVAILABLE = True
     HEVOLVE_PROMPTS_AVAILABLE = True
@@ -1275,8 +1275,8 @@ def custom_gpt():
     turn (_turn_request_id) so a late push or file_list recovery finds its
     bubble.  A Reel Studio turn carries attachments and goal_tags, which the
     adapter forwards to HARTOS as far as HARTOS's contracts accept them
-    (turn_attachments, turn_goal_tags); the reel HARTOS answers with
-    (`media`, reply_media) is in the reply.
+    (turn_attachments, turn_goal_tags); the `media` HARTOS answers with is
+    in the reply as HARTOS sent it.
     """
     data = request.get_json(silent=True) or {}
     user_id = data.get('user_id', 'guest')
@@ -3459,11 +3459,13 @@ def _chat_turn(data):
                     return jsonify(error_response)
 
                 response_text = result.get('text') or result.get('response')
-                # The reel the turn delivered (HARTOS's /chat reply `media`),
-                # as far as HARTOS's reply-media contract accepts it.  It is
-                # an answer with or without words: a reply that is the reel
-                # alone is served, not mistaken for a dead model below.
-                media = reply_media(result.get('media'))
+                # The `media` HARTOS's /chat reply carries (a Reel Studio
+                # reel, or any other agent's), as HARTOS sent it: no agent's
+                # contract judges another agent's reply (owner ruling
+                # 2026-10-25).  It is an answer with or without words: a
+                # reply that is the media alone is served, not mistaken for
+                # a dead model below.
+                media = result.get('media')
                 if (response_text or media) and not result.get('error'):
                     logger.info(f'LangChain local response: {(response_text or "")[:100]}...')
                     # Correction intent: the HARTOS draft-first dispatcher's
@@ -3803,18 +3805,22 @@ def _chat_turn(data):
                 logger.debug(f'Active-task lookup failed (non-fatal): {_e}')
 
             # Emit Liquid UI notification with clickable navigate actions.
-            # ServiceRegistry.get('LiquidUIService') is the canonical
-            # accessor used by HARTOS Connect_Channel, Invite_Friend,
-            # meet_copilot, QR-pair etc. — same emit pattern, no parallel
-            # path.  If LiquidUIService isn't registered (e.g. HARTOS
-            # daemon offline), the emit silently no-ops and the response
-            # text below still carries the summary.
+            # get_registry().get_or_none('LiquidUIService') is the accessor
+            # HARTOS's Connect_Channel and Join_External_Room tools, its
+            # QR-pair card emit and its meet_copilot card emit
+            # (integrations/social/agent_voice_bridge.py) use — same emit
+            # pattern, no parallel path.  (This used
+            # core.platform.service_registry, a module
+            # HARTOS does not have: the card was never shown.)  If
+            # LiquidUIService isn't registered (e.g. HARTOS daemon
+            # offline), the emit no-ops and the response text below still
+            # carries the summary.  The card is FOR this turn's user: named,
+            # it reaches their stream and their phone on a node with more
+            # than one person.
             if _active_tasks:
                 try:
-                    from core.platform.service_registry import (
-                        ServiceRegistry,
-                    )
-                    _lui = ServiceRegistry.get('LiquidUIService')
+                    from core.platform.registry import get_registry
+                    _lui = get_registry().get_or_none('LiquidUIService')
                     if _lui is not None:
                         _lines = [
                             f"• {t['description'][:60]} ({t['status']})"
@@ -3843,7 +3849,7 @@ def _chat_turn(data):
                             'message': '\n'.join(_lines),
                             'severity': 'info',
                             'actions': _actions,
-                        })
+                        }, user_id=str(user_id))
                 except Exception as _e:
                     logger.debug(
                         f'Liquid UI emit failed (non-fatal): {_e}'

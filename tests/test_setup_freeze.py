@@ -303,6 +303,73 @@ class TestBuildConfig:
         assert 'requireAdministrator' in manifest
         assert 'Nunba' in manifest
 
+    def test_tracked_files_drops_an_untracked_file(self, tmp_path, monkeypatch):
+        """Measured 2026-10-21: the root "*.py" include shipped two untracked
+        scratch scripts (check_python.py, run_python.py) into the installed
+        app.  deps.tracked_files keeps the committed file and drops the
+        untracked one."""
+        import shutil
+        import subprocess
+        if shutil.which('git') is None:
+            pytest.skip('git is not installed')
+        from scripts.deps import tracked_files
+
+        def git(*args):
+            subprocess.run(['git', *args], cwd=tmp_path, check=True,
+                           capture_output=True, timeout=30)
+
+        git('init', '-q')
+        git('config', 'user.name', 'tracked_files test')
+        git('config', 'user.email', 'tracked-files-test@example.invalid')
+        (tmp_path / 'a.py').write_text('print("a")\n', encoding='utf-8')
+        git('add', 'a.py')
+        git('commit', '-q', '-m', 'add a.py')
+        (tmp_path / 'b.py').write_text('print("b")\n', encoding='utf-8')
+        monkeypatch.chdir(tmp_path)
+
+        assert tracked_files(['a.py', 'b.py']) == ['a.py']
+        assert tracked_files([]) == []
+
+    def test_tracked_files_outside_a_work_tree_keeps_every_path(
+            self, tmp_path, monkeypatch, capsys):
+        """When git cannot answer (here: no work tree), every path comes back
+        unchanged with one warning line, so a build from a tree without .git
+        ships what it shipped before."""
+        import shutil
+        import subprocess
+        if shutil.which('git') is None:
+            pytest.skip('git is not installed')
+        from scripts.deps import tracked_files
+
+        # Stop git's repo search at tmp_path, wherever the temp dir lives.
+        monkeypatch.setenv('GIT_CEILING_DIRECTORIES', str(tmp_path.parent))
+        probe = subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'],
+                               cwd=tmp_path, capture_output=True, timeout=30)
+        assert probe.returncode != 0, 'precondition: tmp_path is inside a work tree'
+        monkeypatch.chdir(tmp_path)
+
+        assert tracked_files(['a.py', 'b.py']) == ['a.py', 'b.py']
+        lines = capsys.readouterr().out.splitlines()
+        assert len(lines) == 1, lines
+        assert 'WARNING' in lines[0], lines
+
+    def test_root_py_include_goes_through_tracked_files(self):
+        """Every platform freeze script wraps its root "*.py" glob in
+        deps.tracked_files and imports it, so an untracked file at the repo
+        root never reaches the installer."""
+        import re
+        scripts = Path(PROJECT_ROOT) / 'scripts'
+        for fname in ('setup_freeze_nunba.py', 'setup_freeze_mac.py',
+                      'setup_freeze_linux.py'):
+            src = (scripts / fname).read_text(encoding='utf-8')
+            n_root_globs = src.count('glob.glob("*.py")')
+            assert n_root_globs >= 1, f'{fname}: root "*.py" include not found'
+            assert src.count('tracked_files(glob.glob("*.py"))') == n_root_globs, (
+                f'{fname}: a root "*.py" glob is not wrapped in tracked_files(), '
+                f'so untracked files at the repo root ship in the installer')
+            assert re.search(r'^from deps import .*\btracked_files\b', src, re.M), (
+                f'{fname}: tracked_files is not imported from deps')
+
 
 # ---------------------------------------------------------------------------
 # 6. HARTOS module discovery patterns

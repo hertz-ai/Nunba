@@ -2,6 +2,7 @@
 import TypeWriterForSubtitle from './TypeWriterSubtitle';
 
 import hourglassAnimation from '../../assets/hourglass-lottie.json';
+import {OverlayContent} from '../../components/AgentOverlay/AgentOverlay';
 import RelativeTime from '../../components/Common/RelativeTime';
 import {isReplyMessage} from '../../utils/chatRetry';
 import {formatTier} from '../../utils/tier';
@@ -542,6 +543,22 @@ const ChatMessageList = ({
                   Modify
                 </button>
               </div>
+            </div>
+          );
+        }
+
+        if (message.type === 'agent_ui' && message.component) {
+          // An agent's card for this chat: AgentOverlay forwards product_card,
+          // cart, checkout and comparison cards here and Demopage appends each
+          // as {type: 'agent_ui', component}.  The overlay's own renderer
+          // draws it, so the chat shows the same card the overlay does.
+          return (
+            <div
+              key={`agent-ui-${index}`}
+              className="rounded-lg p-6 shadow-sm animate-slide-in-left"
+              style={{maxWidth: '100%', backgroundColor: '#212A31', color: '#FFFFFF'}}
+            >
+              <OverlayContent data={message.component} />
             </div>
           );
         }
