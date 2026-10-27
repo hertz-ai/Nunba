@@ -57,6 +57,27 @@ describe('canRegisterGuestForSeal', () => {
     expect(canRegisterGuestForSeal()).toBe(false);
   });
 
+  test('a cloud user whose token expired (user_id left behind, no pending flag) is NOT registered as a guest', () => {
+    // 401 -> clearAccessTokenForExpiry removes ONLY access_token, so the
+    // encrypted user_id stays; useStorageSync's pending flag is not set; and
+    // Agent.js still shows the ceremony to any unsealed user (review of #35).
+    localStorage.setItem('user_id', 'ENC:10202');
+    localStorage.setItem('email_address', 'ENC:sales@example.com');
+    expect(canRegisterGuestForSeal()).toBe(false);
+  });
+
+  test('a user_id that does not decrypt still counts as a cloud identity', () => {
+    // Presence is the signal: refusing is safe, minting a guest over it is not.
+    localStorage.setItem('user_id', 'not-decryptable');
+    expect(canRegisterGuestForSeal()).toBe(false);
+  });
+
+  test('a guest-only state (guest ids, no cloud user_id) is still registered', () => {
+    localStorage.setItem('guest_mode', 'true');
+    localStorage.setItem('guest_user_id', '555');
+    expect(canRegisterGuestForSeal()).toBe(true);
+  });
+
   test('a pending flag does not turn a token-holding user into a registration', () => {
     localStorage.setItem('access_token', 'ENC:jwt');
     localStorage.setItem('pending_cloud_user_id', '10202');
