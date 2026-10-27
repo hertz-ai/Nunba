@@ -155,3 +155,41 @@ class TestEmbedAbiMismatch(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestArmorWheelForAbi(unittest.TestCase):
+    """The HevolveArmor loader wheel is picked by python-embed's own ABI.
+
+    It used to be `'cp312' in name`, hard-coded (review of #36): a cp313
+    python-embed would have installed a cp312 loader it cannot import.
+    """
+
+    def setUp(self):
+        self.pick = _helpers()['_wheel_for_abi']
+
+    def test_picks_the_wheel_for_the_embed_abi(self):
+        names = ['hevolvearmor-0.3.0-cp311-cp311-win_amd64.whl',
+                 'hevolvearmor-0.3.0-cp312-cp312-win_amd64.whl',
+                 'hevolvearmor-0.3.0-cp313-cp313-win_amd64.whl']
+        self.assertEqual(self.pick(names, 'cp313'),
+                         'hevolvearmor-0.3.0-cp313-cp313-win_amd64.whl')
+        self.assertEqual(self.pick(names, 'cp312'),
+                         'hevolvearmor-0.3.0-cp312-cp312-win_amd64.whl')
+
+    def test_newest_of_several_for_the_same_abi(self):
+        names = ['hevolvearmor-0.2.0-cp312-cp312-win_amd64.whl',
+                 'hevolvearmor-0.3.0-cp312-cp312-win_amd64.whl']
+        self.assertEqual(self.pick(names, 'cp312'),
+                         'hevolvearmor-0.3.0-cp312-cp312-win_amd64.whl')
+
+    def test_no_wheel_for_the_abi_means_build_from_source(self):
+        names = ['hevolvearmor-0.3.0-cp311-cp311-win_amd64.whl', 'README.txt']
+        self.assertIsNone(self.pick(names, 'cp312'))
+        self.assertIsNone(self.pick(names, None))
+
+    def test_the_build_no_longer_hard_codes_cp312(self):
+        src = _src()
+        start = src.index('# Step 2: install hevolvearmor decryption loader')
+        block = src[start:src.index('_install_target =', start)]
+        self.assertNotIn("'cp312' in w", block)
+        self.assertIn('_wheel_for_abi(', block)

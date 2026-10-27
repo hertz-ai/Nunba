@@ -1643,6 +1643,16 @@ def _embed_abi_mismatch(embed_abi, build_abi):
             f"would ship extension modules the app cannot load.  Recreate the "
             f"build venv with the python-embed version (scripts/deps.py "
             f"PYTHON_EMBED_VERSION) and build again.")
+
+
+def _wheel_for_abi(wheel_names, abi):
+    """The newest wheel built for `abi` ('cp312'), by its file-name tag, or
+    None.  `-cp312-` is the interpreter tag of a wheel name, so a cp311 or
+    cp313 wheel lying beside it is never picked for a cp312 python-embed."""
+    if not abi:
+        return None
+    hits = [w for w in wheel_names if w.endswith('.whl') and f'-{abi}-' in w]
+    return sorted(hits)[-1] if hits else None
 # ── end embed ABI helpers ──
 
 # The ABI guard runs FIRST: before the integrity scan below (its autorepair and
@@ -2446,20 +2456,23 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                   f"src={os.path.isdir(_hevolveai_src)})")
 
         # Step 2: install hevolvearmor decryption loader into python-embed.
-        # Uses a pre-built cp312 wheel if present in
+        # Uses a pre-built wheel for python-embed's own ABI if present in
         # HARTOS/hevolvearmor/target/wheels/; falls back to the source
         # directory (pip will invoke maturin if available).  The loader
-        # ships a Rust _native.cp312-win_amd64.pyd so the pip install has
-        # to target the correct Python ABI — which matches python-embed
-        # (PYTHON_EMBED_VERSION, currently 3.12.x).
+        # ships a Rust _native.<abi>-win_amd64.pyd, so the wheel must match
+        # the ABI python-embed ships (_pre_embed_abi, read from its own
+        # pythonXY.dll), not a hard-coded cp312.  The guard above made sure
+        # this build's Python has that ABI; it is the fallback when the
+        # embed's is unknown.
         if os.path.isdir(_armor_pkg_dir):
             _armor_wheels = os.path.join(_armor_pkg_dir, 'target', 'wheels')
             _armor_whl = None
             if os.path.isdir(_armor_wheels):
-                _cps = [w for w in os.listdir(_armor_wheels)
-                        if w.endswith('.whl') and 'cp312' in w]
-                if _cps:
-                    _armor_whl = os.path.join(_armor_wheels, sorted(_cps)[-1])
+                _picked = _wheel_for_abi(
+                    os.listdir(_armor_wheels),
+                    _pre_embed_abi or _abi_tag_of_this_python())
+                if _picked:
+                    _armor_whl = os.path.join(_armor_wheels, _picked)
             _install_target = _armor_whl or _armor_pkg_dir
             print(f"HevolveArmor: installing loader into python-embed from "
                   f"{os.path.relpath(_install_target, _project_root)}")
