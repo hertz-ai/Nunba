@@ -1104,10 +1104,11 @@ export default function LightYourHART({ userId, onComplete }) {
       // /api/hart/profile 404 while the screen showed @kazera).  Register
       // the guest now, under the name being sealed, so the seal carries a
       // bearer the server resolves.  Idempotent on device_id: a returning
-      // device gets its existing guest user back.  A signed-in user already
-      // has a token and skips this, and so does a cloud user whose token is
-      // missing (pending_cloud_user_id): a guest minted over that identity
-      // would take the name for good.  Failure is not fatal: the seal loop
+      // device gets its existing guest user back.  canRegisterGuestForSeal
+      // skips it for a signed-in user (has a token) and for any cloud
+      // identity without one: an expired cloud session (a stored user_id)
+      // or a pending cloud user (pending_cloud_user_id).  A guest minted
+      // over either would take the name for good.  Failure is not fatal: the seal loop
       // runs as before and the local seal still happens.
       if (canRegisterGuestForSeal()) {
         await silentGuestRefresh({ guestName: hartName });
