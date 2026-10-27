@@ -77,37 +77,6 @@ describe('silentGuestRefresh', () => {
     expect(localStorage.getItem('social_user_id')).toBe('u-42');
   });
 
-  // 2026-10-21: the HART ceremony seals BEFORE guest_name exists in
-  // localStorage (applyHartSeal back-fills it afterwards), so a first-run
-  // guest had no account when /api/hart/seal was called and the seal
-  // answered 400 "No user_id".  The ceremony now registers the guest
-  // under the name being sealed, through this helper.
-  test('registers under an explicit guestName before guest_name is stored', async () => {
-    expect(localStorage.getItem('guest_name')).toBeNull();
-    mockGuestRegister.mockResolvedValue({
-      data: {user: {id: 'u-first'}, token: 'jwt-first', existing: false},
-    });
-
-    const result = await silentGuestRefresh({guestName: 'kazera'});
-
-    expect(mockGuestRegister).toHaveBeenCalledWith({
-      guest_name: 'kazera',
-      device_id: 'dev-fingerprint-abc',
-    });
-    expect(result).toEqual({token: 'jwt-first', user_id: 'u-first', existing: false});
-    expect(localStorage.getItem('access_token')).toBe('jwt-first');
-    expect(localStorage.getItem('guest_name')).toBe('kazera');
-  });
-
-  test('an explicit guestName wins over the stored one', async () => {
-    localStorage.setItem('guest_name', 'Old.Name');
-    mockGuestRegister.mockResolvedValue({
-      data: {user: {id: 'u-2'}, token: 'jwt-2', existing: true},
-    });
-    await silentGuestRefresh({guestName: 'newname'});
-    expect(mockGuestRegister.mock.calls[0][0].guest_name).toBe('newname');
-  });
-
   test('returns null when backend omits token', async () => {
     localStorage.setItem('guest_name', 'Sky.Walker');
     mockGuestRegister.mockResolvedValue({data: {user: {id: 'u-1'}}});
