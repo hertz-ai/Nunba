@@ -4755,19 +4755,13 @@ def hart_advance():
 
 
 def hart_generate():
-    """Generate HART name candidates from onboarding answers.
-
-    The ceremony shows a dark screen until this answers, so the model gets a
-    bounded wait (HARTOS NAME_WAIT_S) before the instant curated name answers
-    instead.  Measured 2026-10-22 on a CPU-only desktop with the unbounded
-    generate_hart_name: 270s while an agent plan held the llama-server slot.
-    """
+    """Generate HART name candidates from onboarding answers."""
     try:
-        from hartos.hart_onboarding import HARTNameRegistry, generate_hart_name_within
+        from hartos.hart_onboarding import HARTNameRegistry, generate_hart_name
         data = request.get_json(silent=True) or {}
 
         existing = HARTNameRegistry.get_all_names()
-        result = generate_hart_name_within(
+        result = generate_hart_name(
             language=data.get('language', 'en'),
             passion_key=data.get('passion_key', 'reading_learning'),
             escape_key=data.get('escape_key', 'quiet_alone'),

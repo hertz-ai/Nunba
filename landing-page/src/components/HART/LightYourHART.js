@@ -18,6 +18,7 @@
  * "Every word spoken matters.", The human who built this.
  */
 
+import { createCeremonySession, nameFromReveal } from './ceremonySession';
 import TypedTextBase from './TypedText';
 
 import { API_BASE_URL } from '../../config/apiBase';
@@ -856,24 +857,16 @@ export default function LightYourHART({ userId, onComplete }) {
     return () => clearTimeout(timer);
   }, []);
 
-  // ── API: advance the backend session ──
-  const advance = useCallback(async (action, data) => {
-    try {
-      const token = localStorage.getItem('access_token');
-      const resp = await fetch(`${API_BASE_URL}/api/hart/advance`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ action, data }),
-      });
-      if (resp.ok) return await resp.json();
-    } catch {
-      // Offline mode, continue with frontend-only flow
-    }
-    return null;
-  }, []);
+  // ── API: advance the backend session, one step per server phase ──
+  // One server session per mount (see ceremonySession.js); every step
+  // below matches one phase change there, in order, so the escape answer
+  // starts the name prewarm behind the next ~8.5s of lines.
+  const sessionRef = useRef(null);
+  if (!sessionRef.current) {
+    sessionRef.current = createCeremonySession({ baseUrl: API_BASE_URL });
+  }
+  const advance = useCallback(
+    (action, data) => sessionRef.current.step(action, data), []);
 
   // ── Handle language selection ──
   const selectLanguage = useCallback(async (lang) => {
@@ -932,11 +925,12 @@ export default function LightYourHART({ userId, onComplete }) {
       if (cancelled) return;
 
       // Transition to passion question
+      advance(); // server: greeting -> passion
       setPhase('passion');
     })();
 
     return () => { cancelled = true; stop(); };
-  }, [phase, language, speak, stop]);
+  }, [phase, language, speak, stop, advance]);
 
   // ── Handle passion question ──
   useEffect(() => {
@@ -961,6 +955,7 @@ export default function LightYourHART({ userId, onComplete }) {
     await _sleep(1500);
 
     // Transition to escape question
+    advance(); // server: ack_passion -> escape
     setPhase('escape');
   }, [language, advance, speak]);
 
@@ -977,28 +972,11 @@ export default function LightYourHART({ userId, onComplete }) {
   const answerEscape = useCallback(async (key) => {
     setEscapeKey(key);
     setOptions([]);
+    // Server: escape -> ack_escape.  Both answers are in, so the session
+    // starts generating the name now, behind the lines below (~8.5s).
+    // Measured 2026-10-22 on a CPU-only desktop: a name asked for only
+    // after those lines held "Your secret name is..." for 270s.
     advance('answer', { key });
-
-    // Ask for the name NOW, so the model works while the acknowledgement and
-    // pre-reveal play (~8.5s).  The server bounds its own wait to that cover
-    // plus a short tail (HARTOS NAME_WAIT_S), then answers with a curated
-    // name.  Measured 2026-10-22: sent only after those lines, on a CPU-only
-    // desktop, the request held "Your secret name is..." for 270s.
-    const token = localStorage.getItem('access_token');
-    const nameRequest = fetch(`${API_BASE_URL}/api/hart/generate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({
-        language, locale,
-        passion_key: passionKey || key, // passionKey might not be set yet due to closure
-        escape_key: key,
-      }),
-    })
-      .then((resp) => (resp.ok ? resp.json() : null))
-      .catch(() => null);
 
     // PA acknowledges
     setPhase('ack_escape');
@@ -1008,6 +986,7 @@ export default function LightYourHART({ userId, onComplete }) {
     await _sleep(2000);
 
     // Pre-reveal
+    advance(); // server: ack_escape -> pre_reveal
     setPhase('pre_reveal');
     const preReveal = _getLine('pre_reveal', language);
     setPaText(preReveal);
@@ -1019,13 +998,15 @@ export default function LightYourHART({ userId, onComplete }) {
     setPaText('');
     setLoading(true);
 
-    const result = await nameRequest;
-    if (result && result.name) {
-      setHartName(result.name);
-      setHartTag(result.hart_tag || '');
-      setEmojiCombo(result.emoji_combo || '');
+    // Server: pre_reveal -> reveal.  It waits a short grace period for the
+    // prewarmed name, then answers with an instant curated one.
+    const named = nameFromReveal(await advance());
+    if (named) {
+      setHartName(named.name);
+      setHartTag(named.hartTag);
+      setEmojiCombo(named.emojiCombo);
       // Store backup candidates for race-condition seal retry
-      setHartCandidates((result.candidates || []).filter(c => c !== result.name));
+      setHartCandidates(named.candidates);
     } else {
       // Fallback name if backend fails
       setHartName(_fallbackName());
@@ -1044,7 +1025,7 @@ export default function LightYourHART({ userId, onComplete }) {
     setPhase('reveal_name');
     setPaText('');
     setShowName(true);
-  }, [language, locale, passionKey, advance, speak]);
+  }, [language, advance, speak]);
 
   // ── Post-reveal: seal on the server FIRST, then speak the closing ──
   //
