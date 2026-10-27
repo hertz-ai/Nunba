@@ -1800,18 +1800,21 @@ if getattr(sys, 'frozen', False):
     # GPT2TokenizerFast`, the lazy lookup falls into convert_slow_tokenizer
     # repeatedly (60M+ iterations observed) and the process hangs.
     # Windows/Linux frozen builds don't exhibit this — scope to macOS only.
+    #
+    # HARTOS owns the one implementation (core._transformers_lazy_guard.
+    # bind_gpt2_tokenizer_fast; core/__init__ and hart_intelligence_entry
+    # call it too).  This used to be a third inline copy, and the copies
+    # drifted: transformers 5.x has no tokenization_gpt2_fast module, so the
+    # inline import failed and `except: pass` skipped the bind on exactly
+    # the version this fix is for.  Idempotent and never raises.
     if sys.platform == 'darwin':
         try:
-            import transformers as _tf_pre  # triggers LazyModule install
-            from transformers.models.gpt2.tokenization_gpt2_fast import (
-                GPT2TokenizerFast as _GPT2TF_pre,
-            )
-            try:
-                object.__setattr__(_tf_pre, 'GPT2TokenizerFast', _GPT2TF_pre)
-            except Exception:
-                _tf_pre.GPT2TokenizerFast = _GPT2TF_pre
-        except Exception:
-            pass
+            from core._transformers_lazy_guard import bind_gpt2_tokenizer_fast
+        except ImportError as _e:
+            # HARTOS older than #142: importing the module ran its own bind.
+            _trace(f"GPT2 pre-bind: HARTOS has no bind_gpt2_tokenizer_fast ({_e})")
+        else:
+            bind_gpt2_tokenizer_fast()
 
 # ── Deferred frozen fixes — run AFTER splash is shown ──
 def _run_frozen_import_fixes():
