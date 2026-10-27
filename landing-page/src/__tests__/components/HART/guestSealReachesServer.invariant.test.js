@@ -41,10 +41,20 @@ describe('guest HART seal reaches the server', () => {
     expect(registerAt).toBeLessThan(loopAt);
   });
 
-  test('registration is skipped for a signed-in user (token already present)', () => {
+  test('registration is gated by canRegisterGuestForSeal (no token, no pending cloud user)', () => {
+    // The helper's behaviour is tested for real in
+    // hooks/canRegisterGuestForSeal.test.js; this only pins that the
+    // ceremony asks it, and not a bare token check that would mint a guest
+    // over a cloud user whose token is missing.
+    expect(hartSrc).toMatch(
+      /import \{[^}]*[\s,{]canRegisterGuestForSeal[\s,}][^}]*\} from '\.\.\/\.\.\/hooks\/useAuthSession'/,
+    );
     const at = hartSrc.indexOf('silentGuestRefresh({ guestName: hartName })');
-    const guard = hartSrc.lastIndexOf("if (!localStorage.getItem('access_token'))", at);
+    const guard = hartSrc.lastIndexOf('if (canRegisterGuestForSeal())', at);
     expect(guard).toBeGreaterThan(-1);
     expect(at - guard).toBeLessThan(400);
+    expect(hartSrc).not.toMatch(
+      /if \(!localStorage\.getItem\('access_token'\)\)\s*\{\s*await silentGuestRefresh/,
+    );
   });
 });

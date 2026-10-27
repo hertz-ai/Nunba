@@ -480,6 +480,28 @@ export function clearAccessTokenForExpiry() {
 }
 
 /**
+ * canRegisterGuestForSeal — may the HART ceremony mint a guest account now?
+ *
+ * Yes only when there is no token AND no cloud user waiting to sign in.
+ * useStorageSync writes `pending_cloud_user_id` when user_data.json has a
+ * user_id but no access_token, so that nothing creates "a fresh HART guest
+ * over the cloud identity"; Demopage's auto-refresh honours it.  A guest
+ * registered here would overwrite guest_user_id / social_user_id /
+ * hevolve_access_id, and /api/hart/seal would bind the name to the guest
+ * permanently, so the cloud account could never claim it.
+ *
+ * Reads the flag itself rather than readAuthSession().status: useStorageSync
+ * also sets guest_mode + guest_user_id in that state, so the status resolves
+ * to 'guest', not 'pending'.
+ */
+export function canRegisterGuestForSeal() {
+  try {
+    if (localStorage.getItem('access_token')) return false;
+  } catch { return false; }
+  return !readAuthSession().pending_cloud.user_id;
+}
+
+/**
  * silentGuestRefresh — fetch a fresh guest JWT without nuking the session.
  *
  * Single canonical entry-point for the guest-token-refresh flow.

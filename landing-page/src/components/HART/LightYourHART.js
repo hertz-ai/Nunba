@@ -21,7 +21,7 @@
 import TypedTextBase from './TypedText';
 
 import { API_BASE_URL } from '../../config/apiBase';
-import { applyHartSeal, silentGuestRefresh } from '../../hooks/useAuthSession';
+import { applyHartSeal, canRegisterGuestForSeal, silentGuestRefresh } from '../../hooks/useAuthSession';
 import { consentApi } from '../../services/socialApi';
 import { logger } from '../../utils/logger';
 import VoiceVisualizer from '../VoiceVisualizer';
@@ -1105,9 +1105,11 @@ export default function LightYourHART({ userId, onComplete }) {
       // the guest now, under the name being sealed, so the seal carries a
       // bearer the server resolves.  Idempotent on device_id: a returning
       // device gets its existing guest user back.  A signed-in user already
-      // has a token and skips this.  Failure is not fatal: the seal loop
+      // has a token and skips this, and so does a cloud user whose token is
+      // missing (pending_cloud_user_id): a guest minted over that identity
+      // would take the name for good.  Failure is not fatal: the seal loop
       // runs as before and the local seal still happens.
-      if (!localStorage.getItem('access_token')) {
+      if (canRegisterGuestForSeal()) {
         await silentGuestRefresh({ guestName: hartName });
         if (cancelled) return;
       }
