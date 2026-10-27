@@ -210,7 +210,7 @@ def _create_plan(language: str, gpu_info: dict) -> dict:
             step.vram_gb = entry.vram_gb
             if entry.loaded:
                 step.status = 'ready'
-                step.detail = f'Already running: {entry.name} ({entry.device})'
+                step.detail = _already_running(entry)
                 step.run_mode = entry.device
             else:
                 step.status = 'selecting'
@@ -227,22 +227,23 @@ def _loaded_entries(orch, model_type: str) -> list:
     """Every catalog entry of `model_type` the orchestrator has loaded.
 
     The one lookup for "what is already running" -- the status refresh and
-    the bootstrap worker both ask it.  Never raises.
+    the bootstrap worker both ask it.  Built on the catalog's own accessor
+    (`ModelCatalog.list_by_type`, entries kept in `_entries`); the orchestrator
+    has no `get_loaded`.  Never raises, but a lookup that failed is logged: an
+    empty answer from a broken lookup reads as "nothing is running" and the
+    card then says "Load failed" for a model that is serving chat.
     """
-    found = []
     try:
-        entry = orch.get_loaded(model_type) if hasattr(orch, 'get_loaded') else None
-        if entry:
-            found.append(entry)
+        return [e for e in orch._catalog.list_by_type(model_type) if e.loaded]
     except Exception:
-        pass
-    try:
-        for ent in orch._catalog._models.values():
-            if ent.model_type == model_type and ent.loaded and ent not in found:
-                found.append(ent)
-    except Exception:
-        pass
-    return found
+        logger.warning("bootstrap: could not look up loaded %s models",
+                       model_type, exc_info=True)
+        return []
+
+
+def _already_running(entry) -> str:
+    """The card text for a step whose model is already loaded."""
+    return f'Already running: {entry.name} ({entry.device})'
 
 
 def _loaded_entry(orch, model_type: str, model_id: str | None = None):
@@ -411,7 +412,7 @@ def _bootstrap_worker(language: str) -> None:
             running = _serving_entry(orch, model_type, step.model_id)
             if running is not None:
                 _update_step(model_type, status='ready',
-                             detail=f'Already running: {running.name} ({running.device})',
+                             detail=_already_running(running),
                              run_mode=running.device)
                 continue
 
@@ -432,7 +433,7 @@ def _bootstrap_worker(language: str) -> None:
                     _refresh_vram()
                 elif running is not None:
                     _update_step(model_type, status='ready',
-                                 detail=f'Already running: {running.name} ({running.device})',
+                                 detail=_already_running(running),
                                  run_mode=running.device)
                 elif model_type in OPTIONAL_TYPES:
                     _update_step(model_type, status='skipped',

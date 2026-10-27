@@ -16,28 +16,46 @@ language mismatch, and the failure must stay visible.
 """
 import os
 import sys
-from types import SimpleNamespace
+import tempfile
 from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from integrations.service_tools.model_catalog import (  # noqa: E402
+    ModelCatalog,
+    ModelEntry,
+)
+from integrations.service_tools.model_orchestrator import (  # noqa: E402
+    ModelOrchestrator,
+)
+
 import models.language_bootstrap as lb  # noqa: E402
 from models.language_bootstrap import BootstrapStep, ModelType  # noqa: E402
 
 
 def _entry(model_id, model_type, loaded, device='cpu'):
-    return SimpleNamespace(id=model_id, name=model_id, model_type=model_type,
-                           loaded=loaded, device=device, backend='llama.cpp',
-                           vram_gb=0.0)
+    return ModelEntry(id=model_id, name=model_id, model_type=model_type,
+                      loaded=loaded, device=device, backend='llama.cpp')
 
 
 def _orch(catalog_entries, auto_load_result=None, on_auto_load=None):
-    """An orchestrator double: a catalog of entries, auto_load's answer."""
-    orch = MagicMock(spec=['auto_load', '_catalog'])
-    orch._catalog = SimpleNamespace(
-        _models={e.id: e for e in catalog_entries})
+    """An orchestrator over a REAL ModelCatalog; only auto_load is scripted.
+
+    The review of #37 found the first version of this lookup reading
+    `orch.get_loaded` and `orch._catalog._models`, neither of which exists in
+    HARTOS, and passing because its double was built with those names.  The
+    spec is the real class and the catalog is the real class, so an
+    attribute HARTOS does not have raises here as it does in the app.
+    """
+    tmp = tempfile.NamedTemporaryFile(suffix='.json', delete=False)
+    tmp.close()
+    catalog = ModelCatalog(catalog_path=tmp.name)
+    for e in catalog_entries:
+        catalog.register(e, persist=False)
+    orch = MagicMock(spec=ModelOrchestrator)
+    orch._catalog = catalog
 
     def _auto_load(model_type, language=None):
         if on_auto_load:
@@ -126,5 +144,34 @@ class TestOneLoadedLookup:
         with open(os.path.join(PROJECT_ROOT, 'models', 'language_bootstrap.py'),
                   encoding='utf-8') as fh:
             src = fh.read()
-        assert src.count('ent.model_type == model_type and ent.loaded') == 1
+        assert src.count('.list_by_type(') == 1
         assert 'def _loaded_entry(' in src
+        assert '_catalog._models' not in src
+        assert 'orch.get_loaded' not in src
+
+
+class TestLoadedEntriesAgainstTheRealCatalog:
+
+    def test_the_orchestrator_has_no_get_loaded_and_the_catalog_no_models(self):
+        """The two names the first version of the lookup depended on."""
+        assert not hasattr(ModelOrchestrator, 'get_loaded')
+        orch = _orch([])
+        assert not hasattr(orch._catalog, '_models')
+
+    def test_loaded_entries_finds_the_loaded_entry_by_type(self):
+        llm = _entry('llm-qwen3.5-2b', ModelType.LLM, loaded=True)
+        tts = _entry('tts-piper', ModelType.TTS, loaded=True)
+        idle = _entry('llm-qwen3.5-4b', ModelType.LLM, loaded=False)
+        orch = _orch([llm, tts, idle])
+        assert [e.id for e in lb._loaded_entries(orch, ModelType.LLM)] == [llm.id]
+        assert [e.id for e in lb._loaded_entries(orch, ModelType.TTS)] == [tts.id]
+        assert lb._loaded_entries(orch, ModelType.STT) == []
+
+    def test_a_broken_catalog_is_logged_not_silently_empty(self, caplog):
+        """An empty answer from a lookup that raised is how the first version
+        hid for a review cycle: it must say so."""
+        orch = MagicMock(spec=ModelOrchestrator)
+        orch._catalog = object()          # no list_by_type
+        with caplog.at_level('WARNING', logger=lb.logger.name):
+            assert lb._loaded_entries(orch, ModelType.LLM) == []
+        assert any('loaded' in r.getMessage().lower() for r in caplog.records)
