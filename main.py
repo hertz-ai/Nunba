@@ -1810,7 +1810,13 @@ def execute_command():
         try:
             from integrations.vlm.safety import computer_control_block
             owner_prompt_id = data.get('prompt_id') or os.environ.get('HEVOLVE_OWNER_USER_ID')
-            consent_refusal = computer_control_block(owner_prompt_id)
+            # wait=False: an HTTP request cannot be held for the owner's
+            # answer (the gate's own docstring), and this one holds
+            # computer_control_lock, so a 90 s wait stalled every other
+            # /execute too.  The owner is still asked; the refusal says so.
+            # The VLM loop already waited at its own gate before its first
+            # action.  tests/test_execute_consent_does_not_wait.py.
+            consent_refusal = computer_control_block(owner_prompt_id, wait=False)
             if consent_refusal:
                 logging.warning(f"/execute refused consent: {consent_refusal}")
                 return jsonify({
