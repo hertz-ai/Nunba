@@ -887,16 +887,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   // The speaker toggle governs the clip the server pushes too (utils/
   // ttsGuards.shouldPlayPushedClip), and turning it off silences the reply
-  // that is already playing instead of letting it finish.
+  // that is already playing instead of letting it finish.  tts.stop() is the
+  // one stop: it pauses the shared element, and also stops browser PocketTTS
+  // and clears the queue (a bare el.pause() did only the first).  `stop` is a
+  // stable useCallback, so it is safe as a dep.
   useEffect(() => {
     ttsEnabledRef.current = ttsEnabled;
     if (ttsEnabled) return;
-    const el = getTtsAudioElement();
-    if (el && !el.paused) {
-      el.pause();
-      setIsPlayingResponse(false);
-    }
-  }, [ttsEnabled]);
+    tts.stop();
+    setIsPlayingResponse(false);
+  }, [ttsEnabled, tts.stop]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist TTS settings to localStorage
   useEffect(() => {

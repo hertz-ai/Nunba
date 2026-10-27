@@ -26,10 +26,13 @@ describe('Demopage pushed clip follows the speaker toggle', () => {
     expect(src).toMatch(/ttsEnabledRef\.current = ttsEnabled;/);
   });
 
-  test('turning the speaker off pauses the clip that is playing', () => {
+  test('turning the speaker off stops the clip through useTTS (the one stop)', () => {
+    // tts.stop() pauses the shared element AND stops browser PocketTTS and
+    // clears the queue; a bare el.pause() here did only the first.
     const effect = src.slice(src.indexOf('ttsEnabledRef.current = ttsEnabled;'));
-    const body = effect.slice(0, effect.indexOf('}, [ttsEnabled]);'));
+    const body = effect.slice(0, effect.indexOf('}, [ttsEnabled'));
     expect(body).toMatch(/if \(ttsEnabled\) return;/);
-    expect(body).toMatch(/\.pause\(\)/);
+    expect(body).toMatch(/tts\.stop\(\)/);
+    expect(body).not.toMatch(/\.pause\(\)/);
   });
 });
