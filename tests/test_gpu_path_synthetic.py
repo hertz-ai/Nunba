@@ -91,7 +91,7 @@ class TestVramSwapAndRetry:
             assert engine._vram_allows("indic_parler_tts") is True
         assert vm.can_fit.call_count >= 1
 
-    def test_swap_invoked_when_cant_fit(self, synthetic_cuda, monkeypatch):
+    def test_swap_invoked_when_cant_fit(self, synthetic_cuda):
         """can_fit → False must trigger model_lifecycle.request_swap, then
         re-probe can_fit.  This is the fe45daf regression lane."""
         vm = synthetic_cuda(total_gb=8.0, free_gb=1.5)
@@ -104,12 +104,7 @@ class TestVramSwapAndRetry:
         mock_mlm = MagicMock()
         mock_mlm.request_swap.return_value = True
         mlm_module.get_model_lifecycle_manager = lambda: mock_mlm
-        # monkeypatch.setitem, not a bare sys.modules[...] = : the bare form
-        # left this two-name module in place for every later test file, so
-        # test_model_resilience failed with "cannot import name
-        # '_PRIORITY_RANK' ... (unknown location)" (52 CI failures).
-        monkeypatch.setitem(
-            sys.modules, "integrations.service_tools.model_lifecycle", mlm_module)
+        sys.modules["integrations.service_tools.model_lifecycle"] = mlm_module
 
         from tts.tts_engine import TTSEngine
         engine = TTSEngine()
@@ -123,7 +118,7 @@ class TestVramSwapAndRetry:
             "Must re-probe can_fit after swap"
         )
 
-    def test_swap_failed_returns_false(self, synthetic_cuda, monkeypatch):
+    def test_swap_failed_returns_false(self, synthetic_cuda):
         """Swap fails → backend blocked (no phantom load)."""
         vm = synthetic_cuda(total_gb=8.0, free_gb=1.0)
         vm.can_fit.side_effect = [False, False]
@@ -134,12 +129,7 @@ class TestVramSwapAndRetry:
         mock_mlm = MagicMock()
         mock_mlm.request_swap.return_value = False
         mlm_module.get_model_lifecycle_manager = lambda: mock_mlm
-        # monkeypatch.setitem, not a bare sys.modules[...] = : the bare form
-        # left this two-name module in place for every later test file, so
-        # test_model_resilience failed with "cannot import name
-        # '_PRIORITY_RANK' ... (unknown location)" (52 CI failures).
-        monkeypatch.setitem(
-            sys.modules, "integrations.service_tools.model_lifecycle", mlm_module)
+        sys.modules["integrations.service_tools.model_lifecycle"] = mlm_module
 
         from tts.tts_engine import TTSEngine
         engine = TTSEngine()
