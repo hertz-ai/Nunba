@@ -18,6 +18,7 @@ import json
 import os
 import socket
 import sys
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -735,6 +736,84 @@ class TestTheCaptionServerIsNeverAdoptedAsMain:
              patch.object(cfg, 'apply_pending_llama_upgrade') as upgrade:
             cfg._do_start_server(model_preset=None)
         upgrade.assert_not_called()
+
+
+class TestTheMainStartSeesAPortAnotherSocketHolds:
+    """_do_start_server's bind probe (_is_port_really_free) must call a port
+    held while another socket listens on it -- on Windows too -- and free
+    when only TIME_WAIT is left on it.
+
+    Task #936 (2026-10-21): five llama-servers LISTENING on 127.0.0.1:8081 at
+    once.  On Windows a SO_REUSEADDR bind succeeds beside a live listener that
+    set SO_REUSEADDR too, as llama-server's socket does, and the probe set
+    SO_REUSEADDR, so a port a llama-server was serving on read as free.
+    check_server_type maps a /health slower than 2 s to NOT_RUNNING, and the
+    start then spawned a second main server on that port.
+
+    A real socket holds the port the way llama-server's does and answers no
+    HTTP (check_server_type stubbed to NOT_RUNNING).  The mocked installer
+    has no binary, so each start returns before any spawn, and the port it
+    chose is config['server_port'].  On Linux and macOS a SO_REUSEADDR bind
+    was already refused beside a listener; these pin that it stays so.
+    """
+
+    @staticmethod
+    def _bound_like_llama_server():
+        """A loopback socket bound the way llama-server binds (SO_REUSEADDR),
+        on a port low enough that the 19 the alternative search tries after
+        it exist."""
+        while True:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('127.0.0.1', 0))
+            if s.getsockname()[1] < 65000:
+                return s
+            s.close()
+
+    @staticmethod
+    def _start_on(tmp_config_dir, port):
+        from llama.llama_config import LlamaConfig, ServerType
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+        cfg.config['server_port'] = port
+        with patch.object(cfg, 'check_server_type',
+                          return_value=(ServerType.NOT_RUNNING, None)), \
+             patch('requests.get', side_effect=OSError('no network in this test')), \
+             patch.object(LlamaConfig, '_propagate_llm_url'):
+            result = cfg._do_start_server(model_preset=None)
+        return cfg, result
+
+    def test_a_port_another_socket_listens_on_is_not_taken(self, tmp_config_dir, monkeypatch):
+        monkeypatch.delenv('HEVOLVE_VLM_CAPTION_PORT', raising=False)
+        held = self._bound_like_llama_server()
+        held.listen(1)
+        port = held.getsockname()[1]
+        try:
+            cfg, result = self._start_on(tmp_config_dir, port)
+        finally:
+            held.close()
+        assert cfg.config['server_port'] != port, (
+            'the main server would have started on a port another socket listens on')
+        assert result is False      # no binary in this test: nothing was spawned
+
+    def test_a_port_with_only_time_wait_left_is_still_taken(self, tmp_config_dir, monkeypatch):
+        """A server that stopped leaves its connections in TIME_WAIT for a
+        while; its port is free, and the restart keeps it (SO_REUSEADDR binds
+        past TIME_WAIT on Linux and macOS, SO_EXCLUSIVEADDRUSE on Windows)."""
+        monkeypatch.delenv('HEVOLVE_VLM_CAPTION_PORT', raising=False)
+        listener = self._bound_like_llama_server()
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        client = socket.create_connection(('127.0.0.1', port), timeout=5)
+        served, _ = listener.accept()
+        served.close()          # the server side closes first: it is the one in TIME_WAIT
+        time.sleep(0.2)
+        client.close()
+        listener.close()
+        time.sleep(0.2)
+        cfg, result = self._start_on(tmp_config_dir, port)
+        assert cfg.config['server_port'] == port, (
+            'a port with only TIME_WAIT left on it was taken for held')
+        assert result is False
 
 
 class TestStartServerUsesConfigIndex:
