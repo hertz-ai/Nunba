@@ -399,9 +399,10 @@ function AnswerError({ text }) {
 // HARTOS puts one card in front of the person on every surface they have,
 // carrying the ask's `ask_id`, and the first answer from any of them goes back
 // to the agent that asked: POST /api/agent/approval {ask_id, answer}, the
-// caller's Bearer naming who answers (never a body field).  Answered, the
-// ask's notification row is marked read, and its notification.read fan-out
-// drops the card on every other surface (AgentOverlay below).
+// caller's Bearer naming who answers (never a body field).  Answered, HARTOS
+// sends `ask.answered` {ask_id} to every surface, which drops the card
+// (AgentOverlay below).  Reading the ask in the bell is not an answer: its
+// notification.read drops nothing.
 
 function bearer() {
   const token = localStorage.getItem('access_token');
@@ -423,13 +424,14 @@ async function answerAsk(askId, answer) {
   if (!res.ok) throw await refusedReply(res, 'The answer was refused');
 }
 
-// One picked file into the desktop's one upload store, for the purpose the
-// ask names (her reel clip, logo or song), through the same door chat
-// attachments use (Nunba desktop/file_sync).  Answers its file id.
-async function sendAskedFile(file, purpose) {
+// One picked file into the desktop's one upload store, for the ask, through
+// the same door chat attachments use (Nunba desktop/file_sync).  The door
+// takes the purpose (her reel clip, logo, song) from the open ask, not from
+// the page.  Answers its file id.
+async function sendAskedFile(file, askId) {
   const form = new FormData();
   form.append('file', file, file.name);
-  if (purpose) form.append('purpose', purpose);
+  form.append('ask_id', askId);
   const res = await fetch(`${API_BASE_URL}/api/chat-sync/files/push`, {
     method: 'POST', headers: bearer(), body: form,
   });
@@ -460,7 +462,7 @@ function FileRequestOverlay({ data, onDismiss }) {
     try {
       for (let i = 0; i < files.length; i += 1) {
         setPhase({ sent: i, total: files.length });
-        xids.push(await sendAskedFile(files[i], data.purpose));
+        xids.push(await sendAskedFile(files[i], data.ask_id));
       }
       setPhase('answering');
       await answerAsk(data.ask_id, { xids });
@@ -553,7 +555,9 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
       setBusy(null);
       return;
     }
-    applyCamera(decision);
+    // An ask's answer goes to the agent and nowhere else: it never turns the
+    // camera on (its action words are the agent's own).
+    if (!data.ask_id) applyCamera(decision);
     setBusy(null);
     onDismiss();
   };
@@ -1519,14 +1523,14 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     });
   }, [forgetShowing]);
 
-  // An agent's ask answered on any surface: HARTOS marks its notification
-  // row read, and notification.read names the row, which is the ask's id
-  // (person_ask).  Its card closes here.
-  const dropAnswered = useCallback((read) => {
-    const ids = new Set((read && Array.isArray(read.ids)) ? read.ids : []);
-    if (ids.size === 0) return;
+  // An agent's ask answered on any surface: HARTOS sends ask.answered with
+  // its id (person_ask), and its card closes here.  Not notification.read:
+  // the bell sends that when she only reads the ask.
+  const dropAnswered = useCallback((answered) => {
+    const askId = answered && answered.ask_id;
+    if (!askId) return;
     setOverlays((prev) => {
-      const gone = prev.filter((o) => o.ask_id && ids.has(o.ask_id));
+      const gone = prev.filter((o) => o.ask_id === askId);
       if (gone.length === 0) return prev;
       gone.forEach((o) => {
         clearTimeout(timersRef.current[o._id]);
@@ -1596,9 +1600,12 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
         prev = prev.filter(o => !pairingOf(o));
       }
       const next = [...prev, entry];
-      // FIFO eviction if over max
+      // FIFO eviction if over max.  An open ask is not evicted: HARTOS sends
+      // it once, and it waits for her answer.
       while (next.length > MAX_OVERLAYS) {
-        const evicted = next.shift();
+        const i = next.findIndex((o) => !o.ask_id);
+        if (i < 0) break;
+        const [evicted] = next.splice(i, 1);
         clearTimeout(timersRef.current[evicted._id]);
         delete timersRef.current[evicted._id];
         forgetShowing(evicted._id);
@@ -1621,7 +1628,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
       : realtimeService.on('agent.ui.update', handleEvent);
     const unsubAnswers = CONSENT_ANSWER_TYPES.map(
       (t) => realtimeService.on(t, settleAsks));
-    const unsubRead = realtimeService.on('notification.read', dropAnswered);
+    const unsubRead = realtimeService.on('ask.answered', dropAnswered);
 
     return () => {
       unsub();

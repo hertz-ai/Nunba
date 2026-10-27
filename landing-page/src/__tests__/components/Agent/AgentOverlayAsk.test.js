@@ -7,12 +7,16 @@
  * shd be same agnostic of hartos consumer, liqiuid ui shd also fanout".
  * HARTOS sends one card per ask, carrying its `ask_id`, to every surface; the
  * person answers on one, the answer goes to POST /api/agent/approval
- * {ask_id, answer}, and the ask's notification row is marked read, whose
- * notification.read fan-out drops the card everywhere else.
+ * {ask_id, answer}, and HARTOS then sends `ask.answered` {ask_id}, which drops
+ * the card everywhere else.  Reading the ask in the bell (notification.read)
+ * is not an answer and drops nothing.
  *
- *   file_request  her picks go to /api/chat-sync/files/push with the ask's
- *                 purpose, then the ask is answered with their file ids
- *   approval      a card with an ask_id answers it with {decision}
+ *   file_request  her picks go to /api/chat-sync/files/push under the ask's
+ *                 id (the door takes the purpose from the open ask), then the
+ *                 ask is answered with their file ids
+ *   approval      a card with an ask_id answers it with {decision}, and never
+ *                 turns the camera on
+ *   form          a card with an ask_id answers it with {values}
  */
 
 import React from 'react';
@@ -95,7 +99,7 @@ function pick(...names) {
 }
 
 describe('file_request', () => {
-  test('her picks go up with the ask\'s purpose, then the ask is answered with their ids', async () => {
+  test('her picks go up under the ask\'s id, then the ask is answered with their ids', async () => {
     const send = mountOverlay();
     send(CLIPS);
     expect(screen.getByText('Send me the clips for your reel')).toBeTruthy();
@@ -109,7 +113,9 @@ describe('file_request', () => {
     for (const [, init] of pushes) {
       expect(init.method).toBe('POST');
       expect(init.headers.Authorization).toBe('Bearer tok-owner');
-      expect(init.body.get('purpose')).toBe('reel_source');
+      expect(init.body.get('ask_id')).toBe(ASK);
+      // the door takes the purpose from the open ask, never from the page
+      expect(init.body.get('purpose')).toBeNull();
       expect(init.body.get('file').name).toMatch(/^look[12]\.mp4$/);
     }
     const [, answer] = calls('/api/agent/approval')[0];
@@ -157,24 +163,46 @@ describe('file_request', () => {
       jest.useRealTimers();
     }
   });
+
+  test('newer cards never push an open ask off the page', () => {
+    const send = mountOverlay();
+    send(CLIPS);
+    for (let i = 1; i <= 4; i += 1) {
+      send({type: 'notification', msg_id: `n${i}`, title: `Note ${i}`, message: 'x'});
+    }
+    expect(screen.getByTestId('liquid-file-request')).toBeTruthy();
+    expect(screen.queryByText('Note 1')).toBeNull();      // the oldest note went
+    expect(screen.getByText('Note 4')).toBeTruthy();
+  });
 });
 
 describe('an ask answered anywhere', () => {
-  test('notification.read for the ask drops its card here', () => {
+  test('ask.answered for the ask drops its card here', () => {
     const send = mountOverlay();
     send(CLIPS);
     expect(screen.getByTestId('liquid-file-request')).toBeTruthy();
 
-    act(() => { handlers['notification.read']({user_id: '10202', ids: ['other', ASK]}); });
+    act(() => { handlers['ask.answered']({type: 'ask.answered', ask_id: ASK}); });
 
     expect(screen.queryByTestId('liquid-file-request')).toBeNull();
   });
 
-  test('notification.read for another row leaves the card', () => {
+  test('ask.answered for another ask leaves the card', () => {
     const send = mountOverlay();
     send(CLIPS);
 
-    act(() => { handlers['notification.read']({user_id: '10202', ids: ['other']}); });
+    act(() => { handlers['ask.answered']({type: 'ask.answered', ask_id: 'other'}); });
+
+    expect(screen.getByTestId('liquid-file-request')).toBeTruthy();
+  });
+
+  test('reading the ask in the bell (notification.read) is not an answer', () => {
+    const send = mountOverlay();
+    send(CLIPS);
+
+    if (handlers['notification.read']) {
+      act(() => { handlers['notification.read']({user_id: '10202', ids: [ASK]}); });
+    }
 
     expect(screen.getByTestId('liquid-file-request')).toBeTruthy();
   });
@@ -189,5 +217,41 @@ describe('an ask answered anywhere', () => {
     await waitFor(() => expect(calls('/api/agent/approval')).toHaveLength(1));
     const [, init] = calls('/api/agent/approval')[0];
     expect(JSON.parse(init.body)).toEqual({ask_id: ASK, answer: {decision: 'approve'}});
+  });
+
+  test('approving an ask never turns the camera on, whatever its action says', async () => {
+    const seen = [];
+    const onCamera = (e) => seen.push(e.detail);
+    window.addEventListener('evt', onCamera);
+    try {
+      const send = mountOverlay();
+      send({type: 'approval', msg_id: ASK, ask_id: ASK, agent_id: '342',
+            action: 'post_video_from_camera', title: 'Post the video?'});
+
+      fireEvent.click(screen.getByText('Approve'));
+
+      await waitFor(() => expect(calls('/api/agent/approval')).toHaveLength(1));
+      await waitFor(() => expect(screen.queryByText('Approve')).toBeNull());
+      expect(seen).toEqual([]);
+    } finally {
+      window.removeEventListener('evt', onCamera);
+    }
+  });
+
+  test('a form card that carries an ask_id answers the ask with its values', async () => {
+    const send = mountOverlay();
+    send({type: 'form', msg_id: ASK, ask_id: ASK, agent_id: '342',
+          title: 'Tell me about the reel',
+          fields: [{name: 'caption', label: 'Caption', type: 'text'}]});
+
+    fireEvent.change(screen.getByLabelText('Caption'), {target: {value: 'Summer drop'}});
+    fireEvent.click(screen.getByText('Submit'));
+
+    await waitFor(() => expect(calls('/api/agent/approval')).toHaveLength(1));
+    const [, init] = calls('/api/agent/approval')[0];
+    expect(init.headers.Authorization).toBe('Bearer tok-owner');
+    expect(JSON.parse(init.body)).toEqual({ask_id: ASK, answer: {values: {caption: 'Summer drop'}}});
+    const agentFormApi = require('../../../services/socialApi').agentFormApi;
+    expect(agentFormApi.submit).not.toHaveBeenCalled();
   });
 });

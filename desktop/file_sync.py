@@ -52,13 +52,13 @@ What the store decides, and this door inherits:
     for one of those (a clip she also sends in chat) become her chat
     attachment as well, and stay what they were: deleting the attachment
     here leaves the clip on her reel turn, the logo on her reels.
-  * A push may name another of the store's inbound purposes: an agent's
-    ask for her files (a file_request card, HARTOS
-    integrations.agent_engine.person_ask) sends each pick with the purpose
-    the ask names, so a clip she picks on this desktop is her reel clip,
-    as one her phone sends over its device link is.  Its answer then binds
-    the files to the agent that asked.  Such a file is not her chat
-    attachment, so the reads above do not see it.
+  * A push for an agent's ask (a file_request card, HARTOS
+    integrations.agent_engine.person_ask) is stored under the purpose that
+    open ask names (main.py's push route asks person_ask.open_file_request;
+    the page never names it), so a clip she picks on this desktop is her
+    reel clip, as one her phone sends over its device link is.  Her answer
+    then binds the files to the agent that asked.  Such a file is not her
+    chat attachment, so the reads above do not see it.
 
 Not every upload goes through the store.  ``routes/upload_routes.py``
 KEEPS what it is sent (the web chat's images through /upload/file and
