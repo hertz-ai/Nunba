@@ -33,18 +33,10 @@ source of truth, not a second copy of the rule.
 # the SPA declares no /a2a page.  Without it an unmatched peer call such as
 # POST /a2a/<id>/execute got 200 index.html, so the calling peer logged a
 # misleading "non-JSON" error instead of a 404.
-#
-# `upload` / `uploads`: every /upload/* route is an API (routes/upload_routes
-# /upload/file|image|audio|vision|native, HARTOS books_bp /upload/parse_pdf)
-# and /uploads/<path> serves stored files; the SPA declares no such page.
-# The upload blueprint registers late, through HARTOS bootstrap's consumer
-# hook, and measured 2026-10-23 a POST /upload/image in that window got 200
-# index.html -- HTML the client cannot parse instead of an error.
 API_ENDPOINTS = {
     'api', 'probe', 'execute', 'screenshot', 'indicator', 'llm_control_status',
     'status', 'logs', 'custom_gpt', 'tts', 'crash-report', 'llama',
     'ai', 'health', 'prompts', 'agents', 'chat', 'backend', 'media', 'a2a',
-    'upload', 'uploads',
 }
 
 # Path prefixes served by an explicit asset route (main.serve_static /

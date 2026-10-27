@@ -2209,21 +2209,6 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # WinError 112 disk full).
             'runs')
 
-        def _ignore_staging(src, names):
-            """_IGNORE_HEAVY, plus any virtualenv whatever it is named.
-
-            fnmatch matches whole names, so the 'venv'/'.venv' entries above
-            miss every other spelling.  Measured 2026-10-21: the copy sat in
-            HARTOS/venv-hart/ (2.5 GB, ~43k files) with 18,614 files already
-            in %TEMP%.  A virtualenv always has pyvenv.cfg at its root -- the
-            same test HARTOS's code hash uses
-            (security/node_integrity._is_foreign_tree).
-            """
-            ignored = set(_IGNORE_HEAVY(src, names))
-            ignored.update(n for n in names if os.path.isfile(
-                os.path.join(src, n, 'pyvenv.cfg')))
-            return ignored
-
         _PKG_TMP_PREFIX = 'hart-freeze-pkg-'
 
         def _rmtree_loudly(path, label):
@@ -2336,7 +2321,7 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             _dst = os.path.join(_tmp,
                                 os.path.basename(os.path.normpath(_sib_path)))
             try:
-                _shutil.copytree(_sib_path, _dst, ignore=_ignore_staging,
+                _shutil.copytree(_sib_path, _dst, ignore=_IGNORE_HEAVY,
                                  symlinks=True)
                 return subprocess.run(
                     [sys.executable, "-m", "pip", "install", "--no-deps",
