@@ -36,7 +36,7 @@ jest.mock('../../../services/socialApi', () => ({
 }));
 
 const {agentFormApi} = require('../../../services/socialApi');
-const {default: AgentOverlay} = require('../../../components/AgentOverlay/AgentOverlay');
+const {default: AgentOverlay, OverlayContent} = require('../../../components/AgentOverlay/AgentOverlay');
 
 function mountOverlay() {
   const handlers = {};
@@ -92,6 +92,52 @@ describe('FormOverlay', () => {
     send(FORM);
     expect(screen.getByLabelText('Bot token')).toHaveAttribute('type', 'password');
   });
+
+  // Connect_Channel sends the provider's portal (HARTOS channel metadata
+  // `external_url`) so the person can get the token before pasting it.
+  const DISCORD_FORM = {
+    ...FORM, msg_id: 'form-2', title: 'Connect Discord', channel: 'discord',
+    action: '/api/social/channels/discord/connect',
+    external_url: 'https://discord.com/developers/applications',
+  };
+
+  test("the provider's portal opens from the form", () => {
+    const open = jest.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      const send = mountOverlay();
+      send(DISCORD_FORM);
+      fireEvent.click(screen.getByText('Open discord.com'));
+      expect(open).toHaveBeenCalledWith(
+        'https://discord.com/developers/applications', '_blank', 'noopener,noreferrer');
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  // Only an http(s) portal gets a button.  The button is looked up by role:
+  // a URL with no host labels it "Open ", which a text match on /^Open /
+  // never finds, so that check passed with the protocol test removed.
+  test.each([
+    'javascript:alert(1)',
+    'javascript://discord.com/alert(1)',
+    'file:///C:/',
+    'data:text/html,<script>alert(1)</script>',
+  ])('a %s portal gets no button', (url) => {
+    const open = jest.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      const send = mountOverlay();
+      send({...DISCORD_FORM, external_url: url});
+      expect(screen.queryByRole('button', {name: /^open/i})).toBeNull();
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  test('the embed shows no portal button: it never opens an agent-supplied URL', () => {
+    render(<OverlayContent data={DISCORD_FORM} onAction={jest.fn()} onDismiss={jest.fn()} />);
+    expect(screen.queryByText('Open discord.com')).toBeNull();
+  });
 });
 
 describe('Invite share card (local submit action)', () => {
@@ -145,15 +191,18 @@ describe('QR pairing card', () => {
     const send = mountOverlay();
     send(qr('CODE-1', 1));
     send({type: 'toast', severity: 'error', channel: 'whatsapp', msg_id: 't-1',
-      text: 'The WhatsApp link expired before it was completed.'});
+      message: 'The WhatsApp link expired before it was completed.'});
     expect(screen.queryByTestId('qr')).toBeNull();
+    // The toast's body is `message` (HARTOS COMPONENT_TYPES['toast']).
+    expect(screen.getByText('The WhatsApp link expired before it was completed.'))
+      .toBeInTheDocument();
   });
 
   test("another channel's toast leaves the QR alone", () => {
     const send = mountOverlay();
     send(qr('CODE-1', 1));
     send({type: 'toast', severity: 'error', channel: 'telegram', msg_id: 't-2',
-      text: "Telegram couldn't connect."});
+      message: "Telegram couldn't connect."});
     expect(screen.getByTestId('qr')).toHaveTextContent('CODE-1');
   });
 
