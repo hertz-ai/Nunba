@@ -665,6 +665,40 @@ def version_short():
 
 
 # =============================================================================
+# Freeze-script file selection
+# =============================================================================
+
+def tracked_files(paths):
+    """Return the paths in `paths` that git tracks, in input order.
+
+    The freeze scripts' root "*.py" glob shipped two untracked scratch
+    scripts (check_python.py, run_python.py) into the installed app
+    (measured 2026-10-21).  If git cannot answer (not installed, not a work
+    tree, timed out), prints one warning and returns every path unchanged.
+    """
+    import os
+    import subprocess
+    paths = list(paths)
+    if not paths:
+        return []
+    try:
+        result = subprocess.run(
+            ['git', '--literal-pathspecs', 'ls-files', '-z', '--', *paths],
+            capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        reason = str(exc)
+    else:
+        if result.returncode == 0:
+            tracked = {os.fsdecode(p) for p in result.stdout.split(b'\0') if p}
+            return [p for p in paths if p.replace('\\', '/') in tracked]
+        reason = (f"exit {result.returncode}: "
+                  + ' '.join(result.stderr.decode(errors='replace').split()))
+    print(f"WARNING: tracked_files: git could not list tracked files "
+          f"({reason}); keeping all {len(paths)} paths unfiltered")
+    return paths
+
+
+# =============================================================================
 # CLI: print deps for debugging / requirements generation
 # =============================================================================
 if __name__ == "__main__":
