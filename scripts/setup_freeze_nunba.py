@@ -1560,6 +1560,113 @@ def _autorepair_corrupt_packages(corruption: list[tuple[str, str]]) -> int:
     return repaired
 
 
+# ── Embed ABI helpers (the pre-copy installs AND the post-build copy) ──
+def _abi_tag_of_embedded_python(embed_dir):
+    """'cp312' for the interpreter that SHIPS, read from its own pythonXY.dll.
+
+    Returns None when it cannot be determined, and every caller must then prune
+    nothing: deleting extension modules on a guess is how you ship a bundle that
+    imports on the build box and dies on the user's.
+    """
+    try:
+        for name in os.listdir(embed_dir):
+            low = name.lower()
+            if (low.startswith('python') and low.endswith('.dll')
+                    and low[6:-4].isdigit() and len(low[6:-4]) >= 2):
+                return 'cp' + low[6:-4]        # python312.dll -> cp312
+    except OSError:
+        pass
+    return None
+
+
+def _abi_tag_of_this_python():
+    """'cp311' for the interpreter running this build: the one cx_Freeze
+    freezes Nunba.exe with, and whose pip installs into python-embed below."""
+    return f'cp{sys.version_info.major}{sys.version_info.minor}'
+
+
+def _wrong_abi_orphan(name, names, abi):
+    """Base name of `name` when it is an extension module built ONLY for another
+    ABI (no `<base>.<abi>*`, `<base>.pyd` or `<base>.py` beside it), else None.
+
+    The one rule for "nothing in this directory can import that module" -- the
+    post-build copy's orphan warning and the pre-copy reinstall both ask it.
+    """
+    if not abi or not name.endswith('.pyd') or '.cp' not in name:
+        return None
+    tag = name.rsplit('.cp', 1)[1].split('-', 1)[0]
+    if f'cp{tag}' == abi:
+        return None
+    base = name.split('.cp')[0]
+    if any(o.startswith(f'{base}.{abi}') for o in names):
+        return None
+    if f'{base}.py' in names or f'{base}.pyd' in names:
+        return None
+    return base
+
+
+def _modules_without_abi_build(pkg_dir, abi):
+    """Modules under pkg_dir (relative paths) that ship only for other ABIs.
+
+    Measured 2026-10-21: python-embed (cp312) held ctranslate2 with only
+    `_ext.cp311-win_amd64.pyd`, installed by an earlier build whose venv was
+    Python 3.11.  The "already present" check skipped it on every later build,
+    the post-build copy dropped the cp311 file, and the installed app's
+    faster-whisper failed with "module 'ctranslate2' has no attribute
+    'StorageView'": voice input transcribed nothing.  [] when abi is unknown.
+    """
+    if not abi or not os.path.isdir(pkg_dir):
+        return []
+    out = []
+    for dirpath, _dirs, names in os.walk(pkg_dir):
+        for n in names:
+            base = _wrong_abi_orphan(n, names, abi)
+            if base:
+                out.append(os.path.relpath(os.path.join(dirpath, base), pkg_dir))
+    return sorted(set(out))
+
+def _embed_abi_mismatch(embed_abi, build_abi):
+    """Why this build must not run against python-embed, or None when it can.
+
+    The frozen app appends python-embed's site-packages to its path, and every
+    pip install below runs on THIS interpreter, so the build's Python and
+    python-embed's must be one ABI.  Measured 2026-10-21: a 3.11 venv against
+    the 3.12 python-embed built an installer that passed acceptance and
+    validation, and shipped without LangChain chat (uuid_utils), Piper TTS
+    (onnxruntime) or Whisper (ctranslate2).  An unknown embed ABI is not a
+    mismatch: nothing can be said about it, and callers prune nothing on None.
+    """
+    if not embed_abi or embed_abi == build_abi:
+        return None
+    return (f"this build runs on Python {sys.version.split()[0]} "
+            f"({build_abi}), but python-embed is {embed_abi}.  The installer "
+            f"would ship extension modules the app cannot load.  Recreate the "
+            f"build venv with the python-embed version (scripts/deps.py "
+            f"PYTHON_EMBED_VERSION) and build again.")
+
+
+def _wheel_for_abi(wheel_names, abi):
+    """The newest wheel built for `abi` ('cp312'), by its file-name tag, or
+    None.  `-cp312-` is the interpreter tag of a wheel name, so a cp311 or
+    cp313 wheel lying beside it is never picked for a cp312 python-embed."""
+    if not abi:
+        return None
+    hits = [w for w in wheel_names if w.endswith('.whl') and f'-{abi}-' in w]
+    return sorted(hits)[-1] if hits else None
+# ── end embed ABI helpers ──
+
+# The ABI guard runs FIRST: before the integrity scan below (its autorepair and
+# sibling reinstall run `sys.executable -m pip install --target python-embed`,
+# which would write this venv's ABI into python-embed, a folder that persists
+# between builds) and long before setup() freezes Nunba.exe with this Python.
+_pre_embed_abi = None
+if ('build' in sys.argv or 'build_exe' in sys.argv):
+    _pre_embed_abi = _abi_tag_of_embedded_python(os.path.abspath("python-embed"))
+    _abi_error = _embed_abi_mismatch(_pre_embed_abi, _abi_tag_of_this_python())
+    if _abi_error:
+        print(f"ERROR: {_abi_error}")
+        sys.exit(1)
+
 _skip_python_embed_copy = False
 current_python_embed_hash = None
 if os.path.exists("python-embed"):
@@ -2004,6 +2111,7 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
                 f"won't blow up at runtime)"
             )
 
+
 # ── Pre-copy: install TTS packages into python-embed ──
 # GPU TTS backends need pip packages in python-embed's site-packages.
 # python-embed's own pip is broken (distutils-precedence.pth), so we use
@@ -2100,6 +2208,21 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             # mid-way through hevolveai/runs/_pytest (462 MB of tfevents,
             # WinError 112 disk full).
             'runs')
+
+        def _ignore_staging(src, names):
+            """_IGNORE_HEAVY, plus any virtualenv whatever it is named.
+
+            fnmatch matches whole names, so the 'venv'/'.venv' entries above
+            miss every other spelling.  Measured 2026-10-21: the copy sat in
+            HARTOS/venv-hart/ (2.5 GB, ~43k files) with 18,614 files already
+            in %TEMP%.  A virtualenv always has pyvenv.cfg at its root -- the
+            same test HARTOS's code hash uses
+            (security/node_integrity._is_foreign_tree).
+            """
+            ignored = set(_IGNORE_HEAVY(src, names))
+            ignored.update(n for n in names if os.path.isfile(
+                os.path.join(src, n, 'pyvenv.cfg')))
+            return ignored
 
         _PKG_TMP_PREFIX = 'hart-freeze-pkg-'
 
@@ -2213,7 +2336,7 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             _dst = os.path.join(_tmp,
                                 os.path.basename(os.path.normpath(_sib_path)))
             try:
-                _shutil.copytree(_sib_path, _dst, ignore=_IGNORE_HEAVY,
+                _shutil.copytree(_sib_path, _dst, ignore=_ignore_staging,
                                  symlinks=True)
                 return subprocess.run(
                     [sys.executable, "-m", "pip", "install", "--no-deps",
@@ -2348,20 +2471,23 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                   f"src={os.path.isdir(_hevolveai_src)})")
 
         # Step 2: install hevolvearmor decryption loader into python-embed.
-        # Uses a pre-built cp312 wheel if present in
+        # Uses a pre-built wheel for python-embed's own ABI if present in
         # HARTOS/hevolvearmor/target/wheels/; falls back to the source
         # directory (pip will invoke maturin if available).  The loader
-        # ships a Rust _native.cp312-win_amd64.pyd so the pip install has
-        # to target the correct Python ABI — which matches python-embed
-        # (PYTHON_EMBED_VERSION, currently 3.12.x).
+        # ships a Rust _native.<abi>-win_amd64.pyd, so the wheel must match
+        # the ABI python-embed ships (_pre_embed_abi, read from its own
+        # pythonXY.dll), not a hard-coded cp312.  The guard above made sure
+        # this build's Python has that ABI; it is the fallback when the
+        # embed's is unknown.
         if os.path.isdir(_armor_pkg_dir):
             _armor_wheels = os.path.join(_armor_pkg_dir, 'target', 'wheels')
             _armor_whl = None
             if os.path.isdir(_armor_wheels):
-                _cps = [w for w in os.listdir(_armor_wheels)
-                        if w.endswith('.whl') and 'cp312' in w]
-                if _cps:
-                    _armor_whl = os.path.join(_armor_wheels, sorted(_cps)[-1])
+                _picked = _wheel_for_abi(
+                    os.listdir(_armor_wheels),
+                    _pre_embed_abi or _abi_tag_of_this_python())
+                if _picked:
+                    _armor_whl = os.path.join(_armor_wheels, _picked)
             _install_target = _armor_whl or _armor_pkg_dir
             print(f"HevolveArmor: installing loader into python-embed from "
                   f"{os.path.relpath(_install_target, _project_root)}")
@@ -2457,12 +2583,22 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
         ]
         for _pkg_label, _pip_name, _import_name, _extra_args in _tts_deps:
             _check_path = os.path.join(_embed_sp, _import_name)
-            if os.path.isdir(_check_path) or os.path.isfile(_check_path + '.py'):
+            _present = (os.path.isdir(_check_path)
+                        or os.path.isfile(_check_path + '.py'))
+            _unloadable = _modules_without_abi_build(_check_path, _pre_embed_abi)
+            if _present and not _unloadable:
                 print(f"python-embed: {_pkg_label} already present")
                 continue
-            print(f"python-embed: installing {_pkg_label} via --target...")
+            if _unloadable:
+                print(f"python-embed: {_pkg_label} present but {len(_unloadable)} "
+                      f"module(s) have no {_pre_embed_abi} build "
+                      f"({', '.join(_unloadable[:3])}) -- reinstalling")
+            else:
+                print(f"python-embed: installing {_pkg_label} via --target...")
             _pip_cmd = [sys.executable, "-m", "pip", "install", _pip_name,
                         "--target", _embed_sp, "--no-deps", "--quiet"] + _extra_args
+            if _unloadable:
+                _pip_cmd.append("--upgrade")   # --target replaces only with it
             _r = subprocess.run(_pip_cmd, capture_output=True, text=True, timeout=300)
             if _r.returncode == 0:
                 print(f"python-embed: {_pkg_label} installed OK")
@@ -2481,24 +2617,6 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             if os.path.isdir(_stale_path):
                 shutil.rmtree(_stale_path, ignore_errors=True)
                 print(f"python-embed: pruned {_stale_name} (XTTS runs from its venv)")
-
-def _abi_tag_of_embedded_python(embed_dir):
-    """'cp312' for the interpreter that SHIPS, read from its own pythonXY.dll.
-
-    Returns None when it cannot be determined, and every caller must then prune
-    nothing: deleting extension modules on a guess is how you ship a bundle that
-    imports on the build box and dies on the user's.
-    """
-    try:
-        for name in os.listdir(embed_dir):
-            low = name.lower()
-            if (low.startswith('python') and low.endswith('.dll')
-                    and low[6:-4].isdigit() and len(low[6:-4]) >= 2):
-                return 'cp' + low[6:-4]        # python312.dll -> cp312
-    except OSError:
-        pass
-    return None
-
 
 # ── Post-build: copy python-embed via shutil.copytree ──
 # cx_Freeze's include_files doesn't reliably copy dot-prefixed directories
@@ -2564,11 +2682,8 @@ if ('build' in sys.argv or 'build_exe' in sys.argv) and not _skip_python_embed_c
                     tag = n.rsplit('.cp', 1)[1].split('-', 1)[0]
                     if f'cp{tag}' != _embed_abi:
                         drop.add(n)
-                        base = n.split('.cp')[0]
-                        same_abi = any(
-                            o.startswith(f'{base}.{_embed_abi}') for o in names)
-                        if not (same_abi or f'{base}.py' in names
-                                or f'{base}.pyd' in names):
+                        base = _wrong_abi_orphan(n, names, _embed_abi)
+                        if base:
                             _orphans.append(os.path.join(dirpath, base))
             return drop
 

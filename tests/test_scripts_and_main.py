@@ -689,11 +689,18 @@ class TestSecurityHelpers:
 class TestRequireLocalOrToken:
     """Test the require_local_or_token decorator."""
 
-    def test_execute_from_localhost_ok(self, app_client):
+    def test_execute_from_localhost_ok(self, app_client, monkeypatch):
         """Localhost requests to protected endpoints should be allowed."""
+        # Importing main exports the desktop guest as the owner, and with an
+        # owner the consent gate waits up to COMPUTER_CONTROL_WAIT_SECONDS
+        # (90 s) for an answer nobody gives here -- past the 60 s per-test
+        # timeout, which kills the whole run.  With no owner the real gate
+        # refuses at once, so the command never runs.
+        monkeypatch.delenv('HEVOLVE_OWNER_USER_ID', raising=False)
         response = app_client.post('/execute', json={'command': 'echo hello', 'shell': True})
         # Should not be 401 since test client is localhost
         assert response.status_code != 401
+        assert response.status_code == 403
 
     def test_debug_routes_from_localhost(self, app_client):
         response = app_client.get('/debug/routes')
