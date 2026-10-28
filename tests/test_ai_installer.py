@@ -27,11 +27,16 @@ if PROJECT_ROOT not in sys.path:
 
 class TestGPUDetection:
     """detect_gpu() determines which models the user can run. Wrong detection =
-    either OOM crash (model too big) or unnecessarily slow (CPU when GPU available)."""
+    either OOM crash (model too big) or unnecessarily slow (CPU when GPU available).
+
+    The backend comes from llama_installer.detect_backend, which reads
+    platform.system(), so each test pins the OS it describes; otherwise the
+    runner's own OS decides (a macOS runner always answers 'metal')."""
 
     def test_returns_dict_with_required_keys(self):
         from desktop.ai_installer import detect_gpu
-        with patch('subprocess.run', side_effect=FileNotFoundError):
+        with patch('platform.system', return_value='Linux'), \
+             patch('subprocess.run', side_effect=FileNotFoundError):
             result = detect_gpu()
         required = {'available', 'type', 'name', 'vram_gb'}
         assert required.issubset(set(result.keys()))
@@ -39,7 +44,8 @@ class TestGPUDetection:
     def test_no_gpu_returns_none_type(self):
         """CPU-only machines: type='none', available=False."""
         from desktop.ai_installer import detect_gpu
-        with patch('subprocess.run', side_effect=FileNotFoundError):
+        with patch('platform.system', return_value='Linux'), \
+             patch('subprocess.run', side_effect=FileNotFoundError):
             with patch('desktop.ai_installer.IS_MACOS', False):
                 result = detect_gpu()
         assert result['available'] is False
@@ -52,6 +58,7 @@ class TestGPUDetection:
         mock_proc.returncode = 0
         mock_proc.stdout = "NVIDIA GeForce RTX 3070, 8192 MiB"
         with patch('desktop.ai_installer.IS_MACOS', False), \
+             patch('platform.system', return_value='Linux'), \
              patch('subprocess.run', return_value=mock_proc):
             result = detect_gpu()
         assert result['available'] is True
@@ -66,6 +73,7 @@ class TestGPUDetection:
         mock_proc.returncode = 0
         mock_proc.stdout = "NVIDIA A100, 80 GiB"
         with patch('desktop.ai_installer.IS_MACOS', False), \
+             patch('platform.system', return_value='Linux'), \
              patch('subprocess.run', return_value=mock_proc):
             result = detect_gpu()
         assert result['vram_gb'] == pytest.approx(80.0, abs=0.5)
@@ -76,6 +84,7 @@ class TestGPUDetection:
 
         from desktop.ai_installer import detect_gpu
         with patch('desktop.ai_installer.IS_MACOS', False), \
+             patch('platform.system', return_value='Linux'), \
              patch('subprocess.run', side_effect=subprocess.TimeoutExpired('nvidia-smi', 5)):
             result = detect_gpu()
         assert result['available'] is False
@@ -84,6 +93,7 @@ class TestGPUDetection:
         """Apple Silicon always has Metal — no need to probe."""
         from desktop.ai_installer import detect_gpu
         with patch('desktop.ai_installer.IS_MACOS', True), \
+             patch('platform.system', return_value='Darwin'), \
              patch('platform.machine', return_value='arm64'):
             result = detect_gpu()
         assert result['available'] is True
