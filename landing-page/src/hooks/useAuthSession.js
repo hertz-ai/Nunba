@@ -480,6 +480,35 @@ export function clearAccessTokenForExpiry() {
 }
 
 /**
+ * canRegisterGuestForSeal — may the HART ceremony mint a guest account now?
+ *
+ * Yes only when there is no token AND no cloud identity left behind.  Two
+ * ways a cloud user reaches the ceremony without a token:
+ *   - useStorageSync writes `pending_cloud_user_id` when user_data.json has a
+ *     user_id but no access_token, so that nothing creates "a fresh HART guest
+ *     over the cloud identity"; Demopage's auto-refresh honours it.
+ *   - a 401 runs clearAccessTokenForExpiry, which removes ONLY access_token,
+ *     so the encrypted `user_id` stays and no pending flag is set.  Agent.js
+ *     shows the ceremony to any unsealed user, cloud users included.
+ * A guest registered over either would overwrite guest_user_id /
+ * social_user_id / hevolve_access_id, and /api/hart/seal would bind the name
+ * to the guest permanently, so the cloud account could never claim it.
+ *
+ * Reads the keys themselves rather than readAuthSession().status:
+ * useStorageSync also sets guest_mode + guest_user_id in the pending state, so
+ * the status resolves to 'guest', not 'pending'.  The raw `user_id` key counts
+ * by presence: refusing on one that fails to decrypt is safe, minting a guest
+ * over it is not.
+ */
+export function canRegisterGuestForSeal() {
+  try {
+    if (localStorage.getItem('access_token')) return false;
+    if (localStorage.getItem('user_id')) return false;
+  } catch { return false; }
+  return !readAuthSession().pending_cloud.user_id;
+}
+
+/**
  * silentGuestRefresh — fetch a fresh guest JWT without nuking the session.
  *
  * Single canonical entry-point for the guest-token-refresh flow.
@@ -515,8 +544,12 @@ export function clearAccessTokenForExpiry() {
  *   - Backend returning a non-OK status
  * Callers should treat null as "couldn't refresh — fall back to login UX".
  */
-export async function silentGuestRefresh() {
-  const guestName = (() => {
+export async function silentGuestRefresh({ guestName: explicitName } = {}) {
+  // `guestName` is for the HART ceremony, which seals BEFORE guest_name is
+  // in localStorage (applyHartSeal back-fills it afterwards): it registers
+  // the guest under the name being sealed so the seal can carry a bearer.
+  // Every other caller leaves it out and refreshes the stored guest.
+  const guestName = explicitName || (() => {
     try { return localStorage.getItem('guest_name'); } catch { return null; }
   })();
   if (!guestName) return null;

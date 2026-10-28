@@ -809,7 +809,10 @@ class TestVRAMManager(unittest.TestCase):
         self.vm.release('nonexistent')
 
     def test_can_fit_already_allocated(self):
-        self.vm.allocate('whisper')
+        # Book the allocation directly: allocate() refuses on a box with no
+        # GPU (CI runners, CPU-only desktops), which made this test assert
+        # about the GPU it ran on instead of the already-allocated rule.
+        self.vm._allocations['whisper'] = 1.0
         self.assertTrue(self.vm.can_fit('whisper'))
 
     # ── Drift detection ──────────────────────────────────────────
@@ -1026,7 +1029,17 @@ class TestAPIEndpoints(unittest.TestCase):
     def test_models_swap_with_needed_model(self):
         resp = self.client.post('/api/admin/models/swap',
                                 json={'needed_model': 'test-model'})
-        self.assertIn(resp.status_code, [200, 403, 503])
+        # The route's documented outcomes (main.py admin_models_swap): 409
+        # "no evictable model found" when nothing is on GPU, and 500 "eviction
+        # succeeded but new model load failed" when a model WAS evicted --
+        # 'test-model' is not a real model, so that is what a shared lifecycle
+        # singleton holding a GPU model produces.  Any other 500 is a crash
+        # (it was request_swap reading ModelState.model_type, fixed in HARTOS).
+        body = resp.get_json() or {}
+        load_failed = (resp.status_code == 500 and body.get('error')
+                       == 'eviction succeeded but new model load failed')
+        self.assertTrue(resp.status_code in (200, 403, 409, 503) or load_failed,
+                        f'{resp.status_code} {body}')
 
     def test_models_auto_select_endpoint(self):
         resp = self.client.post('/api/admin/models/auto-select',
