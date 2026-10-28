@@ -1807,12 +1807,18 @@ if getattr(sys, 'frozen', False):
     # drifted: transformers 5.x has no tokenization_gpt2_fast module, so the
     # inline import failed and `except: pass` skipped the bind on exactly
     # the version this fix is for.  Idempotent and never raises.
+    #
+    # This runs before the splash, so nothing here may stop the boot: the
+    # import first runs core/__init__.py, and a half-installed dependency can
+    # raise anything there (a corrupt dist-info raises KeyError('Name')).
     if sys.platform == 'darwin':
         try:
             from core._transformers_lazy_guard import bind_gpt2_tokenizer_fast
         except ImportError as _e:
             # HARTOS older than #142: importing the module ran its own bind.
             _trace(f"GPT2 pre-bind: HARTOS has no bind_gpt2_tokenizer_fast ({_e})")
+        except Exception as _e:
+            _trace(f"GPT2 pre-bind skipped: importing it failed ({_e!r})")
         else:
             bind_gpt2_tokenizer_fast()
 
