@@ -549,6 +549,9 @@ export async function silentGuestRefresh({ guestName: explicitName } = {}) {
   // in localStorage (applyHartSeal back-fills it afterwards): it registers
   // the guest under the name being sealed so the seal can carry a bearer.
   // Every other caller leaves it out and refreshes the stored guest.
+  const startedToken = localStorage.getItem('access_token');
+  const startedGuestName = localStorage.getItem('guest_name');
+  if (readAuthSession().status === 'cloud') return null;
   const guestName = explicitName || (() => {
     try { return localStorage.getItem('guest_name'); } catch { return null; }
   })();
@@ -579,7 +582,7 @@ export async function silentGuestRefresh({ guestName: explicitName } = {}) {
     if (!token || !user?.id) return null;
     // A login, logout, or another refresh wins over this old request.
     if (localStorage.getItem('access_token') !== startedToken ||
-        localStorage.getItem('guest_name') !== guestName ||
+        localStorage.getItem('guest_name') !== startedGuestName ||
         readAuthSession().status === 'cloud') return null;
     setGuestIdentity({
       user_id: user.id,
