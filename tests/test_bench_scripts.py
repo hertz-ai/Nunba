@@ -124,7 +124,33 @@ class TestAggregate:
 
 
 class TestInstallFakeVRAM:
-    def test_install_fake_vram_accepts_gb_args(self):
+    @pytest.fixture
+    def restore_vram_modules(self, monkeypatch):
+        """Undo what install_fake_vram() writes.
+
+        It replaces sys.modules['integrations'], ['integrations.service_tools']
+        and ['integrations.service_tools.vram_manager'] and sets
+        `.vram_manager` on the package, and never restores any of it.  Left in
+        place, every later test file saw a stripped FakeVRAMManager (no
+        get_allocations_display / allocate / VRAMManager), so
+        test_model_resilience failed in CI with "'FakeVRAMManager' object has
+        no attribute ..." and "cannot import name 'VRAMManager' ... (unknown
+        location)".  monkeypatch puts back the originals, or deletes a name
+        that did not exist before.
+        """
+        for name in ('integrations', 'integrations.service_tools',
+                     'integrations.service_tools.vram_manager'):
+            monkeypatch.setitem(sys.modules, name, sys.modules.get(name))
+        pkg = sys.modules.get('integrations.service_tools')
+        if pkg is not None:
+            monkeypatch.setattr(pkg, 'vram_manager',
+                                getattr(pkg, 'vram_manager', None), raising=False)
+        top = sys.modules.get('integrations')
+        if top is not None:
+            monkeypatch.setattr(top, 'service_tools',
+                                getattr(top, 'service_tools', None), raising=False)
+
+    def test_install_fake_vram_accepts_gb_args(self, restore_vram_modules):
         """Should accept arbitrary GB values without raising."""
         from scripts.bench_indic_cohort import install_fake_vram
         install_fake_vram(total_gb=8.0, free_gb=6.0)
