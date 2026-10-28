@@ -431,7 +431,17 @@ class TestOneLockHold:
     snapshot out of their lock hold passed every other test here."""
 
     def _ids(self, frames):
-        return [int(_frame_id(f).split('-')[1]) for f in frames if _frame_id(f)]
+        """Sequence ids of THIS test's 'tick' frames only.
+
+        Importing main starts background broadcasters (system.health.snapshot,
+        community.feed, ...) whose user_id=None frames reach every registered
+        client, including the one these tests register.  Counting every frame
+        made the counts flaky: measured 2026-10-23, 1214 frames for 1200 ticks
+        whenever a background broadcast landed mid-test (main failed this test
+        3 runs in 5, and it failed CI on unrelated PRs).
+        """
+        return [int(_frame_id(f).split('-')[1]) for f in frames
+                if _frame_id(f) and 'event: tick\n' in str(f)]
 
     def test_concurrent_publishers_deliver_in_id_order(self, main_mod):
         import threading

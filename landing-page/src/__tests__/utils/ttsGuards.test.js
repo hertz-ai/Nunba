@@ -131,28 +131,43 @@ describe('shouldPlayPushedClip', () => {
   const first = 'msg_1760160492473_k3j9x1';
   const second = 'msg_1760160521422_a1b2c3';
   const clip = (requestId) => ({generated_audio_url: '/tts/audio/a.wav', request_id: requestId});
+  const ON = true;
 
-  test('the current turn\'s clip plays', () => {
-    expect(shouldPlayPushedClip(clip(second), second)).toBe(true);
+  test("the current turn's clip plays", () => {
+    expect(shouldPlayPushedClip(clip(second), second, ON)).toBe(true);
   });
 
-  test('an earlier turn\'s clip does not play once a newer turn was sent', () => {
-    expect(shouldPlayPushedClip(clip(first), second)).toBe(false);
+  test("an earlier turn's clip does not play once a newer turn was sent", () => {
+    expect(shouldPlayPushedClip(clip(first), second, ON)).toBe(false);
   });
 
-  test('a background agent\'s clip never plays, with or without a turn of our own', () => {
-    expect(shouldPlayPushedClip(clip('daemon_goal_20260412_235046_b18bba6f'), second)).toBe(false);
-    expect(shouldPlayPushedClip(clip('daemon_goal_20260412_235046_b18bba6f'), null)).toBe(false);
+  test("a background agent's clip never plays, with or without a turn of our own", () => {
+    expect(shouldPlayPushedClip(clip('daemon_goal_20260412_235046_b18bba6f'), second, ON)).toBe(false);
+    expect(shouldPlayPushedClip(clip('daemon_goal_20260412_235046_b18bba6f'), null, ON)).toBe(false);
   });
 
   test('a clip with no id, or one arriving before the page has a turn, plays', () => {
-    expect(shouldPlayPushedClip(clip(undefined), second)).toBe(true);
-    expect(shouldPlayPushedClip(clip(first), null)).toBe(true);
+    expect(shouldPlayPushedClip(clip(undefined), second, ON)).toBe(true);
+    expect(shouldPlayPushedClip(clip(first), null, ON)).toBe(true);
   });
 
   test('nothing plays without a clip url', () => {
-    expect(shouldPlayPushedClip({request_id: second}, second)).toBe(false);
-    expect(shouldPlayPushedClip(null, second)).toBe(false);
-    expect(shouldPlayPushedClip(undefined, null)).toBe(false);
+    expect(shouldPlayPushedClip({request_id: second}, second, ON)).toBe(false);
+    expect(shouldPlayPushedClip(null, second, ON)).toBe(false);
+    expect(shouldPlayPushedClip(undefined, null, ON)).toBe(false);
+  });
+
+  // 2026-10-21, measured on the installed app: with the speaker toggle OFF,
+  // the server still synthesised the reply and the page logged "[TTS] Clip
+  // played" -- the toggle only gated the client-side fallback speak, which
+  // never runs while SSE is connected.  The toggle is the user's word on
+  // hearing the reply, so it gates the pushed clip too.
+  test("with the speaker off, not even the current turn's clip plays", () => {
+    expect(shouldPlayPushedClip(clip(second), second, false)).toBe(false);
+    expect(shouldPlayPushedClip(clip(undefined), null, false)).toBe(false);
+  });
+
+  test('the speaker state is required: a caller that leaves it out plays nothing', () => {
+    expect(shouldPlayPushedClip(clip(second), second)).toBe(false);
   });
 });
