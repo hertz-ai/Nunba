@@ -23,7 +23,13 @@ jest.mock('../../../config/apiBase', () => ({ API_BASE_URL: '' }));
 jest.mock('../../../services/socialApi', () => ({
   consentApi: { grant: jest.fn(() => Promise.resolve()), revoke: jest.fn(() => Promise.resolve()) },
 }));
-jest.mock('../../../hooks/useAuthSession', () => ({ applyHartSeal: jest.fn() }));
+// #35's guest registration before the seal is not under test here: no guest
+// to register, so the ceremony goes straight to the seal loop.
+jest.mock('../../../hooks/useAuthSession', () => ({
+  applyHartSeal: jest.fn(),
+  canRegisterGuestForSeal: jest.fn(() => false),
+  silentGuestRefresh: jest.fn(),
+}));
 jest.mock('../../../components/VoiceVisualizer', () => () => null);
 
 const REVEAL = {
