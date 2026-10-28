@@ -246,3 +246,37 @@ describe('OtpAuthModal', () => {
     expect(screen.queryByText('GET OTP')).toBeNull();
   });
 });
+
+
+test('an HTTP 200 wrong-OTP response cannot replace the guest login', async () => {
+  global.fetch = jest.fn().mockResolvedValueOnce({ok: true}).mockResolvedValueOnce({ok: true, json: async () => ({detail: 'Wrong OTP'})});
+  renderModal();
+  fireEvent.click(screen.getByRole('button', {name: /^email$/i}));
+  fireEvent.change(document.querySelector('input[type="email"]'), {target: {value: 'test@example.invalid'}});
+  fireEvent.click(screen.getByRole('button', {name: /get otp/i}));
+  await waitFor(() => expect(screen.getByRole('button', {name: /verify otp/i})).toBeInTheDocument());
+  fireEvent.click(screen.getByRole('button', {name: /verify otp/i}));
+  await waitFor(() => expect(screen.getByText('Wrong OTP')).toBeInTheDocument());
+  expect(localStorage.getItem('access_token')).toBeNull();
+});
+
+test('email login syncs and verifies the desktop account before publishing the token', async () => {
+  const axios = require('axios');
+  localStorage.setItem('access_token', 'old-guest');
+  axios.post.mockImplementation(async (path, body) => {
+    expect(path).toBe('/api/storage/set');
+    expect(body).toEqual(expect.objectContaining({user_id: '123', access_token: 'new-email-token', email: 'test@example.invalid'}));
+    expect(localStorage.getItem('access_token')).toBe('old-guest');
+    return {data: {success: true, db_upserted: false}};
+  });
+  axios.get.mockResolvedValue({data: {success: true, data: {id: '123', role: 'flat'}}});
+  global.fetch = jest.fn().mockResolvedValueOnce({ok: true}).mockResolvedValueOnce({ok: true, json: async () => ({access_token: 'new-email-token', user_id: 123, email_address: 'test@example.invalid', expires_in: 3600})});
+  renderModal();
+  fireEvent.click(screen.getByRole('button', {name: /^email$/i}));
+  fireEvent.change(document.querySelector('input[type="email"]'), {target: {value: 'test@example.invalid'}});
+  fireEvent.click(screen.getByRole('button', {name: /get otp/i}));
+  await waitFor(() => expect(screen.getByRole('button', {name: /verify otp/i})).toBeInTheDocument());
+  fireEvent.click(screen.getByRole('button', {name: /verify otp/i}));
+  await waitFor(() => expect(localStorage.getItem('access_token')).toBe('new-email-token'));
+  expect(axios.get).toHaveBeenCalledWith('/api/social/auth/me', expect.objectContaining({headers: {Authorization: 'Bearer new-email-token'}}));
+});
