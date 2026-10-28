@@ -195,7 +195,7 @@ def detect_gpu() -> dict:
     result = {"available": False, "type": "none", "name": None, "vram_gb": 0}
 
     try:
-        from llama_installer import LlamaInstaller
+        from llama.llama_installer import LlamaInstaller
         backend = LlamaInstaller.detect_backend()
     except Exception as e:
         logger.debug(f"GPU backend detection failed: {e}")
@@ -356,6 +356,17 @@ class AIInstaller:
         self.vibevoice_dir = self.tts_dir / "vibevoice"
         self.tts_models_dir = self.base_dir / "models" / "tts"
 
+    def _llama_installer(self):
+        """LlamaInstaller for this installer's llama.cpp and models dirs.
+
+        Imported through the ``llama`` package: the frozen bundle has only
+        ``lib/llama/llama_installer.pyc`` and never puts ``lib/llama`` on
+        sys.path, so a bare ``llama_installer`` import fails there.
+        """
+        from llama.llama_installer import LlamaInstaller
+        return LlamaInstaller(install_dir=str(self.llama_dir),
+                              models_dir=str(self.models_dir))
+
     def _select_model_for_compute(self):
         """Pick the largest LLM preset that actually fits THIS machine.
 
@@ -365,7 +376,7 @@ class AIInstaller:
         present, else by CPU capability — and NEVER returns nothing: the
         smallest preset (0.8B, "runs on anything") is the floor.
         """
-        from llama_installer import MODEL_PRESETS  # local import (same as install_all)
+        from llama.llama_installer import MODEL_PRESETS  # local import (same as install_all)
         try:
             import psutil
             ram_gb = psutil.virtual_memory().total / (1024 ** 3)
@@ -440,15 +451,9 @@ class AIInstaller:
             Tuple of (success, message)
         """
         try:
-            from llama_config import initialize_llama_on_first_run
-            from llama_installer import MODEL_PRESETS, LlamaInstaller
-
             self._report_progress("Checking llama.cpp installation...", 5)
 
-            installer = LlamaInstaller(
-                install_dir=str(self.llama_dir),
-                models_dir=str(self.models_dir)
-            )
+            installer = self._llama_installer()
 
             # Check if already installed
             existing = installer.find_llama_server()
@@ -509,7 +514,7 @@ class AIInstaller:
                 # mobilevlm / clip via lightweight_backend; draft-first chat
                 # just uses the main 4B standalone.
                 try:
-                    from llama_installer import MODEL_PRESETS as _MP
+                    from llama.llama_installer import MODEL_PRESETS as _MP
                     _p08 = next((p for p in _MP if "0.8B" in p.display_name), None)
                     # Skip if the 0.8B IS the main model just downloaded above.
                     if _p08 and _p08.display_name != default_model.display_name:
@@ -697,11 +702,21 @@ class AIInstaller:
         if not skip_llama and not force_reinstall and not skip_endpoint_scan:
             self._report_progress("Scanning for existing AI endpoints...", 5)
             try:
-                from llama_config import LlamaConfig, scan_existing_llm_endpoints, scan_openai_compatible_ports
+                from llama.llama_config import LlamaConfig, scan_existing_llm_endpoints, scan_openai_compatible_ports
 
-                existing = scan_existing_llm_endpoints()
-                if not existing:
-                    existing = scan_openai_compatible_ports()
+                # A local llama-server binary means the scan can only find
+                # Nunba's OWN server, and adopting that as "external"
+                # (use_external_llm=True) suppresses the local install.
+                # initialize_llama_on_first_run checks for the binary before
+                # it scans for the same reason.
+                local_server = self._llama_installer().find_llama_server()
+                if local_server:
+                    existing = None
+                    logger.info(f"Local llama-server at {local_server}: endpoint scan skipped")
+                else:
+                    existing = scan_existing_llm_endpoints()
+                    if not existing:
+                        existing = scan_openai_compatible_ports()
 
                 if existing:
                     self._report_progress(f"Found existing AI: {existing['name']}", 10)
@@ -786,9 +801,7 @@ class AIInstaller:
 
         # Check llama.cpp
         try:
-            from llama_installer import LlamaInstaller
-            installer = LlamaInstaller(str(self.llama_dir), str(self.models_dir))
-            server = installer.find_llama_server()
+            server = self._llama_installer().find_llama_server()
             if server:
                 status["components"]["llama"]["installed"] = True
                 status["components"]["llama"]["path"] = server
