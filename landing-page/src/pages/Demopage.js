@@ -11,7 +11,7 @@ import connectedGif from '../assets/images/connected.gif';
 // the companion, the icon was always self-referential noise.
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
-import AgentOverlay, {mediaCards} from '../components/AgentOverlay/AgentOverlay';
+import AgentOverlay from '../components/AgentOverlay/AgentOverlay';
 import {Link as RouterLink, useNavigate, useParams, useLocation} from 'react-router-dom';
 import {
   ChevronDown,
@@ -33,7 +33,7 @@ import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
-import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip } from '../utils/ttsGuards';
+import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, initialTtsEnabled } from '../utils/ttsGuards';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
 import VoiceVisualizer from '../components/VoiceVisualizer';
@@ -140,13 +140,6 @@ function mergeCarriedSetupCards(loaded, carried) {
     (m) => !(isGlobalSetupCard(m) && carriedKeys.has(setupCardKey(m)))
   );
   return [...loadedWithoutDupes, ...carried];
-}
-
-// One chat row for an agent's card, drawn by ChatMessageList through
-// AgentOverlay's OverlayContent: the overlay's inline cards and the media an
-// agent's message carries both come in this way.
-function agentCardRow(component) {
-  return {type: 'agent_ui', component, timestamp: new Date(), sender: 'agent'};
 }
 
 /* TypeWriterForSubtitle and ThinkingProcessContainer extracted to ./chat/ */
@@ -768,14 +761,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }
   });
 
-  // TTS enabled is true ONLY if speechConsent is explicitly 'granted'
-  const [ttsEnabled, setTtsEnabled] = useState(() => {
-    try {
-      return localStorage.getItem('nunba_speech_consent') === 'granted';
-    } catch (e) {
-      return false;
-    }
-  });
+  // Speech needs the consent ('granted') AND the speaker toggle's saved choice
+  // (utils/ttsGuards.initialTtsEnabled), so switching the speaker off survives
+  // a reload.
+  const [ttsEnabled, setTtsEnabled] = useState(() =>
+    initialTtsEnabled((key) => localStorage.getItem(key)));
+  // playPushedTts is a []-deps callback, so it reads the toggle through this
+  // ref; the state value it would capture is the one from mount.
+  const ttsEnabledRef = useRef(ttsEnabled);
   const [ttsVoice, setTtsVoice] = useState(() => {
     return localStorage.getItem('tts_voice') || 'en_US-amy-medium';
   });
@@ -891,6 +884,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   useEffect(() => {
     localStorage.setItem('nunba_media_mode', mediaMode);
   }, [mediaMode]);
+
+  // The speaker toggle governs the clip the server pushes too (utils/
+  // ttsGuards.shouldPlayPushedClip), and turning it off silences the reply
+  // that is already playing instead of letting it finish.  tts.stop() is the
+  // one stop: it pauses the shared element, and also stops browser PocketTTS
+  // and clears the queue (a bare el.pause() did only the first).  `stop` is a
+  // stable useCallback, so it is safe as a dep.
+  useEffect(() => {
+    ttsEnabledRef.current = ttsEnabled;
+    if (ttsEnabled) return;
+    tts.stop();
+    setIsPlayingResponse(false);
+  }, [ttsEnabled, tts.stop]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist TTS settings to localStorage
   useEffect(() => {
@@ -2040,9 +2046,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // an earlier turn of this page (each turn carries its own id, so a reply
     // that lands after the next send is not spoken over it) or a background
     // agent's is skipped.
-    if (!shouldPlayPushedClip(data, requestIdRef.current)) {
+    if (!shouldPlayPushedClip(data, requestIdRef.current, ttsEnabledRef.current)) {
       if (data && data.generated_audio_url) {
-        console.log('[TTS] Skipped another turn\'s clip:', data.request_id, 'current:', requestIdRef.current);
+        if (!ttsEnabledRef.current) {
+          console.log('[TTS] Speaker off: skipped clip', data.request_id);
+        } else {
+          console.log('[TTS] Skipped another turn\'s clip:', data.request_id, 'current:', requestIdRef.current);
+        }
       }
       return;
     }
@@ -2355,9 +2365,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
       const responseVideoUrl = parsed.video_link?.video || '';
       const responseAudioUrl = parsed.video_link?.aud_url || '';
-      // What the agent wants the person to SEE (HARTOS publish_agent_message
-      // `media`): each item a card under the agent's words.
-      const mediaRows = mediaCards(parsed.media).map(agentCardRow);
 
       if (extractedText || responseVideoUrl || responseAudioUrl) {
         const endTime = new Date();
@@ -2464,7 +2471,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
-            const newMessages = [...prev, assistantMessage, ...mediaRows];
+            const newMessages = [...prev, assistantMessage];
             setAnimatingMessageIndex(null);
             setShouldScroll(true);
             return newMessages;
@@ -2493,9 +2500,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         };
 
         setMessages((prev) => {
-          const newMessages = [...prev, assistantMessage, ...mediaRows];
-          // The typewriter runs on the agent's words, not on a media row.
-          setAnimatingMessageIndex(prev.length);
+          const newMessages = [...prev, assistantMessage];
+          setAnimatingMessageIndex(newMessages.length - 1);
           setShouldScroll(true);
           return newMessages;
         });
@@ -2539,8 +2545,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             nodeTier: parsed.node_tier,
           };
           setMessages((prev) => {
-            const newMessages = [...prev, assistantMessage, ...mediaRows];
-            setAnimatingMessageIndex(prev.length);
+            const newMessages = [...prev, assistantMessage];
+            setAnimatingMessageIndex(newMessages.length - 1);
             setShouldScroll(true);
             return newMessages;
           });
@@ -6002,7 +6008,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       <AgentOverlay
         navigate={navigate}
         onInlineChatCard={(card) => {
-          setMessages((prev) => [...prev, agentCardRow(card)]);
+          setMessages((prev) => [...prev, {
+            type: 'agent_ui',
+            component: card,
+            timestamp: new Date(),
+            sender: 'agent',
+          }]);
         }}
       />
     </>

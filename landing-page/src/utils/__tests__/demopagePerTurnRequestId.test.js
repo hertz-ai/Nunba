@@ -65,7 +65,9 @@ describe('Demopage starts a turn per send', () => {
     const player = SRC.indexOf('const playPushedTts = useCallback(');
     expect(player).toBeGreaterThan(-1);
     expect(SRC.slice(player, player + 700))
-      .toMatch(/if \(!shouldPlayPushedClip\(data, requestIdRef\.current\)\)/);
+      // The speaker toggle is the third argument (2026-10-21): the guard is
+      // still the one decision, now including whether the user wants audio.
+      .toMatch(/if \(!shouldPlayPushedClip\(data, requestIdRef\.current, ttsEnabledRef\.current\)\)/);
     expect(SRC).not.toMatch(/request_id !== requestIdRef\.current/);
   });
 });

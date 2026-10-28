@@ -17,6 +17,8 @@ import realtimeService, {
   subscribeChatNew,
 } from '../../../../services/realtimeService';
 import {chatApi, dashboardApi} from '../../../../services/socialApi';
+import {getTtsAudioElement} from '../../../../services/ttsAudioElement';
+import {playTtsClip} from '../../../../services/ttsClipPlayer';
 import {
   classifyError,
   getBackoff,
@@ -24,6 +26,10 @@ import {
 } from '../../../../utils/chatRetry';
 import {getStableDeviceIdOnce} from '../../../../utils/deviceId';
 import {rememberServerPromptId} from '../../../../utils/promptId';
+import {
+  initialTtsEnabled,
+  shouldPlayPushedClip,
+} from '../../../../utils/ttsGuards';
 
 import React, {
   createContext,
@@ -270,7 +276,12 @@ export default function NunbaChatProvider({children}) {
   // currentAgent so the visible thread never jumps.
   const adoptedPromptIdRef = useRef(null);
   const [availableAgents, setAvailableAgents] = useState([]);
-  const [ttsEnabled, setTtsEnabled] = useState(false);
+  // The speaker starts from the same storage reading Demopage uses (consent
+  // granted AND the saved `tts_enabled` choice) and the choice is saved when
+  // the user changes it (effect below), so the panel does not fall silent
+  // every session, and a speaker left on in Demopage is on here.
+  const [ttsEnabled, setTtsEnabled] = useState(() =>
+    initialTtsEnabled((key) => localStorage.getItem(key)));
   // Camera frame streaming — consented via an ApprovalOverlay "camera"
   // approval.  Persisted to sessionStorage so a page nav within the
   // session keeps the consent (not localStorage — long-lived consent
@@ -332,6 +343,37 @@ export default function NunbaChatProvider({children}) {
 
   // TTS — wired to existing hook
   const tts = useTTS({enabled: ttsEnabled, autoSpeak: false});
+
+  // The pushed-clip listener below is registered once per `tts`, so it reads
+  // the speaker toggle through this ref.  Turning the speaker off also stops
+  // the reply already playing: tts.stop() is the one stop (shared element,
+  // browser PocketTTS, queue).  `stop` is a stable useCallback, hence the
+  // alias in the deps.
+  //
+  // Neither the stop nor the save runs on mount, only on a change: a save on
+  // mount would overwrite a stored 'true' with the false initialTtsEnabled
+  // returns while consent is not granted yet, and a stop on mount would pause
+  // the shared audio element for nothing.
+  const ttsEnabledRef = useRef(ttsEnabled);
+  const ttsMountedRef = useRef(false);
+  const stopTts = tts.stop;
+  useEffect(() => {
+    ttsEnabledRef.current = ttsEnabled;
+    if (!ttsMountedRef.current) return;
+    if (ttsEnabled) return;
+    stopTts();
+  }, [ttsEnabled, stopTts]);
+  useEffect(() => {
+    if (!ttsMountedRef.current) {
+      ttsMountedRef.current = true;
+      return;
+    }
+    try {
+      localStorage.setItem('tts_enabled', String(ttsEnabled));
+    } catch {
+      /* storage unavailable: the choice lasts for this session only */
+    }
+  }, [ttsEnabled]);
 
   // switchAgent must be defined BEFORE useEffects that reference it (TDZ fix)
   const switchAgent = useCallback(
@@ -943,57 +985,39 @@ export default function NunbaChatProvider({children}) {
 
   // Listen for backend-pushed TTS audio via SSE/WAMP (com.hertzai.pupit.{userId}).
   // Same pattern as Android's onEventPupitVideo → settingVideoResponse → play.
-  // Stale-request guard: only play audio matching latestRequestIdRef.
+  // Whether a clip plays at all is ttsGuards.shouldPlayPushedClip (speaker on,
+  // a url, this turn's: the same decision Demopage's player asks), and it is
+  // loaded through services/ttsClipPlayer on the shared element, so a clip
+  // delivered twice (SSE + WAMP, or to a second mounted surface) is loaded
+  // once instead of aborting its own play().
   //
   // WebView2 / Chrome autoplay policy rejects new Audio().play() from async
-  // SSE callbacks that aren't within a user-gesture window. The prior impl
-  // swallowed the rejection with `.catch(() => {})` — no log, no UI
-  // indication, user hears nothing. Ported the Demopage.js:1918-1950
-  // workaround here: persistent <audio id="nunba-tts-audio"> element, loud
-  // error logging, and a one-shot document-level click handler that resumes
+  // SSE callbacks that aren't within a user-gesture window, so the element is
+  // the persistent, gesture-primed one (services/ttsAudioElement), failures
+  // are logged loudly, and a one-shot document-level click handler resumes
   // playback on the next user gesture.
   useEffect(() => {
-    // Persistent audio element primed by prior user interactions.
-    // When the React tree first mounts inside a user gesture (typing a
-    // message and pressing send), the element is "activated" and can
-    // later play async audio from SSE callbacks.
-    const ttsAudio = document.getElementById('nunba-tts-audio') || (() => {
-      const el = document.createElement('audio');
-      el.id = 'nunba-tts-audio';
-      el.preload = 'auto';
-      document.body.appendChild(el);
-      return el;
-    })();
-
     const handleTTSPush = (payload) => {
       const data = payload?.data || payload;
-      if (data?.action !== 'TTS' || !data?.generated_audio_url) return;
-
-      // Android parity: skip stale audio (request_id mismatch)
-      if (latestRequestIdRef.current &&
-          data.request_id && data.request_id !== latestRequestIdRef.current) {
+      if (data?.action !== 'TTS') return;
+      if (!shouldPlayPushedClip(data, latestRequestIdRef.current, ttsEnabledRef.current)) {
         return;
       }
 
-      // Reuse the persistent element instead of new Audio() — the latter
-      // is born "un-activated" and autoplay always rejects.
-      console.log('[TTS] Event received:', data.generated_audio_url,
-                  'req:', data.request_id);
-      ttsAudio.src = data.generated_audio_url;
-      ttsAudio.play().then(() => {
-        console.log('[TTS] Audio playing OK');
-      }).catch((err) => {
-        console.error('[TTS] Play FAILED (autoplay blocked or network):',
-                      err && err.message);
-        // One-shot resume on next user gesture — replay the rejected audio
-        // once the user clicks anywhere. Avoids the silent-drop class of
-        // failure the prior catch(() => {}) produced.
-        const resumeAudio = () => {
-          ttsAudio.play().catch(() => {});
-          document.removeEventListener('click', resumeAudio);
-        };
-        document.addEventListener('click', resumeAudio, { once: true });
+      const el = getTtsAudioElement();
+      const outcome = playTtsClip(el, data.generated_audio_url, {
+        onError: (err) => {
+          console.error('[TTS] Play FAILED (autoplay blocked or network):',
+                        err && err.message);
+          const resumeAudio = () => {
+            el.play().catch(() => {});
+            document.removeEventListener('click', resumeAudio);
+          };
+          document.addEventListener('click', resumeAudio, { once: true });
+        },
       });
+      console.log('[TTS] Clip', outcome + ':', data.generated_audio_url,
+                  'req:', data.request_id);
     };
 
     // Subscribe to both SSE event types and crossbar worker messages

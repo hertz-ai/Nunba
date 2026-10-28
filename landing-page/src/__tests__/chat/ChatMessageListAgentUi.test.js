@@ -94,18 +94,6 @@ describe('an agent card in the chat', () => {
     expect(screen.getByText('Winner: Store B')).toBeInTheDocument();
   });
 
-  // Demopage appends one media row per item an agent's message carries
-  // (AgentOverlay mediaCards): the picture, clip or page shows in the chat
-  // under the agent's words.
-  it("shows an agent's picture and page in the chat", () => {
-    const {container} = render(<ChatMessageList {...props} messages={[
-      agentRow({type: 'media', media_type: 'image', src: '/uploads/agent/cat.png', alt: 'a cat'}),
-      agentRow({type: 'media', media_type: 'html', src: '/uploads/agent/page.html', alt: 'a chart'}),
-    ]} />);
-    expect(screen.getByAltText('a cat').getAttribute('src')).toBe('/uploads/agent/cat.png');
-    expect(container.querySelector('iframe[src="/uploads/agent/page.html"]')).not.toBeNull();
-  });
-
   it('shows a checkout card with its count and total', () => {
     render(<ChatMessageList {...props} messages={[agentRow({
       type: 'checkout', items_count: 3, total: 360, currency: 'INR',

@@ -37,8 +37,9 @@ route with that body unchanged.  This node must:
     turn alone (marketing_tools.user_assignable_goal_tags; nothing is held
     between turns, amendment A19);
   * put the `media` HARTOS's /chat reply carries into the reply the phone
-    reads (the custom_gpt reply, and /chat's own), only in the reply-media
-    shape (contracts.validate_media_item), with or without reply text;
+    reads (the custom_gpt reply, and /chat's own) as HARTOS sent it, with or
+    without reply text: Reel Studio's reel and any other agent's picture
+    alike, judged by no agent's contract (owner ruling 2026-10-25);
   * never write the owner's intelligence_preference: the phone sends none.
 
 Mocked boundaries only: HARTOS's in-process app (a stand-in Flask app
@@ -141,6 +142,16 @@ MEDIA = [{
              'beats': 'synthetic'},
     'notes': [], 'qa': {'passed': True, 'failed': []},
 }]
+
+#: A picture another agent attaches to its answer: the item HARTOS's
+#: media_items_for returns from the real user file store, as measured
+#: 2026-10-25 (book page 2 for the learning agent, 54).  Not a reel.
+AGENT_PICTURE = {
+    'kind': 'image', 'mime': 'image/jpeg',
+    'url': '/uploads/pdf_parse/10/page_2.jpg',
+    'xid': _sha('page-2'), 'sha256': _sha('page-2'), 'size': 11,
+    'prompt_id': '54', 'request_id': 'r1', 'caption': 'page 2',
+}
 
 #: The shape any id this node uses for a turn must have (plan rev 2, WS-10).
 WELL_FORMED_RID = re.compile(r'[A-Za-z0-9_-]{8,64}')
@@ -763,38 +774,42 @@ def test_a_reply_without_media_has_no_media_key(client, hartos):
     assert reply['answerList'] == ['Which clips should I use?']
 
 
-@pytest.mark.parametrize('media', [
-    'not-a-list',
-    {'kind': 'video'},
-    [{'kind': 'video', 'xid': 'b' * 64}],                          # half an item
-    [{**MEDIA[0], 'qa': {'passed': False, 'failed': ['fps']}}],   # failed QA
-    [{**MEDIA[0], 'xid': 'C:\\reels\\r.mp4'}],
-    ['C:/reels/r.mp4'],
-])
-def test_media_not_in_the_reply_media_shape_is_dropped(client, hartos, media, caplog):
+@pytest.mark.parametrize('path', ['/chat/custom_gpt', '/chat'])
+def test_another_agents_picture_reaches_the_reply_as_hartos_sent_it(
+        client, hartos, path):
+    """Owner ruling 2026-10-25: no agent's contract filters another agent's
+    reply.  Reel Studio's reel contract (validate_media_item) used to run on
+    every /chat reply here and dropped any picture that was not a reel."""
     _built(hartos.prompts_dir)
-    hartos.state['reply'] = {'response': 'Your reel is ready.', 'media': media}
-    caplog.set_level(logging.INFO)
-    reply = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN).get_json()
-    assert 'media' not in reply
-    assert reply['answerList'] == ['Your reel is ready.']
-    assert 'r.mp4' not in _log(caplog)
+    hartos.state['reply'] = {'response': 'Here is page 2.', 'media': [AGENT_PICTURE]}
+    resp = client.post(path, json={
+        'text': 'show me page 2', 'user_id': '10202', 'prompt_id': PROMPT_ID,
+        'request_id': PHONE_RID, 'media_mode': 'text'})
+    assert resp.status_code == 200
+    assert resp.get_json().get('media') == [AGENT_PICTURE]
 
 
-def test_only_the_valid_media_items_are_kept(client, hartos):
+def test_every_media_item_hartos_sends_is_kept_in_its_order(client, hartos):
+    """Nothing here judges an item: a reel the contract would refuse, a
+    picture and a valid reel all reach the phone as HARTOS sent them (the
+    phone's own reel inbox decides what it can show)."""
     _built(hartos.prompts_dir)
-    broken = {**MEDIA[0], 'width': 1920, 'height': 1080}
-    hartos.state['reply'] = {'response': 'Two reels.', 'media': [broken, *MEDIA]}
+    refused_by_the_reel_contract = {**MEDIA[0], 'width': 1920, 'height': 1080}
+    sent = [refused_by_the_reel_contract, AGENT_PICTURE, *MEDIA]
+    hartos.state['reply'] = {'response': 'Two reels and a page.', 'media': sent}
     reply = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN).get_json()
-    assert reply['media'] == MEDIA
+    assert reply.get('media') == sent
 
 
-def test_without_hartos_contract_no_media_crosses(client, hartos, monkeypatch):
+def test_a_node_without_reel_studio_still_passes_every_agents_media(
+        client, hartos, monkeypatch):
+    """No agent's package is needed to carry any agent's reply."""
     _built(hartos.prompts_dir)
     monkeypatch.setitem(sys.modules, 'integrations.reel_studio.contracts', None)
-    hartos.state['reply'] = {'response': 'Your reel is ready.', 'media': MEDIA}
+    hartos.state['reply'] = {'response': 'Your reel is ready.',
+                             'media': [*MEDIA, AGENT_PICTURE]}
     reply = client.post('/chat/custom_gpt', json=PHONE_REEL_REUSE_TURN).get_json()
-    assert 'media' not in reply
+    assert reply.get('media') == [*MEDIA, AGENT_PICTURE]
     assert reply['answerList'] == ['Your reel is ready.']
 
 
