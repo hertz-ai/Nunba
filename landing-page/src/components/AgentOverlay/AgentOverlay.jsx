@@ -38,7 +38,7 @@ const AUTO_DISMISS_MS = 15000;
 // rotates (replacing this card in place, see handleEvent), so the card stays
 // until the phone links or the user closes it.
 // file_request: an agent waits on her files (HARTOS person_ask), so the card
-// stays until it is answered here or anywhere else (notification.read).
+// stays until it is answered here or anywhere else (ask.answered).
 const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair', 'file_request']);
 
 // The card's frosted surface is the ONE HART glass (src/theme/hartGlass,
@@ -1499,11 +1499,42 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     }
   }, []);
 
+  // Open asks a newer card pushed off the screen, oldest first.  HARTOS sends
+  // an ask once and the bell cannot answer one, so an evicted ask comes back
+  // when a slot frees (review of 26d32915, probe R3).  Only changed in ways
+  // that are safe to repeat: React may run a state updater twice.
+  const parkedRef = useRef([]);
+
   const dismiss = useCallback((id) => {
     clearTimeout(timersRef.current[id]);
     delete timersRef.current[id];
     forgetShowing(id);
     setOverlays(prev => prev.filter(o => o._id !== id));
+  }, [forgetShowing]);
+
+  // A card that is not waiting on anyone goes by itself after AUTO_DISMISS_MS.
+  const arm = useCallback((o) => {
+    if (!PERSIST_TYPES.has(o._type)) {
+      timersRef.current[o._id] = setTimeout(() => dismiss(o._id), AUTO_DISMISS_MS);
+    }
+  }, [dismiss]);
+
+  // FIFO eviction past MAX_OVERLAYS, never the card that came last.  An open
+  // ask goes last: it waits for her answer.  HARTOS keeps up to MAX_OVERLAYS
+  // asks open for her, so when only asks are left the oldest one steps aside
+  // into parkedRef, or every newer card would be hidden behind them.
+  const evictOver = useCallback((next) => {
+    while (next.length > MAX_OVERLAYS) {
+      const i = Math.max(0, next.slice(0, -1).findIndex((o) => !o.ask_id));
+      const [evicted] = next.splice(i, 1);
+      clearTimeout(timersRef.current[evicted._id]);
+      delete timersRef.current[evicted._id];
+      forgetShowing(evicted._id);
+      if (evicted.ask_id && !parkedRef.current.some((o) => o._id === evicted._id)) {
+        parkedRef.current.push(evicted);
+      }
+    }
+    return next;
   }, [forgetShowing]);
 
   // An ask answered on any surface (this one, another window, another
@@ -1529,6 +1560,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
   const dropAnswered = useCallback((answered) => {
     const askId = answered && answered.ask_id;
     if (!askId) return;
+    parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== askId);
     setOverlays((prev) => {
       const gone = prev.filter((o) => o.ask_id === askId);
       if (gone.length === 0) return prev;
@@ -1560,6 +1592,10 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     // This message is already on screen.
     const msgId = payload.msg_id;
     if (msgId && showingRef.current.has(msgId)) return;
+    // The same ask sent again shows now, so its parked copy does not come back.
+    if (payload.ask_id) {
+      parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== payload.ask_id);
+    }
 
     // Inline chat card types: forward to Demopage message list AND show overlay
     if (onInlineChatCard && ['product_card', 'cart', 'checkout', 'comparison'].includes(type)) {
@@ -1599,27 +1635,25 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
         });
         prev = prev.filter(o => !pairingOf(o));
       }
-      const next = [...prev, entry];
-      // FIFO eviction if over max, never the card that just came.  An open
-      // ask goes last: HARTOS sends it once, and it waits for her answer.
-      // HARTOS keeps up to MAX_OVERLAYS asks open for her, so when only asks
-      // are left the oldest one goes (it stays open in HARTOS and in her
-      // bell), or every newer card would be hidden behind them.
-      while (next.length > MAX_OVERLAYS) {
-        const i = Math.max(0, next.slice(0, -1).findIndex((o) => !o.ask_id));
-        const [evicted] = next.splice(i, 1);
-        clearTimeout(timersRef.current[evicted._id]);
-        delete timersRef.current[evicted._id];
-        forgetShowing(evicted._id);
-      }
-      return next;
+      return evictOver([...prev, entry]);
     });
 
-    // Auto-dismiss (except persistent types)
-    if (!PERSIST_TYPES.has(type)) {
-      timersRef.current[id] = setTimeout(() => dismiss(id), AUTO_DISMISS_MS);
-    }
-  }, [navigate, onInlineChatCard, dismiss, forgetShowing]);
+    arm(entry);
+  }, [navigate, onInlineChatCard, arm, evictOver, forgetShowing]);
+
+  // A slot freed (a card answered, closed, timed out or replaced): the oldest
+  // parked asks come back into it.
+  useEffect(() => {
+    const room = MAX_OVERLAYS - overlays.length;
+    if (room <= 0 || parkedRef.current.length === 0) return;
+    const back = parkedRef.current.slice(0, room);
+    parkedRef.current = parkedRef.current.slice(room);
+    back.forEach((o) => {
+      if (o.msg_id) showingRef.current.set(o.msg_id, o._id);
+      arm(o);
+    });
+    setOverlays((prev) => evictOver([...prev, ...back]));
+  }, [overlays, arm, evictOver]);
 
   useEffect(() => {
     // Single subscription — realtimeService handles all transports

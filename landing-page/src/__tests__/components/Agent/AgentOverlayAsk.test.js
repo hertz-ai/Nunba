@@ -191,6 +191,56 @@ describe('file_request', () => {
   });
 });
 
+describe('an ask pushed aside', () => {
+  // HARTOS sends an ask once and the bell cannot answer one, so an ask that
+  // stepped aside for a newer card comes back when a slot frees (review of
+  // 26d32915, probe R3).
+  function threeAsksAndANote(send) {
+    for (let i = 1; i <= 3; i += 1) {
+      send({type: 'approval', msg_id: `ask${i}`, ask_id: `ask${i}`, agent_id: '342',
+            action: `step_${i}`, title: `Ask ${i}`});
+    }
+    send({type: 'notification', msg_id: 'n1', title: 'A new note', message: 'x'});
+    expect(screen.queryByText('Ask 1')).toBeNull();
+  }
+
+  test('comes back when the short card that pushed it goes', () => {
+    jest.useFakeTimers();
+    try {
+      const send = mountOverlay();
+      threeAsksAndANote(send);
+      act(() => { jest.advanceTimersByTime(16000); });
+      expect(screen.queryByText('A new note')).toBeNull();
+      expect(screen.getByText('Ask 1')).toBeTruthy();
+      expect(screen.getByText('Ask 2')).toBeTruthy();
+      expect(screen.getByText('Ask 3')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('does not come back once it is answered elsewhere', () => {
+    const send = mountOverlay();
+    threeAsksAndANote(send);
+    act(() => { handlers['ask.answered']({type: 'ask.answered', ask_id: 'ask1'}); });
+    act(() => { handlers['ask.answered']({type: 'ask.answered', ask_id: 'ask2'}); });
+    expect(screen.queryByText('Ask 1')).toBeNull();
+    expect(screen.queryByText('Ask 2')).toBeNull();
+    expect(screen.getByText('Ask 3')).toBeTruthy();
+    expect(screen.getByText('A new note')).toBeTruthy();
+  });
+
+  test('sent again, it shows once', () => {
+    const send = mountOverlay();
+    threeAsksAndANote(send);
+    send({type: 'approval', msg_id: 'ask1', ask_id: 'ask1', agent_id: '342',
+          action: 'step_1', title: 'Ask 1'});
+    expect(screen.getAllByText('Ask 1')).toHaveLength(1);
+    act(() => { handlers['ask.answered']({type: 'ask.answered', ask_id: 'ask2'}); });
+    expect(screen.getAllByText('Ask 1')).toHaveLength(1);
+  });
+});
+
 describe('an ask answered anywhere', () => {
   test('ask.answered for the ask drops its card here', () => {
     const send = mountOverlay();
