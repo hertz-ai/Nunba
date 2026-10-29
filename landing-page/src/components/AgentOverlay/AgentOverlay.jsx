@@ -1509,6 +1509,9 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     clearTimeout(timersRef.current[id]);
     delete timersRef.current[id];
     forgetShowing(id);
+    // A card answered while it was parked is done too (review of 622a31ea,
+    // probe P7): it never comes back for a second answer.
+    parkedRef.current = parkedRef.current.filter((o) => o._id !== id);
     setOverlays(prev => prev.filter(o => o._id !== id));
   }, [forgetShowing]);
 

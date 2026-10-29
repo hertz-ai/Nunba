@@ -52,14 +52,15 @@ const CLIPS = {
 const XID = (n) => String(n).repeat(64).slice(0, 64);
 
 let handlers;
-function mountOverlay() {
+function mountOverlay({strict = false} = {}) {
   handlers = {};
   const rt = require('../../../services/realtimeService').default;
   rt.on = jest.fn((topic, cb) => {
     handlers[topic] = cb;
     return () => {};
   });
-  render(<AgentOverlay navigate={jest.fn()} />);
+  const overlay = <AgentOverlay navigate={jest.fn()} />;
+  render(strict ? <React.StrictMode>{overlay}</React.StrictMode> : overlay);
   return (payload) => act(() => { handlers['agent.ui.update'](payload); });
 }
 
@@ -228,6 +229,63 @@ describe('an ask pushed aside', () => {
     expect(screen.queryByText('Ask 2')).toBeNull();
     expect(screen.getByText('Ask 3')).toBeTruthy();
     expect(screen.getByText('A new note')).toBeTruthy();
+  });
+
+  test('answered here while it was parked, it does not come back', async () => {
+    // She approves Ask 1, a note parks it while the answer is on its way, the
+    // node takes the answer and no ask.answered reaches this page (review of
+    // 622a31ea, probe P7).
+    jest.useFakeTimers();
+    try {
+      let release;
+      global.fetch = jest.fn(() => new Promise((resolve) => {
+        release = () => resolve({ok: true, status: 200,
+                                 json: () => Promise.resolve({status: 'ok', ask_id: 'ask1'})});
+      }));
+      const send = mountOverlay();
+      send({type: 'approval', msg_id: 'ask1', ask_id: 'ask1', agent_id: '342',
+            action: 'step_1', title: 'Ask 1'});
+      fireEvent.click(screen.getByText('Approve'));
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      for (let i = 2; i <= 3; i += 1) {
+        send({type: 'approval', msg_id: `ask${i}`, ask_id: `ask${i}`, agent_id: '342',
+              action: `step_${i}`, title: `Ask ${i}`});
+      }
+      send({type: 'notification', msg_id: 'n1', title: 'A new note', message: 'x'});
+      expect(screen.queryByText('Ask 1')).toBeNull();
+      await act(async () => { release(); });
+      act(() => { jest.advanceTimersByTime(16000); });
+      expect(screen.queryByText('A new note')).toBeNull();
+      expect(screen.queryByText('Ask 1')).toBeNull();
+      expect(screen.getByText('Ask 2')).toBeTruthy();
+      expect(screen.getByText('Ask 3')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('in StrictMode, asks parked in one batch each come back once', () => {
+    // React runs updaters twice in StrictMode; parking and the re-show must
+    // be safe to repeat (review of 622a31ea, probe P6).
+    jest.useFakeTimers();
+    try {
+      const send = mountOverlay({strict: true});
+      act(() => {
+        for (let i = 1; i <= 3; i += 1) {
+          handlers['agent.ui.update']({type: 'approval', msg_id: `ask${i}`, ask_id: `ask${i}`,
+                                       agent_id: '342', action: `step_${i}`, title: `Ask ${i}`});
+        }
+        handlers['agent.ui.update']({type: 'notification', msg_id: 'n1', title: 'Note 1', message: 'x'});
+        handlers['agent.ui.update']({type: 'notification', msg_id: 'n2', title: 'Note 2', message: 'y'});
+      });
+      expect(send).toBeTruthy();
+      act(() => { jest.advanceTimersByTime(16000); });
+      for (let i = 1; i <= 3; i += 1) {
+        expect(screen.getAllByText(`Ask ${i}`)).toHaveLength(1);
+      }
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('sent again, it shows once', () => {
