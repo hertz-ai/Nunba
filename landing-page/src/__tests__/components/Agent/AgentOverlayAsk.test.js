@@ -264,12 +264,13 @@ describe('an ask pushed aside', () => {
     }
   });
 
-  test('in StrictMode, asks parked in one batch each come back once', () => {
-    // React runs updaters twice in StrictMode; parking and the re-show must
-    // be safe to repeat (review of 622a31ea, probe P6).
+  test('in StrictMode, an ask parked in a batch is kept once, so it shows once as slots free', () => {
+    // React runs updaters twice in StrictMode; parking must not keep a second
+    // copy of Ask 1, which would show when a second slot frees (review of
+    // 622a31ea probe P6; review of 151d61a6 probe Q1 and mutant mB).
     jest.useFakeTimers();
     try {
-      const send = mountOverlay({strict: true});
+      mountOverlay({strict: true});
       act(() => {
         for (let i = 1; i <= 3; i += 1) {
           handlers['agent.ui.update']({type: 'approval', msg_id: `ask${i}`, ask_id: `ask${i}`,
@@ -278,11 +279,14 @@ describe('an ask pushed aside', () => {
         handlers['agent.ui.update']({type: 'notification', msg_id: 'n1', title: 'Note 1', message: 'x'});
         handlers['agent.ui.update']({type: 'notification', msg_id: 'n2', title: 'Note 2', message: 'y'});
       });
-      expect(send).toBeTruthy();
       act(() => { jest.advanceTimersByTime(16000); });
       for (let i = 1; i <= 3; i += 1) {
         expect(screen.getAllByText(`Ask ${i}`)).toHaveLength(1);
       }
+      act(() => { handlers['ask.answered']({type: 'ask.answered', ask_id: 'ask2'}); });
+      expect(screen.queryByText('Ask 2')).toBeNull();
+      expect(screen.getAllByText('Ask 1')).toHaveLength(1);
+      expect(screen.getAllByText('Ask 3')).toHaveLength(1);
     } finally {
       jest.useRealTimers();
     }
