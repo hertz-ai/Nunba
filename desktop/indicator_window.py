@@ -940,6 +940,13 @@ class RibbonIndicator:
 _indicator_window = None
 _window_thread = None
 
+# One ribbon per process.  _init_lock makes "is a ribbon thread running?" and
+# "start one" a single step; _window_ready tells callers the ribbon exists
+# instead of each guessing with a fixed sleep.  Building it measured ~1 s.
+_init_lock = threading.Lock()
+_window_ready = threading.Event()
+_READY_WAIT_S = 5.0
+
 _auto_hide_stop = threading.Event()
 
 
@@ -969,20 +976,35 @@ def auto_hide_after_timeout(timeout_seconds=15.0):
             logger.error(f"Error in auto-hide thread: {str(e)}")
 
 def initialize_indicator(server_port=5000):
-    """Initialize the ribbon indicator"""
-    global _indicator_window, _window_thread
+    """Initialize the ribbon indicator, once, and wait until it exists.
+
+    Measured in a dev run 2026-10-21: "RuntimeError: Calling Tcl from
+    different apartment" at the mainloop() below.  This used to sleep a fixed
+    0.5 s while the ribbon took ~1 s to build, so toggle_indicator still saw
+    no window and started a second builder thread; each thread then ran
+    mainloop() on whatever the shared global held, the other thread's Tk.
+    Now the running thread is the guard, the builder runs its OWN ribbon's
+    loop, and callers wait on _window_ready.
+    """
+    global _window_thread
     try:
-        if _indicator_window is None:
-            def create_window():
-                global _indicator_window
-                _indicator_window = RibbonIndicator(server_port)
-                _indicator_window.hide()  # Start hidden
-                _indicator_window.ribbon_window.mainloop()
-            
-            _window_thread = threading.Thread(target=create_window, daemon=True)
-            _window_thread.start()
-            time.sleep(0.5)
-            
+        with _init_lock:
+            if _window_thread is None or not _window_thread.is_alive():
+                _window_ready.clear()
+
+                def create_window():
+                    global _indicator_window
+                    ribbon = RibbonIndicator(server_port)
+                    ribbon.hide()  # Start hidden
+                    _indicator_window = ribbon
+                    _window_ready.set()
+                    ribbon.ribbon_window.mainloop()
+
+                _window_thread = threading.Thread(
+                    target=create_window, daemon=True, name='ribbon-indicator')
+                _window_thread.start()
+        _window_ready.wait(_READY_WAIT_S)
+
         logger.info(f"Ribbon indicator initialized (server port: {server_port})")
         return True
     except Exception as e:
@@ -1030,8 +1052,7 @@ def toggle_indicator(show=True, server_port=5000, text=None):
 
     try:
         if _indicator_window is None:
-            initialize_indicator(server_port)
-            time.sleep(0.5)
+            initialize_indicator(server_port)  # returns once the ribbon exists
 
         if show and not indicator_active:
             _indicator_window.show()

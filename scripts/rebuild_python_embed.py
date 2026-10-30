@@ -983,8 +983,8 @@ def _run_rebuild_steps():
         timeout=600)
 
     # 7. Install HevolveAI (Continual Learner) — MUST come before hart-backend
-    #    hart-backend declares `embodied-ai @ git+...` as a dependency;
-    #    pre-installing from local avoids the private git fetch.
+    #    The distribution is `hevolveai` (the old `embodied-ai` name is
+    #    gone); installing from the local sibling avoids the private git fetch.
     hevolveai_src = HEVOLVEAI_SRC if os.path.isdir(HEVOLVEAI_SRC) else None
 
     # 7a-prebuild: Align HevolveAI .pyd ABI with python-embed.
