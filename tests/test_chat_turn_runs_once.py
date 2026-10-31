@@ -152,8 +152,7 @@ def test_the_resent_turn_answers_with_the_running_turns_reply(app):
                                        'request_id': 'msg_2000000000000_ghijkl'}
     # Two requests, two response objects: each request's own hooks run on
     # its own copy.
-    first, second = (r[1] if not isinstance(r[1], tuple) else r[1][0]
-                     for r in outcome)
+    first, second = (cr._reply_and_status(r[1])[0] for r in outcome)
     assert first is not second
 
 
@@ -210,17 +209,23 @@ def routed(monkeypatch):
         cr.sessions.update(saved)
 
 
+@pytest.mark.parametrize('sent', [None, 'bad id!', 'daemon-tag'])
 @pytest.mark.parametrize('path', ['/chat/custom_gpt', '/chat/teachme2'])
 def test_two_unnamed_questions_sent_together_each_get_their_own_answer(
-        routed, path):
+        routed, path, sent):
     """Review of 1aafe8df: custom_gpt and teachme2 settle the turn's id
     before they hand it to _chat_turn, so a body with no id (RN's
     kidsLearningApi posts chat/custom_gpt with none) arrives there under an
     id this node minted from the clock -- the SAME id for two questions sent
     within one tick (15.625 ms on Windows).  Measured through real sockets:
     3 of 30 such pairs joined, and both people got "reply to: question two".
-    Only an id the client named is its earlier send; the clock is pinned
-    here so the two minted ids are equal every time."""
+    An id the node refuses (malformed, or the daemon's tag) is replaced by
+    a minted one the same way.  Only an id the client named is its earlier
+    send; the clock is pinned here so the two minted ids are equal every
+    time."""
+    if sent == 'daemon-tag':
+        from core.chat_client import DAEMON_PREFIX
+        sent = f'{DAEMON_PREFIX}goal-7000'
     entered, release = threading.Event(), threading.Event()
     runs = []
 
@@ -233,8 +238,10 @@ def test_two_unnamed_questions_sent_together_each_get_their_own_answer(
     replies = {}
 
     def ask(question):
-        resp = routed.test_client().post(
-            path, json={'text': question, 'user_id': 'u-1001'})
+        body = {'text': question, 'user_id': 'u-1001'}
+        if sent is not None:
+            body['request_id'] = sent
+        resp = routed.test_client().post(path, json=body)
         replies[question] = resp.get_json().get('text')
 
     with patch.object(cr, '_run_chat_turn', body), \
