@@ -21,7 +21,7 @@ import time
 from functools import wraps
 
 import requests
-from flask import g, has_request_context, jsonify, request
+from flask import Response, g, has_request_context, jsonify, request
 
 from models.catalog import ModelType
 
@@ -2745,7 +2745,70 @@ def chat_route():
     return _chat_turn(request.get_json() or {})
 
 
+#: The turns running now, by (user_id, request_id), each with the outcome its
+#: run ends with: an arrival whose turn is here waits for it (_chat_turn).
+_RUNNING_TURNS = {}
+_RUNNING_TURNS_LOCK = threading.Lock()
+
+
 def _chat_turn(data):
+    """One chat turn, run once however many times its id arrives.
+
+    A client names its turn with a request_id (_turn_request_id) and may send
+    the turn again while it is still running: the desktop chat page gives up
+    on a /chat it has heard nothing from for 180 s, and its retry loop sends
+    the same id again.  Measured 2026-10-31 10:30-11:09 (agent 54): two turns
+    arrived ten times between them, each arrival started another run on the
+    same session and re-dispatched the current recipe action, and the receipt
+    search, which looks after the newest dispatch, lost the tool results that
+    had already run -- 7 GAVE_UPs, all on the two repeated ids.  So an arrival
+    whose (user_id, request_id) is still running waits for that run and
+    answers with its reply.  A turn with another id, with no id, or with an
+    id the node does not take from a client runs as before; nothing is kept
+    once the run has answered.  The turn itself is _run_chat_turn.
+    """
+    sent = data.get('request_id')
+    request_id = _turn_request_id(data, str(int(time.time())))
+    data = {**data, 'request_id': request_id}
+    if sent in (None, '') or str(sent) != request_id:
+        return _run_chat_turn(data)
+    key = (str(data.get('user_id', 'guest')), request_id)
+    with _RUNNING_TURNS_LOCK:
+        running = _RUNNING_TURNS.get(key)
+        mine = running is None
+        if mine:
+            running = _RUNNING_TURNS[key] = {'done': threading.Event()}
+    if not mine:
+        logger.info("[CHAT] turn received again while it runs: user_id=%s "
+                    "request_id=%s; this arrival waits for that run's reply",
+                    *key)
+        running['done'].wait()
+        if 'error' in running:
+            raise running['error']
+        return _reply_copy(running['result'])
+    try:
+        running['result'] = _run_chat_turn(data)
+        return running['result']
+    except BaseException as exc:
+        running['error'] = exc
+        raise
+    finally:
+        with _RUNNING_TURNS_LOCK:
+            _RUNNING_TURNS.pop(key, None)
+        running['done'].set()
+
+
+def _reply_copy(result):
+    """A run's reply for another request: its own response object, so each
+    request's after-request hooks write their own headers, never the run's."""
+    response, status = result if isinstance(result, tuple) else (result, None)
+    if not isinstance(response, Response):
+        return result
+    return Response(response.get_data(), mimetype=response.mimetype,
+                    status=status or response.status_code)
+
+
+def _run_chat_turn(data):
     """One chat turn, whichever path it arrived on.
 
     The body of POST /chat, taking the request dict so /custom_gpt,
