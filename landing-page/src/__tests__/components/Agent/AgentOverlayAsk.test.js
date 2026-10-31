@@ -382,3 +382,29 @@ describe('an ask answered anywhere', () => {
     expect(agentFormApi.submit).not.toHaveBeenCalled();
   });
 });
+
+describe('an ask in an embed (onAction: a host page\'s session)', () => {
+  const {OverlayContent} = require('../../../components/AgentOverlay/AgentOverlay');
+
+  test('a file request says where to answer and offers no picker', () => {
+    const onAction = jest.fn();
+    render(<OverlayContent data={CLIPS} onDismiss={jest.fn()} onAction={onAction} />);
+    expect(screen.getByText('Send me the clips for your reel')).toBeTruthy();
+    expect(screen.getByText(/Answer this in the Nunba app on your desktop or phone/)).toBeTruthy();
+    expect(screen.queryByTestId('liquid-file-request-input')).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  test("an approval ask's yes goes to the session with the ask's id", async () => {
+    const onAction = jest.fn(() => Promise.resolve({ok: true}));
+    const onDismiss = jest.fn();
+    render(<OverlayContent data={{type: 'approval', ask_id: ASK, agent_id: '342', title: 'Post it?',
+      description: 'Post the reel today?', action: 'post_the_reel'}} onDismiss={onDismiss} onAction={onAction} />);
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => expect(onDismiss).toHaveBeenCalled());
+    expect(onAction).toHaveBeenCalledWith('approval.decide',
+      expect.objectContaining({ask_id: ASK, decision: 'approve'}));
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});

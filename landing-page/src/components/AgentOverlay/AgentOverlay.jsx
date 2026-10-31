@@ -444,7 +444,7 @@ async function sendAskedFile(file, askId) {
 // types each purpose takes and refuses the rest.
 const ACCEPT_FOR = { video: 'video/*', image: 'image/*', audio: 'audio/*' };
 
-function FileRequestOverlay({ data, onDismiss }) {
+function FileRequestOverlay({ data, onDismiss, onAction }) {
   const inputRef = useRef(null);
   // null, {sent, total} while her files go up, or 'answering'.
   const [phase, setPhase] = useState(null);
@@ -452,6 +452,23 @@ function FileRequestOverlay({ data, onDismiss }) {
     : 'This request cannot be answered (it names no ask). Please report it.');
   const max = Number.isInteger(data.max_files) && data.max_files > 0 ? data.max_files : 10;
   const busy = phase !== null;
+
+  // In an embed (onAction: a host page's session) her files have no road to
+  // the store the ask names: the picks go to her desktop's store, which only
+  // her own devices reach.  The card says where to answer instead of
+  // offering a picker whose uploads would go nowhere.
+  if (onAction) {
+    return (
+      <Box data-testid="liquid-file-request">
+        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+          {data.title || 'Your agent asks for files'}
+        </Typography>
+        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)' }}>
+          Answer this in the Nunba app on your desktop or phone.
+        </Typography>
+      </Box>
+    );
+  }
 
   const onPicked = async (e) => {
     const files = Array.from(e.target.files || []).slice(0, max);
@@ -1196,7 +1213,7 @@ export function OverlayContent({ data, onDismiss, navigate, onAction }) {
     case 'progress': return <ProgressOverlay data={data} />;
     case 'agent_action': return <AgentActionOverlay data={data} />;
     case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
-    case 'file_request': return <FileRequestOverlay data={data} onDismiss={onDismiss} />;
+    case 'file_request': return <FileRequestOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
     case 'chart': return <ChartOverlay data={data} />;
     case 'code': return <CodeOverlay data={data} />;
     case 'markdown': return <MarkdownOverlay data={data} />;
