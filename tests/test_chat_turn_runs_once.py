@@ -8,12 +8,15 @@ again while the first run is still going.  Two turns arrived ten times
 between them.  Every arrival started another run on the same session and
 re-dispatched the current recipe action, so the receipt search -- which looks
 only after the newest dispatch -- no longer saw the tool results that had
-already run: 7 "[REUSE-VERIFY] ... no canonical receipt" GAVE_UPs, all on the
-two repeated ids, none on any session whose ids never repeated.
+already run: 9 "[REUSE-VERIFY] ... no canonical receipt" GAVE_UPs, all on the
+two repeated ids (the log's other 2, on another agent the evening before,
+came from ids that arrived once: resends are one cause, not the only one).
 
 The arrival that finds its turn still running waits for that run and answers
-with its reply.  A turn with another id, with no id, or with an id the node
-does not take from a client (the daemon's tag) runs as before.
+with its reply.  Only an id the client named is waited on: a turn with
+another id, with no id (custom_gpt and teachme2 mint one from the clock
+before the turn starts), or with an id the node does not take from a client
+(the daemon's tag) runs as before.
 
     python -m pytest tests/test_chat_turn_runs_once.py -q
 """
@@ -74,6 +77,8 @@ def _send(app, body, outcome):
                 outcome.append(('reply', cr._chat_turn(dict(body))))
         except _TurnStop:
             outcome.append(('stopped', None))
+        except Exception as exc:
+            outcome.append(('failed', exc))
     t = threading.Thread(target=run, daemon=True)
     t.start()
     return t
@@ -109,8 +114,13 @@ def test_a_resent_turn_waits_for_the_running_one(app):
     gate, outcome = _two_arrivals(
         app, _turn('msg_1000000000000_abcdef'), _turn('msg_1000000000000_abcdef'))
     assert gate.runs == 1, f'the resent turn ran again ({gate.runs} runs)'
-    # The waiting arrival ends the way the run it waited for ended.
-    assert [kind for kind, _ in outcome] == ['stopped', 'stopped']
+    # The waiting arrival fails because the run it waited for failed: with an
+    # error of its own whose cause is the run's, never the run's own object
+    # (raising that again would splice the run's request stack into this
+    # one's traceback).
+    assert sorted(kind for kind, _ in outcome) == ['failed', 'stopped']
+    failed = next(exc for kind, exc in outcome if kind == 'failed')
+    assert isinstance(failed.__cause__, _TurnStop)
     assert not cr._RUNNING_TURNS
 
 
@@ -136,7 +146,7 @@ def test_the_resent_turn_answers_with_the_running_turns_reply(app):
     assert len(outcome) == 2
     for kind, result in outcome:
         assert kind == 'reply'
-        response, status = result if isinstance(result, tuple) else (result, None)
+        response, status = cr._reply_and_status(result)
         assert (status or response.status_code) == 200
         assert response.get_json() == {'text': 'Page 3 is about rain.',
                                        'request_id': 'msg_2000000000000_ghijkl'}
@@ -183,4 +193,61 @@ def test_the_id_runs_again_once_its_turn_has_answered(app):
         _send(app, _turn('msg_6000000000000_dddddd'), outcome).join(10)
         _send(app, _turn('msg_6000000000000_dddddd'), outcome).join(10)
     assert gate.runs == 2
-    assert not cr._RUNNING_TURNS
+
+
+@pytest.fixture
+def routed(monkeypatch):
+    """The app with this node's chat routes, as the server serves them."""
+    monkeypatch.setenv('NUNBA_TEACH_AGENT_ID', '')
+    app = Flask(__name__)
+    app.config['TESTING'] = True
+    cr.register_routes(app)
+    with cr._sessions_lock:
+        saved = dict(cr.sessions)
+    yield app
+    with cr._sessions_lock:
+        cr.sessions.clear()
+        cr.sessions.update(saved)
+
+
+@pytest.mark.parametrize('path', ['/chat/custom_gpt', '/chat/teachme2'])
+def test_two_unnamed_questions_sent_together_each_get_their_own_answer(
+        routed, path):
+    """Review of 1aafe8df: custom_gpt and teachme2 settle the turn's id
+    before they hand it to _chat_turn, so a body with no id (RN's
+    kidsLearningApi posts chat/custom_gpt with none) arrives there under an
+    id this node minted from the clock -- the SAME id for two questions sent
+    within one tick (15.625 ms on Windows).  Measured through real sockets:
+    3 of 30 such pairs joined, and both people got "reply to: question two".
+    Only an id the client named is its earlier send; the clock is pinned
+    here so the two minted ids are equal every time."""
+    entered, release = threading.Event(), threading.Event()
+    runs = []
+
+    def body(data):
+        runs.append(data['text'])
+        entered.set()
+        release.wait(10)
+        return jsonify({'text': f"reply to: {data['text']}"})
+
+    replies = {}
+
+    def ask(question):
+        resp = routed.test_client().post(
+            path, json={'text': question, 'user_id': 'u-1001'})
+        replies[question] = resp.get_json().get('text')
+
+    with patch.object(cr, '_run_chat_turn', body), \
+            patch.object(cr.time, 'time', return_value=1793435428.262):
+        a = threading.Thread(target=ask, args=('question one',), daemon=True)
+        a.start()
+        assert entered.wait(10), 'the first question never ran'
+        b = threading.Thread(target=ask, args=('question two',), daemon=True)
+        b.start()
+        b.join(1.0)
+        release.set()
+        a.join(10)
+        b.join(10)
+    assert sorted(runs) == ['question one', 'question two']
+    assert replies == {'question one': 'reply to: question one',
+                       'question two': 'reply to: question two'}

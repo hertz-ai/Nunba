@@ -1191,15 +1191,22 @@ def _turn_request_id(data, fresh=None):
     the goal (create_recipe, daemon_goal_id).  When the tag cannot be read,
     no client names a turn.  An id that is not taken is logged by its shape,
     never by its value.
+
+    The request also keeps whether its id is the client's own
+    (g.turn_id_from_client).  Only a client's id can arrive again for the
+    same turn (_chat_turn); an id minted here comes from the clock, so two
+    different turns sent within one tick are minted the same one.
     """
     sent = data.get('request_id')
     in_request = has_request_context()
     if in_request and sent is not None and g.get('turn_request_id') == sent:
         return sent                       # this request already settled it
-    rid = _settle_request_id(sent, fresh or str(int(time.time() * 1000)),
+    fresh = fresh or str(int(time.time() * 1000))
+    rid = _settle_request_id(sent, fresh,
                              request.path if in_request else 'turn')
     if in_request:
         g.turn_request_id = rid
+        g.turn_id_from_client = rid != fresh
     return rid
 
 
@@ -1246,7 +1253,7 @@ def _run_turn(turn):
     except Exception:
         logger.exception('chat turn failed for user %s', turn.get('user_id'))
         return {}, 500
-    response, status = result if isinstance(result, tuple) else (result, None)
+    response, status = _reply_and_status(result)
     status = status or getattr(response, 'status_code', 200)
     try:
         body = response.get_json(silent=True) or {}
@@ -2761,16 +2768,20 @@ def _chat_turn(data):
     arrived ten times between them, each arrival started another run on the
     same session and re-dispatched the current recipe action, and the receipt
     search, which looks after the newest dispatch, lost the tool results that
-    had already run -- 7 GAVE_UPs, all on the two repeated ids.  So an arrival
+    had already run -- 9 GAVE_UPs, all on the two repeated ids (2 more that
+    week, on another agent, came from ids that arrived once).  So an arrival
     whose (user_id, request_id) is still running waits for that run and
-    answers with its reply.  A turn with another id, with no id, or with an
-    id the node does not take from a client runs as before; nothing is kept
-    once the run has answered.  The turn itself is _run_chat_turn.
+    answers with its reply.  Only an id the client named is waited on
+    (_turn_request_id records which it was): custom_gpt and teachme2 settle
+    the id before they hand the turn here, and an id minted from the clock
+    is the same for two different turns sent within one tick.  A turn with
+    another id, with no id, or with an id the node does not take from a
+    client runs as before; nothing is kept once the run has answered.  The
+    turn itself is _run_chat_turn.
     """
-    sent = data.get('request_id')
     request_id = _turn_request_id(data, str(int(time.time())))
     data = {**data, 'request_id': request_id}
-    if sent in (None, '') or str(sent) != request_id:
+    if not (has_request_context() and g.get('turn_id_from_client')):
         return _run_chat_turn(data)
     key = (str(data.get('user_id', 'guest')), request_id)
     with _RUNNING_TURNS_LOCK:
@@ -2784,7 +2795,11 @@ def _chat_turn(data):
                     *key)
         running['done'].wait()
         if 'error' in running:
-            raise running['error']
+            # An error of this request's own: raising the run's object again
+            # would splice the run's request stack into this traceback.
+            raise RuntimeError(
+                f"the run of request_id {key[1]} this arrival waited for "
+                f"failed") from running['error']
         return _reply_copy(running['result'])
     try:
         running['result'] = _run_chat_turn(data)
@@ -2798,10 +2813,16 @@ def _chat_turn(data):
         running['done'].set()
 
 
+def _reply_and_status(result):
+    """(response, status) of what a turn returns: a Flask response, or
+    (response, status); status is None when the turn named none."""
+    return result if isinstance(result, tuple) else (result, None)
+
+
 def _reply_copy(result):
     """A run's reply for another request: its own response object, so each
     request's after-request hooks write their own headers, never the run's."""
-    response, status = result if isinstance(result, tuple) else (result, None)
+    response, status = _reply_and_status(result)
     if not isinstance(response, Response):
         return result
     return Response(response.get_data(), mimetype=response.mimetype,
