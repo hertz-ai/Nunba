@@ -5999,7 +5999,9 @@ def start_flask():
                 set_keys = [key for key in found_keys if data[key] != '']
 
                 # Store in a file
-                from desktop.guest_identity import get_user_data_file_path
+                from desktop.guest_identity import (
+                    PLACEHOLDER_USER_ID, get_user_data_file_path,
+                    is_placeholder_over_sign_in)
                 user_data_file = get_user_data_file_path()
                 os.makedirs(os.path.dirname(user_data_file), exist_ok=True)
 
@@ -6037,15 +6039,15 @@ def start_flask():
                             f"user_data.json unreadable ({_read_err}) — rebuilding")
                         stored = {}
 
-                # A page that holds no identity posts the placeholder 'guest';
-                # it never replaces the signed-in user on file.
-                from desktop.guest_identity import is_placeholder_over_sign_in
+                # A page that holds no identity posts the placeholder; it never
+                # replaces the signed-in user on file.  Sign-out clears the
+                # identity with the '' sentinel (landing-page clearAuth).
                 if ('user_id' in user_data and is_placeholder_over_sign_in(
                         stored.get('user_id'), user_data['user_id'])):
                     logger.warning(
                         "user_data.json keeps user_id "
                         f"{stored.get('user_id')}: the post carried the "
-                        "placeholder 'guest'")
+                        f"placeholder {PLACEHOLDER_USER_ID!r}")
                     user_data.pop('user_id')
                     set_keys.remove('user_id')
 

@@ -273,6 +273,18 @@ def test_with_nobody_signed_in_the_placeholder_is_stored_as_before(
     assert record == {'user_id': 'guest'}
 
 
+def test_sign_out_clears_the_owner_from_the_record(fake_home, gi, clean_owner_env):
+    """Sign-out (landing-page clearAuth) posts '' for the identity keys.
+    The record drops them and the desktop goes back to the guest; the
+    refused placeholder is not a sign-out."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'tok',
+                                  'email': 'x', 'hart_name': 'h'}))
+    gi.sync_owner_identity_env()
+    _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
+    assert json.loads(_record(fake_home).read_text(encoding='utf-8')) == {'hart_name': 'h'}
+    assert os.environ[OWNER_ENV] == GUEST
+
+
 def test_a_real_sign_in_still_replaces_the_owner(fake_home, gi, clean_owner_env):
     _write(fake_home, json.dumps({'user_id': '10202'}))
     _post_to_set_storage({'user_id': USER_ID})

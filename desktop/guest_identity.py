@@ -64,6 +64,8 @@ Public API
     get_user_data_file_path() -> str # the signed-in user's user_data.json
     get_desktop_owner_id() -> str    # signed-in user_id, else the guest id
     sync_owner_identity_env() -> str # export it to HEVOLVE_OWNER_USER_ID
+    is_placeholder_over_sign_in(stored, posted) -> bool
+                                     # a post that must not replace the owner
     _derive_guest_id() -> (str, str) # (id, source) — no cache, for tests
 """
 
