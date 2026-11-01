@@ -312,6 +312,46 @@ def test_sign_out_clears_the_owner_from_the_record(fake_home, gi, clean_owner_en
     assert os.environ[OWNER_ENV] == GUEST
 
 
+def test_a_post_that_read_before_a_sign_out_cannot_write_the_owner_back(
+        fake_home, gi, clean_owner_env):
+    """Posts land on different server threads.  The page's mirror post reads
+    the record, the sign-out's clear lands while it is still working, then the
+    mirror writes back the record it read.  RED before the lock: 10202 and its
+    token came back (reviewer case S4).
+
+    The mirror waits after its read until the clear has answered.  With the
+    lock the clear cannot answer first, so the mirror goes on after 1 s.
+    """
+    import threading
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'tok',
+                                  'email': 'x', 'hart_name': 'h'}))
+    gi.sync_owner_identity_env()
+    read_done = threading.Event()
+    clear_done = threading.Event()
+
+    class ReadsThenWaits:
+        @staticmethod
+        def load(f):
+            data = json.load(f)
+            read_done.set()
+            clear_done.wait(1)
+            return data
+        dump = staticmethod(json.dump)
+
+    mirror_post = _set_storage_handler(ReadsThenWaits)
+    clear_post = _set_storage_handler()
+    mirror = threading.Thread(target=mirror_post, args=({'hart_emoji': 'E'},))
+    mirror.start()
+    assert read_done.wait(5)
+    clear_post({'user_id': '', 'access_token': '', 'email': ''})
+    clear_done.set()
+    mirror.join(5)
+    assert not mirror.is_alive()
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert record == {'hart_name': 'h', 'hart_emoji': 'E'}
+    assert os.environ[OWNER_ENV] == GUEST
+
+
 def test_a_real_sign_in_still_replaces_the_owner(fake_home, gi, clean_owner_env):
     _write(fake_home, json.dumps({'user_id': '10202'}))
     _post_to_set_storage({'user_id': USER_ID})

@@ -62,6 +62,7 @@ Public API
     get_guest_id() -> str            # "g_<16 hex>", cached
     get_guest_id_file_path() -> str  # absolute path to guest_id.json
     get_user_data_file_path() -> str # the signed-in user's user_data.json
+    USER_DATA_LOCK                   # held around each write of that record
     get_desktop_owner_id() -> str    # signed-in user_id, else the guest id
     sync_owner_identity_env() -> str # export it to HEVOLVE_OWNER_USER_ID
     is_placeholder_user_id(user_id) -> bool
@@ -78,6 +79,7 @@ import os
 import platform
 import sys
 import tempfile
+import threading
 import uuid
 
 from desktop.platform_utils import get_subprocess_flags
@@ -339,6 +341,12 @@ def get_user_data_file_path() -> str:
     """
     return os.path.join(os.path.expanduser("~"), *_USER_DATA_DIR_PARTS,
                         "user_data.json")
+
+
+# /api/storage/set holds it from reading the record to exporting its owner.
+# Posts land on different server threads, and a post that read the record
+# before a sign-out's clear would write the signed-in user back.
+USER_DATA_LOCK = threading.Lock()
 
 
 def get_desktop_owner_id() -> str | None:
