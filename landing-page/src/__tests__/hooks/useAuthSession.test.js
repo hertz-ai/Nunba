@@ -441,8 +441,11 @@ describe('writers — Phase 4 centralised mutation surface', () => {
       clearAuth();
 
       expect(chatApi.post).toHaveBeenCalledTimes(1);
+      // silentError: a sign-out with the desktop down must not raise the
+      // global error banner (axiosFactory's hevolve:api-error).
       expect(chatApi.post).toHaveBeenCalledWith(
-        '/api/storage/set', {user_id: '', access_token: '', email: ''});
+        '/api/storage/set', {user_id: '', access_token: '', email: ''},
+        {silentError: true});
     });
 
     test('signs out in the page even when the desktop cannot be reached', async () => {

@@ -408,7 +408,8 @@ export function setGuestIdentity(payload) {
  * /api/storage/set, '' = clear).  That record decides who owns the
  * desktop, and the server keeps a signed-in user when a page posts the
  * 'guest' placeholder, so sign-out is the one place that clears it.
- * Sent without waiting; the page signs out even if the desktop is down.
+ * Sent without waiting and without the error banner; the page signs out
+ * even if the desktop is down.
  */
 export function clearAuth() {
   const AUTH_KEYS = [
@@ -436,7 +437,8 @@ export function clearAuth() {
   try {
     const {chatApi} = require('../services/socialApi');
     chatApi.post('/api/storage/set',
-      {user_id: '', access_token: '', email: ''}).catch(() => {});
+      {user_id: '', access_token: '', email: ''},
+      {silentError: true}).catch(() => {});
   } catch (_e) { /* module not loaded */ }
 
   try {
