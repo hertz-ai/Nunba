@@ -211,6 +211,75 @@ def test_source_guard_boot_and_sign_in_both_export_through_the_one_writer():
     assert setdefaults == [], f'main.py still setdefaults {OWNER_ENV} at {setdefaults}'
 
 
+# ── The page's placeholder never replaces a signed-in user ────────────────
+#
+# The page posts user_id 'guest' when it holds no identity of its own
+# (Demopage effectiveUserId's last fallback).  Live 2026-11-01 11:06:57 a page
+# that could not read its sign-in posted that over the owner's record:
+# "desktop owner is now guest (was 10202)", every consent ask went to 'guest'
+# and the owner's answers, made as 10202, never closed one.
+
+
+@pytest.mark.parametrize('stored, posted, refused', [
+    ('10202', 'guest', True),       # the 11:06:57 write
+    (10202, 'guest', True),         # an id stored as a number
+    (USER_ID, 'guest', True),
+    (None, 'guest', False),         # nobody signed in yet: unchanged
+    ('', 'guest', False),
+    ('guest', 'guest', False),
+    ('10202', USER_ID, False),      # a real sign-in replaces a real one
+    ('10202', GUEST, False),        # a guest session is a real identity
+    ('10202', '', False),           # '' is the clear sentinel, not this rule
+])
+def test_the_placeholder_never_replaces_a_signed_in_user(gi, stored, posted, refused):
+    assert gi.is_placeholder_over_sign_in(stored, posted) is refused
+
+
+def _post_to_set_storage(posted):
+    """Run app.py's own set_storage body on one post.
+
+    It is nested inside the serving-app builder, and importing app.py drags
+    in the boot path, so its source is compiled on its own with the route
+    decorator dropped and the request and jsonify it reads stood in for.
+    """
+    import logging
+    from types import SimpleNamespace
+    tree = ast.parse((REPO / 'app.py').read_text(encoding='utf-8'))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == 'set_storage')
+    fn.decorator_list = []
+    ns = {'request': SimpleNamespace(method='POST', json=posted),
+          'jsonify': lambda body: body, 'os': os, 'json': json,
+          'logger': logging.getLogger('test_set_storage')}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), 'app.py', 'exec'), ns)
+    return ns['set_storage']()
+
+
+def test_a_post_of_the_placeholder_keeps_the_owner(fake_home, gi, clean_owner_env):
+    """RED before the fix: the record and the export both became 'guest'."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'old'}))
+    gi.sync_owner_identity_env()
+    reply = _post_to_set_storage({'user_id': 'guest', 'access_token': 'new'})
+    assert reply['success'] is True
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert record == {'user_id': '10202', 'access_token': 'new'}
+    assert os.environ[OWNER_ENV] == '10202'
+
+
+def test_with_nobody_signed_in_the_placeholder_is_stored_as_before(
+        fake_home, gi, clean_owner_env):
+    _post_to_set_storage({'user_id': 'guest'})
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert record == {'user_id': 'guest'}
+
+
+def test_a_real_sign_in_still_replaces_the_owner(fake_home, gi, clean_owner_env):
+    _write(fake_home, json.dumps({'user_id': '10202'}))
+    _post_to_set_storage({'user_id': USER_ID})
+    assert json.loads(_record(fake_home).read_text(encoding='utf-8'))['user_id'] == USER_ID
+    assert os.environ[OWNER_ENV] == USER_ID
+
+
 def test_main_does_not_derive_its_own_record_path():
     """RED before the fix: main.py joined get_data_dir()/storage/user_data.json."""
     tree = ast.parse((REPO / 'main.py').read_text(encoding='utf-8'))

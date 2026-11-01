@@ -6037,6 +6037,18 @@ def start_flask():
                             f"user_data.json unreadable ({_read_err}) — rebuilding")
                         stored = {}
 
+                # A page that holds no identity posts the placeholder 'guest';
+                # it never replaces the signed-in user on file.
+                from desktop.guest_identity import is_placeholder_over_sign_in
+                if ('user_id' in user_data and is_placeholder_over_sign_in(
+                        stored.get('user_id'), user_data['user_id'])):
+                    logger.warning(
+                        "user_data.json keeps user_id "
+                        f"{stored.get('user_id')}: the post carried the "
+                        "placeholder 'guest'")
+                    user_data.pop('user_id')
+                    set_keys.remove('user_id')
+
                 _cleared = []
                 for key in clear_keys:
                     if stored.pop(key, None) is not None:

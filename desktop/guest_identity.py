@@ -361,6 +361,25 @@ def get_desktop_owner_id() -> str | None:
         return None
 
 
+# What the page posts as user_id when it holds no identity of its own
+# (landing-page Demopage effectiveUserId's last fallback).  It names nobody.
+PLACEHOLDER_USER_ID = 'guest'
+
+
+def is_placeholder_over_sign_in(stored_user_id, posted_user_id) -> bool:
+    """True when a post would replace a signed-in user with the placeholder.
+
+    /api/storage/set keeps the stored id then.  Live 2026-11-01 a page that
+    could not read its sign-in posted 'guest' over the owner's record, the
+    desktop owner became 'guest', and every consent ask went to it while the
+    owner's answers were recorded for the owner.  Nobody signed in yet, or
+    the placeholder already on file, is left as it was.
+    """
+    stored = '' if stored_user_id is None else str(stored_user_id)
+    return (str(posted_user_id) == PLACEHOLDER_USER_ID
+            and stored not in ('', PLACEHOLDER_USER_ID))
+
+
 # The env var every HARTOS consent gate reads to know whose machine this is
 # (middleware, vision, vlm safety, agent daemon, crossbar, whisper, ...).
 _OWNER_ENV = 'HEVOLVE_OWNER_USER_ID'
