@@ -211,32 +211,33 @@ def test_source_guard_boot_and_sign_in_both_export_through_the_one_writer():
     assert setdefaults == [], f'main.py still setdefaults {OWNER_ENV} at {setdefaults}'
 
 
-# ── The page's placeholder never replaces a signed-in user ────────────────
+# ── The page's placeholder is never the sign-in ───────────────────────────
 #
 # The page posts user_id 'guest' when it holds no identity of its own
 # (Demopage effectiveUserId's last fallback).  Live 2026-11-01 11:06:57 a page
 # that could not read its sign-in posted that over the owner's record:
 # "desktop owner is now guest (was 10202)", every consent ask went to 'guest'
-# and the owner's answers, made as 10202, never closed one.
+# and the owner's answers, made as 10202, never closed one.  On a record with
+# nobody on it the placeholder is read back as an identity too: the next boot's
+# useStorageSync makes 'guest' the page's own guest id, and HARTOS's shell
+# (liquid_ui_service._desktop_owner_id) answers as 'guest'.
 
 
-@pytest.mark.parametrize('stored, posted, refused', [
-    ('10202', 'guest', True),       # the 11:06:57 write
-    (10202, 'guest', True),         # an id stored as a number
-    (USER_ID, 'guest', True),
-    (None, 'guest', False),         # nobody signed in yet: unchanged
-    ('', 'guest', False),
-    ('guest', 'guest', False),
-    ('10202', USER_ID, False),      # a real sign-in replaces a real one
-    ('10202', GUEST, False),        # a guest session is a real identity
-    ('10202', '', False),           # '' is the clear sentinel, not this rule
+@pytest.mark.parametrize('posted, placeholder', [
+    ('guest', True),
+    ('10202', False),
+    (10202, False),
+    (USER_ID, False),
+    (GUEST, False),                 # a guest session is a real identity
+    ('', False),                    # '' is the clear sentinel, not this rule
+    (None, False),
 ])
-def test_the_placeholder_never_replaces_a_signed_in_user(gi, stored, posted, refused):
-    assert gi.is_placeholder_over_sign_in(stored, posted) is refused
+def test_only_the_placeholder_is_refused(gi, posted, placeholder):
+    assert gi.is_placeholder_user_id(posted) is placeholder
 
 
-def _post_to_set_storage(posted):
-    """Run app.py's own set_storage body on one post.
+def _set_storage_handler(json_module=json):
+    """app.py's own set_storage body, as a function of one post.
 
     It is nested inside the serving-app builder, and importing app.py drags
     in the boot path, so its source is compiled on its own with the route
@@ -248,11 +249,18 @@ def _post_to_set_storage(posted):
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == 'set_storage')
     fn.decorator_list = []
-    ns = {'request': SimpleNamespace(method='POST', json=posted),
-          'jsonify': lambda body: body, 'os': os, 'json': json,
+    ns = {'jsonify': lambda body: body, 'os': os, 'json': json_module,
           'logger': logging.getLogger('test_set_storage')}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), 'app.py', 'exec'), ns)
-    return ns['set_storage']()
+
+    def post(posted):
+        ns['request'] = SimpleNamespace(method='POST', json=posted)
+        return ns['set_storage']()
+    return post
+
+
+def _post_to_set_storage(posted):
+    return _set_storage_handler()(posted)
 
 
 def test_a_post_of_the_placeholder_keeps_the_owner(fake_home, gi, clean_owner_env):
@@ -266,11 +274,30 @@ def test_a_post_of_the_placeholder_keeps_the_owner(fake_home, gi, clean_owner_en
     assert os.environ[OWNER_ENV] == '10202'
 
 
-def test_with_nobody_signed_in_the_placeholder_is_stored_as_before(
+def test_with_nobody_signed_in_the_placeholder_is_not_stored(
         fake_home, gi, clean_owner_env):
-    _post_to_set_storage({'user_id': 'guest'})
+    """RED before the fix: the record became {'user_id': 'guest'}."""
+    _post_to_set_storage({'user_id': 'guest', 'hart_name': 'h'})
     record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
-    assert record == {'user_id': 'guest'}
+    assert record == {'hart_name': 'h'}
+    assert os.environ[OWNER_ENV] == GUEST
+
+
+def test_after_sign_out_the_page_placeholder_leaves_the_desktop_to_the_guest(
+        fake_home, gi, clean_owner_env):
+    """Signing out on the chat page: clearAuth's clear, then the remounted
+    page mirrors its state, now with no identity, as user_id 'guest'.  RED
+    before the fix: the desktop owner became 'guest' (reviewer case S1),
+    where signing out from the navbar leaves the hardware guest."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'tok',
+                                  'email': 'x', 'hart_name': 'h'}))
+    gi.sync_owner_identity_env()
+    _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
+    _post_to_set_storage({'agentname': 'Nunba', 'email': None, 'access_token': None,
+                          'user_id': 'guest', 'hart_name': 'h'})
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert 'user_id' not in record
+    assert os.environ[OWNER_ENV] == GUEST
 
 
 def test_sign_out_clears_the_owner_from_the_record(fake_home, gi, clean_owner_env):

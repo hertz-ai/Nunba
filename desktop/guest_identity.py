@@ -64,8 +64,8 @@ Public API
     get_user_data_file_path() -> str # the signed-in user's user_data.json
     get_desktop_owner_id() -> str    # signed-in user_id, else the guest id
     sync_owner_identity_env() -> str # export it to HEVOLVE_OWNER_USER_ID
-    is_placeholder_over_sign_in(stored, posted) -> bool
-                                     # a post that must not replace the owner
+    is_placeholder_user_id(user_id) -> bool
+                                     # the page's no-identity placeholder
     _derive_guest_id() -> (str, str) # (id, source) — no cache, for tests
 """
 
@@ -368,18 +368,17 @@ def get_desktop_owner_id() -> str | None:
 PLACEHOLDER_USER_ID = 'guest'
 
 
-def is_placeholder_over_sign_in(stored_user_id, posted_user_id) -> bool:
-    """True when a post would replace a signed-in user with the placeholder.
+def is_placeholder_user_id(user_id) -> bool:
+    """True for the placeholder, which /api/storage/set never stores.
 
-    /api/storage/set keeps the stored id then.  Live 2026-11-01 a page that
-    could not read its sign-in posted 'guest' over the owner's record, the
-    desktop owner became 'guest', and every consent ask went to it while the
-    owner's answers were recorded for the owner.  Nobody signed in yet, or
-    the placeholder already on file, is left as it was.
+    Live 2026-11-01 a page that could not read its sign-in posted 'guest' over
+    the owner's record, the desktop owner became 'guest', and every consent
+    ask went to it while the owner's answers were recorded for the owner.
+    Stored on a record with nobody on it, it is still read back as a person:
+    the next boot's useStorageSync makes it the page's guest id, and HARTOS's
+    shell (liquid_ui_service._desktop_owner_id) answers as 'guest'.
     """
-    stored = '' if stored_user_id is None else str(stored_user_id)
-    return (str(posted_user_id) == PLACEHOLDER_USER_ID
-            and stored not in ('', PLACEHOLDER_USER_ID))
+    return str(user_id) == PLACEHOLDER_USER_ID
 
 
 # The env var every HARTOS consent gate reads to know whose machine this is
