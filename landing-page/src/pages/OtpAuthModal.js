@@ -6,6 +6,7 @@ import {
 } from '../config/apiBase';
 import {setAuthFromOtp, setGuestIdentity} from '../hooks/useAuthSession';
 import {agentApi, authApi, chatApi, mailerApi} from '../services/socialApi';
+import {isLocalBackendHost} from '../utils/backendHost';
 import {getStableDeviceId} from '../utils/deviceId';
 import {encrypt} from '../utils/encryption';
 import {logger} from '../utils/logger';
@@ -327,12 +328,12 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
           // Persist through the desktop's existing login-sync endpoint BEFORE
           // Social sees the new opaque cloud token. Otherwise /auth/me can
           // race the later chat-page sync and immediately expire this login.
-          if (['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)) {
-            const synced = await axios.post('/api/storage/set', {
+          if (isLocalBackendHost(window.location.hostname)) {
+            const synced = await chatApi.setDesktopIdentity({
               user_id: userId, email: emailAddress, access_token: accessToken,
-              agentname: `account_${userId}`,
+              agentname: localStorage.getItem('agentname') || `account_${userId}`,
             }, {timeout: 15000});
-            if (!synced?.data?.success) {
+            if (!synced?.success) {
               throw new Error('Desktop account sync failed. Please retry signing in.');
             }
             const profile = await axios.get('/api/social/auth/me', {

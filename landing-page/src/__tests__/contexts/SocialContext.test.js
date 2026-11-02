@@ -483,3 +483,21 @@ it('reloads the social profile after email sign-in replaces a guest session', as
   expect(screen.getByTestId('accessTier').textContent).toBe('flat');
   expect(screen.getByTestId('username').textContent).toBe('testuser');
 });
+
+it('a token refresh for the same person does not re-run the social setup', async () => {
+  localStorage.setItem('guest_mode', 'true');
+  localStorage.setItem('guest_user_id', 'guest-1');
+  localStorage.setItem('access_token', 'guest-token-1');
+  renderProvider();
+  await flushWithTimers();
+  const meCalls = () =>
+    mockAxiosInstance.get.mock.calls.filter(([url]) => url === '/auth/me').length;
+  const before = meCalls();
+  expect(before).toBeGreaterThan(0);
+  await act(async () => {
+    localStorage.setItem('access_token', 'guest-token-2');
+    window.dispatchEvent(new CustomEvent('nunba:auth_changed', {detail: {source: 'token_refresh'}}));
+  });
+  await flushWithTimers();
+  expect(meCalls()).toBe(before);
+});

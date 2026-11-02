@@ -44,6 +44,7 @@ jest.mock('../../services/socialApi', () => ({
   },
   chatApi: {
     migrateAgents: jest.fn(),
+    setDesktopIdentity: jest.fn(),
   },
   mailerApi: {
     renewToken: jest.fn(),
@@ -262,12 +263,12 @@ test('an HTTP 200 wrong-OTP response cannot replace the guest login', async () =
 
 test('email login syncs and verifies the desktop account before publishing the token', async () => {
   const axios = require('axios');
+  const {chatApi} = require('../../services/socialApi');
   localStorage.setItem('access_token', 'old-guest');
-  axios.post.mockImplementation(async (path, body) => {
-    expect(path).toBe('/api/storage/set');
+  chatApi.setDesktopIdentity.mockImplementation(async (body) => {
     expect(body).toEqual(expect.objectContaining({user_id: '123', access_token: 'new-email-token', email: 'test@example.invalid'}));
     expect(localStorage.getItem('access_token')).toBe('old-guest');
-    return {data: {success: true, db_upserted: false}};
+    return {success: true, db_upserted: false};
   });
   axios.get.mockResolvedValue({data: {success: true, data: {id: '123', role: 'flat'}}});
   global.fetch = jest.fn().mockResolvedValueOnce({ok: true}).mockResolvedValueOnce({ok: true, json: async () => ({access_token: 'new-email-token', user_id: 123, email_address: 'test@example.invalid', expires_in: 3600})});
@@ -278,5 +279,6 @@ test('email login syncs and verifies the desktop account before publishing the t
   await waitFor(() => expect(screen.getByRole('button', {name: /verify otp/i})).toBeInTheDocument());
   fireEvent.click(screen.getByRole('button', {name: /verify otp/i}));
   await waitFor(() => expect(localStorage.getItem('access_token')).toBe('new-email-token'));
+  expect(chatApi.setDesktopIdentity).toHaveBeenCalledTimes(1);
   expect(axios.get).toHaveBeenCalledWith('/api/social/auth/me', expect.objectContaining({headers: {Authorization: 'Bearer new-email-token'}}));
 });

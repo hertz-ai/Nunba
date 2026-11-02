@@ -915,6 +915,12 @@ export const chatApi = {
       params: {key_name: keyName, channel_type: channelType || ''},
     }),
 
+  // The ONE writer of the desktop sign-in record: user_data.json plus the
+  // local User row a cloud token resolves to (Nunba app.py /api/storage/set).
+  // Demopage's identity effect and OtpAuthModal's sign-in both call it.
+  setDesktopIdentity: (identity, config) =>
+    chatApiClient.post('/api/storage/set', identity, config),
+
   // Generic passthrough (for one-off endpoints)
   get: (path, config) => chatApiClient.get(path, config),
   post: (path, data, config) => chatApiClient.post(path, data, config),

@@ -17,6 +17,7 @@ import React, {
   useEffect,
   useCallback,
   useMemo,
+  useRef,
 } from 'react';
 
 const SocialContext = createContext();
@@ -58,21 +59,12 @@ export function SocialProvider({children}) {
   // guestRegister setItem blocks) stay on direct localStorage calls
   // and move in Phase 4.
   const _authSession = useAuthSession();
-  const [authRevision, setAuthRevision] = useState(0);
-  useEffect(() => {
-    const changed = () => {
-      apiCache.clearAll();
-      setAuthRevision(value => value + 1);
-    };
-    window.addEventListener('nunba:auth_changed', changed);
-    window.addEventListener('nunba:storage_hydrated', changed);
-    window.addEventListener('storage', changed);
-    return () => {
-      window.removeEventListener('nunba:auth_changed', changed);
-      window.removeEventListener('nunba:storage_hydrated', changed);
-      window.removeEventListener('storage', changed);
-    };
-  }, []);
+  // Who is signed in, as the session hook sees it.  The setup effect below
+  // re-runs when this changes (guest -> email sign-in, logout), not on a
+  // token refresh or HART seal; the hook already listens for every write.
+  const sessionIdentity =
+    `${_authSession.status}:${_authSession.identity.user_id || ''}`;
+  const lastSessionIdentity = useRef(sessionIdentity);
 
   const [currentUser, setCurrentUser] = useState(null);
   const [resonance, setResonance] = useState(null);
@@ -144,6 +136,10 @@ export function SocialProvider({children}) {
   }, []);
 
   useEffect(() => {
+    if (lastSessionIdentity.current !== sessionIdentity) {
+      lastSessionIdentity.current = sessionIdentity;
+      apiCache.clearAll(); // the cache is the previous person's
+    }
     const token = localStorage.getItem('access_token');
     if (token) {
       // Decode JWT payload for instant UI (no signature check — just for display).
@@ -267,7 +263,7 @@ export function SocialProvider({children}) {
       setLoading(false);
     }
   }, [fetchProfile, fetchResonance, fetchOnboarding, fetchUnread,
-      authRevision]);
+      sessionIdentity]);
 
   const logout = useCallback(() => {
     localStorage.removeItem('access_token');
