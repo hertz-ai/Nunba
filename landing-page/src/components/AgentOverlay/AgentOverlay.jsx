@@ -37,7 +37,9 @@ const AUTO_DISMISS_MS = 15000;
 // qr_pair: a WhatsApp code lives ~20s and HARTOS sends the next one as it
 // rotates (replacing this card in place, see handleEvent), so the card stays
 // until the phone links or the user closes it.
-const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair']);
+// file_request: an agent waits on her files (HARTOS person_ask), so the card
+// stays until it is answered here or anywhere else (ask.answered).
+const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair', 'file_request']);
 
 // The card's frosted surface is the ONE HART glass (src/theme/hartGlass,
 // mirroring HARTOS theme_service.py's emitted shell values), so an overlay
@@ -392,6 +394,111 @@ function AnswerError({ text }) {
   );
 }
 
+// ─── An agent's ask (HARTOS integrations.agent_engine.person_ask) ─────
+//
+// HARTOS puts one card in front of the person on every surface they have,
+// carrying the ask's `ask_id`, and the first answer from any of them goes back
+// to the agent that asked: POST /api/agent/approval {ask_id, answer}, the
+// caller's Bearer naming who answers (never a body field).  Answered, HARTOS
+// sends `ask.answered` {ask_id} to every surface, which drops the card
+// (AgentOverlay below).  Reading the ask in the bell is not an answer: its
+// notification.read drops nothing.
+
+function bearer() {
+  const token = localStorage.getItem('access_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function refusedReply(res, what) {
+  let body = {};
+  try { body = await res.json(); } catch { /* not JSON */ }
+  return Object.assign(new Error(`${what} (HTTP ${res.status})`), { body });
+}
+
+async function answerAsk(askId, answer) {
+  const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...bearer() },
+    body: JSON.stringify({ ask_id: askId, answer }),
+  });
+  if (!res.ok) throw await refusedReply(res, 'The answer was refused');
+}
+
+// One picked file into the desktop's one upload store, for the ask, through
+// the same door chat attachments use (Nunba desktop/file_sync).  The door
+// takes the purpose (her reel clip, logo, song) from the open ask, not from
+// the page.  Answers its file id.
+async function sendAskedFile(file, askId) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  form.append('ask_id', askId);
+  const res = await fetch(`${API_BASE_URL}/api/chat-sync/files/push`, {
+    method: 'POST', headers: bearer(), body: form,
+  });
+  if (!res.ok) throw await refusedReply(res, `${file.name} was not sent`);
+  const body = await res.json();
+  return body.file_id;
+}
+
+// What the picker offers for the ask's `accept`; the store decides the exact
+// types each purpose takes and refuses the rest.
+const ACCEPT_FOR = { video: 'video/*', image: 'image/*', audio: 'audio/*' };
+
+function FileRequestOverlay({ data, onDismiss }) {
+  const inputRef = useRef(null);
+  // null, {sent, total} while her files go up, or 'answering'.
+  const [phase, setPhase] = useState(null);
+  const [error, setError] = useState(data.ask_id ? null
+    : 'This request cannot be answered (it names no ask). Please report it.');
+  const max = Number.isInteger(data.max_files) && data.max_files > 0 ? data.max_files : 10;
+  const busy = phase !== null;
+
+  const onPicked = async (e) => {
+    const files = Array.from(e.target.files || []).slice(0, max);
+    e.target.value = '';
+    if (!files.length || busy || !data.ask_id) return;
+    setError(null);
+    const xids = [];
+    try {
+      for (let i = 0; i < files.length; i += 1) {
+        setPhase({ sent: i, total: files.length });
+        xids.push(await sendAskedFile(files[i], data.ask_id));
+      }
+      setPhase('answering');
+      await answerAsk(data.ask_id, { xids });
+    } catch (err) {
+      console.error('[file_request] not answered', err);
+      setError(answerFailure(err));
+      setPhase(null);
+      return;
+    }
+    setPhase(null);
+    onDismiss();
+  };
+
+  const label = !busy ? (data.button_label || 'Choose files')
+    : phase === 'answering' ? 'Sending your answer…'
+      : `Sending ${phase.sent + 1} of ${phase.total}…`;
+  return (
+    <Box data-testid="liquid-file-request">
+      <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+        {data.title || 'Your agent asks for files'}
+      </Typography>
+      {data.description && (
+        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)', mb: 1.5 }}>{data.description}</Typography>
+      )}
+      {error && <AnswerError text={error} />}
+      <input ref={inputRef} type="file" hidden multiple={max > 1} accept={ACCEPT_FOR[data.accept]}
+        data-testid="liquid-file-request-input" onChange={onPicked} />
+      <Button variant="contained" size="small" fullWidth disabled={busy || !data.ask_id} aria-busy={busy}
+        onClick={() => inputRef.current && inputRef.current.click()}
+        sx={{ background: ACCENT, '&:hover': { background: ACCENT_HOVER } }}>
+        {label}
+      </Button>
+    </Box>
+  );
+}
+
 function ApprovalOverlay({ data, onDismiss, onAction }) {
   const [act, run] = useActionRunner(onAction);
   // Which decision is on its way, and why the last one did not go through.
@@ -430,20 +537,17 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
     setBusy(decision);
     setError(null);
     try {
-      // The node names the approver from the caller's Bearer (never the body).
-      const token = localStorage.getItem('access_token');
-      const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ agent_id: data.agent_id, action: data.action, decision }),
-      });
-      if (!res.ok) {
-        let body = {};
-        try { body = await res.json(); } catch { /* not JSON */ }
-        throw Object.assign(new Error(`The answer was refused (HTTP ${res.status})`), {body});
+      if (data.ask_id) {
+        // An agent's ask: the decision is its answer, back to the agent.
+        await answerAsk(data.ask_id, { decision });
+      } else {
+        // The node names the approver from the caller's Bearer (never the body).
+        const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...bearer() },
+          body: JSON.stringify({ agent_id: data.agent_id, action: data.action, decision }),
+        });
+        if (!res.ok) throw await refusedReply(res, 'The answer was refused');
       }
     } catch (e) {
       console.error('[approval] decision not recorded', e);
@@ -451,7 +555,9 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
       setBusy(null);
       return;
     }
-    applyCamera(decision);
+    // An ask's answer goes to the agent and nowhere else: it never turns the
+    // camera on (its action words are the agent's own).
+    if (!data.ask_id) applyCamera(decision);
     setBusy(null);
     onDismiss();
   };
@@ -597,6 +703,22 @@ function FormOverlay({ data, onDismiss, onAction }) {
     }
     if (busy) return;
     const local = LOCAL_SUBMIT_ACTIONS[data.submit_action];
+    if (data.ask_id) {
+      // An agent's ask: the values are its answer, back to the agent.
+      setBusy(true);
+      setError(null);
+      try {
+        await answerAsk(data.ask_id, { values });
+      } catch (e) {
+        console.error('[form] ask not answered', e);
+        setError(answerFailure(e));
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+      onDismiss();
+      return;
+    }
     if (!data.action && !local) {
       // A form with nowhere to send its values is a producer bug; say so
       // rather than pretend the values went somewhere.
@@ -1074,6 +1196,7 @@ export function OverlayContent({ data, onDismiss, navigate, onAction }) {
     case 'progress': return <ProgressOverlay data={data} />;
     case 'agent_action': return <AgentActionOverlay data={data} />;
     case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
+    case 'file_request': return <FileRequestOverlay data={data} onDismiss={onDismiss} />;
     case 'chart': return <ChartOverlay data={data} />;
     case 'code': return <CodeOverlay data={data} />;
     case 'markdown': return <MarkdownOverlay data={data} />;
@@ -1376,11 +1499,45 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     }
   }, []);
 
+  // Open asks a newer card pushed off the screen, oldest first.  HARTOS sends
+  // an ask once and the bell cannot answer one, so an evicted ask comes back
+  // when a slot frees (review of 26d32915, probe R3).  Only changed in ways
+  // that are safe to repeat: React may run a state updater twice.
+  const parkedRef = useRef([]);
+
   const dismiss = useCallback((id) => {
     clearTimeout(timersRef.current[id]);
     delete timersRef.current[id];
     forgetShowing(id);
+    // A card answered while it was parked is done too (review of 622a31ea,
+    // probe P7): it never comes back for a second answer.
+    parkedRef.current = parkedRef.current.filter((o) => o._id !== id);
     setOverlays(prev => prev.filter(o => o._id !== id));
+  }, [forgetShowing]);
+
+  // A card that is not waiting on anyone goes by itself after AUTO_DISMISS_MS.
+  const arm = useCallback((o) => {
+    if (!PERSIST_TYPES.has(o._type)) {
+      timersRef.current[o._id] = setTimeout(() => dismiss(o._id), AUTO_DISMISS_MS);
+    }
+  }, [dismiss]);
+
+  // FIFO eviction past MAX_OVERLAYS, never the card that came last.  An open
+  // ask goes last: it waits for her answer.  HARTOS keeps up to MAX_OVERLAYS
+  // asks open for her, so when only asks are left the oldest one steps aside
+  // into parkedRef, or every newer card would be hidden behind them.
+  const evictOver = useCallback((next) => {
+    while (next.length > MAX_OVERLAYS) {
+      const i = Math.max(0, next.slice(0, -1).findIndex((o) => !o.ask_id));
+      const [evicted] = next.splice(i, 1);
+      clearTimeout(timersRef.current[evicted._id]);
+      delete timersRef.current[evicted._id];
+      forgetShowing(evicted._id);
+      if (evicted.ask_id && !parkedRef.current.some((o) => o._id === evicted._id)) {
+        parkedRef.current.push(evicted);
+      }
+    }
+    return next;
   }, [forgetShowing]);
 
   // An ask answered on any surface (this one, another window, another
@@ -1390,6 +1547,25 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     setOverlays((prev) => {
       const gone = prev.filter((o) => o._type === 'consent.request'
         && answerCoversAsk(answer, o));
+      if (gone.length === 0) return prev;
+      gone.forEach((o) => {
+        clearTimeout(timersRef.current[o._id]);
+        delete timersRef.current[o._id];
+        forgetShowing(o._id);
+      });
+      return prev.filter((o) => !gone.includes(o));
+    });
+  }, [forgetShowing]);
+
+  // An agent's ask answered on any surface: HARTOS sends ask.answered with
+  // its id (person_ask), and its card closes here.  Not notification.read:
+  // the bell sends that when she only reads the ask.
+  const dropAnswered = useCallback((answered) => {
+    const askId = answered && answered.ask_id;
+    if (!askId) return;
+    parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== askId);
+    setOverlays((prev) => {
+      const gone = prev.filter((o) => o.ask_id === askId);
       if (gone.length === 0) return prev;
       gone.forEach((o) => {
         clearTimeout(timersRef.current[o._id]);
@@ -1419,6 +1595,10 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     // This message is already on screen.
     const msgId = payload.msg_id;
     if (msgId && showingRef.current.has(msgId)) return;
+    // The same ask sent again shows now, so its parked copy does not come back.
+    if (payload.ask_id) {
+      parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== payload.ask_id);
+    }
 
     // Inline chat card types: forward to Demopage message list AND show overlay
     if (onInlineChatCard && ['product_card', 'cart', 'checkout', 'comparison'].includes(type)) {
@@ -1458,22 +1638,25 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
         });
         prev = prev.filter(o => !pairingOf(o));
       }
-      const next = [...prev, entry];
-      // FIFO eviction if over max
-      while (next.length > MAX_OVERLAYS) {
-        const evicted = next.shift();
-        clearTimeout(timersRef.current[evicted._id]);
-        delete timersRef.current[evicted._id];
-        forgetShowing(evicted._id);
-      }
-      return next;
+      return evictOver([...prev, entry]);
     });
 
-    // Auto-dismiss (except persistent types)
-    if (!PERSIST_TYPES.has(type)) {
-      timersRef.current[id] = setTimeout(() => dismiss(id), AUTO_DISMISS_MS);
-    }
-  }, [navigate, onInlineChatCard, dismiss, forgetShowing]);
+    arm(entry);
+  }, [navigate, onInlineChatCard, arm, evictOver, forgetShowing]);
+
+  // A slot freed (a card answered, closed, timed out or replaced): the oldest
+  // parked asks come back into it.
+  useEffect(() => {
+    const room = MAX_OVERLAYS - overlays.length;
+    if (room <= 0 || parkedRef.current.length === 0) return;
+    const back = parkedRef.current.slice(0, room);
+    parkedRef.current = parkedRef.current.slice(room);
+    back.forEach((o) => {
+      if (o.msg_id) showingRef.current.set(o.msg_id, o._id);
+      arm(o);
+    });
+    setOverlays((prev) => evictOver([...prev, ...back]));
+  }, [overlays, arm, evictOver]);
 
   useEffect(() => {
     // Single subscription — realtimeService handles all transports
@@ -1484,13 +1667,15 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
       : realtimeService.on('agent.ui.update', handleEvent);
     const unsubAnswers = CONSENT_ANSWER_TYPES.map(
       (t) => realtimeService.on(t, settleAsks));
+    const unsubRead = realtimeService.on('ask.answered', dropAnswered);
 
     return () => {
       unsub();
       unsubAnswers.forEach((u) => u && u());
+      if (unsubRead) unsubRead();
       Object.values(timersRef.current).forEach(clearTimeout);
     };
-  }, [handleEvent, settleAsks, subscribe]);
+  }, [handleEvent, settleAsks, dropAnswered, subscribe]);
 
   if (overlays.length === 0) return null;
 
