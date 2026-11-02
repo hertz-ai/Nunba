@@ -27,6 +27,19 @@ def client():
 
 
 @pytest.fixture(scope='module')
+def deferred_client():
+    """A client for the routes registered AFTER ``import main`` (HARTOS's
+    bootstrap calls Nunba's consumer hook and registers the books routes), so
+    ``main.app`` has none of the upload routes at import time.  See
+    tests/deferred_routes.py."""
+    from tests.deferred_routes import deferred_routes_app
+    # No `with test_client()`: that keeps a request context pinned past the
+    # test, and it tears down out of order with the module's other client
+    # ("Popped wrong app context").
+    return deferred_routes_app().test_client()
+
+
+@pytest.fixture(scope='module')
 def auth_header(client):
     ts = int(time.time() * 1000)
     user = {'username': f'chat_tts_test_{ts}', 'password': 'TestPass123!'}
@@ -165,28 +178,28 @@ class TestVoiceAPI:
 # 5. Upload Endpoints
 # ==========================================================================
 class TestUploadAPI:
-    def test_upload_image_no_file(self, client):
-        resp = client.post('/upload/image')
+    def test_upload_image_no_file(self, deferred_client):
+        resp = deferred_client.post('/upload/image')
         assert resp.status_code in (200, 400, 500)
 
-    def test_upload_audio_no_file(self, client):
-        resp = client.post('/upload/audio')
+    def test_upload_audio_no_file(self, deferred_client):
+        resp = deferred_client.post('/upload/audio')
         assert resp.status_code in (200, 400, 500)
 
-    def test_upload_file_no_file(self, client):
-        resp = client.post('/upload/file')
+    def test_upload_file_no_file(self, deferred_client):
+        resp = deferred_client.post('/upload/file')
         assert resp.status_code in (200, 400, 500)
 
-    def test_upload_vision_no_file(self, client):
-        resp = client.post('/upload/vision')
+    def test_upload_vision_no_file(self, deferred_client):
+        resp = deferred_client.post('/upload/vision')
         assert resp.status_code in (200, 400, 500)
 
-    def test_parse_pdf_no_file(self, client):
-        resp = client.post('/upload/parse_pdf')
+    def test_parse_pdf_no_file(self, deferred_client):
+        resp = deferred_client.post('/upload/parse_pdf')
         assert resp.status_code in (200, 400, 500)
 
-    def test_parse_pdf_status(self, client):
-        resp = client.get('/upload/parse_pdf/status')
+    def test_parse_pdf_status(self, deferred_client):
+        resp = deferred_client.get('/upload/parse_pdf/status')
         assert resp.status_code in (200, 404, 500)
 
 
