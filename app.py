@@ -275,7 +275,8 @@ if getattr(sys, 'frozen', False):
     # unless a console is explicitly attached. Before this hook, a
     # headless validate run looked like a hang; it was silently exiting.
     # Diagnosis: task #377.
-    if any(flag in sys.argv for flag in ('--validate', '--acceptance-test', '--diag')):
+    if sys.platform == 'win32' and any(
+            flag in sys.argv for flag in ('--validate', '--acceptance-test', '--diag')):
         try:
             import ctypes
             # ATTACH_PARENT_PROCESS = -1: attach to invoking console if any,
