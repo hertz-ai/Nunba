@@ -160,3 +160,105 @@ def test_without_a_token_nothing_is_stored(client, store):
                           content_type='multipart/form-data')
     assert refused.status_code == 401
     assert store.usage(USER) == 0
+
+
+
+MP4 = b'\x00\x00\x00\x18ftypmp42' + b'her look, filmed' * 64
+ASK = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+OTHER = 'o' * 32
+OTHER_AUTH = {'Authorization': 'Bearer ' + OTHER}
+
+
+def _open_ask(ask_id, user_id):
+    """HARTOS person_ask.open_file_request: her open file_request for the
+    agent that asked, else None (answered, gone, or someone else's)."""
+    if ask_id == ASK and str(user_id) == USER:
+        return {'purpose': 'reel_source', 'prompt_id': '342', 'max_files': 5}
+    return None
+
+
+def _clients(main_mod, sync_on):
+    settings = SimpleNamespace(cloud_sync_enabled=sync_on)
+    people = {TOKEN: USER, OTHER: '777'}
+    return (patch('integrations.social.auth.user_id_for_token',
+                  side_effect=lambda token: people.get(token)),
+            patch('desktop.chat_settings.get_chat_settings', return_value=settings),
+            patch('integrations.agent_engine.person_ask.open_file_request',
+                  side_effect=_open_ask))
+
+
+@pytest.fixture
+def ask_client(main_mod, store):
+    a, b, c = _clients(main_mod, True)
+    with a, b, c:
+        yield main_mod.app.test_client()
+
+
+@pytest.fixture
+def sync_off_client(main_mod, store):
+    a, b, c = _clients(main_mod, False)
+    with a, b, c:
+        yield main_mod.app.test_client()
+
+
+def _clip(client, headers=AUTH, **fields):
+    data = {'file': (io.BytesIO(MP4), 'look.mp4', 'video/mp4')}
+    data.update(fields)
+    return client.post('/api/chat-sync/files/push', headers=headers, data=data,
+                       content_type='multipart/form-data')
+
+
+def test_a_file_for_her_open_ask_lands_under_the_purpose_the_ask_names(ask_client, store):
+    """The desktop page answering an agent's file_request sends each pick
+    with the ask's id; the door takes the purpose from the open ask (HARTOS
+    person_ask), so the clip lands as her reel clip, the claim the asking
+    agent reads."""
+    pushed = _clip(ask_client, ask_id=ASK)
+    assert pushed.status_code == 200, pushed.get_json()
+    meta = pushed.get_json()
+    assert meta['purpose'] == 'reel_source'
+    assert store.resolve(USER, meta['file_id'], purpose='reel_source') is not None
+    assert store.resolve(USER, meta['file_id'], purpose='chat_attachment') is None
+
+
+@pytest.mark.parametrize('ask_id, headers', [
+    ('f' * 32, AUTH),            # no such ask, or answered already
+    (ASK, OTHER_AUTH),           # someone else's ask
+], ids=['not_open', 'not_hers'])
+def test_a_file_for_an_ask_that_is_not_her_open_one_is_refused(ask_client, store, ask_id,
+                                                               headers):
+    refused = _clip(ask_client, headers=headers, ask_id=ask_id)
+    assert refused.status_code == 409
+    assert refused.get_json()['error'] == 'no_open_ask'
+    assert store.usage(USER) == 0 and store.usage('777') == 0
+
+
+def test_the_page_never_names_the_purpose(ask_client, store):
+    """A purpose field with no ask is not an ask: the file is a chat
+    attachment, as every push without an ask was before the ask."""
+    pushed = _clip(ask_client, purpose='reel_source')
+    assert pushed.status_code == 200, pushed.get_json()
+    meta = pushed.get_json()
+    assert meta['purpose'] == 'chat_attachment'
+    assert store.resolve(USER, meta['file_id'], purpose='reel_source') is None
+
+
+def test_with_cloud_sync_off_a_chat_attachment_is_still_refused(sync_off_client, store):
+    refused = _push(sync_off_client)
+    assert refused.status_code == 403 and refused.get_json()['error'] == 'sync_disabled'
+    refused = _clip(sync_off_client, purpose='reel_source')       # no ask: same
+    assert refused.status_code == 403 and refused.get_json()['error'] == 'sync_disabled'
+    assert store.usage(USER) == 0
+
+
+def test_with_cloud_sync_off_a_file_for_her_open_ask_still_reaches_her_agent(sync_off_client,
+                                                                           store):
+    """Cloud sync is about her chat attachments travelling between devices.
+    A file she picks on this desktop for her own agent's open ask is stored
+    here, for that agent: the switch does not decide it.  Who she is does,
+    and it is checked first."""
+    pushed = _clip(sync_off_client, ask_id=ASK)
+    assert pushed.status_code == 200, pushed.get_json()
+    assert store.resolve(USER, pushed.get_json()['file_id'], purpose='reel_source') is not None
+    anonymous = _clip(sync_off_client, headers={}, ask_id=ASK)
+    assert anonymous.status_code == 401
