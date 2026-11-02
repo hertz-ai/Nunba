@@ -98,9 +98,18 @@ class TestEmbedDeps:
         — fetched on-demand only when a Chatterbox backend is selected,
         into ~/.nunba/site-packages/ where it can't shadow embed deps.
         """
-        from tts.package_installer import BACKEND_PACKAGES
-        turbo = BACKEND_PACKAGES.get('chatterbox_turbo', [])
-        ml = BACKEND_PACKAGES.get('chatterbox_multilingual', [])
+        from tts.package_installer import BACKEND_PACKAGES, BACKEND_VENV_PACKAGES
+
+        # The plan is wherever HARTOS routes the engine (TTSEngineSpec
+        # .install_target): chatterbox_multilingual installs into the main
+        # interpreter (BACKEND_PACKAGES), chatterbox_turbo into its own venv
+        # (BACKEND_VENV_PACKAGES).  Either way it is a runtime install.
+        def plan(backend):
+            return (BACKEND_PACKAGES.get(backend, [])
+                    + BACKEND_VENV_PACKAGES.get(backend, []))
+
+        turbo = plan('chatterbox_turbo')
+        ml = plan('chatterbox_multilingual')
         assert any('chatterbox-tts' in p for p in turbo), (
             "chatterbox-tts missing from chatterbox_turbo runtime install list")
         assert any('chatterbox-tts' in p for p in ml), (
