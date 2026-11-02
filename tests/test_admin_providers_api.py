@@ -162,7 +162,7 @@ class TestHelperResolvers:
         sys.modules.pop('integrations.providers.registry', None)
         _reset_optional_import_registry()
         with patch('importlib.import_module', side_effect=ImportError('forced')):
-            from main import app, _providers_registry
+            from main import _providers_registry, app
             with app.app_context():
                 mod, err = _providers_registry()
         assert mod is None
@@ -187,7 +187,7 @@ class TestHelperResolvers:
         sys.modules.pop('integrations.providers.efficiency_matrix', None)
         _reset_optional_import_registry()
         with patch('importlib.import_module', side_effect=ImportError('forced')):
-            from main import app, _providers_matrix
+            from main import _providers_matrix, app
             with app.app_context():
                 mod, err = _providers_matrix()
         assert mod is None
@@ -205,7 +205,7 @@ class TestHelperResolvers:
         sys.modules.pop('wamp_router', None)
         _reset_optional_import_registry()
         with patch('importlib.import_module', side_effect=ImportError('forced')):
-            from main import app, _wamp_mod
+            from main import _wamp_mod, app
             with app.app_context():
                 mod, err = _wamp_mod()
         assert mod is None
