@@ -18,6 +18,7 @@
  * "Every word spoken matters.", The human who built this.
  */
 
+import { createCeremonySession, fetchWithin, nameFromReveal } from './ceremonySession';
 import TypedTextBase from './TypedText';
 
 import { API_BASE_URL } from '../../config/apiBase';
@@ -237,11 +238,6 @@ const _computeProfile = (() => {
   if (cores <= 4 || mem <= 4) return 'medium';
   return 'high';
 })();
-
-// Bound the /api/hart/seal call so a hung network cannot stall the
-// ceremony.  On timeout the seal is retried on the next launch (the
-// absent hart_sealed flag is the retry trigger).
-const SEAL_TIMEOUT_MS = 8000;
 
 const PARTICLE_COUNTS = { low: 25, medium: 50, high: 80 };
 const GLOW_ENABLED = _computeProfile !== 'low';
@@ -856,24 +852,16 @@ export default function LightYourHART({ userId, onComplete }) {
     return () => clearTimeout(timer);
   }, []);
 
-  // ── API: advance the backend session ──
-  const advance = useCallback(async (action, data) => {
-    try {
-      const token = localStorage.getItem('access_token');
-      const resp = await fetch(`${API_BASE_URL}/api/hart/advance`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ action, data }),
-      });
-      if (resp.ok) return await resp.json();
-    } catch {
-      // Offline mode, continue with frontend-only flow
-    }
-    return null;
-  }, []);
+  // ── API: advance the backend session, one step per server phase ──
+  // One server session per mount (see ceremonySession.js); every step
+  // below matches one phase change there, in order, so the escape answer
+  // starts the name prewarm behind the next ~8.5s of lines.
+  const sessionRef = useRef(null);
+  if (!sessionRef.current) {
+    sessionRef.current = createCeremonySession({ baseUrl: API_BASE_URL });
+  }
+  const advance = useCallback(
+    (action, data) => sessionRef.current.step(action, data), []);
 
   // ── Handle language selection ──
   const selectLanguage = useCallback(async (lang) => {
@@ -932,11 +920,12 @@ export default function LightYourHART({ userId, onComplete }) {
       if (cancelled) return;
 
       // Transition to passion question
+      advance(); // server: greeting -> passion
       setPhase('passion');
     })();
 
     return () => { cancelled = true; stop(); };
-  }, [phase, language, speak, stop]);
+  }, [phase, language, speak, stop, advance]);
 
   // ── Handle passion question ──
   useEffect(() => {
@@ -961,6 +950,7 @@ export default function LightYourHART({ userId, onComplete }) {
     await _sleep(1500);
 
     // Transition to escape question
+    advance(); // server: ack_passion -> escape
     setPhase('escape');
   }, [language, advance, speak]);
 
@@ -977,6 +967,10 @@ export default function LightYourHART({ userId, onComplete }) {
   const answerEscape = useCallback(async (key) => {
     setEscapeKey(key);
     setOptions([]);
+    // Server: escape -> ack_escape.  Both answers are in, so the session
+    // starts generating the name now, behind the lines below (~8.5s).
+    // Measured 2026-10-22 on a CPU-only desktop: a name asked for only
+    // after those lines held "Your secret name is..." for 270s.
     advance('answer', { key });
 
     // PA acknowledges
@@ -987,6 +981,7 @@ export default function LightYourHART({ userId, onComplete }) {
     await _sleep(2000);
 
     // Pre-reveal
+    advance(); // server: ack_escape -> pre_reveal
     setPhase('pre_reveal');
     const preReveal = _getLine('pre_reveal', language);
     setPaText(preReveal);
@@ -998,33 +993,19 @@ export default function LightYourHART({ userId, onComplete }) {
     setPaText('');
     setLoading(true);
 
-    try {
-      const resp = await fetch(`${API_BASE_URL}/api/hart/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(localStorage.getItem('access_token')
-            ? { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
-            : {}),
-        },
-        body: JSON.stringify({
-          language, locale,
-          passion_key: passionKey || key, // passionKey might not be set yet due to closure
-          escape_key: key,
-        }),
-      });
-      if (resp.ok) {
-        const result = await resp.json();
-        setHartName(result.name);
-        setHartTag(result.hart_tag || '');
-        setEmojiCombo(result.emoji_combo || '');
-        // Store backup candidates for race-condition seal retry
-        setHartCandidates((result.candidates || []).filter(c => c !== result.name));
-      } else {
-        // Fallback name if backend fails
-        setHartName(_fallbackName());
-      }
-    } catch {
+    // Server: pre_reveal -> reveal.  It waits a short grace period for the
+    // prewarmed name, then answers with an instant curated one.
+    const named = nameFromReveal(await advance());
+    if (named) {
+      setHartName(named.name);
+      setHartTag(named.hartTag);
+      setEmojiCombo(named.emojiCombo);
+      // Store backup candidates for race-condition seal retry
+      setHartCandidates(named.candidates);
+    } else {
+      // Fallback name if backend fails
+      logger.warn('[HART] the reveal step gave no name; using a built-in '
+        + 'name with no backups for the seal');
       setHartName(_fallbackName());
     }
 
@@ -1041,7 +1022,7 @@ export default function LightYourHART({ userId, onComplete }) {
     setPhase('reveal_name');
     setPaText('');
     setShowName(true);
-  }, [language, locale, passionKey, advance, speak]);
+  }, [language, advance, speak]);
 
   // ── Post-reveal: seal on the server FIRST, then speak the closing ──
   //
@@ -1117,13 +1098,11 @@ export default function LightYourHART({ userId, onComplete }) {
 
       for (const candidate of [hartName, ...hartCandidates]) {
         if (cancelled) return;
-        let timer = null;
         try {
-          const ctl = new AbortController();
-          timer = setTimeout(() => ctl.abort(), SEAL_TIMEOUT_MS);
-          const sealResp = await fetch(`${API_BASE_URL}/api/hart/seal`, {
+          // Bounded (HART_REQUEST_TIMEOUT_MS) so a hung network cannot stall
+          // the ceremony; on timeout the seal is retried on the next launch.
+          const sealResp = await fetchWithin(`${API_BASE_URL}/api/hart/seal`, {
             method: 'POST',
-            signal: ctl.signal,
             headers: {
               'Content-Type': 'application/json',
               ...(localStorage.getItem('access_token')
@@ -1156,8 +1135,6 @@ export default function LightYourHART({ userId, onComplete }) {
           // dedicated "pending seal" flag would be a sixth home for a
           // fact that already has too many.
           break;
-        } finally {
-          if (timer) clearTimeout(timer);
         }
       }
       if (cancelled) return;
