@@ -129,7 +129,9 @@ class TestWindowsPerPixelRung:
         assert 'WS_EX_LAYERED' in caplog.text
 
     def test_a_refused_bitmap_is_solid_and_every_gdi_object_is_given_back(
-            self, caplog):
+            self, caplog, monkeypatch):
+        # The refusal message reads ctypes.get_last_error(), a Windows-only name.
+        monkeypatch.setattr(ctypes, 'get_last_error', lambda: 0, raising=False)
         gdi = fake_gdi(ulw_ok=False)
         with caplog.at_level(logging.WARNING, logger='NunbaGlass'):
             result = run(Image.new('RGBA', (1, 1)), gdi)

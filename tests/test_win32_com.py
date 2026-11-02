@@ -174,6 +174,9 @@ def test_the_private_ole32_handle_never_touches_the_shared_loader(monkeypatch):
             self.CoUninitialize = MagicMock()
 
     monkeypatch.setattr(ctypes, 'WinDLL', _Dll, raising=False)
+    # _ole32() also reads ctypes.HRESULT, a Windows-only name; any ctypes type
+    # stands in for the restype here.
+    monkeypatch.setattr(ctypes, 'HRESULT', ctypes.c_long, raising=False)
     shared = MagicMock()
     monkeypatch.setattr(ctypes, 'windll', shared, raising=False)
 
