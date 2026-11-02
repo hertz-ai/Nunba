@@ -16,8 +16,9 @@ Developer Setup — Clone repos (sibling directories):
     projects/
     ├── Nunba/              ← this repo (desktop app + React frontend)
     ├── HARTOS/             ← private: hertz-ai/HARTOS (backend engine)
-    │   └── pyproject.toml declares this as a dependency (transitive):
-    │       └── hevolve-database  ← git+hertz-ai/Hevolve_Database
+    │   └── pyproject.toml declares these as dependencies (transitive):
+    │       ├── hevolve-database  ← git+hertz-ai/Hevolve_Database
+    │       └── embodied-ai       ← git+hertz-ai/HevolveAI
     ├── Hevolve_Database/   ← private: hertz-ai/Hevolve_Database (DB models, canonical)
     └── hevolveai/          ← private: hertz-ai/HevolveAI (embodied continual learner)
 
@@ -721,13 +722,11 @@ def _torch_constraints_file():
 def _install_embodied_ai(python_exe):
     """Install HevolveAI (Embodied Continual Learner With Hiveintelligence) from local sibling first.
 
-    Called BEFORE hart-backend install.  The distribution is `hevolveai`; the
-    old `embodied-ai` name is gone (HARTOS pyproject.toml now carries it only
-    as a comment).  Measured 2026-10-21: the fallback below still asked for
-    `embodied-ai@git+...HevolveAI.git@main`, pip found metadata for
-    `hevolveai` and refused the URL ("inconsistent name: expected
-    'embodied-ai', but metadata has 'hevolveai'"), and check=False let the
-    build carry on without HevolveAI.
+    MUST be called BEFORE hart-backend install. hart-backend's pyproject.toml
+    declares `embodied-ai @ git+https://github.com/hertz-ai/HevolveAI.git@main`
+    which is a private repo. If pip can't reach it, the entire hart-backend
+    install fails. Pre-installing from the local sibling satisfies the dependency
+    so pip skips the git URL during hart-backend resolution.
 
     Falls back to git install only if local sibling is unavailable (requires
     the user's git credentials for private repo access).
@@ -748,7 +747,7 @@ def _install_embodied_ai(python_exe):
         if os.path.exists(os.path.join(path, 'setup.py')):
             if run_command(
                 [python_exe, '-m', 'pip', 'install', *_c_args, path],
-                "Installing hevolveai from local project (torch pins constrained)...",
+                "Installing embodied-ai from local project (torch pins constrained)...",
                 check=False,
             ):
                 return
@@ -756,7 +755,7 @@ def _install_embodied_ai(python_exe):
     # Fallback: pip install from GitHub
     run_command(
         [python_exe, '-m', 'pip', 'install', *_c_args,
-         'hevolveai @ git+https://github.com/hertz-ai/HevolveAI.git@main'],
+         'embodied-ai@git+https://github.com/hertz-ai/HevolveAI.git@main'],
         "Installing HevolveAI (Continual Learner)...",
         check=False,
     )
@@ -770,8 +769,10 @@ def _install_hartos_backend(python_exe):
       2. pip install from GitHub main branch (requires user's git credentials)
       3. git clone fallback for cx_Freeze bundling
 
-    Installs hevolveai (and hevolve-database) from local siblings FIRST, so
-    hart-backend's install below finds them already present.
+    Installs embodied-ai from local sibling FIRST, because hart-backend's
+    pyproject.toml declares it as a git dependency. If pip can't reach the
+    private git repo, the entire install fails. Pre-installing from local
+    sibling satisfies the dependency so pip skips the git URL.
 
     Pins langchain==0.0.230 (monolithic) after install because pyproject.toml
     says >=0.0.230 which pip resolves to 1.x (slim package without llms/chains/etc.),
@@ -782,8 +783,8 @@ def _install_hartos_backend(python_exe):
     _install_embodied_ai(python_exe)
 
     # 1. Check for local sibling project (non-editable for frozen exe compatibility)
-    #    Use --no-deps because pyproject.toml declares private git URLs
-    #    (hevolve-database) that pip may not resolve. All deps are installed above.
+    #    Use --no-deps because pyproject.toml declares embodied-ai as a private
+    #    git URL that pip can't resolve. All deps are already installed above.
     local_path = _find_local_hartos_backend()
     if local_path:
         # Try with --no-deps first (avoids private git URL resolution failure)

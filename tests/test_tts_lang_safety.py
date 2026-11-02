@@ -81,26 +81,11 @@ def test_cosyvoice_not_capable_for_any_indic_lang():
         )
 
 
-def test_piper_capable_for_an_indic_lang_only_with_its_own_voice():
-    """Piper may serve an Indic language only through a voice OF that
-    language, never the English one.
-
-    3ae6b28 (Piper 16-language voice expansion) gave Piper real voices
-    for hi / ml / ne / te / ur (tts/piper_tts.LANG_TO_VOICE) and made it
-    capable exactly there; this test still said "Piper is English-only"
-    and failed on main.  The safety it guards is unchanged: an Indic
-    language with no Piper voice (e.g. Tamil) must never list Piper.
-    """
-    from tts.piper_tts import LANG_TO_VOICE
+def test_piper_not_capable_for_any_indic_lang():
+    """Piper is English-only.  Must never appear in Indic allowlist."""
     from tts.tts_engine import _INDIC_LANGS
-    voiced = {k.split('_')[0] for k in LANG_TO_VOICE}
     for lang in _INDIC_LANGS:
-        if lang in voiced:
-            assert LANG_TO_VOICE[lang].split('_')[0] == lang, (
-                f"{lang} maps to a voice of another language: {LANG_TO_VOICE[lang]}")
-        else:
-            assert BACKEND_PIPER not in _LANG_CAPABLE_BACKENDS[lang], (
-                f"{lang} has no Piper voice but lists Piper as capable")
+        assert BACKEND_PIPER not in _LANG_CAPABLE_BACKENDS[lang]
 
 
 def test_normalize_lang():
@@ -234,10 +219,15 @@ def test_english_falls_through_to_piper_or_kokoro():
             return fake_piper  # pretend kokoro works too, returns audio
         raise RuntimeError(f"{name} not available")
 
-    # Only ever the patched _create_backend.  An unpatched warm-up call used
-    # to run first and discard its result; it built the REAL backends, which
-    # spawn TTS worker subprocesses, and hung until pytest-timeout killed the
-    # whole python-quality run at 91% (Nunba #38 CI, 2026-10-22).
+    result = engine._synthesize_with_fallback(
+        text="hello world",
+        output_path="/tmp/out.wav",
+        voice=None,
+        language="en",
+    )
+    # Above runs _create_backend on each candidate; we didn't patch so
+    # it will call real _create_backend.  Do the patched version:
+    engine = _make_stub_engine(active_backend=BACKEND_CHATTERBOX_TURBO)
     with patch.object(engine, '_create_backend', side_effect=_create):
         result = engine._synthesize_with_fallback(
             text="hello world",
