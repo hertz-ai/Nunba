@@ -350,3 +350,32 @@ def test_delete_absent_returns_false(file_sync):
     # Valid format but never stored.
     sha = hashlib.sha256(b'never').hexdigest()
     assert file_sync.delete('user_a', sha) is False
+
+
+# ── an ask's files: the purpose the ask names (HARTOS person_ask) ─────────
+
+MP4 = b'\x00\x00\x00\x18ftypmp42' + b'her look, filmed' * 64
+
+
+def test_a_file_sent_for_an_asked_purpose_is_held_for_that_purpose_only(file_sync, store):
+    """An agent's ask for her clips (a file_request, HARTOS
+    integrations.agent_engine.person_ask) sends them through this door with
+    the purpose the ask names.  They are her reel clips, for the agent that
+    asked; not her chat attachments, so this door's chat-attachment reads do
+    not see them."""
+    meta = file_sync.store('user_a', MP4, name='look.mp4', mime='video/mp4',
+                           purpose='reel_source')
+    assert meta['purpose'] == 'reel_source'
+    assert meta['file_id'] == hashlib.sha256(MP4).hexdigest()
+    held = store.resolve('user_a', meta['file_id'], purpose='reel_source')
+    assert held is not None and held.size == len(MP4)
+    assert store.resolve('user_a', meta['file_id'], purpose='chat_attachment') is None
+    assert file_sync.list_since('user_a') == []
+    assert file_sync.fetch('user_a', meta['file_id']) == (None, None)
+
+
+def test_a_purpose_the_store_does_not_have_is_refused(file_sync, store):
+    with pytest.raises(file_sync.FileRefused) as refused:
+        file_sync.store('user_a', MP4, name='look.mp4', mime='video/mp4', purpose='nope')
+    assert refused.value.reason == 'bad_offer'
+    assert store.usage('user_a') == 0
