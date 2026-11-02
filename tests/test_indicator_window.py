@@ -145,3 +145,45 @@ class TestModuleFunctions:
         # May fail due to mocked Tk — the important thing is it returns bool
         result = initialize_indicator(server_port=9090)
         assert isinstance(result, bool)
+
+
+# ── the ribbon is not built just to be hidden, and never off the main thread on macOS ──
+#
+# CI, macOS (tests/test_flask_routes.py::TestIndicatorStop): GET /indicator/stop
+# calls toggle_indicator(False); with no ribbon yet that built one on a
+# background thread (initialize_indicator -> create_window -> Tk), and macOS Tk
+# off the main thread aborts the whole process ("Fatal Python error: Aborted",
+# create_ribbon_tab in the stack).  main.py's initialize_indicator_window already
+# returns on darwin because "NSWindow must be on main thread".
+
+class TestRibbonBuild:
+    def test_a_hide_request_builds_no_window(self):
+        import desktop.indicator_window as iw
+        with patch.object(iw, '_indicator_window', None), \
+                patch.object(iw, 'indicator_active', False), \
+                patch.object(iw, 'initialize_indicator') as init:
+            assert iw.toggle_indicator(False) is False
+        init.assert_not_called()
+
+    def test_a_show_request_still_builds_it(self):
+        import desktop.indicator_window as iw
+        ribbon = MagicMock()
+
+        def _built(*_a, **_k):
+            iw._indicator_window = ribbon
+            return True
+
+        with patch.object(iw, '_indicator_window', None), \
+                patch.object(iw, 'indicator_active', False), \
+                patch.object(iw, 'initialize_indicator', side_effect=_built) as init:
+            iw.toggle_indicator(True)
+        init.assert_called_once()
+        ribbon.show.assert_called_once()
+
+    def test_macos_never_builds_the_ribbon_on_a_background_thread(self):
+        import desktop.indicator_window as iw
+        with patch.object(iw.sys, 'platform', 'darwin'), \
+                patch.object(iw, '_window_thread', None), \
+                patch.object(iw.threading, 'Thread') as thread:
+            assert iw.initialize_indicator() is False
+        thread.assert_not_called()
