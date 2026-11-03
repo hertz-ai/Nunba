@@ -31,32 +31,32 @@ describe('Chat Flow E2E', () => {
     it('1.1 demo page has chat UI elements (textarea + buttons)', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 300000});
+      cy.wait('@getPrompts', {timeout: 30000});
       cy.wait(2000);
 
       // Page should render with content
       cy.get('#root').invoke('html').should('not.be.empty');
-      cy.get('button', {timeout: 300000}).should('have.length.greaterThan', 0);
+      cy.get('button', {timeout: 30000}).should('have.length.greaterThan', 0);
 
       // Chat textarea should exist (may be disabled if not logged in)
-      cy.get('textarea', {timeout: 300000}).should('exist');
+      cy.get('textarea', {timeout: 30000}).should('exist');
     });
 
     it('1.2 chat textarea is present and shows placeholder', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 300000});
+      cy.wait('@getPrompts', {timeout: 30000});
       cy.wait(2000);
 
       // Textarea should have a placeholder
-      cy.get('textarea', {timeout: 300000}).should('exist');
-      cy.get('textarea', {timeout: 300000}).should('have.attr', 'placeholder');
+      cy.get('textarea', {timeout: 30000}).should('exist');
+      cy.get('textarea', {timeout: 30000}).should('have.attr', 'placeholder');
     });
 
     it('1.3 shows login prompt when not authenticated', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 300000});
+      cy.wait('@getPrompts', {timeout: 30000});
       cy.wait(2000);
 
       // When not logged in, the page should prompt login
@@ -75,11 +75,11 @@ describe('Chat Flow E2E', () => {
     it('1.4 chat textarea is disabled when not logged in (expected behavior)', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 300000});
+      cy.wait('@getPrompts', {timeout: 30000});
       cy.wait(2000);
 
       // Textarea should be disabled since user isn't authenticated
-      cy.get('textarea', {timeout: 300000}).should('be.disabled');
+      cy.get('textarea', {timeout: 30000}).should('be.disabled');
     });
   });
 
@@ -354,7 +354,7 @@ describe('Chat Flow E2E', () => {
 
     it('4.1 Guest user can see chat interface enabled', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsStubbed', {timeout: 300000});
+      cy.wait('@getPromptsStubbed', {timeout: 30000});
       cy.wait(2000);
 
       // With guest mode, the chat should be enabled
@@ -364,7 +364,7 @@ describe('Chat Flow E2E', () => {
 
     it('4.2 Chat response uses "text" field (not "response")', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsStubbed', {timeout: 300000});
+      cy.wait('@getPromptsStubbed', {timeout: 30000});
 
       // Verify the intercepted response format
       cy.wait(1000);
@@ -670,7 +670,7 @@ describe('Chat Flow E2E', () => {
       }).as('chatSend');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsUI', {timeout: 300000});
+      cy.wait('@getPromptsUI', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -700,7 +700,7 @@ describe('Chat Flow E2E', () => {
 
     it('7.2 Send button is disabled when textarea is empty', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsUI', {timeout: 300000});
+      cy.wait('@getPromptsUI', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -736,7 +736,7 @@ describe('Chat Flow E2E', () => {
       }).as('chatDelayed');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsUI', {timeout: 300000});
+      cy.wait('@getPromptsUI', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -785,7 +785,7 @@ describe('Chat Flow E2E', () => {
       }).as('chatError');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsUI', {timeout: 300000});
+      cy.wait('@getPromptsUI', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -832,7 +832,7 @@ describe('Chat Flow E2E', () => {
       }).as('chatSuccess');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsUI', {timeout: 300000});
+      cy.wait('@getPromptsUI', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -878,7 +878,7 @@ describe('Chat Flow E2E', () => {
       }).as('chatClear');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsUI', {timeout: 300000});
+      cy.wait('@getPromptsUI', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -922,7 +922,7 @@ describe('Chat Flow E2E', () => {
       }).as('chatEnter');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsUI', {timeout: 300000});
+      cy.wait('@getPromptsUI', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -990,7 +990,7 @@ describe('Chat Flow E2E', () => {
       }).as('slowChat');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsLoading', {timeout: 300000});
+      cy.wait('@getPromptsLoading', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -1039,7 +1039,7 @@ describe('Chat Flow E2E', () => {
       }).as('quickChat');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsLoading', {timeout: 300000});
+      cy.wait('@getPromptsLoading', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -1087,7 +1087,7 @@ describe('Chat Flow E2E', () => {
       }).as('rapidChat');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsLoading', {timeout: 300000});
+      cy.wait('@getPromptsLoading', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -1145,7 +1145,7 @@ describe('Chat Flow E2E', () => {
       );
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsError', {timeout: 300000});
+      cy.wait('@getPromptsError', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -1178,7 +1178,7 @@ describe('Chat Flow E2E', () => {
       }).as('serverError');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsError', {timeout: 300000});
+      cy.wait('@getPromptsError', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -1211,7 +1211,7 @@ describe('Chat Flow E2E', () => {
       }).as('timeoutError');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsError', {timeout: 300000});
+      cy.wait('@getPromptsError', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -1250,7 +1250,7 @@ describe('Chat Flow E2E', () => {
       }).as('llmUnavailable');
 
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@getPromptsError', {timeout: 300000});
+      cy.wait('@getPromptsError', {timeout: 30000});
       cy.wait(2000);
 
       cy.get('body').then(($body) => {

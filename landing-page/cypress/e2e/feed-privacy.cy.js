@@ -24,7 +24,7 @@
  *   - failOnStatusCode: false on all cy.request() calls
  *   - cy.socialAuth() in before() once per describe block
  *   - cy.socialVisit() to navigate (token set automatically)
- *   - Generous timeouts: { timeout: 300000 }
+ *   - Generous timeouts: { timeout: 30000 }
  *   - No reliance on cy.wait('@alias') for API intercepts
  */
 
@@ -138,7 +138,7 @@ describe('Feed Privacy — is_hidden Posts (API-level)', () => {
       }).as('feedAllStubbed');
 
       cy.socialVisit('/social');
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
 
       // Verify the stubbed feed does not contain hidden posts
       cy.wait(2000);
@@ -318,7 +318,7 @@ describe('Feed Privacy — Hidden Posts UI', () => {
     }).as('authMe');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Wait for React to render
     cy.wait(2000);
@@ -409,7 +409,7 @@ describe('Feed Privacy — Hidden Posts UI', () => {
     }).as('authMe');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Page should render without errors
@@ -457,7 +457,7 @@ describe('Feed Privacy — Hidden Posts UI', () => {
     }).as('feedMixed');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -666,7 +666,7 @@ describe('Comment Privacy — is_hidden Comments', () => {
     }).as('authMe');
 
     cy.socialVisit(`/social/post/${postId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     cy.get('body').then(($body) => {
@@ -715,7 +715,7 @@ describe('Comment Privacy — is_hidden Comments', () => {
     }).as('feedWithCommentCount');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Page should render without errors
@@ -875,7 +875,7 @@ describe('Feed Privacy — is_private Communities', () => {
     }).as('authMe');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Page should render without crash
@@ -919,7 +919,7 @@ describe('Feed Privacy — is_private Communities', () => {
     }).as('authMe');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -1188,7 +1188,7 @@ describe('Feed Privacy — Anonymous User', () => {
     }).as('authMeAnon');
 
     cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -1234,7 +1234,7 @@ describe('Feed Privacy — Anonymous User', () => {
     }).as('authMeAnon');
 
     cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -1256,7 +1256,7 @@ describe('Feed Privacy — Anonymous User', () => {
     }).as('authMeAnon');
 
     cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Page should render something (feed, login prompt, etc.)
     cy.get('#root').invoke('html').should('not.be.empty');
@@ -1283,7 +1283,7 @@ describe('Feed Privacy — Anonymous User', () => {
     }).as('authMeAnon');
 
     cy.visit(`/social/post/${hiddenPostId}`, {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {

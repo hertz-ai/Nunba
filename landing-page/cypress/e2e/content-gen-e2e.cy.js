@@ -376,7 +376,7 @@ describe('GameAssetService — JWT Auth Header', () => {
       },
     });
 
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
 
     // If any media asset requests were fired, verify auth header
     // (kids hub may not fire media requests — this validates the wiring is in place)
@@ -397,7 +397,7 @@ describe('GameAssetService — JWT Auth Header', () => {
       },
     });
 
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 });
 
@@ -419,7 +419,7 @@ describe('GameItemImage — Broken Image Fallback', () => {
     }).as('brokenImage');
 
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
     // The page should not crash — broken images fall back to emoji
   });
 
@@ -430,7 +430,7 @@ describe('GameItemImage — Broken Image Fallback', () => {
     }).as('media503');
 
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 });
 
@@ -453,7 +453,7 @@ describe('RoleGuard — Kids Learning Zone Access', () => {
     });
 
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
     // Should NOT redirect — guest is allowed
     cy.url().should('include', '/social/kids');
   });
@@ -461,7 +461,7 @@ describe('RoleGuard — Kids Learning Zone Access', () => {
   it('/social/kids accessible to flat role', () => {
     stubAuth('flat');
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
     cy.url().should('include', '/social/kids');
   });
 
@@ -472,7 +472,7 @@ describe('RoleGuard — Kids Learning Zone Access', () => {
     });
 
     visitSocial('/social/kids/create');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
     // RoleGuard with minRole="flat" should redirect guest away
     // (either to /social or show access denied)
   });
@@ -480,13 +480,13 @@ describe('RoleGuard — Kids Learning Zone Access', () => {
   it('/social/kids/create accessible to flat role', () => {
     stubAuth('flat');
     visitSocial('/social/kids/create');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 
   it('/social/kids/custom requires flat role', () => {
     stubAuth('flat');
     visitSocial('/social/kids/custom');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 
   it('anonymous user (no auth) is redirected from kids hub', () => {
@@ -496,7 +496,7 @@ describe('RoleGuard — Kids Learning Zone Access', () => {
     });
 
     cy.visit('/social/kids', {timeout: 60000, failOnStatusCode: false});
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
     // Should redirect to /social (RoleGuard blocks anonymous)
   });
 });
@@ -520,12 +520,12 @@ describe('Sound System — Mute & AudioContext', () => {
 
   it('page loads without AudioContext errors', () => {
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 
   it('GameSounds functions exist on window after page load', () => {
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
     // The sound system is loaded via imports — no global window check needed
     // This test ensures the page doesn't crash during module initialization
   });
@@ -554,14 +554,14 @@ describe('Admin Privilege — Master Control', () => {
     });
 
     visitSocial('/admin');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 
   it('flat user is redirected away from /admin', () => {
     stubAuth('flat');
 
     visitSocial('/admin');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
     // RoleGuard with minRole="central" redirects flat users
   });
 
@@ -572,7 +572,7 @@ describe('Admin Privilege — Master Control', () => {
     });
 
     visitSocial('/admin');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 
   it('admin settings API requires auth token', () => {
@@ -609,7 +609,7 @@ describe('Graceful Degradation', () => {
     cy.intercept('POST', '**/api/social/tts/**', {forceNetworkError: true});
 
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 
   it('game screen loads with emoji fallback when images fail', () => {
@@ -623,7 +623,7 @@ describe('Graceful Degradation', () => {
     });
 
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 
   it('handles 429 (rate limit) on media routes', () => {
@@ -701,7 +701,7 @@ describe('Kids Game Template — Sound & Commentary', () => {
 
   it('kids hub page renders without sound errors', () => {
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
     // Verify no JavaScript errors from sound initialization
   });
 
@@ -711,7 +711,7 @@ describe('Kids Game Template — Sound & Commentary', () => {
     });
 
     visitSocial('/social/kids');
-    cy.get('body', {timeout: 300000}).should('be.visible');
+    cy.get('body', {timeout: 30000}).should('be.visible');
   });
 });
 

@@ -98,7 +98,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
       cy.request({
         url: `${API}/backend/health`,
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         if (res.status === 200) {
           flaskAvailable = true;
@@ -111,7 +111,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
       cy.request({
         url: `${LANGCHAIN_API}/health`,
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         if (res.status === 200) {
           langchainAvailable = true;
@@ -125,7 +125,7 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
       cy.request({
         url: `${LLAMA_API}/health`,
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         if (res.status === 200) {
           llamaAvailable = true;
@@ -356,11 +356,11 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
 
     it('4.1 Demopage loads and sends message to live backend', () => {
-      cy.visit('/local', {timeout: 300000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 30000, failOnStatusCode: false});
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       seedGuestAuth();
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('Hello, what can you do?{enter}', {force: true});
 
@@ -373,11 +373,11 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
 
     it('4.2 Chat response from live LLM renders in the UI', () => {
-      cy.visit('/local', {timeout: 300000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 30000, failOnStatusCode: false});
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       seedGuestAuth();
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('Tell me about Nunba{enter}', {force: true});
 
@@ -390,11 +390,11 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
 
     it('4.3 Agent creation intent from UI triggers creation flow', () => {
-      cy.visit('/local', {timeout: 300000, failOnStatusCode: false});
+      cy.visit('/local', {timeout: 30000, failOnStatusCode: false});
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       seedGuestAuth();
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('I want to create an agent for writing emails{enter}', {
           force: true,
