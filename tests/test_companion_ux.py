@@ -13,6 +13,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# `patch('ctypes.windll.user32')` needs ctypes.windll, which only Windows has
+# (tests/conftest.py gives it to the other platforms).
+pytestmark = pytest.mark.usefixtures('windll_exists_off_windows')
+
 
 def desktop_where(foreground, owned=None, minimized=()):
     """A fake user32 for a desktop whose foreground window is `foreground`.

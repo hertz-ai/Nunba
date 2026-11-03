@@ -48,6 +48,24 @@ def _private_tts_state_file(tmp_path, monkeypatch):
     monkeypatch.setenv('NUNBA_TTS_STATE_PATH', str(tmp_path / 'tts_state.json'))
 
 
+@pytest.fixture
+def windll_exists_off_windows(monkeypatch):
+    """`patch('ctypes.windll.user32')` needs `ctypes.windll` to exist, and
+    it only exists on Windows.  CI runs these files on ubuntu and macOS too,
+    where every such patch raised AttributeError before the test body ran.
+    On Windows the real one is left alone.
+
+    One definition for every file that patches a Win32 library by that
+    dotted name (it lived in tests/test_glass.py alone, and test_companion_ux
+    and test_model_storage_path hit the same failure): ask for it with
+    ``pytestmark = pytest.mark.usefixtures('windll_exists_off_windows')``.
+    """
+    import ctypes
+    from unittest.mock import MagicMock
+    if not hasattr(ctypes, 'windll'):
+        monkeypatch.setattr(ctypes, 'windll', MagicMock(), raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Temp directory for config files (llama_config, etc.)
 # ---------------------------------------------------------------------------

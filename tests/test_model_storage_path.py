@@ -168,6 +168,7 @@ def test_api_storage_path_get_and_post(tmp_path):
     assert os.path.abspath(post_info["models_dir"]) == os.path.abspath(new_dir)
 
 
+@pytest.mark.usefixtures('windll_exists_off_windows')
 def test_is_main_window_foreground_cross_platform():
     """Verify is_main_window_foreground handles Windows, macOS, and Linux cleanly."""
     import desktop.platform_utils as pu

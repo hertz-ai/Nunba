@@ -29,14 +29,9 @@ LWA_COLORKEY = 0x00000001
 LWA_ALPHA = 0x00000002
 
 
-@pytest.fixture(autouse=True)
-def windll_exists_off_windows(monkeypatch):
-    """`patch('ctypes.windll.user32')` needs `ctypes.windll` to exist, and
-    it only exists on Windows.  CI runs this file on ubuntu and macOS too,
-    where every such patch raised AttributeError before the test body ran.
-    On Windows the real one is left alone."""
-    if not hasattr(ctypes, 'windll'):
-        monkeypatch.setattr(ctypes, 'windll', MagicMock(), raising=False)
+# `ctypes.windll` only exists on Windows: the fixture (tests/conftest.py) gives
+# the dotted `patch('ctypes.windll.user32')` below something to resolve.
+pytestmark = pytest.mark.usefixtures('windll_exists_off_windows')
 
 
 @pytest.fixture(autouse=True)
