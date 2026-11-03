@@ -130,7 +130,11 @@ class TestTTSScenario:
         """Tamil users get Indic Parler (native quality) not Piper (English accent)."""
         from tts.tts_engine import BACKEND_INDIC_PARLER, _get_lang_preference
         prefs = _get_lang_preference('ta')
-        assert prefs[0] == BACKEND_INDIC_PARLER
+        # The universal omnivoice (HARTOS ranks it first everywhere, installed
+        # and with the GPU room) may sit ahead; Indic Parler is the first
+        # specialist, and Piper is not before it.
+        specialists = [b for b in prefs if b != 'omnivoice']
+        assert specialists[0] == BACKEND_INDIC_PARLER, prefs
 
     def test_piper_always_in_english_chain(self):
         """Piper (CPU) must always be in the English fallback chain — last resort."""
