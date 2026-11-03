@@ -7,21 +7,24 @@
  *   3. Tab Navigation       - switch tabs, rapid switching
  *   4. Activity Tab         - timeline entries, conversations, empty state
  *   5. Evolution Tab        - level/XP, traits, specialization trees, missing data
- *   6. Talk to Agent CTA    - fixed button presence, navigation to chat
+ *   6. Chat with HART CTA   - fixed button presence, hands the agent to the chat panel
  *   7. Responsive           - mobile, tablet, viewport changes
  *   8. API Integration      - prompts API, evolution API, error handling, timeout
  *
  * Route: /social/agent/:agentId
  * Component: AgentProfilePage.jsx
  *
- * The component fetches agent data from chatApi.getPublicPromptsCloud()
- * (cloud endpoint: GET https://mailer.hertzai.com/getprompt_all/)
- * and evolution data from evolutionApi.get() (GET /api/social/agents/:agentId/evolution).
+ * The component finds the agent in chatApi.getPrompts() (GET /prompts on the
+ * chat API, answered as {prompts: [...]}) and reads evolution data from
+ * evolutionApi.get() (GET /api/social/agents/:agentId/evolution).  It has
+ * never called the cloud getprompt_all endpoint this spec used to stub, so
+ * every agent-dependent test saw "Agent not found".
  *
- * IMPORTANT: The component unwraps axios response.data, so stub bodies must be
- * the raw payload the component expects — NOT wrapped in { success, data }.
- * e.g. body: [mockAgent]  NOT  body: { data: [mockAgent] }
- *      body: mockEvolution NOT  body: { success: true, data: mockEvolution }
+ * IMPORTANT: axiosFactory's response interceptor already returns the body, and
+ * the component then reads `.data` off it for every social list
+ * (`historyRes.value?.data || []`).  Social stubs are therefore the social
+ * API's own shape, { success: true, data: ... }; a bare array would leave the
+ * list empty.
  *
  * Custom commands used:
  *   cy.socialAuth()    - registers unique test user, stores token/userId
@@ -173,70 +176,59 @@ const mockCollaborations = [
   },
 ];
 
+/** A social API answer, as the component reads it (see the header). */
+const social = (data) => ({success: true, data});
+
 /**
  * Helper: stub ALL agent-profile APIs with default mock data.
  * Call inside beforeEach to ensure every test starts with consistent stubs.
  *
- * Body format rationale:
- *   The component uses axios, which puts the HTTP response body into response.data.
- *   - chatApi.getPublicPromptsCloud() → allRes.data = body → must be the array directly
- *   - evolutionApi.get()              → evoRes.value.data = body → must be the evolution object directly
- *   - evolutionApi.history()          → historyRes.value.data = body → must be the array directly
- *   - evolutionApi.trees()            → treesRes.value.data = body → must be the array directly
- *   - auditApi.getTimeline()          → timelineRes.value.data = body → must be the array directly
- *   - auditApi.getConversations()     → convoRes.value.data = body → must be the array directly
- *   - evolutionApi.collaborations()   → res.data = body → must be the array directly
+ * Body format (axiosFactory hands the component the body):
+ *   - chatApi.getPrompts()          → res.prompts           → {prompts: [...]}
+ *   - evolutionApi.get()            → evoRes.value.data     → social(object)
+ *   - evolutionApi.history()        → historyRes.value.data → social(array)
+ *   - evolutionApi.trees()          → treesRes.value.data   → social(array)
+ *   - auditApi.getTimeline()        → timelineRes.value.data→ social(array)
+ *   - auditApi.getConversations()   → convoRes.value.data   → social(array)
+ *   - evolutionApi.collaborations() → res.data              → social(array)
  */
 function stubAgentApis(overrides = {}) {
   const agentData = overrides.agents || [mockAgent];
 
-  // Cloud prompts endpoint (chatApi.getPublicPromptsCloud)
-  // Component: allRes.data (axios unwrap) → must be the agent array
-  cy.intercept('GET', '**/getprompt_all/**', {
+  // The agent list the component searches (chatApi.getPrompts)
+  cy.intercept('GET', '**/prompts*', {
     statusCode: 200,
-    body: agentData,
+    body: {prompts: agentData},
   }).as('agentList');
 
-  // Evolution
-  // Component: evoRes.value.data (axios unwrap) → must be the evolution object
   cy.intercept('GET', '**/api/social/agents/test-agent-1/evolution', {
     statusCode: 200,
-    body: overrides.evolution || mockEvolution,
+    body: social(overrides.evolution || mockEvolution),
   }).as('evolution');
 
-  // Evolution history
-  // Component: historyRes.value.data (axios unwrap) → must be the array
   cy.intercept('GET', '**/api/social/agents/test-agent-1/evolution-history', {
     statusCode: 200,
-    body: overrides.evolutionHistory || mockEvolutionHistory,
+    body: social(overrides.evolutionHistory || mockEvolutionHistory),
   }).as('evolutionHistory');
 
-  // Specialization trees
-  // Component: treesRes.value.data (axios unwrap) → must be the array
   cy.intercept('GET', '**/api/social/agents/specialization-trees', {
     statusCode: 200,
-    body: overrides.trees || mockTrees,
+    body: social(overrides.trees || mockTrees),
   }).as('trees');
 
-  // Activity timeline
-  // Component: timelineRes.value.data (axios unwrap) → must be the array
   cy.intercept('GET', '**/api/social/audit/agents/test-agent-1/timeline**', {
     statusCode: 200,
-    body: overrides.timeline || mockTimeline,
+    body: social(overrides.timeline || mockTimeline),
   }).as('timeline');
 
-  // Conversations
-  // Component: convoRes.value.data (axios unwrap) → must be the array
   cy.intercept('GET', '**/api/social/audit/agents/test-agent-1/conversations', {
     statusCode: 200,
-    body: overrides.conversations || mockConversations,
+    body: social(overrides.conversations || mockConversations),
   }).as('conversations');
 
-  // Collaborations
-  // Component: res.data (axios unwrap) → must be the array
   cy.intercept('GET', '**/api/social/agents/test-agent-1/collaborations**', {
     statusCode: 200,
-    body: overrides.collaborations || mockCollaborations,
+    body: social(overrides.collaborations || mockCollaborations),
   }).as('collaborations');
 
   // Auth me (so SocialContext sees authenticated user)
@@ -270,8 +262,8 @@ describe('Agent Profile -- Page Load', () => {
   });
 
   it('should show loading state initially', () => {
-    // Delay the cloud API so the loading spinner is visible
-    cy.intercept('GET', '**/getprompt_all/**', (req) => {
+    // Delay the agent list so the loading spinner is visible
+    cy.intercept('GET', '**/prompts*', (req) => {
       req.on('response', (res) => {
         res.setDelay(1500);
       });
@@ -310,10 +302,10 @@ describe('Agent Profile -- Page Load', () => {
   });
 
   it('should handle agent not found gracefully', () => {
-    // Stub cloud API to return empty list -- agent won't be found
-    cy.intercept('GET', '**/getprompt_all/**', {
+    // An empty agent list -- the agent won't be found
+    cy.intercept('GET', '**/prompts*', {
       statusCode: 200,
-      body: [],
+      body: {prompts: []},
     }).as('emptyAgentList');
 
     cy.intercept(
@@ -381,8 +373,10 @@ describe('Agent Profile -- With Stubbed Agent Data', () => {
     cy.contains('Cypress Test Agent', {timeout: 30000}).should('be.visible');
   });
 
-  it('should show "Agent" badge chip', () => {
-    cy.contains('Agent', {timeout: 30000}).should('be.visible');
+  it('should show "HART" badge chip', () => {
+    // The badge beside the name reads HART.  The old check for "Agent"
+    // also matched "Agent not found", so it passed with no profile at all.
+    cy.contains('.MuiChip-label', 'HART', {timeout: 30000}).should('be.visible');
   });
 
   it('should display auto-bio from video_text', () => {
@@ -391,27 +385,29 @@ describe('Agent Profile -- With Stubbed Agent Data', () => {
     );
   });
 
-  it('should show stats row (Conversations, Level, Specializations, Status)', () => {
-    cy.contains('Conversations', {timeout: 30000}).should('exist');
-    cy.contains('Level', {timeout: 30000}).should('exist');
-    cy.contains('Specializations', {timeout: 30000}).should('exist');
-    cy.contains('Status', {timeout: 30000}).should('exist');
+  // The section and stat labels are styled text-transform: uppercase, so
+  // they are matched without case.
+  it('should show stats row (HART Score, Level, Conversations, Status)', () => {
+    cy.contains('HART Score', {timeout: 30000, matchCase: false}).should('exist');
+    cy.contains('Level', {timeout: 30000, matchCase: false}).should('exist');
+    cy.contains('Conversations', {timeout: 30000, matchCase: false}).should('exist');
+    cy.contains('Status', {timeout: 30000, matchCase: false}).should('exist');
   });
 
   it('should render About tab by default', () => {
-    // The Tabs component renders "About", "Activity", "Evolution"
-    cy.get('[role="tab"]', {timeout: 30000}).should('have.length', 3);
+    // The Tabs component renders "About", "Activity", "Evolution", "Contributions"
+    cy.get('[role="tab"]', {timeout: 30000}).should('have.length', 4);
     // About tab should be selected (Mui-selected class)
     cy.get('[role="tab"]', {timeout: 30000}).eq(0).should('have.attr', 'aria-selected', 'true');
-    cy.contains('About this Agent', {timeout: 30000}).should('exist');
+    cy.contains('About this Agent', {timeout: 30000, matchCase: false}).should('exist');
   });
 
-  it('should render the "Talk to Agent" CTA button', () => {
-    cy.contains('Talk to Agent', {timeout: 30000}).should('be.visible');
+  it('should render the "Chat with HART" CTA button', () => {
+    cy.contains('Chat with HART', {timeout: 30000}).should('be.visible');
   });
 
   it('should show capabilities chips', () => {
-    cy.contains('Capabilities', {timeout: 30000}).should('exist');
+    cy.contains('Capabilities', {timeout: 30000, matchCase: false}).should('exist');
     cy.contains('web_search', {timeout: 30000}).should('exist');
     cy.contains('code_interpreter', {timeout: 30000}).should('exist');
     cy.contains('image_generation', {timeout: 30000}).should('exist');
@@ -440,13 +436,13 @@ describe('Agent Profile -- With Stubbed Agent Data', () => {
 
   it('should show About tab with model metadata', () => {
     // The mock agent has model: 'gpt-4' and type: 'assistant'
-    cy.contains('Model', {timeout: 30000}).should('exist');
+    cy.contains('Model', {timeout: 30000, matchCase: false}).should('exist');
     cy.contains('gpt-4', {timeout: 30000}).should('exist');
   });
 
   it('should show evolution history on About tab', () => {
     // Evolution history is displayed on the About tab when available
-    cy.contains('Evolution History', {timeout: 30000}).should('exist');
+    cy.contains('Evolution History', {timeout: 30000, matchCase: false}).should('exist');
     cy.contains('Agent created', {timeout: 30000}).should('exist');
     cy.contains('First evolution', {timeout: 30000}).should('exist');
   });
@@ -480,7 +476,7 @@ describe('Agent Profile -- Tab Navigation', () => {
     // Activity tab should now be selected
     cy.get('[role="tab"]', {timeout: 30000}).eq(1).should('have.attr', 'aria-selected', 'true');
     // Should show activity-related content
-    cy.contains('Activity Timeline', {timeout: 30000}).should('exist');
+    cy.contains('Activity Timeline', {timeout: 30000, matchCase: false}).should('exist');
   });
 
   it('should switch to Evolution tab when clicked', () => {
@@ -488,7 +484,7 @@ describe('Agent Profile -- Tab Navigation', () => {
     cy.wait(1000);
 
     cy.get('[role="tab"]', {timeout: 30000}).eq(2).should('have.attr', 'aria-selected', 'true');
-    cy.contains('Evolution Level', {timeout: 30000}).should('exist');
+    cy.contains('Evolution Level', {timeout: 30000, matchCase: false}).should('exist');
   });
 
   it('should return to About tab when clicked', () => {
@@ -501,7 +497,7 @@ describe('Agent Profile -- Tab Navigation', () => {
     cy.wait(500);
 
     cy.get('[role="tab"]', {timeout: 30000}).eq(0).should('have.attr', 'aria-selected', 'true');
-    cy.contains('About this Agent', {timeout: 30000}).should('exist');
+    cy.contains('About this Agent', {timeout: 30000, matchCase: false}).should('exist');
   });
 
   it('should not crash when switching tabs rapidly', () => {
@@ -538,7 +534,7 @@ describe('Agent Profile -- Activity Tab', () => {
     cy.get('[role="tab"]', {timeout: 30000}).eq(1).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Activity Timeline', {timeout: 30000}).should('exist');
+    cy.contains('Activity Timeline', {timeout: 30000, matchCase: false}).should('exist');
     cy.contains('Discussed project architecture', {timeout: 30000}).should(
       'exist'
     );
@@ -554,7 +550,7 @@ describe('Agent Profile -- Activity Tab', () => {
     cy.get('[role="tab"]', {timeout: 30000}).eq(1).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Recent Conversations', {timeout: 30000}).should('exist');
+    cy.contains('Recent Conversations', {timeout: 30000, matchCase: false}).should('exist');
     cy.contains('Project planning session', {timeout: 30000}).should('exist');
     cy.contains('12 messages', {timeout: 30000}).should('exist');
   });
@@ -594,7 +590,7 @@ describe('Agent Profile -- Evolution Tab', () => {
     cy.get('[role="tab"]', {timeout: 30000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Evolution Level', {timeout: 30000}).should('exist');
+    cy.contains('Evolution Level', {timeout: 30000, matchCase: false}).should('exist');
     // Level number "3" is rendered in a large typography
     cy.get('body').should('contain.text', '3');
     // XP progress: "150/300"
@@ -610,7 +606,7 @@ describe('Agent Profile -- Evolution Tab', () => {
     cy.get('[role="tab"]', {timeout: 30000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Traits', {timeout: 30000}).should('exist');
+    cy.contains('Traits', {timeout: 30000, matchCase: false}).should('exist');
     cy.contains('helpful', {timeout: 30000}).should('exist');
     cy.contains('creative', {timeout: 30000}).should('exist');
     cy.contains('analytical', {timeout: 30000}).should('exist');
@@ -625,7 +621,7 @@ describe('Agent Profile -- Evolution Tab', () => {
     cy.get('[role="tab"]', {timeout: 30000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Specialization Trees', {timeout: 30000}).should('exist');
+    cy.contains('Specialization Trees', {timeout: 30000, matchCase: false}).should('exist');
     cy.contains('NLP Expert', {timeout: 30000}).should('exist');
     cy.contains('Data Analyst', {timeout: 30000}).should('exist');
     cy.contains('Creative Writer', {timeout: 30000}).should('exist');
@@ -643,7 +639,7 @@ describe('Agent Profile -- Evolution Tab', () => {
     cy.get('[role="tab"]', {timeout: 30000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Next Stage Requirements', {timeout: 30000}).should('exist');
+    cy.contains('Next Stage Requirements', {timeout: 30000, matchCase: false}).should('exist');
     cy.contains('Reach 100 interactions', {timeout: 30000}).should('exist');
     cy.contains('Achieve 90% satisfaction', {timeout: 30000}).should('exist');
   });
@@ -657,7 +653,7 @@ describe('Agent Profile -- Evolution Tab', () => {
     cy.get('[role="tab"]', {timeout: 30000}).eq(2).click({force: true});
     cy.wait(1500);
 
-    cy.contains('Collaboration History', {timeout: 30000}).should('exist');
+    cy.contains('Collaboration History', {timeout: 30000, matchCase: false}).should('exist');
     cy.contains('Data Analyst Agent', {timeout: 30000}).should('exist');
     cy.contains('Joint Analysis', {timeout: 30000}).should('exist');
   });
@@ -677,16 +673,16 @@ describe('Agent Profile -- Evolution Tab', () => {
     cy.wait(1500);
 
     // Should still render the Evolution Level card (with defaults)
-    cy.contains('Evolution Level', {timeout: 30000}).should('exist');
+    cy.contains('Evolution Level', {timeout: 30000, matchCase: false}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
     cy.get('body').should('not.contain.text', 'is not a function');
   });
 });
 
 // =========================================================================
-// 6. Agent Profile -- Talk to Agent CTA
+// 6. Agent Profile -- Chat with HART CTA
 // =========================================================================
-describe('Agent Profile -- Talk to Agent CTA', () => {
+describe('Agent Profile -- Chat with HART CTA', () => {
   before(() => {
     cy.socialAuth();
   });
@@ -695,27 +691,33 @@ describe('Agent Profile -- Talk to Agent CTA', () => {
     stubAgentApis();
   });
 
-  it('should have a fixed "Talk to Agent" button', () => {
+  it('should have a fixed "Chat with HART" button', () => {
     cy.socialVisit('/social/agent/test-agent-1');
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // The CTA is in a position:fixed container at the bottom
-    cy.contains('Talk to Agent', {timeout: 30000}).should('be.visible');
+    cy.contains('Chat with HART', {timeout: 30000}).should('be.visible');
     // Verify it is a button element
-    cy.contains('button', 'Talk to Agent', {timeout: 30000}).should('exist');
+    cy.contains('button', 'Chat with HART', {timeout: 30000}).should('exist');
   });
 
-  it('should navigate to chat page when CTA is clicked', () => {
+  it('should hand the agent to the chat panel when CTA is clicked', () => {
+    // The CTA no longer routes to a chat page: it dispatches
+    // nunba:selectAgent with this agent, which NunbaChatPanel listens for.
     cy.socialVisit('/social/agent/test-agent-1');
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
-    cy.contains('button', 'Talk to Agent').click({force: true});
-    cy.url({timeout: 30000}).should(
-      'include',
-      '/social/agent/test-agent-1/chat'
-    );
+    const selected = [];
+    cy.window().then((win) => {
+      win.addEventListener('nunba:selectAgent', (e) => selected.push(e.detail));
+    });
+    cy.contains('button', 'Chat with HART').click({force: true});
+    cy.wrap(selected).should('deep.equal', [
+      {agentId: 'test-agent-1', agentName: 'Cypress Test Agent'},
+    ]);
+    cy.url().should('include', '/social/agent/test-agent-1');
   });
 });
 
@@ -738,7 +740,7 @@ describe('Agent Profile -- Responsive', () => {
     cy.wait(2000);
 
     cy.contains('Cypress Test Agent', {timeout: 30000}).should('be.visible');
-    cy.contains('Talk to Agent', {timeout: 30000}).should('be.visible');
+    cy.contains('Chat with HART', {timeout: 30000}).should('be.visible');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
 
@@ -749,8 +751,8 @@ describe('Agent Profile -- Responsive', () => {
     cy.wait(2000);
 
     cy.contains('Cypress Test Agent', {timeout: 30000}).should('be.visible');
-    cy.contains('About this Agent', {timeout: 30000}).should('exist');
-    cy.contains('Talk to Agent', {timeout: 30000}).should('be.visible');
+    cy.contains('About this Agent', {timeout: 30000, matchCase: false}).should('exist');
+    cy.contains('Chat with HART', {timeout: 30000}).should('be.visible');
   });
 
   it('should adapt layout when viewport changes', () => {
@@ -787,7 +789,10 @@ describe('Agent Profile -- API Integration', () => {
   });
 
   it('should call prompts API to fetch agent data', () => {
-    cy.intercept('GET', '**/getprompt_all/**').as('promptsApi');
+    cy.intercept('GET', '**/prompts*', {
+      statusCode: 200,
+      body: {prompts: [mockAgent]},
+    }).as('promptsApi');
 
     // Stub remaining APIs to prevent failures (raw payloads)
     cy.intercept('GET', '**/api/social/agents/test-agent-1/evolution', {
@@ -810,17 +815,16 @@ describe('Agent Profile -- API Integration', () => {
     cy.socialVisit('/social/agent/test-agent-1');
     cy.get('#root', {timeout: 30000}).should('exist');
 
-    // Verify the prompts API was called
+    // Verify the agent list was asked for (chatApi.getPrompts -> GET /prompts)
     cy.wait('@promptsApi', {timeout: 30000})
       .its('request.url')
-      .should('include', 'getprompt_all');
+      .should('match', /\/prompts(\?|$)/);
   });
 
   it('should call evolution API for agent level', () => {
-    // Agent list — raw array (no wrapper)
-    cy.intercept('GET', '**/getprompt_all/**', {
+    cy.intercept('GET', '**/prompts*', {
       statusCode: 200,
-      body: [mockAgent],
+      body: {prompts: [mockAgent]},
     }).as('agentList');
 
     cy.intercept('GET', '**/api/social/agents/test-agent-1/evolution').as(
@@ -850,7 +854,7 @@ describe('Agent Profile -- API Integration', () => {
 
   it('should handle API errors gracefully', () => {
     // Prompts API returns 500
-    cy.intercept('GET', '**/getprompt_all/**', {
+    cy.intercept('GET', '**/prompts*', {
       statusCode: 500,
       body: {error: 'Internal Server Error'},
     }).as('promptsError');
@@ -884,7 +888,7 @@ describe('Agent Profile -- API Integration', () => {
 
   it('should handle network timeout gracefully', () => {
     // Simulate very slow response (effectively a timeout from the user's perspective)
-    cy.intercept('GET', '**/getprompt_all/**', (req) => {
+    cy.intercept('GET', '**/prompts*', (req) => {
       req.on('response', (res) => {
         res.setDelay(10000);
       });
