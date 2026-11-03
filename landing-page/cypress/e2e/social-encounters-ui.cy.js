@@ -23,7 +23,7 @@ describe('Social Encounters -- Page UI', () => {
   it('should load the encounters page without crashing', () => {
     cy.socialVisit('/social/encounters');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.url().should('include', '/social/encounters');
   });
@@ -72,9 +72,9 @@ describe('Social Encounters -- Page UI', () => {
 
     cy.socialVisit('/social/encounters');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
-    cy.get('body', {timeout: 300000}).then(($body) => {
+    cy.get('body', {timeout: 30000}).then(($body) => {
       const text = $body.text();
       expect(text.length).to.be.greaterThan(0);
     });

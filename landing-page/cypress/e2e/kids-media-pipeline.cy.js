@@ -252,7 +252,7 @@ describe('Kids Media Pipeline', () => {
       });
 
       // The feed page should load without errors
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
   });
 
@@ -284,7 +284,7 @@ describe('Kids Media Pipeline', () => {
       });
 
       // Page should render without crashing
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
 
     it('handles image binary response from backend', () => {
@@ -302,7 +302,7 @@ describe('Kids Media Pipeline', () => {
         },
       });
 
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
 
     it('handles JSON URL response from backend', () => {
@@ -318,7 +318,7 @@ describe('Kids Media Pipeline', () => {
         },
       });
 
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
   });
 
@@ -357,7 +357,7 @@ describe('Kids Media Pipeline', () => {
         },
       });
 
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
 
     it('TTS gracefully degrades when backend returns 503', () => {
@@ -374,7 +374,7 @@ describe('Kids Media Pipeline', () => {
       });
 
       // Page should still render — TTS failure is non-fatal
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
   });
 
@@ -409,7 +409,7 @@ describe('Kids Media Pipeline', () => {
         },
       });
 
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
 
     it('video request returns 202 with job_id (stubbed)', () => {
@@ -429,7 +429,7 @@ describe('Kids Media Pipeline', () => {
         },
       });
 
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
 
     it('poll endpoint returns complete status with binary (stubbed)', () => {
@@ -498,7 +498,7 @@ describe('Kids Media Pipeline', () => {
         },
       });
 
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
 
     it('handles concurrent media requests without errors', () => {
@@ -528,7 +528,7 @@ describe('Kids Media Pipeline', () => {
       });
 
       // Page should load even with mixed success/failure responses
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
   });
 
@@ -569,7 +569,7 @@ describe('Kids Media Pipeline', () => {
 
       // The page may or may not fire media requests depending on route
       // This test verifies structure when requests do fire
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
   });
 
@@ -664,7 +664,7 @@ describe('Kids Media Pipeline', () => {
           win.localStorage.setItem('access_token', 'stub-jwt');
         },
       });
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
   });
 
@@ -741,7 +741,7 @@ describe('Kids Media Pipeline', () => {
         },
       });
 
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
 
       // No crash regardless of how many media types fail
     });
@@ -779,7 +779,7 @@ describe('Kids Media Pipeline', () => {
       });
 
       // Page should still render — media failures are non-fatal
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
 
     it('survives TTS network failure', () => {
@@ -794,7 +794,7 @@ describe('Kids Media Pipeline', () => {
         },
       });
 
-      cy.get('body', {timeout: 300000}).should('be.visible');
+      cy.get('body', {timeout: 30000}).should('be.visible');
     });
   });
 });
