@@ -1,4 +1,4 @@
-import useAuthSession, {setGuestIdentity, setAccessToken, silentGuestRefresh} from '../hooks/useAuthSession';
+import useAuthSession, {clearAuth, setGuestIdentity, setAccessToken, silentGuestRefresh} from '../hooks/useAuthSession';
 import {useReferral} from '../hooks/useReferral';
 import {apiCache} from '../services/apiCache';
 import realtimeService from '../services/realtimeService';
@@ -17,6 +17,7 @@ import React, {
   useEffect,
   useCallback,
   useMemo,
+  useRef,
 } from 'react';
 
 const SocialContext = createContext();
@@ -58,6 +59,12 @@ export function SocialProvider({children}) {
   // guestRegister setItem blocks) stay on direct localStorage calls
   // and move in Phase 4.
   const _authSession = useAuthSession();
+  // Who is signed in, as the session hook sees it.  The setup effect below
+  // re-runs when this changes (guest -> email sign-in, logout), not on a
+  // token refresh or HART seal; the hook already listens for every write.
+  const sessionIdentity =
+    `${_authSession.status}:${_authSession.identity.user_id || ''}`;
+  const lastSessionIdentity = useRef(sessionIdentity);
 
   const [currentUser, setCurrentUser] = useState(null);
   const [resonance, setResonance] = useState(null);
@@ -75,10 +82,12 @@ export function SocialProvider({children}) {
   const [profileAnswer, setProfileAnswer] = useState('none');
 
   const fetchProfile = useCallback(async () => {
+    const requestedToken = localStorage.getItem('access_token');
     setProfileAnswer('asking');
     try {
       setAuthError(null);
       const res = await authApi.me();
+      if (localStorage.getItem('access_token') !== requestedToken) return;
       setCurrentUser(res.data);
       setProfileAnswer('answered');
     } catch (err) {
@@ -127,6 +136,10 @@ export function SocialProvider({children}) {
   }, []);
 
   useEffect(() => {
+    if (lastSessionIdentity.current !== sessionIdentity) {
+      lastSessionIdentity.current = sessionIdentity;
+      apiCache.clearAll(); // the cache is the previous person's
+    }
     const token = localStorage.getItem('access_token');
     if (token) {
       // Decode JWT payload for instant UI (no signature check — just for display).
@@ -249,11 +262,11 @@ export function SocialProvider({children}) {
     } else {
       setLoading(false);
     }
-  }, [fetchProfile, fetchResonance, fetchOnboarding, fetchUnread]);
+  }, [fetchProfile, fetchResonance, fetchOnboarding, fetchUnread,
+      sessionIdentity]);
 
   const logout = useCallback(() => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
+    clearAuth(); // the one logout: every auth key, plus the desktop's copy
     apiCache.clearAll(); // Flush user-scoped cache to prevent data bleed
     setCurrentUser(null);
     setResonance(null);

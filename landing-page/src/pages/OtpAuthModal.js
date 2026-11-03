@@ -6,6 +6,7 @@ import {
 } from '../config/apiBase';
 import {setAuthFromOtp, setGuestIdentity} from '../hooks/useAuthSession';
 import {agentApi, authApi, chatApi, mailerApi} from '../services/socialApi';
+import {isLocalBackendHost} from '../utils/backendHost';
 import {getStableDeviceId} from '../utils/deviceId';
 import {encrypt} from '../utils/encryption';
 import {logger} from '../utils/logger';
@@ -300,11 +301,15 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
 
       if (verifyResp.ok) {
         const data = await verifyResp.json();
-        logger.log(data, 'this is the data');
-        const accessToken = String(data.access_token);
+        if (typeof data.access_token !== 'string' || !data.access_token.trim() || data.user_id == null) {
+          setAlert(true);
+          setAlertContent(data.detail || 'The code was not accepted. Please try again.');
+          return;
+        }
+        const accessToken = data.access_token;
         const userId = String(data.user_id);
-        const emailAddress = String(data.email_address);
-        const refresh_token = String(data?.refresh_token);
+        const emailAddress = data.email_address || (loginMethod === 'email' ? email : '');
+        const refresh_token = data.refresh_token || undefined;
 
         try {
           const expireTokenTime = data.expires_in;
@@ -320,6 +325,24 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
           // Encryption + key ordering + event dispatch + mutual-
           // exclusion clearing now live in useAuthSession.setAuthFromOtp
           // — one boundary, one set of jest cases.
+          // Persist through the desktop's existing login-sync endpoint BEFORE
+          // Social sees the new opaque cloud token. Otherwise /auth/me can
+          // race the later chat-page sync and immediately expire this login.
+          if (isLocalBackendHost(window.location.hostname)) {
+            const synced = await chatApi.setDesktopIdentity({
+              user_id: userId, email: emailAddress, access_token: accessToken,
+              agentname: localStorage.getItem('agentname') || `account_${userId}`,
+            }, {timeout: 15000});
+            if (!synced?.success) {
+              throw new Error('Desktop account sync failed. Please retry signing in.');
+            }
+            const profile = await axios.get('/api/social/auth/me', {
+              timeout: 15000, headers: {Authorization: `Bearer ${accessToken}`},
+            });
+            if (!profile?.data?.success || !profile.data.data?.id) {
+              throw new Error('Desktop could not confirm your account. Please retry signing in.');
+            }
+          }
           setAuthFromOtp({
             access_token: accessToken,
             user_id: userId,
@@ -362,8 +385,8 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
           }, 1000);
 
           setIntervalId(interval);
-        } catch (encryptionError) {
-          throw new Error('Failed to encrypt user data');
+        } catch (loginError) {
+          throw loginError;
         }
       } else {
         const errBody = await verifyResp.json().catch(() => ({}));

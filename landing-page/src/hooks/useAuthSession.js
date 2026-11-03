@@ -63,6 +63,7 @@
  *   exported from this module.  Until then, all existing
  *   localStorage.setItem call sites keep working unchanged.
  */
+import {isLocalBackendHost} from '../utils/backendHost';
 import {decrypt, encrypt} from '../utils/encryption';
 
 import {useEffect, useState, useCallback} from 'react';
@@ -425,6 +426,19 @@ export function clearAuth() {
   // logout per the 4-layer identity model (HART node + cloud account
   // co-exist; logging out of cloud doesn't dissolve the HART node).
 
+  // The desktop keeps its own copy of the sign-in (user_data.json).  Clear
+  // the account there too, or the next load hydrates it straight back
+  // (useStorageSync) and the desktop owner stays the signed-out person.
+  // '' is /api/storage/set's delete sentinel; hart_* stay, as above.
+  // Required lazily: axiosFactory requires this module the same way.
+  if (isLocalBackendHost(window.location.hostname)) {
+    try {
+      require('../services/socialApi').chatApi
+        .setDesktopIdentity({access_token: '', email: '', user_id: ''})
+        .catch(() => {});
+    } catch (_e) { /* API module unavailable (tests) */ }
+  }
+
   try {
     window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
       detail: {source: 'logout'},
@@ -549,6 +563,9 @@ export async function silentGuestRefresh({ guestName: explicitName } = {}) {
   // in localStorage (applyHartSeal back-fills it afterwards): it registers
   // the guest under the name being sealed so the seal can carry a bearer.
   // Every other caller leaves it out and refreshes the stored guest.
+  const startedToken = localStorage.getItem('access_token');
+  const startedGuestName = localStorage.getItem('guest_name');
+  if (readAuthSession().status === 'cloud') return null;
   const guestName = explicitName || (() => {
     try { return localStorage.getItem('guest_name'); } catch { return null; }
   })();
@@ -577,6 +594,10 @@ export async function silentGuestRefresh({ guestName: explicitName } = {}) {
     });
     const { user, token, existing } = res?.data || {};
     if (!token || !user?.id) return null;
+    // A login, logout, or another refresh wins over this old request.
+    if (localStorage.getItem('access_token') !== startedToken ||
+        localStorage.getItem('guest_name') !== startedGuestName ||
+        readAuthSession().status === 'cloud') return null;
     setGuestIdentity({
       user_id: user.id,
       token,
