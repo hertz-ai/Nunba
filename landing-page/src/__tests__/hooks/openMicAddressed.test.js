@@ -1,5 +1,5 @@
 /**
- * A mic the chat page opened by itself sends only speech that names Nunba.
+ * A mic the chat page opened by itself sends only speech naming Nunba.
  *
  * The page starts its mic on its own once speech recognition is ready
  * (Demopage's bootstrap poll calls handleStart with no click), and every
@@ -14,20 +14,30 @@
  * names Nunba is a turn, and the turn is what follows the name.  A mic the
  * person clicked open is unchanged: everything they say is sent.
  *
- * The decision lives in two pure helpers in hooks/useSpeechRecognition.js
- * (tested here).  Demopage is too large to render in a unit test, so the last
- * block reads its source and pins the wiring, as demopagePerTurnRequestId
- * does.
+ * Two parts are tested here:
+ *   - the two helpers in hooks/useSpeechRecognition.js, called directly;
+ *   - Demopage's own handlers, RUN, not read: the Whisper tier's onmessage,
+ *     the Web Speech tier's onresult, the drop report, the STT-ready poll and
+ *     the "Hey Nunba" listener.  Demopage is too large to render in a unit
+ *     test, so each handler's real text is cut out of the page (between the
+ *     markers below) and executed with the page's state stubbed.  A changed
+ *     handler changes what these tests see; a missing marker fails loudly.
+ *
+ * OPEN_MIC_DEMOPAGE=<path> runs the same tests against another copy of
+ * Demopage.js (the parent commit, a mutant) to show they fail there.
  *
  *   npx react-scripts test --watchAll=false src/__tests__/hooks/openMicAddressed.test.js
  */
-const {addressedToNunba, micTurnText} = require('../../hooks/useSpeechRecognition');
+const {
+  addressedToNunba, micTurnText, OPEN_MIC_CUE,
+} = require('../../hooks/useSpeechRecognition');
 
 const fs = require('fs');
 const path = require('path');
 
-const SRC = fs.readFileSync(
-  path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf8');
+const PAGE = process.env.OPEN_MIC_DEMOPAGE
+  || path.join(__dirname, '..', '..', 'pages', 'Demopage.js');
+const SRC = fs.readFileSync(PAGE, 'utf8');
 
 // The three Whisper finals that reached agent 54 as turns on 2026-11-03.
 const ROOM_SPEECH = [
@@ -50,6 +60,11 @@ describe('speech addressed to Nunba', () => {
   test('the name with nothing after it is addressed but empty', () => {
     expect(addressedToNunba('Nunba.')).toBe('');
     expect(addressedToNunba('hey nunba')).toBe('');
+  });
+
+  test('the name counts only as a whole word', () => {
+    expect(addressedToNunba('the nunbas are here')).toBeNull();
+    expect(addressedToNunba('mynunba app')).toBeNull();
   });
 
   test('no text is not addressed', () => {
@@ -80,40 +95,214 @@ describe('what a mic final sends', () => {
   });
 });
 
-describe('Demopage wiring', () => {
-  test('only the page\'s own start marks the mic as one nobody opened', () => {
-    expect(SRC).toMatch(/const UNPROMPTED_MIC = /);
-    const marks = SRC.match(/handleStartRef\.current\(UNPROMPTED_MIC\)/g) || [];
-    expect(marks).toHaveLength(1);
-    const poll = SRC.indexOf("if (type === 'stt' && !isRecording && handleStartRef.current)");
-    expect(poll).toBeGreaterThan(-1);
-    expect(SRC.indexOf('handleStartRef.current(UNPROMPTED_MIC)', poll)).toBeGreaterThan(poll);
-    expect(SRC).toMatch(/const handleStart = \(how\) => \{/);
-    expect(SRC).toMatch(/const unprompted = how === UNPROMPTED_MIC;/);
+// ── Demopage's handlers, run with the page's state stubbed ──────────────
+
+function cut(src, start, end) {
+  const a = src.indexOf(start);
+  if (a < 0) throw new Error(`Demopage marker not found: ${start}`);
+  const b = src.indexOf(end, a + start.length);
+  if (b < 0) throw new Error(`Demopage end marker not found after ${start}: ${end}`);
+  return src.slice(a, b);
+}
+
+// What the person would see: the composer's successive contents, the turns
+// sent (the composer as it stood when handleSend fired), and the drops the
+// handler reported.  Timers run only when flushed, so "1 s of silence" is a
+// flush.
+function pageStubs() {
+  const page = { composer: [], sent: [], dropped: [], logs: [], toasts: [] };
+  const timers = new Map();
+  let nextTimer = 0;
+  page.setInputMessage = (v) => { page.composer.push(v); };
+  page.handleSendRef = { current: () => { page.sent.push(page.composer[page.composer.length - 1]); } };
+  page.setTimeout = (cb) => { nextTimer += 1; timers.set(nextTimer, cb); return nextTimer; };
+  page.clearTimeout = (id) => { timers.delete(id); };
+  page.flush = () => { const due = [...timers.values()]; timers.clear(); due.forEach((cb) => cb()); };
+  page.notAddressed = (said) => { page.dropped.push(said); };
+  page.console = { log: (line) => { page.logs.push(line); } };
+  page.pushNotification = (n) => { page.toasts.push(n); };
+  return page;
+}
+
+const TIER_ARGS = ['micTurnText', 'unprompted', 'notAddressed', 'setInputMessage',
+  'handleSendRef', 'setTimeout', 'clearTimeout', 'console'];
+const tierArgs = (page, unprompted) => [micTurnText, unprompted, page.notAddressed,
+  page.setInputMessage, page.handleSendRef, page.setTimeout, page.clearTimeout, page.console];
+
+// Tier 1: the streaming-Whisper socket's onmessage.
+function whisperMic(unprompted) {
+  const tier = cut(SRC, 'const _useStreamingWhisper = async () => {', 'const _useWebSpeech = () => {');
+  const handler = cut(tier, 'ws.onmessage = (evt) => {', '\n        ws.onerror');
+  const page = pageStubs();
+  // eslint-disable-next-line no-new-func
+  const onmessage = new Function(...TIER_ARGS,
+    `let fullText = ''; let autoSendTimer = null; const ws = {};\n${handler}\nreturn ws.onmessage;`,
+  )(...tierArgs(page, unprompted));
+  page.hear = (...msgs) => {
+    msgs.forEach(([text, isFinal]) => onmessage({ data: JSON.stringify({ text, is_final: isFinal }) }));
+    page.flush();
+    return page;
+  };
+  return page;
+}
+
+// Tier 2: the browser's SpeechRecognition onresult.  Chrome keeps every
+// result of the session and marks where the new ones start.
+function webSpeechMic(unprompted) {
+  const tier = cut(SRC, 'const _useWebSpeech = () => {', '// Tier cascade:');
+  const handler = cut(tier, 'recognition.onresult = (event) => {', '\n      recognition.onerror');
+  const page = pageStubs();
+  // eslint-disable-next-line no-new-func
+  const onresult = new Function(...TIER_ARGS,
+    `let committedText = ''; let autoSendTimer = null; const recognition = {};\n${handler}\nreturn recognition.onresult;`,
+  )(...tierArgs(page, unprompted));
+  const results = [];
+  page.hear = (...events) => {
+    events.forEach((event) => {
+      const resultIndex = results.length;
+      event.forEach(([transcript, isFinal]) => {
+        const r = [{ transcript }];
+        r.isFinal = isFinal;
+        results.push(r);
+      });
+      onresult({ resultIndex, results: results.slice() });
+    });
+    page.flush();
+    return page;
+  };
+  return page;
+}
+
+describe('a mic the page opened, Whisper tier', () => {
+  test.each(ROOM_SPEECH)('room speech is no turn and never reaches the composer: %s', (said) => {
+    const page = whisperMic(true).hear([said.slice(0, 8), false], [said, true]);
+    expect(page.sent).toEqual([]);
+    expect(page.composer).toEqual([]);
+    expect(page.dropped).toEqual([said]);
   });
 
-  test('both auto-sending tiers decide through micTurnText', () => {
-    const calls = SRC.match(/micTurnText\(/g) || [];
-    expect(calls).toHaveLength(2);
-    const whisper = SRC.indexOf('const _useStreamingWhisper = async () => {');
-    const webSpeech = SRC.indexOf('const _useWebSpeech = () => {');
-    const first = SRC.indexOf('micTurnText(');
-    const second = SRC.indexOf('micTurnText(', first + 1);
-    expect(first).toBeGreaterThan(whisper);
-    expect(first).toBeLessThan(webSpeech);
-    expect(second).toBeGreaterThan(webSpeech);
+  test('"Nunba, <command>" sends the command', () => {
+    const page = whisperMic(true).hear(['Nunba, continue', false], ['Nunba, continue my lesson.', true]);
+    expect(page.sent).toEqual(['continue my lesson.']);
+    expect(page.dropped).toEqual([]);
   });
 
-  test('a mic the page opened writes no partial speech into the composer', () => {
-    const whisper = SRC.indexOf('const _useStreamingWhisper = async () => {');
-    const webSpeech = SRC.indexOf('const _useWebSpeech = () => {');
-    expect(SRC.slice(whisper, webSpeech)).toMatch(/\} else if \(!unprompted\) \{/);
+  test('the name alone sends nothing', () => {
+    const page = whisperMic(true).hear(['Hey Nunba.', true]);
+    expect(page.sent).toEqual([]);
+  });
+});
+
+describe('a clicked mic, Whisper tier: unchanged', () => {
+  test.each(ROOM_SPEECH)('what was said is shown as it comes and sent: %s', (said) => {
+    const page = whisperMic(false).hear([said.slice(0, 8), false], [said, true]);
+    expect(page.composer).toEqual([said.slice(0, 8).trim(), said]);
+    expect(page.sent).toEqual([said]);
+    expect(page.dropped).toEqual([]);
+  });
+});
+
+describe('a mic the page opened, Web Speech tier', () => {
+  test('room speech is no turn and never reaches the composer', () => {
+    const page = webSpeechMic(true).hear(
+      [['And he leaves me', false]], [['And he leaves me sickly sickly', true]]);
+    expect(page.sent).toEqual([]);
+    expect(page.composer).toEqual([]);
+    expect(page.dropped).toEqual(['And he leaves me sickly sickly']);
   });
 
-  test('the "Hey Nunba" listener uses the same rule, not a copy of it', () => {
-    expect(SRC).not.toMatch(/indexOf\('nunba'\)/);
-    const wake = SRC.indexOf('const onWakeResult = (e) => {');
-    expect(wake).toBeGreaterThan(-1);
-    expect(SRC.indexOf('addressedToNunba(text)', wake)).toBeGreaterThan(wake);
+  test('"hey nunba <command>" sends the command', () => {
+    const page = webSpeechMic(true).hear(
+      [['hey nunba open', false]], [['hey nunba open my lesson', true]]);
+    expect(page.sent).toEqual(['open my lesson']);
+  });
+
+  test('two addressed finals inside one second are one turn, words apart', () => {
+    const page = webSpeechMic(true).hear(
+      [['Nunba open my lesson', true]], [[' Nunba read it aloud', true]]);
+    expect(page.sent).toEqual(['open my lesson read it aloud']);
+  });
+});
+
+describe('a clicked mic, Web Speech tier: unchanged', () => {
+  test('what was said is sent', () => {
+    const page = webSpeechMic(false).hear(
+      [['And he leaves me', false]], [['And he leaves me sickly sickly', true]]);
+    expect(page.sent).toEqual(['And he leaves me sickly sickly']);
+    expect(page.dropped).toEqual([]);
+  });
+});
+
+describe('a drop is reported, and the person is told once', () => {
+  test('length only in the log, one on-screen cue per mic', () => {
+    const block = cut(SRC, 'let toldToSayName = false;', '\n    // Barge-in');
+    const page = pageStubs();
+    // eslint-disable-next-line no-new-func
+    const notAddressed = new Function('console', 'pushNotification', 'OPEN_MIC_CUE',
+      `${block}\nreturn notAddressed;`,
+    )(page.console, page.pushNotification, OPEN_MIC_CUE);
+    ROOM_SPEECH.forEach((said) => notAddressed(said));
+
+    expect(page.logs).toEqual(ROOM_SPEECH.map(
+      (said) => `[STT] open mic: ${said.length} chars not addressed to Nunba, not sent`));
+    expect(page.toasts).toEqual([{ type: 'info', message: OPEN_MIC_CUE }]);
+  });
+
+  test('the cue names the word that opens a turn', () => {
+    expect(OPEN_MIC_CUE).toMatch(/"Nunba"/);
+  });
+});
+
+describe('the STT-ready poll opens the mic as one nobody clicked', () => {
+  function poll(readySteps) {
+    const block = cut(SRC, 'for (const [type, step] of Object.entries(data.steps)) {',
+      "if (data.phase === 'done')");
+    const page = pageStubs();
+    const opened = [];
+    const UNPROMPTED = { sentinel: 'unprompted' };
+    const steps = {};
+    readySteps.forEach((type) => { steps[type] = { status: 'ready' }; });
+    // eslint-disable-next-line no-new-func
+    new Function('data', 'announcedCapsRef', 'CAPABILITY_LABELS', 'OPEN_MIC_CUE',
+      'pushNotification', 'isRecording', 'handleStartRef', 'UNPROMPTED_MIC', block,
+    )({ steps }, { current: new Set() }, { stt: 'I can hear you now', tts: 'I can speak now' },
+      OPEN_MIC_CUE, page.pushNotification, false,
+      { current: (how) => { opened.push(how); } }, UNPROMPTED);
+    return { toasts: page.toasts, opened, UNPROMPTED };
+  }
+
+  test('speech ready: the mic opens marked unprompted, and the person is told the rule', () => {
+    const { toasts, opened, UNPROMPTED } = poll(['stt']);
+    expect(opened).toEqual([UNPROMPTED]);
+    expect(toasts).toEqual([{ type: 'success', message: OPEN_MIC_CUE }]);
+  });
+
+  test('another capability keeps its own announcement and opens no mic', () => {
+    const { toasts, opened } = poll(['tts']);
+    expect(opened).toEqual([]);
+    expect(toasts).toEqual([{ type: 'success', message: 'I can speak now' }]);
+  });
+});
+
+describe('the "Hey Nunba" listener', () => {
+  // The listener hands over the last result, lower-cased and trimmed.
+  function wake(said) {
+    const block = cut(SRC, '// Wake word: "Hey Nunba [command]"',
+      '\n    };\n    const listener = startContinuousRecognition(');
+    const page = pageStubs();
+    // eslint-disable-next-line no-new-func
+    new Function('text', 'setInputMessage', 'setTimeout', 'handleSendRef', 'addressedToNunba', block,
+    )(said.toLowerCase().trim(), page.setInputMessage, page.setTimeout, page.handleSendRef,
+      addressedToNunba);
+    page.flush();
+    return page.sent;
+  }
+
+  test('sends what follows the name', () => {
+    expect(wake('Hey Nunba, open my lesson')).toEqual(['open my lesson']);
+  });
+
+  test.each(['Hey Nunba.', 'the nunbas are here', ...ROOM_SPEECH])('sends nothing: %s', (said) => {
+    expect(wake(said)).toEqual([]);
   });
 });

@@ -65,7 +65,7 @@ import {getStableDeviceIdOnce} from '../utils/deviceId';
 
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
-import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText} from '../hooks/useSpeechRecognition';
+import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
 import {playTtsClip} from '../services/ttsClipPlayer';
 
@@ -547,13 +547,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         for (const [type, step] of Object.entries(data.steps)) {
           if (step.status === 'ready' && !announcedCapsRef.current.has(type)) {
             announcedCapsRef.current.add(type);
-            const label = CAPABILITY_LABELS[type];
+            // Auto-start mic when STT is ready — voice-first UX.  Nobody
+            // clicked it, so it sends only speech that names Nunba, and the
+            // announcement says so.
+            const opensMic = type === 'stt' && !isRecording && handleStartRef.current;
+            const label = opensMic ? OPEN_MIC_CUE : CAPABILITY_LABELS[type];
             if (label) {
               pushNotification({ type: 'success', message: label });
             }
-            // Auto-start mic when STT is ready — voice-first UX.  Nobody
-            // clicked it, so it sends only speech that names Nunba.
-            if (type === 'stt' && !isRecording && handleStartRef.current) {
+            if (opensMic) {
               handleStartRef.current(UNPROMPTED_MIC);
             }
           }
@@ -3320,6 +3322,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     micBusyRef.current = true;
     // True when the page opened this mic by itself; a click passes its event.
     const unprompted = how === UNPROMPTED_MIC;
+    // Such a mic drops speech that does not name Nunba.  Both tiers report a
+    // drop here: the length only (it is room speech, not the person's), and
+    // once per mic an on-screen cue so the refusal is not silent.
+    let toldToSayName = false;
+    const notAddressed = (said) => {
+      console.log(`[STT] open mic: ${String(said).trim().length} chars not addressed to Nunba, not sent`);
+      if (!toldToSayName) {
+        toldToSayName = true;
+        pushNotification({ type: 'info', message: OPEN_MIC_CUE });
+      }
+    };
 
     // Barge-in: if TTS is playing, stop it before starting mic
     if (tts.isSpeaking) {
@@ -3404,8 +3417,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               if (data.is_final) {
                 const words = micTurnText(data.text, unprompted);
                 if (!words) {
-                  // Length only: this is room speech, not the person's.
-                  console.log(`[STT] open mic: ${data.text.trim().length} chars not addressed to Nunba, not sent`);
+                  notAddressed(data.text);
                   return;
                 }
                 fullText += (fullText ? ' ' : '') + words;
@@ -3564,10 +3576,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           if (!newFinal) return;
           const words = micTurnText(newFinal, true);
           if (!words) {
-            console.log(`[STT] open mic: ${newFinal.trim().length} chars not addressed to Nunba, not sent`);
+            notAddressed(newFinal);
             return;
           }
-          newFinal = words;
+          // Chrome's finals carry their own leading space; the words after
+          // the name are trimmed, so two addressed finals need one between.
+          newFinal = (committedText ? ' ' : '') + words;
           interim = '';
         }
         if (newFinal) committedText += newFinal;

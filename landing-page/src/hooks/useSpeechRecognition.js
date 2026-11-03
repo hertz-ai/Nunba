@@ -81,13 +81,15 @@ export function startContinuousRecognition(Recognition, lang, onResult) {
 // what was said after the name -- leading punctuation dropped, words as
 // spoken -- '' when the name came with nothing after it, and null when the
 // name is not in it.  The one rule for both the "Hey Nunba" listener and a
-// mic the chat page opened by itself (micTurnText below).
-const WAKE_WORD = 'nunba';
+// mic the chat page opened by itself (micTurnText below).  The name counts
+// only as a whole word: "the nunbas are here" does not name Nunba (it used to
+// send "s are here").
+const WAKE_WORD = /\bnunba\b/i;
 export function addressedToNunba(text) {
   const said = String(text || '');
-  const at = said.toLowerCase().indexOf(WAKE_WORD);
-  if (at < 0) return null;
-  return said.slice(at + WAKE_WORD.length).replace(/^[\s,.:;!?-]+/, '').trim();
+  const named = WAKE_WORD.exec(said);
+  if (!named) return null;
+  return said.slice(named.index + named[0].length).replace(/^[\s,.:;!?-]+/, '').trim();
 }
 
 // What one final transcript from the chat page's mic sends as a turn, or null
@@ -100,6 +102,12 @@ export function micTurnText(said, unprompted) {
   const words = unprompted ? addressedToNunba(said) : String(said || '').trim();
   return words || null;
 }
+
+// What the person is told about such a mic: when the page opens it, and the
+// first time it drops speech that did not name Nunba.  Without it the refusal
+// was silent: the red Stop looked like a mic that hears everything, and the
+// dropped words left only a console line.
+export const OPEN_MIC_CUE = 'I\'m listening. Start with "Nunba" to talk to me.';
 
 export default function useSpeechRecognition(config = {}) {
   const {
