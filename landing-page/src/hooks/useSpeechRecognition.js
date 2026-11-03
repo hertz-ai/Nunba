@@ -77,6 +77,30 @@ export function startContinuousRecognition(Recognition, lang, onResult) {
   };
 }
 
+// Speech is meant for Nunba when it names Nunba ("Hey Nunba, ...").  Returns
+// what was said after the name -- leading punctuation dropped, words as
+// spoken -- '' when the name came with nothing after it, and null when the
+// name is not in it.  The one rule for both the "Hey Nunba" listener and a
+// mic the chat page opened by itself (micTurnText below).
+const WAKE_WORD = 'nunba';
+export function addressedToNunba(text) {
+  const said = String(text || '');
+  const at = said.toLowerCase().indexOf(WAKE_WORD);
+  if (at < 0) return null;
+  return said.slice(at + WAKE_WORD.length).replace(/^[\s,.:;!?-]+/, '').trim();
+}
+
+// What one final transcript from the chat page's mic sends as a turn, or null
+// to send nothing.  A mic the person clicked open sends what they said.  A
+// mic the page opened by itself (it starts listening once speech recognition
+// is ready) hears the whole room, so it sends only speech addressed to Nunba:
+// on 2026-11-03 three background-speech finals ("1.5°C 1.5°C", "And he leaves
+// me sickly...") each became an agent turn.
+export function micTurnText(said, unprompted) {
+  const words = unprompted ? addressedToNunba(said) : String(said || '').trim();
+  return words || null;
+}
+
 export default function useSpeechRecognition(config = {}) {
   const {
     language: defaultLanguage = null,

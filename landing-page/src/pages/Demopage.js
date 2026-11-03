@@ -65,7 +65,7 @@ import {getStableDeviceIdOnce} from '../utils/deviceId';
 
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
-import {sttConfigMessage, startContinuousRecognition} from '../hooks/useSpeechRecognition';
+import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
 import {playTtsClip} from '../services/ttsClipPlayer';
 
@@ -107,6 +107,12 @@ const ENGINE_BOOT_GRACE_MS = 20000;
 // `no_content`) stays open waiting for that push before the message says no
 // reply came.  The same 2 minutes the cloud branch waited before.
 const PUSHED_REPLY_WAIT_MS = 120000;
+
+// handleStart's argument when the page opens the mic by itself (once speech
+// recognition is ready) rather than the person clicking it.  Such a mic hears
+// the whole room, so it sends only speech that names Nunba
+// (useSpeechRecognition.micTurnText).  A click passes the click event.
+const UNPROMPTED_MIC = 'unprompted';
 
 // Setup/install cards (CUDA torch, GPU-whisper ctranslate2, model downloads,
 // TTS engine setup) report SYSTEM-global state — they are NOT tied to the
@@ -545,9 +551,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             if (label) {
               pushNotification({ type: 'success', message: label });
             }
-            // Auto-start mic when STT is ready — voice-first UX
+            // Auto-start mic when STT is ready — voice-first UX.  Nobody
+            // clicked it, so it sends only speech that names Nunba.
             if (type === 'stt' && !isRecording && handleStartRef.current) {
-              handleStartRef.current();
+              handleStartRef.current(UNPROMPTED_MIC);
             }
           }
         }
@@ -3308,9 +3315,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // repeatedly.  This ref closes that window synchronously.
   const micBusyRef = useRef(false);
 
-  const handleStart = () => {
+  const handleStart = (how) => {
     if (isRecording || micBusyRef.current) return;
     micBusyRef.current = true;
+    // True when the page opened this mic by itself; a click passes its event.
+    const unprompted = how === UNPROMPTED_MIC;
 
     // Barge-in: if TTS is playing, stop it before starting mic
     if (tts.isSpeaking) {
@@ -3393,7 +3402,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             const data = JSON.parse(evt.data);
             if (data.text?.trim()) {
               if (data.is_final) {
-                fullText += (fullText ? ' ' : '') + data.text.trim();
+                const words = micTurnText(data.text, unprompted);
+                if (!words) {
+                  // Length only: this is room speech, not the person's.
+                  console.log(`[STT] open mic: ${data.text.trim().length} chars not addressed to Nunba, not sent`);
+                  return;
+                }
+                fullText += (fullText ? ' ' : '') + words;
                 setInputMessage(fullText);
                 // Auto-send after 1s of silence (fast conversational flow)
                 clearTimeout(autoSendTimer);
@@ -3403,8 +3418,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                     fullText = '';
                   }
                 }, 1000);
-              } else {
-                // Interim — show current full + interim
+              } else if (!unprompted) {
+                // Interim — show current full + interim.  Not for a mic the
+                // page opened: room speech would fill the composer.
                 setInputMessage(fullText + (fullText ? ' ' : '') + data.text.trim());
               }
             }
@@ -3541,6 +3557,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           const result = event.results[i];
           if (result.isFinal) newFinal += result[0].transcript;
           else interim += result[0].transcript;
+        }
+        if (unprompted) {
+          // A mic the page opened: only speech that names Nunba, and no
+          // partial speech in the composer (same rule as the Whisper tier).
+          if (!newFinal) return;
+          const words = micTurnText(newFinal, true);
+          if (!words) {
+            console.log(`[STT] open mic: ${newFinal.trim().length} chars not addressed to Nunba, not sent`);
+            return;
+          }
+          newFinal = words;
+          interim = '';
         }
         if (newFinal) committedText += newFinal;
         setInputMessage(committedText + interim);
@@ -3697,14 +3725,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       // any manual send.
       if (Date.now() - lastMessageSentAtRef.current < 2000) return;
 
-      // Wake word: "Hey Nunba [command]"
-      const wakeIdx = text.indexOf('nunba');
-      if (wakeIdx >= 0) {
-        const command = text.slice(wakeIdx + 5).trim();
-        if (command) {
-          setInputMessage(command);
-          setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 100);
-        }
+      // Wake word: "Hey Nunba [command]" (useSpeechRecognition.addressedToNunba)
+      const command = addressedToNunba(text);
+      if (command) {
+        setInputMessage(command);
+        setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 100);
       }
     };
     const listener = startContinuousRecognition(
