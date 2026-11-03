@@ -402,7 +402,9 @@ function AnswerError({ text }) {
 // caller's Bearer naming who answers (never a body field).  Answered, HARTOS
 // sends `ask.answered` {ask_id} to every surface, which drops the card
 // (AgentOverlay below).  Reading the ask in the bell is not an answer: its
-// notification.read drops nothing.
+// notification.read drops nothing.  Closing the card (its X) dismisses the
+// ask: POST {ask_id, dismiss: true}, and HARTOS drops it on every surface the
+// same way (owner, 2026-11-03: "dismissing a request dismisses").
 
 function bearer() {
   const token = localStorage.getItem('access_token');
@@ -422,6 +424,19 @@ async function answerAsk(askId, answer) {
     body: JSON.stringify({ ask_id: askId, answer }),
   });
   if (!res.ok) throw await refusedReply(res, 'The answer was refused');
+}
+
+// The person closed the ask's card here: every surface drops it.  The card
+// goes from this screen whatever HARTOS answers (an ask already answered or
+// gone elsewhere is closed there too), so a refusal is only logged.
+function dismissAsk(askId) {
+  return fetch(`${API_BASE_URL}/api/agent/approval`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...bearer() },
+    body: JSON.stringify({ ask_id: askId, dismiss: true }),
+  }).then((res) => {
+    if (!res.ok) console.warn(`ask ${askId}: the dismissal was refused (HTTP ${res.status})`);
+  }).catch((err) => console.warn(`ask ${askId}: the dismissal did not reach HARTOS`, err));
 }
 
 // One picked file into the desktop's one upload store, for the ask, through
@@ -1719,8 +1734,9 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
                 sx={{ position: 'absolute', top: 8, left: 12, fontSize: '0.65rem', height: 20,
                   background: 'rgba(108,99,255,0.2)', color: ACCENT, border: '1px solid rgba(108,99,255,0.3)' }} />
             )}
-            {/* Close button */}
-            <IconButton size="small" aria-label="Dismiss" onClick={() => dismiss(overlay._id)}
+            {/* Close button: on an ask's card it dismisses the ask everywhere */}
+            <IconButton size="small" aria-label="Dismiss"
+              onClick={() => { if (overlay.ask_id) dismissAsk(overlay.ask_id); dismiss(overlay._id); }}
               sx={{ position: 'absolute', top: 4, right: 4, color: 'rgba(255,255,255,0.4)', '&:hover': { color: '#fff' } }}>
               <CloseIcon sx={{ fontSize: 16 }} />
             </IconButton>

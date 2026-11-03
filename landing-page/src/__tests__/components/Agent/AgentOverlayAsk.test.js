@@ -383,6 +383,53 @@ describe('an ask answered anywhere', () => {
   });
 });
 
+// Owner, 2026-11-03: "dismissing a request dismisses and answering in one
+// client device clears everything".  Before, the X only hid the card on this
+// screen and the ask stayed open on every other surface.
+describe('an ask dismissed here', () => {
+  test('the X tells HARTOS, as her, so every surface drops it, and the card goes', async () => {
+    const send = mountOverlay();
+    send(CLIPS);
+
+    fireEvent.click(screen.getByLabelText('Dismiss'));
+
+    expect(screen.queryByTestId('liquid-file-request')).toBeNull();
+    await waitFor(() => expect(calls('/api/agent/approval')).toHaveLength(1));
+    const [, init] = calls('/api/agent/approval')[0];
+    expect(init.method).toBe('POST');
+    expect(init.headers.Authorization).toBe('Bearer tok-owner');
+    expect(JSON.parse(init.body)).toEqual({ask_id: ASK, dismiss: true});
+  });
+
+  test('a refused dismissal still takes the card off this screen', async () => {
+    global.fetch = jest.fn(() => reply(409, {status: 'error', reason: 'already_answered'}));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const send = mountOverlay();
+      send(CLIPS);
+
+      fireEvent.click(screen.getByLabelText('Dismiss'));
+
+      expect(screen.queryByTestId('liquid-file-request')).toBeNull();
+      await waitFor(() => expect(warn).toHaveBeenCalled());
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('closing a card that is not an ask tells HARTOS nothing', async () => {
+    const send = mountOverlay();
+    send({type: 'approval', msg_id: 'm-plain', agent_id: '342',
+          action: 'post_the_reel', title: 'Post today\'s reel?'});
+
+    fireEvent.click(screen.getByLabelText('Dismiss'));
+
+    expect(screen.queryByText('Approve')).toBeNull();
+    await act(() => Promise.resolve());
+    expect(calls('/api/agent/approval')).toHaveLength(0);
+  });
+});
+
 describe('an ask in an embed (onAction: a host page\'s session)', () => {
   const {OverlayContent} = require('../../../components/AgentOverlay/AgentOverlay');
 
