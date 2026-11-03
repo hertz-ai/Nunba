@@ -1,0 +1,11 @@
+# Applied to every pip run in regression.yml through PIP_CONSTRAINT.
+#
+# pip 26.3 (released 2026-11-02) refuses autobahn==23.1.2 from PyPI:
+#   "Distributions from PyPI cannot declare direct URL dependencies.
+#    autobahn depends on web3[ipfs] @ git+https://github.com/ethereum/web3.py.git
+#    ... ; extra == "all""
+# HARTOS's requirements.txt pins autobahn==23.1.2 and regression.yml installs
+# it, so that install would fail with pip 26.3.  HARTOS caps pip the same way
+# (its own .github/pip-constraint.txt).  Nunba's own autobahn==25.12.2
+# installs under 26.3.  Lift this when HARTOS's pin moves.
+pip<26.3
