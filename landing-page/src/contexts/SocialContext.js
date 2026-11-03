@@ -1,4 +1,4 @@
-import useAuthSession, {setGuestIdentity, setAccessToken, silentGuestRefresh} from '../hooks/useAuthSession';
+import useAuthSession, {clearAuth, setGuestIdentity, setAccessToken, silentGuestRefresh} from '../hooks/useAuthSession';
 import {useReferral} from '../hooks/useReferral';
 import {apiCache} from '../services/apiCache';
 import realtimeService from '../services/realtimeService';
@@ -266,8 +266,7 @@ export function SocialProvider({children}) {
       sessionIdentity]);
 
   const logout = useCallback(() => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
+    clearAuth(); // the one logout: every auth key, plus the desktop's copy
     apiCache.clearAll(); // Flush user-scoped cache to prevent data bleed
     setCurrentUser(null);
     setResonance(null);

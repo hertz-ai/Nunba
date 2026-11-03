@@ -63,6 +63,7 @@
  *   exported from this module.  Until then, all existing
  *   localStorage.setItem call sites keep working unchanged.
  */
+import {isLocalBackendHost} from '../utils/backendHost';
 import {decrypt, encrypt} from '../utils/encryption';
 
 import {useEffect, useState, useCallback} from 'react';
@@ -424,6 +425,19 @@ export function clearAuth() {
   // deliberately NOT cleared — HART node identity persists across
   // logout per the 4-layer identity model (HART node + cloud account
   // co-exist; logging out of cloud doesn't dissolve the HART node).
+
+  // The desktop keeps its own copy of the sign-in (user_data.json).  Clear
+  // the account there too, or the next load hydrates it straight back
+  // (useStorageSync) and the desktop owner stays the signed-out person.
+  // '' is /api/storage/set's delete sentinel; hart_* stay, as above.
+  // Required lazily: axiosFactory requires this module the same way.
+  if (isLocalBackendHost(window.location.hostname)) {
+    try {
+      require('../services/socialApi').chatApi
+        .setDesktopIdentity({access_token: '', email: '', user_id: ''})
+        .catch(() => {});
+    } catch (_e) { /* API module unavailable (tests) */ }
+  }
 
   try {
     window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
