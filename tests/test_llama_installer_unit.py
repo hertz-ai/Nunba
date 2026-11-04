@@ -139,16 +139,22 @@ class TestLlamaInstallerInit:
             result = installer.get_model_path(MODEL_PRESETS[0])
             assert result is None or isinstance(result, str)
 
-    def test_get_model_path_finds_existing_file(self):
+    def test_get_model_path_finds_existing_file(self, monkeypatch):
         """When model GGUF exists on disk, returns its full path."""
+        import integrations.service_tools.model_catalog as _rule
         with tempfile.TemporaryDirectory() as tmpdir:
             models = os.path.join(tmpdir, 'models')
             os.makedirs(models, exist_ok=True)
-            # Create a fake model file
+            # A file get_model_path vouches complete: GGUF magic, and at
+            # least the completeness floor.  The floor is 90% of a multi-GB
+            # weight (HARTOS gguf_min_bytes, d0dc674); it is lowered to this
+            # file's size rather than writing gigabytes.  The size rule
+            # itself is test_model_weight_bytes_one_table's.
             preset = MODEL_PRESETS[0]
             fake_path = os.path.join(models, preset.file_name)
-            with open(fake_path, 'w') as f:
-                f.write('fake model')
+            with open(fake_path, 'wb') as f:
+                f.write(b'GGUF' + b'\0' * 1020)
+            monkeypatch.setattr(_rule, 'gguf_min_bytes', lambda _expected: 1024)
             installer = LlamaInstaller(
                 install_dir=os.path.join(tmpdir, 'llama'),
                 models_dir=models)

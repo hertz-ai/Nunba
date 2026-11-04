@@ -51,8 +51,13 @@ class TestLLMStatus:
         assert isinstance(data, dict)
 
     def test_status_includes_version_upgrade(self, client):
-        """The global (Tier-1) upgrade card reads status.version_upgrade."""
-        resp = client.get('/api/llm/status')
+        """The global (Tier-1) upgrade card reads status.version_upgrade.
+
+        It reads the FULL status: since e29ec79 the plain /api/llm/status is
+        the cheap liveness poll and the diagnosis, version_upgrade included,
+        is behind ?full=1 -- what Demopage.js fetches for the card.
+        """
+        resp = client.get('/api/llm/status?full=1')
         if resp.status_code == 200:
             data = resp.get_json()
             assert 'version_upgrade' in data, \

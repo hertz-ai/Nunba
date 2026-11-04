@@ -116,7 +116,14 @@ if LLM_ENTRIES:
 
     @pytest.mark.parametrize('entry', LLM_ENTRIES, ids=LLM_IDS)
     def test_llm_vram_under_25gb(entry):
-        assert entry.vram_gb <= 25.0, f"{entry.id}: {entry.vram_gb}GB exceeds 24GB GPU"
+        # Over 25GB only for HARTOS's 'full'-tier 35B-A3B MoE rows, sized
+        # fully resident (80c703b6): a 24GB GPU must offload them.
+        if entry.vram_gb <= 25.0:
+            return
+        assert entry.min_capability_tier == 'full', f"{entry.id}: {entry.vram_gb}GB below the full tier"
+        assert entry.supports_cpu_offload, f"{entry.id}: {entry.vram_gb}GB exceeds 24GB GPU, no offload"
+        assert entry.matches_compute(24.0, entry.ram_gb, True) == 'cpu_offload', \
+            f"{entry.id}: {entry.vram_gb}GB exceeds 24GB GPU"
 
 
 # ==========================================================================
