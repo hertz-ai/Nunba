@@ -432,6 +432,19 @@ class TestRunPip:
                      else {'side_effect': popen_side_effect})),
         ]
 
+    @staticmethod
+    def _pip_argv(mock_popen):
+        """The argv of THE pip spawn among every call the patched Popen saw.
+
+        patch('subprocess.Popen') is process-wide, so a daemon thread an
+        earlier test started lands on the mock too: CI ubuntu, PR #72,
+        call_args was HARTOS resource_governor's idle probe ['xprintidle'].
+        """
+        pip = [c[0][0] for c in mock_popen.call_args_list
+               if list(c[0][0][:3]) == ['/fake/python.exe', '-m', 'pip']]
+        assert len(pip) == 1, mock_popen.call_args_list
+        return pip[0]
+
     def _run_with(self, popen, call_args=('install', 'pkg'), **kwargs):
         """Apply the common patches + return (ok, msg)."""
         import contextlib
@@ -492,7 +505,7 @@ class TestRunPip:
             stack.enter_context(patch.object(pi, 'ensure_user_site_on_path'))
             mock_popen = stack.enter_context(popen_patch)
             pi._run_pip(['install', 'pkg'])
-            cmd = mock_popen.call_args[0][0]
+            cmd = self._pip_argv(mock_popen)
             assert '--target' in cmd
             assert '/user/sp' in cmd
 
@@ -506,7 +519,7 @@ class TestRunPip:
             stack.enter_context(patch.object(pi, 'ensure_user_site_on_path'))
             mock_popen = stack.enter_context(popen_patch)
             pi._run_pip(['uninstall', '-y', 'pkg'])
-            cmd = mock_popen.call_args[0][0]
+            cmd = self._pip_argv(mock_popen)
             assert '--target' not in cmd
 
     def test_progress_callback_called(self):

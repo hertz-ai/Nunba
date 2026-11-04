@@ -68,6 +68,12 @@ def user32(monkeypatch):
 
     monkeypatch.setattr(platform_utils, 'IS_WINDOWS', True)
     monkeypatch.setattr(ctypes, 'windll', _Windll(), raising=False)
+    # _drop_taskbar_tab names ctypes.HRESULT as each vcall's restype, and
+    # ctypes defines it only on Windows: without this the Linux and macOS
+    # legs raised AttributeError inside the COM block and the shell log read
+    # ['create'] (CI, PR #72).  On Windows HRESULT is a c_long subclass.
+    monkeypatch.setattr(ctypes, 'HRESULT', getattr(ctypes, 'HRESULT', ctypes.c_long),
+                        raising=False)
     return fake
 
 

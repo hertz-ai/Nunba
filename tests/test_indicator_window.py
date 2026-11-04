@@ -40,6 +40,12 @@ def mock_tkinter():
     imports AND already-cached modules.
     """
     import desktop.indicator_window as iw_mod
+    # Where pyautogui is absent (CI installs no pyautogui) get_screen_size
+    # asks tk, and a bare MagicMock answers with MagicMocks: d009793's
+    # min(520, screen_width - 16) then raised "'<' not supported between
+    # MagicMock and int" on every OS.  A real Tk reports ints, so the mock does.
+    tk_mock.Tk.return_value.winfo_screenwidth.return_value = 1920
+    tk_mock.Tk.return_value.winfo_screenheight.return_value = 1080
     with patch.dict('sys.modules', {'tkinter': tk_mock, 'tkinter.ttk': ttk_mock}), \
          patch.object(iw_mod, 'tk', tk_mock):
         yield
