@@ -23,6 +23,8 @@
  *   restoreServerHistory  fetch, rebuild and merge, while the agent is open.
  */
 
+import { firstChatTime, isChatMessage, mergeRestoredMessages, timeOf } from './mergeRestoredMessages';
+
 // Setup/install cards (Demopage isGlobalSetupCard, chat/SetupProgressCard)
 // report system-wide state and ride along across agent switches; they are
 // never part of one agent's conversation.
@@ -41,27 +43,34 @@ export function holdsAgentChat(messages) {
   return Array.isArray(messages) && messages.some((m) => m && !isSetupCard(m));
 }
 
-const toMs = (ts) => new Date(ts).getTime();
-
 const textOf = (m) => {
   const t = m && (m.content !== undefined && m.content !== null ? m.content : m.text);
   return typeof t === 'string' ? t.trim() : '';
 };
 
-const rowMs = (r) => {
-  const ms = toMs(r.created_date);
-  return Number.isNaN(ms) ? 0 : ms;
-};
+const rowMs = (r) => timeOf({timestamp: r.created_date}) || 0;
+
+const fieldText = (v) => (typeof v === 'string' ? v.trim() : '');
 
 /**
- * The rows as messages, oldest first: `request` as the user's and `response`
- * as the assistant's, each timed by its row.  A save posts the chat's last
- * two messages again, so a message equal to one of the last two kept is a
- * re-post and is skipped.  Measured 2026-11-04 against the copies still in
- * the desktop's page storage: for agents 13, 48 and 49 every rebuilt message
- * (274, 83, 10) is in the page copy; 9 of the 385 rebuilt messages the page
- * copies also hold (agents 13, 48, 49, 20) got the other side's role, because
- * a row saved mid-turn holds the reply as `request`.
+ * The rows as messages, oldest first, each timed by its row.  A save posts
+ * the chat's last two entries as one row (`request` the second-to-last,
+ * `response` the last), so consecutive rows are overlapping two-message
+ * windows:
+ *   - the same pair as the row before: saved again with nothing new; skipped;
+ *   - a row starting with the message the row before ended with: one new
+ *     message (a save in the middle of a turn, or the save after it), added
+ *     in the next speaker's role;
+ *   - anything else: a new turn, `request` as the user's and `response` as
+ *     the assistant's.
+ * The rows hold no roles, so where the chat had two replies (or two user
+ * messages) in a row the second can come back in the other side's role.
+ * Measured 2026-11-04, this code on the real rows of the 7 agents whose page
+ * copy is still intact on the desktop (402 messages rebuilt): 392 in the
+ * page copy's order and role, 7 in the other role, 3 the copy does not hold.
+ * The rule before this one skipped any message equal to one of the last two
+ * kept, which dropped a repeated turn such as "next", "next" (review of
+ * fc660500): 380 in order and role, 6 in the other role, the same 3.
  */
 export function historyFromServerRows(rows) {
   if (!Array.isArray(rows)) return [];
@@ -69,37 +78,54 @@ export function historyFromServerRows(rows) {
     .filter((r) => r && typeof r === 'object')
     .sort((a, b) => rowMs(a) - rowMs(b) || Number(a.conv_id) - Number(b.conv_id));
   const out = [];
+  const add = (type, content, timestamp) => out.push({type, content, timestamp});
+  let prev = null;
   ordered.forEach((r) => {
-    [[r.request, 'user'], [r.response, 'assistant']].forEach(([field, type]) => {
-      const content = typeof field === 'string' ? field.trim() : '';
-      if (!content) return;
-      if (out.slice(-2).some((m) => m.content === content)) return;
-      out.push({type, content, timestamp: r.created_date});
-    });
+    const req = fieldText(r.request);
+    const resp = fieldText(r.response);
+    if (!req && !resp) return;
+    if (prev && req === prev[0] && resp === prev[1]) return;
+    if (prev && req && req === prev[1]) {
+      const last = out[out.length - 1];
+      if (resp) add(last && last.type === 'user' ? 'assistant' : 'user', resp, r.created_date);
+    } else {
+      if (req) add('user', req, r.created_date);
+      if (resp) add('assistant', resp, r.created_date);
+    }
+    prev = [req, resp];
   });
   return out;
 }
 
 /**
- * The server messages older than the first stored message of the chat, and
- * not already in it, put before the stored list.  Newer server messages are
- * left out: the stored chat is complete from its first message on, and a
- * message deleted on screen must not come back.  Setup cards and other
- * non-conversation entries stay where they are.  Returns `local` itself when
- * there is nothing to add.
+ * The server messages older than the stored chat, placed by the one merge
+ * rule (utils/mergeRestoredMessages), which puts them in front of it.  This
+ * function only decides which server messages are history.  A newer server
+ * message is in the stored chat already or was deleted on screen, so it is
+ * left out.  A row is saved after the messages it holds were written
+ * (measured 2026-11-04: no stored message on the desktop is timed after every
+ * row holding its text), so cutting at the stored chat's first time keeps a
+ * stored message's own server copy out, while an older message with the same
+ * text ("next", "hi") still comes back.  A stored chat with no times has
+ * nothing to cut at; there the server messages whose text the chat holds are
+ * left out instead.  Setup cards and other non-conversation entries stay
+ * where they are.  Returns `local` itself when there is nothing to add.
  */
 export function mergeServerHistory(local, serverHistory) {
   const base = Array.isArray(local) ? local : [];
   if (!Array.isArray(serverHistory) || serverHistory.length === 0) return base;
-  const chat = base.filter((m) => m && (m.type === 'user' || m.type === 'assistant'));
-  const times = chat.map((m) => toMs(m.timestamp)).filter((ms) => !Number.isNaN(ms));
-  const firstStored = times.length ? Math.min(...times) : Infinity;
-  const held = new Set(chat.map(textOf));
-  const older = serverHistory.filter((m) => {
-    const ms = toMs(m.timestamp);
-    return (Number.isNaN(ms) || ms < firstStored) && !held.has(textOf(m));
-  });
-  return older.length ? [...older, ...base] : base;
+  const first = firstChatTime(base);
+  let older;
+  if (first !== Infinity) {
+    older = serverHistory.filter((m) => {
+      const t = timeOf(m);
+      return t !== null && t < first;
+    });
+  } else {
+    const held = new Set(base.filter(isChatMessage).map(textOf));
+    older = serverHistory.filter((m) => !held.has(textOf(m)));
+  }
+  return older.length ? mergeRestoredMessages(base, older) : base;
 }
 
 /**

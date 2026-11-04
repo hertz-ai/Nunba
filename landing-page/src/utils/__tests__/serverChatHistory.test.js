@@ -16,9 +16,6 @@ import {
   SERVER_HISTORY_LIMIT,
 } from '../serverChatHistory';
 
-import fs from 'fs';
-import path from 'path';
-
 const setupCards = () => [
   ...Array.from({length: 21}, (_, i) => ({
     type: 'setup_progress',
@@ -97,6 +94,33 @@ describe('historyFromServerRows', () => {
     expect(historyFromServerRows(rows).map((m) => m.content)).toEqual(['hi', 'hi again', 'how are you']);
   });
 
+  test('two "next" turns in a row both come back (the old rule kept one)', () => {
+    const rows = [
+      row(1, '2026-08-03T10:00:00+00:00', 'next', 'Page 2.'),
+      row(2, '2026-08-03T10:01:00+00:00', 'next', 'Page 3.'),
+    ];
+    expect(historyFromServerRows(rows).map((m) => [m.type, m.content])).toEqual([
+      ['user', 'next'],
+      ['assistant', 'Page 2.'],
+      ['user', 'next'],
+      ['assistant', 'Page 3.'],
+    ]);
+  });
+
+  test('a save in the middle of a turn adds the one new message, in the next speaker role', () => {
+    const rows = [
+      row(1, '2026-08-03T10:00:00+00:00', 'hi', 'Hello!'),
+      row(2, '2026-08-03T10:00:30+00:00', 'Hello!', 'teach me fractions'),
+      row(3, '2026-08-03T10:00:40+00:00', 'teach me fractions', 'Sure.'),
+    ];
+    expect(historyFromServerRows(rows).map((m) => [m.type, m.content])).toEqual([
+      ['user', 'hi'],
+      ['assistant', 'Hello!'],
+      ['user', 'teach me fractions'],
+      ['assistant', 'Sure.'],
+    ]);
+  });
+
   test('the same exchange on another day, with others between, is kept', () => {
     const rows = [
       row(1, '2026-10-03T10:00:00+00:00', 'hi', 'Hello!'),
@@ -170,12 +194,31 @@ describe('mergeServerHistory', () => {
     expect(mergeServerHistory(local, deletedOnScreen)).toBe(local);
   });
 
-  test('a server message the stored chat already holds is not repeated', () => {
+  test("a stored message's own server copy is not added: its row was saved after it was written", () => {
     const local = [
-      {type: 'assistant', content: 'Hello! Ready for a lesson?', timestamp: '2026-10-04T00:00:00.000Z'},
+      {type: 'user', content: 'hi', timestamp: '2026-10-03T13:14:10.000Z'},
+      {type: 'assistant', content: 'Hello! Ready for a lesson?', timestamp: '2026-10-03T13:14:11.000Z'},
+      {type: 'user', content: 'and then?', timestamp: '2026-11-04T04:41:40.000Z'},
     ];
+    expect(mergeServerHistory(local, history)).toBe(local);
+  });
+
+  test('an older "next" comes back although the stored chat holds a "next" (the old rule dropped it)', () => {
+    const local = [
+      {type: 'user', content: 'next', timestamp: '2026-11-04T04:30:00.000Z'},
+      {type: 'assistant', content: 'Page 9.', timestamp: '2026-11-04T04:30:05.000Z'},
+    ];
+    const older = [
+      {type: 'user', content: 'next', timestamp: '2026-08-03T10:00:00+00:00'},
+      {type: 'assistant', content: 'Page 2.', timestamp: '2026-08-03T10:00:00+00:00'},
+    ];
+    expect(mergeServerHistory(local, older).map((m) => m.content)).toEqual(['next', 'Page 2.', 'next', 'Page 9.']);
+  });
+
+  test('a stored chat with no times gets no second copy of a message it holds', () => {
+    const local = [{type: 'user', content: 'hi'}, {type: 'assistant', content: 'Hello! Ready for a lesson?'}];
     const merged = mergeServerHistory(local, history);
-    expect(merged.map((m) => m.content)).toEqual(['hi', 'Hello! Ready for a lesson?']);
+    expect(merged.map((m) => m.content)).toEqual(['and then?', 'Then page 3.', 'hi', 'Hello! Ready for a lesson?']);
   });
 
   test('nothing to add returns the same list, so the chat does not re-render', () => {
@@ -235,34 +278,5 @@ describe('restoreServerHistory', () => {
   });
 });
 
-// Source guards for the Demopage wiring: Demopage is too large to render in a
-// unit test (utils/__tests__/demopageRestoreOnMount.test.js), so these pin
-// that it calls the rules above where the 2026-11-04 losses happened.
-describe('Demopage wiring', () => {
-  const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf8');
-  const SAVE = SRC.match(/const saveMessagesToStorage = \([^)]*\) => \{[\s\S]*?\n {2}\};\n/);
-  const LOAD = SRC.match(/const loadMessagesFromStorage = \([^)]*\) => \{[\s\S]*?\n {2}\};\n/);
-
-  test('a save checks holdsAgentChat before it writes or posts anything', () => {
-    expect(SAVE).not.toBe(null);
-    const save = SAVE[0];
-    const guard = save.indexOf('if (!promptId || !holdsAgentChat(messages)) return;');
-    expect(guard > 0).toBe(true);
-    expect(guard < save.indexOf('localStorage.setItem(')).toBe(true);
-    expect(guard < save.indexOf("fetch('/conversation'")).toBe(true);
-  });
-
-  test('a load merges the server copy only while that agent is open, with no synchronous request', () => {
-    expect(LOAD).not.toBe(null);
-    const load = LOAD[0];
-    expect(load.includes('restoreServerHistory({')).toBe(true);
-    expect(load.includes('const open = currentAgentRef.current;')).toBe(true);
-    expect(load.includes('return String(open?.prompt_id || open?.id) === String(id);')).toBe(true);
-    expect(load.includes('XMLHttpRequest')).toBe(false);
-  });
-
-  test('the switch keeps setup cards by the same card rule the save guard uses', () => {
-    expect(SRC.includes('return isSetupCard(message) && !message.dismissed;')).toBe(true);
-    expect(SRC.includes("message.type === 'setup_progress' || message.type === 'llm_setup_card'")).toBe(false);
-  });
-});
+// Demopage's own save, load and agents-fetch restore are RUN against these
+// rules in utils/__tests__/demopageChatHistoryHandlers.test.js.
