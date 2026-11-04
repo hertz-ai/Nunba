@@ -387,13 +387,17 @@ Cypress.Commands.add('clearAuthState', () => {
  * it: the keys applyHartSeal (src/hooks/useAuthSession.js) writes.  Without
  * them /local shows LightYourHART ("What language feels like home?") instead
  * of the chat (Agent.js, HART ONBOARDING GATE).  Call it before cy.visit.
+ *
+ * {loggedOut: true} is that HART after a logout: clearAuth (same file)
+ * removes guest_mode and the auth keys and keeps the hart_* keys and
+ * guest_name, so /local is the chat with no one signed in.
  */
-Cypress.Commands.add('sealHart', (name = 'CypressTest', language = 'en') => {
+Cypress.Commands.add('sealHart', (name = 'CypressTest', language = 'en', {loggedOut = false} = {}) => {
   localStorage.setItem('hart_sealed', 'true');
   localStorage.setItem('hart_name', name);
   localStorage.setItem('hart_language', language);
   localStorage.setItem('guest_name', name);
-  localStorage.setItem('guest_mode', 'true');
+  if (!loggedOut) localStorage.setItem('guest_mode', 'true');
 });
 
 /**

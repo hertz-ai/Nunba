@@ -182,6 +182,9 @@ describe('Agent Creation & Types E2E', () => {
       win.localStorage.setItem('guest_name', 'Test.Blue.User');
       win.localStorage.setItem('guest_user_id', 'test-guest-id');
     });
+    // A sealed HART: unsealed, /local is the onboarding ceremony and has no
+    // "Create new Agent" (cypress/support/e2e.js sealHart).
+    cy.sealHart('Test.Blue.User');
   }
 
   // ---------------------------------------------------------------------------
@@ -280,42 +283,19 @@ describe('Agent Creation & Types E2E', () => {
       cy.contains('Create new Agent', {timeout: 30000}).should('exist');
     });
 
-    it('should open the CreateAgentForm when "Create new Agent" is clicked', () => {
-      // handleCreateAgentClick shows CreateAgentForm only in cloud mode.
-      // If guest_mode is set in localStorage, it enters local/conversational mode instead.
-      // Override guest_mode to false so the form appears.
-      cy.window().then((win) => {
-        win.localStorage.removeItem('guest_mode');
-        win.localStorage.removeItem('guest_name');
-        win.localStorage.removeItem('guest_user_id');
-      });
-
-      // Re-visit with clean auth (non-guest) so the Demopage sees cloud mode
-      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.wait(3000);
-
-      cy.get('body').then(($body) => {
-        const hasBtn = $body.text().includes('Create new Agent');
-        if (hasBtn) {
-          cy.contains('Create new Agent', {timeout: 30000})
-            .first()
-            .click({force: true});
-          cy.wait(1000);
-
-          // In cloud mode, the form heading "Create New Agent" should appear.
-          // In local mode (no network), conversational creation starts instead.
-          cy.get('body').then(($b) => {
-            const text = $b.text();
-            const formOpened = text.includes('Create New Agent');
-            const localMode = text.includes("Let's create a new agent");
-            // Either the form opened (cloud) or conversational creation started (local)
-            expect(formOpened || localMode).to.be.true;
-          });
-        } else {
-          // Button not found — page rendered differently
-          cy.get('#root').invoke('html').should('not.be.empty');
-        }
-      });
+    it('should start conversational creation when a guest clicks "Create new Agent"', () => {
+      // handleCreateAgentClick (Demopage.js): a guest, or anyone offline,
+      // creates an agent by talking to it; only a signed-in cloud user gets
+      // CreateAgentForm.  A signed-in user needs a user_id that decrypt()
+      // (src/utils/encryption.js) can read, and the CI bundle is built
+      // without REACT_APP_SECRET_KEY, so decrypt() returns null there and
+      // that user cannot exist.  This was "remove guest_mode, expect the
+      // form": that visitor is logged out and gets the login modal.
+      cy.contains('Create new Agent', {timeout: 30000})
+        .first()
+        .click({force: true});
+      cy.contains("Let's create a new agent", {timeout: 30000}).should('exist');
+      cy.contains('Create New Agent').should('not.exist');
     });
 
     it('should have agent name input, prompt textarea, public checkbox, and submit button', () => {
@@ -1171,7 +1151,9 @@ describe('Agent Creation & Types E2E', () => {
   describe('7. Authentication Gate for Agent Creation', () => {
     beforeEach(() => {
       setupIntercepts();
-      // Do NOT seed auth -- user is NOT logged in
+      // Not logged in: a sealed HART after logout.  With no seal at all,
+      // /local is the onboarding ceremony and has no Create button.
+      cy.sealHart('Test.LoggedOut', 'en', {loggedOut: true});
     });
 
     it('should show "(Login required)" text next to Create button when unauthenticated', () => {
