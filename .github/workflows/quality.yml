@@ -326,11 +326,23 @@ jobs:
 
       # ── Backend: Flask + HARTOS (from source) ──
       - name: Install Python dependencies
+        # No pip cache: every wheel was also kept in ~/.cache/pip, a second
+        # copy on a disk that is already tight (see the CPU torch note).
+        env:
+          PIP_NO_CACHE_DIR: '1'
         run: |
           pip install --upgrade pip
           # Fail on pip errors (pipefail) + show enough lines to see
           # ResolutionImpossible conflict details.
           set -o pipefail
+          # CPU torch, same pins as requirements.txt, so the install below
+          # finds them already met.  This job has no GPU, and PyPI's Linux
+          # torch brings the multi-GB nvidia-* CUDA wheels: on #72 they
+          # filled shard 1's disk ("[Errno 28] No space left on device" while
+          # installing nvidia-cusparselt-cu12), Flask was never installed, and
+          # Flask died with "No module named 'flask'".
+          pip install $(grep -E '^(torch|torchaudio)==' requirements.txt) \
+            --index-url https://download.pytorch.org/whl/cpu 2>&1 | tail -5
           pip install -r requirements.txt 2>&1 | tail -60
 
           # Install sibling deps in order: hevolve-database → hevolveai → hart-backend
