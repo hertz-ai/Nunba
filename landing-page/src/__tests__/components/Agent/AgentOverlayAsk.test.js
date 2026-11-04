@@ -417,6 +417,34 @@ describe('an ask dismissed here', () => {
     }
   });
 
+  // Owner, 2026-11-04: "Later" on an ask card dismisses everywhere, as the X does.
+  test("Later on an ask's approval card dismisses it everywhere, as her, and the card goes", async () => {
+    const send = mountOverlay();
+    send({type: 'approval', msg_id: ASK, ask_id: ASK, agent_id: '342',
+          action: 'post_the_reel', title: 'Post today\'s reel?'});
+
+    fireEvent.click(screen.getByText('Later'));
+
+    expect(screen.queryByText('Approve')).toBeNull();
+    await waitFor(() => expect(calls('/api/agent/approval')).toHaveLength(1));
+    const [, init] = calls('/api/agent/approval')[0];
+    expect(init.method).toBe('POST');
+    expect(init.headers.Authorization).toBe('Bearer tok-owner');
+    expect(JSON.parse(init.body)).toEqual({ask_id: ASK, dismiss: true});
+  });
+
+  test('Later on an approval that is not an ask closes it here and tells HARTOS nothing', async () => {
+    const send = mountOverlay();
+    send({type: 'approval', msg_id: 'm-plain-later', agent_id: '342',
+          action: 'post_the_reel', title: 'Post today\'s reel?'});
+
+    fireEvent.click(screen.getByText('Later'));
+
+    expect(screen.queryByText('Approve')).toBeNull();
+    await act(() => Promise.resolve());
+    expect(calls('/api/agent/approval')).toHaveLength(0);
+  });
+
   test('closing a card that is not an ask tells HARTOS nothing', async () => {
     const send = mountOverlay();
     send({type: 'approval', msg_id: 'm-plain', agent_id: '342',

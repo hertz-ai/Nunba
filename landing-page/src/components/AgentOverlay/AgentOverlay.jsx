@@ -417,24 +417,28 @@ async function refusedReply(res, what) {
   return Object.assign(new Error(`${what} (HTTP ${res.status})`), { body });
 }
 
-async function answerAsk(askId, answer) {
-  const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...bearer() },
-    body: JSON.stringify({ ask_id: askId, answer }),
-  });
-  if (!res.ok) throw await refusedReply(res, 'The answer was refused');
-}
-
-// The person closed the ask's card here: every surface drops it.  The card
-// goes from this screen whatever HARTOS answers (an ask already answered or
-// gone elsewhere is closed there too), so a refusal is only logged.
-function dismissAsk(askId) {
+// The one request to the approval door: an ask's answer, its dismissal and a
+// plain approval's decision differ only in the body and in what a refusal
+// means to each caller.
+function postApproval(body) {
   return fetch(`${API_BASE_URL}/api/agent/approval`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...bearer() },
-    body: JSON.stringify({ ask_id: askId, dismiss: true }),
-  }).then((res) => {
+    body: JSON.stringify(body),
+  });
+}
+
+async function answerAsk(askId, answer) {
+  const res = await postApproval({ ask_id: askId, answer });
+  if (!res.ok) throw await refusedReply(res, 'The answer was refused');
+}
+
+// The person closed the ask's card here (its X, or "Later" on an approval
+// ask: owner, 2026-11-04): every surface drops it.  The card goes from this
+// screen whatever HARTOS answers (an ask already answered or gone elsewhere
+// is closed there too), so a refusal is only logged.
+function dismissAsk(askId) {
+  return postApproval({ ask_id: askId, dismiss: true }).then((res) => {
     if (!res.ok) console.warn(`ask ${askId}: the dismissal was refused (HTTP ${res.status})`);
   }).catch((err) => console.warn(`ask ${askId}: the dismissal did not reach HARTOS`, err));
 }
@@ -574,11 +578,7 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
         await answerAsk(data.ask_id, { decision });
       } else {
         // The node names the approver from the caller's Bearer (never the body).
-        const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...bearer() },
-          body: JSON.stringify({ agent_id: data.agent_id, action: data.action, decision }),
-        });
+        const res = await postApproval({ agent_id: data.agent_id, action: data.action, decision });
         if (!res.ok) throw await refusedReply(res, 'The answer was refused');
       }
     } catch (e) {
@@ -599,8 +599,15 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
   // button SET never shrinks.  Producers use it to say what the choice
   // MEANS: the game-sound card offers 'Keep it' / 'Compose another'.
   // Only approve | deny are answers /api/agent/approval records; HARTOS
-  // refuses 'later' with 400, so the defer button closes the card and sends
-  // nothing, like "Not now" on the consent card (the producer asks again).
+  // refuses 'later' with 400, so on a plain approval the defer button closes
+  // the card and sends nothing, like "Not now" on the consent card (the
+  // producer asks again).  On an agent's ask it dismisses the ask, so every
+  // surface drops it and the agent is told (owner, 2026-11-04: "Later
+  // dismisses everywhere", as the X does).
+  const later = () => {
+    if (data.ask_id) dismissAsk(data.ask_id);
+    onDismiss();
+  };
   const label = (i, dflt) => {
     const o = Array.isArray(data.options) ? data.options[i] : null;
     return (typeof o === 'string' && o) ? o : dflt;
@@ -614,7 +621,7 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
       <Box sx={{ display: 'flex', gap: 1, flexWrap: onAction ? 'wrap' : undefined }}>
         <Button variant="contained" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'approve'} sx={{ background: SUCCESS, flex: 1, minHeight: onAction ? 44 : undefined, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>{act.phase === 'busy' ? 'Working…' : label(0, 'Approve')}</Button>
         <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'deny'} sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1, minHeight: onAction ? 44 : undefined }} onClick={() => postDecision('deny')}>{label(1, 'Deny')}</Button>
-        <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : onDismiss}>{label(2, 'Later')}</Button>
+        <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : later}>{label(2, 'Later')}</Button>
       </Box>
       <ActionError state={act} />
     </Box>
