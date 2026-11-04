@@ -383,6 +383,20 @@ Cypress.Commands.add('clearAuthState', () => {
 });
 
 /**
+ * A HART already sealed on this machine, as the onboarding ceremony leaves
+ * it: the keys applyHartSeal (src/hooks/useAuthSession.js) writes.  Without
+ * them /local shows LightYourHART ("What language feels like home?") instead
+ * of the chat (Agent.js, HART ONBOARDING GATE).  Call it before cy.visit.
+ */
+Cypress.Commands.add('sealHart', (name = 'CypressTest', language = 'en') => {
+  localStorage.setItem('hart_sealed', 'true');
+  localStorage.setItem('hart_name', name);
+  localStorage.setItem('hart_language', language);
+  localStorage.setItem('guest_name', name);
+  localStorage.setItem('guest_mode', 'true');
+});
+
+/**
  * Verify that a request with the given token succeeds
  */
 Cypress.Commands.add('verifyTokenWorks', (token) => {
