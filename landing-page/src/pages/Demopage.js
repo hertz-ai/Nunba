@@ -36,6 +36,7 @@ import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, initialTtsEnabled } from '../utils/ttsGuards';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
+import { holdsAgentChat, isSetupCard, restoreServerHistory } from '../utils/serverChatHistory';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
@@ -126,9 +127,7 @@ const UNPROMPTED_MIC = 'unprompted';
 // The caller filters out dismissed cards before carrying, so a user-dismissed
 // card is never resurrected.
 function isGlobalSetupCard(message) {
-  return !!message && !message.dismissed && (
-    message.type === 'setup_progress' || message.type === 'llm_setup_card'
-  );
+  return isSetupCard(message) && !message.dismissed;
 }
 
 function setupCardKey(message) {
@@ -1765,7 +1764,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   const saveMessagesToStorage = (messages, promptId) => {
-    if (!promptId) return;
+    // Setup cards alone are not this agent's chat.  An agent switch keeps
+    // them on screen (isGlobalSetupCard), and a save inside the switch wrote
+    // them over the agent's stored conversation: 2026-11-04, agents 54,
+    // local_assistant, 49 and 1793365100141 (utils/serverChatHistory).
+    if (!promptId || !holdsAgentChat(messages)) return;
 
     try {
       const storageKey = getChatStorageKey(promptId);
@@ -1803,9 +1806,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   // localStorage only — no network.  Returns null when nothing is stored (or
-  // the stored value cannot be read), so the caller can fall back to the
-  // server DB.  The mount-time restore uses this alone: the server fallback is
-  // a synchronous XHR and must not run on the main thread during boot.
+  // the stored value cannot be read).  The mount-time restore uses this alone:
+  // it runs before the agents fetch, while the open agent is still the route's
+  // placeholder, so the server copy is merged by the load that follows
+  // (loadMessagesFromStorage).
   const readLocalMessages = (promptId) => {
     if (!promptId) return null;
 
@@ -1851,35 +1855,26 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     return null;
   };
 
+  // The stored chat now, and the server's copy of what came before it once
+  // that arrives (utils/serverChatHistory.restoreServerHistory), merged only
+  // while this agent is still the open one.  The server copy used to be read
+  // with a synchronous XHR, and only when localStorage held nothing for the
+  // agent, so a stored list of setup cards hid the whole conversation.
   const loadMessagesFromStorage = (promptId) => {
     if (!promptId) return [];
 
-    const local = readLocalMessages(promptId);
-    if (local !== null) return local;
+    restoreServerHistory({
+      fetchFn: (url) => fetch(url),
+      userId: effectiveUserId || localStorage.getItem('guest_user_id') || 'guest',
+      promptId,
+      isOpen: (id) => {
+        const open = currentAgentRef.current;
+        return String(open?.prompt_id || open?.id) === String(id);
+      },
+      setMessages,
+    });
 
-    // Fallback: load from server DB (survives WebView reset / reinstall)
-    try {
-      const uid = effectiveUserId || localStorage.getItem('guest_user_id') || 'guest';
-      const xhr = new XMLHttpRequest();
-      xhr.open('GET', `/conversation?user_id=${encodeURIComponent(uid)}&topic=agent_${promptId}`, false);
-      xhr.send();
-      if (xhr.status === 200) {
-        const convs = JSON.parse(xhr.responseText);
-        if (Array.isArray(convs) && convs.length > 0) {
-          const restored = [];
-          convs.forEach((c) => {
-            if (c.request) restored.push({ type: 'user', content: c.request });
-            if (c.response) restored.push({ type: 'assistant', content: c.response });
-          });
-          if (restored.length > 0) {
-            logger.log(`Restored ${restored.length} messages from server DB for agent ${promptId}`);
-            return normalizeRestoredMessages(restored);
-          }
-        }
-      }
-    } catch (_) {}
-
-    return [];
+    return readLocalMessages(promptId) || [];
   };
 
   const getVideoWidthforMobile = () => {
