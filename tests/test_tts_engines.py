@@ -398,9 +398,14 @@ class TestVibeVoiceDetectGpu:
     """Test the detect_gpu function with mocked subprocess calls."""
 
     def test_detect_gpu_no_nvidia_no_amd(self):
-        """When no GPU tools are found and WMI returns nothing, returns gpu_available=False."""
+        """When no GPU tools are found and neither Metal nor WMI finds one,
+        returns gpu_available=False."""
         from tts.vibevoice_tts import detect_gpu
+        # The Apple Metal probe answers for real on macOS (the CI runner is
+        # Apple Silicon, so it found a GPU there); it is the third of
+        # detect_gpu's four probes and is patched off like the WMI one.
         with patch("shutil.which", return_value=None), \
+             patch("tts.vibevoice_tts._detect_apple_metal", return_value=None), \
              patch("tts.vibevoice_tts._detect_gpu_wmic", return_value=None):
             result = detect_gpu()
             assert result["gpu_available"] is False
