@@ -17,7 +17,7 @@
  *   12. Kids game template sound events
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 // 1x1 transparent PNG for stub image responses
 const STUB_PNG_B64 =

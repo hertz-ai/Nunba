@@ -24,7 +24,7 @@
  *   - Backend startup logs: "Local agents: 3, Cloud agents: 3"
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 // ---------------------------------------------------------------------------
 // 1. Nunba Health Endpoint

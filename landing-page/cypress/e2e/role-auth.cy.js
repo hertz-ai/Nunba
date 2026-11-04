@@ -70,14 +70,14 @@ describe('Role-Based Auth - API Layer', () => {
       // Register
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/api/social/auth/register',
+        url: `${Cypress.env('apiUrl')}/api/social/auth/register`,
         body: user,
         failOnStatusCode: false,
       }).then(() => {
         // Login
         cy.request({
           method: 'POST',
-          url: 'http://localhost:5000/api/social/auth/login',
+          url: `${Cypress.env('apiUrl')}/api/social/auth/login`,
           body: {username: user.username, password: user.password},
           failOnStatusCode: false,
         }).then((res) => {
@@ -102,7 +102,7 @@ describe('Role-Based Auth - API Layer', () => {
     it('should reject unauthenticated requests to admin stats', () => {
       cy.request({
         method: 'GET',
-        url: 'http://localhost:5000/api/social/admin/stats',
+        url: `${Cypress.env('apiUrl')}/api/social/admin/stats`,
         failOnStatusCode: false,
       }).then((res) => {
         // Should be 401 or 403, not 200
@@ -113,7 +113,7 @@ describe('Role-Based Auth - API Layer', () => {
     it('should reject unauthenticated requests to admin users list', () => {
       cy.request({
         method: 'GET',
-        url: 'http://localhost:5000/api/social/admin/users',
+        url: `${Cypress.env('apiUrl')}/api/social/admin/users`,
         failOnStatusCode: false,
       }).then((res) => {
         expect(res.status).to.be.oneOf([401, 403, 404, 503]);
@@ -124,7 +124,7 @@ describe('Role-Based Auth - API Layer', () => {
       cy.socialAuth().then((authData) => {
         cy.request({
           method: 'GET',
-          url: 'http://localhost:5000/api/social/admin/stats',
+          url: `${Cypress.env('apiUrl')}/api/social/admin/stats`,
           headers: {Authorization: `Bearer ${authData.access_token}`},
           failOnStatusCode: false,
         }).then((res) => {

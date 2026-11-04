@@ -46,37 +46,37 @@ describe('J52-J57: WAMP/crossbar/kids runtime', () => {
   });
 
   it('J52: GET /api/wamp/status returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/wamp/status', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/wamp/status`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 503]);
     });
   });
 
   it('J53: GET /api/wamp/ticket returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/wamp/ticket', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/wamp/ticket`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403]);
     });
   });
 
   it('J54: GET /api/media/asset with missing prompt returns 400', () => {
-    cy.request({url: 'http://localhost:5000/api/media/asset', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/media/asset`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([400, 401, 403, 503]);
     });
   });
 
   it('J55: GET /api/social/kids/game lists kids game slots', () => {
-    cy.request({url: 'http://localhost:5000/api/social/kids/game', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/kids/game`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
 
   it('J56: GET /api/mcp/local/health returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/mcp/local/health', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/mcp/local/health`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 503]);
     });
   });
 
   it('J57: GET /api/mcp/local/tools/list returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/mcp/local/tools/list', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/list`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 403, 503]);
     });
   });
@@ -94,7 +94,7 @@ describe('J60-J63: auth + peer + encrypted channel', () => {
   it('J60: POST /api/social/auth/register returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/register',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/register`,
       body: {username: `cy_j60_${Date.now()}`, password: 'testpwd!23'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -105,7 +105,7 @@ describe('J60-J63: auth + peer + encrypted channel', () => {
   it('J61: POST /api/social/auth/login returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/login',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/login`,
       body: {username: 'nonexistent_j61', password: 'wrongpw'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -116,7 +116,7 @@ describe('J60-J63: auth + peer + encrypted channel', () => {
   it('J62: POST /api/distributed/tasks/announce returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/distributed/tasks/announce',
+      url: `${Cypress.env('apiUrl')}/api/distributed/tasks/announce`,
       body: {},
       failOnStatusCode: false,
     }).then((r) => {
@@ -125,7 +125,7 @@ describe('J60-J63: auth + peer + encrypted channel', () => {
   });
 
   it('J63: GET /api/distributed/peer/keys returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/distributed/peer/keys', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/distributed/peer/keys`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -141,13 +141,13 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   });
 
   it('J65: GET /api/admin/diag/thread-dump returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/diag/thread-dump', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/diag/thread-dump`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
     });
   });
 
   it('J66: GET /api/admin/diag/degradations returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/diag/degradations', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/diag/degradations`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
     });
   });
@@ -155,7 +155,7 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   it('J67: POST /api/tts/setup-engine returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/tts/setup-engine',
+      url: `${Cypress.env('apiUrl')}/api/tts/setup-engine`,
       body: {engine: 'kokoro'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -164,13 +164,13 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   });
 
   it('J69: GET /api/admin/diag/paths returns data-dir info', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/diag/paths', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/diag/paths`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
 
   it('J70: GET /api/admin/shutdown returns envelope (no actual shutdown in CI)', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/shutdown', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/shutdown`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 405, 503]);
     });
   });
@@ -178,7 +178,7 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   it('J71: POST /api/memory/remember returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/memory/remember',
+      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
       body: {text: 'test', agent_id: 'j71'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -189,7 +189,7 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   it('J72: POST /api/memory/recall returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/memory/recall',
+      url: `${Cypress.env('apiUrl')}/api/memory/recall`,
       body: {query: 'test', agent_id: 'j72'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -198,7 +198,7 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   });
 
   it('J73: GET /api/admin/providers returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/providers', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/providers`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 503]);
     });
   });
@@ -206,7 +206,7 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   it('J74: POST /api/admin/providers/<id>/test returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/providers/groq/test',
+      url: `${Cypress.env('apiUrl')}/api/admin/providers/groq/test`,
       body: {},
       failOnStatusCode: false,
     }).then((r) => {
@@ -215,7 +215,7 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   });
 
   it('J75: GET /api/admin/providers/gateway/stats returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/providers/gateway/stats', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/providers/gateway/stats`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 503]);
     });
   });
@@ -223,7 +223,7 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   it('J76: POST /api/vlm/caption returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/vlm/caption',
+      url: `${Cypress.env('apiUrl')}/api/vlm/caption`,
       body: {image_b64: '', prompt: 'describe'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -232,7 +232,7 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
   });
 
   it('J77: GET /api/vlm/health returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/vlm/health', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/vlm/health`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 404, 503]);
     });
   });
@@ -248,7 +248,7 @@ describe('J78-J82: tier/encryption/mcp', () => {
   });
 
   it('J78: GET /api/admin/topology returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/topology', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/topology`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -256,7 +256,7 @@ describe('J78-J82: tier/encryption/mcp', () => {
   it('J79: POST /api/admin/topology/upgrade returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/topology/upgrade',
+      url: `${Cypress.env('apiUrl')}/api/admin/topology/upgrade`,
       body: {target: 'regional'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -267,7 +267,7 @@ describe('J78-J82: tier/encryption/mcp', () => {
   it('J80: POST /api/mcp/local/tools/execute with wrong bearer → 403', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/mcp/local/tools/execute',
+      url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/execute`,
       body: {tool: 'system_health', arguments: {}},
       headers: {Authorization: 'Bearer wrong-j80'},
       failOnStatusCode: false,
@@ -277,13 +277,13 @@ describe('J78-J82: tier/encryption/mcp', () => {
   });
 
   it('J81: GET /api/admin/tier/info returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/tier/info', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/tier/info`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
 
   it('J82: GET /api/admin/encryption/keys returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/encryption/keys', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/encryption/keys`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -299,7 +299,7 @@ describe('J83-J85: distributed goals', () => {
   });
 
   it('J83: GET /api/distributed/goals returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/distributed/goals', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/distributed/goals`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -307,7 +307,7 @@ describe('J83-J85: distributed goals', () => {
   it('J84: POST /api/distributed/goals returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/distributed/goals',
+      url: `${Cypress.env('apiUrl')}/api/distributed/goals`,
       body: {description: 'j84-test', acceptance_criteria: 'passes'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -316,7 +316,7 @@ describe('J83-J85: distributed goals', () => {
   });
 
   it('J85: GET /api/distributed/verify/summary returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/distributed/verify/summary', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/distributed/verify/summary`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -338,7 +338,7 @@ describe('J88-J91: coding + video/audio generation', () => {
   it('J88: POST /api/distributed/goals/execute returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/distributed/goals/execute',
+      url: `${Cypress.env('apiUrl')}/api/distributed/goals/execute`,
       body: {goal_id: 'j88_test', code: 'print(1)'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -349,7 +349,7 @@ describe('J88-J91: coding + video/audio generation', () => {
   it('J89: POST /api/code/verify returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/code/verify',
+      url: `${Cypress.env('apiUrl')}/api/code/verify`,
       body: {code: 'print(1)'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -360,7 +360,7 @@ describe('J88-J91: coding + video/audio generation', () => {
   it('J90: POST /video-gen/ returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/video-gen/',
+      url: `${Cypress.env('apiUrl')}/video-gen/`,
       body: {prompt: 'a cat'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -371,7 +371,7 @@ describe('J88-J91: coding + video/audio generation', () => {
   it('J91: POST /audio-gen/ returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/audio-gen/',
+      url: `${Cypress.env('apiUrl')}/audio-gen/`,
       body: {prompt: 'happy piano'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -390,19 +390,19 @@ describe('J92-J99: social admin + misc', () => {
   });
 
   it('J92: GET /api/social/admin/stats returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/social/admin/stats', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/admin/stats`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
     });
   });
 
   it('J93: GET /api/social/feed returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/social/feed', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/feed`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
     });
   });
 
   it('J94: GET /api/social/posts returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/social/posts', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/posts`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
     });
   });
@@ -410,7 +410,7 @@ describe('J92-J99: social admin + misc', () => {
   it('J95: POST /api/social/posts returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/posts',
+      url: `${Cypress.env('apiUrl')}/api/social/posts`,
       body: {content: 'j95-test-post'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -419,20 +419,20 @@ describe('J92-J99: social admin + misc', () => {
   });
 
   it('J96: GET /api/social/users returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/social/users', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/users`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
     });
   });
 
   it('J97: GET /api/social/comments returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/social/comments', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/comments`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
     });
   });
 
   it('J98: GET /api/image-proxy with http URL returns envelope', () => {
     cy.request({
-      url: 'http://localhost:5000/api/image-proxy?url=http://example.com/test.png',
+      url: `${Cypress.env('apiUrl')}/api/image-proxy?url=http://example.com/test.png`,
       failOnStatusCode: false,
     }).then((r) => {
       expect(r.status).to.be.oneOf([200, 400, 401, 403, 404, 415, 503]);
@@ -440,7 +440,7 @@ describe('J92-J99: social admin + misc', () => {
   });
 
   it('J99: GET /api/social/gamification/balance returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/social/gamification/balance', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/gamification/balance`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
     });
   });

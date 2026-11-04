@@ -16,7 +16,7 @@
  *   Cloud unavailable: { text: "...", agent_id: "...", agent_type: "cloud", error: "cloud_unavailable"|"no_internet", success: false }
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 describe('Chat Flow E2E', () => {
   beforeEach(() => {

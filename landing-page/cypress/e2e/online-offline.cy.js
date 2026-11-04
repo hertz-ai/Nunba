@@ -20,7 +20,7 @@
  *  - {force: true} on all cy.click() calls to bypass webpack-dev-server overlay iframe
  */
 
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = `${Cypress.env('apiUrl')}`;
 const CLOUD_AGENTS_URL = 'https://mailer.hertzai.com/getprompt_all/';
 const CLOUD_USER_AGENTS_PATTERN = '**/mailer.hertzai.com/getprompt_userid/**';
 const CLOUD_CHAT_URL = 'https://azurekong.hertzai.com/**';

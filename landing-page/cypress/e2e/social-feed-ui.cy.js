@@ -1507,7 +1507,7 @@ describe('Social Feed UI - Full Auth Flow', () => {
   it('should register new user via API', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/register',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/register`,
       body: flowUser,
       failOnStatusCode: false,
     }).then((res) => {
@@ -1520,7 +1520,7 @@ describe('Social Feed UI - Full Auth Flow', () => {
   it('should login and receive valid JWT', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/login',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/login`,
       body: {
         username: flowUser.username,
         password: flowUser.password,
@@ -1566,7 +1566,7 @@ describe('Social Feed UI - Full Auth Flow', () => {
 
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/posts',
+      url: `${Cypress.env('apiUrl')}/api/social/posts`,
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',

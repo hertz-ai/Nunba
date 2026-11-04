@@ -59,7 +59,7 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
   it('J138: GET /api/memory/search returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/memory/search?q=test',
+      url: `${Cypress.env('apiUrl')}/api/memory/search?q=test`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
@@ -69,7 +69,7 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
   it('J139: POST /api/memory/forget returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/memory/forget',
+      url: `${Cypress.env('apiUrl')}/api/memory/forget`,
       body: {memory_id: 'test_id'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -80,7 +80,7 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
   it('J140, J143: GET /api/memory/backtrace returns chain envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/memory/backtrace?memory_id=test&depth=3',
+      url: `${Cypress.env('apiUrl')}/api/memory/backtrace?memory_id=test&depth=3`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
@@ -90,7 +90,7 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
   it('J141: memory remember returns envelope even under concurrent embed', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/memory/remember',
+      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
       body: {text: 'concurrent embed test', agent_id: 'test'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -101,7 +101,7 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
   it('J142: GET /api/memory/status reports db health', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/memory/status',
+      url: `${Cypress.env('apiUrl')}/api/memory/status`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -111,7 +111,7 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
   it('J144: POST /api/memory/sync returns envelope (flat→regional sync)', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/memory/sync',
+      url: `${Cypress.env('apiUrl')}/api/memory/sync`,
       body: {target_tier: 'regional'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -132,7 +132,7 @@ describe('J145-J154: installer ladder + resource degrade', () => {
   it('J145: GET /api/admin/installer/status reports partial-success state', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/installer/status',
+      url: `${Cypress.env('apiUrl')}/api/admin/installer/status`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -143,7 +143,7 @@ describe('J145-J154: installer ladder + resource degrade', () => {
     cy.intercept('GET', '**/api/online', {statusCode: 200, body: {online: false}});
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'offline test', preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -154,7 +154,7 @@ describe('J145-J154: installer ladder + resource degrade', () => {
   it('J147: GET /api/admin/diag/disk-free returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/diag/disk-free',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/disk-free`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -164,7 +164,7 @@ describe('J145-J154: installer ladder + resource degrade', () => {
   it('J148: backend/health reports GPU tier classification', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/backend/health',
+      url: `${Cypress.env('apiUrl')}/backend/health`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 503]);
@@ -178,7 +178,7 @@ describe('J145-J154: installer ladder + resource degrade', () => {
   it('J149: GET /api/admin/diag/resource-governor returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/diag/resource-governor',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/resource-governor`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -188,7 +188,7 @@ describe('J145-J154: installer ladder + resource degrade', () => {
   it('J150: POST /api/admin/providers/<id>/rotate-key returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/providers/openai/rotate-key',
+      url: `${Cypress.env('apiUrl')}/api/admin/providers/openai/rotate-key`,
       body: {new_key: 'sk-fake-rotated'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -199,7 +199,7 @@ describe('J145-J154: installer ladder + resource degrade', () => {
   it('J151: GET /api/admin/models/hub/search with HF_HUB_OFFLINE does not crash', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/models/hub/search?q=qwen',
+      url: `${Cypress.env('apiUrl')}/api/admin/models/hub/search?q=qwen`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -209,7 +209,7 @@ describe('J145-J154: installer ladder + resource degrade', () => {
   it('J152: GET /api/admin/diag/degradations exposes optional_import failures', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/diag/degradations',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/degradations`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 500, 503]);
@@ -222,7 +222,7 @@ describe('J145-J154: installer ladder + resource degrade', () => {
   it('J154: NUNBA_DATA_DIR env var is honored (read-only check via /api/admin/diag/paths)', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/diag/paths',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/paths`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -242,7 +242,7 @@ describe('J155-J164: concurrency + race journeys', () => {
   it('J155: two simultaneous /chat same user both return envelopes', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'first chat', preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((respA) => {
@@ -250,7 +250,7 @@ describe('J155-J164: concurrency + race journeys', () => {
     });
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'second chat', preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((respB) => {
@@ -261,7 +261,7 @@ describe('J155-J164: concurrency + race journeys', () => {
   it('J156: POST /api/admin/models/swap accepts model_id', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/models/swap',
+      url: `${Cypress.env('apiUrl')}/api/admin/models/swap`,
       body: {model_id: 'qwen-0.5b'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -270,12 +270,12 @@ describe('J155-J164: concurrency + race journeys', () => {
   });
 
   it('J157: camera + chat + TTS simultaneous → /api/vlm/health + /chat + /tts/quick', () => {
-    cy.request({url: 'http://localhost:5000/api/vlm/health', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/vlm/health`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 404, 503]);
     });
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'concurrent-with-tts', preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -286,13 +286,13 @@ describe('J155-J164: concurrency + race journeys', () => {
   it('J158: two users same adapter concurrent inbound (POST /crossbar twice)', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/crossbar',
+      url: `${Cypress.env('apiUrl')}/crossbar`,
       body: {topic: 'com.hertzai.hevolve.chat.user_a', args: ['hi-a']},
       failOnStatusCode: false,
     });
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/crossbar',
+      url: `${Cypress.env('apiUrl')}/crossbar`,
       body: {topic: 'com.hertzai.hevolve.chat.user_b', args: ['hi-b']},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -304,14 +304,14 @@ describe('J155-J164: concurrency + race journeys', () => {
     for (let i = 0; i < 10; i++) {
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/crossbar',
+        url: `${Cypress.env('apiUrl')}/crossbar`,
         body: {topic: `com.hertzai.test.j159.${i}`, args: [i]},
         failOnStatusCode: false,
       });
     }
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/wamp/status',
+      url: `${Cypress.env('apiUrl')}/api/wamp/status`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
@@ -321,13 +321,13 @@ describe('J155-J164: concurrency + race journeys', () => {
   it('J160: parallel remember writes return envelopes', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/memory/remember',
+      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
       body: {text: 'parallel-1', agent_id: 'j160'},
       failOnStatusCode: false,
     });
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/memory/remember',
+      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
       body: {text: 'parallel-2', agent_id: 'j160'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -358,7 +358,7 @@ describe('J165-J170: security / SSRF / origin checks', () => {
   it('J165: /api/image-proxy rejects private-net IP (SSRF DNS rebind)', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/image-proxy?url=http://169.254.169.254/latest',
+      url: `${Cypress.env('apiUrl')}/api/image-proxy?url=http://169.254.169.254/latest`,
       failOnStatusCode: false,
     }).then((resp) => {
       // Expected: 400 (rejected) or 403 (gated) or 503.  NOT 200 with body.
@@ -369,7 +369,7 @@ describe('J165-J170: security / SSRF / origin checks', () => {
   it('J166: WAMP ticket endpoint responds even with missing auth', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/wamp/ticket',
+      url: `${Cypress.env('apiUrl')}/api/wamp/ticket`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403]);
@@ -379,7 +379,7 @@ describe('J165-J170: security / SSRF / origin checks', () => {
   it('J167: POST /api/mcp/local/tools/execute with wrong bearer returns 403', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/mcp/local/tools/execute',
+      url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/execute`,
       body: {tool: 'system_health', arguments: {}},
       headers: {Authorization: 'Bearer rotated-invalid'},
       failOnStatusCode: false,
@@ -391,7 +391,7 @@ describe('J165-J170: security / SSRF / origin checks', () => {
   it('J169: POST /api/admin/models/hub/install with untrusted org returns 400/401/403', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/models/hub/install',
+      url: `${Cypress.env('apiUrl')}/api/admin/models/hub/install`,
       body: {hf_id: 'untrusted-bad-org/malicious-model'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -402,7 +402,7 @@ describe('J165-J170: security / SSRF / origin checks', () => {
   it('J170: /api/image-proxy with file:// scheme rejected', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/image-proxy?url=file:///etc/passwd',
+      url: `${Cypress.env('apiUrl')}/api/image-proxy?url=file:///etc/passwd`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([400, 401, 403, 404, 503]);

@@ -18,7 +18,7 @@
  *   - All cy.request() use failOnStatusCode: false.
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 const DISTRIBUTED = `${API}/api/distributed`;
 
 describe('Distributed Goal Notifications E2E', () => {
@@ -124,7 +124,7 @@ describe('Distributed Goal Notifications E2E', () => {
     it('1.5 POST /api/distributed/hosts/register responds with auth token', () => {
       cy.socialRequest('POST', `${DISTRIBUTED}/hosts/register`, {
         host_id: 'cypress-host',
-        host_url: 'http://localhost:5000',
+        host_url: `${Cypress.env('apiUrl')}`,
         capabilities: ['testing', 'coding'],
         compute_budget: {max_tasks: 5},
       }).then((res) => {

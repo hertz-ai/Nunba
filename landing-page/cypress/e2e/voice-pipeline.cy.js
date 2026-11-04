@@ -30,7 +30,7 @@
  * 90 tests across 8 sections.
  */
 describe('Voice Pipeline E2E', () => {
-  const FLASK = 'http://localhost:5000';
+  const FLASK = `${Cypress.env('apiUrl')}`;
   const TTS_BASE = `${FLASK}/tts`;
 
   // ── Fixtures ──────────────────────────────────────────────────────────

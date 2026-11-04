@@ -26,7 +26,7 @@
  *  10. TTS Toggle Triggers Synthesis - UI toggle actually works (NEW)
  */
 describe('TTS (Text-to-Speech) Setup & Integration E2E', () => {
-  const API = 'http://localhost:5000';
+  const API = `${Cypress.env('apiUrl')}`;
   const TTS_BASE = `${API}/tts`;
 
   // ─────────────────────────────────────────────────────

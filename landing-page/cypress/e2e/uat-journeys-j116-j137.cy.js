@@ -47,7 +47,7 @@ describe('J116, J117: language auto-detect + per-agent override', () => {
   it('POST /chat with non-Latin input overrides stored en preference', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'வணக்கம்', preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -58,7 +58,7 @@ describe('J116, J117: language auto-detect + per-agent override', () => {
   it('POST /chat with per-agent metadata lang honours agent override', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'hello', agent_id: 'ta_agent', agent_lang: 'ta'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -79,7 +79,7 @@ describe('J118-J120: TTS streaming + STT + engine add', () => {
   it('POST /api/tts/submit returns job_id envelope or 503', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/tts/submit',
+      url: `${Cypress.env('apiUrl')}/api/tts/submit`,
       body: {text: 'hello', voice: 'default'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -90,7 +90,7 @@ describe('J118-J120: TTS streaming + STT + engine add', () => {
   it('POST /api/voice/transcribe (STT) returns envelope or 503', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/voice/transcribe',
+      url: `${Cypress.env('apiUrl')}/api/voice/transcribe`,
       body: {audio_b64: '', lang: 'hi'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -101,7 +101,7 @@ describe('J118-J120: TTS streaming + STT + engine add', () => {
   it('POST /api/tts/setup-engine accepts engine selector', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/tts/setup-engine',
+      url: `${Cypress.env('apiUrl')}/api/tts/setup-engine`,
       body: {engine: 'kokoro'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -122,7 +122,7 @@ describe('J121: VLM caption + TTS', () => {
   it('POST /api/vlm/caption returns caption envelope or 503', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/vlm/caption',
+      url: `${Cypress.env('apiUrl')}/api/vlm/caption`,
       body: {image_b64: '', prompt: 'describe'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -133,7 +133,7 @@ describe('J121: VLM caption + TTS', () => {
   it('POST /api/social/tts/quick accepts caption as text body', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/tts/quick',
+      url: `${Cypress.env('apiUrl')}/api/social/tts/quick`,
       body: {text: 'a happy cat on a mat', voice: 'default'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -154,7 +154,7 @@ describe('J122: TTS concurrency does not lock engine', () => {
   it('two back-to-back TTS submits both return envelopes', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/tts/quick',
+      url: `${Cypress.env('apiUrl')}/api/social/tts/quick`,
       body: {text: 'user A long text '.repeat(50)},
       failOnStatusCode: false,
       timeout: 20000,
@@ -163,7 +163,7 @@ describe('J122: TTS concurrency does not lock engine', () => {
     });
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/tts/quick',
+      url: `${Cypress.env('apiUrl')}/api/social/tts/quick`,
       body: {text: 'user B short text'},
       failOnStatusCode: false,
     }).then((respB) => {
@@ -184,7 +184,7 @@ describe('J123, J124: hive fusion + federated aggregator', () => {
   it('POST /chat with intelligence_preference=hive_preferred does not crash', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'summarize', intelligence_preference: 'hive_preferred'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -195,7 +195,7 @@ describe('J123, J124: hive fusion + federated aggregator', () => {
   it('GET /api/social/federated/round returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/federated/round',
+      url: `${Cypress.env('apiUrl')}/api/social/federated/round`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
@@ -215,7 +215,7 @@ describe('J125: encrypted cross-user offload', () => {
   it('GET /api/distributed/peer/keys returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/distributed/peer/keys',
+      url: `${Cypress.env('apiUrl')}/api/distributed/peer/keys`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -235,7 +235,7 @@ describe('J126-J128: peer reclaim, ensemble, gossip recovery', () => {
   it('POST /api/distributed/tasks/claim returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/distributed/tasks/claim',
+      url: `${Cypress.env('apiUrl')}/api/distributed/tasks/claim`,
       body: {task_id: 'j126_test'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -246,7 +246,7 @@ describe('J126-J128: peer reclaim, ensemble, gossip recovery', () => {
   it('POST /api/hive/benchmarks/challenge accepts model_ids list', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/hive/benchmarks/challenge',
+      url: `${Cypress.env('apiUrl')}/api/hive/benchmarks/challenge`,
       body: {model_ids: ['qwen-4b', 'llama-7b'], prompt: 'benchmark-test'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -257,7 +257,7 @@ describe('J126-J128: peer reclaim, ensemble, gossip recovery', () => {
   it('GET /api/social/peers/health returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/peers/health',
+      url: `${Cypress.env('apiUrl')}/api/social/peers/health`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -277,7 +277,7 @@ describe('J129: spark/gamification balance', () => {
   it('GET /api/social/gamification/balance returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/gamification/balance',
+      url: `${Cypress.env('apiUrl')}/api/social/gamification/balance`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
@@ -297,7 +297,7 @@ describe('J130: signature verification chain', () => {
   it('GET /api/distributed/verify/chain returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/distributed/verify/chain',
+      url: `${Cypress.env('apiUrl')}/api/distributed/verify/chain`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -317,7 +317,7 @@ describe('J131, J132: tier promote + key rotation', () => {
   it('POST /api/admin/tier/promote returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/tier/promote',
+      url: `${Cypress.env('apiUrl')}/api/admin/tier/promote`,
       body: {target_tier: 'regional'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -328,7 +328,7 @@ describe('J131, J132: tier promote + key rotation', () => {
   it('POST /api/admin/keys/rotate returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/keys/rotate',
+      url: `${Cypress.env('apiUrl')}/api/admin/keys/rotate`,
       body: {},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -349,7 +349,7 @@ describe('J133: resonance wallet transactions', () => {
   it('GET /api/social/resonance/transactions returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/resonance/transactions',
+      url: `${Cypress.env('apiUrl')}/api/social/resonance/transactions`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
@@ -359,7 +359,7 @@ describe('J133: resonance wallet transactions', () => {
   it('GET /api/social/resonance/leaderboard returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/resonance/leaderboard',
+      url: `${Cypress.env('apiUrl')}/api/social/resonance/leaderboard`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
@@ -379,7 +379,7 @@ describe('J134: hive task dispatch multi-candidate', () => {
   it('POST /api/distributed/tasks/announce with model list returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/distributed/tasks/announce',
+      url: `${Cypress.env('apiUrl')}/api/distributed/tasks/announce`,
       body: {task_type: 'chat', candidates: ['peer_a', 'peer_b']},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -400,7 +400,7 @@ describe('J135-J137: encounters, merge, notifications', () => {
   it('GET /api/social/encounters/suggestions stubbed envelope exists', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/encounters/suggestions',
+      url: `${Cypress.env('apiUrl')}/api/social/encounters/suggestions`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -423,7 +423,7 @@ describe('J135-J137: encounters, merge, notifications', () => {
   it('GET /api/social/notifications list envelope stubbed', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/notifications',
+      url: `${Cypress.env('apiUrl')}/api/social/notifications`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);

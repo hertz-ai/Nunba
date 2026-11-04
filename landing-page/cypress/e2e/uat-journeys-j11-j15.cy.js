@@ -76,7 +76,7 @@ describe('J12: crossbar WAMP realtime push', () => {
   it('GET /api/wamp/status returns {running, ...}', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/wamp/status',
+      url: `${Cypress.env('apiUrl')}/api/wamp/status`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
@@ -91,7 +91,7 @@ describe('J12: crossbar WAMP realtime push', () => {
   it('GET /api/wamp/ticket returns an envelope regardless of auth state', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/wamp/ticket',
+      url: `${Cypress.env('apiUrl')}/api/wamp/ticket`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403]);
@@ -104,7 +104,7 @@ describe('J12: crossbar WAMP realtime push', () => {
   it('POST /crossbar publishes to the embedded router (or 503)', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/crossbar',
+      url: `${Cypress.env('apiUrl')}/crossbar`,
       body: {topic: 'com.hertzai.test.j12', args: [1, 2], kwargs: {}},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -125,7 +125,7 @@ describe('J13: kids media pipeline (3-tier asset resolution)', () => {
   it('GET /api/media/asset with missing prompt returns 400', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/media/asset',
+      url: `${Cypress.env('apiUrl')}/api/media/asset`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([400, 401, 403, 503]);
@@ -135,7 +135,7 @@ describe('J13: kids media pipeline (3-tier asset resolution)', () => {
   it('GET /api/media/asset with invalid type returns 400', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/media/asset?prompt=cat&type=invalid',
+      url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=cat&type=invalid`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([400, 401, 403, 503]);
@@ -145,7 +145,7 @@ describe('J13: kids media pipeline (3-tier asset resolution)', () => {
   it('GET /api/media/asset with valid params returns asset or 503', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/media/asset?prompt=happy+cat&type=image&style=cartoon&classification=public_educational',
+      url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=happy+cat&type=image&style=cartoon&classification=public_educational`,
       failOnStatusCode: false,
       timeout: 30000,
     }).then((resp) => {
@@ -156,7 +156,7 @@ describe('J13: kids media pipeline (3-tier asset resolution)', () => {
   it('GET /api/media/asset/status/<job_id> returns job envelope or 404', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/media/asset/status/nonexistent-job',
+      url: `${Cypress.env('apiUrl')}/api/media/asset/status/nonexistent-job`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 404, 503]);
@@ -196,7 +196,7 @@ describe('J14: agent creation pipeline (Steps 1-20)', () => {
 
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'create a research agent', autonomous_creation: true, preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -207,7 +207,7 @@ describe('J14: agent creation pipeline (Steps 1-20)', () => {
   it('auto_continue flag on chat body does not crash the route', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'continue', auto_continue: true, preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -228,7 +228,7 @@ describe('J15: external MCP client → /api/mcp/local with bearer', () => {
   it('GET /api/mcp/local/health responds 200 without auth (tool count only)', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/mcp/local/health',
+      url: `${Cypress.env('apiUrl')}/api/mcp/local/health`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 503]);
@@ -242,7 +242,7 @@ describe('J15: external MCP client → /api/mcp/local with bearer', () => {
   it('GET /api/mcp/local/tools/list on loopback works without bearer', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/mcp/local/tools/list',
+      url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/list`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 403, 503]);
@@ -255,7 +255,7 @@ describe('J15: external MCP client → /api/mcp/local with bearer', () => {
   it('POST /api/mcp/local/tools/execute without bearer → 403', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/mcp/local/tools/execute',
+      url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/execute`,
       body: {tool: 'system_health', arguments: {}},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -268,7 +268,7 @@ describe('J15: external MCP client → /api/mcp/local with bearer', () => {
   it('POST /api/mcp/local/tools/execute with wrong bearer → 403', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/mcp/local/tools/execute',
+      url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/execute`,
       body: {tool: 'system_health', arguments: {}},
       headers: {Authorization: 'Bearer totally-wrong-token'},
       failOnStatusCode: false,

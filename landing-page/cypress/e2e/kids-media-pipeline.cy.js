@@ -31,7 +31,7 @@ describe('Kids Media Pipeline', () => {
   describe('GET /api/media/asset', () => {
     it('returns 400 when prompt is missing', () => {
       cy.request({
-        url: 'http://localhost:5000/api/media/asset?type=image',
+        url: `${Cypress.env('apiUrl')}/api/media/asset?type=image`,
         failOnStatusCode: false,
       }).then((res) => {
         expect([400, 404, 500, 503]).to.include(res.status);
@@ -40,7 +40,7 @@ describe('Kids Media Pipeline', () => {
 
     it('returns 400 when type is invalid', () => {
       cy.request({
-        url: 'http://localhost:5000/api/media/asset?prompt=hello&type=invalid',
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=hello&type=invalid`,
         failOnStatusCode: false,
       }).then((res) => {
         expect([400, 404, 500, 503]).to.include(res.status);
@@ -49,7 +49,7 @@ describe('Kids Media Pipeline', () => {
 
     it('accepts valid image request', () => {
       cy.request({
-        url: 'http://localhost:5000/api/media/asset?prompt=cute+cartoon+apple&type=image&style=cartoon',
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=cute+cartoon+apple&type=image&style=cartoon`,
         failOnStatusCode: false,
       }).then((res) => {
         // May return 200 (cache hit), 503 (agent unavailable), or image bytes
@@ -59,7 +59,7 @@ describe('Kids Media Pipeline', () => {
 
     it('accepts valid TTS request', () => {
       cy.request({
-        url: 'http://localhost:5000/api/media/asset?prompt=hello+world&type=tts',
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=hello+world&type=tts`,
         failOnStatusCode: false,
       }).then((res) => {
         expect([200, 400, 404, 500, 503]).to.include(res.status);
@@ -68,7 +68,7 @@ describe('Kids Media Pipeline', () => {
 
     it('returns 202 with job_id for music requests', () => {
       cy.request({
-        url: 'http://localhost:5000/api/media/asset?prompt=happy+children+music&type=music',
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=happy+children+music&type=music`,
         failOnStatusCode: false,
       }).then((res) => {
         // Music is async: 202 with job_id or 503 if service unavailable
@@ -83,7 +83,7 @@ describe('Kids Media Pipeline', () => {
 
     it('returns 202 with job_id for video requests', () => {
       cy.request({
-        url: 'http://localhost:5000/api/media/asset?prompt=letter+A+being+drawn&type=video',
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=letter+A+being+drawn&type=video`,
         failOnStatusCode: false,
       }).then((res) => {
         expect([202, 404, 500, 503]).to.include(res.status);
@@ -101,7 +101,7 @@ describe('Kids Media Pipeline', () => {
   describe('GET /api/media/asset/status/<job_id>', () => {
     it('returns 404 for unknown job_id', () => {
       cy.request({
-        url: 'http://localhost:5000/api/media/asset/status/nonexistent_abc123',
+        url: `${Cypress.env('apiUrl')}/api/media/asset/status/nonexistent_abc123`,
         failOnStatusCode: false,
       }).then((res) => {
         expect([404, 500, 503]).to.include(res.status);
@@ -119,7 +119,7 @@ describe('Kids Media Pipeline', () => {
     it('returns 400 when text is missing', () => {
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/api/social/tts/quick',
+        url: `${Cypress.env('apiUrl')}/api/social/tts/quick`,
         body: {},
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
@@ -131,7 +131,7 @@ describe('Kids Media Pipeline', () => {
     it('accepts valid TTS request', () => {
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/api/social/tts/quick',
+        url: `${Cypress.env('apiUrl')}/api/social/tts/quick`,
         body: {text: 'Hello world', voice: 'default', speed: 1.0},
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
@@ -153,7 +153,7 @@ describe('Kids Media Pipeline', () => {
     it('returns 400 when text is missing', () => {
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/api/social/tts/submit',
+        url: `${Cypress.env('apiUrl')}/api/social/tts/submit`,
         body: {},
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
@@ -165,7 +165,7 @@ describe('Kids Media Pipeline', () => {
     it('accepts valid submit and returns taskId', () => {
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/api/social/tts/submit',
+        url: `${Cypress.env('apiUrl')}/api/social/tts/submit`,
         body: {text: 'This is a longer text for async processing'},
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
@@ -179,7 +179,7 @@ describe('Kids Media Pipeline', () => {
 
     it('returns 404 for unknown TTS taskId', () => {
       cy.request({
-        url: 'http://localhost:5000/api/social/tts/status/nonexistent_xyz',
+        url: `${Cypress.env('apiUrl')}/api/social/tts/status/nonexistent_xyz`,
         failOnStatusCode: false,
       }).then((res) => {
         expect([404, 500, 503]).to.include(res.status);
@@ -193,7 +193,7 @@ describe('Kids Media Pipeline', () => {
   describe('Data Classification & Access Control', () => {
     it('public_educational assets are accessible without user_id', () => {
       cy.request({
-        url: 'http://localhost:5000/api/media/asset?prompt=cute+cartoon+apple&type=image&classification=public_educational',
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=cute+cartoon+apple&type=image&classification=public_educational`,
         failOnStatusCode: false,
       }).then((res) => {
         // Should NOT return 403 for public assets
@@ -205,7 +205,7 @@ describe('Kids Media Pipeline', () => {
       // This test verifies that if a private asset exists, a different user can't fetch it
       // In practice we need the asset to exist first; this validates the code path
       cy.request({
-        url: 'http://localhost:5000/api/media/asset?prompt=private+content&type=image&classification=user_private&user_id=wrong_user',
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=private+content&type=image&classification=user_private&user_id=wrong_user`,
         failOnStatusCode: false,
       }).then((res) => {
         // Could be 403 (access denied), 503 (no agent), or 200 (cache miss → generate new)
@@ -308,7 +308,7 @@ describe('Kids Media Pipeline', () => {
     it('handles JSON URL response from backend', () => {
       cy.intercept('GET', '**/api/media/asset*type=image*', {
         statusCode: 200,
-        body: {url: 'http://localhost:5000/static/test.png'},
+        body: {url: `${Cypress.env('apiUrl')}/static/test.png`},
       }).as('mediaImageJson');
 
       cy.visit('/social', {
@@ -441,7 +441,7 @@ describe('Kids Media Pipeline', () => {
 
       // Direct request to verify poll endpoint contract
       cy.request({
-        url: 'http://localhost:5000/api/media/asset/status/music_done',
+        url: `${Cypress.env('apiUrl')}/api/media/asset/status/music_done`,
         failOnStatusCode: false,
       }).then((res) => {
         // 404 (job doesn't exist) or 200/500
@@ -579,7 +579,7 @@ describe('Kids Media Pipeline', () => {
   describe('Edge Cases', () => {
     it('empty prompt returns error', () => {
       cy.request({
-        url: 'http://localhost:5000/api/media/asset?prompt=&type=image',
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=&type=image`,
         failOnStatusCode: false,
       }).then((res) => {
         expect([400, 404, 500, 503]).to.include(res.status);
@@ -589,7 +589,7 @@ describe('Kids Media Pipeline', () => {
     it('very long prompt is handled', () => {
       const longPrompt = 'a'.repeat(2000);
       cy.request({
-        url: `http://localhost:5000/api/media/asset?prompt=${encodeURIComponent(longPrompt)}&type=image`,
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=${encodeURIComponent(longPrompt)}&type=image`,
         failOnStatusCode: false,
       }).then((res) => {
         // Should not crash — might be 400, 503, or 200
@@ -599,7 +599,7 @@ describe('Kids Media Pipeline', () => {
 
     it('special characters in prompt are handled', () => {
       cy.request({
-        url: `http://localhost:5000/api/media/asset?prompt=${encodeURIComponent('cute "apple" & <tiger>')}&type=image`,
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=${encodeURIComponent('cute "apple" & <tiger>')}&type=image`,
         failOnStatusCode: false,
       }).then((res) => {
         expect([200, 400, 404, 500, 503]).to.include(res.status);
@@ -609,7 +609,7 @@ describe('Kids Media Pipeline', () => {
     it('TTS with kids-friendly voice mapping', () => {
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/api/social/tts/quick',
+        url: `${Cypress.env('apiUrl')}/api/social/tts/quick`,
         body: {text: 'Hello kids', voice: 'kids-friendly', speed: 0.8},
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
@@ -621,7 +621,7 @@ describe('Kids Media Pipeline', () => {
     it('TTS speed is clamped to valid range', () => {
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/api/social/tts/quick',
+        url: `${Cypress.env('apiUrl')}/api/social/tts/quick`,
         body: {text: 'Fast talking', voice: 'default', speed: 5.0},
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
@@ -677,12 +677,12 @@ describe('Kids Media Pipeline', () => {
 
       // First request — cache miss
       cy.request({
-        url: `http://localhost:5000/api/media/asset?prompt=${prompt}&type=image&style=cartoon`,
+        url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=${prompt}&type=image&style=cartoon`,
         failOnStatusCode: false,
       }).then((res1) => {
         // Second request — should hit cache if first succeeded
         cy.request({
-          url: `http://localhost:5000/api/media/asset?prompt=${prompt}&type=image&style=cartoon`,
+          url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=${prompt}&type=image&style=cartoon`,
           failOnStatusCode: false,
         }).then((res2) => {
           // Both should return same status (both miss if agent unavailable)

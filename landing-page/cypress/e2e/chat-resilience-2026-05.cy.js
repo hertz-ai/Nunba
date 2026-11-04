@@ -18,7 +18,7 @@
  */
 
 const APP = Cypress.config('baseUrl') || 'http://localhost:3000';
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 describe('#207 guest session survives 401 mid-chat (functional)', () => {
   beforeEach(() => {

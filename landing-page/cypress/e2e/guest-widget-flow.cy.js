@@ -10,7 +10,7 @@
  * 4. Chat works without manual login
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 describe('Guest Widget Flow', () => {
 

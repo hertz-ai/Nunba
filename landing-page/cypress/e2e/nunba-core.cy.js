@@ -12,7 +12,7 @@
  * 6. Notification toast system
  */
 
-const API = Cypress.config('baseUrl') || 'http://localhost:5000';
+const API = Cypress.config('baseUrl') || `${Cypress.env('apiUrl')}`;
 
 describe('Habit Features', () => {
 

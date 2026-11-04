@@ -9,6 +9,14 @@ module.exports = defineConfig({
     },
     // React dev server on 3000, Flask backend on 5000
     baseUrl: 'http://localhost:3000',
+    // The Flask backend every spec's cy.request / cy.intercept URL is
+    // built on: Cypress.env('apiUrl').  A local run against a test Flask on
+    // another port passes --env apiUrl=http://localhost:<port>; without it
+    // the specs reach whatever owns :5000 (on a dev box, the installed Nunba).
+    // Build that run's bundle with REACT_APP_API_BASE_URL to match.
+    env: {
+      apiUrl: 'http://localhost:5000',
+    },
     supportFile: 'cypress/support/e2e.js',
     specPattern: 'cypress/e2e/**/*.cy.{js,jsx}',
     viewportWidth: 1280,

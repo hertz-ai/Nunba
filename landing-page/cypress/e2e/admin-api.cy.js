@@ -16,7 +16,7 @@
  *   - Channels admin: http://localhost:5000/api/admin/*
  */
 
-const API_BASE = 'http://localhost:5000';
+const API_BASE = `${Cypress.env('apiUrl')}`;
 const ADMIN_API = `${API_BASE}/api/admin`;
 
 // Helper: make raw request to channels admin API

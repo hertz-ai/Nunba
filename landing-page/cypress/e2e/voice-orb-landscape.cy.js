@@ -19,7 +19,7 @@
  * landscape size and must fail for the old constant cap.
  */
 
-const APP = Cypress.env('APP_URL') || 'http://localhost:5000';
+const APP = Cypress.env('APP_URL') || `${Cypress.env('apiUrl')}`;
 
 /** Landscape desktop. 0.28 * 1920 = 537.6 -> the constraining dimension. */
 const W = 1920;

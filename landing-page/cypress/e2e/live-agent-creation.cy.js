@@ -21,7 +21,7 @@
  *   - Assertions on structure, not content (LLM responses are non-deterministic).
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 const LANGCHAIN_API = 'http://localhost:6777';
 const LLAMA_API = 'http://localhost:8080';
 

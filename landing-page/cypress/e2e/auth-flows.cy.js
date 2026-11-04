@@ -1300,7 +1300,7 @@ describe('Authentication Flows E2E', () => {
   // 11. REAL AUTH FLOW TESTS (No mocks - tests actual API behavior)
   // --------------------------------------------------------------------------
   describe('11 - Real Auth Flow Integration Tests', () => {
-    const SOCIAL_API = 'http://localhost:5000/api/social';
+    const SOCIAL_API = `${Cypress.env('apiUrl')}/api/social`;
 
     beforeEach(() => {
       cy.clearLocalStorage();
@@ -1560,7 +1560,7 @@ describe('Authentication Flows E2E', () => {
   // 12. Token Refresh Flow Tests
   // --------------------------------------------------------------------------
   describe('12 - Token Refresh Flow Tests', () => {
-    const SOCIAL_API = 'http://localhost:5000/api/social';
+    const SOCIAL_API = `${Cypress.env('apiUrl')}/api/social`;
     const RENEW_TOKEN_ENDPOINT = 'https://mailer.hertzai.com/refresh_tokens';
 
     beforeEach(() => {
@@ -1676,7 +1676,7 @@ describe('Authentication Flows E2E', () => {
   // 13. Logout and Session Clearing Tests
   // --------------------------------------------------------------------------
   describe('13 - Logout and Session Clearing Tests', () => {
-    const SOCIAL_API = 'http://localhost:5000/api/social';
+    const SOCIAL_API = `${Cypress.env('apiUrl')}/api/social`;
 
     beforeEach(() => {
       setupCommonIntercepts();
@@ -1969,7 +1969,7 @@ describe('Authentication Flows E2E', () => {
   // 15. JWT Token Validation Tests
   // --------------------------------------------------------------------------
   describe('15 - JWT Token Validation Tests', () => {
-    const SOCIAL_API = 'http://localhost:5000/api/social';
+    const SOCIAL_API = `${Cypress.env('apiUrl')}/api/social`;
 
     /**
      * Helper: Decode JWT payload

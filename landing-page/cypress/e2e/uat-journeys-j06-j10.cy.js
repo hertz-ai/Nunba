@@ -41,7 +41,7 @@ describe('J06: social end-to-end (register → login → post → feed)', () => 
 
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/register',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/register`,
       body: {username: 'alice_j06', password: 'hunter2test!'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -63,7 +63,7 @@ describe('J06: social end-to-end (register → login → post → feed)', () => 
     }).as('login');
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/login',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/login`,
       body: {username: 'alice_j06', password: 'hunter2test!'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -106,7 +106,7 @@ describe('J07: admin HF Hub model install (supply-chain gates)', () => {
     }).as('hubSearch');
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/models/hub/search?q=qwen',
+      url: `${Cypress.env('apiUrl')}/api/admin/models/hub/search?q=qwen`,
       failOnStatusCode: false,
     }).then((resp) => {
       // local-or-token gate: Cypress runs from 127.0.0.1 → bypass.
@@ -117,7 +117,7 @@ describe('J07: admin HF Hub model install (supply-chain gates)', () => {
   it('POST /api/admin/models/hub/install returns 400 on missing hf_id', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/models/hub/install',
+      url: `${Cypress.env('apiUrl')}/api/admin/models/hub/install`,
       body: {},  // intentionally empty
       failOnStatusCode: false,
     }).then((resp) => {
@@ -128,7 +128,7 @@ describe('J07: admin HF Hub model install (supply-chain gates)', () => {
   it('supply-chain gate rejects untrusted org without confirm flag', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/models/hub/install',
+      url: `${Cypress.env('apiUrl')}/api/admin/models/hub/install`,
       body: {hf_id: 'random-suspect-org/totally-malicious-model'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -173,7 +173,7 @@ describe('J08: kids mode template game (media preload + TTS quick-submit)', () =
   it('POST /api/social/tts/quick returns envelope or 503', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/tts/quick',
+      url: `${Cypress.env('apiUrl')}/api/social/tts/quick`,
       body: {text: 'Good job!', voice: 'piper_en'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -211,7 +211,7 @@ describe('J09: multi-device agent sync (active_agent_id + sync endpoints)', () =
   it('GET /agents/sync returns agent list envelope (or 401/503)', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/agents/sync',
+      url: `${Cypress.env('apiUrl')}/agents/sync`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -221,7 +221,7 @@ describe('J09: multi-device agent sync (active_agent_id + sync endpoints)', () =
   it('POST /agents/migrate returns 400 on missing agent_id', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/agents/migrate',
+      url: `${Cypress.env('apiUrl')}/agents/migrate`,
       body: {},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -242,7 +242,7 @@ describe('J10: offline degradation (network down → local TTS + LLM still work)
   it('GET /api/online returns {online: bool} regardless of network state', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/online',
+      url: `${Cypress.env('apiUrl')}/api/online`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.eq(200);
@@ -274,7 +274,7 @@ describe('J10: offline degradation (network down → local TTS + LLM still work)
     }
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/diag/degradations',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/degradations`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 500, 503]);

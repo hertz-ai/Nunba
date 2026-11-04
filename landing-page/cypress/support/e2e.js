@@ -14,7 +14,7 @@ Cypress.on('uncaught:exception', () => false);
 // Uses fetch() via cy.wrap to gracefully handle connection-refused (cy.request throws)
 before(() => {
   cy.wrap(
-    fetch('http://localhost:5000/api/social/test/reset-rate-limits', {
+    fetch(`${Cypress.env('apiUrl')}/api/social/test/reset-rate-limits`, {
       method: 'POST',
     }).catch(() => {
       /* backend not running — OK for stub-based tests */
@@ -48,7 +48,7 @@ beforeEach(() => {
 // Social Auth Custom Commands
 // ---------------------------------------------------------------------------
 
-const API_BASE = 'http://localhost:5000';
+const API_BASE = `${Cypress.env('apiUrl')}`;
 const SOCIAL_API = `${API_BASE}/api/social`;
 
 // Generate unique test user credentials

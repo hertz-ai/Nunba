@@ -32,7 +32,7 @@
  *   - Backend API tests gracefully skip if Flask is not running.
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 describe('Autonomous Agent Creation E2E', () => {
   // =========================================================================
@@ -160,6 +160,9 @@ describe('Autonomous Agent Creation E2E', () => {
       win.localStorage.setItem('guest_user_id', 'cypress-auto-user');
       win.localStorage.setItem('guest_name_verified', 'true');
     });
+    // A sealed HART: unsealed, /local is the onboarding ceremony and has no
+    // chat textarea (cypress/support/e2e.js sealHart).
+    cy.sealHart('Test.Auto.User');
   }
 
   function setupBaseIntercepts() {

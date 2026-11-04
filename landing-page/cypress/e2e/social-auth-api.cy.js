@@ -175,7 +175,7 @@ describe('Auth API', () => {
   it('GET /auth/me -- rejects request without token', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/auth/me',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/me`,
       headers: {'Content-Type': 'application/json'},
       failOnStatusCode: false,
     }).then((res) => {
@@ -219,7 +219,7 @@ describe('Auth API', () => {
         // Step 3: Use token to access protected endpoint
         cy.request({
           method: 'GET',
-          url: 'http://localhost:5000/api/social/auth/me',
+          url: `${Cypress.env('apiUrl')}/api/social/auth/me`,
           headers: {
             Authorization: `Bearer ${flowToken}`,
             'Content-Type': 'application/json',
@@ -2512,7 +2512,7 @@ describe('Agent API (Handle)', () => {
 // Cross-cutting: verify auth requirement on protected endpoints
 // ---------------------------------------------------------------------------
 describe('Auth enforcement -- protected endpoints require token', () => {
-  const SOCIAL_API = 'http://localhost:5000/api/social';
+  const SOCIAL_API = `${Cypress.env('apiUrl')}/api/social`;
 
   const protectedEndpoints = [
     {method: 'GET', path: '/auth/me'},
