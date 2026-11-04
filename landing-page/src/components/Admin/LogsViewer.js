@@ -48,7 +48,7 @@ import {
   Error as ErrorIcon,
 } from '@mui/icons-material';
 
-const API_BASE = 'http://localhost:5000';
+import {API_BASE_URL as API_BASE} from '../../config/apiBase';
 
 // Log level colors
 const LOG_LEVEL_COLORS = {

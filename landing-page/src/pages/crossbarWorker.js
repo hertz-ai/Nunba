@@ -1,6 +1,8 @@
 import autobahn from 'autobahn';
 import axios from 'axios';
 
+import {API_BASE_URL} from '../config/apiBase';
+
 let connectionInstance = null;
 let reconnectTimer = null;
 let statusCheckInterval = null;
@@ -74,7 +76,7 @@ const cleanupProcessedMessages = () => {
 
 const checkCompanionAppStatus = async () => {
   try {
-    const response = await axios.get('http://localhost:5000/status');
+    const response = await axios.get(`${API_BASE_URL}/status`);
     logResponse('COMPANION_STATUS_RESPONSE', response.data);
 
     const isOperational = response.data.status === 'operational';
@@ -274,7 +276,7 @@ const handleScreenshot = async (args) => {
   logResponse('SCREENSHOT_PROCEDURE_CALLED', {args});
 
   try {
-    const response = await axios.get('http://localhost:5000/screenshot', {
+    const response = await axios.get(`${API_BASE_URL}/screenshot`, {
       responseType: 'arraybuffer',
     });
 
@@ -308,7 +310,7 @@ const handleExecute = async (args) => {
     console.log(`Payload: ${JSON.stringify(payload)}`);
     logResponse('PAYLOAD_LOGGED', {payload});
 
-    const response = await axios.post('http://localhost:5000/execute', payload);
+    const response = await axios.post(`${API_BASE_URL}/execute`, payload);
     logResponse('EXECUTE_RESPONSE_RECEIVED', {response: response.data});
 
     return response.data;
@@ -772,7 +774,7 @@ let _wampTicket = '';
 
 async function fetchWampTicket() {
   try {
-    const res = await axios.get('http://localhost:5000/api/wamp/ticket');
+    const res = await axios.get(`${API_BASE_URL}/api/wamp/ticket`);
     _wampTicket = res.data?.ticket || '';
     logResponse('WAMP_TICKET_FETCHED', {hasTicket: !!_wampTicket});
   } catch (err) {
