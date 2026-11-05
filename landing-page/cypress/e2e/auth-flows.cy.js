@@ -27,7 +27,11 @@
 // ---------------------------------------------------------------------------
 // Shared constants
 // ---------------------------------------------------------------------------
-const LOGIN_API_URL = 'https://mailer.hertzai.com/verifyTeacherByPhone';
+// OtpAuthModal sends the OTP to AZURE_LOGIN_URL (src/config/apiBase.js),
+// ${CLOUD_API_URL}/data/login.  This was mailer's verifyTeacherByPhone, which
+// the modal no longer calls: nothing matched the intercept, so every "GET OTP"
+// click went to the real cloud with the test phone number.
+const LOGIN_API_URL = 'https://azurekong.hertzai.com/data/login';
 const VERIFY_OTP_API_URL = 'https://azurekong.hertzai.com/data/varify_otp';
 const RENEW_TOKEN_URL = 'https://mailer.hertzai.com/refresh_tokens';
 const CHECK_HANDLE_URL = '**/agents/check-handle*';
@@ -78,6 +82,16 @@ function setupCommonIntercepts() {
   // Intercept the guest handle availability check
   cy.intercept('GET', CHECK_HANDLE_URL).as('checkHandle');
 
+  // A local LLM that is set up and running.  On a runner with no model,
+  // /api/llm/status?full=1 answers setup_needed and Demopage appends a
+  // "Local LLM Setup" card to the chat a few seconds after load.  The login
+  // modal is mounted in the empty-chat block, so that card unmounts an open
+  // modal mid-test ("GET OTP" gone right after "User Sign in" was found).
+  cy.intercept('GET', '**/api/llm/status*', {
+    statusCode: 200,
+    body: {available: true, setup_needed: false},
+  });
+
   // Intercept social API calls that fire on page load so they do not fail
   cy.intercept('GET', '**/api/social/**', {statusCode: 200, body: {}});
   cy.intercept('GET', '**/prompts*', {
@@ -102,8 +116,32 @@ function setupCommonIntercepts() {
 // Helper: visit the main agent page (which is the DemoPage / Agent component)
 // The app uses BrowserRouter, so "/" renders <Agent /> which renders Demopage.
 // "/agents/Hevolve" is the specific agent URL and also renders Agent/Demopage.
+//
+// The page is visited as someone whose HART is sealed but who is not signed
+// in.  Every route that renders <Agent /> ("/", "/local", "/agents/:name")
+// shows the LightYourHART onboarding instead of the chat until hart_sealed is
+// set (Agent.js, HART ONBOARDING GATE), so with a bare localStorage there is
+// no textarea, no "Please login" button and no login modal to open.
+//
+// The speech-consent question is already answered.  Until it is, Demopage
+// shows the ProactiveConciergeCard where the empty-chat block would be, and
+// that block is where the login modal is mounted (Demopage.js, speechConsent
+// === null branch): "Please login to talk to agent." is then on screen but
+// opens nothing.  Measured 2026-11-05 on a CI-like stack: unanswered, no
+// "User Sign in" after the click; answered text_only, the modal opens.
+//
+// {newGuest: true} also drops guest_name, as OtpAuthModal's "Use a different
+// name" does.  With guest_name kept, /local's modal is the returning-guest
+// "Welcome back ... Continue as" card, not the Guest Login name form.
 // ---------------------------------------------------------------------------
-function visitAgentPage(path = '/agents/Hevolve') {
+function visitAgentPage(path = '/agents/Hevolve', {newGuest = false} = {}) {
+  cy.sealHart('Test.Auth.User', 'en', {loggedOut: true});
+  // Inside cy.then: sealHart is a queued command, so a bare removeItem here
+  // would run before it and sealHart would write guest_name back.
+  cy.then(() => {
+    localStorage.setItem('nunba_speech_consent', 'text_only');
+    if (newGuest) localStorage.removeItem('guest_name');
+  });
   cy.visit(path, {failOnStatusCode: false, timeout: 60000});
   // Wait for the React app to mount -- use a DOM element check instead of
   // waiting on the cloud API intercept which may time out.
@@ -276,8 +314,14 @@ describe('Authentication Flows E2E', () => {
       // Modal should be open
       cy.contains('h2', 'User Sign in').should('be.visible');
 
-      // Click the close (X) button -- it is an SVG inside a button near the top
-      cy.get('.fixed button').first().click({force: true});
+      // Click the close (X) button -- the first button inside the modal's
+      // portal root (OtpAuthModal: <p>, then the X button).  A bare
+      // '.fixed button' finds the page's own fixed panels first.
+      cy.contains('h2', 'User Sign in')
+        .closest('.fixed')
+        .find('button')
+        .first()
+        .click({force: true});
 
       // Modal heading should no longer be visible
       cy.contains('h2', 'User Sign in').should('not.exist');
@@ -557,7 +601,7 @@ describe('Authentication Flows E2E', () => {
     });
 
     it('should show Guest Login UI when visiting /local route', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // On /local route, the modal should auto-open with forceGuestMode=true
       // The heading should say "Guest Login" instead of "User Sign in"
@@ -568,7 +612,7 @@ describe('Authentication Flows E2E', () => {
     });
 
     it('should display username input and agent handle preview', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // Username input
       cy.get('input[placeholder="Enter your name (e.g., John)"]', {
@@ -590,7 +634,7 @@ describe('Authentication Flows E2E', () => {
     });
 
     it('should generate Adjective.Color.Username handle when name is entered', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // Type a username
       cy.get('input[placeholder="Enter your name (e.g., John)"]', {
@@ -613,7 +657,7 @@ describe('Authentication Flows E2E', () => {
     });
 
     it('should regenerate the prefix when the refresh button is clicked', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       cy.get('input[placeholder="Enter your name (e.g., John)"]', {
         timeout: 30000,
@@ -650,7 +694,7 @@ describe('Authentication Flows E2E', () => {
     });
 
     it('should store guest_mode items in localStorage on Continue as Guest', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // Enter a username
       cy.get('input[placeholder="Enter your name (e.g., John)"]', {
@@ -663,24 +707,28 @@ describe('Authentication Flows E2E', () => {
       // Click Continue as Guest
       cy.contains('button', 'Continue as Guest').click({force: true});
 
-      // Verify localStorage
+      // Verify localStorage.  Continue as Guest first POSTs
+      // /api/social/auth/guest-register to the real backend and only then
+      // writes the keys (setGuestIdentity), so wait for guest_mode with a
+      // retrying assertion instead of a fixed 1 s sleep that raced it.
+      cy.window()
+        .its('localStorage')
+        .invoke('getItem', 'guest_mode')
+        .should('eq', 'true');
       cy.window().then((win) => {
-        cy.wait(1000).then(() => {
-          expect(win.localStorage.getItem('guest_mode')).to.eq('true');
-          expect(win.localStorage.getItem('guest_name')).to.not.be.null;
-          expect(win.localStorage.getItem('guest_user_id')).to.not.be.null;
+        expect(win.localStorage.getItem('guest_name')).to.not.be.null;
+        expect(win.localStorage.getItem('guest_user_id')).to.not.be.null;
 
-          // The guest_name should follow Adjective.Color.TestUser format
-          const guestName = win.localStorage.getItem('guest_name');
-          const parts = guestName.split('.');
-          expect(parts.length).to.eq(3);
-          expect(parts[2]).to.eq('TestUser');
-        });
+        // The guest_name should follow Adjective.Color.TestUser format
+        const guestName = win.localStorage.getItem('guest_name');
+        const parts = guestName.split('.');
+        expect(parts.length).to.eq(3);
+        expect(parts[2]).to.eq('TestUser');
       });
     });
 
     it('should show validation error when Continue as Guest is clicked with empty username', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // Do NOT enter a username -- leave it blank
       cy.wait(1000);
@@ -1880,6 +1928,9 @@ describe('Authentication Flows E2E', () => {
     });
 
     it('should enable chat input when authenticated', () => {
+      // Sealed HART: unsealed, the page is the onboarding and has no textarea
+      // (see visitAgentPage).
+      cy.sealHart('Test.Auth.User');
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
         timeout: 60000,
