@@ -20,33 +20,10 @@
 const APP = Cypress.config('baseUrl') || 'http://localhost:3000';
 const API = `${Cypress.env('apiUrl')}`;
 
-/**
- * /local as the chat a returning guest sees:
- *  - a sealed HART (cy.sealHart): unsealed, /local is the LightYourHART
- *    onboarding and has no textarea (Agent.js, HART ONBOARDING GATE);
- *  - the speech-consent question answered, so the ProactiveConciergeCard
- *    is not in the way ('granted' when a test needs speech);
- *  - a local LLM that is up: on a runner with none, /api/llm/status makes
- *    Demopage queue every send for 20 s (hooks/useLocalEngineReady) and
- *    append a "Local LLM Setup" card to the chat.
- */
-function visitLocalChat({consent = 'text_only'} = {}) {
-  cy.intercept('GET', '**/api/llm/status*', {
-    statusCode: 200,
-    body: {available: true, setup_needed: false},
-  });
-  cy.sealHart('Test.Resilience.User');
-  cy.then(() => {
-    localStorage.setItem('nunba_speech_consent', consent);
-    if (consent === 'granted') localStorage.setItem('tts_enabled', 'true');
-  });
-  cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-}
-
 describe('#207 guest session survives 401 mid-chat (functional)', () => {
   beforeEach(() => {
     cy.clearAllLocalStorage();
-    visitLocalChat();
+    cy.openLocalChat();
   });
 
   it('silentGuestRefresh fires on /chat 401, then retries with new token', () => {
@@ -112,7 +89,7 @@ describe('#170 autogen prompt stays within llama-server n_ctx budget', () => {
 
 describe('#125 retry cap surfaces clear failure', () => {
   beforeEach(() => {
-    visitLocalChat();
+    cy.openLocalChat();
   });
 
   it('after MAX_RETRIES backend-unreachable attempts, message status=failed', () => {
@@ -175,7 +152,7 @@ describe('#206 + #218 TTS playback after on-device reply', () => {
   // src/__tests__/utils/ttsGuards.test.js.
 
   it('draft-first bubble does NOT speak (waits for expert)', () => {
-    visitLocalChat({consent: 'granted'});
+    cy.openLocalChat({consent: 'granted'});
     cy.intercept('POST', '**/chat', {
       statusCode: 200,
       body: {
@@ -234,7 +211,7 @@ describe('#204 TaskLedger 3-level grouping (admin)', () => {
 
 describe('NFT — premium-UX criteria (visible feedback within 100ms)', () => {
   it('clicking send button shows visual feedback under 100ms', () => {
-    visitLocalChat();
+    cy.openLocalChat();
     cy.intercept('POST', '**/chat', {
       statusCode: 200,
       body: {text: 'ok', source: 'langchain_local'},

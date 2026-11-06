@@ -46,8 +46,9 @@ describe('J06: social end-to-end (register → login → post → feed)', () => 
       failOnStatusCode: false,
     }).then((resp) => {
       // Both stub + real backend should return the register envelope shape.
-      expect(resp.status).to.be.oneOf([200, 400, 409]); // 409 if user exists on live backend
-      if (resp.status === 200) {
+      // A new user is 201 Created on the real backend; 409 if it exists.
+      expect(resp.status).to.be.oneOf([200, 201, 400, 409]);
+      if (resp.status === 200 || resp.status === 201) {
         expect(resp.body.data).to.have.property('api_token');
       }
     });
@@ -239,29 +240,32 @@ describe('J10: offline degradation (network down → local TTS + LLM still work)
     installBaselineStubs();
   });
 
-  it('GET /api/online returns {online: bool} regardless of network state', () => {
+  // The network probe is GET /network/status (routes/chatbot_routes.py
+  // network_status_route, read by socialApi.networkStatus).  There is no
+  // /api/online route: it answered 404.
+  it('GET /network/status returns {is_online: bool} regardless of network state', () => {
     cy.request({
       method: 'GET',
-      url: `${Cypress.env('apiUrl')}/api/online`,
+      url: `${Cypress.env('apiUrl')}/network/status`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.eq(200);
-      expect(resp.body).to.have.property('online');
+      expect(resp.body).to.have.property('is_online').that.is.a('boolean');
     });
   });
 
-  it('stubbed network-down /api/online does not crash chat shell', () => {
-    cy.intercept('GET', '**/api/online', {statusCode: 200, body: {online: false}}).as('onlineStub');
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|type a message/i, {timeout: 10000}).should('exist');
+  it('stubbed network-down /network/status does not crash chat shell', () => {
+    cy.intercept('GET', '**/network/status*', {statusCode: 200, body: {is_online: false, cloud_services: {}}}).as('onlineStub');
+    // A sealed HART: unsealed, /local is the onboarding and has no chat.
+    cy.openLocalChat();
+    cy.get('textarea', {timeout: 30000}).should('be.visible');
   });
 
   it('/chat still returns a local-source envelope when provider gateway 503', () => {
     cy.intercept('GET', '**/api/admin/providers/gateway/stats', {statusCode: 503, body: {error: 'Provider gateway not available'}});
     cy.intercept('POST', '**/chat', {statusCode: 200, body: {text: 'local response', source: 'local', draft_used: false}}).as('chatLocal');
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|type a message/i, {timeout: 10000});
-    cy.get('textarea, input[type="text"]').first().type('hello{enter}', {force: true});
+    cy.openLocalChat();
+    cy.get('textarea', {timeout: 30000}).first().type('hello{enter}', {force: true});
     cy.wait('@chatLocal').its('response.body.source').should('eq', 'local');
   });
 

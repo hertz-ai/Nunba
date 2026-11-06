@@ -401,6 +401,30 @@ Cypress.Commands.add('sealHart', (name = 'CypressTest', language = 'en', {logged
 });
 
 /**
+ * /local as the chat a returning guest sees, ready to type into:
+ *  - a sealed HART (cy.sealHart above);
+ *  - the speech-consent question answered, so Demopage's
+ *    ProactiveConciergeCard is not where the empty-chat block belongs
+ *    ('granted' when a test needs speech);
+ *  - a local LLM that is up.  On a runner with none, /api/llm/status makes
+ *    Demopage queue every send for ENGINE_BOOT_GRACE_MS (20 s,
+ *    hooks/useLocalEngineReady) and its ?full=1 check appends a
+ *    "Local LLM Setup" card to the chat.
+ */
+Cypress.Commands.add('openLocalChat', ({consent = 'text_only', name = 'CypressTest'} = {}) => {
+  cy.intercept('GET', '**/api/llm/status*', {
+    statusCode: 200,
+    body: {available: true, setup_needed: false},
+  });
+  cy.sealHart(name);
+  cy.then(() => {
+    localStorage.setItem('nunba_speech_consent', consent);
+    if (consent === 'granted') localStorage.setItem('tts_enabled', 'true');
+  });
+  cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+});
+
+/**
  * Verify that a request with the given token succeeds
  */
 Cypress.Commands.add('verifyTokenWorks', (token) => {
