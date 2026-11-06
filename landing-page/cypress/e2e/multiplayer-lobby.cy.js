@@ -158,9 +158,14 @@ function stubCatalog(engine, title, extraConfig = {}) {
         title: title || engine,
         engine,
         category: 'test',
+        // Defaults first, the caller's config last.  The other order put
+        // MOCK_GAME_INFO's questions over a caller's own (Game Complete
+        // Phase's single "What color is the sky?"), so that game asked
+        // "What is 2+2?" and its five tests waited 30 s for a question
+        // that never came.
         engine_config: {
-          ...extraConfig,
           questions: MOCK_GAME_INFO.data.questions,
+          ...extraConfig,
         },
       },
     ],
@@ -394,9 +399,10 @@ describe('Unified Game Screen - Lobby Phase', () => {
     cy.contains('button', /create room/i, {timeout: 25000}).click({
       force: true,
     });
-    // After creating a session, status transitions to 'waiting' or 'creating'
-    // The lobby shows "Waiting for Players" or "Setting up..."
-    cy.contains(/waiting|setting up/i, {timeout: 30000}).should('exist');
+    // The created session waits for players.  'Setting up...' is the
+    // 'creating' state, which a room the backend accepted never left until
+    // 42b3179, so it does not count as reaching the lobby.
+    cy.contains(/waiting/i, {timeout: 30000}).should('exist');
   });
 
   it('waiting state shows session code', () => {
@@ -406,7 +412,7 @@ describe('Unified Game Screen - Lobby Phase', () => {
     });
     // The session code is displayed as a monospace string in the waiting state
     // The code is derived from session ID or returned by the API
-    cy.contains(/waiting|setting up/i, {timeout: 30000}).should('exist');
+    cy.contains(/waiting/i, {timeout: 30000}).should('exist');
     // The code area or copy icon should be present
     cy.get('body').should(($body) => {
       // Either a copy button icon or the code text itself
@@ -423,7 +429,7 @@ describe('Unified Game Screen - Lobby Phase', () => {
     cy.contains('button', /create room/i, {timeout: 25000}).click({
       force: true,
     });
-    cy.contains(/waiting|setting up/i, {timeout: 30000}).should('exist');
+    cy.contains(/waiting/i, {timeout: 30000}).should('exist');
     // Click the Leave button to return to idle mode
     cy.contains('button', /leave/i, {timeout: 30000}).click({force: true});
     // Should return to idle lobby (Solo, Quick Match, Create Room visible again)
@@ -553,6 +559,9 @@ describe('Unified Game Screen - Engine Rendering', () => {
         text.includes('puzzle') ||
         text.includes('check') ||
         text.includes('hint') ||
+        // SudokuEngine's header: difficulty, 'Mistakes: n / 3', score.
+        // Its cells are buttons, so the old input check never matched.
+        text.includes('mistakes') ||
         $body.find('input').length > 0;
       const hasLoading = text.includes('loading');
       expect(hasPuzzleUI || hasLoading).to.be.true;
