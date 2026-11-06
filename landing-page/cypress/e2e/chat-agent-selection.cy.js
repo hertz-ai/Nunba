@@ -115,8 +115,11 @@ describe('Chat Agent Selection', () => {
     cy.intercept('GET', '**/getprompt_all/**', { statusCode: 200, body: [] }).as('cloudPublic');
     cy.intercept('GET', '**/getprompt/**', { statusCode: 200, body: [] }).as('cloudUser');
 
-    // Stub LLM status so setup card doesn't appear
-    cy.intercept('GET', '**/api/llm/status', {
+    // Stub LLM status so setup card doesn't appear.  The trailing * also
+    // matches Demopage's one-shot /api/llm/status?full=1 setup check; without
+    // it that request reached the runner's real (model-less) backend and a
+    // 'Local LLM Setup' card replaced the empty-chat block.
+    cy.intercept('GET', '**/api/llm/status*', {
       statusCode: 200,
       body: { available: true, model_name: 'qwen-2.5', setup_needed: false },
     }).as('llmStatus');
@@ -140,18 +143,43 @@ describe('Chat Agent Selection', () => {
     }).as('agentsSync');
   }
 
+  /**
+   * A returning guest on this device: a sealed HART (no onboarding), guest
+   * mode, and the speech-consent question answered.  Unanswered, Demopage
+   * shows the ProactiveConciergeCard where the empty-chat block, and the
+   * active agent's name in its heading, would be.
+   */
+  function seedReturningGuest() {
+    localStorage.removeItem('active_agent_id');
+    localStorage.setItem('hart_sealed', 'true');
+    localStorage.setItem('hart_name', 'CypressTest');
+    localStorage.setItem('guest_mode', 'true');
+    localStorage.setItem('guest_user_id', 'cypress_user_001');
+    localStorage.setItem('nunba_speech_consent', 'text_only');
+  }
+
+  /** The active agent's name: the empty-chat heading (Demopage.js). */
+  function activeAgentHeading() {
+    return cy.get('h1', {timeout: 30000}).filter(':visible');
+  }
+
+  /**
+   * The /prompts agents are listed in the 'View All Agents' overlay
+   * (components/Agent/Agents.js, predefinedAgents = Demopage's allAgents).
+   * The sidebar's Recents is a fixed showcase list, not /prompts.
+   */
+  function openAllAgents() {
+    cy.contains('button', 'View All Agents', {timeout: 30000}).click({force: true});
+    cy.contains('h2', 'All Agents', {timeout: 30000}).should('be.visible');
+  }
+
   // =========================================================================
   // 1. Default Agent on Fresh Load
   // =========================================================================
   describe('1. Default Agent on Fresh Load', () => {
     beforeEach(() => {
       stubApis();
-      // Clear any saved agent preference
-      localStorage.removeItem('active_agent_id');
-      localStorage.setItem('hart_sealed', 'true');
-      localStorage.setItem('hart_name', 'CypressTest');
-      localStorage.setItem('guest_mode', 'true');
-      localStorage.setItem('guest_user_id', 'cypress_user_001');
+      seedReturningGuest();
     });
 
     it('1.1 selects local_assistant as default when no saved preference', () => {
@@ -159,11 +187,9 @@ describe('Chat Agent Selection', () => {
       cy.wait('@getPrompts', { timeout: 30000 });
       cy.wait(3000);
 
-      // The agent name "HART" (local_assistant) should appear in the page
-      cy.get('body').should(($body) => {
-        const text = $body.text();
-        expect(text).to.include('HART');
-      });
+      // The active agent's name heads the empty chat.  (A body-text match
+      // for 'HART' also hit the sidebar's 'Hear HART OS speak'.)
+      activeAgentHeading().should('contain.text', 'HART');
     });
 
     it('1.2 does not auto-select a user-created agent on fresh load', () => {
@@ -174,11 +200,9 @@ describe('Chat Agent Selection', () => {
       // Should NOT show the created agent's name as the active/heading agent
       // The created agent name might appear in the sidebar list, so we check
       // the main chat area heading specifically
-      cy.get('body').then(($body) => {
-        const text = $body.text();
-        // HART should be present (default), and Science Tutor should NOT be the heading
-        expect(text).to.include('HART');
-      });
+      activeAgentHeading()
+        .should('contain.text', 'HART')
+        .and('not.contain.text', 'Science Tutor');
     });
 
     it('1.3 restores saved agent from localStorage if valid', () => {
@@ -188,10 +212,7 @@ describe('Chat Agent Selection', () => {
       cy.wait('@getPrompts', { timeout: 30000 });
       cy.wait(3000);
 
-      cy.get('body').should(($body) => {
-        const text = $body.text();
-        expect(text).to.include('Cloud GPT');
-      });
+      activeAgentHeading().should('contain.text', 'Cloud GPT');
     });
 
     it('1.4 clears invalid active_agent_id and falls back to default', () => {
@@ -201,9 +222,12 @@ describe('Chat Agent Selection', () => {
       cy.wait('@getPrompts', { timeout: 30000 });
       cy.wait(3000);
 
-      // Invalid ID should be cleared; page should show default agent
+      // The unknown id is dropped and the default agent chosen, and the
+      // default's id is saved in its place (Demopage.js fetchPrompts: the
+      // fallback writes active_agent_id, symmetric with a restore).
+      activeAgentHeading().should('contain.text', 'HART');
       cy.window().then((win) => {
-        expect(win.localStorage.getItem('active_agent_id')).to.be.null;
+        expect(win.localStorage.getItem('active_agent_id')).to.eq('1');
       });
     });
   });
@@ -214,61 +238,46 @@ describe('Chat Agent Selection', () => {
   describe('2. Switching Agents Updates Chat', () => {
     beforeEach(() => {
       stubApis();
-      localStorage.removeItem('active_agent_id');
-      localStorage.setItem('hart_sealed', 'true');
-      localStorage.setItem('hart_name', 'CypressTest');
-      localStorage.setItem('guest_mode', 'true');
-      localStorage.setItem('guest_user_id', 'cypress_user_001');
+      seedReturningGuest();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 30000 });
       cy.wait(3000);
     });
 
     it('2.1 clicking an agent in the sidebar updates the active agent', () => {
-      // Find and click on the "Cloud GPT" agent button/link in the sidebar
-      cy.contains('Cloud GPT', { timeout: 30000 }).click({ force: true });
-      cy.wait(1000);
+      openAllAgents();
+      cy.contains('.agent-card__name', 'Cloud GPT', { timeout: 30000 }).click({ force: true });
 
-      // After clicking, the active agent name should update in the UI
-      cy.get('body').should(($body) => {
-        const text = $body.text();
-        expect(text).to.include('Cloud GPT');
-      });
+      activeAgentHeading().should('contain.text', 'Cloud GPT');
     });
 
     it('2.2 switching agents persists active_agent_id to localStorage', () => {
-      cy.contains('Cloud GPT', { timeout: 30000 }).click({ force: true });
-      cy.wait(1000);
+      openAllAgents();
+      cy.contains('.agent-card__name', 'Cloud GPT', { timeout: 30000 }).click({ force: true });
 
-      cy.window().then((win) => {
-        const savedId = win.localStorage.getItem('active_agent_id');
-        expect(savedId).to.eq('2');
-      });
+      cy.window().its('localStorage').invoke('getItem', 'active_agent_id')
+        .should('eq', '2');
     });
 
     it('2.3 switching back to default agent works', () => {
       // First switch away
-      cy.contains('Cloud GPT', { timeout: 30000 }).click({ force: true });
-      cy.wait(500);
+      openAllAgents();
+      cy.contains('.agent-card__name', 'Cloud GPT', { timeout: 30000 }).click({ force: true });
+      activeAgentHeading().should('contain.text', 'Cloud GPT');
 
       // Then switch back to HART
-      cy.contains('HART', { timeout: 30000 }).first().click({ force: true });
-      cy.wait(1000);
+      openAllAgents();
+      cy.contains('.agent-card__name', /^HART$/, { timeout: 30000 })
+        .click({ force: true });
 
-      cy.get('body').should(($body) => {
-        const text = $body.text();
-        expect(text).to.include('HART');
-      });
+      activeAgentHeading().should('contain.text', 'HART');
     });
 
     it('2.4 switching to a created agent shows its name', () => {
-      cy.contains('Science Tutor', { timeout: 30000 }).click({ force: true });
-      cy.wait(1000);
+      openAllAgents();
+      cy.contains('.agent-card__name', 'Science Tutor', { timeout: 30000 }).click({ force: true });
 
-      cy.get('body').should(($body) => {
-        const text = $body.text();
-        expect(text).to.include('Science Tutor');
-      });
+      activeAgentHeading().should('contain.text', 'Science Tutor');
     });
   });
 
@@ -278,29 +287,28 @@ describe('Chat Agent Selection', () => {
   describe('3. Created Agents in Sidebar', () => {
     beforeEach(() => {
       stubApis();
-      localStorage.removeItem('active_agent_id');
-      localStorage.setItem('hart_sealed', 'true');
-      localStorage.setItem('hart_name', 'CypressTest');
-      localStorage.setItem('guest_mode', 'true');
-      localStorage.setItem('guest_user_id', 'cypress_user_001');
+      seedReturningGuest();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 30000 });
       cy.wait(3000);
     });
 
     it('3.1 user-created agents appear in the agent list', () => {
+      openAllAgents();
       cy.contains('Science Tutor', { timeout: 30000 }).should('exist');
       cy.contains('Music Composer', { timeout: 30000 }).should('exist');
     });
 
     it('3.2 built-in agents appear in the agent list', () => {
+      openAllAgents();
       cy.contains('HART', { timeout: 30000 }).should('exist');
       cy.contains('Cloud GPT', { timeout: 30000 }).should('exist');
     });
 
     it('3.3 total agent count matches fixture', () => {
-      // There should be at least 4 agents rendered somewhere on page
-      cy.get('body').then(($body) => {
+      openAllAgents();
+      cy.contains('4 agents').should('exist');
+      cy.get('.agents-page').then(($body) => {
         const text = $body.text();
         expect(text).to.include('HART');
         expect(text).to.include('Cloud GPT');
@@ -341,10 +349,11 @@ describe('Chat Agent Selection', () => {
       cy.wait('@getPromptsInactive', { timeout: 30000 });
       cy.wait(3000);
 
-      // Active agents should be visible
-      cy.contains('HART', { timeout: 30000 }).should('exist');
+      // Active agents should be listed
+      openAllAgents();
+      cy.contains('Cloud GPT', { timeout: 30000 }).should('exist');
       // Inactive agent should not appear (backend filters, frontend also filters)
-      cy.get('body').then(($body) => {
+      cy.get('.agents-page').then(($body) => {
         const text = $body.text();
         expect(text).to.not.include('InactiveBot');
       });
@@ -357,11 +366,7 @@ describe('Chat Agent Selection', () => {
   describe('4. Agent Capabilities', () => {
     beforeEach(() => {
       stubApis();
-      localStorage.removeItem('active_agent_id');
-      localStorage.setItem('hart_sealed', 'true');
-      localStorage.setItem('hart_name', 'CypressTest');
-      localStorage.setItem('guest_mode', 'true');
-      localStorage.setItem('guest_user_id', 'cypress_user_001');
+      seedReturningGuest();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
       cy.wait('@getPrompts', { timeout: 30000 });
       cy.wait(3000);
@@ -369,7 +374,8 @@ describe('Chat Agent Selection', () => {
 
     it('4.1 agent type (local vs cloud) is distinguishable in the UI', () => {
       // Both local and cloud agents should render
-      cy.get('body').then(($body) => {
+      openAllAgents();
+      cy.get('.agents-page').then(($body) => {
         const text = $body.text();
         // At minimum the agent names are present — type is conveyed via
         // icon/badge/label next to each agent name
