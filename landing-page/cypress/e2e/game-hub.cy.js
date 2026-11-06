@@ -220,23 +220,23 @@ function visitGameHub() {
   cy.get('#root', {timeout: 30000}).should('exist');
 }
 
-function visitGameScreen(gameId) {
-  // Stub single-game catalog lookup for the UnifiedGameScreen resolver
-  cy.intercept('GET', `**/api/social/games/catalog?id=${gameId}*`, {
-    statusCode: 200,
-    body: {
-      success: true,
-      data: [
-        MOCK_CATALOG.data.find((g) => g.id === gameId) || MOCK_CATALOG.data[0],
-      ],
-    },
-  }).as('catalogLookup');
-
+// `entry`: the catalog entry the screen should resolve; by default the
+// MOCK_CATALOG game with this id.  Registered here because a stub a test
+// set up before calling this was overridden by these (the later intercept
+// wins), so 'unknown-game' resolved to General Knowledge.
+function visitGameScreen(gameId, entry) {
+  const resolved =
+    entry || MOCK_CATALOG.data.find((g) => g.id === gameId) || MOCK_CATALOG.data[0];
   // Also intercept wildcard catalog calls that the page may issue
   cy.intercept('GET', '**/api/social/games/catalog*', {
     statusCode: 200,
-    body: MOCK_CATALOG,
+    body: entry ? {success: true, data: [entry]} : MOCK_CATALOG,
   });
+  // Single-game catalog lookup for the UnifiedGameScreen resolver
+  cy.intercept('GET', `**/api/social/games/catalog?id=${gameId}*`, {
+    statusCode: 200,
+    body: {success: true, data: [resolved]},
+  }).as('catalogLookup');
 
   cy.visit(`/social/games/${gameId}`, {
     failOnStatusCode: false,
@@ -441,7 +441,10 @@ describe('Game Hub — E2E', () => {
 
     it('shows "Games" heading', () => {
       visitGameHub();
-      cy.contains('Games', {timeout: 30000}).should('be.visible');
+      // The hub's own heading (GameHub.jsx, Typography h5).  A bare
+      // contains('Games') found the sidebar's "Games" nav link first, which
+      // is not visible at this viewport.
+      cy.contains('h5', /^\s*Games\s*$/, {timeout: 30000}).should('be.visible');
     });
 
     it('renders Quick Match buttons (Trivia, Board, Arcade, Word)', () => {
@@ -540,8 +543,13 @@ describe('Game Hub — E2E', () => {
     });
 
     it('shows empty state when no games match', () => {
+      // An empty backend catalog falls back to the local one by design
+      // (hooks/useGameCatalog), so the empty state is a search that
+      // matches nothing in either.
       stubBackend({emptyGames: true});
       visitGameHub();
+      cy.get('input[placeholder*="earch"]', {timeout: 30000})
+        .type('zz-no-such-game-zz', {force: true});
       cy.contains(/no games found/i, {timeout: 30000}).should('be.visible');
     });
 
@@ -601,28 +609,18 @@ describe('Game Hub — E2E', () => {
     });
 
     it('renders engine placeholder for unknown engine type', () => {
-      // Stub a catalog entry with an unknown engine
-      cy.intercept('GET', '**/api/social/games/catalog*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [
-            {
-              id: 'unknown-game',
-              title: 'Mystery Game',
-              engine: 'mystery_engine_xyz',
-              category: 'party',
-              audience: 'adult',
-              min_players: 1,
-              max_players: 1,
-              multiplayer: false,
-              featured: false,
-            },
-          ],
-        },
+      // A catalog entry with an unknown engine
+      visitGameScreen('unknown-game', {
+        id: 'unknown-game',
+        title: 'Mystery Game',
+        engine: 'mystery_engine_xyz',
+        category: 'party',
+        audience: 'adult',
+        min_players: 1,
+        max_players: 1,
+        multiplayer: false,
+        featured: false,
       });
-
-      visitGameScreen('unknown-game');
       // The lobby should still render with Play Solo
       cy.contains(/mystery game/i, {timeout: 30000}).should('be.visible');
       cy.contains(/play solo/i, {timeout: 30000}).should('be.visible');
