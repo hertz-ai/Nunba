@@ -541,6 +541,21 @@ jobs:
           name: cypress-reports-shard${{ matrix.shard }}
           path: landing-page/cypress/reports/
 
+      # The Flask a whole shard ran against: its stdout (/tmp/flask.log, see
+      # "Start Flask backend") and the app's own log (core.platform_paths
+      # get_log_dir), which records SSE client counts per broadcast.  Later
+      # specs in a shard have run slowly while the same spec is fast on a
+      # fresh server; these are what show whether the server degraded.
+      - name: Upload Flask logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flask-logs-shard${{ matrix.shard }}
+          path: |
+            /tmp/flask.log
+            ~/Documents/Nunba/logs/server.log
+          if-no-files-found: warn
+
       - name: Stop Flask backend
         if: always()
         run: kill $(cat /tmp/flask.pid) 2>/dev/null || true
