@@ -29,6 +29,7 @@ from core.platform_paths import (
     get_data_dir,
     get_db_dir,
     get_db_path,
+    get_installed_log_dir,
     get_log_dir,
     get_memory_graph_dir,
     get_prompts_dir,
@@ -335,7 +336,13 @@ class TestLogDirProvenanceSeparation:
         unaffected."""
         with patch.object(sys, 'frozen', True, create=True):
             reset_cache()
-            assert os.path.basename(get_log_dir()) == 'logs'
+            log_dir = get_log_dir()
+            assert log_dir == get_installed_log_dir()
+            # The documented path is per OS (core.platform_paths.
+            # get_installed_log_dir): macOS follows Apple's
+            # ~/Library/Logs/Nunba, Windows and Linux nest logs/ in the data dir.
+            assert os.path.basename(log_dir) == (
+                'Nunba' if sys.platform == 'darwin' else 'logs')
 
     def test_env_override_wins_for_both(self):
         """NUNBA_LOG_DIR pins the directory explicitly — needed by CI,

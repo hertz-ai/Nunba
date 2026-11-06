@@ -361,9 +361,14 @@ export default function useGameCatalog(filters = {}) {
     setLoading(true);
     setError(null);
     try {
+      // gamesApi's client (services/axiosFactory) resolves to the response
+      // BODY, {success, data: [...], meta}.  This read `res.data?.data`,
+      // `.data` of the games array, so a backend catalog always looked
+      // empty and the hub showed LOCAL_CATALOG
+      // (__tests__/hooks/useGameCatalog.backend.test.js).
       const res = await gamesApi.catalog(stableFilters);
-      const data = res.data?.data || [];
-      const meta = res.data?.meta || {};
+      const data = Array.isArray(res?.data) ? res.data : [];
+      const meta = res?.meta || {};
       if (data.length > 0) {
         setGames(data);
         setCategories(meta.categories || {});

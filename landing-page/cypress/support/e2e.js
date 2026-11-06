@@ -14,7 +14,7 @@ Cypress.on('uncaught:exception', () => false);
 // Uses fetch() via cy.wrap to gracefully handle connection-refused (cy.request throws)
 before(() => {
   cy.wrap(
-    fetch('http://localhost:5000/api/social/test/reset-rate-limits', {
+    fetch(`${Cypress.env('apiUrl')}/api/social/test/reset-rate-limits`, {
       method: 'POST',
     }).catch(() => {
       /* backend not running — OK for stub-based tests */
@@ -48,7 +48,7 @@ beforeEach(() => {
 // Social Auth Custom Commands
 // ---------------------------------------------------------------------------
 
-const API_BASE = 'http://localhost:5000';
+const API_BASE = `${Cypress.env('apiUrl')}`;
 const SOCIAL_API = `${API_BASE}/api/social`;
 
 // Generate unique test user credentials
@@ -380,6 +380,48 @@ Cypress.Commands.add('clearAuthState', () => {
   Cypress.env('socialToken', null);
   Cypress.env('socialUserId', null);
   Cypress.env('socialUsername', null);
+});
+
+/**
+ * A HART already sealed on this machine, as the onboarding ceremony leaves
+ * it: the keys applyHartSeal (src/hooks/useAuthSession.js) writes.  Without
+ * them /local shows LightYourHART ("What language feels like home?") instead
+ * of the chat (Agent.js, HART ONBOARDING GATE).  Call it before cy.visit.
+ *
+ * {loggedOut: true} is that HART after a logout: clearAuth (same file)
+ * removes guest_mode and the auth keys and keeps the hart_* keys and
+ * guest_name, so /local is the chat with no one signed in.
+ */
+Cypress.Commands.add('sealHart', (name = 'CypressTest', language = 'en', {loggedOut = false} = {}) => {
+  localStorage.setItem('hart_sealed', 'true');
+  localStorage.setItem('hart_name', name);
+  localStorage.setItem('hart_language', language);
+  localStorage.setItem('guest_name', name);
+  if (!loggedOut) localStorage.setItem('guest_mode', 'true');
+});
+
+/**
+ * /local as the chat a returning guest sees, ready to type into:
+ *  - a sealed HART (cy.sealHart above);
+ *  - the speech-consent question answered, so Demopage's
+ *    ProactiveConciergeCard is not where the empty-chat block belongs
+ *    ('granted' when a test needs speech);
+ *  - a local LLM that is up.  On a runner with none, /api/llm/status makes
+ *    Demopage queue every send for ENGINE_BOOT_GRACE_MS (20 s,
+ *    hooks/useLocalEngineReady) and its ?full=1 check appends a
+ *    "Local LLM Setup" card to the chat.
+ */
+Cypress.Commands.add('openLocalChat', ({consent = 'text_only', name = 'CypressTest'} = {}) => {
+  cy.intercept('GET', '**/api/llm/status*', {
+    statusCode: 200,
+    body: {available: true, setup_needed: false},
+  });
+  cy.sealHart(name);
+  cy.then(() => {
+    localStorage.setItem('nunba_speech_consent', consent);
+    if (consent === 'granted') localStorage.setItem('tts_enabled', 'true');
+  });
+  cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 });
 
 /**

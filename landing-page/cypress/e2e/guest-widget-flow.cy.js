@@ -10,7 +10,7 @@
  * 4. Chat works without manual login
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 describe('Guest Widget Flow', () => {
 
@@ -81,13 +81,13 @@ describe('Guest Widget Flow', () => {
           cy.visit(`/?embed=true&companionAppInstalled=true&token=${encodeURIComponent(token)}`, {timeout: 60000, failOnStatusCode: false});
 
           // Find chat input and type
-          cy.get('textarea, input[type="text"]', { timeout: 300000 })
+          cy.get('textarea, input[type="text"]', { timeout: 30000 })
             .first()
             .should('be.visible')
             .type('hello');
 
           // Find send button and click
-          cy.get('button[aria-label*="send"], button[type="submit"], button svg', { timeout: 300000 })
+          cy.get('button[aria-label*="send"], button[type="submit"], button svg', { timeout: 30000 })
             .first()
             .click({ force: true });
 
@@ -113,7 +113,7 @@ describe('Guest Widget Flow', () => {
 
       // The app should try to recover the guest session
       // and not show login
-      cy.get('body', { timeout: 300000 }).should('be.visible');
+      cy.get('body', { timeout: 30000 }).should('be.visible');
     });
   });
 });

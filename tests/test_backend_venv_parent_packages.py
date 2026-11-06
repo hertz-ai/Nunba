@@ -30,6 +30,14 @@ BACKEND = "pth_backend"
 @pytest.fixture
 def venv_root(tmp_path, monkeypatch):
     monkeypatch.setenv("NUNBA_VENV_ROOT_OVERRIDE", str(tmp_path))
+    # Where the app packages live is HARTOS's question, not this file's: CI
+    # pip-installs HARTOS, so core/integrations resolve from site-packages,
+    # which parent_package_roots() refuses to name (a venv must not see a
+    # distribution dir), it returns [] and no .pth is written -- on every OS
+    # (CI, PR #72).  A source checkout returns the repo root.  Pin one root so
+    # these tests check what they are for: ensure_venv calls the writer.
+    monkeypatch.setattr(venv_paths, "parent_package_roots",
+                        lambda: [str(tmp_path / "app_root")])
     backend_venv._reset_cache_for_tests()
     yield tmp_path
     backend_venv._reset_cache_for_tests()

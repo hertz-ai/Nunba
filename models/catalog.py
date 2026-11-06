@@ -257,6 +257,15 @@ def _enforce_nunba_business_rules(catalog: ModelCatalog) -> None:
         version = len(catalog.list_all())
     if version == _business_rules_enforced_at:
         return
+    # populate_media_gen again, now that HARTOS's built-ins have run.  App
+    # populators run FIRST in populate_from_subsystems, and on a fresh
+    # catalogue HARTOS's _populate_audiogen_models then deletes every
+    # audio_gen-* row without capabilities -- the one Nunba just registered
+    # -- and registers its own narrower audio_gen-acestep.  Measured on an
+    # empty NUNBA_DATA_DIR: first boot tags ['local', 'audio_gen'], second
+    # boot adds 'music'/'generative' through populate_media_gen's override
+    # branch.  This run takes that branch on the first boot too.
+    populate_media_gen(catalog)
     for entry in catalog.list_all():
         tags = list(entry.tags or [])
         if 'local' not in tags:

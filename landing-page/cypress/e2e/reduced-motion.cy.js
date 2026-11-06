@@ -38,7 +38,7 @@ describe('Reduced Motion — CSS Global Override', () => {
   });
 
   it('should have reduced motion CSS rule active', () => {
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Inject the reduced motion media query override to verify it's working
     // index.css has: @media (prefers-reduced-motion: reduce) { ... }
@@ -62,7 +62,7 @@ describe('Reduced Motion — CSS Global Override', () => {
   });
 
   it('should still load and display content with reduced motion', () => {
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Page should have content
     cy.get('#root').invoke('html').should('not.be.empty');
@@ -70,7 +70,7 @@ describe('Reduced Motion — CSS Global Override', () => {
   });
 
   it('should not show broken animation artifacts', () => {
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // No elements should be stuck in a mid-animation state
@@ -122,7 +122,7 @@ describe('Reduced Motion — Authenticated Pages', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     // Page should have content
@@ -155,11 +155,11 @@ describe('Reduced Motion — Authenticated Pages', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Tabs should be clickable
-    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 30000}).then(($tabs) => {
       if ($tabs.length >= 2) {
         cy.wrap($tabs.eq(1)).click({force: true});
         cy.wait(500);
@@ -216,7 +216,7 @@ describe('Reduced Motion — Chat Page', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Hero section and chat area should be visible
@@ -227,7 +227,7 @@ describe('Reduced Motion — Chat Page', () => {
     });
 
     // All elements should be visible (not hidden by animation state)
-    cy.get('h1, h2, h3, p', {timeout: 300000}).then(($elements) => {
+    cy.get('h1, h2, h3, p', {timeout: 30000}).then(($elements) => {
       $elements.each(function () {
         const style = window.getComputedStyle(this);
         // Text elements should be visible
@@ -264,7 +264,7 @@ describe('Reduced Motion — Chat Page', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Find chat input and type
@@ -309,11 +309,11 @@ describe('Reduced Motion — Element Visibility', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     // Check major UI elements are visible
-    cy.get('button', {timeout: 300000}).then(($buttons) => {
+    cy.get('button', {timeout: 30000}).then(($buttons) => {
       $buttons.each(function () {
         if (this.offsetWidth > 0 && this.offsetHeight > 0) {
           const style = window.getComputedStyle(this);

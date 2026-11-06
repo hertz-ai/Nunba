@@ -161,8 +161,11 @@ class TestTheRecordIsKeyedByFile:
             backend='llama.cpp',
             files={'model': 'Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf'})
 
-        spawn_path = (r'F:\hevolve\models'
-                      r'\Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf')
+        # In the HOST's form, as the spawn holds it: the spawn (and this
+        # test) cut the record's weight_file with os.path.basename, which on
+        # Linux/macOS leaves a Windows-shaped F:\... path whole.
+        spawn_path = os.path.join(os.path.abspath(os.sep), 'hevolve', 'models',
+                                  'Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf')
         entry = c.get_by_weight_file(spawn_path)
         assert entry is not None and entry.id == 'tiel'
 

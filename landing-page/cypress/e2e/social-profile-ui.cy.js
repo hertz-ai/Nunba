@@ -29,7 +29,7 @@ describe('Own Profile', () => {
     const userId = Cypress.env('socialUserId');
     cy.socialVisit(`/social/profile/${userId}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.url().should('include', '/social/profile');
   });
@@ -39,8 +39,8 @@ describe('Own Profile', () => {
     cy.socialVisit(`/social/profile/${userId}`);
 
     // The profile page renders display_name or username in an h5, and @username below it
-    cy.get('#root', {timeout: 300000}).should('exist');
-    cy.get('body', {timeout: 300000}).then(($body) => {
+    cy.get('#root', {timeout: 30000}).should('exist');
+    cy.get('body', {timeout: 30000}).then(($body) => {
       const text = $body.text();
       // Should contain at least one of: display name text or @ symbol for username
       expect(text.length).to.be.greaterThan(0);
@@ -51,27 +51,27 @@ describe('Own Profile', () => {
     const userId = Cypress.env('socialUserId');
     cy.socialVisit(`/social/profile/${userId}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     // ProfilePage renders "Karma" as a caption label
-    cy.contains('Karma', {timeout: 300000}).should('exist');
+    cy.contains('Karma', {timeout: 30000}).should('exist');
   });
 
   it('should show followers and following counts', () => {
     const userId = Cypress.env('socialUserId');
     cy.socialVisit(`/social/profile/${userId}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
-    cy.contains('Followers', {timeout: 300000}).should('exist');
-    cy.contains('Following', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
+    cy.contains('Followers', {timeout: 30000}).should('exist');
+    cy.contains('Following', {timeout: 30000}).should('exist');
   });
 
   it('should show the Posts tab', () => {
     const userId = Cypress.env('socialUserId');
     cy.socialVisit(`/social/profile/${userId}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     // Tabs component has a "Posts" tab
-    cy.contains('Posts', {timeout: 300000}).should('exist');
+    cy.contains('Posts', {timeout: 30000}).should('exist');
   });
 });
 
@@ -87,7 +87,7 @@ describe('Edit Profile', () => {
     const userId = Cypress.env('socialUserId');
     cy.socialVisit(`/social/profile/${userId}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     // The page is the user's own profile; check the page loaded properly
     // ProfilePage sets isOwn = true and may render edit UI or ReferralSection
     cy.get('#root').invoke('html').should('not.be.empty');
@@ -132,11 +132,11 @@ describe('Edit Profile', () => {
       // Then visit the profile page
       cy.socialVisit(`/social/profile/${userId}`);
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
 
       // Verify the page loads successfully with updated content
       // The profile fetches fresh user data on mount via usersApi.get(userId)
-      cy.get('#root').invoke('text', {timeout: 300000}).should('not.be.empty');
+      cy.get('#root').invoke('text', {timeout: 30000}).should('not.be.empty');
     });
   });
 });
@@ -164,14 +164,14 @@ describe('Follow System', () => {
 
     cy.socialVisit(`/social/profile/${secondUserId}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
   });
 
   it("should show a follow button on another user's profile", () => {
     cy.socialVisit(`/social/profile/${secondUserId}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     // On another user's profile, isOwn is false
     // The page should render - even if there is no explicit Follow button in the
     // current ProfilePage source, the page should load without the isOwn-only sections
@@ -269,9 +269,9 @@ describe('Search', () => {
   it('should load the search page', () => {
     cy.socialVisit('/social/search');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     // Wait for React to render — check body has content even if #root is slow
-    cy.get('body', {timeout: 300000})
+    cy.get('body', {timeout: 30000})
       .invoke('html')
       .should('have.length.greaterThan', 100);
     cy.url().should('include', '/social/search');
@@ -292,7 +292,7 @@ describe('Search', () => {
   it('should display search results or an empty state', () => {
     cy.socialVisit('/social/search');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Wait for the page to render
     cy.wait(2000);
@@ -311,7 +311,7 @@ describe('Search', () => {
         cy.wait(1000);
 
         // Either we see result cards or the EmptyState message
-        cy.get('body', {timeout: 300000}).then(($b) => {
+        cy.get('body', {timeout: 30000}).then(($b) => {
           const text = $b.text();
           const hasResults =
             text.includes('cypress') || text.includes('Cypress');
@@ -343,7 +343,7 @@ describe('Profile UI - Edit Profile Form Integration', () => {
     const newDisplayName = `UIEdit_${Date.now()}`;
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Look for edit button or settings link
@@ -400,7 +400,7 @@ describe('Profile UI - Edit Profile Form Integration', () => {
     const newBio = `Bio updated at ${Date.now()}`;
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -456,7 +456,7 @@ describe('Profile UI - Edit Profile Form Integration', () => {
     }).as('updateProfile');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Page should be stable and functional
@@ -486,7 +486,7 @@ describe('Profile UI - Follow Button Integration', () => {
     }
 
     cy.socialVisit(`/social/profile/${targetId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -526,7 +526,7 @@ describe('Profile UI - Follow Button Integration', () => {
     // First ensure we're following
     cy.socialRequest('POST', `/users/${targetId}/follow`).then(() => {
       cy.socialVisit(`/social/profile/${targetId}`);
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(2000);
 
       cy.get('body').then(($body) => {
@@ -605,7 +605,7 @@ describe('Profile UI - Loading States', () => {
     }).as('profileLoad');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Check for loading indicator or content
     cy.get('body').then(($body) => {
@@ -626,7 +626,7 @@ describe('Profile UI - Loading States', () => {
     const userId = Cypress.env('socialUserId');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Click on Posts tab if exists
@@ -653,7 +653,7 @@ describe('Profile UI - Error Handling', () => {
   it('should handle profile not found error gracefully', () => {
     // Visit a non-existent user profile
     cy.socialVisit('/social/profile/nonexistent-user-id-12345');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Should not crash
     cy.get('body').should('not.contain.text', 'Cannot read properties');
@@ -683,7 +683,7 @@ describe('Profile UI - Error Handling', () => {
     }).as('updateError');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Page should not crash even with API error
@@ -704,7 +704,7 @@ describe('Profile UI - Error Handling', () => {
     }).as('followError');
 
     cy.socialVisit(`/social/profile/${targetId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -729,7 +729,7 @@ describe('Profile UI - Navigation State Preservation', () => {
     const userId = Cypress.env('socialUserId');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -745,10 +745,10 @@ describe('Profile UI - Navigation State Preservation', () => {
 
         // Go back
         cy.go('back');
-        cy.url({timeout: 300000}).should('include', '/social/profile');
+        cy.url({timeout: 30000}).should('include', '/social/profile');
 
         // Page should be stable
-        cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+        cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       }
     });
   });
@@ -757,7 +757,7 @@ describe('Profile UI - Navigation State Preservation', () => {
     const userId = Cypress.env('socialUserId');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Scroll down — use ensureScrollable: false since the window may not be scrollable
@@ -768,10 +768,10 @@ describe('Profile UI - Navigation State Preservation', () => {
     cy.socialVisit('/social');
     cy.wait(1000);
     cy.go('back');
-    cy.url({timeout: 300000}).should('include', '/social/profile');
+    cy.url({timeout: 30000}).should('include', '/social/profile');
 
     // Page should be stable
-    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
   });
 });
 
@@ -785,7 +785,7 @@ describe('Profile UI - Responsive Behavior', () => {
 
     cy.viewport(375, 667);
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Profile content should be visible
@@ -805,7 +805,7 @@ describe('Profile UI - Responsive Behavior', () => {
 
     cy.viewport(768, 1024);
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Content should be visible
@@ -817,7 +817,7 @@ describe('Profile UI - Responsive Behavior', () => {
     const userId = Cypress.env('socialUserId');
 
     cy.socialVisit(`/social/profile/${userId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(1000);
 
     // Desktop
@@ -850,7 +850,7 @@ describe('Search UI - Integration Tests', () => {
     }).as('searchApi');
 
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -876,7 +876,7 @@ describe('Search UI - Integration Tests', () => {
     }).as('slowSearch');
 
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -906,7 +906,7 @@ describe('Search UI - Integration Tests', () => {
     }).as('mockSearch');
 
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -938,7 +938,7 @@ describe('Search UI - Integration Tests', () => {
     }).as('emptySearch');
 
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -967,7 +967,7 @@ describe('Search UI - Integration Tests', () => {
 
   it('should clear results when search input is cleared', () => {
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {

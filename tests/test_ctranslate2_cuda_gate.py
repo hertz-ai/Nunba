@@ -120,6 +120,10 @@ def test_real_child_no_cuda_device_is_not_usable(monkeypatch, tmp_path, worker_p
     assert pi.is_cuda_ctranslate2() is False
 
 
+@pytest.mark.skipif(
+    sys.platform == 'darwin',
+    reason='macOS has no CUDA ctranslate2: _CT2_CUDA_LIBRARIES has no darwin '
+           'entry, so there is no cuBLAS for the child to miss')
 def test_real_child_a_device_without_cublas_is_not_usable(monkeypatch, tmp_path, worker_python):
     # The live case: a CUDA device is there, the cuBLAS library is not
     # reachable.  A PATH holding only an empty dir makes the library
@@ -573,15 +577,23 @@ def test_the_child_is_asked_for_this_platforms_libraries(monkeypatch, worker_pyt
     """The real table, not a one-key stand-in: a lookup of another platform's
     key would ask for libraries this OS can never load."""
     table = pi._CT2_CUDA_LIBRARIES
-    assert sys.platform in table and len(table) > 1
+    assert len(table) > 1
     assert len({tuple(v) for v in table.values()}) == len(table)
+    if sys.platform == 'darwin':
+        # "No entry (macOS) means no CUDA build to probe" (the table's
+        # comment): the child is asked for no library there.
+        assert 'darwin' not in table
+        expected = []
+    else:
+        assert sys.platform in table
+        expected = list(table[sys.platform])
     import core.subprocess_safe as ss
     argv = []
     monkeypatch.setattr(ss, 'run_bounded',
                         lambda cmd, timeout, **kw: argv.append(list(cmd)) or _Result(0))
     assert pi.is_cuda_ctranslate2() is True
     assert argv[0][:2] == [worker_python, '-c']
-    assert argv[0][3:] == list(table[sys.platform])
+    assert argv[0][3:] == expected
 
 
 # ── After the install, the worker python reaches the CUDA runtime (P1) ───────

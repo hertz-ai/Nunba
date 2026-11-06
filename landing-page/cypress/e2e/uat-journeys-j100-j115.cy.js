@@ -46,7 +46,7 @@ describe('J100: language switch mid-session', () => {
   it('POST /chat with preferred_lang=ta returns envelope or 503', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'வணக்கம்', preferred_lang: 'ta'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -118,7 +118,7 @@ describe('J102: agentic multi-step plan', () => {
   it('POST /chat with autonomous_creation does not crash the route', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'plan a research agent', autonomous_creation: true, preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -129,7 +129,7 @@ describe('J102: agentic multi-step plan', () => {
   it('GET /api/agents/plan returns an envelope regardless of auth state', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/agents/plan',
+      url: `${Cypress.env('apiUrl')}/api/agents/plan`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -177,7 +177,7 @@ describe('J104: memory tool chain exposed', () => {
   it('POST /api/memory/remember returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/memory/remember',
+      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
       body: {text: 'user loves cats', agent_id: 'test'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -188,7 +188,7 @@ describe('J104: memory tool chain exposed', () => {
   it('POST /api/memory/recall returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/memory/recall',
+      url: `${Cypress.env('apiUrl')}/api/memory/recall`,
       body: {query: 'cats', agent_id: 'test'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -212,7 +212,7 @@ describe('J105: context window overflow (GAP flagged)', () => {
     const huge = 'x'.repeat(10000);
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: huge, preferred_lang: 'en'},
       failOnStatusCode: false,
       timeout: 30000,
@@ -234,7 +234,7 @@ describe('J106: SSE stream endpoint exists (Last-Event-ID GAP)', () => {
   it('GET /api/social/events/stream responds with text/event-stream or 503', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/events/stream',
+      url: `${Cypress.env('apiUrl')}/api/social/events/stream`,
       failOnStatusCode: false,
       timeout: 10000,
     }).then((resp) => {
@@ -258,7 +258,7 @@ describe('J107, J108: expert delegation + ensemble fanout', () => {
   it('POST /chat with delegate flag returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'escalate to expert', delegate_expert: true, preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -269,7 +269,7 @@ describe('J107, J108: expert delegation + ensemble fanout', () => {
   it('POST /api/social/experiments/auto-evolve enumerates ensemble', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/experiments/auto-evolve',
+      url: `${Cypress.env('apiUrl')}/api/social/experiments/auto-evolve`,
       body: {hypothesis: 'test-fanout'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -290,7 +290,7 @@ describe('J109: visual context + chat combo', () => {
   it('POST /chat with visual_context flag returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'what do you see?', visual_context: true},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -301,7 +301,7 @@ describe('J109: visual context + chat combo', () => {
   it('GET /api/vlm/health probes the VLM sidecar', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/vlm/health',
+      url: `${Cypress.env('apiUrl')}/api/vlm/health`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 404, 503]);
@@ -321,7 +321,7 @@ describe('J110: draft evict on non-Latin switch', () => {
   it('POST /chat in Tamil does not crash (draft evict path)', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'hello', preferred_lang: 'ta'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -332,7 +332,7 @@ describe('J110: draft evict on non-Latin switch', () => {
   it('POST /chat in English rehydrates draft path', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'hi', preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -353,7 +353,7 @@ describe('J111, J112: mid-session prompt edit + two-tab interleave', () => {
   it('PATCH /api/agents/:id/prompt returns envelope', () => {
     cy.request({
       method: 'PATCH',
-      url: 'http://localhost:5000/api/agents/test_agent_id/prompt',
+      url: `${Cypress.env('apiUrl')}/api/agents/test_agent_id/prompt`,
       body: {prompt: 'new system prompt'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -385,7 +385,7 @@ describe('J113, J114: Tamil translate + Tanglish codepoints', () => {
   it('POST /chat with Tamil then English request does not crash', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'நன்றி', preferred_lang: 'ta'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -396,7 +396,7 @@ describe('J113, J114: Tamil translate + Tanglish codepoints', () => {
   it('POST /chat with mixed Tanglish codepoints (en + ta) does not crash', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'Thanks நன்றி da', preferred_lang: 'en'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -417,7 +417,7 @@ describe('J115: TTS engine mid-flight swap on failure', () => {
   it('GET /api/tts/engines returns list or 503', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/tts/engines',
+      url: `${Cypress.env('apiUrl')}/api/tts/engines`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -427,7 +427,7 @@ describe('J115: TTS engine mid-flight swap on failure', () => {
   it('POST /api/tts/engine/switch accepts a new engine selector', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/tts/engine/switch',
+      url: `${Cypress.env('apiUrl')}/api/tts/engine/switch`,
       body: {engine: 'piper'},
       failOnStatusCode: false,
     }).then((resp) => {

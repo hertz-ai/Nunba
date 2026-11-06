@@ -51,7 +51,7 @@ describe('J21-J51: channel adapter create contract (31 adapter types)', () => {
     it(`${jId} ${adapter}: POST /api/admin/channels returns documented status`, () => {
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/api/admin/channels',
+        url: `${Cypress.env('apiUrl')}/api/admin/channels`,
         body: {type: adapter, name: `test-${adapter}-cypress`},
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
@@ -64,7 +64,7 @@ describe('J21-J51: channel adapter create contract (31 adapter types)', () => {
   it('GET /api/admin/channels/registry returns adapter-type list', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/channels/registry',
+      url: `${Cypress.env('apiUrl')}/api/admin/channels/registry`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -74,7 +74,7 @@ describe('J21-J51: channel adapter create contract (31 adapter types)', () => {
   it('GET /api/admin/channels returns channel list envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/channels',
+      url: `${Cypress.env('apiUrl')}/api/admin/channels`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 503]);

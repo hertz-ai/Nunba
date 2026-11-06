@@ -105,7 +105,7 @@ describe('J200-J207: guest identity + chat persistence', () => {
   it('J206: GET /api/guest-id returns a stable-looking id envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/guest-id',
+      url: `${Cypress.env('apiUrl')}/api/guest-id`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 500, 503]);
@@ -118,7 +118,7 @@ describe('J200-J207: guest identity + chat persistence', () => {
   it('J207: GET /api/admin/config/chat returns restore policy envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/config/chat',
+      url: `${Cypress.env('apiUrl')}/api/admin/config/chat`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 500, 503]);
@@ -138,7 +138,7 @@ describe('J210-J215: TTS routes + lifecycle + venv', () => {
   it('J210: POST /api/social/tts/quick in Portuguese returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/tts/quick',
+      url: `${Cypress.env('apiUrl')}/api/social/tts/quick`,
       body: {text: 'Olá mundo', voice: 'default', lang: 'pt'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -149,7 +149,7 @@ describe('J210-J215: TTS routes + lifecycle + venv', () => {
   it('J211: /api/chat-sync/pull envelope exposes lifecycle state', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/chat-sync/pull',
+      url: `${Cypress.env('apiUrl')}/api/chat-sync/pull`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 400, 401, 403, 404, 500, 503]);
@@ -159,7 +159,7 @@ describe('J210-J215: TTS routes + lifecycle + venv', () => {
   it('J212: GET /api/tts/status returns engine handshake envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/tts/status',
+      url: `${Cypress.env('apiUrl')}/api/tts/status`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -169,7 +169,7 @@ describe('J210-J215: TTS routes + lifecycle + venv', () => {
   it('J213: GET /api/tts/engines does not list cosyvoice3 as default-active', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/tts/engines',
+      url: `${Cypress.env('apiUrl')}/api/tts/engines`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -179,7 +179,7 @@ describe('J210-J215: TTS routes + lifecycle + venv', () => {
   it('J214: POST /api/tts/pin-active returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/tts/pin-active',
+      url: `${Cypress.env('apiUrl')}/api/tts/pin-active`,
       body: {engine: 'piper'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -190,7 +190,7 @@ describe('J210-J215: TTS routes + lifecycle + venv', () => {
   it('J215: POST /api/tts/venv/create returns envelope (idempotent)', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/tts/venv/create',
+      url: `${Cypress.env('apiUrl')}/api/tts/venv/create`,
       body: {backend: 'piper'},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -211,7 +211,7 @@ describe('J216-J220: ingest + health + crossbar', () => {
   it('J216: GET /api/admin/diag/ingest returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/diag/ingest',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/ingest`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
@@ -221,7 +221,7 @@ describe('J216-J220: ingest + health + crossbar', () => {
   it('J217: GET /backend/health returns healthy envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/backend/health',
+      url: `${Cypress.env('apiUrl')}/backend/health`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 503]);
@@ -231,14 +231,14 @@ describe('J216-J220: ingest + health + crossbar', () => {
   it('J218: GET /api/wamp/ticket returns rotating ticket envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/wamp/ticket',
+      url: `${Cypress.env('apiUrl')}/api/wamp/ticket`,
       failOnStatusCode: false,
     }).then((respA) => {
       expect(respA.status).to.be.oneOf([200, 401, 403]);
     });
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/wamp/ticket',
+      url: `${Cypress.env('apiUrl')}/api/wamp/ticket`,
       failOnStatusCode: false,
     }).then((respB) => {
       expect(respB.status).to.be.oneOf([200, 401, 403]);
@@ -248,7 +248,7 @@ describe('J216-J220: ingest + health + crossbar', () => {
   it('J219: GET /api/social/feed returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/feed',
+      url: `${Cypress.env('apiUrl')}/api/social/feed`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
@@ -258,7 +258,7 @@ describe('J216-J220: ingest + health + crossbar', () => {
   it('J220: GET /api/social/notifications returns envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/notifications',
+      url: `${Cypress.env('apiUrl')}/api/social/notifications`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);

@@ -24,7 +24,7 @@
  *   - Backend startup logs: "Local agents: 3, Cloud agents: 3"
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 // ---------------------------------------------------------------------------
 // 1. Nunba Health Endpoint
@@ -618,7 +618,7 @@ describe('Infrastructure Resilience', () => {
   it('/backend/health responds within 10 seconds', () => {
     const start = Date.now();
 
-    cy.request({url: `${API}/backend/health`, timeout: 300000}).then(
+    cy.request({url: `${API}/backend/health`, timeout: 30000}).then(
       (response) => {
         const elapsed = Date.now() - start;
         // Backend health checks cloud connectivity which can take longer

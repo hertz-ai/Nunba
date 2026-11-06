@@ -44,14 +44,14 @@ describe('Social Recipes -- List Page UI', () => {
 
   it('should load the recipes page without crashing', () => {
     cy.socialVisit('/social/recipes');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.url().should('include', '/social/recipes');
   });
 
   it('should display "Shared Recipes" heading', () => {
     cy.socialVisit('/social/recipes');
-    cy.contains('Shared Recipes', {timeout: 300000}).should('be.visible');
+    cy.contains('Shared Recipes', {timeout: 30000}).should('be.visible');
   });
 
   it('should render mocked recipe cards correctly', () => {
@@ -61,11 +61,11 @@ describe('Social Recipes -- List Page UI', () => {
     });
 
     cy.socialVisit('/social/recipes');
-    cy.contains('Customer Support Agent', {timeout: 300000}).should(
+    cy.contains('Customer Support Agent', {timeout: 30000}).should(
       'be.visible'
     );
-    cy.contains('Content Writer Agent', {timeout: 300000}).should('be.visible');
-    cy.contains('12 forks', {timeout: 300000}).should('exist');
+    cy.contains('Content Writer Agent', {timeout: 30000}).should('be.visible');
+    cy.contains('12 forks', {timeout: 30000}).should('exist');
   });
 
   it('should render tags on recipe cards', () => {
@@ -75,7 +75,7 @@ describe('Social Recipes -- List Page UI', () => {
     });
 
     cy.socialVisit('/social/recipes');
-    cy.contains('Customer Support Agent', {timeout: 300000}).should(
+    cy.contains('Customer Support Agent', {timeout: 30000}).should(
       'be.visible'
     );
     cy.contains('support').should('be.visible');
@@ -89,14 +89,14 @@ describe('Social Recipes -- List Page UI', () => {
     });
 
     cy.socialVisit('/social/recipes');
-    cy.contains('No shared recipes', {timeout: 300000}).should('be.visible');
+    cy.contains('No shared recipes', {timeout: 30000}).should('be.visible');
   });
 
   it('should render content area (cards or empty state)', () => {
     cy.socialVisit('/social/recipes');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
-    cy.get('body', {timeout: 300000}).should(($body) => {
+    cy.get('body', {timeout: 30000}).should(($body) => {
       const text = $body.text();
       const hasContent =
         text.includes('Shared Recipes') || text.includes('No shared recipes');
@@ -172,7 +172,7 @@ describe('Social Recipes -- Error Handling', () => {
     });
 
     cy.socialVisit('/social/recipes');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
 });

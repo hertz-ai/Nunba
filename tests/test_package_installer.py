@@ -378,6 +378,10 @@ class _FakePopen:
         # potential .close() call both work without AttributeError.
         self.stdout = _FakePopen._Stdout(self._lines)
         self._polls = 0
+        # _run_pip reads proc.pid (psutil io counters, the stall detector's
+        # progress signal).  A pid no host has: psutil answers "gone" and
+        # _child_io_counters returns None, which the caller reads as progress.
+        self.pid = 4_194_305
 
     def poll(self):
         # Let the drain thread deliver all lines before we signal exit.
@@ -427,6 +431,19 @@ class TestRunPip:
                   **({'return_value': popen_return} if popen_return is not None
                      else {'side_effect': popen_side_effect})),
         ]
+
+    @staticmethod
+    def _pip_argv(mock_popen):
+        """The argv of THE pip spawn among every call the patched Popen saw.
+
+        patch('subprocess.Popen') is process-wide, so a daemon thread an
+        earlier test started lands on the mock too: CI ubuntu, PR #72,
+        call_args was HARTOS resource_governor's idle probe ['xprintidle'].
+        """
+        pip = [c[0][0] for c in mock_popen.call_args_list
+               if list(c[0][0][:3]) == ['/fake/python.exe', '-m', 'pip']]
+        assert len(pip) == 1, mock_popen.call_args_list
+        return pip[0]
 
     def _run_with(self, popen, call_args=('install', 'pkg'), **kwargs):
         """Apply the common patches + return (ok, msg)."""
@@ -488,7 +505,7 @@ class TestRunPip:
             stack.enter_context(patch.object(pi, 'ensure_user_site_on_path'))
             mock_popen = stack.enter_context(popen_patch)
             pi._run_pip(['install', 'pkg'])
-            cmd = mock_popen.call_args[0][0]
+            cmd = self._pip_argv(mock_popen)
             assert '--target' in cmd
             assert '/user/sp' in cmd
 
@@ -502,7 +519,7 @@ class TestRunPip:
             stack.enter_context(patch.object(pi, 'ensure_user_site_on_path'))
             mock_popen = stack.enter_context(popen_patch)
             pi._run_pip(['uninstall', '-y', 'pkg'])
-            cmd = mock_popen.call_args[0][0]
+            cmd = self._pip_argv(mock_popen)
             assert '--target' not in cmd
 
     def test_progress_callback_called(self):
@@ -668,7 +685,7 @@ class TestInstallBackendPackages:
         # has CUDA torch installed.
         with patch.object(pi, 'is_package_installed', return_value=True), \
              patch.object(pi, 'is_cuda_torch', return_value=True):
-            ok, msg = pi.install_backend_packages('f5')
+            ok, msg = pi.install_backend_packages('pocket_tts')
             assert ok is True
             assert 'already installed' in msg
 
@@ -693,7 +710,7 @@ class TestInstallBackendPackages:
              patch.object(pi, 'has_nvidia_gpu', return_value=False), \
              patch.object(pi, '_run_pip', return_value=(False, 'network error')), \
              patch.object(pi, '_invalidate_import_cache'):
-            ok, msg = pi.install_backend_packages('f5')
+            ok, msg = pi.install_backend_packages('pocket_tts')
             assert ok is False
             assert 'Failed' in msg
 
@@ -1601,9 +1618,11 @@ class TestGetBackendStatus:
             assert status['piper']['packages_missing'] == []
 
     def test_missing_packages_listed(self):
+        # pocket_tts: a backend whose HARTOS install_target is 'main'.  f5 is
+        # 'venv' now, so its main-interpreter plan is [] by design.
         with patch.object(pi, 'is_package_installed', return_value=False):
             status = pi.get_backend_status()
-            assert len(status['f5']['packages_missing']) > 0
+            assert len(status['pocket_tts']['packages_missing']) > 0
 
     def test_installing_flag(self):
         pi._installing['f5'] = True

@@ -398,9 +398,14 @@ class TestVibeVoiceDetectGpu:
     """Test the detect_gpu function with mocked subprocess calls."""
 
     def test_detect_gpu_no_nvidia_no_amd(self):
-        """When no GPU tools are found and WMI returns nothing, returns gpu_available=False."""
+        """When no GPU tools are found and neither Metal nor WMI finds one,
+        returns gpu_available=False."""
         from tts.vibevoice_tts import detect_gpu
+        # The Apple Metal probe answers for real on macOS (the CI runner is
+        # Apple Silicon, so it found a GPU there); it is the third of
+        # detect_gpu's four probes and is patched off like the WMI one.
         with patch("shutil.which", return_value=None), \
+             patch("tts.vibevoice_tts._detect_apple_metal", return_value=None), \
              patch("tts.vibevoice_tts._detect_gpu_wmic", return_value=None):
             result = detect_gpu()
             assert result["gpu_available"] is False
@@ -529,21 +534,36 @@ class TestGetEngineCapabilitiesCatalogIntegration:
 class TestGetLangPreferenceCatalogIntegration:
     """Tests for _get_lang_preference() catalog shim and fallback."""
 
+    # HARTOS's catalog puts the universal 646-language engine 'omnivoice' ahead
+    # of every language's specialists (tts_router.py: "so it wins unless it's
+    # uninstalled or the GPU can't hold it", since 2026-04-22), so the Indic
+    # specialist these tests are about is the first engine AFTER it.
+    _UNIVERSAL = 'omnivoice'
+
+    def _specialists(self, pref):
+        return [b for b in pref if b != self._UNIVERSAL]
+
     def test_ta_preference_starts_with_indic_parler(self):
-        """Tamil (ta) must prefer Indic Parler TTS as the first choice."""
+        """Tamil (ta) must prefer Indic Parler TTS as its first specialist
+        (only the universal omnivoice may rank ahead of it)."""
         from tts.tts_engine import BACKEND_INDIC_PARLER, _get_lang_preference
         pref = _get_lang_preference('ta')
         assert isinstance(pref, list)
         assert len(pref) > 0, "Expected at least one backend for 'ta'"
-        assert pref[0] == BACKEND_INDIC_PARLER, (
-            f"Expected '{BACKEND_INDIC_PARLER}' first for 'ta', got '{pref[0]}'"
+        first = self._specialists(pref)[0]
+        assert first == BACKEND_INDIC_PARLER, (
+            f"Expected '{BACKEND_INDIC_PARLER}' first for 'ta' after the "
+            f"universal engine, got '{first}' (ladder: {pref})"
         )
+        assert pref.index(BACKEND_INDIC_PARLER) <= 1, pref
 
     def test_hi_preference_starts_with_indic_parler(self):
-        """Hindi (hi), another Indic lang, must also prefer Indic Parler first."""
+        """Hindi (hi), another Indic lang, must also prefer Indic Parler first
+        among the specialists."""
         from tts.tts_engine import BACKEND_INDIC_PARLER, _get_lang_preference
         pref = _get_lang_preference('hi')
-        assert pref[0] == BACKEND_INDIC_PARLER
+        assert self._specialists(pref)[0] == BACKEND_INDIC_PARLER, pref
+        assert pref.index(BACKEND_INDIC_PARLER) <= 1, pref
 
     def test_en_preference_starts_with_chatterbox_or_f5(self):
         """English must prefer Chatterbox Turbo or F5-TTS as the first choice."""

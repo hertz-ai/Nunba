@@ -557,7 +557,8 @@ def is_main_window_foreground(main_window_handle, companion_window_handle=None):
     try:
         import subprocess
         out = subprocess.run(['xdotool', 'getactivewindow'],
-                             capture_output=True, text=True, timeout=2)
+                             capture_output=True, text=True, timeout=2,
+                             **get_subprocess_flags())
         active = (out.stdout or '').strip()
         if not active:
             return False

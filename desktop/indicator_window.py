@@ -7,6 +7,7 @@ thread creation.
 """
 import logging
 import os
+import sys
 import threading
 import time
 import tkinter as tk
@@ -987,6 +988,15 @@ def initialize_indicator(server_port=5000):
     loop, and callers wait on _window_ready.
     """
     global _window_thread
+    if sys.platform == 'darwin':
+        # Tk/NSWindow must be on the main thread on macOS, and this builds the
+        # ribbon on a background one: there Tk aborts the whole process (CI:
+        # "Fatal Python error: Aborted" in create_ribbon_tab).  main.py's
+        # initialize_indicator_window already skips macOS for the same reason;
+        # this keeps every other caller (toggle_indicator, the HARTOS show
+        # request) from bypassing that.
+        logger.info("Ribbon indicator not built: Tk must run on the main thread on macOS")
+        return False
     try:
         with _init_lock:
             if _window_thread is None or not _window_thread.is_alive():
@@ -1052,7 +1062,14 @@ def toggle_indicator(show=True, server_port=5000, text=None):
 
     try:
         if _indicator_window is None:
+            if not show:
+                # Nothing is shown, so there is nothing to hide: do not build a
+                # Tk window just to hide it (GET /indicator/stop did, from a
+                # background thread).
+                return indicator_active
             initialize_indicator(server_port)  # returns once the ribbon exists
+            if _indicator_window is None:      # not built (macOS, or it failed)
+                return indicator_active
 
         if show and not indicator_active:
             _indicator_window.show()

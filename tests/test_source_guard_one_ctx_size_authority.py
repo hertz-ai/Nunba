@@ -78,3 +78,19 @@ _spec.loader.exec_module(_mod)
 OneEnvVarNameForNCtx = _mod.OneEnvVarNameForNCtx
 OneDerivationForNCtx = _mod.OneDerivationForNCtx
 VendoredInjectorIsInert = _mod.VendoredInjectorIsInert
+
+
+def test_the_delegated_guard_classes_each_carry_tests():
+    """The three classes above are what pytest collects from this file.  Prove
+    each is a real TestCase with at least one test, so a delegate that
+    re-exported something empty fails here instead of passing as 'ran the guard'.
+
+    It is also the one ``test_`` function tests/test_harness_meta.py's static
+    check can see in this file: the re-exported classes are TestCases that
+    pytest collects but whose names do not start with ``Test``, so that AST
+    scan reported the file as having no tests."""
+    import unittest
+    for cls in (OneEnvVarNameForNCtx, OneDerivationForNCtx, VendoredInjectorIsInert):
+        assert issubclass(cls, unittest.TestCase), cls
+        assert [n for n in dir(cls) if n.startswith('test')], (
+            f'{cls.__name__} was re-exported with no tests in it')

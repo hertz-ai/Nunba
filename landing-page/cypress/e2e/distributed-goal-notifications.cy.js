@@ -18,7 +18,7 @@
  *   - All cy.request() use failOnStatusCode: false.
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 const DISTRIBUTED = `${API}/api/distributed`;
 
 describe('Distributed Goal Notifications E2E', () => {
@@ -80,7 +80,7 @@ describe('Distributed Goal Notifications E2E', () => {
         method: 'GET',
         url: `${DISTRIBUTED}/hosts`,
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         // 401 = blueprint is registered and auth is enforced
         // 404 = blueprint not registered (failure)
@@ -124,7 +124,7 @@ describe('Distributed Goal Notifications E2E', () => {
     it('1.5 POST /api/distributed/hosts/register responds with auth token', () => {
       cy.socialRequest('POST', `${DISTRIBUTED}/hosts/register`, {
         host_id: 'cypress-host',
-        host_url: 'http://localhost:5000',
+        host_url: `${Cypress.env('apiUrl')}`,
         capabilities: ['testing', 'coding'],
         compute_budget: {max_tasks: 5},
       }).then((res) => {
@@ -279,8 +279,8 @@ describe('Distributed Goal Notifications E2E', () => {
       }).as('getNotifications');
 
       visitNotificationsPage();
-      cy.contains('contributed to', {timeout: 300000}).should('be.visible');
-      cy.contains('Invent a better search engine', {timeout: 300000}).should(
+      cy.contains('contributed to', {timeout: 30000}).should('be.visible');
+      cy.contains('Invent a better search engine', {timeout: 30000}).should(
         'be.visible'
       );
     });
@@ -295,7 +295,7 @@ describe('Distributed Goal Notifications E2E', () => {
       }).as('getNotifications');
 
       visitNotificationsPage();
-      cy.contains('verified by peer consensus', {timeout: 300000}).should(
+      cy.contains('verified by peer consensus', {timeout: 30000}).should(
         'be.visible'
       );
     });
@@ -314,11 +314,11 @@ describe('Distributed Goal Notifications E2E', () => {
       }).as('getNotifications');
 
       visitNotificationsPage();
-      cy.contains('contributed to', {timeout: 300000}).should('be.visible');
-      cy.contains('verified by peer consensus', {timeout: 300000}).should(
+      cy.contains('contributed to', {timeout: 30000}).should('be.visible');
+      cy.contains('verified by peer consensus', {timeout: 30000}).should(
         'be.visible'
       );
-      cy.contains('Alice commented', {timeout: 300000}).should('be.visible');
+      cy.contains('Alice commented', {timeout: 30000}).should('be.visible');
     });
 
     it('3.4 Mark all read works for goal notifications', () => {
@@ -336,8 +336,8 @@ describe('Distributed Goal Notifications E2E', () => {
       }).as('markAllRead');
 
       visitNotificationsPage();
-      cy.contains('contributed to', {timeout: 300000}).should('be.visible');
-      cy.contains(/mark all/i, {timeout: 300000}).click({force: true});
+      cy.contains('contributed to', {timeout: 30000}).should('be.visible');
+      cy.contains(/mark all/i, {timeout: 30000}).click({force: true});
       cy.wait('@markAllRead');
     });
 
@@ -351,7 +351,7 @@ describe('Distributed Goal Notifications E2E', () => {
       }).as('getNotifications');
 
       visitNotificationsPage();
-      cy.contains('contributed to', {timeout: 300000}).should('be.visible');
+      cy.contains('contributed to', {timeout: 30000}).should('be.visible');
     });
 
     it('3.6 Empty state shows when no notifications', () => {
@@ -364,7 +364,7 @@ describe('Distributed Goal Notifications E2E', () => {
       }).as('getNotifications');
 
       visitNotificationsPage();
-      cy.contains(/no notification/i, {timeout: 300000}).should('be.visible');
+      cy.contains(/no notification/i, {timeout: 30000}).should('be.visible');
     });
   });
 

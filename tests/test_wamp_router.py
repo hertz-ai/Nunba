@@ -106,11 +106,12 @@ class TestWampMessageHandlers:
             _sessions[sub_session.session_id] = sub_session
             _protocol_to_session[id(sub_proto)] = sub_session.session_id
 
-        # Use a public-prefix topic — per-topic authorization (Task #300/#301)
-        # requires either a public prefix OR per-user segment match. Plain
-        # 'com.test.events' would be refused. 'chat.social' is in the
-        # canonical HARTOS public whitelist.
-        _handle_hello(sub_session, [1, 'realm1', {}])
+        # 'chat.social' is a per-user bus topic (com.hertzai.hevolve.social.
+        # {user_id}): open to a session that names a user, refused to an
+        # anonymous one since HARTOS d89d5022 (F4, "both gates ask
+        # realtime_acl.topic_open_to"; it used to be a public prefix).  Both
+        # sessions say who they are in HELLO, as the webview does.
+        _handle_hello(sub_session, [1, 'realm1', {'authid': '42'}])
         _handle_subscribe(sub_session, [32, 1, {}, 'chat.social'])
 
         # Create publisher session
@@ -125,7 +126,7 @@ class TestWampMessageHandlers:
             _sessions[pub_session.session_id] = pub_session
             _protocol_to_session[id(pub_proto)] = pub_session.session_id
 
-        _handle_hello(pub_session, [1, 'realm1', {}])
+        _handle_hello(pub_session, [1, 'realm1', {'authid': '42'}])
         _handle_publish(pub_session, [16, 2, {}, 'chat.social', ['hello']])
 
         # Subscriber should have received the event

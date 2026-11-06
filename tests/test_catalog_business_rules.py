@@ -96,9 +96,20 @@ class TestLLMBusinessRules:
         assert len(auto_loads) <= 1, f"Only 1 LLM should auto-load, got {len(auto_loads)}"
 
     def test_vram_under_24gb(self, llm_entries):
-        """All local LLMs should fit in prosumer GPU VRAM (RTX 3090/4090 = 24GB)."""
+        """A prosumer GPU (RTX 3090/4090 = 24GB) can run every local LLM.
+
+        Not every row fits WHOLE: HARTOS's 35B-A3B MoE rows (80c703b6,
+        05c0faa4, 64a0d090) are sized fully resident (weights * 1.35, ~30GB)
+        and gated to the 'full' tier.  Those must reach a 24GB card through
+        CPU offload, never be placed on it whole.
+        """
         for e in llm_entries:
-            assert e.vram_gb <= 24.0, f"{e.id} needs {e.vram_gb}GB VRAM — too large for prosumer GPU"
+            if e.vram_gb <= 24.0:
+                continue
+            assert e.min_capability_tier == 'full', f"{e.id} needs {e.vram_gb}GB VRAM below the full tier"
+            assert e.supports_cpu_offload, f"{e.id} needs {e.vram_gb}GB VRAM and cannot offload"
+            assert e.matches_compute(24.0, e.ram_gb, True) == 'cpu_offload', \
+                f"{e.id} needs {e.vram_gb}GB VRAM — a 24GB GPU must offload it"
 
     def test_quality_score_bounded(self, llm_entries):
         for e in llm_entries:
@@ -185,6 +196,24 @@ class TestMediaGenBusinessRules:
         for e in ace:
             assert 'music' in (e.tags or []), f"{e.id} missing 'music' tag"
             assert e.model_type == ModelType.AUDIO_GEN
+
+    def test_ace_step_is_music_on_a_fresh_catalog(self, tmp_path, monkeypatch):
+        """The rule above on a FIRST boot, which is what CI runs.
+
+        The shared catalog above is the box's persisted one, so locally it
+        is a second boot.  On an empty catalogue HARTOS's audio-gen built-in
+        replaced Nunba's row with an untagged one; the post-populate rule
+        has to put 'music' back.
+        """
+        import models.catalog as nunba_catalog
+        monkeypatch.setattr(nunba_catalog, '_business_rules_enforced_at', -1)
+        cat = ModelCatalog(catalog_path=str(tmp_path / 'model_catalog.json'))
+        cat.register_populator('media_gen', nunba_catalog.populate_media_gen)
+        cat.populate_from_subsystems()
+        nunba_catalog._enforce_nunba_business_rules(cat)
+        ace = cat.get('audio_gen-acestep')
+        assert ace is not None
+        assert 'music' in ace.tags, ace.tags
 
     def test_ltx_is_video(self, all_entries):
         ltx = [e for e in all_entries if 'ltx' in e.id]

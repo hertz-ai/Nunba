@@ -158,9 +158,14 @@ function stubCatalog(engine, title, extraConfig = {}) {
         title: title || engine,
         engine,
         category: 'test',
+        // Defaults first, the caller's config last.  The other order put
+        // MOCK_GAME_INFO's questions over a caller's own (Game Complete
+        // Phase's single "What color is the sky?"), so that game asked
+        // "What is 2+2?" and its five tests waited 30 s for a question
+        // that never came.
         engine_config: {
-          ...extraConfig,
           questions: MOCK_GAME_INFO.data.questions,
+          ...extraConfig,
         },
       },
     ],
@@ -238,7 +243,7 @@ function visitGame(gameSlug) {
       win.localStorage.setItem('access_token', FAKE_TOKEN);
     },
   });
-  cy.get('#root', {timeout: 300000}).should('exist');
+  cy.get('#root', {timeout: 30000}).should('exist');
 }
 
 // =============================================================================
@@ -386,7 +391,7 @@ describe('Unified Game Screen - Lobby Phase', () => {
     visitGame('trivia-general-knowledge-classic');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // After solo start, lobby buttons should disappear
-    cy.contains(/create room/i, {timeout: 300000}).should('not.exist');
+    cy.contains(/create room/i, {timeout: 30000}).should('not.exist');
   });
 
   it('stub: create room shows waiting state', () => {
@@ -394,9 +399,10 @@ describe('Unified Game Screen - Lobby Phase', () => {
     cy.contains('button', /create room/i, {timeout: 25000}).click({
       force: true,
     });
-    // After creating a session, status transitions to 'waiting' or 'creating'
-    // The lobby shows "Waiting for Players" or "Setting up..."
-    cy.contains(/waiting|setting up/i, {timeout: 300000}).should('exist');
+    // The created session waits for players.  'Setting up...' is the
+    // 'creating' state, which a room the backend accepted never left until
+    // 42b3179, so it does not count as reaching the lobby.
+    cy.contains(/waiting/i, {timeout: 30000}).should('exist');
   });
 
   it('waiting state shows session code', () => {
@@ -406,7 +412,7 @@ describe('Unified Game Screen - Lobby Phase', () => {
     });
     // The session code is displayed as a monospace string in the waiting state
     // The code is derived from session ID or returned by the API
-    cy.contains(/waiting|setting up/i, {timeout: 300000}).should('exist');
+    cy.contains(/waiting/i, {timeout: 30000}).should('exist');
     // The code area or copy icon should be present
     cy.get('body').should(($body) => {
       // Either a copy button icon or the code text itself
@@ -423,11 +429,11 @@ describe('Unified Game Screen - Lobby Phase', () => {
     cy.contains('button', /create room/i, {timeout: 25000}).click({
       force: true,
     });
-    cy.contains(/waiting|setting up/i, {timeout: 300000}).should('exist');
+    cy.contains(/waiting/i, {timeout: 30000}).should('exist');
     // Click the Leave button to return to idle mode
-    cy.contains('button', /leave/i, {timeout: 300000}).click({force: true});
+    cy.contains('button', /leave/i, {timeout: 30000}).click({force: true});
     // Should return to idle lobby (Solo, Quick Match, Create Room visible again)
-    cy.contains(/play solo/i, {timeout: 300000}).should('exist');
+    cy.contains(/play solo/i, {timeout: 30000}).should('exist');
   });
 });
 
@@ -449,7 +455,7 @@ describe('Unified Game Screen - Engine Rendering', () => {
     // Click Solo to start the game
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // Trivia engine should render — look for question text or option buttons
-    cy.contains(/what is|capital of|question/i, {timeout: 300000}).should(
+    cy.contains(/what is|capital of|question/i, {timeout: 30000}).should(
       'exist'
     );
   });
@@ -461,10 +467,10 @@ describe('Unified Game Screen - Engine Rendering', () => {
     visitGame('test-opentdb_trivia-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // Should show first question
-    cy.contains('What is 2+2?', {timeout: 300000}).should('be.visible');
+    cy.contains('What is 2+2?', {timeout: 30000}).should('be.visible');
     // Should show option buttons (A, B, C, D labels or the answer text)
-    cy.contains('4', {timeout: 300000}).should('exist');
-    cy.contains('3', {timeout: 300000}).should('exist');
+    cy.contains('4', {timeout: 30000}).should('exist');
+    cy.contains('3', {timeout: 30000}).should('exist');
   });
 
   it('timer visible in trivia', () => {
@@ -475,7 +481,7 @@ describe('Unified Game Screen - Engine Rendering', () => {
     visitGame('test-opentdb_trivia-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // The TriviaEngine shows a LinearProgress timer bar
-    cy.get('[role="progressbar"]', {timeout: 300000}).should('exist');
+    cy.get('[role="progressbar"]', {timeout: 30000}).should('exist');
   });
 
   it('score display visible', () => {
@@ -485,7 +491,7 @@ describe('Unified Game Screen - Engine Rendering', () => {
     visitGame('test-opentdb_trivia-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // The AdultGameShell or TriviaEngine shows score — look for "Score" text or "0" initial
-    cy.contains(/score|0\/|points/i, {timeout: 300000}).should('exist');
+    cy.contains(/score|0\/|points/i, {timeout: 30000}).should('exist');
   });
 
   it('phaser bridge loads for arcade games', () => {
@@ -494,7 +500,7 @@ describe('Unified Game Screen - Engine Rendering', () => {
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // PhaserGameBridge renders a container div for the Phaser canvas or shows loading/error
     // It may show "Loading" text or a canvas element
-    cy.get('body', {timeout: 300000}).should(($body) => {
+    cy.get('body', {timeout: 30000}).should(($body) => {
       const hasCanvas = $body.find('canvas').length > 0;
       const hasLoading = $body.text().toLowerCase().includes('loading');
       const hasGameText = $body.text().toLowerCase().includes('snake');
@@ -511,7 +517,7 @@ describe('Unified Game Screen - Engine Rendering', () => {
     visitGame('test-boardgame-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // BoardGameEngine renders the board or a loading/error state
-    cy.get('body', {timeout: 300000}).should(($body) => {
+    cy.get('body', {timeout: 30000}).should(($body) => {
       const text = $body.text().toLowerCase();
       const hasBoard =
         text.includes('tic') ||
@@ -528,7 +534,7 @@ describe('Unified Game Screen - Engine Rendering', () => {
     visitGame('test-word_scramble-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // WordScrambleEngine shows scrambled letters, input, or word-related UI
-    cy.get('body', {timeout: 300000}).should(($body) => {
+    cy.get('body', {timeout: 30000}).should(($body) => {
       const text = $body.text().toLowerCase();
       const hasWordUI =
         text.includes('scrambl') ||
@@ -546,13 +552,16 @@ describe('Unified Game Screen - Engine Rendering', () => {
     visitGame('test-sudoku-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // SudokuEngine renders a 9x9 grid with cells
-    cy.get('body', {timeout: 300000}).should(($body) => {
+    cy.get('body', {timeout: 30000}).should(($body) => {
       const text = $body.text().toLowerCase();
       const hasPuzzleUI =
         text.includes('sudoku') ||
         text.includes('puzzle') ||
         text.includes('check') ||
         text.includes('hint') ||
+        // SudokuEngine's header: difficulty, 'Mistakes: n / 3', score.
+        // Its cells are buttons, so the old input check never matched.
+        text.includes('mistakes') ||
         $body.find('input').length > 0;
       const hasLoading = text.includes('loading');
       expect(hasPuzzleUI || hasLoading).to.be.true;
@@ -584,61 +593,61 @@ describe('Game Complete Phase', () => {
     visitGame('test-opentdb_trivia-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
     // Answer the single question to trigger completion
-    cy.contains('What color is the sky?', {timeout: 300000}).should(
+    cy.contains('What color is the sky?', {timeout: 30000}).should(
       'be.visible'
     );
-    cy.contains('button', /blue/i, {timeout: 300000}).click({force: true});
+    cy.contains('button', /blue/i, {timeout: 30000}).click({force: true});
     // After answering the last question, the game transitions to complete phase
     // The complete phase shows "Play Again" or results
     cy.contains(/play again|results|score|wins|points/i, {
-      timeout: 300000,
+      timeout: 30000,
     }).should('exist');
   });
 
   it('score displayed after completion', () => {
     visitGame('test-opentdb_trivia-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
-    cy.contains('What color is the sky?', {timeout: 300000}).should(
+    cy.contains('What color is the sky?', {timeout: 30000}).should(
       'be.visible'
     );
-    cy.contains('button', /blue/i, {timeout: 300000}).click({force: true});
+    cy.contains('button', /blue/i, {timeout: 30000}).click({force: true});
     // Score or points should be visible in the complete phase
-    cy.contains(/score|point|correct|\d+/i, {timeout: 300000}).should('exist');
+    cy.contains(/score|point|correct|\d+/i, {timeout: 30000}).should('exist');
   });
 
   it('Play Again button visible after completion', () => {
     visitGame('test-opentdb_trivia-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
-    cy.contains('What color is the sky?', {timeout: 300000}).should(
+    cy.contains('What color is the sky?', {timeout: 30000}).should(
       'be.visible'
     );
-    cy.contains('button', /blue/i, {timeout: 300000}).click({force: true});
-    cy.contains(/play again/i, {timeout: 300000}).should('be.visible');
+    cy.contains('button', /blue/i, {timeout: 30000}).click({force: true});
+    cy.contains(/play again/i, {timeout: 30000}).should('be.visible');
   });
 
   it('Back to Hub button navigates back', () => {
     visitGame('test-opentdb_trivia-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
-    cy.contains('What color is the sky?', {timeout: 300000}).should(
+    cy.contains('What color is the sky?', {timeout: 30000}).should(
       'be.visible'
     );
-    cy.contains('button', /blue/i, {timeout: 300000}).click({force: true});
+    cy.contains('button', /blue/i, {timeout: 30000}).click({force: true});
     // "Back to Games" button in the complete phase
-    cy.contains(/back to games|back/i, {timeout: 300000}).should('exist');
+    cy.contains(/back to games|back/i, {timeout: 30000}).should('exist');
     cy.contains('button', /back to games|back/i).click({force: true});
     // Should navigate back to /social/games hub
-    cy.url({timeout: 300000}).should('include', '/social/games');
+    cy.url({timeout: 30000}).should('include', '/social/games');
   });
 
   it('scoreboard shows player rankings', () => {
     visitGame('test-opentdb_trivia-id');
     cy.contains('button', /play solo/i, {timeout: 25000}).click({force: true});
-    cy.contains('What color is the sky?', {timeout: 300000}).should(
+    cy.contains('What color is the sky?', {timeout: 30000}).should(
       'be.visible'
     );
-    cy.contains('button', /blue/i, {timeout: 300000}).click({force: true});
+    cy.contains('button', /blue/i, {timeout: 30000}).click({force: true});
     // MultiplayerResults component shows rankings — look for player name or rank elements
-    cy.get('body', {timeout: 300000}).should(($body) => {
+    cy.get('body', {timeout: 30000}).should(($body) => {
       const text = $body.text();
       // Should have score/result info or player name after game ends
       const hasResults = /play again|score|point|win|result|rank/i.test(text);

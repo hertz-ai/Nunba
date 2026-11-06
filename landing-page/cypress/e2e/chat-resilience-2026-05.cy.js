@@ -18,12 +18,12 @@
  */
 
 const APP = Cypress.config('baseUrl') || 'http://localhost:3000';
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 describe('#207 guest session survives 401 mid-chat (functional)', () => {
   beforeEach(() => {
     cy.clearAllLocalStorage();
-    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    cy.openLocalChat();
   });
 
   it('silentGuestRefresh fires on /chat 401, then retries with new token', () => {
@@ -46,58 +46,23 @@ describe('#207 guest session survives 401 mid-chat (functional)', () => {
 });
 
 
-describe('#208 thinking-trace UI bounded at 180s (non-functional)', () => {
-  it('Thinking-in-progress spinner force-completes after STALE_CEILING_SEC', () => {
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.window().then((win) => {
-      // Inject a stuck thinking-trace via the chat container internal
-      // event stream so onComplete never arrives.
-      win.dispatchEvent(new CustomEvent('test:inject-thinking', {
-        detail: {step: 'analyzing...', id: 'test-1'},
-      }));
-    });
-    // Wait past STALE_CEILING_SEC + small slack
-    cy.wait(185000);
-    cy.contains(/thinking completed|completed/i, {timeout: 5000}).should('be.visible');
-  });
-});
+// #208 (thinking-trace spinner force-completes after STALE_CEILING_SEC) is
+// pinned by src/__tests__/pages/chat/ThinkingProcessContainer.ceiling.test.js
+// on computeIsReallyCompleted, boundary and the 83-minute case included.
+// The Cypress test that stood here dispatched a 'test:inject-thinking' event
+// that nothing in the app listens for, then slept 185 s: it could not pass
+// and cost ~6 min a run with the retry.
 
 
-describe('#211 SSE resilience: token refresh does not drop the connection', () => {
-  it('refreshing access_token via silentGuestRefresh keeps SSE open', () => {
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.window().then((win) => {
-      const realtimeService = win.__nunba_realtime__ ||
-                              require('../../src/services/realtimeService').default;
-      const initialUrl = realtimeService && realtimeService._eventSource?.url;
-      // Simulate token rotation
-      win.localStorage.setItem('access_token', 'jwt-rotated-' + Date.now());
-      win.dispatchEvent(new CustomEvent('nunba:auth_changed', {
-        detail: {source: 'token_refresh'},
-      }));
-      cy.wait(500);
-      const afterUrl = realtimeService && realtimeService._eventSource?.url;
-      // Same connection — URL did NOT rotate
-      expect(afterUrl).to.equal(initialUrl);
-    });
-  });
-
-  it('uid change overlap-reconnects with no broadcast-loss gap', () => {
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.window().then((win) => {
-      const realtimeService = win.__nunba_realtime__ ||
-                              require('../../src/services/realtimeService').default;
-      // Initial bind as 'guest'
-      realtimeService.setIdentity({userId: 'guest'});
-      cy.wait(500);
-      // Rotate to real uid
-      realtimeService.setIdentity({userId: 'd68c9dee-real-uid'});
-      // During overlap, both connections should briefly coexist
-      cy.wait(200);
-      expect(realtimeService._sseConnected).to.equal(true);
-    });
-  });
-});
+// #211 (a token refresh keeps the SSE stream; a uid change opens the new
+// stream before closing the old) is pinned by
+// src/__tests__/services/realtimeService.resilience.test.js with a fake
+// EventSource.  The Cypress tests that stood here never reached the app's
+// stream: the app sets no window.__nunba_realtime__, so they require()d a
+// second copy of realtimeService into the spec bundle, where API_BASE_URL
+// is the localhost:5000 default.  On a dev box that copy opened SSE streams
+// on the installed Nunba (measured 2026-11-05: uid=guest and
+// uid=d68c9dee-real-uid registered there during a run against :5001).
 
 
 describe('#170 autogen prompt stays within llama-server n_ctx budget', () => {
@@ -106,7 +71,10 @@ describe('#170 autogen prompt stays within llama-server n_ctx budget', () => {
     // the active token budget.  Pinning the contract here so a UI
     // dev who increases the constant can't silently regress chat
     // reliability.
-    cy.request(`${API}/api/admin/autogen-budget`, {failOnStatusCode: false})
+    // Options object, not cy.request(url, {...}): the second argument of
+    // that form is the request BODY, so failOnStatusCode never applied and
+    // the 404 below failed the test.
+    cy.request({url: `${API}/api/admin/autogen-budget`, failOnStatusCode: false})
       .then((res) => {
         if (res.status === 200 && res.body?.budget) {
           expect(res.body.budget).to.be.at.most(3500);
@@ -121,54 +89,70 @@ describe('#170 autogen prompt stays within llama-server n_ctx budget', () => {
 
 describe('#125 retry cap surfaces clear failure', () => {
   beforeEach(() => {
-    cy.visit('/local', {failOnStatusCode: false});
+    cy.openLocalChat();
   });
 
   it('after MAX_RETRIES backend-unreachable attempts, message status=failed', () => {
     // Force backend down for the whole test
     cy.intercept('POST', '**/chat', {forceNetworkError: true}).as('chatFail');
+    // Only the timers are faked (Date stays real), and only once the chat
+    // is usable: Agent.js crossfades the hero into the chat on setTimeout,
+    // so a clock installed before the visit left #demo-section at
+    // pointer-events:none.  handleSend sleeps getBackoff(n) between
+    // attempts, 2 s doubling to 30 s, ~3.5 min of real time for
+    // MAX_RETRIES (utils/chatRetry); in real time that sat at the edge of
+    // the old 240 s timeout (222 s pass, then a fail, on the same stack).
+    cy.get('textarea').first().should('be.visible').and('not.be.disabled');
+    cy.clock(Date.now(), ['setTimeout', 'clearTimeout']);
     cy.get('textarea').first().type('this will fail{enter}');
 
-    // 10 retries × ~30s max each = ~3 minutes; wait up to 4 minutes
-    cy.contains(/gave up after \d+ attempts/i, {timeout: 240000}).should('be.visible');
+    // Step the backoff forward one second at a time: handleSend counts the
+    // backoff down with one setTimeout(1000) per second (Demopage.js, the
+    // "retrying in Ns" loop), so a tick fires at most one of them and the
+    // next is armed only after it resolves.  The short real wait lets the
+    // failed request settle and the next timer be armed; a tick that lands
+    // first is caught up by the next one.  ~210 steps for MAX_RETRIES.
+    const stepUntilGaveUp = (stepsLeft) => {
+      cy.get('body', {log: false}).then(($body) => {
+        if (/gave up after \d+ attempts/i.test($body.text()) || stepsLeft === 0) return;
+        cy.wait(30, {log: false});
+        cy.tick(1000, {log: false});
+        stepUntilGaveUp(stepsLeft - 1);
+      });
+    };
+    stepUntilGaveUp(400);
+    cy.contains(/gave up after \d+ attempts/i, {timeout: 10000}).should('be.visible');
     // User can manually retry — the Retry button is rendered
     cy.contains('button', /retry/i).should('be.visible');
   });
 });
 
 
-describe('#206 + #218 TTS playback after on-device reply', () => {
-  it('on-device assistant message triggers tts.speak() once', () => {
-    cy.visit('/local', {failOnStatusCode: false});
-    let speakCalls = 0;
-    cy.window().then((win) => {
-      const originalSpeak = win.speechSynthesis?.speak;
-      if (originalSpeak) {
-        win.speechSynthesis.speak = (u) => {
-          speakCalls++;
-          return originalSpeak.call(win.speechSynthesis, u);
-        };
-      }
-    });
+/**
+ * Whether a TTS clip was put on the shared TTS audio element
+ * (services/ttsAudioElement.js, id nunba-tts-audio).  A data: URI does not
+ * count: handleSend primes that element on every send with a silent
+ * data:audio/wav clip (WebView2 autoplay), so "src is set" was true for
+ * any send, spoken or not.
+ */
+function ttsClipQueued(win) {
+  const el = win.document.getElementById('nunba-tts-audio');
+  const src = (el && el.getAttribute('src')) || '';
+  return src !== '' && !src.startsWith('data:');
+}
 
-    cy.intercept('POST', '**/chat', {
-      statusCode: 200,
-      body: {text: 'Hi! How can I help you today?', source: 'langchain_local'},
-    });
-    cy.get('textarea').first().type('hi{enter}');
-    cy.contains('Hi! How can I help', {timeout: 10000}).should('be.visible');
-    // Allow either Piper or WebSpeech to fire — what matters is "audio attempted"
-    cy.wait(1500);
-    cy.window().then((win) => {
-      // If WebSpeech was used, speakCalls >= 1; if Piper, audioRef.src is set
-      const audioEl = win.document.querySelector('audio');
-      const piperFired = audioEl && audioEl.src && audioEl.src !== '';
-      expect(speakCalls > 0 || piperFired).to.equal(true);
-    });
-  });
+describe('#206 + #218 TTS playback after on-device reply', () => {
+  // 'on-device assistant message triggers tts.speak() once' stood here.  By
+  // design (utils/ttsGuards.shouldSpeakLocalReply, the 2026-05-20 double-
+  // playback fix) the page speaks a local reply itself only when the
+  // realtime stream is down; with it up, the server's TTS push is the audio.
+  // On a CI-like stack (/chat stubbed, NUNBA_DISABLE_TTS=1) neither can
+  // happen, and the test passed only on the silent data: clip handleSend
+  // primes the element with.  Both branches are pinned in
+  // src/__tests__/utils/ttsGuards.test.js.
 
   it('draft-first bubble does NOT speak (waits for expert)', () => {
-    cy.visit('/local', {failOnStatusCode: false});
+    cy.openLocalChat({consent: 'granted'});
     cy.intercept('POST', '**/chat', {
       statusCode: 200,
       body: {
@@ -183,8 +167,7 @@ describe('#206 + #218 TTS playback after on-device reply', () => {
     // Audio MUST NOT have fired for the draft
     cy.wait(1500);
     cy.window().then((win) => {
-      const audioEl = win.document.querySelector('audio');
-      const piperFired = audioEl && audioEl.src && audioEl.src !== '';
+      const piperFired = ttsClipQueued(win);
       expect(piperFired).to.equal(false);
     });
   });
@@ -193,7 +176,10 @@ describe('#206 + #218 TTS playback after on-device reply', () => {
 
 describe('#204 TaskLedger 3-level grouping (admin)', () => {
   it('prompt -> flow -> action hierarchy renders with expand/collapse', () => {
-    cy.visit('/admin/tasks', {failOnStatusCode: false});
+    // The ledger page is /admin/task-ledger (MainRoute.js, RoleGuard
+    // minRole guest); /admin/tasks is the 404 page.  The stub is registered
+    // before the visit, which is when the page fetches.
+    cy.sealHart('Test.Resilience.User');
     cy.intercept('GET', '**/agent-engine/ledger/tasks*', {
       statusCode: 200,
       body: {
@@ -208,25 +194,58 @@ describe('#204 TaskLedger 3-level grouping (admin)', () => {
         ],
       },
     }).as('listTasks');
+    cy.visit('/admin/task-ledger', {failOnStatusCode: false});
     cy.wait('@listTasks');
     cy.contains(/Flow 1/i).should('exist');
     cy.contains(/Flow 2/i).should('exist');
-    cy.contains(/Action 1/i).should('exist');
+    // Flow 1 holds the in-progress action, so it is open on arrival.
+    cy.contains('Execute Action 1: lookup').should('exist');
+    cy.contains('Execute Action 2: synthesize').should('exist');
+    // Flow 2 has only pending work: collapsed until its header is clicked.
+    cy.contains('Flow 2 / Action 1: post').should('not.exist');
+    cy.contains('tr', /↳ Flow 2/).click();
+    cy.contains('Flow 2 / Action 1: post').should('exist');
   });
 });
 
 
 describe('NFT — premium-UX criteria (visible feedback within 100ms)', () => {
   it('clicking send button shows visual feedback under 100ms', () => {
-    cy.visit('/local', {failOnStatusCode: false});
+    cy.openLocalChat();
+    cy.intercept('POST', '**/chat', {
+      statusCode: 200,
+      body: {text: 'ok', source: 'langchain_local'},
+      delay: 2000,
+    });
     cy.get('textarea').first().type('hi');
-    const before = Date.now();
-    cy.get('button[type="submit"], button[aria-label*="send" i]').first().click();
-    cy.get('[aria-busy="true"], .loading, [data-loading="true"]', {timeout: 200})
-      .should('exist')
-      .then(() => {
-        const elapsed = Date.now() - before;
-        expect(elapsed).to.be.lessThan(200);  // 100ms target + slack for Cypress
+    // Measured inside the page, from the click to the first mutation that
+    // marks the UI busy.  `const before = Date.now()` at the top level ran
+    // while Cypress was still building the command queue, so it counted the
+    // visit and the typing; timing the next cy.get() instead counts
+    // Cypress's own polling (366 ms locally for a busy flag already set).
+    const BUSY = '[aria-busy="true"], .loading, [data-loading="true"]';
+    cy.get('button[type="submit"], button[aria-label*="send" i]').first()
+      .then(($btn) => {
+        const win = $btn[0].ownerDocument.defaultView;
+        win.__busyAfterMs = null;
+        const start = win.performance.now();
+        const obs = new win.MutationObserver(() => {
+          if (win.__busyAfterMs === null && win.document.querySelector(BUSY)) {
+            win.__busyAfterMs = win.performance.now() - start;
+            obs.disconnect();
+          }
+        });
+        obs.observe(win.document.body, {
+          subtree: true, childList: true, attributes: true,
+          attributeFilter: ['aria-busy', 'class', 'data-loading'],
+        });
+        $btn[0].click();
+      });
+    cy.window().its('__busyAfterMs', {timeout: 2000}).should('not.be.null')
+      .then((ms) => {
+        // 100 ms premium-UX target + slack, the bound this test always had.
+        // Measured in-page on a slow dev box: 162 ms.
+        expect(ms).to.be.lessThan(200);
       });
   });
 });

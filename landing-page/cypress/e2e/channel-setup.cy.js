@@ -13,7 +13,7 @@
  */
 
 describe('Channel Setup via Admin API', () => {
-  const API = 'http://localhost:5000';
+  const API = `${Cypress.env('apiUrl')}`;
   const CHANNELS_API = `${API}/api/admin/channels`;
   const WEBHOOKS_API = `${API}/api/admin/automation/webhooks`;
 
