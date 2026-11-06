@@ -4739,6 +4739,19 @@ def _sse_replay(user_id, since):
 # heartbeat write raises on a closed socket, which unwinds the generator
 # and runs its finally.  That converts a half-open connection into a
 # real close event, which is the one authority.
+#
+# Except where the write does NOT raise.  Under Hypercorn this WSGI stream
+# runs on the NUNBA_WORKER_THREADS executor (128) and a write to a closed
+# peer is swallowed, so a page that leaves keeps its thread for good.
+# Measured 2026-11-06: 10 streams opened and closed on a local server were
+# still registered 75 s later; CI shard 2 of 5fc11e2 climbed to 128 clients
+# and stayed there while every page load timed out.  So a stream also ENDS
+# itself after _SSE_STREAM_MAX_S.  That is still the stream's own lifecycle
+# (the same finally runs), not the old silent eviction: the client sees the
+# close, EventSource reconnects with ?since= and the replay window returns
+# what it missed (tests/test_sse_client_registry.py
+# TestAStreamEndsWithinItsMaxAge).
+_SSE_STREAM_MAX_S = 300
 
 
 def broadcast_sse_event(event_type, data, user_id=None):
@@ -5009,10 +5022,15 @@ def sse_event_stream():
             # replayed id, not past frames it never got.
             yield ("data: " + json.dumps({"type": "connected", "resume": head})
                    + "\n\n")
+            started = time.monotonic()
             while True:
                 # A frame was dropped on this full queue: end the stream so
                 # the client resumes from its last id via the replay window.
                 if client_queue in _sse_lagged:
+                    return
+                # Max age reached (see _SSE_STREAM_MAX_S): end, so a peer
+                # this server never saw leave gives its thread back.
+                if time.monotonic() - started >= _SSE_STREAM_MAX_S:
                     return
                 try:
                     msg = client_queue.get(timeout=30)
