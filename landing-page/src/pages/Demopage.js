@@ -2840,7 +2840,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     const _origErr = console.error;
     const _send = (level, args) => {
       const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
-      if (msg.includes('[TTS]') || msg.includes('[SSE]') || msg.includes('[VIDEO]') || msg.includes('[STT]')) {
+      // [Nunba Pill]: the reason behind the desktop's red error pill (app.py
+      // setup_connectivity_monitor).  Without it the pill named no failure
+      // and no log held one (owner's auto-start, 2026-11-05).
+      if (msg.includes('[TTS]') || msg.includes('[SSE]') || msg.includes('[VIDEO]') || msg.includes('[STT]')
+          || msg.includes('[Nunba Pill]')) {
         fetch('/api/jslog', { method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({level, msg}) }).catch(() => {});
       }
