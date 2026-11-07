@@ -160,13 +160,19 @@ export function createApiClient(
       // emit so cross-platform diagnostic discipline stays uniform.
       //
       // silentError (per request): true keeps every failure of the request
-      // off the banner; a list of statuses keeps only those off, for a caller
-      // that handles them itself and still wants the rest said.
+      // off the banner; a list of statuses (compared as numbers) keeps only
+      // those off, for a caller that handles them itself and still wants the
+      // rest said.  The page's mount-time background reads of HARTOS social
+      // routes pass [404]: they run while HARTOS may still be registering
+      // the routes (measured 2026-11-07: /auth/me asked at 11:26:13.564,
+      // social_bp registered at 11:26:14.18) and each handles that 404.
       try {
         if (typeof window !== 'undefined' && error?.config) {
           const status = Number(error.response?.status) || 0;
           const silent = error.config.silentError;
-          const silenced = Array.isArray(silent) ? silent.includes(status) : Boolean(silent);
+          const silenced = Array.isArray(silent)
+            ? silent.some((s) => Number(s) === status)
+            : Boolean(silent);
           if (!silenced) {
             const url = (error.config.baseURL || '') + (error.config.url || '');
             const method = String(error.config.method || 'get').toUpperCase();

@@ -133,7 +133,8 @@ export const searchApi = {
 
 // --- Notifications ---
 export const notificationsApi = {
-  list: (params) => socialApi.get('/notifications', {params}),
+  // config: per-request options (e.g. silentError for the background polls).
+  list: (params, config) => socialApi.get('/notifications', {...config, params}),
   markRead: (ids) => socialApi.post('/notifications/read', {ids}),
   markAllRead: () => socialApi.post('/notifications/read-all'),
 };

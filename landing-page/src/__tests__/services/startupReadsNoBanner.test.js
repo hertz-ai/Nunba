@@ -107,6 +107,21 @@ describe('every other failure still reaches the banner', () => {
   });
 });
 
+describe('a silentError status list', () => {
+  test('notificationsApi.list passes a caller\'s silentError through', async () => {
+    answer = {status: 404, data: {error: 'API endpoint not found'}};
+    await settle(notificationsApi.list({unread: true, limit: 1}, {silentError: [404]}));
+    expect(banners).toEqual([]);
+  });
+
+  test('statuses written as strings still match', async () => {
+    answer = {status: 404, data: {}};
+    const client = createApiClient('http://localhost:5000', {cache: false});
+    await settle(client.get('/x', {silentError: ['404']}));
+    expect(banners).toEqual([]);
+  });
+});
+
 describe('silentError: true still silences every failure', () => {
   test('a 500 on a silentError: true request raises no banner', async () => {
     answer = {status: 500, data: {}};
