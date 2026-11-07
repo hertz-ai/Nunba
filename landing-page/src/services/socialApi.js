@@ -53,7 +53,11 @@ export const authApi = {
   // keepStatus: SocialContext tells an answer about the token (200 / 401 /
   // 403) from no answer (404 while HARTOS registers the route at boot,
   // 5xx, network); without it a failure rejects with the body alone.
-  me: () => socialApi.get('/auth/me', {keepStatus: true}),
+  // silentError [404]: that boot 404 is handled there ('unanswered', asked
+  // again by RoleGuard), so the banner must not tell the person "Couldn't
+  // find what you asked for" -- measured 2026-11-07: the page asked at
+  // 11:26:13, social_bp registered at 11:26:14.18.  401 and 5xx still show.
+  me: () => socialApi.get('/auth/me', {keepStatus: true, silentError: [404]}),
   logout: () => socialApi.post('/auth/logout'),
   guestRegister: (data) =>
     socialApi.post('/auth/guest-register', _attachReferral(data)),
@@ -1039,7 +1043,10 @@ export const contentGenApi = {
 // --- Theme (OS-wide appearance) ---
 export const themeApi = {
   getPresets: () => socialApi.get('/theme/presets'),
-  getActive: () => socialApi.get('/theme/active'),
+  // silentError [404]: read once at page load, often before HARTOS has
+  // registered the route (same boot race as authApi.me); ThemeContext keeps
+  // the default theme on a failure, so the banner has nothing to report.
+  getActive: () => socialApi.get('/theme/active', {silentError: [404]}),
   apply: (themeId) => socialApi.post('/theme/apply', {theme_id: themeId}),
   customize: (overrides) => socialApi.post('/theme/customize', overrides),
   getFonts: () => socialApi.get('/theme/fonts'),
