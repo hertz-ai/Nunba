@@ -544,9 +544,9 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
 
-  // Camera consent → NunbaChatProvider listens for this event and
-  // mounts useCameraFrameStream, which opens WS to VisionService
-  // :5460 and pipes JPEG frames at ~1fps.  The server protocol is
+  // Camera consent → useCameraConsent (hooks/useCameraConsent.js) listens
+  // for this event on both chat surfaces, and useConsentedCameraStream
+  // opens the WS to VisionService :5460 and pipes JPEG frames at ~1fps.  The server protocol is
   // (user_id digit, 'video_start', binary frames) — not JSON.
   const applyCamera = (decision) => {
     const _action = String(data.action || '').toLowerCase();
@@ -1336,9 +1336,9 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
   // A camera answer has to act HERE.  Every other consent is actuated
   // server-side (HARTOS grant_consent drives the embodied feed, and the
   // screen capture loop polls its own consent), but the camera frames come
-  // from this browser: NunbaChatProvider listens for this event and mounts
-  // useCameraFrameStream, which opens the WS to VisionService :5460.
-  // Without it a camera grant would be a row that turns nothing on.
+  // from this browser: useCameraConsent listens for this event on both chat
+  // surfaces (the answer counts before HARTOS's consent.granted arrives),
+  // and useConsentedCameraStream opens the WS to VisionService :5460.
   const applyCamera = (approved) => {
     if (card.consentType !== CAMERA_CONSENT_TYPE) return;
     try {

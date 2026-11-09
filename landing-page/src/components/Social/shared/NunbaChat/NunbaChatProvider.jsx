@@ -8,8 +8,7 @@
 import {steerError} from '../../../../constants/steerOutcome';
 import {useSocial} from '../../../../contexts/SocialContext';
 import useAuthSession from '../../../../hooks/useAuthSession';
-import useCameraConsent from '../../../../hooks/useCameraConsent';
-import useCameraFrameStream from '../../../../hooks/useCameraFrameStream';
+import {useConsentedCameraStream} from '../../../../hooks/useCameraConsent';
 import useComputerActivity from '../../../../hooks/useComputerActivity';
 import {useTTS} from '../../../../hooks/useTTS';
 import realtimeService, {
@@ -283,16 +282,11 @@ export default function NunbaChatProvider({children}) {
   const [ttsEnabled, setTtsEnabled] = useState(() =>
     initialTtsEnabled((key) => localStorage.getItem(key)));
   // Camera frames stream while the owner's camera consent is on file in
-  // HARTOS (useCameraConsent): the one gate, kept and revoked on the
-  // privacy page.  It used to be a per-session sessionStorage flag, so a yes
-  // was forgotten at the next launch while HARTOS never asked again.
-  const cameraConsented = useCameraConsent(userId);
-
-  useCameraFrameStream({
-    enabled: cameraConsented && !!userId,
-    userId,
-    channel: 'camera',
-  });
+  // HARTOS: the one gate, kept and revoked on the privacy page.  It used to
+  // be a per-session sessionStorage flag, so a yes was forgotten at the next
+  // launch while HARTOS never asked again.  One stream per person even with
+  // the agent page mounted beside this panel (useConsentedCameraStream).
+  useConsentedCameraStream(userId);
 
   const conversationIdRef = useRef(uuidv4());
   const currentAgentRef = useRef(null); // race-condition guard

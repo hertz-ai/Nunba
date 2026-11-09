@@ -67,8 +67,7 @@ import {getStableDeviceIdOnce} from '../utils/deviceId';
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
 // ── Camera frames, streamed while the owner's camera consent is on file ──
-import useCameraConsent from '../hooks/useCameraConsent';
-import useCameraFrameStream from '../hooks/useCameraFrameStream';
+import {useConsentedCameraStream} from '../hooks/useCameraConsent';
 import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
 import {playTtsClip} from '../services/ttsClipPlayer';
@@ -3958,13 +3957,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // This page never listened for the owner's camera answer, so a yes started
   // nothing here and agents found no frame (get_user_camera_inp, 28 calls on
   // 2026-11-07).  Stream at 1 fps while the consent is on file; video mode
-  // already streams its own 5 fps, so it is left to that.
-  const cameraConsented = useCameraConsent(effectiveUserId);
-  useCameraFrameStream({
-    enabled: cameraConsented && mediaMode !== 'video',
-    userId: effectiveUserId,
-    channel: 'camera',
-  });
+  // already streams its own 5 fps, so it holds the stream paused.
+  useConsentedCameraStream(effectiveUserId, {paused: mediaMode === 'video'});
 
   // ── Camera capture — snap frame, send as image ──
   const handleCameraCapture = async () => {
