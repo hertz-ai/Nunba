@@ -385,14 +385,15 @@ export const consentApi = {
   reopen: ({consent_type, scope}) =>
     socialApi.post('/consent/reopen', {consent_type, scope}),
 
-  // GET /api/social/consent — list (newest-first by granted_at)
-  list: ({consent_type, active_only} = {}) => {
+  // GET /api/social/consent — list (newest-first by granted_at).  `config`
+  // passes request options through (useCameraConsent: silentError [404]).
+  list: ({consent_type, active_only} = {}, config = {}) => {
     const params = {};
     if (consent_type !== undefined) params.consent_type = consent_type;
     if (active_only !== undefined) {
       params.active_only = active_only ? 'true' : 'false';
     }
-    return socialApi.get('/consent', {params});
+    return socialApi.get('/consent', {...config, params});
   },
 };
 

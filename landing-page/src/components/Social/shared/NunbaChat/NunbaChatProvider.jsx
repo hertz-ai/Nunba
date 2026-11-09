@@ -5,10 +5,10 @@
  * Does NOT import Demopage — lightweight direct API calls only.
  */
 
-import {NUNBA_CAMERA_CONSENT} from '../../../../constants/events';
 import {steerError} from '../../../../constants/steerOutcome';
 import {useSocial} from '../../../../contexts/SocialContext';
 import useAuthSession from '../../../../hooks/useAuthSession';
+import useCameraConsent from '../../../../hooks/useCameraConsent';
 import useCameraFrameStream from '../../../../hooks/useCameraFrameStream';
 import useComputerActivity from '../../../../hooks/useComputerActivity';
 import {useTTS} from '../../../../hooks/useTTS';
@@ -282,35 +282,11 @@ export default function NunbaChatProvider({children}) {
   // every session, and a speaker left on in Demopage is on here.
   const [ttsEnabled, setTtsEnabled] = useState(() =>
     initialTtsEnabled((key) => localStorage.getItem(key)));
-  // Camera frame streaming — consented via an ApprovalOverlay "camera"
-  // approval.  Persisted to sessionStorage so a page nav within the
-  // session keeps the consent (not localStorage — long-lived consent
-  // is a privacy anti-pattern, user should re-opt-in per session).
-  const [cameraConsented, setCameraConsented] = useState(() => {
-    try {
-      return sessionStorage.getItem('nunba_camera_consent') === 'true';
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    const onConsent = (ev) => {
-      const approved = !!ev?.detail?.approved;
-      setCameraConsented(approved);
-      try {
-        if (approved) {
-          sessionStorage.setItem('nunba_camera_consent', 'true');
-        } else {
-          sessionStorage.removeItem('nunba_camera_consent');
-        }
-      } catch {
-        /* storage quota */
-      }
-    };
-    window.addEventListener(NUNBA_CAMERA_CONSENT, onConsent);
-    return () => window.removeEventListener(NUNBA_CAMERA_CONSENT, onConsent);
-  }, []);
+  // Camera frames stream while the owner's camera consent is on file in
+  // HARTOS (useCameraConsent): the one gate, kept and revoked on the
+  // privacy page.  It used to be a per-session sessionStorage flag, so a yes
+  // was forgotten at the next launch while HARTOS never asked again.
+  const cameraConsented = useCameraConsent(userId);
 
   useCameraFrameStream({
     enabled: cameraConsented && !!userId,
