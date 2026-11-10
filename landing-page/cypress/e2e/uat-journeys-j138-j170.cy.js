@@ -47,6 +47,19 @@ const installBaselineStubs = () => {
   cy.intercept('GET', '**/api/guest-id', {statusCode: 200, body: {guest_id: 'g_j138_j170_fixture'}});
 };
 
+// MCP tool call the way an external MCP client makes it (J15): the bridge's
+// own bearer, read from the admin token route, which answers on loopback.
+const mcpExecute = (tool, args) =>
+  cy.request({url: `${Cypress.env('apiUrl')}/api/admin/mcp/token`, failOnStatusCode: false})
+    .then((t) => cy.request({
+      method: 'POST',
+      url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/execute`,
+      headers: {Authorization: `Bearer ${t.body.token}`},
+      body: {tool, arguments: args},
+      failOnStatusCode: false,
+      timeout: 60000,
+    }));
+
 // ════════════════════════════════════════════════════════════════════════
 // J138-J144 — MemoryGraph suite
 // ════════════════════════════════════════════════════════════════════════
@@ -66,56 +79,67 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
     });
   });
 
-  it('J139: POST /api/memory/forget returns envelope', () => {
+  // Each test below reaches the journey through the entry point
+  // tests/journey/PRODUCT_MAP.md names for it.  The routes the spec used to
+  // call (/api/memory/forget, /backtrace, /remember, /status, /sync) were
+  // never registered: Flask answered 405 for them, because
+  // DELETE /api/memory/<memory_id> matches the path.
+
+  it('J139: DELETE /api/memory/<id> answers in JSON (unknown id is 404)', () => {
     cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/forget`,
-      body: {memory_id: 'test_id'},
+      method: 'DELETE',
+      url: `${Cypress.env('apiUrl')}/api/memory/cypress_j139_no_such_id?user_id=cypress_j139`,
       failOnStatusCode: false,
     }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
+      expect(resp.status).to.be.oneOf([404, 503]);
+      expect(resp.body).to.have.property('error');
     });
   });
 
-  it('J140, J143: GET /api/memory/backtrace returns chain envelope', () => {
+  // J140 / J143 (backtrace across agents, depth bound) are
+  // MemoryGraph.backtrace / agent_memory_tools.backtrace_memory in HARTOS:
+  // there is no HTTP route or MCP tool for them, so a browser test cannot
+  // reach them.  They belong in a HARTOS unit test.
+
+  it('J141: MCP remember stores a memory that recall finds', () => {
+    const content = `cypress j141 ${Date.now()}`;
+    mcpExecute('remember', {content}).then((resp) => {
+      expect(resp.status).to.eq(200);
+      expect(resp.body.success).to.eq(true);
+      expect(resp.body.result).to.have.property('stored', true);
+      const id = resp.body.result.memory_id;
+      expect(id).to.be.a('string').and.not.be.empty;
+      mcpExecute('recall', {q: content}).then((r) => {
+        expect(r.status).to.eq(200);
+        const ids = (r.body.result.memories || []).map((m) => m.id);
+        expect(ids).to.include(id);
+      });
+    });
+  });
+
+  it('J142: GET /api/admin/diag/degradations lists degraded subsystems', () => {
+    // A corrupt memory_graph.db must surface here (degradation:memory_graph)
+    // while chat still boots; on a healthy box the list is just empty.
     cy.request({
       method: 'GET',
-      url: `${Cypress.env('apiUrl')}/api/memory/backtrace?memory_id=test&depth=3`,
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/degradations`,
       failOnStatusCode: false,
     }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
+      expect(resp.status).to.eq(200);
+      expect(resp.body).to.have.property('degradations').that.is.an('array');
     });
   });
 
-  it('J141: memory remember returns envelope even under concurrent embed', () => {
-    cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
-      body: {text: 'concurrent embed test', agent_id: 'test'},
-      failOnStatusCode: false,
-    }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 201, 400, 401, 403, 404, 503]);
-    });
-  });
-
-  it('J142: GET /api/memory/status reports db health', () => {
+  it('J144: GET /api/memory-sync/pull answers (refuses while cloud sync is off)', () => {
     cy.request({
       method: 'GET',
-      url: `${Cypress.env('apiUrl')}/api/memory/status`,
+      url: `${Cypress.env('apiUrl')}/api/memory-sync/pull`,
       failOnStatusCode: false,
     }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
-    });
-  });
-
-  it('J144: POST /api/memory/sync returns envelope (flat→regional sync)', () => {
-    cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/sync`,
-      body: {target_tier: 'regional'},
-      failOnStatusCode: false,
-    }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 202, 400, 401, 403, 404, 503]);
+      expect(resp.status).to.be.oneOf([200, 403]);
+      if (resp.status === 403) {
+        expect(resp.body).to.have.property('error', 'sync_disabled');
+      }
     });
   });
 });
@@ -318,20 +342,16 @@ describe('J155-J164: concurrency + race journeys', () => {
     });
   });
 
-  it('J160: parallel remember writes return envelopes', () => {
-    cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
-      body: {text: 'parallel-1', agent_id: 'j160'},
-      failOnStatusCode: false,
+  it('J160: two remember writes both land', () => {
+    const tag = `cypress j160 ${Date.now()}`;
+    mcpExecute('remember', {content: `${tag} one`});
+    mcpExecute('remember', {content: `${tag} two`}).then((resp) => {
+      expect(resp.status).to.eq(200);
+      expect(resp.body.result).to.have.property('stored', true);
     });
-    cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
-      body: {text: 'parallel-2', agent_id: 'j160'},
-      failOnStatusCode: false,
-    }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 201, 400, 401, 403, 404, 503]);
+    mcpExecute('recall', {q: tag}).then((r) => {
+      expect(r.status).to.eq(200);
+      expect(r.body.result.memories).to.have.length.of.at.least(2);
     });
   });
 
