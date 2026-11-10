@@ -149,46 +149,19 @@ describe('Ad Components — Feed Top Banner', () => {
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
-    // Look for a dismiss/close button on the ad banner.
-    // The AdBanner component renders an IconButton with CloseIcon (MUI).
-    // MUI IconButtons may not have aria-label unless explicitly set.
-    // The CloseIcon renders as an SVG with data-testid="CloseIcon".
-    cy.get('body').then(($body) => {
-      // Strategy 1: Find the CloseIcon SVG and navigate up to the button
-      const closeIcon = $body.find('[data-testid="CloseIcon"]');
-      let btn = closeIcon.closest('button');
+    // The close button inside THIS ad's card (AdBanner: an IconButton with
+    // MUI's CloseIcon, no aria-label).  The page has other close icons; the
+    // test used to click the first one on the page, which need not be the
+    // ad's, and then found the ad still there.
+    cy.wait('@serveAd');
+    cy.contains('Test Ad', {timeout: 20000})
+      .closest('.MuiCard-root')
+      .find('[data-testid="CloseIcon"]')
+      .closest('button')
+      .click({force: true});
 
-      // Strategy 2: aria-label based selectors
-      if (btn.length === 0) {
-        btn = $body.find(
-          'button[aria-label*="close"], button[aria-label*="Close"], ' +
-            'button[aria-label*="dismiss"], button[aria-label*="Dismiss"]'
-        );
-      }
-
-      // Strategy 3: Find any absolutely positioned small button (dismiss button style)
-      if (btn.length === 0) {
-        btn = $body.find('button').filter(function () {
-          const s = window.getComputedStyle(this);
-          return s.position === 'absolute' && parseInt(s.width) <= 40;
-        });
-      }
-
-      if (btn.length > 0) {
-        cy.wrap(btn.first()).click({force: true});
-        cy.wait(500);
-
-        // After dismiss, the ad banner should be gone
-        cy.get('body').then(($b) => {
-          const text = $b.text();
-          const adGone = !text.includes('Test Ad') || !text.includes('Buy now');
-          expect(adGone).to.be.true;
-        });
-      } else {
-        // No close button found — ad may not have rendered (page still stable)
-        cy.get('#root').invoke('html').should('not.be.empty');
-      }
-    });
+    // After dismiss, the ad banner is gone.
+    cy.contains('Test Ad').should('not.exist');
   });
 
   it('should not show banner after dismissal (sessionStorage)', () => {
