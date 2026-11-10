@@ -6003,7 +6003,12 @@ def start_flask():
                 set_keys = [key for key in found_keys if data[key] != '']
 
                 # Store in a file
-                from desktop.guest_identity import get_user_data_file_path
+                from desktop.guest_identity import (
+                    PLACEHOLDER_USER_ID,
+                    USER_DATA_LOCK,
+                    get_user_data_file_path,
+                    is_placeholder_user_id,
+                )
                 user_data_file = get_user_data_file_path()
                 os.makedirs(os.path.dirname(user_data_file), exist_ok=True)
 
@@ -6016,52 +6021,69 @@ def start_flask():
                 for key in set_keys:
                     user_data[key] = data[key]
 
-                # What we PERSIST — merged into the existing document.
-                #
-                # Until 2026-08-11 this handler wrote `user_data` straight out
-                # with mode 'w', rebuilding the file from ONLY the posted keys.
-                # Any caller sending a subset therefore deleted everything it
-                # did not mention.  That made a HART-identity reset
-                # inexpressible: SettingsPage could not clear hart_* without
-                # also destroying access_token / email / user_id and signing
-                # the user out, so the reset cleared localStorage only —
-                # whereupon useStorageSync re-hydrated hart_* straight back
-                # out of this file and the naming ceremony never ran.
-                stored = {}
-                if os.path.exists(user_data_file):
+                # One step from reading the record to exporting its owner: posts land
+                # on different server threads, and a post that read the record before
+                # a sign-out's clear wrote the signed-in user back (reviewer case S4).
+                with USER_DATA_LOCK:
+                    # What we PERSIST — merged into the existing document.
+                    #
+                    # Until 2026-08-11 this handler wrote `user_data` straight out
+                    # with mode 'w', rebuilding the file from ONLY the posted keys.
+                    # Any caller sending a subset therefore deleted everything it
+                    # did not mention.  That made a HART-identity reset
+                    # inexpressible: SettingsPage could not clear hart_* without
+                    # also destroying access_token / email / user_id and signing
+                    # the user out, so the reset cleared localStorage only —
+                    # whereupon useStorageSync re-hydrated hart_* straight back
+                    # out of this file and the naming ceremony never ran.
+                    stored = {}
+                    if os.path.exists(user_data_file):
+                        try:
+                            with open(user_data_file) as f:
+                                _existing = json.load(f)
+                            if isinstance(_existing, dict):
+                                stored = _existing
+                        except (OSError, ValueError) as _read_err:
+                            # Corrupt or unreadable: fall back to the pre-merge
+                            # behaviour (start clean) rather than refusing the write.
+                            logger.warning(
+                                f"user_data.json unreadable ({_read_err}) — rebuilding")
+                            stored = {}
+
+                    # A page that holds no identity posts the placeholder; it names
+                    # nobody, so it is never stored, over a signed-in user or on an
+                    # empty record.  Sign-out clears the identity with the ''
+                    # sentinel (landing-page clearAuth).
+                    if 'user_id' in user_data and is_placeholder_user_id(
+                            user_data['user_id']):
+                        logger.info(
+                            "user_data.json does not store the placeholder "
+                            f"{PLACEHOLDER_USER_ID!r} (on file: "
+                            f"{stored.get('user_id') or 'nobody'})")
+                        user_data.pop('user_id')
+                        set_keys.remove('user_id')
+
+                    _cleared = []
+                    for key in clear_keys:
+                        if stored.pop(key, None) is not None:
+                            _cleared.append(key)
+                    stored.update(user_data)
+
+                    with open(user_data_file, 'w') as f:
+                        json.dump(stored, f)
+
+                    logger.info(
+                        f"user_data.json merged — set={set_keys} "
+                        f"cleared={_cleared} now={list(stored.keys())}")
+
+                    # This file IS the sign-in record, so every write can change
+                    # who owns the desktop.  Re-export it so the consent gates act
+                    # for the person signed in NOW, not the boot-time guest.
                     try:
-                        with open(user_data_file) as f:
-                            _existing = json.load(f)
-                        if isinstance(_existing, dict):
-                            stored = _existing
-                    except (OSError, ValueError) as _read_err:
-                        # Corrupt or unreadable: fall back to the pre-merge
-                        # behaviour (start clean) rather than refusing the write.
-                        logger.warning(
-                            f"user_data.json unreadable ({_read_err}) — rebuilding")
-                        stored = {}
-
-                _cleared = []
-                for key in clear_keys:
-                    if stored.pop(key, None) is not None:
-                        _cleared.append(key)
-                stored.update(user_data)
-
-                with open(user_data_file, 'w') as f:
-                    json.dump(stored, f)
-
-                logger.info(
-                    f"user_data.json merged — set={set_keys} "
-                    f"cleared={_cleared} now={list(stored.keys())}")
-
-                # This file IS the sign-in record, so every write can change
-                # who owns the desktop.  Re-export it so the consent gates act
-                # for the person signed in NOW, not the boot-time guest.
-                try:
-                    from desktop.guest_identity import sync_owner_identity_env
-                    sync_owner_identity_env()
-                except Exception as _own_err:
-                    logger.warning(f"desktop owner re-export failed: {_own_err}")
+                        from desktop.guest_identity import sync_owner_identity_env
+                        sync_owner_identity_env()
+                    except Exception as _own_err:
+                        logger.warning(f"desktop owner re-export failed: {_own_err}")
 
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']

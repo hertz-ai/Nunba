@@ -403,6 +403,13 @@ export function setGuestIdentity(payload) {
  * NOT touch unrelated keys (nunba_media_mode, hart_sealed once
  * sealed — HART node identity persists across logout for the same
  * device).
+ *
+ * Also clears the sign-in on the desktop's record (user_data.json via
+ * /api/storage/set, '' = clear).  That record decides who owns the
+ * desktop, and the server keeps a signed-in user when a page posts the
+ * 'guest' placeholder, so sign-out is the one place that clears it.
+ * Sent without waiting and without the error banner; the page signs out
+ * even if the desktop is down.
  */
 export function clearAuth() {
   const AUTH_KEYS = [
@@ -424,6 +431,15 @@ export function clearAuth() {
   // deliberately NOT cleared — HART node identity persists across
   // logout per the 4-layer identity model (HART node + cloud account
   // co-exist; logging out of cloud doesn't dissolve the HART node).
+
+  // Lazy require: socialApi -> axiosFactory -> useAuthSession is a cycle
+  // (same as silentGuestRefresh below).
+  try {
+    const {chatApi} = require('../services/socialApi');
+    chatApi.post('/api/storage/set',
+      {user_id: '', access_token: '', email: ''},
+      {silentError: true}).catch(() => {});
+  } catch (_e) { /* module not loaded */ }
 
   try {
     window.dispatchEvent(new CustomEvent('nunba:auth_changed', {

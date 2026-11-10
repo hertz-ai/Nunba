@@ -5235,7 +5235,7 @@ def _register_nunba_consumer_routes(flask_app):
         logging.debug(f"upload_routes register skipped: {_e}")
     try:
         from routes.db_routes import register_db_routes
-        register_db_routes(flask_app)
+        register_db_routes(flask_app, device_id=DEVICE_ID)
     except Exception as _e:
         logging.debug(f"db_routes register skipped: {_e}")
 

@@ -261,8 +261,68 @@ def get_visual_by_mins():
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONVERSATION ROUTES — replaces cloud /conversation
-# Consumers: save_conversation_db() in create_recipe.py, reuse_recipe.py
+# Consumers: save_conversation_db() in create_recipe.py, reuse_recipe.py (POST);
+#            the chat page's history restore (Demopage, utils/serverChatHistory)
 # ══════════════════════════════════════════════════════════════════════════════
+
+#: This node's device id, the one main.py's /status reports (DEVICE_ID).  The
+#: page sends that id when it signs in as a guest, and HARTOS
+#: /auth/guest-register records it on the guest account's GuestRecovery row.
+#: Set by register_db_routes.
+_NODE_DEVICE_ID = None
+
+
+def _device_guest_ids():
+    """The anonymous ids this device's chat page has saved its chats under.
+
+    The page posts each save under whatever id it holds at the time: the
+    desktop's hardware guest id, the 'guest' placeholder when it holds none,
+    or a guest account HARTOS registered for this device.  None of them is a
+    person's account; a recovered account whose user_type is no longer
+    'guest' is left out.
+    """
+    from desktop.guest_identity import PLACEHOLDER_USER_ID, get_guest_id
+    ids = {PLACEHOLDER_USER_ID}
+    try:
+        ids.add(str(get_guest_id()))
+    except Exception as e:  # noqa: BLE001 -- the other ids still count
+        logger.warning("conversation history: desktop guest id unread (%s)", e)
+    if _NODE_DEVICE_ID:
+        try:
+            from integrations.social.models import GuestRecovery, User, db_session
+            with db_session(commit=False) as db:
+                rows = (db.query(GuestRecovery.user_id, User.user_type)
+                        .join(User, User.id == GuestRecovery.user_id)
+                        .filter(GuestRecovery.device_id == _NODE_DEVICE_ID)
+                        .all())
+            ids.update(str(uid) for uid, user_type in rows if user_type == 'guest')
+        except Exception as e:  # noqa: BLE001 -- the other ids still count
+            logger.warning("conversation history: device guest accounts unread (%s)", e)
+    return ids
+
+
+def _history_user_ids(user_id):
+    """The user ids whose rows GET /conversation returns for ``user_id``.
+
+    For this desktop's owner (desktop.guest_identity.get_desktop_owner_id):
+    the owner's rows and those the page saved under this device's anonymous
+    ids before the owner signed in.  Measured 2026-11-04: the owner signed in
+    on 09-25, and the page's earlier chats sat under a guest account of this
+    device (590 rows) and 'guest' (64), so they never came back.  For anyone
+    else, and whenever the owner cannot be read: that user's rows only.  Rows
+    are read, never re-keyed (HARTOS core.user_memory_migration re-keys the
+    agent's memory, behind is_claimable_guest).
+    """
+    uid = str(user_id)
+    try:
+        from desktop.guest_identity import get_desktop_owner_id
+        if uid != str(get_desktop_owner_id() or ''):
+            return [uid]
+        return [uid, *sorted(_device_guest_ids() - {uid})]
+    except Exception as e:  # noqa: BLE001 -- fail closed: the user's own rows
+        logger.warning("conversation history: owner unread, own rows only (%s)", e)
+        return [uid]
+
 
 @db_bp.route('/conversation', methods=['POST', 'GET'])
 def conversation():
@@ -277,6 +337,8 @@ def conversation():
     Returns: { conv_id: int }
 
     GET params: ?user_id=X&topic=Y&request_id=Z
+    (for this desktop's owner, user_id also covers the device's anonymous
+    ids: _history_user_ids)
     """
     if request.method == 'GET':
         user_id = request.args.get('user_id', '')
@@ -289,8 +351,9 @@ def conversation():
             query = "SELECT * FROM conversations WHERE 1=1"
             params = []
             if user_id:
-                query += " AND user_id = ?"
-                params.append(user_id)
+                ids = _history_user_ids(user_id)
+                query += " AND user_id IN (" + ", ".join("?" for _ in ids) + ")"
+                params.extend(ids)
             if topic:
                 query += " AND topic = ?"
                 params.append(topic)
@@ -738,8 +801,15 @@ def get_voice_sample_id(voice_id):
 # REGISTRATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def register_db_routes(app):
-    """Register the DB blueprint with the Flask app."""
+def register_db_routes(app, device_id=None):
+    """Register the DB blueprint with the Flask app.
+
+    device_id: this node's device id (main.py DEVICE_ID), so GET
+    /conversation can find the guest accounts HARTOS registered for this
+    device (_device_guest_ids).
+    """
+    global _NODE_DEVICE_ID
+    _NODE_DEVICE_ID = device_id or None
     app.register_blueprint(db_bp)
     logger.info(
         "DB routes registered: /create_action, /conversation, /createpromptlist, "

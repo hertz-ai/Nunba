@@ -421,7 +421,7 @@ jobs:
 
       - name: Build React (production)
         working-directory: landing-page
-        run: npx react-app-rewired build
+        run: npm run build
         env:
           CI: 'false'
           DISABLE_ESLINT_PLUGIN: 'true'
@@ -675,7 +675,7 @@ jobs:
 
       - name: Build React (production)
         working-directory: landing-page
-        run: npx react-app-rewired build
+        run: npm run build
         env:
           CI: 'false'
           DISABLE_ESLINT_PLUGIN: 'true'
