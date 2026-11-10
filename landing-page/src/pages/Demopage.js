@@ -2618,7 +2618,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // identity/agent field changes.
     const sendPostRequest = async () => {
       try {
-        const data = await chatApi.post('/api/storage/set', payload);
+        const data = await chatApi.setDesktopIdentity(payload);
         logger.log('POST request response:', data);
       } catch (error) {
         console.error('Failed to send POST request:', error);
