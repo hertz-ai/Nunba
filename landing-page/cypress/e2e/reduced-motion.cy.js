@@ -9,6 +9,21 @@
  * - App remains fully functional with reduced motion
  */
 
+// Real reduced motion: Chrome's own prefers-reduced-motion, so the app's
+// @media (prefers-reduced-motion: reduce) rules apply (index.css).  The
+// matchMedia stubs below only answer JS callers; on their own they never
+// turned on the CSS this spec exists to check.  Chromium-family browsers only
+// (the Chrome DevTools protocol); quality.yml runs Chrome.
+const setReducedMotion = (value) => {
+  if (!Cypress.isBrowser({family: 'chromium'})) return;
+  cy.wrap(Cypress.automation('remote:debugger:protocol', {
+    command: 'Emulation.setEmulatedMedia',
+    params: {features: [{name: 'prefers-reduced-motion', value}]},
+  }), {log: false});
+};
+beforeEach(() => setReducedMotion('reduce'));
+after(() => setReducedMotion(''));
+
 // Every visit is /local, the page the desktop window opens.  Not '/':
 // Flask's '/' (main.py serve_landing_page_root) redirects to
 // https://hevolve.ai whenever that answers, so on an online runner a visit to
@@ -232,9 +247,9 @@ describe('Reduced Motion — Chat Page', () => {
     });
 
     // All elements should be visible (not hidden by animation state)
-    // .should, not .then: it retries until fades in flight have settled, so it
-    // fails only on text that STAYS at opacity 0.
-    cy.get('h1, h2, h3, p', {timeout: 30000}).should(($elements) => {
+    // A single read, not a retrying .should: with reduced motion nothing may
+    // be mid-fade, so text caught at opacity 0 is the failure this checks.
+    cy.get('h1, h2, h3, p', {timeout: 30000}).then(($elements) => {
       $elements.each(function () {
         const style = window.getComputedStyle(this);
         // Text elements should be visible
@@ -247,8 +262,9 @@ describe('Reduced Motion — Chat Page', () => {
   });
 
   it('should allow message sending with reduced motion', () => {
-    cy.visit('/local', {
-      timeout: 60000,
+    // The chat page: a sealed HART.  Unsealed, /local is the first-run
+    // ceremony, which has no textarea, so this test checked nothing there.
+    cy.openLocalChat({
       onBeforeLoad(win) {
         const originalMatchMedia = win.matchMedia?.bind(win);
         if (originalMatchMedia) {
@@ -275,18 +291,10 @@ describe('Reduced Motion — Chat Page', () => {
     cy.wait(2000);
 
     // Find chat input and type
-    cy.get('body').then(($body) => {
-      const textarea = $body.find('textarea');
-      if (textarea.length > 0) {
-        cy.wrap(textarea.first()).type('Test message with reduced motion', {
-          force: true,
-        });
-        cy.wrap(textarea.first()).should(
-          'have.value',
-          'Test message with reduced motion'
-        );
-      }
-    });
+    cy.get('textarea', {timeout: 30000})
+      .first()
+      .type('Test message with reduced motion', {force: true})
+      .should('have.value', 'Test message with reduced motion');
   });
 });
 
@@ -319,11 +327,12 @@ describe('Reduced Motion — Element Visibility', () => {
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
-    // Check major UI elements are visible.  .should, not .then: /local is the
-    // first-run ceremony here, whose language buttons fade in one by one, so
-    // a single read can land mid-fade; this fails only on a button that
-    // STAYS transparent.
-    cy.get('button', {timeout: 30000}).should(($buttons) => {
+    // Check major UI elements are visible.  /local is the first-run ceremony
+    // here; with reduced motion its language buttons must not be held at
+    // opacity 0 by their staggered fade-in delays (index.css cuts delays).
+    // A single read, not a retrying .should, so a button still fading fails.
+    cy.contains(/What language feels like home/i, {timeout: 30000});
+    cy.get('button', {timeout: 30000}).then(($buttons) => {
       $buttons.each(function () {
         if (this.offsetWidth > 0 && this.offsetHeight > 0) {
           const style = window.getComputedStyle(this);
