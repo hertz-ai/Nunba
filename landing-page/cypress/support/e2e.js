@@ -410,8 +410,10 @@ Cypress.Commands.add('sealHart', (name = 'CypressTest', language = 'en', {logged
  *    Demopage queue every send for ENGINE_BOOT_GRACE_MS (20 s,
  *    hooks/useLocalEngineReady) and its ?full=1 check appends a
  *    "Local LLM Setup" card to the chat.
+ * onBeforeLoad runs before the page's own scripts, e.g. to put a fake
+ * window.pywebview in place the way the desktop window has one.
  */
-Cypress.Commands.add('openLocalChat', ({consent = 'text_only', name = 'CypressTest'} = {}) => {
+Cypress.Commands.add('openLocalChat', ({consent = 'text_only', name = 'CypressTest', onBeforeLoad} = {}) => {
   cy.intercept('GET', '**/api/llm/status*', {
     statusCode: 200,
     body: {available: true, setup_needed: false},
@@ -421,7 +423,7 @@ Cypress.Commands.add('openLocalChat', ({consent = 'text_only', name = 'CypressTe
     localStorage.setItem('nunba_speech_consent', consent);
     if (consent === 'granted') localStorage.setItem('tts_enabled', 'true');
   });
-  cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+  cy.visit('/local', {timeout: 60000, failOnStatusCode: false, ...(onBeforeLoad ? {onBeforeLoad} : {})});
 });
 
 /**

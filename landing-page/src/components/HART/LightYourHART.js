@@ -100,7 +100,18 @@ const LANGUAGES = [
 const styles = {
   root: {
     position: 'fixed',
-    inset: 0,
+    // Below the desktop window's titlebar, never over it.  The frameless
+    // window (Win+Linux) has no native chrome: NunbaTitleBar's strip is the
+    // only minimize / maximize / close and the only drag handle.  With
+    // inset:0 at zIndex 99999 (above the titlebar's 10000) a first-run
+    // person met this ceremony with no way to move or close the window.
+    // --nunba-titlebar-h is NunbaTitleBar's own offset, set only while the
+    // titlebar shows (the same one its stylesheet uses for .fixed.top-0 and
+    // the MUI drawers), so in a browser this is 0 and nothing moves.
+    top: 'var(--nunba-titlebar-h, 0px)',
+    right: 0,
+    bottom: 0,
+    left: 0,
     zIndex: 99999,
     bgcolor: '#000',
     display: 'flex',
