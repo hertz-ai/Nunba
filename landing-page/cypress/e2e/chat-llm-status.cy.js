@@ -10,7 +10,11 @@
  *   4. Model name displayed correctly
  *
  * The Demopage performs a proactive LLM status check on mount:
- *   GET /api/llm/status → { available, model_name, setup_needed, recommended, diagnosis }
+ *   GET /api/llm/status?full=1 → { available, model_name, setup_needed, recommended, diagnosis }
+ * (Demopage.js asks with ?full=1; the send-gate poller, useLocalEngineReady,
+ * asks without it.  Every stub here is '**\/api/llm/status*' so it answers
+ * both: a pattern without the trailing * does not match a URL with a query,
+ * and the setup check then reached the real server.)
  * If setup_needed + auto-fixable action → POST /api/llm/auto-setup
  * If setup_needed + needs download → inject llm_setup_card message
  * On success → pushNotification("Your Nunba is fully awake")
@@ -91,7 +95,7 @@ describe('Chat LLM Status', () => {
   describe('1. LLM Status Check on Page Load', () => {
     it('1.1 GET /api/llm/status is called on mount', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: { available: true, model_name: 'qwen-2.5-7b-q4', setup_needed: false },
       }).as('llmStatus');
@@ -113,7 +117,7 @@ describe('Chat LLM Status', () => {
 
     it('1.2 page renders normally when LLM is available', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: { available: true, model_name: 'qwen-2.5-7b-q4', setup_needed: false },
       }).as('llmStatus');
@@ -139,7 +143,7 @@ describe('Chat LLM Status', () => {
 
     it('1.3 page survives when /api/llm/status returns 500', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 500,
         body: { error: 'internal server error' },
       }).as('llmStatusError');
@@ -160,7 +164,7 @@ describe('Chat LLM Status', () => {
 
     it('1.4 page survives when /api/llm/status times out (network error)', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', { forceNetworkError: true }).as('llmStatusNetErr');
+      cy.intercept('GET', '**/api/llm/status*', { forceNetworkError: true }).as('llmStatusNetErr');
       cy.intercept('GET', '**/api/ai/bootstrap/status', {
         statusCode: 200,
         body: { phase: 'done', steps: {} },
@@ -182,7 +186,7 @@ describe('Chat LLM Status', () => {
   describe('2. Auto-Setup Card When setup_needed', () => {
     it('2.1 shows setup notification for auto-start action', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: {
           available: false,
@@ -235,7 +239,7 @@ describe('Chat LLM Status', () => {
 
     it('2.2 shows setup card when download is required', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: {
           available: false,
@@ -285,7 +289,7 @@ describe('Chat LLM Status', () => {
 
     it('2.3 auto-setup failure shows warning notification', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: {
           available: false,
@@ -330,7 +334,7 @@ describe('Chat LLM Status', () => {
 
     it('2.4 no auto-setup triggered when setup_needed is false', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: { available: true, model_name: 'qwen-2.5-7b-q4', setup_needed: false },
       }).as('llmStatus');
@@ -359,7 +363,7 @@ describe('Chat LLM Status', () => {
   describe('3. Fully Awake Toast', () => {
     it('3.1 success toast appears with "fully awake" message', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: {
           available: false,
@@ -392,7 +396,7 @@ describe('Chat LLM Status', () => {
 
     it('3.2 bootstrap capability announcements show toast messages', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: { available: true, model_name: 'qwen-2.5', setup_needed: false },
       }).as('llmStatus');
@@ -427,7 +431,7 @@ describe('Chat LLM Status', () => {
 
     it('3.3 GPU occupied message shown for start_cpu action', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: {
           available: false,
@@ -477,7 +481,7 @@ describe('Chat LLM Status', () => {
   describe('4. Model Name Display', () => {
     it('4.1 model name from auto-setup appears in notification', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: {
           available: false,
@@ -517,7 +521,7 @@ describe('Chat LLM Status', () => {
 
     it('4.2 /api/llm/status response with model_name is accessible', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: { available: true, model_name: 'mistral-7b-instruct-q4', setup_needed: false },
       }).as('llmStatus');
@@ -539,7 +543,7 @@ describe('Chat LLM Status', () => {
 
     it('4.3 setup card contains model name and size label', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: {
           available: false,
@@ -575,7 +579,7 @@ describe('Chat LLM Status', () => {
 
     it('4.4 chat still works when model_name is null (unavailable)', () => {
       stubCommonApis();
-      cy.intercept('GET', '**/api/llm/status', {
+      cy.intercept('GET', '**/api/llm/status*', {
         statusCode: 200,
         body: { available: false, model_name: null, setup_needed: false },
       }).as('llmStatus');
