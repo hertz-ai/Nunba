@@ -149,6 +149,34 @@ describe('NunbaTitleBar — frameless custom chrome', () => {
     });
   });
 
+  context('Frameless mode, the bridge attaches after the page', () => {
+    // pywebview can attach its api after the page has rendered; NunbaTitleBar
+    // shows on `pywebviewready`, and the ceremony root shrinks by 32px with no
+    // window resize.  The particle canvas must follow the root.
+    it('the ceremony still fits below the titlebar, canvas included', () => {
+      cy.viewport(1280, 800);
+      cy.visit('/local');
+      cy.contains(/What language feels like home/i, { timeout: 20000 }).should('be.visible');
+      cy.get('[data-testid="nunba-titlebar"]').should('not.exist');
+      cy.window().then((win) => {
+        fakePywebview(win);
+        onWindows(win);
+        win.dispatchEvent(new win.Event('pywebviewready'));
+      });
+      cy.get('[data-testid="nunba-titlebar"]').should('be.visible');
+      cy.get('canvas').first().should(($canvas) => {
+        const root = $canvas[0].parentElement;
+        const c = $canvas[0].getBoundingClientRect();
+        expect(root.getBoundingClientRect().top, 'root below the strip').to.equal(32);
+        expect(c.top, 'canvas starts where the root starts').to.equal(32);
+        expect(c.height, 'canvas height').to.equal(root.clientHeight);
+        expect(c.width, 'canvas width').to.equal(root.clientWidth);
+        // At 800px the language list fits: nothing to scroll.
+        expect(root.scrollHeight, 'root scroll').to.be.at.most(root.clientHeight);
+      });
+    });
+  });
+
   context('Frameless mode, the chat page', () => {
     it('Demopage chip sits in the titlebar right slot (TB-Phase-B), not over the page', () => {
       // Demopage portals its toolbar into the titlebar's right slot when the

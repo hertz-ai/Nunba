@@ -301,7 +301,18 @@ function useParticles(canvasRef, phase, passionKey) {
       ctx.scale(dpr, dpr);
     }
     resize();
-    window.addEventListener('resize', resize);
+    // Follow the root's own size, not only the window's: the root shrinks
+    // when the desktop titlebar appears (pywebview's bridge can attach after
+    // the ceremony has mounted) and when a scrollbar comes or goes, with no
+    // window resize.  The window listener is the fallback where
+    // ResizeObserver is missing.
+    let observer = null;
+    if (typeof ResizeObserver !== 'undefined' && canvas.parentElement) {
+      observer = new ResizeObserver(() => resize());
+      observer.observe(canvas.parentElement);
+    } else {
+      window.addEventListener('resize', resize);
+    }
 
     // Initialize particles, count adapts to device capability
     const count = Math.min(
@@ -309,9 +320,10 @@ function useParticles(canvasRef, phase, passionKey) {
       Math.floor(area().w / 15)
     );
     if (particlesRef.current.length === 0) {
+      const start = area();
       particlesRef.current = Array.from({ length: count }, () => ({
-        x: Math.random() * area().w,
-        y: Math.random() * area().h,
+        x: Math.random() * start.w,
+        y: Math.random() * start.h,
         vx: (Math.random() - 0.5) * 0.3,
         vy: (Math.random() - 0.5) * 0.3,
         r: Math.random() * 2 + 0.5,
@@ -395,6 +407,7 @@ function useParticles(canvasRef, phase, passionKey) {
 
     return () => {
       cancelAnimationFrame(frameRef.current);
+      if (observer) observer.disconnect();
       window.removeEventListener('resize', resize);
     };
   }, [canvasRef, phase, passionKey]);
@@ -1259,7 +1272,11 @@ export default function LightYourHART({ userId, onComplete }) {
       <style>{keyframes}</style>
       <Box sx={styles.root}>
         {/* Particle canvas */}
-        <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
+        {/* Fixed to the root's own box (below the desktop titlebar), not
+            absolute inside it: the root scrolls when the language list is
+            taller than the window, and an absolute canvas scrolled away with
+            the list, leaving the bottom of the screen without particles. */}
+        <canvas ref={canvasRef} style={{ position: 'fixed', top: 'var(--nunba-titlebar-h, 0px)', left: 0, zIndex: 0, pointerEvents: 'none' }} />
 
         {/* Voice visualizer: only visible when PA is speaking.
 
