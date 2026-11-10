@@ -44,11 +44,19 @@ describe('App Navigation E2E', () => {
 // ===========================================================================
 
 describe('Navigation - Interactive Link Clicks', () => {
-  // "clicking a social link from the home page" was a hosted-site journey.
-  // Measured on this build: sealed and unsealed /local, and /social at
-  // desktop width, have no element matching its selectors, so it could only
-  // fall back to a direct visit.  Nunba's way to /social is the mobile menu
-  // (Responsive Behavior below) and its own routes.
+  // Nunba's home (/local, Agent) reaches /social through AgentSidebar's menu
+  // (SIDEBAR_LINKS has {to: '/social'}): on a phone, a lucide hamburger
+  // button with no aria-label opens it.  Hard checks: the button, the link
+  // and the landing path must all exist.
+  it('should navigate to social feed from the home menu', () => {
+    cy.viewport(375, 667);
+    cy.sealHart();
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    cy.get('button:has(svg.lucide-menu)', {timeout: 30000}).first().click();
+    cy.get('a[href="/social"]', {timeout: 10000}).filter(':visible').first().click();
+    cy.location('pathname', {timeout: 20000}).should('eq', '/social');
+  });
+
   it('should navigate back to home when clicking logo/brand', () => {
     cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
@@ -69,8 +77,9 @@ describe('Navigation - Interactive Link Clicks', () => {
     });
   });
 
-  // "navbar menu items" likewise: no nav / navbar links on /local (measured);
-  // the menu journey is tested in Responsive Behavior on /social.
+  // "navbar menu items" (nav a / navbar a) was the hosted site's top navbar,
+  // which Nunba's /local does not have; the menus Nunba has are tested in
+  // "from the home menu" above and in Responsive Behavior on /social.
 });
 
 describe('Navigation - State Preservation', () => {
@@ -470,14 +479,16 @@ describe('Navigation - Loading States', () => {
   });
 });
 
-// The mobile menu lives in the social layout: measured at 375px on /social,
-// 2 menu buttons and 80 drawer links; /local has none.
+// The social layout's mobile menu: measured at 375px on /social, 2 menu
+// buttons and 39 in-drawer links.
 describe('Navigation - Responsive Behavior', () => {
   const MENU_BTN = 'button[aria-label*="menu"], [data-testid="MenuIcon"]';
   // The menu button opens the temporary (modal) drawer; the docked drawer's
   // paper is also in the DOM, hidden at this width, so scope to the modal.
   const MENU_PAPER = '.MuiDrawer-modal .MuiDrawer-paper';
-  const DRAWER_LINK = `${MENU_PAPER} a[href^="/"]:not([href="/social"])`;
+  // Links that stay inside the social layout (e.g. /social/communities): the
+  // drawer is keepMounted, so after them it closes but stays in the DOM.
+  const DRAWER_LINK = `${MENU_PAPER} a[href^="/social/"]`;
 
   before(() => {
     cy.socialAuth();
@@ -487,7 +498,9 @@ describe('Navigation - Responsive Behavior', () => {
     cy.viewport(375, 667);
     cy.socialVisit('/social');
     cy.get('#root', {timeout: 30000}).should('exist');
-    cy.get(MENU_BTN, {timeout: 30000}).first().click({force: true});
+    // No {force: true}: an overlay over the button or the drawer fails the
+    // test (the Getting Started checklist once covered the open menu).
+    cy.get(MENU_BTN, {timeout: 30000}).first().click();
     cy.get(MENU_PAPER, {timeout: 10000}).should('be.visible');
   };
 
@@ -500,15 +513,16 @@ describe('Navigation - Responsive Behavior', () => {
     openMobileMenu();
     cy.get(DRAWER_LINK).first().then(($a) => {
       const target = $a.attr('href').split('?')[0];
-      cy.wrap($a).click({force: true});
+      cy.wrap($a).click();
       cy.location('pathname', {timeout: 20000}).should('eq', target);
     });
   });
 
   it('should close mobile menu after navigation', () => {
     openMobileMenu();
-    cy.get(DRAWER_LINK).first().click({force: true});
-    cy.get(MENU_PAPER).should('not.exist');
+    cy.get(DRAWER_LINK).first().click();
+    cy.location('pathname', {timeout: 20000}).should('match', /^\/social\//);
+    cy.get(MENU_PAPER).should('not.be.visible');
   });
 
   it('should adapt navigation layout on viewport resize', () => {
