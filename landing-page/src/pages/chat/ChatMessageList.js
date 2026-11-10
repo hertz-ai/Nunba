@@ -351,7 +351,12 @@ const ChatMessageList = ({
           };
           return (
             <SetupProgressCard
-              key={`setup-${message.jobType || index}`}
+              // One key per message.  A restored chat can hold several cards
+              // of one job (the owner's held 18 for 'tts'), and two children
+              // with one key made React add the cards to the page again on
+              // every render: 27 cards in state, 521 on the page, and the
+              // chat grew under the reader as they scrolled (2026-11-10).
+              key={`setup-${message.jobType || ''}-${index}`}
               steps={message.steps || []}
               jobType={message.jobType || ''}
               isComplete={message.isComplete || false}
