@@ -53,7 +53,11 @@ export const authApi = {
   // keepStatus: SocialContext tells an answer about the token (200 / 401 /
   // 403) from no answer (404 while HARTOS registers the route at boot,
   // 5xx, network); without it a failure rejects with the body alone.
-  me: () => socialApi.get('/auth/me', {keepStatus: true}),
+  // silentError [404]: that boot 404 is handled there ('unanswered', asked
+  // again by RoleGuard), so the banner must not tell the person "Couldn't
+  // find what you asked for" -- measured 2026-11-07: the page asked at
+  // 11:26:13, social_bp registered at 11:26:14.18.  401 and 5xx still show.
+  me: () => socialApi.get('/auth/me', {keepStatus: true, silentError: [404]}),
   logout: () => socialApi.post('/auth/logout'),
   guestRegister: (data) =>
     socialApi.post('/auth/guest-register', _attachReferral(data)),
@@ -129,7 +133,8 @@ export const searchApi = {
 
 // --- Notifications ---
 export const notificationsApi = {
-  list: (params) => socialApi.get('/notifications', {params}),
+  // config: per-request options (e.g. silentError for the background polls).
+  list: (params, config) => socialApi.get('/notifications', {...config, params}),
   markRead: (ids) => socialApi.post('/notifications/read', {ids}),
   markAllRead: () => socialApi.post('/notifications/read-all'),
 };
@@ -380,14 +385,15 @@ export const consentApi = {
   reopen: ({consent_type, scope}) =>
     socialApi.post('/consent/reopen', {consent_type, scope}),
 
-  // GET /api/social/consent — list (newest-first by granted_at)
-  list: ({consent_type, active_only} = {}) => {
+  // GET /api/social/consent — list (newest-first by granted_at).  `config`
+  // passes request options through (useCameraConsent: silentError [404]).
+  list: ({consent_type, active_only} = {}, config = {}) => {
     const params = {};
     if (consent_type !== undefined) params.consent_type = consent_type;
     if (active_only !== undefined) {
       params.active_only = active_only ? 'true' : 'false';
     }
-    return socialApi.get('/consent', {params});
+    return socialApi.get('/consent', {...config, params});
   },
 };
 
@@ -1045,7 +1051,10 @@ export const contentGenApi = {
 // --- Theme (OS-wide appearance) ---
 export const themeApi = {
   getPresets: () => socialApi.get('/theme/presets'),
-  getActive: () => socialApi.get('/theme/active'),
+  // silentError [404]: read once at page load, often before HARTOS has
+  // registered the route (same boot race as authApi.me); ThemeContext keeps
+  // the default theme on a failure, so the banner has nothing to report.
+  getActive: () => socialApi.get('/theme/active', {silentError: [404]}),
   apply: (themeId) => socialApi.post('/theme/apply', {theme_id: themeId}),
   customize: (overrides) => socialApi.post('/theme/customize', overrides),
   getFonts: () => socialApi.get('/theme/fonts'),

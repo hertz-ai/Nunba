@@ -128,7 +128,11 @@ export function SocialProvider({children}) {
 
   const fetchUnread = useCallback(async () => {
     try {
-      const res = await notificationsApi.list({unread: true, limit: 1});
+      // silentError [404]: fired at mount beside /auth/me, often before
+      // HARTOS has registered /notifications; the count just stays 0 and the
+      // 30 s poll asks again, so the banner has nothing to report.
+      const res = await notificationsApi.list({unread: true, limit: 1},
+        {silentError: [404]});
       setUnreadCount(res.meta ? res.meta.total : 0);
     } catch {
       // silent

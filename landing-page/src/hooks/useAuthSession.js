@@ -63,7 +63,6 @@
  *   exported from this module.  Until then, all existing
  *   localStorage.setItem call sites keep working unchanged.
  */
-import {isLocalBackendHost} from '../utils/backendHost';
 import {decrypt, encrypt} from '../utils/encryption';
 
 import {useEffect, useState, useCallback} from 'react';
@@ -404,6 +403,13 @@ export function setGuestIdentity(payload) {
  * NOT touch unrelated keys (nunba_media_mode, hart_sealed once
  * sealed — HART node identity persists across logout for the same
  * device).
+ *
+ * Also clears the sign-in on the desktop's record (user_data.json via
+ * /api/storage/set, '' = clear).  That record decides who owns the
+ * desktop, and the server keeps a signed-in user when a page posts the
+ * 'guest' placeholder, so sign-out is the one place that clears it.
+ * Sent without waiting and without the error banner; the page signs out
+ * even if the desktop is down.
  */
 export function clearAuth() {
   const AUTH_KEYS = [
@@ -426,18 +432,14 @@ export function clearAuth() {
   // logout per the 4-layer identity model (HART node + cloud account
   // co-exist; logging out of cloud doesn't dissolve the HART node).
 
-  // The desktop keeps its own copy of the sign-in (user_data.json).  Clear
-  // the account there too, or the next load hydrates it straight back
-  // (useStorageSync) and the desktop owner stays the signed-out person.
-  // '' is /api/storage/set's delete sentinel; hart_* stay, as above.
-  // Required lazily: axiosFactory requires this module the same way.
-  if (isLocalBackendHost(window.location.hostname)) {
-    try {
-      require('../services/socialApi').chatApi
-        .setDesktopIdentity({access_token: '', email: '', user_id: ''})
-        .catch(() => {});
-    } catch (_e) { /* API module unavailable (tests) */ }
-  }
+  // Lazy require: socialApi -> axiosFactory -> useAuthSession is a cycle
+  // (same as silentGuestRefresh below).
+  try {
+    const {chatApi} = require('../services/socialApi');
+    chatApi.post('/api/storage/set',
+      {user_id: '', access_token: '', email: ''},
+      {silentError: true}).catch(() => {});
+  } catch (_e) { /* module not loaded */ }
 
   try {
     window.dispatchEvent(new CustomEvent('nunba:auth_changed', {

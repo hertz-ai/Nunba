@@ -402,7 +402,9 @@ function AnswerError({ text }) {
 // caller's Bearer naming who answers (never a body field).  Answered, HARTOS
 // sends `ask.answered` {ask_id} to every surface, which drops the card
 // (AgentOverlay below).  Reading the ask in the bell is not an answer: its
-// notification.read drops nothing.
+// notification.read drops nothing.  Closing the card (its X) dismisses the
+// ask: POST {ask_id, dismiss: true}, and HARTOS drops it on every surface the
+// same way (owner, 2026-11-03: "dismissing a request dismisses").
 
 function bearer() {
   const token = localStorage.getItem('access_token');
@@ -415,13 +417,30 @@ async function refusedReply(res, what) {
   return Object.assign(new Error(`${what} (HTTP ${res.status})`), { body });
 }
 
-async function answerAsk(askId, answer) {
-  const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
+// The one request to the approval door: an ask's answer, its dismissal and a
+// plain approval's decision differ only in the body and in what a refusal
+// means to each caller.
+function postApproval(body) {
+  return fetch(`${API_BASE_URL}/api/agent/approval`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...bearer() },
-    body: JSON.stringify({ ask_id: askId, answer }),
+    body: JSON.stringify(body),
   });
+}
+
+async function answerAsk(askId, answer) {
+  const res = await postApproval({ ask_id: askId, answer });
   if (!res.ok) throw await refusedReply(res, 'The answer was refused');
+}
+
+// The person closed the ask's card here (its X, or "Later" on an approval
+// ask: owner, 2026-11-04): every surface drops it.  The card goes from this
+// screen whatever HARTOS answers (an ask already answered or gone elsewhere
+// is closed there too), so a refusal is only logged.
+function dismissAsk(askId) {
+  return postApproval({ ask_id: askId, dismiss: true }).then((res) => {
+    if (!res.ok) console.warn(`ask ${askId}: the dismissal was refused (HTTP ${res.status})`);
+  }).catch((err) => console.warn(`ask ${askId}: the dismissal did not reach HARTOS`, err));
 }
 
 // One picked file into the desktop's one upload store, for the ask, through
@@ -444,7 +463,7 @@ async function sendAskedFile(file, askId) {
 // types each purpose takes and refuses the rest.
 const ACCEPT_FOR = { video: 'video/*', image: 'image/*', audio: 'audio/*' };
 
-function FileRequestOverlay({ data, onDismiss }) {
+function FileRequestOverlay({ data, onDismiss, onAction }) {
   const inputRef = useRef(null);
   // null, {sent, total} while her files go up, or 'answering'.
   const [phase, setPhase] = useState(null);
@@ -452,6 +471,23 @@ function FileRequestOverlay({ data, onDismiss }) {
     : 'This request cannot be answered (it names no ask). Please report it.');
   const max = Number.isInteger(data.max_files) && data.max_files > 0 ? data.max_files : 10;
   const busy = phase !== null;
+
+  // In an embed (onAction: a host page's session) her files have no road to
+  // the store the ask names: the picks go to her desktop's store, which only
+  // her own devices reach.  The card says where to answer instead of
+  // offering a picker whose uploads would go nowhere.
+  if (onAction) {
+    return (
+      <Box data-testid="liquid-file-request">
+        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+          {data.title || 'Your agent asks for files'}
+        </Typography>
+        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)' }}>
+          Answer this in the Nunba app on your desktop or phone.
+        </Typography>
+      </Box>
+    );
+  }
 
   const onPicked = async (e) => {
     const files = Array.from(e.target.files || []).slice(0, max);
@@ -508,9 +544,9 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
 
-  // Camera consent → NunbaChatProvider listens for this event and
-  // mounts useCameraFrameStream, which opens WS to VisionService
-  // :5460 and pipes JPEG frames at ~1fps.  The server protocol is
+  // Camera consent → useCameraConsent (hooks/useCameraConsent.js) listens
+  // for this event on both chat surfaces, and useConsentedCameraStream
+  // opens the WS to VisionService :5460 and pipes JPEG frames at ~1fps.  The server protocol is
   // (user_id digit, 'video_start', binary frames) — not JSON.
   const applyCamera = (decision) => {
     const _action = String(data.action || '').toLowerCase();
@@ -542,11 +578,7 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
         await answerAsk(data.ask_id, { decision });
       } else {
         // The node names the approver from the caller's Bearer (never the body).
-        const res = await fetch(`${API_BASE_URL}/api/agent/approval`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...bearer() },
-          body: JSON.stringify({ agent_id: data.agent_id, action: data.action, decision }),
-        });
+        const res = await postApproval({ agent_id: data.agent_id, action: data.action, decision });
         if (!res.ok) throw await refusedReply(res, 'The answer was refused');
       }
     } catch (e) {
@@ -567,8 +599,15 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
   // button SET never shrinks.  Producers use it to say what the choice
   // MEANS: the game-sound card offers 'Keep it' / 'Compose another'.
   // Only approve | deny are answers /api/agent/approval records; HARTOS
-  // refuses 'later' with 400, so the defer button closes the card and sends
-  // nothing, like "Not now" on the consent card (the producer asks again).
+  // refuses 'later' with 400, so on a plain approval the defer button closes
+  // the card and sends nothing, like "Not now" on the consent card (the
+  // producer asks again).  On an agent's ask it dismisses the ask, so every
+  // surface drops it and the agent is told (owner, 2026-11-04: "Later
+  // dismisses everywhere", as the X does).
+  const later = () => {
+    if (data.ask_id) dismissAsk(data.ask_id);
+    onDismiss();
+  };
   const label = (i, dflt) => {
     const o = Array.isArray(data.options) ? data.options[i] : null;
     return (typeof o === 'string' && o) ? o : dflt;
@@ -582,7 +621,7 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
       <Box sx={{ display: 'flex', gap: 1, flexWrap: onAction ? 'wrap' : undefined }}>
         <Button variant="contained" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'approve'} sx={{ background: SUCCESS, flex: 1, minHeight: onAction ? 44 : undefined, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>{act.phase === 'busy' ? 'Working…' : label(0, 'Approve')}</Button>
         <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'deny'} sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1, minHeight: onAction ? 44 : undefined }} onClick={() => postDecision('deny')}>{label(1, 'Deny')}</Button>
-        <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : onDismiss}>{label(2, 'Later')}</Button>
+        <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : later}>{label(2, 'Later')}</Button>
       </Box>
       <ActionError state={act} />
     </Box>
@@ -1196,7 +1235,7 @@ export function OverlayContent({ data, onDismiss, navigate, onAction }) {
     case 'progress': return <ProgressOverlay data={data} />;
     case 'agent_action': return <AgentActionOverlay data={data} />;
     case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
-    case 'file_request': return <FileRequestOverlay data={data} onDismiss={onDismiss} />;
+    case 'file_request': return <FileRequestOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
     case 'chart': return <ChartOverlay data={data} />;
     case 'code': return <CodeOverlay data={data} />;
     case 'markdown': return <MarkdownOverlay data={data} />;
@@ -1297,9 +1336,9 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
   // A camera answer has to act HERE.  Every other consent is actuated
   // server-side (HARTOS grant_consent drives the embodied feed, and the
   // screen capture loop polls its own consent), but the camera frames come
-  // from this browser: NunbaChatProvider listens for this event and mounts
-  // useCameraFrameStream, which opens the WS to VisionService :5460.
-  // Without it a camera grant would be a row that turns nothing on.
+  // from this browser: useCameraConsent listens for this event on both chat
+  // surfaces (the answer counts before HARTOS's consent.granted arrives),
+  // and useConsentedCameraStream opens the WS to VisionService :5460.
   const applyCamera = (approved) => {
     if (card.consentType !== CAMERA_CONSENT_TYPE) return;
     try {
@@ -1702,8 +1741,9 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
                 sx={{ position: 'absolute', top: 8, left: 12, fontSize: '0.65rem', height: 20,
                   background: 'rgba(108,99,255,0.2)', color: ACCENT, border: '1px solid rgba(108,99,255,0.3)' }} />
             )}
-            {/* Close button */}
-            <IconButton size="small" aria-label="Dismiss" onClick={() => dismiss(overlay._id)}
+            {/* Close button: on an ask's card it dismisses the ask everywhere */}
+            <IconButton size="small" aria-label="Dismiss"
+              onClick={() => { if (overlay.ask_id) dismissAsk(overlay.ask_id); dismiss(overlay._id); }}
               sx={{ position: 'absolute', top: 4, right: 4, color: 'rgba(255,255,255,0.4)', '&:hover': { color: '#fff' } }}>
               <CloseIcon sx={{ fontSize: 16 }} />
             </IconButton>
