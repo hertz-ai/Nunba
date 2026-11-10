@@ -247,6 +247,11 @@ describe('Reduced Motion — Chat Page', () => {
     });
 
     // All elements should be visible (not hidden by animation state)
+    // One read, after every animation has left its pending first frame: a
+    // just-mounted fill-mode:both animation shows keyframe 0 (opacity 0)
+    // for one frame even with zero delay and duration.
+    cy.document().then((doc) =>
+      Promise.all(doc.getAnimations().map((a) => a.ready.catch(() => null))));
     // A single read, not a retrying .should: with reduced motion nothing may
     // be mid-fade, so text caught at opacity 0 is the failure this checks.
     cy.get('h1, h2, h3, p', {timeout: 30000}).then(($elements) => {
@@ -332,6 +337,11 @@ describe('Reduced Motion — Element Visibility', () => {
     // opacity 0 by their staggered fade-in delays (index.css cuts delays).
     // A single read, not a retrying .should, so a button still fading fails.
     cy.contains(/What language feels like home/i, {timeout: 30000});
+    // One read, after every animation has left its pending first frame: a
+    // just-mounted fill-mode:both animation shows keyframe 0 (opacity 0)
+    // for one frame even with zero delay and duration.
+    cy.document().then((doc) =>
+      Promise.all(doc.getAnimations().map((a) => a.ready.catch(() => null))));
     cy.get('button', {timeout: 30000}).then(($buttons) => {
       $buttons.each(function () {
         if (this.offsetWidth > 0 && this.offsetHeight > 0) {
