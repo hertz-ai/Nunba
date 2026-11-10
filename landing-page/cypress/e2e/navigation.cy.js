@@ -1,8 +1,12 @@
 /// <reference types="cypress" />
 
+// Nunba's own entry page is /local, the page the desktop window opens.  Not
+// '/': Flask's '/' (main.py serve_landing_page_root) redirects to
+// https://hevolve.ai whenever that answers, so on an online runner a visit to
+// '/' tested the hosted site.
 describe('App Navigation E2E', () => {
   it('landing page loads and renders React app', () => {
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.get('#root div').should('have.length.greaterThan', 0);
@@ -15,20 +19,20 @@ describe('App Navigation E2E', () => {
   });
 
   it('page title is set to Hevolve', () => {
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.title().should('contain', 'Hevolve');
   });
 
   it('page is responsive on mobile viewport', () => {
     cy.viewport(375, 667);
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root div').should('have.length.greaterThan', 0);
   });
 
   it('page works on tablet viewport', () => {
     cy.viewport(768, 1024);
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root div').should('have.length.greaterThan', 0);
   });
@@ -41,7 +45,7 @@ describe('App Navigation E2E', () => {
 
 describe('Navigation - Interactive Link Clicks', () => {
   it('should navigate to social feed when clicking social link', () => {
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
@@ -85,7 +89,7 @@ describe('Navigation - Interactive Link Clicks', () => {
   });
 
   it('should navigate using navbar menu items', () => {
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
@@ -469,7 +473,7 @@ describe('Navigation - History Management', () => {
 
 describe('Navigation - Loading States', () => {
   it('should show loading indicator during route transitions', () => {
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
 
     // Page should show content or loading
@@ -490,7 +494,7 @@ describe('Navigation - Loading States', () => {
   it('should complete loading within reasonable time', () => {
     const startTime = Date.now();
 
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
 
     // Page should load within 10 seconds
@@ -507,7 +511,7 @@ describe('Navigation - Loading States', () => {
 describe('Navigation - Responsive Behavior', () => {
   it('should show mobile navigation menu on small screens', () => {
     cy.viewport(375, 667);
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
@@ -537,7 +541,7 @@ describe('Navigation - Responsive Behavior', () => {
 
   it('should navigate correctly from mobile menu', () => {
     cy.viewport(375, 667);
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
@@ -570,7 +574,7 @@ describe('Navigation - Responsive Behavior', () => {
 
   it('should close mobile menu after navigation', () => {
     cy.viewport(375, 667);
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
@@ -599,7 +603,7 @@ describe('Navigation - Responsive Behavior', () => {
   });
 
   it('should adapt navigation layout on viewport resize', () => {
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(1000);
 
@@ -674,12 +678,12 @@ describe('Navigation - Performance', () => {
   });
 
   it('should handle rapid navigation without errors', () => {
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
 
     // Rapid navigation
     cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
-    cy.visit('/', {timeout: 60000, failOnStatusCode: false});
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
     cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.wait(1000);
 
