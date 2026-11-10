@@ -147,21 +147,22 @@ describe('Ad Components — Feed Top Banner', () => {
 
     cy.socialVisit('/social');
     cy.get('#root', {timeout: 30000}).should('exist');
-    cy.wait(3000);
 
-    // The close button inside THIS ad's card (AdBanner: an IconButton with
-    // MUI's CloseIcon, no aria-label).  The page has other close icons; the
-    // test used to click the first one on the page, which need not be the
-    // ad's, and then found the ad still there.
-    cy.wait('@serveAd');
-    cy.contains('Test Ad', {timeout: 20000})
-      .closest('.MuiCard-root')
+    // The banner: AdBanner's Card, the only ad card with a close button
+    // (AdCard has none; measured on /social: 10 CloseIcons, the first is the
+    // Autopilot banner's).  The stubbed /ads/serve also answers the feed's
+    // interstitial placements, so "Test Ad" can appear in several cards;
+    // both the click and the check are scoped to the banner.
+    const adBanner =
+      '.MuiCard-root:has([data-testid="CloseIcon"]):contains("Test Ad")';
+    cy.get(adBanner, {timeout: 20000})
+      .should('have.length', 1)
       .find('[data-testid="CloseIcon"]')
       .closest('button')
       .click({force: true});
 
-    // After dismiss, the ad banner is gone.
-    cy.contains('Test Ad').should('not.exist');
+    // After dismiss, the banner is gone (interstitial AdCards may remain).
+    cy.get(adBanner).should('not.exist');
   });
 
   it('should not show banner after dismissal (sessionStorage)', () => {
