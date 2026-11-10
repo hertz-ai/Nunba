@@ -129,12 +129,6 @@ const styles = {
     cursor: 'default',
     userSelect: 'none',
   },
-  canvas: {
-    position: 'absolute',
-    inset: 0,
-    zIndex: 0,
-    pointerEvents: 'none',
-  },
   content: {
     position: 'relative',
     zIndex: 1,
