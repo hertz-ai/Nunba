@@ -525,10 +525,18 @@ describe('Autonomous Agent Creation E2E', () => {
         agent_type: 'local',
       }).then((response) => {
         if (response.status === 200 && response.body.source) {
-          expect(response.body.source).to.be.oneOf([
-            'langchain_local',
-            'llama_local',
-          ]);
+          // With no local LLM loaded (a CI runner), /chat answers the setup
+          // card instead: source 'system' plus llm_setup_card
+          // (routes/chatbot_routes.py, "Still no LLM — return setup card").
+          // Any other answer names the local backend that made it.
+          if (response.body.source === 'system') {
+            expect(response.body).to.have.property('llm_setup_card');
+          } else {
+            expect(response.body.source).to.be.oneOf([
+              'langchain_local',
+              'llama_local',
+            ]);
+          }
         }
       });
     });
