@@ -9,11 +9,15 @@
  * - App remains fully functional with reduced motion
  */
 
+// Every visit is /local, the page the desktop window opens.  Not '/':
+// Flask's '/' (main.py serve_landing_page_root) redirects to
+// https://hevolve.ai whenever that answers, so on an online runner a visit to
+// '/' tested the hosted site.
 describe('Reduced Motion — CSS Global Override', () => {
   beforeEach(() => {
     // Emulate prefers-reduced-motion: reduce
     // Cypress can set this via CSS or by injecting a style tag
-    cy.visit('/', {
+    cy.visit('/local', {
       timeout: 60000,
       onBeforeLoad(win) {
         // Override matchMedia to return reduced motion
@@ -192,8 +196,9 @@ describe('Reduced Motion — Authenticated Pages', () => {
 
 describe('Reduced Motion — Chat Page', () => {
   it('should render chat page fully with reduced motion', () => {
-    cy.visit('/local', {
-      timeout: 60000,
+    // The chat page: a sealed HART (cy.openLocalChat).  Unsealed, /local is
+    // the first-run ceremony, whose text fades in over its first seconds.
+    cy.openLocalChat({
       onBeforeLoad(win) {
         const originalMatchMedia = win.matchMedia?.bind(win);
         if (originalMatchMedia) {
@@ -227,7 +232,9 @@ describe('Reduced Motion — Chat Page', () => {
     });
 
     // All elements should be visible (not hidden by animation state)
-    cy.get('h1, h2, h3, p', {timeout: 30000}).then(($elements) => {
+    // .should, not .then: it retries until fades in flight have settled, so it
+    // fails only on text that STAYS at opacity 0.
+    cy.get('h1, h2, h3, p', {timeout: 30000}).should(($elements) => {
       $elements.each(function () {
         const style = window.getComputedStyle(this);
         // Text elements should be visible
@@ -285,7 +292,7 @@ describe('Reduced Motion — Chat Page', () => {
 
 describe('Reduced Motion — Element Visibility', () => {
   it('should not have any elements stuck at opacity 0 or scale 0', () => {
-    cy.visit('/', {
+    cy.visit('/local', {
       timeout: 60000,
       onBeforeLoad(win) {
         const originalMatchMedia = win.matchMedia?.bind(win);
@@ -312,8 +319,11 @@ describe('Reduced Motion — Element Visibility', () => {
     cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
-    // Check major UI elements are visible
-    cy.get('button', {timeout: 30000}).then(($buttons) => {
+    // Check major UI elements are visible.  .should, not .then: /local is the
+    // first-run ceremony here, whose language buttons fade in one by one, so
+    // a single read can land mid-fade; this fails only on a button that
+    // STAYS transparent.
+    cy.get('button', {timeout: 30000}).should(($buttons) => {
       $buttons.each(function () {
         if (this.offsetWidth > 0 && this.offsetHeight > 0) {
           const style = window.getComputedStyle(this);
