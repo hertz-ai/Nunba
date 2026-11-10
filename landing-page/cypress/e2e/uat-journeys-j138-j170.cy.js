@@ -5,11 +5,11 @@
  *
  *   J138 — MemoryGraph FTS5 recall > 100 memories
  *   J139 — Memory TTL / privacy wipe
- *   J140 — Backtrace crosses agent boundary
+ *   J140 — Backtrace crosses agent boundary (no HTTP surface: tests/journey/test_J140)
  *   J141 — Memory write+read during FedAggregator embed
  *   J142 — Corrupt memory_graph.db graceful recovery
- *   J143 — Backtrace depth bound honored
- *   J144 — Cross-topology memory sync flat → regional
+ *   J143 — Backtrace depth bound honored (no HTTP surface: tests/journey/test_J143)
+ *   J144 — Cross-topology memory sync flat → regional (no HTTP surface: tests/journey/test_J144)
  *   J145 — AI installer partial success (LLM ok, TTS fail)
  *   J146 — Offline boot with cached models
  *   J147 — Disk full mid-install graceful rollback
@@ -51,14 +51,18 @@ const installBaselineStubs = () => {
 // own bearer, read from the admin token route, which answers on loopback.
 const mcpExecute = (tool, args) =>
   cy.request({url: `${Cypress.env('apiUrl')}/api/admin/mcp/token`, failOnStatusCode: false})
-    .then((t) => cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/execute`,
-      headers: {Authorization: `Bearer ${t.body.token}`},
-      body: {tool, arguments: args},
-      failOnStatusCode: false,
-      timeout: 60000,
-    }));
+    .then((t) => {
+      expect(t.status, 'MCP token route').to.eq(200);
+      expect(t.body.token, 'MCP bearer').to.be.a('string').and.not.be.empty;
+      return cy.request({
+        method: 'POST',
+        url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/execute`,
+        headers: {Authorization: `Bearer ${t.body.token}`},
+        body: {tool, arguments: args},
+        failOnStatusCode: false,
+        timeout: 60000,
+      });
+    });
 
 // ════════════════════════════════════════════════════════════════════════
 // J138-J144 — MemoryGraph suite
@@ -99,7 +103,8 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
   // J140 / J143 (backtrace across agents, depth bound) are
   // MemoryGraph.backtrace / agent_memory_tools.backtrace_memory in HARTOS:
   // there is no HTTP route or MCP tool for them, so a browser test cannot
-  // reach them.  They belong in a HARTOS unit test.
+  // reach them.  Their journey tests are tests/journey/test_J140 and
+  // test_J143 (pytest).
 
   it('J141: MCP remember stores a memory that recall finds', () => {
     const content = `cypress j141 ${Date.now()}`;
@@ -130,18 +135,11 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
     });
   });
 
-  it('J144: GET /api/memory-sync/pull answers (refuses while cloud sync is off)', () => {
-    cy.request({
-      method: 'GET',
-      url: `${Cypress.env('apiUrl')}/api/memory-sync/pull`,
-      failOnStatusCode: false,
-    }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 403]);
-      if (resp.status === 403) {
-        expect(resp.body).to.have.property('error', 'sync_disabled');
-      }
-    });
-  });
+  // J144 (flat -> regional, federated_aggregator aggregate_embeddings) has
+  // no HTTP route either: the aggregator pushes on its own.  Its journey test
+  // is tests/journey/test_J144 (pytest).  /api/memory-sync/pull is J234's
+  // surface (cross-device cloud memory sync), not J144's.
+
 });
 
 // ════════════════════════════════════════════════════════════════════════
