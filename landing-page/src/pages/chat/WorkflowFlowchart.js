@@ -1,4 +1,6 @@
-import React, {useMemo, useState, useCallback} from 'react';
+import CloseIcon from '@mui/icons-material/Close';
+import {Dialog, IconButton} from '@mui/material';
+import React, {useMemo, useState, useCallback, useId} from 'react';
 
 const COLORS = {
   agent: '#6C63FF',
@@ -220,9 +222,155 @@ function Tooltip({node, x, y}) {
   );
 }
 
+function Legend() {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 16,
+        marginTop: 8,
+        paddingLeft: 4,
+        fontSize: 11,
+        color: COLORS.muted,
+      }}
+    >
+      <span>
+        <span style={{color: COLORS.agent}}>■</span> Agent
+      </span>
+      <span>
+        <span style={{color: COLORS.user}}>■</span> User required
+      </span>
+      <span>
+        <span style={{color: COLORS.scheduled}}>■</span> Scheduled
+      </span>
+      <span>
+        <span style={{color: COLORS.completed}}>■</span> Completed
+      </span>
+      <span>┈┈ Pending</span>
+    </div>
+  );
+}
+
+// The whole flow, readable: one column per flow, its steps top to bottom with
+// their full text. The card in the chat draws every flow as one long row (an
+// agent with 23 steps a flow is ~6,400 px wide), which the chat column can
+// only show at about a tenth of its size, with each label cut at 28
+// characters. Same steps, colours and dependencies as the card.
+function FlowLanes({nodes, edges}) {
+  const lanes = useMemo(() => {
+    const byFlow = [];
+    nodes.forEach((node) => {
+      let lane = byFlow.find((l) => l.index === node.flowIndex);
+      if (!lane) {
+        lane = {index: node.flowIndex, name: node.flow, persona: node.persona, steps: []};
+        byFlow.push(lane);
+      }
+      lane.steps.push(node);
+    });
+    return byFlow;
+  }, [nodes]);
+
+  // Steps that wait on a step in another flow (the card's dashed edges).
+  const waitsOn = useMemo(() => {
+    const byId = {};
+    nodes.forEach((n) => (byId[n.id] = n));
+    const after = {};
+    edges.forEach((e) => {
+      if (!e.cross || !byId[e.from]) return;
+      const from = byId[e.from];
+      (after[e.to] = after[e.to] || []).push(`${from.flow} #${from.actionIndex + 1}`);
+    });
+    return after;
+  }, [nodes, edges]);
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: `repeat(${lanes.length}, minmax(240px, 1fr))`,
+        gap: 20,
+        padding: 20,
+        overflow: 'auto',
+        flex: 1,
+        alignItems: 'start',
+      }}
+    >
+      {lanes.map((lane) => (
+        <section key={lane.index} aria-label={lane.name} style={{minWidth: 0}}>
+          <div style={{fontWeight: 600, fontSize: 14, wordBreak: 'break-word'}}>{lane.name}</div>
+          {lane.persona && (
+            <div style={{color: COLORS.muted, fontSize: 12, marginTop: 2}}>{lane.persona}</div>
+          )}
+          <ol style={{listStyle: 'none', margin: '12px 0 0', padding: 0}}>
+            {lane.steps.map((node, i) => {
+              const color = getNodeColor(node.label, node.vlm);
+              const isDone = node.vlm?.status === 'done';
+              const isPending = !isDone && !node.vlm?.status;
+              const last = i === lane.steps.length - 1;
+              return (
+                <li
+                  key={node.id}
+                  style={{
+                    position: 'relative',
+                    border: `1.5px ${isPending ? 'dashed' : 'solid'} ${color}`,
+                    borderRadius: 10,
+                    background: '#1e1e3a',
+                    padding: '8px 10px',
+                    marginBottom: last ? 0 : 20,
+                    fontSize: 13,
+                    lineHeight: 1.45,
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  <span style={{color: COLORS.muted, marginRight: 6}}>{i + 1}.</span>
+                  <span>{node.label}</span>
+                  {isDone && <span style={{color: COLORS.completed}}> ✓</span>}
+                  {node.persona && node.persona !== lane.persona && (
+                    <div style={{color, fontSize: 11}}>{node.persona}</div>
+                  )}
+                  {node.tool && (
+                    <div style={{color: COLORS.muted, fontSize: 11}}>Tool: {node.tool}</div>
+                  )}
+                  {waitsOn[node.id] && (
+                    <div style={{color: COLORS.muted, fontSize: 11}}>
+                      After: {waitsOn[node.id].join(', ')}
+                    </div>
+                  )}
+                  {node.vlm?.fallback_action && (
+                    <div style={{color: COLORS.scheduled, fontSize: 11}}>
+                      Fallback: {node.vlm.fallback_action}
+                    </div>
+                  )}
+                  {!last && (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: 'absolute',
+                        left: '50%',
+                        bottom: -19,
+                        color: COLORS.edge,
+                        fontSize: 13,
+                      }}
+                    >
+                      ↓
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export default function WorkflowFlowchart({recipe}) {
   const [hoveredNode, setHoveredNode] = useState(null);
   const [tooltipPos, setTooltipPos] = useState({x: 0, y: 0});
+  const [zoomed, setZoomed] = useState(false);
+  const titleId = useId();
 
   const {nodes, edges} = useMemo(() => parseRecipe(recipe), [recipe]);
   const {positioned, width, height} = useMemo(
@@ -263,9 +411,23 @@ export default function WorkflowFlowchart({recipe}) {
   }
 
   const goalText = recipe?.goal || recipe?.action || '';
+  const openZoom = () => setZoomed(true);
+  const closeZoom = () => setZoomed(false);
 
   return (
+    <>
     <div
+      role="button"
+      tabIndex={0}
+      aria-label="Open the whole workflow"
+      title="Click to see the whole workflow"
+      onClick={openZoom}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openZoom();
+        }
+      }}
       style={{
         background: COLORS.bg,
         borderRadius: '12px',
@@ -274,6 +436,7 @@ export default function WorkflowFlowchart({recipe}) {
         marginBottom: 8,
         maxWidth: '100%',
         overflowX: 'auto',
+        cursor: 'zoom-in',
       }}
     >
       {goalText && (
@@ -432,31 +595,37 @@ export default function WorkflowFlowchart({recipe}) {
         )}
       </svg>
 
-      {/* Legend */}
+      <Legend />
+    </div>
+
+    <Dialog
+      open={zoomed}
+      onClose={closeZoom}
+      fullScreen
+      aria-labelledby={titleId}
+      PaperProps={{style: {background: COLORS.bg, color: COLORS.text}}}
+    >
       <div
         style={{
           display: 'flex',
-          gap: 16,
-          marginTop: 8,
-          paddingLeft: 4,
-          fontSize: 11,
-          color: COLORS.muted,
+          alignItems: 'flex-start',
+          gap: 12,
+          padding: '14px 12px 12px 20px',
+          borderBottom: '1px solid #2a2a4a',
         }}
       >
-        <span>
-          <span style={{color: COLORS.agent}}>■</span> Agent
-        </span>
-        <span>
-          <span style={{color: COLORS.user}}>■</span> User required
-        </span>
-        <span>
-          <span style={{color: COLORS.scheduled}}>■</span> Scheduled
-        </span>
-        <span>
-          <span style={{color: COLORS.completed}}>■</span> Completed
-        </span>
-        <span>┈┈ Pending</span>
+        <div id={titleId} style={{flex: 1, fontWeight: 600, fontSize: 16, lineHeight: 1.4}}>
+          {goalText || 'Workflow'}
+        </div>
+        <IconButton aria-label="Close" onClick={closeZoom} style={{color: COLORS.text}}>
+          <CloseIcon />
+        </IconButton>
       </div>
-    </div>
+      <FlowLanes nodes={nodes} edges={edges} />
+      <div style={{padding: '0 20px 16px'}}>
+        <Legend />
+      </div>
+    </Dialog>
+    </>
   );
 }
