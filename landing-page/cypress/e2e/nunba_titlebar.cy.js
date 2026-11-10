@@ -117,6 +117,15 @@ describe('NunbaTitleBar — frameless custom chrome', () => {
           expect($tb[0].contains(onStrip), 'the titlebar is on top at its own row').to.be.true;
         });
       });
+      // The particle canvas fills the space below the strip and no more, so
+      // it never gives the ceremony a scrollbar of its own.  (The language
+      // list itself may still scroll in a short window: by design, so every
+      // option stays reachable.)
+      cy.get('canvas').first().should(($canvas) => {
+        const root = $canvas[0].parentElement;
+        expect($canvas[0].getBoundingClientRect().height, 'canvas height')
+          .to.be.at.most(root.clientHeight);
+      });
     });
 
     it('minimize click calls pywebview.api.window_minimize', () => {
@@ -170,13 +179,7 @@ describe('NunbaTitleBar — frameless custom chrome', () => {
     it('does NOT render titlebar on macOS even with pywebview', () => {
       cy.visit('/local', {
         onBeforeLoad(win) {
-          win.pywebview = {
-            api: {
-              window_minimize: () => {},
-              window_toggle_maximize: () => {},
-              window_close: () => {},
-            },
-          };
+          fakePywebview(win);
           Object.defineProperty(win.navigator, 'platform', {
             configurable: true,
             value: 'MacIntel',

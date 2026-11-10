@@ -281,11 +281,23 @@ function useParticles(canvasRef, phase, passionKey) {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
 
+    // The area the canvas fills: its container (the ceremony root), not the
+    // window.  In the frameless desktop window the root starts below the
+    // 32px titlebar, so a window-sized canvas overflowed it by 32px and gave
+    // the ceremony a scrollbar.  Falls back to the window before layout.
+    function area() {
+      const box = canvas.parentElement;
+      const w = (box && box.clientWidth) || window.innerWidth;
+      const h = (box && box.clientHeight) || window.innerHeight;
+      return { w, h };
+    }
+
     function resize() {
-      canvas.width = window.innerWidth * dpr;
-      canvas.height = window.innerHeight * dpr;
-      canvas.style.width = window.innerWidth + 'px';
-      canvas.style.height = window.innerHeight + 'px';
+      const { w, h } = area();
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
       ctx.scale(dpr, dpr);
     }
     resize();
@@ -294,12 +306,12 @@ function useParticles(canvasRef, phase, passionKey) {
     // Initialize particles, count adapts to device capability
     const count = Math.min(
       PARTICLE_COUNTS[_computeProfile],
-      Math.floor(window.innerWidth / 15)
+      Math.floor(area().w / 15)
     );
     if (particlesRef.current.length === 0) {
       particlesRef.current = Array.from({ length: count }, () => ({
-        x: Math.random() * window.innerWidth,
-        y: Math.random() * window.innerHeight,
+        x: Math.random() * area().w,
+        y: Math.random() * area().h,
         vx: (Math.random() - 0.5) * 0.3,
         vy: (Math.random() - 0.5) * 0.3,
         r: Math.random() * 2 + 0.5,
@@ -313,8 +325,7 @@ function useParticles(canvasRef, phase, passionKey) {
     const palette = passionKey ? PASSION_HUES[passionKey] : null;
 
     function draw() {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
+      const { w, h } = area();
       ctx.clearRect(0, 0, w, h);
 
       const isConverging = phase === 'pre_reveal' || phase === 'generating';
