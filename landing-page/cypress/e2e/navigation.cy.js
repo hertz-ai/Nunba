@@ -44,30 +44,11 @@ describe('App Navigation E2E', () => {
 // ===========================================================================
 
 describe('Navigation - Interactive Link Clicks', () => {
-  it('should navigate to social feed when clicking social link', () => {
-    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 30000}).should('exist');
-    cy.wait(2000);
-
-    cy.get('body').then(($body) => {
-      const socialLink = $body.find(
-        'a[href*="/social"], button:contains("Social"), a:contains("Community")'
-      );
-
-      if (socialLink.length > 0) {
-        cy.wrap(socialLink.first()).click({force: true});
-        cy.wait(1000);
-
-        // Should navigate to social section
-        cy.url().should('include', '/social');
-      } else {
-        // Direct navigation test
-        cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
-        cy.get('#root', {timeout: 30000}).should('exist');
-      }
-    });
-  });
-
+  // "clicking a social link from the home page" was a hosted-site journey.
+  // Measured on this build: sealed and unsealed /local, and /social at
+  // desktop width, have no element matching its selectors, so it could only
+  // fall back to a direct visit.  Nunba's way to /social is the mobile menu
+  // (Responsive Behavior below) and its own routes.
   it('should navigate back to home when clicking logo/brand', () => {
     cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
@@ -88,27 +69,8 @@ describe('Navigation - Interactive Link Clicks', () => {
     });
   });
 
-  it('should navigate using navbar menu items', () => {
-    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 30000}).should('exist');
-    cy.wait(2000);
-
-    cy.get('body').then(($body) => {
-      // Find navbar menu items
-      const navItems = $body.find(
-        'nav a, nav button, [class*="navbar"] a, [class*="Navbar"] a'
-      );
-
-      if (navItems.length > 0) {
-        // Click first menu item
-        cy.wrap(navItems.first()).click({force: true});
-        cy.wait(1000);
-
-        // Page should navigate or scroll
-        cy.get('#root').invoke('html').should('not.be.empty');
-      }
-    });
-  });
+  // "navbar menu items" likewise: no nav / navbar links on /local (measured);
+  // the menu journey is tested in Responsive Behavior on /social.
 });
 
 describe('Navigation - State Preservation', () => {
@@ -508,98 +470,45 @@ describe('Navigation - Loading States', () => {
   });
 });
 
+// The mobile menu lives in the social layout: measured at 375px on /social,
+// 2 menu buttons and 80 drawer links; /local has none.
 describe('Navigation - Responsive Behavior', () => {
-  it('should show mobile navigation menu on small screens', () => {
+  const MENU_BTN = 'button[aria-label*="menu"], [data-testid="MenuIcon"]';
+  // The menu button opens the temporary (modal) drawer; the docked drawer's
+  // paper is also in the DOM, hidden at this width, so scope to the modal.
+  const MENU_PAPER = '.MuiDrawer-modal .MuiDrawer-paper';
+  const DRAWER_LINK = `${MENU_PAPER} a[href^="/"]:not([href="/social"])`;
+
+  before(() => {
+    cy.socialAuth();
+  });
+
+  const openMobileMenu = () => {
     cy.viewport(375, 667);
-    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    cy.socialVisit('/social');
     cy.get('#root', {timeout: 30000}).should('exist');
-    cy.wait(2000);
+    cy.get(MENU_BTN, {timeout: 30000}).first().click({force: true});
+    cy.get(MENU_PAPER, {timeout: 10000}).should('be.visible');
+  };
 
-    cy.get('body').then(($body) => {
-      // Look for hamburger menu
-      const menuBtn = $body.find(
-        'button[aria-label*="menu"], [data-testid="MenuIcon"], button:contains("Menu")'
-      );
-
-      if (menuBtn.length > 0) {
-        cy.wrap(menuBtn.first()).click({force: true});
-        cy.wait(500);
-
-        // Should show navigation drawer/menu
-        cy.get('body').then(($b) => {
-          const hasDrawer =
-            $b.find('[class*="MuiDrawer"], [role="presentation"], nav').length >
-            0;
-          const hasMenu = $b.find('[class*="Menu"], [role="menu"]').length > 0;
-          const pageLoaded = $b.html().length > 100;
-
-          expect(hasDrawer || hasMenu || pageLoaded).to.be.true;
-        });
-      }
-    });
+  it('should show mobile navigation menu on small screens', () => {
+    openMobileMenu();
+    cy.get(DRAWER_LINK).should('have.length.greaterThan', 0);
   });
 
   it('should navigate correctly from mobile menu', () => {
-    cy.viewport(375, 667);
-    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 30000}).should('exist');
-    cy.wait(2000);
-
-    cy.get('body').then(($body) => {
-      const menuBtn = $body.find(
-        'button[aria-label*="menu"], [data-testid="MenuIcon"]'
-      );
-
-      if (menuBtn.length > 0) {
-        cy.wrap(menuBtn.first()).click({force: true});
-        cy.wait(500);
-
-        // Find and click a menu item
-        cy.get('body').then(($b) => {
-          const menuItems = $b.find(
-            '[class*="MuiDrawer"] a, [role="menu"] a, nav a'
-          );
-
-          if (menuItems.length > 0) {
-            cy.wrap(menuItems.first()).click({force: true});
-            cy.wait(1000);
-
-            // Should navigate
-            cy.get('#root').invoke('html').should('not.be.empty');
-          }
-        });
-      }
+    openMobileMenu();
+    cy.get(DRAWER_LINK).first().then(($a) => {
+      const target = $a.attr('href').split('?')[0];
+      cy.wrap($a).click({force: true});
+      cy.location('pathname', {timeout: 20000}).should('eq', target);
     });
   });
 
   it('should close mobile menu after navigation', () => {
-    cy.viewport(375, 667);
-    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 30000}).should('exist');
-    cy.wait(2000);
-
-    cy.get('body').then(($body) => {
-      const menuBtn = $body.find(
-        'button[aria-label*="menu"], [data-testid="MenuIcon"]'
-      );
-
-      if (menuBtn.length > 0) {
-        cy.wrap(menuBtn.first()).click({force: true});
-        cy.wait(500);
-
-        cy.get('body').then(($b) => {
-          const menuItems = $b.find('[class*="MuiDrawer"] a, nav a');
-
-          if (menuItems.length > 0) {
-            cy.wrap(menuItems.first()).click({force: true});
-            cy.wait(1000);
-
-            // Menu should be closed (drawer not visible)
-            cy.get('#root').invoke('html').should('not.be.empty');
-          }
-        });
-      }
-    });
+    openMobileMenu();
+    cy.get(DRAWER_LINK).first().click({force: true});
+    cy.get(MENU_PAPER).should('not.exist');
   });
 
   it('should adapt navigation layout on viewport resize', () => {
