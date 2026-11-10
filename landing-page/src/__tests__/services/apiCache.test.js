@@ -261,6 +261,22 @@ describe('apiCache.invalidateOnMutation', () => {
     expect(apiCache.get('anon:GET:/communities:')).toBeNull();
   });
 
+  it('invalidates the discoverable state when it is set', () => {
+    // DiscoverableTogglePanel re-reads GET /encounter/discoverable right
+    // after its POST; a cached read put the old state back on the screen.
+    apiCache.set('anon:GET:/encounter/discoverable:', {enabled: false}, '/encounter/discoverable');
+    apiCache.set('anon:GET:/encounter/persona:', {bio: 'x'}, '/encounter/persona');
+    apiCache.invalidateOnMutation('/api/social/encounter/discoverable');
+    expect(apiCache.get('anon:GET:/encounter/discoverable:')).toBeNull();
+    expect(apiCache.get('anon:GET:/encounter/persona:')).not.toBeNull();
+  });
+
+  it('invalidates the persona card when it is saved', () => {
+    apiCache.set('anon:GET:/encounter/persona:', {bio: 'x'}, '/encounter/persona');
+    apiCache.invalidateOnMutation('/api/social/encounter/persona');
+    expect(apiCache.get('anon:GET:/encounter/persona:')).toBeNull();
+  });
+
   it('does nothing for non-matching mutations', () => {
     apiCache.set('anon:GET:/posts:', 'data', '/posts');
     apiCache.invalidateOnMutation('/some/random/endpoint');

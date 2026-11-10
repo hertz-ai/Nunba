@@ -294,7 +294,12 @@ export const bleEncounterApi = {
     if (face_visible != null) body.face_visible = !!face_visible;
     if (avatar_style != null) body.avatar_style = avatar_style;
     if (vibe_tags != null) body.vibe_tags = vibe_tags;
-    return socialApi.post('/encounter/discoverable', body);
+    // keepStatus: a refusal keeps its HTTP status (axiosFactory), so the
+    // panel can tell 429 (toggle limit) and 403 (18+ not confirmed) apart;
+    // without it the rejection is the bare JSON body.  silentError: the
+    // panel says both itself, so they stay off the global error banner.
+    return socialApi.post('/encounter/discoverable', body,
+      {keepStatus: true, silentError: [403, 429]});
   },
 
   // Persona card (HARTOS GET/PUT /encounter/persona): bio, recognize_me,
