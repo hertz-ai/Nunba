@@ -3498,6 +3498,28 @@ def _run_chat_turn(data):
                 # genuinely hard prompt is casual is not honoured".  That is far
                 # narrower than the 08-24 override, which flipped on every
                 # not-casual classifier verdict.
+                #
+                # WHAT THIS DELETION COSTS, measured 2026-11-10 by an
+                # independent review and reproduced -- recorded here because
+                # the commit that removed the tuple claimed otherwise and was
+                # wrong.  The tuple did one thing that nothing replaces yet:
+                # it sent casual_conv=False for 'remember that/this/my',
+                # 'don't forget', 'forget that/my/about', 'open my/the',
+                # 'find my/the' and 'summarize the/this pdf'.  Those prompts
+                # assess ORDINARY, not HARD, and resolve_casual_conv only
+                # overrides a 'casual' hint at HARD -- so with this line
+                # sending True they now come back True on both the new HARTOS
+                # and the installed ca0852c0f:
+                #     resolve_casual_conv('remember that my exam is on
+                #     friday', True) -> (True, 'client:True')
+                # i.e. the 0.8B draft answers them with no tools, which is the
+                # exact failure the 09-25 stopgap was written for.  Difficulty
+                # is not tool-need, and the resolver only answers the first
+                # question.  Closing it means overriding on tool-need too,
+                # which changes the 08-24 session-shape design above, so it is
+                # the owner's call and is with them.  Until they rule, this is
+                # a known open gap, NOT a solved problem -- do not re-add a
+                # substring tuple here, and do not claim it is covered.
                 _needs_tools = bool(langchain_prompt_id or create_agent
                                     or agentic_execute or agentic_plan
                                     or autonomous_creation)
