@@ -828,6 +828,10 @@ def chat(
     preferred_lang: str = "en",
     probe: bool = False,
     create_agent: bool = False,
+    # Left at False: HARTOS treats it as the caller's hint and only
+    # overrides a 'casual' claim on a prompt that assesses HARD.  The one
+    # caller that omits it (the legacy gpt_lang helper) keeps the full-path
+    # behaviour it has always had; None would have changed that silently.
     casual_conv: bool = False,
     video_req: bool = False,
     media_request: bool = False,

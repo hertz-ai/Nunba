@@ -511,6 +511,10 @@ def gpt_lang(message, user_id, prompt=None, prompt_id=None, timeout=120, probe=F
         "file_id": sessions.get(user_id, {}).get('file_id', 0),
         "tools": None,
         "prompt_id": prompt_id,
+        # Session shape, per the owner's 2026-08-24 design and pinned by
+        # HARTOS tests/unit/test_casual_conv_classifier_override.py.  HARTOS
+        # resolves it through resolve_casual_conv, which honours this unless
+        # the prompt assesses HARD.
         "casual_conv": not bool(prompt_id or create_agent),
         "probe": probe,
         "intermediate": False,
@@ -3463,32 +3467,45 @@ def _run_chat_turn(data):
                 # computation to save latency. Agent-creation and
                 # channel-connect both get handled by the draft flags
                 # the adapter surfaces on the /chat response.
-                # Default to casual (0.8B draft) unless an agentic flow needs tools.
+                # The caller does NOT decide this any more.  OWNER 2026-11-09:
+                # "remove the friggin hardcodi".  What stood here was a tuple of
+                # substrings ('remember that', 'open my', 'summarize the pdf'...)
+                # added 2026-09-25 and labelled in its own comment as "a stopgap,
+                # not a replacement for a real classifier".  It contradicted this
+                # module's own architecture note at :236 -- intent classification
+                # lives in the HARTOS draft, and the earlier phrase tables
+                # (_CASUAL_EXACT, _TOOL_TRIGGER_TOKENS...) were deleted as "shadow
+                # code that couldn't keep up with paraphrases".  It was also wrong
+                # in both directions: substring matching sent "open the pod bay
+                # doors" to the tool path, while a question about the person's own
+                # book matched nothing at all, so the 0.8B draft answered it with
+                # zero tool calls and SPOKE an invented "about 200 metres" where
+                # the book says 57.3 (live, request liveproof-20261103-0).
                 #
-                # Pragmatic override (2026-09-25): the 0.8B draft classifier
-                # was not escalating plainly actionable/memory-carrying
-                # requests ("remember that...", "open my Downloads folder")
-                # out of casual_conv — they got a friendly-sounding LLM
-                # reply with zero tool access (remember()/open_file_gui()
-                # never called), which is silently wrong, not just slow.
-                # This keyword check is a stopgap, not a replacement for a
-                # real classifier — it only widens the set of requests that
-                # get real tool access; it never narrows it.
-                _text_lower = (text or '').lower()
-                _looks_actionable = any(kw in _text_lower for kw in (
-                    'remember that', 'remember this', 'remember my',
-                    "don't forget", 'forget that', 'forget my', 'forget about',
-                    'open my', 'open the', 'find my', 'find the',
-                    'summarize the pdf', 'summarize this pdf',
-                    'summarize the document', 'summarize this document',
-                ))
+                # What stays: SESSION SHAPE, unchanged.  The owner's 2026-08-24
+                # design is that a session without a prompt_id behaves like a
+                # casual companion and one with a prompt_id is agent-bound; a
+                # same-day change that overrode this per-turn was reverted as a
+                # regression and is pinned by
+                # HARTOS tests/unit/test_casual_conv_classifier_override.py.
+                # So this value is still `not _needs_tools` and nothing here
+                # reads the person's words.
+                #
+                # What the hint now means downstream: HARTOS resolves it through
+                # core.prompt_difficulty.resolve_casual_conv (canonical since
+                # July, previously with ZERO callers), which HONOURS this shape
+                # except for a prompt that assesses HARD -- "a hint that a
+                # genuinely hard prompt is casual is not honoured".  That is far
+                # narrower than the 08-24 override, which flipped on every
+                # not-casual classifier verdict.
                 _needs_tools = bool(langchain_prompt_id or create_agent
                                     or agentic_execute or agentic_plan
-                                    or autonomous_creation or _looks_actionable)
+                                    or autonomous_creation)
+                _casual_hint = not _needs_tools
                 logger.info(
                     f"hevolve_chat dispatch: media_mode={media_mode} "
                     f"text[:160]={text[:160]!r} "
-                    f"conv_id={conversation_id} casual={not _needs_tools}"
+                    f"conv_id={conversation_id} casual_hint={_casual_hint}"
                 )
                 result = hevolve_chat(
                     text=text,
@@ -3497,7 +3514,7 @@ def _run_chat_turn(data):
                     conversation_id=conversation_id,
                     request_id=request_id,
                     create_agent=bool(create_agent),
-                    casual_conv=not _needs_tools,
+                    casual_conv=_casual_hint,
                     media_mode=media_mode,
                     autonomous=bool(autonomous_creation),
                     agentic_execute=bool(agentic_execute),
