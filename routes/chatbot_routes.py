@@ -3505,15 +3505,23 @@ def _run_chat_turn(data):
                 # wrong.  The tuple did one thing that nothing replaces yet:
                 # it sent casual_conv=False for 'remember that/this/my',
                 # 'don't forget', 'forget that/my/about', 'open my/the',
-                # 'find my/the' and 'summarize the/this pdf'.  Those prompts
+                # 'find my/the', 'summarize the/this pdf' and 'summarize
+                # the/this document'.  Those prompts
                 # assess ORDINARY, not HARD, and resolve_casual_conv only
                 # overrides a 'casual' hint at HARD -- so with this line
                 # sending True they now come back True on both the new HARTOS
                 # and the installed ca0852c0f:
                 #     resolve_casual_conv('remember that my exam is on
                 #     friday', True) -> (True, 'client:True')
-                # i.e. the 0.8B draft answers them with no tools, which is the
-                # exact failure the 09-25 stopgap was written for.  Difficulty
+                # WHAT WAS MEASURED IS THE FLAG, AND ONLY THE FLAG.  An
+                # earlier version of this comment said "the 0.8B draft
+                # answers them with no tools" and attributed that to the
+                # review; the review measured casual_conv, not tool calls,
+                # and the casual tool set does carry the memory tools and
+                # Shell_Command -- so whether the draft actually calls them
+                # is UNCHECKED and needs one live turn to settle.  What is
+                # established: these prompts used to be routed off the
+                # casual path deliberately and no longer are.  Difficulty
                 # is not tool-need, and the resolver only answers the first
                 # question.  Closing it means overriding on tool-need too,
                 # which changes the 08-24 session-shape design above, so it is
