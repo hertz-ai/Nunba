@@ -138,7 +138,7 @@ describe('AgentOverlay agent.ui.update — live substrate', () => {
   };
 
   it('notification with navigate action renders + click changes URL', () => {
-    cy.visit('/', {failOnStatusCode: false});
+    cy.visit('/local', {failOnStatusCode: false});
     emitWhenReady(NOTIFICATION_PAYLOAD);
 
     // Overlay text from the synthetic event must appear in the DOM.
@@ -174,7 +174,7 @@ describe('AgentOverlay agent.ui.update — live substrate', () => {
   });
 
   it('toast and oauth_link route through NotificationCard (no JSON blob)', () => {
-    cy.visit('/', {failOnStatusCode: false});
+    cy.visit('/local', {failOnStatusCode: false});
 
     // Toast → renders title + message via NotificationCard
     emitWhenReady(TOAST_PAYLOAD);
@@ -193,7 +193,7 @@ describe('AgentOverlay agent.ui.update — live substrate', () => {
   });
 
   it('notification without actions stays back-compat', () => {
-    cy.visit('/', {failOnStatusCode: false});
+    cy.visit('/local', {failOnStatusCode: false});
 
     emitWhenReady({
       type: 'notification',
