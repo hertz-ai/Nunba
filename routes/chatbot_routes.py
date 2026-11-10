@@ -852,11 +852,14 @@ def vision_frame_ingest():
     if len(frame_bytes) > _MAX_FRAME_BYTES:
         return jsonify({'ok': False, 'error': 'frame_too_large',
                         'max_bytes': _MAX_FRAME_BYTES}), 413
+    # Who sent it: this route, by the caller's address (the store keeps it
+    # beside the frame and the caption row carries it).
+    sender = f"http:{request.remote_addr or 'unknown'}"
     try:
         if channel == 'screen':
-            svc.store.put_screen_frame(user_id, frame_bytes)
+            svc.store.put_screen_frame(user_id, frame_bytes, source=sender)
         else:
-            svc.store.put_frame(user_id, frame_bytes)
+            svc.store.put_frame(user_id, frame_bytes, source=sender)
         return ('', 204)
     except Exception as _e:
         logger.warning(f"vision_frame_ingest error: {_e}")
@@ -3491,43 +3494,36 @@ def _run_chat_turn(data):
                 # So this value is still `not _needs_tools` and nothing here
                 # reads the person's words.
                 #
-                # What the hint now means downstream: HARTOS resolves it through
-                # core.prompt_difficulty.resolve_casual_conv (canonical since
-                # July, previously with ZERO callers), which HONOURS this shape
-                # except for a prompt that assesses HARD -- "a hint that a
-                # genuinely hard prompt is casual is not honoured".  That is far
-                # narrower than the 08-24 override, which flipped on every
-                # not-casual classifier verdict.
+                # WHAT HAPPENS TO THIS HINT DOWNSTREAM, and why there is no
+                # word list at either end of the wire any more.
                 #
-                # WHAT THIS DELETION COSTS, measured 2026-11-10 by an
-                # independent review and reproduced -- recorded here because
-                # the commit that removed the tuple claimed otherwise and was
-                # wrong.  The tuple did one thing that nothing replaces yet:
-                # it sent casual_conv=False for 'remember that/this/my',
-                # 'don't forget', 'forget that/my/about', 'open my/the',
-                # 'find my/the', 'summarize the/this pdf' and 'summarize
-                # the/this document'.  Those prompts
-                # assess ORDINARY, not HARD, and resolve_casual_conv only
-                # overrides a 'casual' hint at HARD -- so with this line
-                # sending True they now come back True on both the new HARTOS
-                # and the installed ca0852c0f:
-                #     resolve_casual_conv('remember that my exam is on
-                #     friday', True) -> (True, 'client:True')
-                # WHAT WAS MEASURED IS THE FLAG, AND ONLY THE FLAG.  An
-                # earlier version of this comment said "the 0.8B draft
-                # answers them with no tools" and attributed that to the
-                # review; the review measured casual_conv, not tool calls,
-                # and the casual tool set does carry the memory tools and
-                # Shell_Command -- so whether the draft actually calls them
-                # is UNCHECKED and needs one live turn to settle.  What is
-                # established: these prompts used to be routed off the
-                # casual path deliberately and no longer are.  Difficulty
-                # is not tool-need, and the resolver only answers the first
-                # question.  Closing it means overriding on tool-need too,
-                # which changes the 08-24 session-shape design above, so it is
-                # the owner's call and is with them.  Until they rule, this is
-                # a known open gap, NOT a solved problem -- do not re-add a
-                # substring tuple here, and do not claim it is covered.
+                # For one day (2026-11-09 to 11-10) HARTOS re-decided this
+                # flag through core/prompt_difficulty.py, which was EIGHT
+                # regex word lists.  That was the same keyword matching the
+                # owner had just had deleted from here, moved one layer down,
+                # and the module is deleted (HARTOS c821bc722).  Do not
+                # reintroduce either end of it.
+                #
+                # What the 2026-09-25 tuple was actually written for --
+                # "remember that..." and friends answered with no tool --
+                # already has a model-based owner, and that is the point of
+                # deleting the tuple rather than replacing it:
+                # speculative_dispatcher.py promotes delegate='none' to
+                # 'local' when the draft's OWN classifier sets memory_query,
+                # channel_connect, is_create_agent, language_change,
+                # invite_intent or join_room_intent, so the expert turn binds
+                # the full registry.  memory_query IS the 'remember that my
+                # exam is on friday' case, and that guard carries its own live
+                # evidence (2026-06-09, request 897fc534).  A model reads the
+                # sentence; a substring tuple here never could -- it sent
+                # "open the pod bay doors" to the tool path and missed a
+                # question about the person's own book entirely.
+                #
+                # STILL UNMEASURED, so do not claim it is covered: nobody has
+                # watched a live turn confirm memory_query firing for these
+                # phrasings end to end.  One desktop turn settles it.  If it
+                # turns out not to fire, the fix is in the classifier or its
+                # guard -- NOT a phrase list here.
                 _needs_tools = bool(langchain_prompt_id or create_agent
                                     or agentic_execute or agentic_plan
                                     or autonomous_creation)
