@@ -8,6 +8,14 @@
  * 2. Token stored in sessionStorage
  * 3. Demopage loads with ?token= and skips login
  * 4. Chat works without manual login
+ *
+ * The ?embed=true&token= entry is the hosted Hevolve web app's (the docs
+ * widget iframes hevolve.ai): Nunba's build has no reader of a ?token= param.
+ * These tests used to visit '/?embed=...' here, and Flask's '/' redirects to
+ * https://hevolve.ai whenever that answers, so on an online runner they
+ * drove the live hosted site (whose input says "Please login to talk to
+ * agent." and is disabled).  In Nunba the same journey is a guest's chat on
+ * /local: a sealed guest HART, no sign-in.
  */
 
 const API = `${Cypress.env('apiUrl')}`;
@@ -46,63 +54,35 @@ describe('Guest Widget Flow', () => {
     });
   });
 
-  describe('2. Demopage with Token', () => {
-    it('should load Demopage with token param without showing login', () => {
-      // First get a guest token
-      cy.request({
-        method: 'POST',
-        url: `${API}/api/social/auth/guest-register`,
-        body: { guest_name: 'Widget User', source: 'cypress_test' },
-        failOnStatusCode: false,
-      }).then((res) => {
-        const token = res.body.data?.token || res.body.token || '';
-        if (token) {
-          // Visit Demopage with token
-          cy.visit(`/?embed=true&companionAppInstalled=true&token=${encodeURIComponent(token)}`, {timeout: 60000, failOnStatusCode: false});
-          // Should NOT show login modal/button
-          cy.get('body').should('not.contain', 'Sign In');
-          cy.get('body').should('not.contain', 'Log In');
-        }
-      });
+  describe('2. Guest Demopage', () => {
+    it('opens the chat for a guest without showing a sign-in', () => {
+      cy.openLocalChat();
+      cy.get('textarea', {timeout: 30000}).should('be.visible').and('not.be.disabled');
+      cy.get('body').should('not.contain', 'Please login to talk to agent');
     });
   });
 
   describe('3. Chat Without Login', () => {
     it('should be able to send a message as guest', () => {
-      // Register guest
-      cy.request({
-        method: 'POST',
-        url: `${API}/api/social/auth/guest-register`,
-        body: { guest_name: 'Chat Guest', source: 'cypress_test' },
-        failOnStatusCode: false,
-      }).then((res) => {
-        const token = res.body.data?.token || res.body.token || '';
-        if (token) {
-          cy.visit(`/?embed=true&companionAppInstalled=true&token=${encodeURIComponent(token)}`, {timeout: 60000, failOnStatusCode: false});
-
-          // Find chat input and type
-          cy.get('textarea, input[type="text"]', { timeout: 30000 })
-            .first()
-            .should('be.visible')
-            .type('hello');
-
-          // Find send button and click
-          cy.get('button[aria-label*="send"], button[type="submit"], button svg', { timeout: 30000 })
-            .first()
-            .click({ force: true });
-
-          // Should show some loading or response (not an error page)
-          cy.get('body').should('not.contain', '401');
-          cy.get('body').should('not.contain', 'Unauthorized');
-        }
-      });
+      cy.intercept('POST', '**/chat', {
+        statusCode: 200,
+        body: {text: 'Hello guest!', source: 'local', success: true},
+      }).as('guestChat');
+      cy.openLocalChat();
+      cy.get('textarea', {timeout: 30000})
+        .first()
+        .should('be.visible')
+        .type('hello{enter}');
+      cy.wait('@guestChat').its('request.body').should('have.property', 'text');
+      cy.contains('Hello guest!', {timeout: 20000}).should('exist');
+      cy.get('body').should('not.contain', 'Unauthorized');
     });
   });
 
   describe('4. Guest Recovery', () => {
     it('should recover guest session from localStorage', () => {
       // Set guest mode in localStorage before visiting
-      cy.visit('/', {
+      cy.visit('/local', {
         timeout: 60000,
         onBeforeLoad(win) {
           win.localStorage.setItem('guest_mode', 'true');
