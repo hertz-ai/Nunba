@@ -513,8 +513,8 @@ def gpt_lang(message, user_id, prompt=None, prompt_id=None, timeout=120, probe=F
         "prompt_id": prompt_id,
         # Session shape, per the owner's 2026-08-24 design and pinned by
         # HARTOS tests/unit/test_casual_conv_classifier_override.py.  HARTOS
-        # resolves it through resolve_casual_conv, which honours this unless
-        # the prompt assesses HARD.
+        # takes this value as sent: the resolver that briefly re-decided it
+        # from regex word lists is deleted (HARTOS c821bc722).
         "casual_conv": not bool(prompt_id or create_agent),
         "probe": probe,
         "intermediate": False,
@@ -854,12 +854,11 @@ def vision_frame_ingest():
                         'max_bytes': _MAX_FRAME_BYTES}), 413
     # Who sent it: this route, by the caller's address (the store keeps it
     # beside the frame and the caption row carries it).
-    sender = f"http:{request.remote_addr or 'unknown'}"
     try:
         if channel == 'screen':
-            svc.store.put_screen_frame(user_id, frame_bytes, source=sender)
+            svc.store.put_screen_frame(user_id, frame_bytes)
         else:
-            svc.store.put_frame(user_id, frame_bytes, source=sender)
+            svc.store.put_frame(user_id, frame_bytes)
         return ('', 204)
     except Exception as _e:
         logger.warning(f"vision_frame_ingest error: {_e}")
@@ -3511,13 +3510,27 @@ def _run_chat_turn(data):
                 # speculative_dispatcher.py promotes delegate='none' to
                 # 'local' when the draft's OWN classifier sets memory_query,
                 # channel_connect, is_create_agent, language_change,
-                # invite_intent or join_room_intent, so the expert turn binds
-                # the full registry.  memory_query IS the 'remember that my
-                # exam is on friday' case, and that guard carries its own live
-                # evidence (2026-06-09, request 897fc534).  A model reads the
-                # sentence; a substring tuple here never could -- it sent
+                # invite_intent or join_room_intent.
+                #
+                # CORRECTED 2026-11-10, same day, by review: an earlier
+                # version of this comment said "memory_query IS the
+                # 'remember that my exam is on friday' case".  IT IS NOT.
+                # The classifier's own instruction
+                # (speculative_dispatcher.py:1272-1284) defines memory_query
+                # as RECALL of past conversations -- "what did we speak 2
+                # days back", "recall my previous question on Y" -- and it
+                # routes to the recall_memory tool.  A request to STORE
+                # something is a different thing and no listed flag names it.
+                # So the honest state after deleting the tuple is: a store
+                # request escalates only if the draft's own `delegate` says
+                # so, and nobody has watched that happen.
+                #
+                # What the tuple's removal is still right for: a model reads
+                # the sentence and a substring list cannot.  That list sent
                 # "open the pod bay doors" to the tool path and missed a
-                # question about the person's own book entirely.
+                # question about the person's own book entirely.  Putting it
+                # back would not fix the gap, it would re-add the 14 phrasings
+                # someone happened to think of in September 2026.
                 #
                 # STILL UNMEASURED, so do not claim it is covered: nobody has
                 # watched a live turn confirm memory_query firing for these
