@@ -9,7 +9,7 @@
  *   J141 — Memory write+read during FedAggregator embed
  *   J142 — Corrupt memory_graph.db graceful recovery
  *   J143 — Backtrace depth bound honored (no HTTP surface: tests/journey/test_J143)
- *   J144 — Cross-topology memory sync flat → regional (no HTTP surface: tests/journey/test_J144)
+ *   J144 — Cross-topology memory sync flat → regional (receiver: POST /api/social/peers/embedding-delta)
  *   J145 — AI installer partial success (LLM ok, TTS fail)
  *   J146 — Offline boot with cached models
  *   J147 — Disk full mid-install graceful rollback
@@ -135,10 +135,37 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
     });
   });
 
-  // J144 (flat -> regional, federated_aggregator aggregate_embeddings) has
-  // no HTTP route either: the aggregator pushes on its own.  Its journey test
-  // is tests/journey/test_J144 (pytest).  /api/memory-sync/pull is J234's
-  // surface (cross-device cloud memory sync), not J144's.
+  // J144 (flat -> regional): the flat node's push is outbound, not driven
+  // from a browser.  The receiving side is HTTP: a regional/central node takes
+  // the delta on POST /api/social/peers/embedding-delta (HARTOS
+  // integrations/social/discovery.py), which feeds
+  // FederatedAggregator.receive_embedding_delta, and reports the round on
+  // GET /api/learning/gradient/status.  (/api/memory-sync/pull is J234's
+  // surface, cross-device cloud memory sync.)
+  it('J144: the aggregator receiver refuses a malformed delta and reports its round', () => {
+    // A witness_request with an empty delta is validation only: no state
+    // changes, and the refusal names its reason.
+    cy.request({
+      method: 'POST',
+      url: `${Cypress.env('apiUrl')}/api/social/peers/embedding-delta`,
+      body: {action: 'witness_request', delta: {}},
+      failOnStatusCode: false,
+    }).then((resp) => {
+      expect(resp.status).to.eq(200);
+      expect(resp.body).to.include({success: false, witness_ack: false});
+      expect(resp.body.reason).to.be.a('string').and.not.be.empty;
+    });
+    cy.request({
+      method: 'GET',
+      url: `${Cypress.env('apiUrl')}/api/learning/gradient/status`,
+      failOnStatusCode: false,
+    }).then((resp) => {
+      expect(resp.status).to.eq(200);
+      expect(resp.body.success).to.eq(true);
+      expect(resp.body.data).to.have.property('embedding_sync');
+      expect(resp.body.data.embedding_sync).to.have.property('pending_deltas');
+    });
+  });
 
 });
 
