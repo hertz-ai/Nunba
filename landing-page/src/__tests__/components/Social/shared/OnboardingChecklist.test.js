@@ -39,6 +39,20 @@ describe('OnboardingChecklist Component', () => {
     onboardingApi.getProgress.mockResolvedValue({data: mockProgress});
   });
 
+  describe('Stacking', () => {
+    // A floating widget, not a dialog: it must sit under drawers and modals.
+    // At zIndex 'modal' it drew over the social layout's open mobile menu
+    // (a temporary Drawer, also at modal level) and hid most of its links.
+    test('stays below an open drawer or modal', async () => {
+      renderWithProviders(<OnboardingChecklist />);
+      const header = await screen.findByText(/Getting Started/);
+      const paper = header.closest('.MuiPaper-root');
+      const z = Number(window.getComputedStyle(paper).zIndex);
+      expect(Number.isFinite(z)).toBe(true);
+      expect(z).toBeLessThan(1200); // theme.zIndex.drawer
+    });
+  });
+
   describe('Rendering', () => {
     test('renders Getting Started header with progress count', async () => {
       renderWithProviders(<OnboardingChecklist />);

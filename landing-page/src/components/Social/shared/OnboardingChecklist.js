@@ -80,7 +80,10 @@ export default function OnboardingChecklist() {
           bottom: {xs: 72, md: 16},
           right: 16,
           width: {xs: 'calc(100% - 32px)', sm: 280},
-          zIndex: 'modal',
+          // A floating widget: above the page, below drawers and dialogs.  At
+          // 'modal' it drew over the social layout's open mobile menu (a
+          // temporary Drawer at modal level) and hid most of its links.
+          zIndex: 'speedDial',
           borderRadius: 3,
           overflow: 'hidden',
         }}
