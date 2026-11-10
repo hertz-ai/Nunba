@@ -80,10 +80,13 @@ export default function OnboardingChecklist() {
           bottom: {xs: 72, md: 16},
           right: 16,
           width: {xs: 'calc(100% - 32px)', sm: 280},
-          // A floating widget: above the page, below drawers and dialogs.  At
-          // 'modal' it drew over the social layout's open mobile menu (a
-          // temporary Drawer at modal level) and hid most of its links.
-          zIndex: 'speedDial',
+          // Just under drawers: above the page chrome it can overlap (AppBar
+          // and BottomNavigation at appBar 1100, NunbaChatPill at 1150), so
+          // its close and expand controls stay tappable on a phone, and
+          // below the mobile menu (temporary Drawer, zIndex.drawer 1200),
+          // NunbaChatPanel (1250) and dialogs (modal 1300).  At 'modal' it
+          // drew over the open menu and hid most of its links.
+          zIndex: (t) => t.zIndex.drawer - 1,
           borderRadius: 3,
           overflow: 'hidden',
         }}
