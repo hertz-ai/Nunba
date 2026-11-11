@@ -276,4 +276,14 @@ describe('the drawn ring follows the voice', () => {
     expect(Math.abs(riseMs(atOwner) - riseMs(at60))).toBeLessThanOrEqual(oneFrameAt60);
     expect(Math.abs(fallMs(atOwner) - fallMs(at60))).toBeLessThanOrEqual(oneFrameAt60);
   });
+
+  // The "too quick" the owner saw was the 0.3 / 0.5 smoothing: 12 ms to swell
+  // on their 165 Hz display. Spread over time the same pair still swells in
+  // 33 ms at any frame rate; the calmer 0.4 / 0.35 takes 50 ms. The floor
+  // sits between, so going back to 0.3 / 0.5 fails here and not only in a
+  // comment.
+  test('the ring takes at least 40 ms to swell, at 60 Hz and on a 165 Hz display', () => {
+    expect(riseMs(ringThroughOneWord(FPS))).toBeGreaterThanOrEqual(40);
+    expect(riseMs(ringThroughOneWord(OWNER_FPS))).toBeGreaterThanOrEqual(40);
+  });
 });
