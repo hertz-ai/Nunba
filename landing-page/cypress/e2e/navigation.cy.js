@@ -64,8 +64,12 @@ describe('Navigation - Interactive Link Clicks', () => {
     cy.viewport(1280, 720);
     cy.sealHart();
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    // After the row renders: before that #root is empty and the check below
+    // could not fail.  The row is matched by its layout classes (it has no
+    // role, label or test id); it is the only match on /local.
+    cy.get('div.mt-auto.cursor-pointer', {timeout: 30000}).should('be.visible');
     cy.get('a[href="/social"]:visible').should('not.exist');
-    cy.get('div.mt-auto.cursor-pointer', {timeout: 30000}).first().click();
+    cy.get('div.mt-auto.cursor-pointer').click();
     cy.get('a[href="/social"]', {timeout: 10000}).filter(':visible').first().click();
     cy.location('pathname', {timeout: 20000}).should('eq', '/social');
   });
