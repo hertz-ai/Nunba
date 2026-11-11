@@ -98,7 +98,11 @@ describe('J60-J63: auth + peer + encrypted channel', () => {
       body: {username: `cy_j60_${Date.now()}`, password: 'testpwd!23'},
       failOnStatusCode: false,
     }).then((r) => {
-      expect(r.status).to.be.oneOf([200, 400, 409, 503]);
+      // A new user is 201 Created (as J06 in uat-journeys-j06-j10).
+      expect(r.status).to.be.oneOf([200, 201, 400, 409, 503]);
+      if (r.status === 200 || r.status === 201) {
+        expect(r.body.data).to.have.property('api_token');
+      }
     });
   });
 
@@ -140,9 +144,18 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
     installBaselineStubs();
   });
 
-  it('J65: GET /api/admin/diag/thread-dump returns envelope', () => {
-    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/diag/thread-dump`, failOnStatusCode: false}).then((r) => {
-      expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
+  // The thread dump is POST only (a GET answered 405); on loopback it writes
+  // every thread's stack to the startup trace and says how many.
+  it('J65: POST /api/admin/diag/thread-dump dumps the threads', () => {
+    cy.request({
+      method: 'POST',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/thread-dump`,
+      body: {},
+      failOnStatusCode: false,
+    }).then((r) => {
+      expect(r.status).to.eq(200);
+      expect(r.body.success).to.eq(true);
+      expect(r.body.threads_dumped).to.be.greaterThan(0);
     });
   });
 
@@ -175,25 +188,24 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
     });
   });
 
-  it('J71: POST /api/memory/remember returns envelope', () => {
-    cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
-      body: {text: 'test', agent_id: 'j71'},
-      failOnStatusCode: false,
-    }).then((r) => {
-      expect(r.status).to.be.oneOf([200, 201, 400, 401, 403, 404, 503]);
+  // J71/J72 per tests/journey/PRODUCT_MAP.md: MCP remember -> recall (the
+  // /api/memory/remember and /recall routes these used to call were never
+  // registered).
+  it('J71: MCP remember stores a memory', () => {
+    cy.mcpExecute('remember', {content: `cypress j71 ${Date.now()}`}).then((r) => {
+      expect(r.status).to.eq(200);
+      expect(r.body.result).to.have.property('stored', true);
     });
   });
 
-  it('J72: POST /api/memory/recall returns envelope', () => {
-    cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/recall`,
-      body: {query: 'test', agent_id: 'j72'},
-      failOnStatusCode: false,
-    }).then((r) => {
-      expect(r.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
+  it('J72: MCP recall finds what remember stored', () => {
+    const content = `cypress j72 ${Date.now()}`;
+    cy.mcpExecute('remember', {content}).then((r) => {
+      const id = r.body.result.memory_id;
+      cy.mcpExecute('recall', {q: content}).then((rr) => {
+        expect(rr.status).to.eq(200);
+        expect((rr.body.result.memories || []).map((m) => m.id)).to.include(id);
+      });
     });
   });
 
@@ -298,9 +310,24 @@ describe('J83-J85: distributed goals', () => {
     installBaselineStubs();
   });
 
-  it('J83: GET /api/distributed/goals returns envelope', () => {
-    cy.request({url: `${Cypress.env('apiUrl')}/api/distributed/goals`, failOnStatusCode: false}).then((r) => {
-      expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
+  // There is no GET /api/distributed/goals (POST only; a GET answered 405).
+  // The read side is a goal's progress: a signed-in user submits a goal with
+  // its tasks and reads it back.
+  it('J83: a submitted goal reports its progress', () => {
+    cy.socialAuth();
+    cy.socialRequest('POST', `${Cypress.env('apiUrl')}/api/distributed/goals`, {
+      objective: `cypress j83 ${Date.now()}`,
+      tasks: [{description: 'step one'}],
+    }).then((r) => {
+      expect(r.status).to.eq(200);
+      const id = r.body.goal_id;
+      expect(id).to.be.a('string').and.not.be.empty;
+      cy.socialRequest('GET', `${Cypress.env('apiUrl')}/api/distributed/goals/${id}/progress`)
+        .then((p) => {
+          expect(p.status).to.eq(200);
+          expect(p.body).to.include({goal_id: id, success: true});
+          expect(p.body.tasks).to.have.length(1);
+        });
     });
   });
 
