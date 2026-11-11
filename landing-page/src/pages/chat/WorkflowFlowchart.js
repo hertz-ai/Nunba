@@ -13,6 +13,8 @@ const COLORS = {
   muted: '#888',
   edge: '#555',
   edgeActive: '#6C63FF',
+  node: '#1e1e3a',
+  nodeHover: '#2a2a4a',
 };
 
 const NODE_W = 200;
@@ -26,6 +28,16 @@ function getNodeColor(action, vlm) {
   if (vlm?.can_perform_without_user_input === 'no') return COLORS.user;
   if (vlm?.scheduled_tasks?.length > 0) return COLORS.scheduled;
   return COLORS.agent;
+}
+
+// One reading of a step's state, for the card and the window alike.
+function stepState(node) {
+  const isDone = node.vlm?.status === 'done';
+  return {
+    color: getNodeColor(node.label, node.vlm),
+    isDone,
+    isPending: !isDone && !node.vlm?.status,
+  };
 }
 
 function truncate(text, max = 28) {
@@ -288,7 +300,10 @@ function FlowLanes({nodes, edges}) {
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: `repeat(${lanes.length}, minmax(240px, 1fr))`,
+        // As many 240 px columns as the window holds; in a narrow window
+        // (the portrait dock is 473 px wide) the flows stack instead of
+        // running off the side.
+        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
         gap: 20,
         padding: 20,
         overflow: 'auto',
@@ -304,9 +319,7 @@ function FlowLanes({nodes, edges}) {
           )}
           <ol style={{listStyle: 'none', margin: '12px 0 0', padding: 0}}>
             {lane.steps.map((node, i) => {
-              const color = getNodeColor(node.label, node.vlm);
-              const isDone = node.vlm?.status === 'done';
-              const isPending = !isDone && !node.vlm?.status;
+              const {color, isDone, isPending} = stepState(node);
               const last = i === lane.steps.length - 1;
               return (
                 <li
@@ -315,7 +328,7 @@ function FlowLanes({nodes, edges}) {
                     position: 'relative',
                     border: `1.5px ${isPending ? 'dashed' : 'solid'} ${color}`,
                     borderRadius: 10,
-                    background: '#1e1e3a',
+                    background: COLORS.node,
                     padding: '8px 10px',
                     marginBottom: last ? 0 : 20,
                     fontSize: 13,
@@ -419,7 +432,7 @@ export default function WorkflowFlowchart({recipe}) {
     <div
       role="button"
       tabIndex={0}
-      aria-label="Open the whole workflow"
+      aria-label={goalText ? `Open the whole workflow: ${goalText}` : 'Open the whole workflow'}
       title="Click to see the whole workflow"
       onClick={openZoom}
       onKeyDown={(e) => {
@@ -505,10 +518,8 @@ export default function WorkflowFlowchart({recipe}) {
 
         {/* Nodes */}
         {positioned.map((node) => {
-          const color = getNodeColor(node.label, node.vlm);
+          const {color, isDone, isPending: isDashed} = stepState(node);
           const isHovered = hoveredNode === node.id;
-          const isDone = node.vlm?.status === 'done';
-          const isDashed = !isDone && !node.vlm?.status;
 
           return (
             <g
@@ -526,7 +537,7 @@ export default function WorkflowFlowchart({recipe}) {
                 width={NODE_W}
                 height={NODE_H}
                 rx={10}
-                fill={isHovered ? '#2a2a4a' : '#1e1e3a'}
+                fill={isHovered ? COLORS.nodeHover : COLORS.node}
                 stroke={color}
                 strokeWidth={isHovered ? 2.5 : 1.5}
                 strokeDasharray={isDashed ? '6 3' : 'none'}
@@ -611,7 +622,7 @@ export default function WorkflowFlowchart({recipe}) {
           alignItems: 'flex-start',
           gap: 12,
           padding: '14px 12px 12px 20px',
-          borderBottom: '1px solid #2a2a4a',
+          borderBottom: `1px solid ${COLORS.nodeHover}`,
         }}
       >
         <div id={titleId} style={{flex: 1, fontWeight: 600, fontSize: 16, lineHeight: 1.4}}>

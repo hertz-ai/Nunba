@@ -13,6 +13,29 @@
 import React from 'react';
 import {fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 
+// ChatMessageList's own imports, mocked as ChatMessageListSetupCards.test.js
+// does; the workflow card itself is the real one.
+jest.mock('lottie-react', () => ({__esModule: true, default: () => null}));
+jest.mock('../../assets/hourglass-lottie.json', () => ({}), {virtual: true});
+jest.mock('../../pages/chat/TypeWriterSubtitle', () => ({__esModule: true, default: () => null}));
+jest.mock('../../pages/chat/ThinkingProcessContainer', () => ({__esModule: true, default: () => null}));
+jest.mock('../../pages/chat/SetupProgressCard', () => ({__esModule: true, default: () => null}));
+jest.mock('lucide-react', () => ({FileText: () => null}));
+jest.mock('markdown-to-jsx', () => ({__esModule: true, default: ({children}) => <div>{children}</div>}));
+jest.mock('../../services/realtimeService', () => ({
+  __esModule: true,
+  default: {on: jest.fn(() => () => {}), off: jest.fn()},
+}));
+jest.mock('../../config/apiBase', () => ({API_BASE_URL: ''}));
+jest.mock('qrcode.react', () => ({QRCodeSVG: () => null}));
+jest.mock('../../services/socialApi', () => ({
+  agentFormApi: {submit: jest.fn()},
+  chatApi: {vaultStore: jest.fn()},
+  consentApi: {grant: jest.fn(), decline: jest.fn()},
+  notificationsApi: {markRead: jest.fn(() => Promise.resolve({}))},
+}));
+
+import ChatMessageList from '../../pages/chat/ChatMessageList';
 import WorkflowFlowchart from '../../pages/chat/WorkflowFlowchart';
 
 // The shape of the owner's agent: several flows, each with its persona, and
@@ -37,6 +60,18 @@ const recipe = {
       persona: 'Parent_Coach',
       actions: [COACH_STEP],
     },
+  ],
+};
+
+// The other recipe shape the card reads: one action, its steps in recipe[],
+// each naming the tool it uses, and the action's fallback.
+const toolRecipe = {
+  action: 'Post the weekly reel',
+  persona: 'Reel_Maker',
+  fallback_action: 'ask the owner which clip to use',
+  recipe: [
+    {steps: 'pick the three best clips from the week', tool_name: 'list_media_files'},
+    {steps: 'cut them into one reel with captions', tool_name: 'edit_video'},
   ],
 };
 
@@ -68,6 +103,91 @@ describe('the workflow card opens into the whole flow', () => {
     const dialog = await screen.findByRole('dialog');
 
     fireEvent.keyDown(dialog, {key: 'Escape'});
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('opens on Space as well as Enter', async () => {
+    render(<WorkflowFlowchart recipe={recipe} />);
+    fireEvent.keyDown(openButton(), {key: ' '});
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+  });
+
+  // A screen reader hears which workflow the card opens, and the window it
+  // opens is named by the same goal.
+  it('names the card and the window by the goal', async () => {
+    render(<WorkflowFlowchart recipe={recipe} />);
+    fireEvent.click(
+      screen.getByRole('button', {name: `Open the whole workflow: ${recipe.goal}`})
+    );
+    expect(await screen.findByRole('dialog', {name: recipe.goal})).toBeTruthy();
+  });
+
+  it('shows the tool each step uses and the fallback', async () => {
+    render(<WorkflowFlowchart recipe={toolRecipe} />);
+    fireEvent.click(openButton());
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('pick the three best clips from the week')).toBeTruthy();
+    expect(within(dialog).getByText('Tool: list_media_files')).toBeTruthy();
+    expect(within(dialog).getByText('Tool: edit_video')).toBeTruthy();
+    expect(
+      within(dialog).getAllByText('Fallback: ask the owner which clip to use').length
+    ).toBeGreaterThan(0);
+  });
+
+  it('gives focus back to the card when the window closes', async () => {
+    render(<WorkflowFlowchart recipe={recipe} />);
+    const card = openButton();
+    card.focus();
+    fireEvent.keyDown(card, {key: 'Enter'});
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.keyDown(dialog, {key: 'Escape'});
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(card);
+  });
+
+  // jsdom does no layout, so this reads the rule itself: one column per flow
+  // ran off the side of the 473 px portrait dock; the columns must wrap.
+  it('lets the flows wrap in a narrow window', async () => {
+    render(<WorkflowFlowchart recipe={recipe} />);
+    fireEvent.click(openButton());
+    const dialog = await screen.findByRole('dialog');
+    const lane = within(dialog).getByRole('region', {name: 'Flow_1_Name_Attention_Training'});
+    expect(lane.parentElement.style.gridTemplateColumns).toMatch(/auto-fit/);
+  });
+});
+
+describe('the workflow card inside the chat', () => {
+  const props = {
+    setMessages: jest.fn(),
+    isRequestInFlight: false,
+    currentThinkingId: null,
+    animatingMessageIndex: -1,
+    duration: 0,
+    isTextMode: true,
+    videoUrl: '',
+    idleVideoUrl: 'idle.mp4',
+    progress: 0,
+    messagesEndRef: {current: null},
+    onPdfClick: jest.fn(),
+    onImageClick: jest.fn(),
+    onImgError: jest.fn(),
+    onRetryMessage: jest.fn(),
+    onDeleteMessage: jest.fn(),
+    setCodeContent: jest.fn(),
+  };
+
+  it('opens into the whole flow from the chat list', async () => {
+    const messages = [
+      {type: 'user', content: 'make my agent', timestamp: '2026-11-10T08:00:00.000Z'},
+      {type: 'workflow_flowchart', recipe, promptId: 1793365100141},
+    ];
+    render(<ChatMessageList {...props} messages={messages} />);
+    fireEvent.click(openButton());
+    const dialog = await screen.findByRole('dialog', {name: recipe.goal});
+    expect(within(dialog).getByText(COACH_STEP)).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole('button', {name: /close/i}));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 });
