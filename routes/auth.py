@@ -159,6 +159,42 @@ def require_local_or_token(f):
     return decorated_function
 
 
+def admitted_device_user():
+    """The user id an admitted phone's token names, else None.
+
+    On a desktop, HARTOS's API gate (security.middleware, install_api_gate)
+    runs before every route.  It admits a phone that signed its token with
+    the key the owner allowed, and marks that request g.auth_source ==
+    'device' with g.device_public_key and the token's claims in
+    g.jwt_payload.  None for every other caller, and for an admitted phone
+    whose token names no user, so a route never acts for nobody.
+    """
+    from flask import g
+    if (getattr(g, 'auth_source', None) != 'device'
+            or not getattr(g, 'device_public_key', None)):
+        return None
+    uid = (getattr(g, 'jwt_payload', None) or {}).get('user_id')
+    return None if uid in (None, '') else str(uid)
+
+
+def require_local_token_or_device(f):
+    """require_local_or_token, and a phone the owner allowed.
+
+    require_local_or_token alone refuses that phone (it is neither this
+    machine nor the local token), so a frame from it got 401 after the gate
+    had admitted it.  The route must act only as admitted_device_user().
+    """
+    guarded = require_local_or_token(f)
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if admitted_device_user() is not None:
+            return f(*args, **kwargs)
+        return guarded(*args, **kwargs)
+
+    return decorated_function
+
+
 _origin_check_unavailable_logged = False
 
 

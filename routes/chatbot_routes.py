@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Auth decorator — single source of truth in routes/auth.py
 from routes.auth import require_local_or_token as _require_local_or_token
+from routes.auth import admitted_device_user, require_local_token_or_device
 
 # ============== Nunba-layer TTS (works on ALL tiers) ==============
 
@@ -843,8 +844,17 @@ def vision_frame_ingest():
     if svc is None or not getattr(svc, 'store', None):
         return jsonify({'ok': False,
                         'error': 'vision_service_unavailable'}), 503
-    user_id = str(request.args.get('user_id') or
-                  request.headers.get('X-User-Id') or 'anon')
+    asked_for = request.args.get('user_id') or request.headers.get('X-User-Id')
+    device_user = admitted_device_user()
+    if device_user is not None:
+        # A phone acts only as its token's user: the gate holds a JSON body
+        # to that rule (#51), and this body is a JPEG, so it is held here.
+        if asked_for and str(asked_for) != device_user:
+            return jsonify({'ok': False,
+                            'error': "user_id must be the token's user"}), 403
+        user_id = device_user
+    else:
+        user_id = str(asked_for or 'anon')
     channel = (request.args.get('channel') or 'camera').lower()
     frame_bytes = request.get_data() or b''
     if not frame_bytes:
@@ -854,11 +864,17 @@ def vision_frame_ingest():
                         'max_bytes': _MAX_FRAME_BYTES}), 413
     # Who sent it: this route, by the caller's address (the store keeps it
     # beside the frame and the caption row carries it).
+    sender = f"http:{request.remote_addr or 'unknown'}"
+    if device_user is not None:
+        # The phone's own key says which phone; its address over the relay
+        # is the link's, not the phone's.
+        from flask import g
+        sender = f"device:{str(g.device_public_key)[:16]}"
     try:
         if channel == 'screen':
-            svc.store.put_screen_frame(user_id, frame_bytes)
+            svc.store.put_screen_frame(user_id, frame_bytes, source=sender)
         else:
-            svc.store.put_frame(user_id, frame_bytes)
+            svc.store.put_frame(user_id, frame_bytes, source=sender)
         return ('', 204)
     except Exception as _e:
         logger.warning(f"vision_frame_ingest error: {_e}")
@@ -5238,8 +5254,9 @@ def register_routes(app):
     # cross-OS canonical transport.  Wrapped in _require_local_or_token so
     # only the authenticated principal can write frames (prevents any local
     # process from POSTing attacker-controlled imagery as another user).
+    # A phone the owner allowed is let in too, as its token's user only.
     app.add_url_rule("/api/vision/frame",
-                     view_func=_require_local_or_token(vision_frame_ingest),
+                     view_func=require_local_token_or_device(vision_frame_ingest),
                      methods=["POST"], endpoint="vision_frame_ingest")
 
     # Kids Learning TTS routes (called by kidsLearningApi.js TTSManager)
