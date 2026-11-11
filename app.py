@@ -8112,6 +8112,16 @@ def main():
             FilePickerApi(lambda: _window),
             _native_api,
         )
+        # The main page says whether the owner is looking at it; the floating
+        # companion follows that (desktop/main_page_presence.py).  On the MAIN
+        # window's js_api only: the companion page has no such method.
+        from desktop.main_page_presence import (
+            MainPagePresence,
+            MainPagePresenceApi,
+        )
+        _main_page = MainPagePresence()
+        _native_api.main_page_presence = (
+            MainPagePresenceApi(_main_page).main_page_presence)
 
         # Create window with conditional hidden status and frameless design.
         # frameless=True on Win+Linux: dark NunbaTitleBar replaces native chrome.
@@ -8181,19 +8191,13 @@ def main():
             _comp_x, _comp_y = _companion_origin(_screen_w, _screen_h,
                                                  _comp_w, _comp_h)
 
-            # What the PAGE last asked for.  The page owns presence
-            # (on_companion_presence below); the foreground monitor owns
-            # whether that presence is allowed on screen right now.  Two
-            # different questions, so the answer to the first is kept here
-            # rather than inferred from whether the window happens to be
-            # visible -- which is what the monitor is busy changing.
+            # What the PAGE last asked for.  The companion page owns presence
+            # (on_companion_presence below); the main page's own report
+            # (_main_page) owns whether that presence is allowed on screen
+            # right now.  Two different questions, so the answer to the first
+            # is kept here rather than inferred from whether the window
+            # happens to be visible -- which is what the report changes.
             _companion_desired = {'state': 'hidden', 'shape': None}
-            # The foreground monitor's lifetime is this window's lifetime.
-            # app.py has no process-wide shutdown signal to hang it on, and
-            # inventing one here would be a second answer to a question
-            # nothing else in this file asks; the window's own closed event
-            # is the real end of the thing being watched.
-            _companion_stop = threading.Event()
 
             class CompanionAPI:
                 """Python bridge for the companion window JS.
@@ -8331,27 +8335,14 @@ def main():
                         if state == 'hidden':
                             _companion_window.hide()
                             return
-                        from desktop.platform_utils import (
-                            is_main_window_foreground,
-                            main_window_state_readable,
-                        )
                         # Fail closed.  This surface is for when the owner is
-                        # in ANOTHER application; over Nunba's own window it
-                        # is a second copy of the same conversation.  And
-                        # "could not read the main window" must suppress too:
-                        # the bool alone returns False for unreadable, which
-                        # means "not in front", which SHOWS -- and during
-                        # startup the two windows race, so unreadable is a
-                        # state that really happens (see
-                        # tests/test_companion_presence_fails_closed.py).
-                        # Kept as ONE BoolOp: tests/test_companion_presence_
-                        # fails_closed.py walks for a condition containing
-                        # both calls, and splitting them into two names made
-                        # that guard fail (measured 2026-09-20) -- the pairing
-                        # is the thing being pinned, so it stays literal.
-                        _suppress = (
-                            is_main_window_foreground(_window, _companion_window)
-                            or not main_window_state_readable(_window))
+                        # somewhere else; over Nunba's own window it is a
+                        # second copy of the same conversation.  The main page
+                        # reports whether it is in front, and until it has
+                        # said "not in front" (startup, a page that failed to
+                        # load) the companion stays hidden
+                        # (desktop/main_page_presence.py).
+                        _suppress = not _main_page.companion_may_show()
                         # The success path logged nothing, which made the gate
                         # unfalsifiable: an absent line could mean "never ran"
                         # or "ran and allowed", and a live check could not tell
@@ -8531,53 +8522,30 @@ def main():
             if _companion_window:
                 _companion_window.events.loaded += _on_companion_loaded
 
-            def _companion_fg_monitor():
-                """Follow the owner's foreground window, not just page events.
+            def _on_main_page_presence(in_front):
+                """The main page came to the front, or left it.
 
-                on_companion_presence only fires when the PAGE changes its
-                mind.  The owner alt-tabbing to Nunba changes nothing on the
-                page, so without this tick the companion would sit on top of
-                the main window until the agent next spoke.  0.35s is under
-                the ~0.4s an alt-tab takes to settle, so the companion is
-                gone by the time the owner is looking at Nunba.
-
-                Same fail-closed pair as the presence handler: in front OR
-                unreadable means hide.  The gate is written out here rather
-                than shared with the handler because the two answer at
-                different moments -- the handler on a page event, this on a
-                clock -- and a single shared applier was tried and drifts the
-                page's desired state against the clock's view of it.
+                on_companion_presence only runs when the COMPANION page
+                changes its mind.  The owner alt-tabbing to Nunba changes
+                nothing there, so the main page's own report (focus, blur,
+                visibility; desktop/main_page_presence.py) is applied here to
+                what the companion page last asked for: hide when the main
+                page is in front, else the companion page's last request
+                again, through the same handler and its fail-closed gate.
                 """
-                from desktop.platform_utils import (
-                    is_main_window_foreground,
-                    main_window_state_readable,
-                )
-                _last = None
-                while not _companion_stop.is_set():
-                    try:
-                        if _companion_desired['state'] != 'hidden':
-                            suppress = (
-                                is_main_window_foreground(_window,
-                                                          _companion_window)
-                                or not main_window_state_readable(_window))
-                            if suppress != _last:
-                                if suppress:
-                                    _companion_window.hide()
-                                else:
-                                    _companion_window.show()
-                                    _companion_raise()
-                                _last = suppress
-                        else:
-                            _last = None
-                    except Exception as _fg_err:
-                        logger.debug("[COMPANION] fg monitor tick failed: %s",
-                                     _fg_err)
-                    _companion_stop.wait(0.35)
+                try:
+                    if in_front:
+                        _companion_window.hide()
+                    elif _companion_desired['state'] != 'hidden':
+                        _companion_api.on_companion_presence(
+                            _companion_desired['state'],
+                            _companion_desired['shape'])
+                except Exception as _fg_err:
+                    logger.debug("[COMPANION] main page presence %s failed: "
+                                 "%s", in_front, _fg_err)
 
             if _companion_window:
-                _companion_window.events.closed += _companion_stop.set
-                threading.Thread(target=_companion_fg_monitor, daemon=True,
-                                 name='companion_fg_monitor').start()
+                _main_page.on_change(_on_main_page_presence)
 
         except Exception as _comp_err:
             logger.warning("[COMPANION] Companion window not created: %s", _comp_err)

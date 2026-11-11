@@ -14,15 +14,21 @@ resort, for a form that is not up yet" -- its own docstring), so there is a
 real window in which the gate says show while Nunba owns the screen.  That is
 the state the owner reported.
 
-These tests pin the two halves of the fix:
+These tests pinned the two halves of that fix:
   1. ``main_window_state_readable`` tells unreadable apart from backgrounded.
-  2. app.py consults it at BOTH decision sites (presence handler + the 0.35s
-     monitor) and treats unreadable as suppress.
+  2. app.py consulted it at both decision sites.
 
-(2) is an AST/source assertion rather than a live window: the presence handler
-is a closure inside main(), built only while a real pywebview app is starting,
-so there is nothing importable to call.  The assertion is still not vacuous --
-it fails on the pre-fix source, which called is_main_window_foreground alone.
+2026-11-10 the owner retired the operating-system question: the floating
+window follows the main page's own report of focus and visibility, on every
+OS, with no 0.35 s poll ("are you a software developer or not"; "we shd know
+whether its getting rendered or not, not the windows").  The fail-closed rule
+stays: until the page has said "not in front", the companion stays hidden
+(desktop/main_page_presence.py, tests/test_main_page_presence.py).  Section 2
+now pins that app.py takes the page's answer and asks the OS nothing.
+
+Section 2 is an AST/source assertion rather than a live window: the presence
+handler is a closure inside main(), built only while a real pywebview app is
+starting, so there is nothing importable to call.
 """
 import ast
 import os
@@ -86,81 +92,74 @@ def test_a_resolvable_live_hwnd_is_readable(monkeypatch):
     assert platform_utils.main_window_state_readable(_Up()) is True
 
 
-# ── 2. both decision sites consult it ──────────────────────────────
+# ── 2. app.py takes the main page's report, not the OS's ───────────
 
 def _app_source():
     with open(os.path.join(_ROOT, 'app.py'), encoding='utf-8') as fh:
         return fh.read()
 
 
-def test_the_presence_gate_is_not_the_bool_alone():
-    """RED on the pre-fix source.
+def _function(tree, name):
+    found = [n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == name]
+    assert len(found) == 1, f'{name} defined {len(found)} times in app.py'
+    return found[0]
 
-    Pre-fix, every companion suppression test read:
 
-        if is_main_window_foreground(_window, _companion_window):
+def _source_of(node):
+    return ast.get_source_segment(_app_source(), node)
 
-    with nothing else in the condition.  Post-fix each one is OR'd with
-    `not main_window_state_readable(...)`.  Walking the AST for a BoolOp that
-    contains BOTH calls is what separates the two -- a plain substring search
-    for the new name would pass on a file that merely imported it.
-    """
+
+def test_the_presence_gate_reads_the_main_pages_own_report():
+    """Owner 2026-11-10: the floating window follows the main PAGE's report
+    (focus, blur, visibility), not the operating system's foreground window.
+    The handler's gate is the report's fail-closed answer: shown only after
+    the page has said it is not in front (desktop/main_page_presence.py)."""
+    handler = _source_of(_function(ast.parse(_app_source()),
+                                   'on_companion_presence'))
+    assert '_suppress = not _main_page.companion_may_show()' in handler
+
+
+def test_no_companion_site_asks_the_operating_system():
+    """Half a migration is the trap this repo keeps hitting: one site moved,
+    the sibling left on the old answer.  No foreground or readability call is
+    left in app.py, and no clock: the 0.35 s monitor thread is gone."""
     tree = ast.parse(_app_source())
-
-    def _calls(node):
-        return {
-            n.func.id
-            for n in ast.walk(node)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-        }
-
-    guarded = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.BoolOp)
-        and 'is_main_window_foreground' in _calls(n)
-        and 'main_window_state_readable' in _calls(n)
-    ]
-    assert len(guarded) >= 2, (
-        'Expected BOTH companion decision sites (the on_companion_presence '
-        'handler and the _companion_fg_monitor tick) to pair the foreground '
-        'bool with the readability probe, so an unreadable main window '
-        f'suppresses instead of showing. Found {len(guarded)} such condition(s).'
-    )
-
-
-def test_no_companion_site_still_tests_foreground_alone():
-    """A half-migration is the trap this repo keeps hitting: one site fixed,
-    the sibling left permissive.  Every call to is_main_window_foreground must
-    sit inside a BoolOp that also calls the readability probe."""
-    tree = ast.parse(_app_source())
-
-    paired = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.BoolOp):
-            continue
-        names = {
-            n.func.id
-            for n in ast.walk(node)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-        }
-        if {'is_main_window_foreground', 'main_window_state_readable'} <= names:
-            for n in ast.walk(node):
-                if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                        and n.func.id == 'is_main_window_foreground'):
-                    paired.add((n.lineno, n.col_offset))
-
-    everywhere = {
-        (n.lineno, n.col_offset)
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-        and n.func.id == 'is_main_window_foreground'
+    called = {
+        n.func.id if isinstance(n.func, ast.Name) else getattr(n.func, 'attr', None)
+        for n in ast.walk(tree) if isinstance(n, ast.Call)
     }
-    unpaired = sorted(everywhere - paired)
-    assert not unpaired, (
-        'is_main_window_foreground is used WITHOUT the readability probe at '
-        f'app.py lines {[ln for ln, _ in unpaired]} — that site still reads '
-        '"cannot tell" as "not in foreground", i.e. shows the companion.'
-    )
+    assert 'is_main_window_foreground' not in called
+    assert 'main_window_state_readable' not in called
+    names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    assert '_companion_fg_monitor' not in names
+    assert 'companion_fg_monitor' not in _app_source()
+
+
+def test_a_main_page_report_reapplies_the_companions_last_request():
+    """The owner alt-tabbing changes nothing on the COMPANION page, so the
+    main page's change is what moves the window: hide when in front, else the
+    companion page's last request again, through the handler and its gate."""
+    tree = ast.parse(_app_source())
+    listener = _source_of(_function(tree, '_on_main_page_presence'))
+    assert '_companion_window.hide()' in listener
+    assert '_companion_api.on_companion_presence(' in listener
+    assert "_companion_desired['state']" in listener
+    assert "_companion_desired['shape']" in listener
+    assert '_main_page.on_change(_on_main_page_presence)' in _app_source()
+
+
+def test_only_the_main_window_can_report():
+    """The report is bound onto the main window's js_api; the companion's
+    own api class has no such method, so the floating page cannot say the
+    main page is in front or not."""
+    src = _app_source()
+    assert '_native_api.main_page_presence = (' in src
+    cls = [n for n in ast.walk(ast.parse(src))
+           if isinstance(n, ast.ClassDef) and n.name == 'CompanionAPI']
+    assert len(cls) == 1
+    methods = {n.name for n in cls[0].body if isinstance(n, ast.FunctionDef)}
+    assert 'main_page_presence' not in methods
 
 
 # ── 3. the window styles the owner asked for ───────────────────────
