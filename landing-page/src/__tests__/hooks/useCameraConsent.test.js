@@ -248,6 +248,18 @@ describe('useConsentedCameraStream: one stream per person', () => {
     await waitFor(() => expect(streaming()).toHaveLength(1));
   });
 
+  test('one person named by a number on one surface and a string on the other: one stream', async () => {
+    // The claim key is String(userId), so the two spellings are one person.
+    signedIn();
+    mockList.mockResolvedValue(GRANTED);
+    render(<Surface userId={10202} />);
+    render(<Surface userId="10202" />);
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(streaming()).toHaveLength(1));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(streaming()).toHaveLength(1);
+  });
+
   test('two people: each has a stream of their own', async () => {
     signedIn();
     mockList.mockResolvedValue(GRANTED);
@@ -272,7 +284,9 @@ describe('the agent page streams through the one hook', () => {
       /useConsentedCameraStream\(effectiveUserId, \{paused: mediaMode === 'video'\}\);/);
   });
 
-  test('and has no camera streamer of its own beside it', () => {
+  // Video mode still sends its own 5 fps frames inline; it does so under the
+  // paused claim above, never through a second useCameraFrameStream call.
+  test('and never calls useCameraFrameStream itself', () => {
     expect(src).not.toMatch(/useCameraFrameStream\(/);
   });
 });
