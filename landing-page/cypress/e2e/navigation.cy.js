@@ -57,6 +57,19 @@ describe('Navigation - Interactive Link Clicks', () => {
     cy.location('pathname', {timeout: 20000}).should('eq', '/social');
   });
 
+  // The same journey at desktop width, the usual Nunba window: AgentSidebar
+  // shows the links in the account-row dropdown (the row's onClick is
+  // toggleDropdown) instead of a hamburger.
+  it('should navigate to social feed from the account menu on desktop', () => {
+    cy.viewport(1280, 720);
+    cy.sealHart();
+    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    cy.get('a[href="/social"]:visible').should('not.exist');
+    cy.get('div.mt-auto.cursor-pointer', {timeout: 30000}).first().click();
+    cy.get('a[href="/social"]', {timeout: 10000}).filter(':visible').first().click();
+    cy.location('pathname', {timeout: 20000}).should('eq', '/social');
+  });
+
   it('should navigate back to home when clicking logo/brand', () => {
     cy.visit('/social', {timeout: 60000, failOnStatusCode: false});
     cy.get('#root', {timeout: 30000}).should('exist');
@@ -479,8 +492,9 @@ describe('Navigation - Loading States', () => {
   });
 });
 
-// The social layout's mobile menu: measured at 375px on /social, 2 menu
-// buttons and 39 in-drawer links.
+// The social layout's mobile menu, measured at 375px on /social: one menu
+// button (MENU_BTN also matches its MenuIcon svg, hence .first()); the modal
+// drawer holds 40 links, 27 of them under /social/ (DRAWER_LINK).
 describe('Navigation - Responsive Behavior', () => {
   const MENU_BTN = 'button[aria-label*="menu"], [data-testid="MenuIcon"]';
   // The menu button opens the temporary (modal) drawer; the docked drawer's
