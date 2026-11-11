@@ -73,6 +73,8 @@ describe('J200-J207: guest identity + chat persistence', () => {
     cy.sealHart();
     cy.visit('/local?guest_token=abc123', {failOnStatusCode: false});
     cy.get('textarea', {timeout: 30000}).should('be.visible');
+    // A token in the URL is never adopted (Demopage nulls it, the S8 fix).
+    cy.window().its('localStorage').invoke('getItem', 'access_token').should('not.eq', 'abc123');
   });
 
   it('J203: per-agent localStorage keys coexist with different agent ids', () => {
@@ -95,18 +97,23 @@ describe('J200-J207: guest identity + chat persistence', () => {
     });
   });
 
-  it('J205: guest_id persists across stubbed crossbar 503', () => {
-    cy.intercept('GET', '**/api/wamp/status', {statusCode: 503, body: {running: false}});
+  it('J205: with storage wiped, guest_user_id is the injected hardware id and survives a reload', () => {
+    // With storage wiped and no guest registered yet (HART unsealed),
+    // SocialContext copies window.__NUNBA_GUEST_ID__ (main.py
+    // _inject_guest_id_into_html) into guest_user_id.  Once a guest
+    // registers, guest_user_id becomes the HARTOS user id instead.
     cy.visit('/local', {failOnStatusCode: false});
-    // The guest identity is guest_user_id: the hardware-derived id Flask
-    // injects as window.__NUNBA_GUEST_ID__ (main.py
-    // _inject_guest_id_into_html).  Measured on /local: no guest_id or
-    // device_id key exists; guest_user_id is written after mount, so this
-    // retries.
     cy.window().should((win) => {
       const g = win.localStorage.getItem('guest_user_id');
       expect(g).to.be.a('string').and.not.empty;
       expect(g).to.eq(win.__NUNBA_GUEST_ID__);
+    });
+    cy.window().its('localStorage').invoke('getItem', 'guest_user_id').then((before) => {
+      cy.reload();
+      cy.window().should((win) => {
+        expect(win.localStorage.getItem('guest_user_id')).to.eq(before);
+        expect(win.localStorage.getItem('guest_user_id')).to.eq(win.__NUNBA_GUEST_ID__);
+      });
     });
   });
 
