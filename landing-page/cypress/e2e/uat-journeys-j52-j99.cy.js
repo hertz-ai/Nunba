@@ -188,26 +188,28 @@ describe('J65-J77: runtime + provider + VLM + fleet', () => {
     });
   });
 
-  // J71/J72 per tests/journey/PRODUCT_MAP.md: MCP remember -> recall (the
-  // /api/memory/remember and /recall routes these used to call were never
+  // J71 per tests/journey/PRODUCT_MAP.md: MCP remember -> recall (the
+  // /api/memory/remember and /recall routes this used to call were never
   // registered).
-  it('J71: MCP remember stores a memory', () => {
-    cy.mcpExecute('remember', {content: `cypress j71 ${Date.now()}`}).then((r) => {
-      expect(r.status).to.eq(200);
-      expect(r.body.result).to.have.property('stored', true);
-    });
-  });
-
-  it('J72: MCP recall finds what remember stored', () => {
-    const content = `cypress j72 ${Date.now()}`;
+  it('J71: MCP remember stores a memory that recall finds', () => {
+    const content = `cypress j71 ${Date.now()}`;
     cy.mcpExecute('remember', {content}).then((r) => {
+      expect(r.status).to.eq(200);
+      expect(r.body.success).to.eq(true);
+      expect(r.body.result).to.have.property('stored', true);
       const id = r.body.result.memory_id;
+      expect(id).to.be.a('string').and.not.be.empty;
       cy.mcpExecute('recall', {q: content}).then((rr) => {
         expect(rr.status).to.eq(200);
         expect((rr.body.result.memories || []).map((m) => m.id)).to.include(id);
       });
     });
   });
+
+  // J72 (backtrace chain) is MemoryGraph.backtrace in HARTOS: no HTTP route
+  // and no MCP tool (measured: the MCP tools list has remember and recall
+  // only), so a browser test cannot reach it.  Its journey test is
+  // tests/journey/test_J72_memory_backtrace.py (pytest).
 
   it('J73: GET /api/admin/providers returns envelope', () => {
     cy.request({url: `${Cypress.env('apiUrl')}/api/admin/providers`, failOnStatusCode: false}).then((r) => {
@@ -317,7 +319,12 @@ describe('J83-J85: distributed goals', () => {
     cy.socialAuth();
     cy.socialRequest('POST', `${Cypress.env('apiUrl')}/api/distributed/goals`, {
       objective: `cypress j83 ${Date.now()}`,
-      tasks: [{description: 'step one'}],
+      // A capability no worker advertises, so no worker claims the task.
+      // With an empty list any worker may claim it, and the distributed
+      // worker_loop then runs it as a real /chat turn against the LLM
+      // (measured on a local server: ~54 min on the box's llama-server,
+      // with task.confirmation SSE to every browser, and the goal lingers).
+      tasks: [{description: 'step one', capabilities: ['cypress_j83_no_worker']}],
     }).then((r) => {
       expect(r.status).to.eq(200);
       const id = r.body.goal_id;
