@@ -196,10 +196,12 @@ describe('AgentOverlay consent.request', () => {
       reason: '',
     });
 
+    // Named as an AGENT: "Spider-Man asks to ..." read as a person asking
+    // (owner 2026-11-11, of "Vijai asks you").
     expect(
-      await screen.findByText('Spider-Man asks to control this computer.'),
+      await screen.findByText('Agent Spider-Man asks to control this computer.'),
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', {name: "Don't allow Spider-Man"})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: "Don't allow Agent Spider-Man"})).toBeInTheDocument();
     expect(screen.getAllByText('Spider-Man').length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText('79211163351')).not.toBeInTheDocument();
   });

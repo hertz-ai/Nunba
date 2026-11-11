@@ -9,7 +9,7 @@
  * the security control").
  */
 import {
-  CONSENT_ASKS, FINGERPRINT_CAPTION, PRIVACY_CARD_TYPES, askTitle, canDecline,
+  CONSENT_ASKS, FINGERPRINT_CAPTION, PRIVACY_CARD_TYPES, askTitle, askerName, canDecline,
   declineLabel, declineNote, deviceFingerprint, grantLabel, isPerRequester,
 } from '../constants/consentAsks';
 
@@ -71,9 +71,19 @@ describe('an agent ask is unchanged', () => {
   test('grants every agent and declines the one agent by name', () => {
     expect(grantLabel('computer_control')).toBe('Allow ALL agents to control this computer');
     expect(declineLabel('computer_control', '88659566083', 'Disk Watch Dan'))
-      .toBe("Don't allow Disk Watch Dan");
+      .toBe("Don't allow Agent Disk Watch Dan");
     expect(declineLabel('computer_control', '88659566083', '')).toBe("Don't allow this agent");
     expect(declineLabel('computer_control', null, '')).toBe("Don't allow");
+  });
+});
+
+describe('askerName: an agent is named as an agent', () => {
+  // Owner 2026-11-11: an agent named "Vijai" read as another person asking.
+  test('says Agent before the name, once', () => {
+    expect(askerName('Vijai')).toBe('Agent Vijai');
+    expect(askerName('Agent Smith')).toBe('Agent Smith');
+    expect(askerName('  ')).toBe('An agent');
+    expect(askerName(undefined)).toBe('An agent');
   });
 });
 
