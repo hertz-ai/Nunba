@@ -4274,10 +4274,17 @@ def agents_sync_get():
 
     prompts_dir = _get_prompts_dir()
     agents = []
+    # Agent records only, by the one predicate the database listings use: the
+    # per-action, recipe and personality files and the plan waiting on its
+    # creator's card sit in the same directory.  Without it the waiting plan
+    # came back twice under the real agent's id and the page added both to
+    # the person's agent list (review of 38e6dd78).
+    from pathlib import Path
+    from routes.db_routes import _is_agent_record
 
     if os.path.isdir(prompts_dir):
         for fname in os.listdir(prompts_dir):
-            if not fname.endswith('.json'):
+            if not _is_agent_record(Path(fname)):
                 continue
             fpath = os.path.join(prompts_dir, fname)
             try:

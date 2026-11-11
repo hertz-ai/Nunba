@@ -484,8 +484,14 @@ def _get_prompts_dir():
 #   {pid}_{flow}_{n}      per-action record written as each action is authored
 #   {pid}_{flow}_recipe   the assembled recipe
 #   {pid}_personality     the persona blob
-#   {pid}.proposed.rN     a proposal variant
+#   {pid}.proposed        the plan waiting on its creator's approval card
+#   {pid}.proposed.rN     a plan of one auto-review round
 #   {pid}_vlm_agent       the vlm agent record
+#
+# The two plan shapes are HARTOS's to name (core.prompt_files.
+# proposed_plan_filename), so they are told apart by HARTOS's own
+# is_proposed_plan_filename, not by a second copy of the pattern here: the
+# copy here missed {pid}.proposed and listed the waiting plan as an agent.
 #
 # Measured live 2026-09-06: GET /getprompt_all/ returned 1,844 rows of which
 # 1,161 (63%) were these files — 588 per-action, 386 personality, 187 proposal
@@ -511,8 +517,6 @@ _ARTIFACT_STEM_RE = re.compile(
     r'|_recipe'              # assembled recipe
     r'|_vlm_agent'           # vlm agent record
     r'|_personality$'        # personality blob
-    r'|\.proposed\.r\d+$'    # proposal variant
-    r'|\.proposed$'          # the plan waiting on its creator's approval card
 )
 
 
@@ -524,6 +528,9 @@ def _is_agent_record(path):
     pipeline actually writes.
     """
     if path.suffix != '.json':
+        return False
+    from core.prompt_files import is_proposed_plan_filename
+    if is_proposed_plan_filename(path.name):
         return False
     return not _ARTIFACT_STEM_RE.search(path.stem)
 

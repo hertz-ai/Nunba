@@ -646,6 +646,14 @@ class TestGetAllPrompts:
             "10009855073",              # ordinary numeric id
             "hive_economics_d2f34440",  # underscores, but a REAL agent
             "p2p_food_2d57bc33",
+            # Near misses of the plan names, which HARTOS's
+            # is_proposed_plan_filename does not match: a filter wider than
+            # HARTOS's naming rule would hide these real agents (review of
+            # 38e6dd78, two surviving mutants).
+            "12.proposedx",
+            "12proposed",
+            "hive_proposed_9",
+            "12.proposed.rx",
         ]
         for stem in real_agents:
             (prompts_dir / f"{stem}.json").write_text(
