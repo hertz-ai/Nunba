@@ -67,7 +67,7 @@ describe('a device ask on the card', () => {
   });
 });
 
-describe('an agent ask is unchanged', () => {
+describe('an agent ask grants every agent and declines this one by name', () => {
   test('grants every agent and declines the one agent by name', () => {
     expect(grantLabel('computer_control')).toBe('Allow ALL agents to control this computer');
     expect(declineLabel('computer_control', '88659566083', 'Disk Watch Dan'))
@@ -82,6 +82,9 @@ describe('askerName: an agent is named as an agent', () => {
   test('says Agent before the name, once', () => {
     expect(askerName('Vijai')).toBe('Agent Vijai');
     expect(askerName('Agent Smith')).toBe('Agent Smith');
+    // Case-blind, and only the whole word: review of 71477fa7, m2.
+    expect(askerName('agent smith')).toBe('agent smith');
+    expect(askerName('Agentic')).toBe('Agent Agentic');
     expect(askerName('  ')).toBe('An agent');
     expect(askerName(undefined)).toBe('An agent');
   });
