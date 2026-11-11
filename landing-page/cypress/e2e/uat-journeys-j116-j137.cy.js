@@ -76,19 +76,26 @@ describe('J118-J120: TTS streaming + STT + engine add', () => {
     installBaselineStubs();
   });
 
-  // The async submit is HARTOS's api_tts (PRODUCT_MAP J118):
-  // /api/social/tts/submit.  /api/tts/submit was never a route (404).
-  it('POST /api/social/tts/submit returns job_id envelope or 503', () => {
+  // The async TTS submit (PRODUCT_MAP J118) is Nunba's tts_kids_submit,
+  // routes/chatbot_routes.py: /api/social/tts/submit.  /api/tts/submit was
+  // never a route (404).
+  it('POST /api/social/tts/submit returns a taskId, or 503 with TTS off', () => {
     cy.request({
       method: 'POST',
       url: `${Cypress.env('apiUrl')}/api/social/tts/submit`,
       body: {text: 'hello', voice: 'default'},
       failOnStatusCode: false,
     }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 202, 400, 401, 403, 503]);
-      if (resp.status === 503) {
-        // TTS off (CI runs with NUNBA_DISABLE_TTS=1): a JSON refusal.
-        expect(resp.body).to.have.property('error');
+      // The route has no auth wrapper and answers 200 or, with TTS off
+      // (CI runs with NUNBA_DISABLE_TTS=1), 503; 400/500 only for bad input
+      // or an exception.
+      expect(resp.status).to.be.oneOf([200, 503]);
+      if (resp.status === 200) {
+        expect(resp.body.success).to.eq(true);
+        expect(resp.body.data.taskId).to.be.a('string').and.not.be.empty;
+      } else {
+        expect(resp.body).to.include({success: false});
+        expect(resp.body.error).to.be.a('string');
       }
     });
   });
