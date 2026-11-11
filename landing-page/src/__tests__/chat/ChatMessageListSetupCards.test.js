@@ -19,11 +19,13 @@ jest.mock('../../assets/hourglass-lottie.json', () => ({}), {virtual: true});
 jest.mock('../../pages/chat/TypeWriterSubtitle', () => ({__esModule: true, default: () => null}));
 jest.mock('../../pages/chat/ThinkingProcessContainer', () => ({__esModule: true, default: () => null}));
 jest.mock('../../pages/chat/WorkflowFlowchart', () => ({__esModule: true, default: () => null}));
-// Every card mount, so a test can tell a card kept from a card rebuilt.
+// Every card mount, so a test can tell a card kept from a card rebuilt.  The
+// module's reducers stay real; only the card itself is replaced.
 const mockMounts = [];
 jest.mock('../../pages/chat/SetupProgressCard', () => {
   const ReactInMock = require('react');
   return {
+    ...jest.requireActual('../../pages/chat/SetupProgressCard'),
     __esModule: true,
     default: ({jobType, firstSeen}) => {
       ReactInMock.useEffect(() => {
@@ -51,6 +53,8 @@ jest.mock('../../services/socialApi', () => ({
 }));
 
 import ChatMessageList from '../../pages/chat/ChatMessageList';
+import {withBootstrapStatus} from '../../pages/chat/SetupProgressCard';
+import {mergeRestoredMessages} from '../../utils/mergeRestoredMessages';
 
 const props = {
   setMessages: jest.fn(),
@@ -109,6 +113,78 @@ describe('setup cards restored from an old chat', () => {
     const mountsBefore = mockMounts.length;
     rerender(<ChatMessageList {...props} messages={restored.slice(1)} />);
     expect(screen.getAllByTestId('setup-card')).toHaveLength(4);
+    expect(mockMounts.length).toBe(mountsBefore);
+  });
+
+  // The key's two other parts: the job, for cards of two jobs stamped in the
+  // same instant (the backfill stamps every unstamped message with one time),
+  // and the place, for a card the backfill has not stamped yet.
+  it('stay one per message when two jobs share a time or a card has none yet', () => {
+    const at = '2026-11-11T09:00:05.000Z';
+    const list = [
+      {type: 'user', content: 'hello', timestamp: '2026-11-11T09:00:00.000Z'},
+      card('tts', {dismissed: true}),
+      card('tts', {timestamp: at}),
+      card('llm', {timestamp: at}),
+      card('vlm_caption', {timestamp: undefined}),
+      card('vlm_caption', {timestamp: undefined}),
+    ];
+    const {rerender} = render(<ChatMessageList {...props} messages={list} />);
+    for (let i = 0; i < 3; i += 1) {
+      rerender(<ChatMessageList {...props} messages={[...list]} />);
+    }
+    expect(screen.getAllByTestId('setup-card')).toHaveLength(4);
+  });
+});
+
+// Demopage's backfill effect: a message added without a time is stamped on
+// the render after it appears (Demopage.js, "Backfill timestamp on any
+// message added without one").
+const backfill = (list) => (list.some((m) => !m.timestamp)
+  ? list.map((m) => (m.timestamp ? m : {...m, timestamp: new Date().toISOString()}))
+  : list);
+
+// One /api/ai/bootstrap/status reply while the models download.
+const bootstrapStatus = {
+  phase: 'running',
+  steps: {
+    llm: {model_type: 'llm', model_name: 'Qwen3-4B', status: 'downloading', detail: '41%'},
+    tts: {model_type: 'tts', model_name: 'Piper', status: 'pending'},
+  },
+};
+
+describe('the setup card of a live chat', () => {
+  // First-run Auto Setup polls once a second for up to 2 minutes.  Each poll
+  // renders, then the backfill renders; the card must be the same card
+  // throughout (review of b6c45ee7: 10 mounts over 5 polls).
+  it('stays mounted while Auto Setup polls its status', () => {
+    let messages = [{type: 'user', content: 'set up', timestamp: '2026-11-11T09:00:00.000Z'}];
+    const {rerender} = render(<ChatMessageList {...props} messages={messages} />);
+    const mountsBefore = mockMounts.length;
+    for (let poll = 0; poll < 5; poll += 1) {
+      messages = withBootstrapStatus(messages, bootstrapStatus, new Date(Date.UTC(2026, 10, 11, 9, 0, 1 + poll)));
+      rerender(<ChatMessageList {...props} messages={messages} />);
+      messages = backfill(messages);
+      rerender(<ChatMessageList {...props} messages={messages} />);
+    }
+    expect(screen.getAllByTestId('setup-card')).toHaveLength(1);
+    expect(mockMounts.length - mountsBefore).toBe(1);
+  });
+
+  // A sign-in or sign-out reloads the agents and merges the stored chat back
+  // (Demopage.js, mergeRestoredMessages).  The stored copy, whose times are
+  // ISO strings, replaces the live one, whose times are Dates.
+  it('keeps its key when the stored chat is merged back over it', () => {
+    const live = [
+      {type: 'user', content: 'hello', timestamp: new Date(Date.UTC(2026, 10, 11, 9, 0, 0))},
+      {type: 'setup_progress', jobType: 'tts', steps: [], isComplete: false,
+        handshake: {status: 'pending'}, timestamp: new Date(Date.UTC(2026, 10, 11, 9, 0, 1, 250))},
+    ];
+    const {rerender} = render(<ChatMessageList {...props} messages={live} />);
+    const mountsBefore = mockMounts.length;
+    const stored = JSON.parse(JSON.stringify(live));
+    rerender(<ChatMessageList {...props} messages={mergeRestoredMessages(stored, live)} />);
+    expect(screen.getAllByTestId('setup-card')).toHaveLength(1);
     expect(mockMounts.length).toBe(mountsBefore);
   });
 });

@@ -91,7 +91,7 @@ import PdfViewer from './chat/PdfViewer';
 import ChatInputBar from './chat/ChatInputBar';
 import ChatMessageList from './chat/ChatMessageList';
 import LlmUpgradeCard from './chat/LlmUpgradeCard';
-import {withSetupProgress} from './chat/SetupProgressCard';
+import {withBootstrapStatus, withSetupProgress} from './chat/SetupProgressCard';
 import ProactiveConciergeCard from '../components/chat/ProactiveConciergeCard';
 
 const HOSTED_URL = 'https://hevolve.hertzai.com';
@@ -4774,25 +4774,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 .filter(s => s.status !== 'pending')
                 .map(s => `${s.model_name || s.model_type}: ${s.status}${s.detail ? ' — ' + s.detail : ''}`);
               if (stepMsgs.length > 0) {
-                setMessages((prev) => {
-                  const idx = prev.findIndex(m => m.type === 'setup_progress' && m.jobType === 'bootstrap');
-                  const card = {
-                    type: 'setup_progress',
-                    jobType: 'bootstrap',
-                    steps: Object.values(status.steps).map(s => ({
-                      job_type: s.model_type,
-                      message: `${s.model_name || s.model_type}: ${s.detail || s.status}`,
-                      status: s.status,
-                    })),
-                    isComplete: status.phase === 'done',
-                  };
-                  if (idx >= 0) {
-                    const updated = [...prev];
-                    updated[idx] = card;
-                    return updated;
-                  }
-                  return [...prev, card];
-                });
+                setMessages((prev) => withBootstrapStatus(prev, status));
               }
             }
 

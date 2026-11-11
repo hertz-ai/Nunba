@@ -5,6 +5,7 @@ import hourglassAnimation from '../../assets/hourglass-lottie.json';
 import {OverlayContent} from '../../components/AgentOverlay/AgentOverlay';
 import RelativeTime from '../../components/Common/RelativeTime';
 import {isReplyMessage} from '../../utils/chatRetry';
+import {timeOf} from '../../utils/mergeRestoredMessages';
 import {formatTier} from '../../utils/tier';
 
 import Lottie from 'lottie-react';
@@ -358,13 +359,16 @@ const ChatMessageList = ({
               // key made React add the cards to the page again on every
               // render: 27 cards in state, 521 on the page, and the chat
               // grew under the reader as they scrolled (2026-11-10).  The
-              // card's own timestamp (stamped when the card is created; the
-              // restore merge already tells id-less cards apart by it) keeps
-              // the key when a message above is deleted, where an index
-              // would remount the card and replay its fade and auto-dismiss.
+              // card's creation time keeps the key when a message above is
+              // deleted, where an index would remount the card and replay
+              // its fade and auto-dismiss.  It is read in milliseconds
+              // (timeOf), the way the restore merge tells id-less cards
+              // apart: a live card holds a Date and its stored copy an ISO
+              // string, and the merge keeps the stored copy.  The index
+              // stands in only until the chat's backfill stamps a new card.
               // Measured 2026-11-10: 139 stored cards in 12 chats, none
               // without a timestamp and no two alike within a job.
-              key={`setup-${message.jobType || ''}-${message.timestamp || index}`}
+              key={`setup-${message.jobType || ''}-${timeOf(message) ?? index}`}
               steps={message.steps || []}
               jobType={message.jobType || ''}
               isComplete={message.isComplete || false}

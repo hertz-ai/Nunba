@@ -120,6 +120,40 @@ export function withSetupProgress(messages, data, now = new Date()) {
   return updated;
 }
 
+/**
+ * The chat's messages with one /api/ai/bootstrap/status reply applied — the
+ * reducer Demopage's Auto Setup poll runs once a second.  One 'bootstrap'
+ * card: the poll's steps replace the card's, and the card keeps its own
+ * fields the way withSetupProgress keeps them, above all its timestamp,
+ * which keys it in the chat list.  The poll used to build a new card with
+ * no timestamp each second, so the chat's backfill stamped a new one, the
+ * key changed, and the card was rebuilt on every poll (review of b6c45ee7,
+ * 2026-11-11).
+ */
+export function withBootstrapStatus(messages, status, now = new Date()) {
+  const steps = Object.values(status.steps || {}).map((s) => ({
+    job_type: s.model_type,
+    message: `${s.model_name || s.model_type}: ${s.detail || s.status}`,
+    status: s.status,
+  }));
+  const isComplete = status.phase === 'done';
+  const existingIdx = messages.findIndex(
+    (m) => m.type === 'setup_progress' && m.jobType === 'bootstrap'
+  );
+  if (existingIdx < 0) {
+    return [...messages, {
+      type: 'setup_progress',
+      jobType: 'bootstrap',
+      steps,
+      isComplete,
+      timestamp: now,
+    }];
+  }
+  const updated = [...messages];
+  updated[existingIdx] = {...messages[existingIdx], steps, isComplete, updatedAt: now};
+  return updated;
+}
+
 const ACCENT = '#6C63FF';
 const SURFACE_BG = 'rgba(15, 14, 23, 0.85)';
 const BORDER_GRADIENT = 'linear-gradient(135deg, rgba(108,99,255,0.4), rgba(255,107,107,0.2))';
