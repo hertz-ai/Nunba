@@ -71,10 +71,18 @@ describe('J200-J207: guest identity + chat persistence', () => {
   it('J202: ?guest_token= URL param does not crash /local', () => {
     // A sealed HART: unsealed, /local is the first-run ceremony, not the chat.
     cy.sealHart();
-    cy.visit('/local?guest_token=abc123', {failOnStatusCode: false});
+    cy.visit('/local?guest_token=abc123', {
+      failOnStatusCode: false,
+      // Spy before the page's scripts run: guest-register overwrites
+      // access_token with its JWT before the textarea shows, so reading it
+      // afterwards cannot see a token adopted at load.
+      onBeforeLoad(win) { cy.spy(win.Storage.prototype, 'setItem').as('setItem'); },
+    });
     cy.get('textarea', {timeout: 30000}).should('be.visible');
-    // A token in the URL is never adopted (Demopage nulls it, the S8 fix).
-    cy.window().its('localStorage').invoke('getItem', 'access_token').should('not.eq', 'abc123');
+    // Nothing in the page reads guest_token; this pins that no URL token is
+    // ever written as access_token
+    // (tests/journey/test_J202_guest_autologin_via_url_token.py).
+    cy.get('@setItem').should('not.have.been.calledWith', 'access_token', 'abc123');
   });
 
   it('J203: per-agent localStorage keys coexist with different agent ids', () => {
