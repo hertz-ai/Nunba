@@ -627,6 +627,10 @@ class TestGetAllPrompts:
             "12165936867_personality",  # personality
             "10009855073.proposed.r0",  # proposal variant
             "10009855073.proposed.r1",
+            # The plan waiting on its creator's approval card (HARTOS
+            # _hold_for_the_creator writes {pid}.proposed.json on every hold
+            # and keeps it after approve or deny; review of HARTOS 06f729559).
+            "10009855073.proposed",
             # Per-action file whose PARENT id is a UUID, not digits.  Live
             # 2026-09-06 the registry carried exactly one:
             # c38e8b7c-ccbc-4127-a0a4-7604f69f9203_0_1, with an empty prompt

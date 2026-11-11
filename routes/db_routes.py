@@ -512,6 +512,7 @@ _ARTIFACT_STEM_RE = re.compile(
     r'|_vlm_agent'           # vlm agent record
     r'|_personality$'        # personality blob
     r'|\.proposed\.r\d+$'    # proposal variant
+    r'|\.proposed$'          # the plan waiting on its creator's approval card
 )
 
 
