@@ -31,14 +31,12 @@ describe('Realtime Events — SSE Connection', () => {
 
   it('should have SSE endpoint accessible on the backend', () => {
     const token = Cypress.env('socialToken');
-    if (!token) {
-      cy.log('Skipping: No auth token available');
-      return;
-    }
+    expect(token, 'cy.socialAuth() token').to.be.a('string').and.not.be.empty;
 
     // fetch, not cy.request: an SSE response never ends, and cy.request
     // waits for the whole body (it timed out at 60 s).  Read the status and
-    // content type, then close the stream.
+    // content type, then close our side (the server holds the stream until
+    // its 300 s cap).
     cy.wrap(
       (async () => {
         const ctl = new AbortController();
