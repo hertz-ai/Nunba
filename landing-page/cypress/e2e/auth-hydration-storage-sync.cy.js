@@ -63,13 +63,6 @@ describe('auth-hydration: useStorageSync', () => {
       statusCode: 200,
       body: {status: 'operational', device_id: 'cypress', log_file: ''},
     });
-    // The page checks its token with /auth/me; a 401 makes axiosFactory
-    // clear it (clearAccessTokenForExpiry), measured with the made-up tokens
-    // here.  These tests are about the hook, so the token is accepted.
-    cy.intercept('GET', '**/api/social/auth/me*', {
-      statusCode: 200,
-      body: {success: true, data: {id: USER.user_id, username: 'cypress', role: 'flat'}},
-    });
   });
 
   it('hydrates a cloud sign-in: token, encrypted user id and email', () => {
@@ -113,9 +106,10 @@ describe('auth-hydration: useStorageSync', () => {
           win.localStorage.setItem('guest_user_id', 'pre-existing-user');
         },
       });
-      // That branch only tops up: the reset marker, then the encrypted-blob
-      // backfill (user_id, email).
-      cy.wait('@storage_get_email');
+      // That branch tops up: the reset marker, the encrypted-blob backfill
+      // (user_id, email), then the HART identity; hart_language is its last
+      // read and any write follows it, so assert after that one.
+      cy.wait('@storage_get_hart_language');
       ls('access_token').should('eq', token);
     });
     ls('guest_user_id').should('eq', 'pre-existing-user');
@@ -126,8 +120,8 @@ describe('auth-hydration: useStorageSync', () => {
   it('writes no identity when storage has no sign-in (no cloud signin yet)', () => {
     interceptStorageGet({});
     cy.visit('/local', {onBeforeLoad: (win) => win.localStorage.clear()});
+    // The hook's writes, if any, follow its last read in the same tick.
     cy.wait('@storage_get_hart_language');
-    cy.wait(1000); // the hook's last write, if any, follows its last read
 
     // Keys only this hook writes.  (guest_user_id is not one: the page's
     // own guest identity sets it, measured at ~8 s on /local.)
