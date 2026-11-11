@@ -36,15 +36,24 @@ describe('Realtime Events — SSE Connection', () => {
       return;
     }
 
-    cy.request({
-      method: 'GET',
-      url: `${API_BASE}/api/social/events/stream?token=${token}`,
-      failOnStatusCode: false,
-      // SSE returns text/event-stream, don't try to parse as JSON
-      headers: {Accept: 'text/event-stream'},
-    }).then((res) => {
-      // Endpoint should respond (200 for SSE stream, or 401/404 if not configured)
-      expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
+    // fetch, not cy.request: an SSE response never ends, and cy.request
+    // waits for the whole body (it timed out at 60 s).  Read the status and
+    // content type, then close the stream.
+    cy.wrap(
+      (async () => {
+        const ctl = new AbortController();
+        const res = await fetch(`${API_BASE}/api/social/events/stream?token=${token}`, {
+          headers: {Accept: 'text/event-stream'},
+          signal: ctl.signal,
+        });
+        const out = {status: res.status, type: res.headers.get('content-type') || ''};
+        ctl.abort();
+        return out;
+      })(),
+      {timeout: 30000}
+    ).then(({status, type}) => {
+      expect(status).to.eq(200);
+      expect(type).to.include('text/event-stream');
     });
   });
 });
