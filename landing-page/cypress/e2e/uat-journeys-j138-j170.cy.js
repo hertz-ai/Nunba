@@ -47,23 +47,6 @@ const installBaselineStubs = () => {
   cy.intercept('GET', '**/api/guest-id', {statusCode: 200, body: {guest_id: 'g_j138_j170_fixture'}});
 };
 
-// MCP tool call the way an external MCP client makes it (J15): the bridge's
-// own bearer, read from the admin token route, which answers on loopback.
-const mcpExecute = (tool, args) =>
-  cy.request({url: `${Cypress.env('apiUrl')}/api/admin/mcp/token`, failOnStatusCode: false})
-    .then((t) => {
-      expect(t.status, 'MCP token route').to.eq(200);
-      expect(t.body.token, 'MCP bearer').to.be.a('string').and.not.be.empty;
-      return cy.request({
-        method: 'POST',
-        url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/execute`,
-        headers: {Authorization: `Bearer ${t.body.token}`},
-        body: {tool, arguments: args},
-        failOnStatusCode: false,
-        timeout: 60000,
-      });
-    });
-
 // ════════════════════════════════════════════════════════════════════════
 // J138-J144 — MemoryGraph suite
 // ════════════════════════════════════════════════════════════════════════
@@ -108,13 +91,13 @@ describe('J138-J144: MemoryGraph FTS5 + backtrace + TTL', () => {
 
   it('J141: MCP remember stores a memory that recall finds', () => {
     const content = `cypress j141 ${Date.now()}`;
-    mcpExecute('remember', {content}).then((resp) => {
+    cy.mcpExecute('remember', {content}).then((resp) => {
       expect(resp.status).to.eq(200);
       expect(resp.body.success).to.eq(true);
       expect(resp.body.result).to.have.property('stored', true);
       const id = resp.body.result.memory_id;
       expect(id).to.be.a('string').and.not.be.empty;
-      mcpExecute('recall', {q: content}).then((r) => {
+      cy.mcpExecute('recall', {q: content}).then((r) => {
         expect(r.status).to.eq(200);
         const ids = (r.body.result.memories || []).map((m) => m.id);
         expect(ids).to.include(id);
@@ -369,12 +352,12 @@ describe('J155-J164: concurrency + race journeys', () => {
 
   it('J160: two remember writes both land', () => {
     const tag = `cypress j160 ${Date.now()}`;
-    mcpExecute('remember', {content: `${tag} one`});
-    mcpExecute('remember', {content: `${tag} two`}).then((resp) => {
+    cy.mcpExecute('remember', {content: `${tag} one`});
+    cy.mcpExecute('remember', {content: `${tag} two`}).then((resp) => {
       expect(resp.status).to.eq(200);
       expect(resp.body.result).to.have.property('stored', true);
     });
-    mcpExecute('recall', {q: tag}).then((r) => {
+    cy.mcpExecute('recall', {q: tag}).then((r) => {
       expect(r.status).to.eq(200);
       expect(r.body.result.memories).to.have.length.of.at.least(2);
     });

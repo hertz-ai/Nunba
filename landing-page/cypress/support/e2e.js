@@ -427,6 +427,27 @@ Cypress.Commands.add('openLocalChat', ({consent = 'text_only', name = 'CypressTe
 });
 
 /**
+ * An MCP tool call the way an external MCP client makes it (J15): the
+ * bridge's own bearer, read from the admin token route, which answers on
+ * loopback.  Yields the /api/mcp/local/tools/execute response.
+ */
+Cypress.Commands.add('mcpExecute', (tool, args) =>
+  cy.request({url: `${API_BASE}/api/admin/mcp/token`, failOnStatusCode: false})
+    .then((t) => {
+      expect(t.status, 'MCP token route').to.eq(200);
+      expect(t.body.token, 'MCP bearer').to.be.a('string').and.not.be.empty;
+      return cy.request({
+        method: 'POST',
+        url: `${API_BASE}/api/mcp/local/tools/execute`,
+        headers: {Authorization: `Bearer ${t.body.token}`},
+        body: {tool, arguments: args},
+        failOnStatusCode: false,
+        timeout: 60000,
+      });
+    })
+);
+
+/**
  * Verify that a request with the given token succeeds
  */
 Cypress.Commands.add('verifyTokenWorks', (token) => {
