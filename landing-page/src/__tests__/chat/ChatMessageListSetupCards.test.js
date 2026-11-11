@@ -19,10 +19,20 @@ jest.mock('../../assets/hourglass-lottie.json', () => ({}), {virtual: true});
 jest.mock('../../pages/chat/TypeWriterSubtitle', () => ({__esModule: true, default: () => null}));
 jest.mock('../../pages/chat/ThinkingProcessContainer', () => ({__esModule: true, default: () => null}));
 jest.mock('../../pages/chat/WorkflowFlowchart', () => ({__esModule: true, default: () => null}));
-jest.mock('../../pages/chat/SetupProgressCard', () => ({
-  __esModule: true,
-  default: ({jobType}) => <div data-testid="setup-card">{jobType}</div>,
-}));
+// Every card mount, so a test can tell a card kept from a card rebuilt.
+const mockMounts = [];
+jest.mock('../../pages/chat/SetupProgressCard', () => {
+  const ReactInMock = require('react');
+  return {
+    __esModule: true,
+    default: ({jobType, firstSeen}) => {
+      ReactInMock.useEffect(() => {
+        mockMounts.push(`${jobType}@${firstSeen}`);
+      }, []);
+      return <div data-testid="setup-card">{jobType}</div>;
+    },
+  };
+});
 jest.mock('lucide-react', () => ({FileText: () => null}));
 jest.mock('markdown-to-jsx', () => ({__esModule: true, default: ({children}) => <div>{children}</div>}));
 
@@ -61,9 +71,14 @@ const props = {
   setCodeContent: jest.fn(),
 };
 
+// Each card carries its own creation timestamp, as every one of the 139
+// cards in the owner's stored chats does (no two alike within a job).
+let stamp = 0;
 const card = (jobType, extra = {}) => ({
   type: 'setup_progress', jobType, steps: [], isComplete: true,
-  handshake: {status: 'pending'}, timestamp: '2026-11-04T07:52:52.759Z', ...extra,
+  handshake: {status: 'pending'},
+  timestamp: `2026-11-04T07:52:${String(10 + stamp++).padStart(2, '0')}.759Z`,
+  ...extra,
 });
 
 // The shape of the owner's stored chat: a dismissed card first, then one job
@@ -85,5 +100,15 @@ describe('setup cards restored from an old chat', () => {
       rerender(<ChatMessageList {...props} messages={[...restored]} />);
     }
     expect(screen.getAllByTestId('setup-card')).toHaveLength(4);
+  });
+
+  // A card keyed by its place in the list is rebuilt whenever a message
+  // above it goes away, which replays its fade and restarts its auto-dismiss.
+  it('stay mounted when a message above them is deleted', () => {
+    const {rerender} = render(<ChatMessageList {...props} messages={restored} />);
+    const mountsBefore = mockMounts.length;
+    rerender(<ChatMessageList {...props} messages={restored.slice(1)} />);
+    expect(screen.getAllByTestId('setup-card')).toHaveLength(4);
+    expect(mockMounts.length).toBe(mountsBefore);
   });
 });

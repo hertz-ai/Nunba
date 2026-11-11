@@ -301,9 +301,10 @@ const ChatMessageList = ({
           // Soft-delete: a dismissed card stays in the messages array
           // (so chat-sync replicas, history, and any future "undo"
           // affordance still see the record) but renders nothing.  We
-          // checked once here rather than inside SetupProgressCard so
-          // the dismissed bubble doesn't claim layout space + key
-          // collisions stay impossible.
+          // check once here rather than inside SetupProgressCard so the
+          // dismissed bubble doesn't claim layout space.  Rendering
+          // nothing here is also what sends React down its keyed path,
+          // so the key below must be unique per card.
           if (message.dismissed) {
             return null;
           }
@@ -351,12 +352,19 @@ const ChatMessageList = ({
           };
           return (
             <SetupProgressCard
-              // One key per message.  A restored chat can hold several cards
-              // of one job (the owner's held 18 for 'tts'), and two children
-              // with one key made React add the cards to the page again on
-              // every render: 27 cards in state, 521 on the page, and the
-              // chat grew under the reader as they scrolled (2026-11-10).
-              key={`setup-${message.jobType || ''}-${index}`}
+              // One key per card, and the same key for as long as the card
+              // exists.  A restored chat can hold several cards of one job
+              // (the owner's held 18 for 'tts'), and two children with one
+              // key made React add the cards to the page again on every
+              // render: 27 cards in state, 521 on the page, and the chat
+              // grew under the reader as they scrolled (2026-11-10).  The
+              // card's own timestamp (stamped when the card is created; the
+              // restore merge already tells id-less cards apart by it) keeps
+              // the key when a message above is deleted, where an index
+              // would remount the card and replay its fade and auto-dismiss.
+              // Measured 2026-11-10: 139 stored cards in 12 chats, none
+              // without a timestamp and no two alike within a job.
+              key={`setup-${message.jobType || ''}-${message.timestamp || index}`}
               steps={message.steps || []}
               jobType={message.jobType || ''}
               isComplete={message.isComplete || false}
