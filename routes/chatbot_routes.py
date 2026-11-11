@@ -830,9 +830,11 @@ def vision_frame_ingest():
     WKWebView / WebKitGTK — single frontend path for every OS, not a
     Mac-only fallback.
 
-    Auth: wrapped via _require_local_or_token at route registration.
-    user_id is read from query/header (then pinned to authenticated
-    principal by the decorator's session context where available).
+    Auth: wrapped via routes.auth.require_local_token_or_device at route
+    registration.  This machine or the local token: user_id is read from
+    the query or X-User-Id as sent.  A phone the owner allowed (HARTOS's
+    gate admitted it): it acts only as its token's user, named or not;
+    another user is 403.
     Body cap: 512KB (5 FPS × ~40KB JPEG @ 640×480 q=0.6 = ~200KB/s,
     cap above that rejects size-bomb DoS).
     """
@@ -851,7 +853,8 @@ def vision_frame_ingest():
         # to that rule (#51), and this body is a JPEG, so it is held here.
         if asked_for and str(asked_for) != device_user:
             return jsonify({'ok': False,
-                            'error': "user_id must be the token's user"}), 403
+                            'error': ("This phone sends frames as its own user only: "
+                                      "drop user_id, or send the user its token names.")}), 403
         user_id = device_user
     else:
         user_id = str(asked_for or 'anon')
@@ -866,10 +869,12 @@ def vision_frame_ingest():
     # beside the frame and the caption row carries it).
     sender = f"http:{request.remote_addr or 'unknown'}"
     if device_user is not None:
-        # The phone's own key says which phone; its address over the relay
-        # is the link's, not the phone's.
+        # The phone's own key says which phone, written as the owner's
+        # trusted-phones list shows it ('3f9a 1c02 77de b4e1'); its address
+        # over the relay is the link's, not the phone's.
         from flask import g
-        sender = f"device:{str(g.device_public_key)[:16]}"
+        from integrations.social.consent_service import device_fingerprint
+        sender = f"device:{device_fingerprint(str(g.device_public_key))}"
     try:
         if channel == 'screen':
             svc.store.put_screen_frame(user_id, frame_bytes, source=sender)

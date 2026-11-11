@@ -1690,10 +1690,10 @@ def create_inprocess_dispatch_blueprint():
     A multipart body (an audio upload) is forwarded as multipart, files and
     form fields intact; anything else as JSON, as before.
     """
-    from flask import Blueprint, Response, g, jsonify
+    from flask import Blueprint, Response, jsonify
     from flask import request as flask_request
 
-    from routes.auth import require_local_or_token_csrf_safe
+    from routes.auth import is_admitted_device, require_local_or_token_csrf_safe
 
     bp = Blueprint('hevolve_inprocess_dispatch', __name__)
 
@@ -1736,8 +1736,10 @@ def create_inprocess_dispatch_blueprint():
         guarded = require_local_or_token_csrf_safe(dispatch)
 
         def device_or_guarded():
-            if (getattr(g, 'auth_source', None) == 'device'
-                    and getattr(g, 'device_public_key', None)):
+            # The one reading of the gate's phone admission
+            # (routes.auth.is_admitted_device); the forwarded token names the
+            # user and HARTOS binds it, so no user is required here.
+            if is_admitted_device():
                 return dispatch()
             return guarded()
         return device_or_guarded

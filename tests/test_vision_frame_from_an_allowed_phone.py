@@ -29,7 +29,10 @@ import routes.chatbot_routes as cr  # noqa: E402
 
 pytestmark = pytest.mark.timeout(30)
 
-_PHONE_KEY = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
+# A phone's Ed25519 public key as the gate sets it (64 hex), and how the
+# owner's trusted-phones list shows it (HARTOS consent_service.device_fingerprint).
+_PHONE_KEY = '3f9a1c0277deb4e1' + 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6' + 'e7f8091a2b3c4d5e'
+_PHONE_PRINT = '3f9a 1c02 77de b4e1'
 _OWNER = '10202'
 _OTHER = '20404'
 _JPEG = b'\xff\xd8\xff\xe0' + b'frame' * 40 + b'\xff\xd9'
@@ -95,7 +98,7 @@ class TestAnAllowedPhoneIsLetIn:
         client, gate, store = setup
         gate['admitted'] = True
         _post(client)
-        assert store.frames[0][3] == f'device:{_PHONE_KEY[:16]}'
+        assert store.frames[0][3] == f'device:{_PHONE_PRINT}'
 
     def test_naming_its_own_user_is_fine(self, setup):
         client, gate, store = setup
@@ -126,6 +129,7 @@ class TestAnAllowedPhoneActsOnlyAsItsUser:
         gate['admitted'] = True
         resp = _post(client, f'?user_id={_OTHER}')
         assert resp.status_code == 403
+        assert 'drop user_id' in resp.get_json()['error']      # says what to do
         assert store.frames == []
 
     def test_naming_another_user_in_the_header_is_refused(self, setup):
@@ -140,6 +144,7 @@ class TestAnAllowedPhoneActsOnlyAsItsUser:
         gate.update(admitted=True, payload={})
         resp = _post(client)
         assert resp.status_code == 401
+        assert 'names no user' in resp.get_json()['message']  # not "invalid token"
         assert store.frames == []
 
     def test_a_device_mark_without_the_phones_key_is_not_let_in(self, setup):
@@ -182,3 +187,57 @@ class TestEveryOtherCallerAsBefore:
         resp = _post(client, environ=_THIS_MACHINE)
         assert resp.status_code == 204
         assert store.frames[0][1] == 'anon'
+
+
+class TestTheRealStoreAndTheDispatcher:
+    """Review of 14394fa1: the stand-in store took any signature, so it could
+    not catch HARTOS's put_frame lacking ``source`` (every frame 500ed against
+    a HARTOS without a7d79664d); and the in-process dispatcher kept its own
+    reading of the phone admission."""
+
+    def test_the_real_frame_store_keeps_the_phones_frame_and_who_sent_it(self, setup, monkeypatch):
+        from integrations.vision.frame_store import FrameStore
+        import core.ai_sensing as ai_sensing
+        monkeypatch.setattr(ai_sensing, 'allowed', lambda sensor: True)
+        client, gate, _ = setup
+        real = FrameStore()
+        monkeypatch.setattr(cr, '_get_vision_service',
+                            lambda: type('Svc', (), {'store': real})())
+        gate['admitted'] = True
+        resp = _post(client, '?channel=camera')
+        assert resp.status_code == 204, resp.get_data(as_text=True)
+        assert real.latest(_OWNER, 'camera') == (_JPEG, f'device:{_PHONE_PRINT}')
+
+    def test_the_dispatcher_admits_the_phone_by_the_same_reading_without_a_user(
+            self, monkeypatch):
+        """The dispatcher forwards the token and HARTOS binds the user, so a
+        phone whose token names no user reaches it (here: HARTOS is not
+        loaded, 503); the frame route, which acts for a person, says the
+        token names no user; a caller the gate did not admit gets neither."""
+        import routes.hartos_backend_adapter as hba
+        monkeypatch.delenv('NUNBA_CI', raising=False)
+        monkeypatch.setattr(hba, '_hartos_backend_available', False)
+        monkeypatch.setattr(cr, '_get_vision_service', lambda: _Service())
+        gate = {}
+        app = Flask('dispatch')
+        app.config['TESTING'] = True
+
+        @app.before_request
+        def _hartos_gate_stand_in():
+            if gate.get('admitted'):
+                g.auth_source = 'device'
+                g.device_public_key = _PHONE_KEY
+                g.jwt_payload = {}
+
+        app.register_blueprint(hba.create_inprocess_dispatch_blueprint())
+        cr.register_routes(app)
+        client = app.test_client()
+        gate['admitted'] = True
+        reached = client.post('/time_agent', json={}, environ_base=_LAN_PHONE)
+        assert reached.status_code == 503
+        assert reached.get_json()['status'] == 'backend_unavailable'
+        frame = _post(client)
+        assert frame.status_code == 401 and 'names no user' in frame.get_json()['message']
+        gate['admitted'] = False
+        refused = client.post('/time_agent', json={}, environ_base=_LAN_PHONE)
+        assert refused.status_code in (401, 403)
