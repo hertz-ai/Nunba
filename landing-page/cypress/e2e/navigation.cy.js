@@ -183,47 +183,28 @@ describe('Navigation - State Preservation', () => {
   });
 
   it('should maintain feed tab selection after viewing post and returning', () => {
+    // A post of this test's own, so a post card exists on any database.
+    // (The test used to click the first MuiCard on the page, which is an
+    // encounter suggestion card that opens nothing, so cy.go('back') left
+    // the app for about:blank.)
+    const title = `Tab memory post ${Date.now()}`;
+    cy.socialRequest('POST', '/posts', {
+      title,
+      content: 'Opened from the Thought Experiments tab, then back.',
+    }).its('status').should('be.oneOf', [200, 201]);
+
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 30000}).should('exist');
-    cy.wait(2000);
+    cy.contains('[role="tab"]', 'Thought Experiments', {timeout: 30000}).click();
+    cy.location('search').should('include', 'tab=all');
 
-    cy.get('body').then(($body) => {
-      const tabs = $body.find('[role="tab"]');
-      if (tabs.length >= 2) {
-        // Click second tab (Trending)
-        cy.get('[role="tab"]', {timeout: 30000}).eq(1).click({force: true});
-        cy.wait(1000);
+    cy.contains(title, {timeout: 30000}).click();
+    cy.location('pathname', {timeout: 20000}).should('match', /^\/social\/post\//);
 
-        // Click on a post card if available
-        const cards = $body.find('[class*="MuiCard"]');
-        if (cards.length > 0) {
-          // Re-query from DOM to avoid stale element after tab click re-render
-          cy.get('[class*="MuiCard"]').first().click({force: true});
-          cy.wait(1000);
-
-          // Go back
-          cy.go('back');
-          cy.wait(2000);
-
-          // Page should be stable - wait for React to re-render
-          cy.get('#root', {timeout: 30000}).should('exist');
-          cy.get('body').then(($b) => {
-            const rootHtml = $b.find('#root').html() || '';
-            const pageLoaded = $b.html().length > 200;
-            expect(
-              rootHtml.length > 0 || pageLoaded,
-              'Page should have rendered content after back navigation'
-            ).to.be.true;
-          });
-        } else {
-          // No cards to click - just verify page is stable
-          cy.get('body').invoke('html').should('not.be.empty');
-        }
-      } else {
-        // No tabs found - just verify page loaded
-        cy.get('#root').invoke('html').should('not.be.empty');
-      }
-    });
+    cy.go('back');
+    cy.location('pathname', {timeout: 20000}).should('eq', '/social');
+    cy.location('search').should('include', 'tab=all');
+    cy.contains('[role="tab"]', 'Thought Experiments')
+      .should('have.attr', 'aria-selected', 'true');
   });
 });
 
