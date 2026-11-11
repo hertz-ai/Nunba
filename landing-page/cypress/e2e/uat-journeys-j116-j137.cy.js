@@ -76,14 +76,20 @@ describe('J118-J120: TTS streaming + STT + engine add', () => {
     installBaselineStubs();
   });
 
-  it('POST /api/tts/submit returns job_id envelope or 503', () => {
+  // The async submit is HARTOS's api_tts (PRODUCT_MAP J118):
+  // /api/social/tts/submit.  /api/tts/submit was never a route (404).
+  it('POST /api/social/tts/submit returns job_id envelope or 503', () => {
     cy.request({
       method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/tts/submit`,
+      url: `${Cypress.env('apiUrl')}/api/social/tts/submit`,
       body: {text: 'hello', voice: 'default'},
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 202, 400, 401, 403, 503]);
+      if (resp.status === 503) {
+        // TTS off (CI runs with NUNBA_DISABLE_TTS=1): a JSON refusal.
+        expect(resp.body).to.have.property('error');
+      }
     });
   });
 
