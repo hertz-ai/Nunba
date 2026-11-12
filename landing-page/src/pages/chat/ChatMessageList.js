@@ -362,10 +362,12 @@ const ChatMessageList = ({
               // card's creation time keeps the key when a message above is
               // deleted, where an index would remount the card and replay
               // its fade and auto-dismiss.  It is read in milliseconds
-              // (timeOf), the way the restore merge tells id-less cards
-              // apart: a live card holds a Date and its stored copy an ISO
-              // string, and the merge keeps the stored copy.  The index
-              // stands in only until the chat's backfill stamps a new card.
+              // (timeOf): a live card holds a Date and its stored copy an
+              // ISO string, and the restore merge, which also compares
+              // times in milliseconds, keeps the stored copy.  (The merge's
+              // own key reads a missing time as 0; timeOf gives null, and
+              // the index then stands in until the chat's backfill stamps
+              // the card.)
               // Measured 2026-11-10: 139 stored cards in 12 chats, none
               // without a timestamp and no two alike within a job.
               key={`setup-${message.jobType || ''}-${timeOf(message) ?? index}`}

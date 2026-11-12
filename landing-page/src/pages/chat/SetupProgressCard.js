@@ -129,8 +129,19 @@ export function withSetupProgress(messages, data, now = new Date()) {
  * no timestamp each second, so the chat's backfill stamped a new one, the
  * key changed, and the card was rebuilt on every poll (review of b6c45ee7,
  * 2026-11-11).
+ *
+ * A new run of Auto Setup starts the card over, as withSetupProgress does for
+ * a job's new run: it shows again even if it was dismissed (by itself 4 s
+ * after Ready, or by the person), and it is dated now.  Kept as it was, a
+ * dismissed card hid every later run and a finished card kept its old date
+ * (review of 526ce3fd, 2026-11-11).  The poll says when a run starts
+ * (`startsRun`, on the first reply it applies), because each poll follows its
+ * own POST /api/ai/bootstrap, which starts a run or joins the one under way.
+ * The card's state cannot say it: a step can fail while the others still
+ * load, the card then offers its dismiss, and a card dismissed mid-run must
+ * stay dismissed for the rest of that run.
  */
-export function withBootstrapStatus(messages, status, now = new Date()) {
+export function withBootstrapStatus(messages, status, now = new Date(), startsRun = false) {
   const steps = Object.values(status.steps || {}).map((s) => ({
     job_type: s.model_type,
     message: `${s.model_name || s.model_type}: ${s.detail || s.status}`,
@@ -149,9 +160,44 @@ export function withBootstrapStatus(messages, status, now = new Date()) {
       timestamp: now,
     }];
   }
+  const card = messages[existingIdx];
   const updated = [...messages];
-  updated[existingIdx] = {...messages[existingIdx], steps, isComplete, updatedAt: now};
+  updated[existingIdx] = startsRun
+    ? {...card, steps, isComplete, dismissed: false, timestamp: now, updatedAt: now}
+    : {...card, steps, isComplete, updatedAt: now};
   return updated;
+}
+
+/**
+ * Demopage's Auto Setup poll: asks for the bootstrap status once a second,
+ * up to `tries` times, applies each reply that has a step under way to the
+ * chat (withBootstrapStatus; the first one it applies starts the run), and
+ * ends with onDone(status) on phase 'done' or onTimeout() when the tries run
+ * out.  A failed request is skipped.  The effects are passed in so a test
+ * drives the loop the page runs.
+ */
+export async function pollBootstrapStatus({
+  fetchStatus, setMessages, wait, onDone, onTimeout, tries = 120, intervalMs = 1000,
+}) {
+  let applied = false;
+  for (let i = 0; i < tries; i += 1) {
+    await wait(intervalMs);
+    try {
+      const status = await fetchStatus();
+      const steps = Object.values(status.steps || {});
+      if (steps.some((s) => s.status !== 'pending')) {
+        const now = new Date();
+        const startsRun = !applied;
+        applied = true;
+        setMessages((prev) => withBootstrapStatus(prev, status, now, startsRun));
+      }
+      if (status.phase === 'done') {
+        onDone(status);
+        return;
+      }
+    } catch { /* poll error, keep trying */ }
+  }
+  onTimeout();
 }
 
 const ACCENT = '#6C63FF';

@@ -53,7 +53,7 @@ jest.mock('../../services/socialApi', () => ({
 }));
 
 import ChatMessageList from '../../pages/chat/ChatMessageList';
-import {withBootstrapStatus} from '../../pages/chat/SetupProgressCard';
+import {pollBootstrapStatus} from '../../pages/chat/SetupProgressCard';
 import {mergeRestoredMessages} from '../../utils/mergeRestoredMessages';
 
 const props = {
@@ -137,14 +137,16 @@ describe('setup cards restored from an old chat', () => {
   });
 });
 
-// Demopage's backfill effect: a message added without a time is stamped on
-// the render after it appears (Demopage.js, "Backfill timestamp on any
-// message added without one").
-const backfill = (list) => (list.some((m) => !m.timestamp)
-  ? list.map((m) => (m.timestamp ? m : {...m, timestamp: new Date().toISOString()}))
-  : list);
+// Demopage's backfill effect: messages added without a time are stamped, all
+// with one time, on the render after they appear (Demopage.js, "Backfill
+// timestamp on any message added without one").
+const backfill = (list) => {
+  if (!list.some((m) => !m.timestamp)) return list;
+  const now = new Date().toISOString();
+  return list.map((m) => (m.timestamp ? m : {...m, timestamp: now}));
+};
 
-// One /api/ai/bootstrap/status reply while the models download.
+// /api/ai/bootstrap/status replies while the models download, then the end.
 const bootstrapStatus = {
   phase: 'running',
   steps: {
@@ -152,23 +154,61 @@ const bootstrapStatus = {
     tts: {model_type: 'tts', model_name: 'Piper', status: 'pending'},
   },
 };
+const bootstrapDone = {
+  phase: 'done',
+  steps: {
+    llm: {model_type: 'llm', model_name: 'Qwen3-4B', status: 'ready', detail: 'Running on gpu'},
+    tts: {model_type: 'tts', model_name: 'Piper', status: 'ready', detail: 'Running on cpu'},
+  },
+};
+
+// The chat list as Demopage drives it during Auto Setup: the poll's update
+// renders, then the backfill renders.
+function autoSetup(initial) {
+  let messages = initial;
+  const view = render(<ChatMessageList {...props} messages={messages} />);
+  const show = (next) => {
+    messages = next;
+    view.rerender(<ChatMessageList {...props} messages={messages} />);
+  };
+  const poll = (replies) => {
+    let n = 0;
+    return pollBootstrapStatus({
+      fetchStatus: async () => replies[Math.min(n++, replies.length - 1)],
+      setMessages: (update) => { show(update(messages)); show(backfill(messages)); },
+      wait: () => Promise.resolve(),
+      onDone: () => {},
+      onTimeout: () => {},
+    });
+  };
+  return {poll, messages: () => messages, unmount: view.unmount};
+}
 
 describe('the setup card of a live chat', () => {
-  // First-run Auto Setup polls once a second for up to 2 minutes.  Each poll
-  // renders, then the backfill renders; the card must be the same card
-  // throughout (review of b6c45ee7: 10 mounts over 5 polls).
-  it('stays mounted while Auto Setup polls its status', () => {
-    let messages = [{type: 'user', content: 'set up', timestamp: '2026-11-11T09:00:00.000Z'}];
-    const {rerender} = render(<ChatMessageList {...props} messages={messages} />);
+  // First-run Auto Setup polls once a second for up to 2 minutes; the card
+  // must be the same card throughout (review of b6c45ee7: 10 mounts over 5
+  // polls).  Driven through the poll Demopage runs.
+  it('stays mounted while Auto Setup polls its status', async () => {
+    const chat = autoSetup([{type: 'user', content: 'set up', timestamp: '2026-11-11T09:00:00.000Z'}]);
     const mountsBefore = mockMounts.length;
-    for (let poll = 0; poll < 5; poll += 1) {
-      messages = withBootstrapStatus(messages, bootstrapStatus, new Date(Date.UTC(2026, 10, 11, 9, 0, 1 + poll)));
-      rerender(<ChatMessageList {...props} messages={messages} />);
-      messages = backfill(messages);
-      rerender(<ChatMessageList {...props} messages={messages} />);
-    }
+    await chat.poll([bootstrapStatus, bootstrapStatus, bootstrapStatus, bootstrapStatus, bootstrapStatus, bootstrapDone]);
     expect(screen.getAllByTestId('setup-card')).toHaveLength(1);
     expect(mockMounts.length - mountsBefore).toBe(1);
+  });
+
+  // The card says Ready and dismisses itself 4 s later.  A later Auto Setup
+  // run must show its card again (review of 526ce3fd: 0 cards on screen).
+  it('shows again for a second Auto Setup run after it dismissed itself', async () => {
+    const chat = autoSetup([{type: 'user', content: 'set up', timestamp: '2026-11-11T09:00:00.000Z'}]);
+    await chat.poll([bootstrapStatus, bootstrapDone]);
+    expect(screen.getAllByTestId('setup-card')).toHaveLength(1);
+    // SetupProgressCard's own 4 s dismiss, as Demopage's onDismiss marks it.
+    const dismissed = chat.messages().map((m) => (m.type === 'setup_progress' ? {...m, dismissed: true} : m));
+    chat.unmount();
+    const again = autoSetup(dismissed);
+    expect(screen.queryAllByTestId('setup-card')).toHaveLength(0);
+    await again.poll([bootstrapStatus, bootstrapStatus, bootstrapDone]);
+    expect(screen.getAllByTestId('setup-card')).toHaveLength(1);
   });
 
   // A sign-in or sign-out reloads the agents and merges the stored chat back
