@@ -271,6 +271,20 @@ describe('apiCache.invalidateOnMutation', () => {
     expect(apiCache.get('anon:GET:/encounter/persona:')).not.toBeNull();
   });
 
+  it('invalidates the consent list when a consent is granted or revoked', () => {
+    // PrivacySettingsPage re-reads GET /consent right after its grant and
+    // revoke POSTs; a cached read kept "not granted" on the screen and sent
+    // no request (cloud-capability-consent.cy.js waited for one).
+    const listKey = 'anon:GET:/consent:{"consent_type":"cloud_capability"}';
+    for (const mutation of ['/api/social/consent', '/api/social/consent/revoke']) {
+      apiCache.set(listKey, {consents: []}, '/consent');
+      apiCache.set('anon:GET:/encounter/persona:', {bio: 'x'}, '/encounter/persona');
+      apiCache.invalidateOnMutation(mutation);
+      expect(apiCache.get(listKey)).toBeNull();
+      expect(apiCache.get('anon:GET:/encounter/persona:')).not.toBeNull();
+    }
+  });
+
   it('invalidates the persona card when it is saved', () => {
     apiCache.set('anon:GET:/encounter/persona:', {bio: 'x'}, '/encounter/persona');
     apiCache.invalidateOnMutation('/api/social/encounter/persona');
