@@ -78,11 +78,9 @@ export default function useCameraConsent(userId) {
         .list({consent_type: CAMERA_CONSENT_TYPE, active_only: true},
           // Before HARTOS registers its routes the read 404s; the next
           // (re)connect reads again, so the banner has nothing to report.
-          // cache: false -- the client keeps a GET for 60 s and nothing
-          // clears this list on a grant, so the read a grant announcement
-          // triggers would get the mount read's "no" back and turn the
-          // camera off right after Allow.
-          {silentError: [404], cache: false})
+          // (consentApi.list never caches, so the read a grant announcement
+          // triggers sees the grant, not the mount read's "no".)
+          {silentError: [404]})
         .then((res) => {
           if (alive) setAllowed(grantedRows(res).length > 0);
         })

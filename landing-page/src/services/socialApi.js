@@ -392,13 +392,16 @@ export const consentApi = {
 
   // GET /api/social/consent — list (newest-first by granted_at).  `config`
   // passes request options through (useCameraConsent: silentError [404]).
+  // Never cached: consent answers also arrive from other windows and devices
+  // (realtime re-reads) and a revoke/reopen that 404s invalidates nothing,
+  // so a cached read showed the old state for up to the 60 s TTL.
   list: ({consent_type, active_only} = {}, config = {}) => {
     const params = {};
     if (consent_type !== undefined) params.consent_type = consent_type;
     if (active_only !== undefined) {
       params.active_only = active_only ? 'true' : 'false';
     }
-    return socialApi.get('/consent', {...config, params});
+    return socialApi.get('/consent', {...config, cache: false, params});
   },
 };
 
