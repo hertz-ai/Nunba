@@ -132,8 +132,12 @@ describe('Social Communities -- Create Dialog', () => {
 
     cy.get('[role="dialog"]', {timeout: 30000}).should('exist');
     cy.get('[role="dialog"]').find('input').should('exist');
-    cy.contains('Cancel').should('be.visible');
-    cy.contains('Create').should('be.visible');
+    // Inside the dialog, exact labels: an unscoped cy.contains('Create')
+    // found the sidebar's "CREATE" section heading behind the dialog first.
+    cy.get('[role="dialog"]').within(() => {
+      cy.contains('button', /^Cancel$/).should('be.visible');
+      cy.contains('button', /^Create$/).should('be.visible');
+    });
   });
 
   it('should close dialog when Cancel is clicked', () => {
@@ -148,7 +152,7 @@ describe('Social Communities -- Create Dialog', () => {
       .first()
       .click({force: true});
     cy.contains('Create Community', {timeout: 30000}).should('be.visible');
-    cy.contains('Cancel').click({force: true});
+    cy.get('[role="dialog"]').contains('button', /^Cancel$/).click();
     cy.get('[role="dialog"]').should('not.exist');
   });
 
