@@ -2151,6 +2151,15 @@ class TTSEngine:
         if backend and self._consecutive_failures.get(backend):
             self._consecutive_failures[backend] = 0
 
+    def _record_never_came_up(self, backend: str) -> None:
+        """Count a selected engine that has no instance as one failure of
+        that engine, so repeated misses demote it and the selector moves on.
+        Nothing is counted while a background switch is still loading."""
+        if getattr(self, '_pending_backend', None):
+            return
+        self._record_backend_failure(
+            backend, RuntimeError(f"TTS backend {backend!r} was selected but never came up"))
+
     def _is_demoted(self, backend: str) -> bool:
         return backend in self._demoted_backends
 
@@ -2392,7 +2401,10 @@ class TTSEngine:
         Auto-installs missing backends in background via TTSLoader.download().
         """
         self._ensure_hw_detected()
-        prefs = _get_lang_preference(language)
+        # Only names _create_backend can build are candidates.  A catalog
+        # engine Nunba has no backend for (omnivoice) is never picked, so it
+        # is never counted, demoted, or handed to the auto-installer.
+        prefs = [b for b in _get_lang_preference(language) if _is_engine_backend(b)]
 
         # Lazy import keeps the module loadable in pre-handshake test envs
         # where tts_handshake's import chain (desktop.log_ctx → core.constants
@@ -2727,6 +2739,25 @@ class TTSEngine:
             # in a half-pinned state that confuses the next caller.
             self._active_backend = prev
         return ok
+
+    def verify_synth_via_backend(self, backend: str, text: str,
+                                 output_path: str, language: str | None = None):
+        """verified_synth's probe of one engine (it prefers this hook when
+        the engine has it): ``backend`` speaks ``text`` through synthesize(),
+        or the probe gets None.
+
+        An engine set_backend cannot bring up yields None, so another
+        engine's audio never passes that engine's handshake.  Afterwards
+        set_backend is called with the engine active before the probe.
+        """
+        prev = self._active_backend
+        try:
+            if not self.set_backend(backend):
+                return None
+            return self.synthesize(text, output_path, language=language)
+        finally:
+            if prev:
+                self.set_backend(prev)
 
     def initialize(self, force_backend: str | None = None,
                    blocking: bool = True) -> bool:
@@ -3288,13 +3319,14 @@ class TTSEngine:
                     if inst:
                         break
             if not inst:
-                logger.error("TTS backend not initialized: active=%s, available=%s, pending=%s",
-                             self._active_backend, list(self._backends.keys()),
-                             getattr(self, '_pending_backend', None))
-                # The selected engine never came up.  Live 13 Nov 2026 13:23 IST:
-                # Tamil picked omnivoice, whose venv another interpreter built, and
-                # the person got no audio while mms_tts (installed, speaks Tamil)
-                # was never tried.  Walk the same ladder a failing synth walks.
+                # The selected engine never came up: it counts as a failure of
+                # that engine, and the line goes to the ladder, which speaks it
+                # with the next engine for the language.
+                logger.warning("TTS backend %s never came up (available=%s, pending=%s); "
+                               "handing the line to the fallback ladder",
+                               self._active_backend, list(self._backends.keys()),
+                               getattr(self, '_pending_backend', None))
+                self._record_never_came_up(self._active_backend)
                 return self._synthesize_with_fallback(
                     text, output_path, voice, language or self._language, **kwargs)
 
@@ -3480,10 +3512,9 @@ class TTSEngine:
     def _synthesize_with_fallback(self, text, output_path, voice, language, **kwargs):
         """Try remaining engines in the preference chain after the primary fails.
 
-        Called when the selected engine's synthesize() raises an exception
-        (e.g. ImportError for missing package, RuntimeError for CUDA).
-        Walks LANG_ENGINE_PREFERENCE skipping the failed engine and any
-        already-tried engines. Piper is always the last resort.
+        Called when the selected engine raises, never came up, or cannot
+        speak the language.  Walks the language's preference ladder without
+        the active engine; Piper is appended when the ladder lacks it.
 
         _transient=True: VRAM pressure fallback — don't permanently switch
         _active_backend. The GPU engine will be retried on next request.
@@ -3533,12 +3564,17 @@ class TTSEngine:
                 continue
             try:
                 if candidate not in self._backends:
-                    # An engine this interpreter cannot run (e.g. a venv another
-                    # Python built) is not started from a synth call: starting it
-                    # can mean a venv rebuild, i.e. gigabytes of downloads.
-                    if candidate != BACKEND_PIPER and not self._can_run_backend(candidate):
-                        logger.debug(f"Fallback skipping {candidate}: not runnable here")
-                        continue
+                    # A venv-backed engine whose venv is missing or was built by
+                    # another interpreter is not started from a synth call: its
+                    # worker could not import the engine.  CUDA and free VRAM are
+                    # not asked here, so an engine that also runs on CPU still
+                    # speaks on a machine without them.
+                    if _is_venv_backend(candidate):
+                        from tts.backend_venv import is_venv_healthy
+                        if not is_venv_healthy(candidate):
+                            logger.info(f"Fallback skipping {candidate}: its venv is "
+                                        f"missing or built by another interpreter")
+                            continue
                     self._backends[candidate] = self._create_backend(candidate)
                 inst = self._backends.get(candidate)
                 if not inst:
