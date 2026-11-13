@@ -2679,9 +2679,16 @@ class TTSEngine:
                 logger.warning(f"J214: pin {new_tool!r} failed: {e}")
 
     def _switch_backend(self, new_backend):
-        """Switch to a new backend, unloading the old one if needed."""
+        """Switch to a new backend, unloading the old one if needed.
+
+        The old engine is unloaded only to make GPU room for a new engine
+        that needs GPU memory, i.e. one the engine registry gives a VRAM
+        budget (vram_key), the same tool name this method allocates and
+        releases.  Switching to one with none (Piper) leaves the old engine
+        loaded, so switching back costs no reload."""
         old = self._active_backend
-        if old in self._backends and old != new_backend:
+        needs_gpu = self._get_vram_tool_name(new_backend) is not None
+        if needs_gpu and old in self._backends and old != new_backend:
             old_inst = self._backends.pop(old, None)
             if old_inst:
                 if hasattr(old_inst, 'unload_model'):
@@ -2958,24 +2965,14 @@ class TTSEngine:
     def _synth_speech_segment(self, text, lang, out_path, **kwargs):
         """Synthesize one speech segment with language-appropriate TTS engine.
 
-        2026-05-27 — route through ``_synthesize_with_fallback`` instead
-        of calling ``inst.synthesize`` directly.  Two bugs the prior
-        direct-call path silently swallowed:
-
-          1. Piper's no-voice raise (``PiperLangUnavailable`` for ta/ml)
-             documented at piper_tts.py:3615-3620 explicitly says
-             "Re-raise so ``_synthesize_with_fallback`` walks to the
-             next capable backend (indic_parler / chatterbox_ml)" — but
-             this code never invoked it.  The exception bubbled to the
-             segment loop's generic ``except``, the segment was dropped,
-             and synthesize_text returned None → no audio + no setup
-             card surfaced to the user.
-
-          2. ``_synthesize_with_fallback``'s wrong-language safety gate
-             (line 3211-3221) that emits ``_publish_lang_unsupported``
-             SSE for the frontend's "setting up TTS for this language"
-             card was bypassed, so the user got Tamil text with no
-             audio and no explanation.
+        The selected engine speaks first when it can speak the segment's
+        language.  Every other case goes to ``_synthesize_with_fallback``:
+        the engine never came up, raised (e.g. Piper's
+        ``PiperLangUnavailable`` for a language it has no voice for),
+        returned no audio, or cannot speak the language.  The ladder's
+        wrong-language gate and its ``_publish_lang_unsupported`` event
+        (the frontend's "setting up TTS for this language" card) apply
+        there.
 
         Also call ``ensure_inference_headroom`` before synth so the
         LLM-stays / TTS-yields VRAM rule fires when the chat LLM owns
@@ -3011,10 +3008,42 @@ class TTSEngine:
         except Exception as _hr_err:
             logger.debug(f"ensure_inference_headroom skipped: {_hr_err}")
 
+        # The selected engine speaks the segment first, as in synthesize().
+        # The ladder is asked only when that engine never came up, raises,
+        # or returns no audio, and each of those counts against the engine,
+        # so repeated failures demote it.  An engine that cannot speak the
+        # segment's language is not asked and not counted.
+        voice = kwargs.pop('voice', None)
+        active = self._active_backend
+        inst = self._backends.get(active)
+        if inst is None:
+            self._record_never_came_up(active)
+        elif _normalize_lang(lang) == 'en' or active in _capable_backends_for(lang):
+            try:
+                with self._synth_lock:
+                    raw = inst.synthesize(text=text, output_path=out_path, voice=voice,
+                                          language=lang, **kwargs)
+                result = _normalize_tts_result(raw, out_path)
+                if result:
+                    self._record_backend_success(active)
+                    return result
+                self._record_backend_failure(
+                    active, RuntimeError(f"{active}: synthesize returned no audio"))
+            except Exception as e:
+                is_transient = bool(getattr(e, 'transient', False))
+                logger.error(f"Synthesis failed ({active}): {e} [transient={is_transient}]")
+                try:
+                    from tts.verified_synth import _surface_backend_exception
+                    _surface_backend_exception(active, e)
+                except Exception:
+                    pass
+                if not is_transient:
+                    self._record_backend_failure(active, e)
+
         return self._synthesize_with_fallback(
             text=text,
             output_path=out_path,
-            voice=kwargs.pop('voice', None),
+            voice=voice,
             language=lang,
             **kwargs,
         )
