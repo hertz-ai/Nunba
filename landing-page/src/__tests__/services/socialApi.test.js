@@ -78,10 +78,11 @@ describe('authApi', () => {
     });
   });
 
-  it('me calls GET /auth/me, keeping the HTTP status on a failure', async () => {
+  it('me calls GET /auth/me, keeping the HTTP status on a failure and a boot 404 off the banner', async () => {
     await authApi.me();
     expect(mockAxiosInstance.get).toHaveBeenCalledWith('/auth/me', {
       keepStatus: true,
+      silentError: [404],
     });
   });
 

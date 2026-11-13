@@ -7,7 +7,27 @@
 // back to the nyc reporter after each Cypress run.  Production
 // builds do NOT set either var — zero instrumentation cost in
 // shipped bundles.
-function override(config) {
+//
+// A production build needs REACT_APP_SECRET_KEY: it is the key the page
+// reads every stored sign-in with (src/utils/encryption.js).  Without it
+// the bundle cannot tell who is signed in and runs as the placeholder
+// 'guest'.  On 2026-11-01 such a bundle (built without prebuild, which is
+// what puts .env.local in place) went onto the desktop: the page wrote
+// 'guest' over the owner's sign-in record, every consent ask went to
+// 'guest', and the owner's answers never cleared them.  `npm run build`
+// runs prebuild; a bare `react-app-rewired build` does not.
+function requireSignInKey(env) {
+  if (env === "production" && !process.env.REACT_APP_SECRET_KEY) {
+    throw new Error(
+      "REACT_APP_SECRET_KEY is not set, so this bundle could not read " +
+        "anyone's sign-in. Build with `npm run build` (its prebuild " +
+        "writes .env.local) or set the variable."
+    );
+  }
+}
+
+function override(config, env) {
+  requireSignInKey(env);
   config.resolve = config.resolve || {};
   config.resolve.fallback = {
     ...config.resolve.fallback,

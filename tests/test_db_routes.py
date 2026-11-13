@@ -274,6 +274,84 @@ class TestConversation:
         assert resp.status_code == 200
 
 
+class TestConversationHistoryIds:
+    """GET /conversation for the desktop's owner also returns the rows the
+    page wrote under this device's anonymous ids.
+
+    Measured 2026-11-04 on the desktop: the owner (10202) signed in on 09-25;
+    the page's rows from before that sit under d68c9dee-... (590 rows, a guest
+    account HARTOS registered for this device) and 'guest' (64 rows), and the
+    page asked only for 10202's, so the Aug-Sep chats never came back.
+    """
+
+    @staticmethod
+    def _post(client, user_id, text):
+        client.post("/conversation", json={
+            "user_id": user_id, "topic": "agent_54", "request": text, "response": "ok"})
+
+    def _post_all(self, client):
+        for uid, text in (("10202", "signed in"), ("d68c9dee-guest", "as forgeki"),
+                          ("guest", "no id yet"), ("g_02d12543ce57f2b2", "desktop guest"),
+                          ("7777", "someone else")):
+            self._post(client, uid, text)
+
+    def test_owner_gets_the_rows_of_this_devices_guest_ids(self, client, db_mod, monkeypatch):
+        monkeypatch.setattr("desktop.guest_identity.get_desktop_owner_id", lambda: "10202")
+        # raising=False: on the route before this fix the GET itself is what
+        # fails (it returns the 10202 rows only), not the missing helper.
+        monkeypatch.setattr(db_mod, "_device_guest_ids",
+                            lambda: {"guest", "g_02d12543ce57f2b2", "d68c9dee-guest"},
+                            raising=False)
+        self._post_all(client)
+        rows = client.get("/conversation?user_id=10202&topic=agent_54").get_json()
+        assert sorted(r["request"] for r in rows) == [
+            "as forgeki", "desktop guest", "no id yet", "signed in"]
+
+    def test_anyone_else_gets_only_their_own_rows(self, client, db_mod, monkeypatch):
+        monkeypatch.setattr("desktop.guest_identity.get_desktop_owner_id", lambda: "10202")
+        guest_ids = MagicMock(return_value={"guest", "d68c9dee-guest"})
+        monkeypatch.setattr(db_mod, "_device_guest_ids", guest_ids)
+        self._post_all(client)
+        rows = client.get("/conversation?user_id=7777&topic=agent_54").get_json()
+        assert [r["request"] for r in rows] == ["someone else"]
+        guest_ids.assert_not_called()
+
+    def test_an_unreadable_owner_gives_the_users_own_rows_only(self, client, db_mod, monkeypatch):
+        def broken():
+            raise OSError("user_data.json unreadable")
+        monkeypatch.setattr("desktop.guest_identity.get_desktop_owner_id", broken)
+        monkeypatch.setattr(db_mod, "_device_guest_ids", lambda: {"guest", "d68c9dee-guest"})
+        self._post_all(client)
+        rows = client.get("/conversation?user_id=10202&topic=agent_54").get_json()
+        assert [r["request"] for r in rows] == ["signed in"]
+
+    def test_device_guest_ids_are_the_placeholder_desktop_guest_and_its_guest_accounts(
+            self, db_mod, monkeypatch):
+        monkeypatch.setattr("desktop.guest_identity.get_guest_id", lambda: "g_02d12543ce57f2b2")
+        monkeypatch.setattr(db_mod, "_NODE_DEVICE_ID", "679f1a3d8563")
+        session = MagicMock()
+        session.__enter__ = MagicMock(return_value=session)
+        session.__exit__ = MagicMock(return_value=False)
+        (session.query.return_value.join.return_value.filter.return_value
+         .all.return_value) = [("d68c9dee-guest", "guest"), ("10203", "human")]
+        models = MagicMock(db_session=MagicMock(return_value=session))
+        with patch.dict("sys.modules", {"integrations": MagicMock(), "integrations.social": MagicMock(),
+                                         "integrations.social.models": models}):
+            ids = db_mod._device_guest_ids()
+        # A recovered account that is no longer a guest is a person's account.
+        assert ids == {"guest", "g_02d12543ce57f2b2", "d68c9dee-guest"}
+
+    def test_without_a_device_id_no_guest_account_is_looked_up(self, db_mod, monkeypatch):
+        monkeypatch.setattr("desktop.guest_identity.get_guest_id", lambda: "g_02d12543ce57f2b2")
+        monkeypatch.setattr(db_mod, "_NODE_DEVICE_ID", None)
+        models = MagicMock()
+        with patch.dict("sys.modules", {"integrations": MagicMock(), "integrations.social": MagicMock(),
+                                         "integrations.social.models": models}):
+            ids = db_mod._device_guest_ids()
+        assert ids == {"guest", "g_02d12543ce57f2b2"}
+        models.db_session.assert_not_called()
+
+
 # ============================================================
 # Student/user profile: POST /db/getstudent_by_user_id
 # ============================================================
@@ -539,6 +617,11 @@ class TestGetAllPrompts:
 # ============================================================
 
 class TestRegisterDbRoutes:
+
+    def test_registration_keeps_the_nodes_device_id(self, db_mod):
+        from flask import Flask
+        db_mod.register_db_routes(Flask(__name__), device_id="679f1a3d8563")
+        assert db_mod._NODE_DEVICE_ID == "679f1a3d8563"
 
     def test_registers_blueprint(self, db_mod):
         from flask import Flask
