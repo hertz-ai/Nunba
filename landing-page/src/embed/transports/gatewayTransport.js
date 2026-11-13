@@ -167,6 +167,7 @@ export function createGatewayTransport({
   }
 
   async function decide(payload) {
+    if (payload.ask_id) return answerAsk(payload);
     const action = String(payload.action || '');
     // AP2 (PLAN §5.3): the host confirms with a user gesture BEFORE the
     // approval reaches HARTOS; HARTOS then authorizes against the JWT user.
@@ -183,6 +184,22 @@ export function createGatewayTransport({
         action,
         decision: payload.decision,
         approved: payload.decision === 'approve',
+      });
+      return {ok: true, data};
+    } catch (e) {
+      return {ok: false, error: e.message, code: e.code};
+    }
+  }
+
+  // An agent's ask (HARTOS person_ask): the person's yes or no is the ask's
+  // answer, sent with its id through the same door.  As a card's decision
+  // (agent_id, action) it closed the card and left the ask open.  Later
+  // answers nothing: the ask stays open on her other surfaces.
+  async function answerAsk(payload) {
+    if (payload.decision !== 'approve' && payload.decision !== 'deny') return {ok: true, data: null};
+    try {
+      const data = await post('/api/agent/approval', {
+        ask_id: payload.ask_id, answer: {decision: payload.decision},
       });
       return {ok: true, data};
     } catch (e) {

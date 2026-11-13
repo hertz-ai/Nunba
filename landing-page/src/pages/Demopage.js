@@ -36,6 +36,7 @@ import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, initialTtsEnabled } from '../utils/ttsGuards';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
+import { holdsAgentChat, isSetupCard, restoreServerHistory } from '../utils/serverChatHistory';
 import VoiceVisualizer from '../components/VoiceVisualizer';
 import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
@@ -65,7 +66,9 @@ import {getStableDeviceIdOnce} from '../utils/deviceId';
 
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
-import {sttConfigMessage, startContinuousRecognition} from '../hooks/useSpeechRecognition';
+// ── Camera frames, streamed while the owner's camera consent is on file ──
+import {useConsentedCameraStream} from '../hooks/useCameraConsent';
+import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
 import {playTtsClip} from '../services/ttsClipPlayer';
 
@@ -108,6 +111,12 @@ const ENGINE_BOOT_GRACE_MS = 20000;
 // reply came.  The same 2 minutes the cloud branch waited before.
 const PUSHED_REPLY_WAIT_MS = 120000;
 
+// handleStart's argument when the page opens the mic by itself (once speech
+// recognition is ready) rather than the person clicking it.  Such a mic hears
+// the whole room, so it sends only speech that names Nunba
+// (useSpeechRecognition.micTurnText).  A click passes the click event.
+const UNPROMPTED_MIC = 'unprompted';
+
 // Setup/install cards (CUDA torch, GPU-whisper ctranslate2, model downloads,
 // TTS engine setup) report SYSTEM-global state — they are NOT tied to the
 // selected agent.  But the Demopage chat is per-agent: switching agents saves
@@ -120,9 +129,7 @@ const PUSHED_REPLY_WAIT_MS = 120000;
 // The caller filters out dismissed cards before carrying, so a user-dismissed
 // card is never resurrected.
 function isGlobalSetupCard(message) {
-  return !!message && !message.dismissed && (
-    message.type === 'setup_progress' || message.type === 'llm_setup_card'
-  );
+  return isSetupCard(message) && !message.dismissed;
 }
 
 function setupCardKey(message) {
@@ -541,13 +548,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         for (const [type, step] of Object.entries(data.steps)) {
           if (step.status === 'ready' && !announcedCapsRef.current.has(type)) {
             announcedCapsRef.current.add(type);
-            const label = CAPABILITY_LABELS[type];
+            // Auto-start mic when STT is ready — voice-first UX.  Nobody
+            // clicked it, so it sends only speech that names Nunba, and the
+            // announcement says so.
+            const opensMic = type === 'stt' && !isRecording && handleStartRef.current;
+            const label = opensMic ? OPEN_MIC_CUE : CAPABILITY_LABELS[type];
             if (label) {
               pushNotification({ type: 'success', message: label });
             }
-            // Auto-start mic when STT is ready — voice-first UX
-            if (type === 'stt' && !isRecording && handleStartRef.current) {
-              handleStartRef.current();
+            if (opensMic) {
+              handleStartRef.current(UNPROMPTED_MIC);
             }
           }
         }
@@ -1756,7 +1766,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   const saveMessagesToStorage = (messages, promptId) => {
-    if (!promptId) return;
+    // Setup cards alone are not this agent's chat.  An agent switch keeps
+    // them on screen (isGlobalSetupCard), and a save inside the switch wrote
+    // them over the agent's stored conversation: 2026-11-04, agents 54,
+    // local_assistant, 49 and 1793365100141 (utils/serverChatHistory).
+    if (!promptId || !holdsAgentChat(messages)) return;
 
     try {
       const storageKey = getChatStorageKey(promptId);
@@ -1794,9 +1808,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   // localStorage only — no network.  Returns null when nothing is stored (or
-  // the stored value cannot be read), so the caller can fall back to the
-  // server DB.  The mount-time restore uses this alone: the server fallback is
-  // a synchronous XHR and must not run on the main thread during boot.
+  // the stored value cannot be read).  The mount-time restore uses this alone:
+  // it runs before the agents fetch, while the open agent is still the route's
+  // placeholder, so the server copy is merged by the load that follows
+  // (loadMessagesFromStorage).
   const readLocalMessages = (promptId) => {
     if (!promptId) return null;
 
@@ -1842,35 +1857,26 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     return null;
   };
 
+  // The stored chat now, and the server's copy of what came before it once
+  // that arrives (utils/serverChatHistory.restoreServerHistory), merged only
+  // while this agent is still the open one.  The server copy used to be read
+  // with a synchronous XHR, and only when localStorage held nothing for the
+  // agent, so a stored list of setup cards hid the whole conversation.
   const loadMessagesFromStorage = (promptId) => {
     if (!promptId) return [];
 
-    const local = readLocalMessages(promptId);
-    if (local !== null) return local;
+    restoreServerHistory({
+      fetchFn: (url) => fetch(url),
+      userId: effectiveUserId || localStorage.getItem('guest_user_id') || 'guest',
+      promptId,
+      isOpen: (id) => {
+        const open = currentAgentRef.current;
+        return String(open?.prompt_id || open?.id) === String(id);
+      },
+      setMessages,
+    });
 
-    // Fallback: load from server DB (survives WebView reset / reinstall)
-    try {
-      const uid = effectiveUserId || localStorage.getItem('guest_user_id') || 'guest';
-      const xhr = new XMLHttpRequest();
-      xhr.open('GET', `/conversation?user_id=${encodeURIComponent(uid)}&topic=agent_${promptId}`, false);
-      xhr.send();
-      if (xhr.status === 200) {
-        const convs = JSON.parse(xhr.responseText);
-        if (Array.isArray(convs) && convs.length > 0) {
-          const restored = [];
-          convs.forEach((c) => {
-            if (c.request) restored.push({ type: 'user', content: c.request });
-            if (c.response) restored.push({ type: 'assistant', content: c.response });
-          });
-          if (restored.length > 0) {
-            logger.log(`Restored ${restored.length} messages from server DB for agent ${promptId}`);
-            return normalizeRestoredMessages(restored);
-          }
-        }
-      }
-    } catch (_) {}
-
-    return [];
+    return readLocalMessages(promptId) || [];
   };
 
   const getVideoWidthforMobile = () => {
@@ -2836,7 +2842,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     const _origErr = console.error;
     const _send = (level, args) => {
       const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
-      if (msg.includes('[TTS]') || msg.includes('[SSE]') || msg.includes('[VIDEO]') || msg.includes('[STT]')) {
+      // [Nunba Pill]: the reason behind the desktop's red error pill (app.py
+      // setup_connectivity_monitor).  Without it the pill named no failure
+      // and no log held one (owner's auto-start, 2026-11-05).
+      if (msg.includes('[TTS]') || msg.includes('[SSE]') || msg.includes('[VIDEO]') || msg.includes('[STT]')
+          || msg.includes('[Nunba Pill]')) {
         fetch('/api/jslog', { method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({level, msg}) }).catch(() => {});
       }
@@ -3308,9 +3318,22 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // repeatedly.  This ref closes that window synchronously.
   const micBusyRef = useRef(false);
 
-  const handleStart = () => {
+  const handleStart = (how) => {
     if (isRecording || micBusyRef.current) return;
     micBusyRef.current = true;
+    // True when the page opened this mic by itself; a click passes its event.
+    const unprompted = how === UNPROMPTED_MIC;
+    // Such a mic drops speech that does not name Nunba.  Both tiers report a
+    // drop here: the length only (it is room speech, not the person's), and
+    // once per mic an on-screen cue so the refusal is not silent.
+    let toldToSayName = false;
+    const notAddressed = (said) => {
+      console.log(`[STT] open mic: ${String(said).trim().length} chars not addressed to Nunba, not sent`);
+      if (!toldToSayName) {
+        toldToSayName = true;
+        pushNotification({ type: 'info', message: OPEN_MIC_CUE });
+      }
+    };
 
     // Barge-in: if TTS is playing, stop it before starting mic
     if (tts.isSpeaking) {
@@ -3393,7 +3416,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             const data = JSON.parse(evt.data);
             if (data.text?.trim()) {
               if (data.is_final) {
-                fullText += (fullText ? ' ' : '') + data.text.trim();
+                const words = micTurnText(data.text, unprompted);
+                if (!words) {
+                  notAddressed(data.text);
+                  return;
+                }
+                fullText += (fullText ? ' ' : '') + words;
                 setInputMessage(fullText);
                 // Auto-send after 1s of silence (fast conversational flow)
                 clearTimeout(autoSendTimer);
@@ -3403,8 +3431,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                     fullText = '';
                   }
                 }, 1000);
-              } else {
-                // Interim — show current full + interim
+              } else if (!unprompted) {
+                // Interim — show current full + interim.  Not for a mic the
+                // page opened: room speech would fill the composer.
                 setInputMessage(fullText + (fullText ? ' ' : '') + data.text.trim());
               }
             }
@@ -3541,6 +3570,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           const result = event.results[i];
           if (result.isFinal) newFinal += result[0].transcript;
           else interim += result[0].transcript;
+        }
+        if (unprompted) {
+          // A mic the page opened: only speech that names Nunba, and no
+          // partial speech in the composer (same rule as the Whisper tier).
+          if (!newFinal) return;
+          const words = micTurnText(newFinal, true);
+          if (!words) {
+            notAddressed(newFinal);
+            return;
+          }
+          // Chrome's finals carry their own leading space; the words after
+          // the name are trimmed, so two addressed finals need one between.
+          newFinal = (committedText ? ' ' : '') + words;
+          interim = '';
         }
         if (newFinal) committedText += newFinal;
         setInputMessage(committedText + interim);
@@ -3697,14 +3740,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       // any manual send.
       if (Date.now() - lastMessageSentAtRef.current < 2000) return;
 
-      // Wake word: "Hey Nunba [command]"
-      const wakeIdx = text.indexOf('nunba');
-      if (wakeIdx >= 0) {
-        const command = text.slice(wakeIdx + 5).trim();
-        if (command) {
-          setInputMessage(command);
-          setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 100);
-        }
+      // Wake word: "Hey Nunba [command]" (useSpeechRecognition.addressedToNunba)
+      const command = addressedToNunba(text);
+      if (command) {
+        setInputMessage(command);
+        setTimeout(() => { if (handleSendRef.current) handleSendRef.current(); }, 100);
       }
     };
     const listener = startContinuousRecognition(
@@ -3912,6 +3952,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
     };
   }, [mediaMode, effectiveUserId]);
+
+  // ── Camera consent: the one gate (owner 2026-11-09) ──
+  // This page never listened for the owner's camera answer, so a yes started
+  // nothing here and agents found no frame (get_user_camera_inp, 28 calls on
+  // 2026-11-07).  Stream at 1 fps while the consent is on file; video mode
+  // already streams its own 5 fps, so it holds the stream paused.
+  useConsentedCameraStream(effectiveUserId, {paused: mediaMode === 'video'});
 
   // ── Camera capture — snap frame, send as image ──
   const handleCameraCapture = async () => {

@@ -130,6 +130,27 @@ export function nextFramePolicy({ isActive, hidden, reducedMotion }) {
   return { mode: 'timeout', delayMs: IDLE_FRAME_MS };
 }
 
+// ── How closely the orb follows the voice ──────────────────────────────
+// Two smoothers sit between the voice and the silhouette. The analyser
+// averages each frame's spectrum with the previous one by
+// ANALYSER_SMOOTHING (Web Audio's smoothingTimeConstant), and each band then
+// steps toward the analyser's reading by BAND_FOLLOW per frame. Kept here,
+// named, so the test drives the numbers the loop uses.
+//
+// They were 0.8 and 0.12/0.10/0.08 (since the orb's first React port,
+// ccd49b67), and together they ironed the syllables out: replaying the
+// analyser on a real 18.8 s reply clip (2026-11-03) put 10% of the orb's
+// movement at syllable rate (2-8 Hz) against 50% in the voice, trailing it
+// by 67 ms -- the orb swelled with sentences, so it never looked like it was
+// the one talking. At 0.3 and 0.5 the same replay gives 47% at syllable rate
+// and no lag (correlation with the voice 0.51 -> 0.80).
+export const ANALYSER_SMOOTHING = 0.3;
+export const BAND_FOLLOW = { bass: 0.5, mid: 0.5, treble: 0.5 };
+
+export function followBand(current, target, rate) {
+  return current + (target - current) * rate;
+}
+
 const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, fill, idleGain }) {
   // `size` is an optional CAP, not the orb's size.  Deliberately NOT defaulted
   // (it used to be `size || 200`): the orb is driven by the box it lives in,
@@ -212,7 +233,7 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.8;
+      analyser.smoothingTimeConstant = ANALYSER_SMOOTHING;
       analyser.connect(ctx.destination);
       const source = ctx.createMediaElementSource(el);
       source.connect(analyser);
@@ -319,9 +340,9 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
         s.bass *= 0.95; s.mid *= 0.95; s.treble *= 0.95;
       }
 
-      s.bassCur += (s.bass - s.bassCur) * 0.12;
-      s.midCur += (s.mid - s.midCur) * 0.10;
-      s.trebleCur += (s.treble - s.trebleCur) * 0.08;
+      s.bassCur = followBand(s.bassCur, s.bass, BAND_FOLLOW.bass);
+      s.midCur = followBand(s.midCur, s.mid, BAND_FOLLOW.mid);
+      s.trebleCur = followBand(s.trebleCur, s.treble, BAND_FOLLOW.treble);
       const energy = s.bassCur * 0.5 + s.midCur * 0.35 + s.trebleCur * 0.15;
 
       // Flip wave direction on natural speech pauses
