@@ -116,15 +116,20 @@ describe('Distributed Goal Notifications E2E', () => {
       });
     });
 
-    it('1.4 POST /api/distributed/tasks/claim responds with auth token', () => {
-      // No agent_id: the claim is made as the signed-in user's own agent.
-      // Naming another agent ('cypress-agent') is refused with 403 "Cannot
-      // act as another agent" (HARTOS distributed_agent/api.py claim_task),
-      // which is the guard working, not the route failing.
+    it('1.4 POST /api/distributed/tasks/claim refuses to claim as another agent', () => {
+      // A signed-in non-admin naming another agent is refused with 403
+      // "Cannot act as another agent" (HARTOS distributed_agent/api.py
+      // claim_task), so nothing is claimed on the server.  A real claim
+      // (no agent_id) would take a PENDING task, possibly a real user's.
+      // 503/404/401: no coordinator, no blueprint, sign-in refused.
       cy.socialRequest('POST', `${DISTRIBUTED}/tasks/claim`, {
+        agent_id: 'cypress-agent',
         capabilities: ['testing'],
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 401, 404, 500, 503]);
+        expect(res.status).to.be.oneOf([401, 403, 404, 503]);
+        if (res.status === 403) {
+          expect(res.body.error).to.eq('Cannot act as another agent');
+        }
       });
     });
 
@@ -231,20 +236,30 @@ describe('Distributed Goal Notifications E2E', () => {
   //    guest and the list was never on screen.
   // =========================================================================
   describe('3. NotificationsPage UI', () => {
+    // The page's own list call (NotificationsPage asks for ?limit=10 once
+    // RoleGuard lets it mount).  The unread-count call SocialContext makes
+    // (?unread=true&limit=1) is stubbed separately and never satisfies the
+    // wait, so a page that was sent away fails at the wait, not 30 s later
+    // at the text.
+    function stubNotifications(data) {
+      cy.intercept(
+        {method: 'GET', pathname: '/api/social/notifications', query: {unread: 'true'}},
+        {statusCode: 200, body: {success: true, data: []}},
+      );
+      cy.intercept(
+        {method: 'GET', pathname: '/api/social/notifications', query: {limit: '10'}},
+        {statusCode: 200, body: {success: true, data}},
+      ).as('getNotifications');
+    }
+
     function visitNotificationsPage() {
       cy.socialVisit('/social/notifications');
-      cy.location('pathname', {timeout: 30000}).should('eq', '/social/notifications');
-      cy.wait('@getNotifications');
+      cy.wait('@getNotifications', {timeout: 30000});
+      cy.location('pathname').should('eq', '/social/notifications');
     }
 
     it('3.1 goal_contribution notification renders on /social/notifications', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [goalContributionNotification, regularNotification],
-        },
-      }).as('getNotifications');
+      stubNotifications([goalContributionNotification, regularNotification]);
 
       visitNotificationsPage();
       cy.contains('contributed to', {timeout: 30000}).should('be.visible');
@@ -254,13 +269,7 @@ describe('Distributed Goal Notifications E2E', () => {
     });
 
     it('3.2 goal_verified notification renders correctly', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [goalVerifiedNotification],
-        },
-      }).as('getNotifications');
+      stubNotifications([goalVerifiedNotification]);
 
       visitNotificationsPage();
       cy.contains('verified by peer consensus', {timeout: 30000}).should(
@@ -269,17 +278,7 @@ describe('Distributed Goal Notifications E2E', () => {
     });
 
     it('3.3 Both notification types render together', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [
-            goalContributionNotification,
-            goalVerifiedNotification,
-            regularNotification,
-          ],
-        },
-      }).as('getNotifications');
+      stubNotifications([goalContributionNotification, goalVerifiedNotification, regularNotification]);
 
       visitNotificationsPage();
       cy.contains('contributed to', {timeout: 30000}).should('be.visible');
@@ -290,13 +289,7 @@ describe('Distributed Goal Notifications E2E', () => {
     });
 
     it('3.4 Mark all read works for goal notifications', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [goalContributionNotification, goalVerifiedNotification],
-        },
-      }).as('getNotifications');
+      stubNotifications([goalContributionNotification, goalVerifiedNotification]);
 
       cy.intercept('POST', '**/api/social/notifications/read-all', {
         statusCode: 200,
@@ -310,26 +303,14 @@ describe('Distributed Goal Notifications E2E', () => {
     });
 
     it('3.5 Unread goal notifications show unread indicator', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [goalContributionNotification], // is_read: false
-        },
-      }).as('getNotifications');
+      stubNotifications([goalContributionNotification]);
 
       visitNotificationsPage();
       cy.contains('contributed to', {timeout: 30000}).should('be.visible');
     });
 
     it('3.6 Empty state shows when no notifications', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [],
-        },
-      }).as('getNotifications');
+      stubNotifications([]);
 
       visitNotificationsPage();
       cy.contains(/no notification/i, {timeout: 30000}).should('be.visible');
