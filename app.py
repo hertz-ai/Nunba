@@ -5472,6 +5472,14 @@ def setup_connectivity_monitor(window, port):
     // ── Universal rescue: intercept ALL failures ──
 
     // 1. Fetch interceptor — catches /chat errors AND any failed API call
+    // A chat request has a path segment that is exactly "chat" (/chat,
+    // /api/social/agent/<id>/chat, /chat/teachme2).  Matching "/chat"
+    // anywhere also took /api/chat-sync/...: with cloud sync off, its
+    // refusal {"error": "sync_disabled"} showed as "Chat error" (2026-11-13).
+    function _isChatRequest(url) {
+        var path = String(url || '').split(/[?#]/)[0];
+        return path.slice(-5) === '/chat' || path.indexOf('/chat/') !== -1;
+    }
     var _origFetch = window.fetch;
     window.fetch = function() {
         var args = arguments;
@@ -5479,7 +5487,7 @@ def setup_connectivity_monitor(window, port):
         return _origFetch.apply(this, args).then(function(response) {
             try {
                 // /chat responses — detect compute source or errors
-                if (url.indexOf('/chat') !== -1) {
+                if (_isChatRequest(url)) {
                     response.clone().json().then(function(data) {
                         if (data.error && !data.success) {
                             if (data.error === 'auth_required' || data.error === 'auth_failed') {
@@ -5499,7 +5507,7 @@ def setup_connectivity_monitor(window, port):
                     }).catch(function() {});
                 }
                 // Any API returning 5xx (skip known-flaky endpoints)
-                if (response.status >= 500 && url.indexOf('/chat') === -1 && !_isSilentUrl(url)) {
+                if (response.status >= 500 && !_isChatRequest(url) && !_isSilentUrl(url)) {
                     _errorCount++;
                     if (_errorCount >= _errorThreshold) {
                         showErrorPill('Server error — tap to reload', function() { location.reload(); });
@@ -5540,7 +5548,7 @@ def setup_connectivity_monitor(window, port):
             }
         });
         xhr.addEventListener('load', function() {
-            if (xhr.status >= 500 && xhr._nunbaUrl && xhr._nunbaUrl.indexOf('/chat') === -1 && !_isSilentUrl(xhr._nunbaUrl)) {
+            if (xhr.status >= 500 && xhr._nunbaUrl && !_isChatRequest(xhr._nunbaUrl) && !_isSilentUrl(xhr._nunbaUrl)) {
                 _errorCount++;
                 if (_errorCount >= _errorThreshold) showErrorPill('Server error — tap to reload', function() { location.reload(); });
             } else if (xhr.status < 400) {
