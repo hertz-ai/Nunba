@@ -3291,7 +3291,12 @@ class TTSEngine:
                 logger.error("TTS backend not initialized: active=%s, available=%s, pending=%s",
                              self._active_backend, list(self._backends.keys()),
                              getattr(self, '_pending_backend', None))
-                return None
+                # The selected engine never came up.  Live 13 Nov 2026 13:23 IST:
+                # Tamil picked omnivoice, whose venv another interpreter built, and
+                # the person got no audio while mms_tts (installed, speaks Tamil)
+                # was never tried.  Walk the same ladder a failing synth walks.
+                return self._synthesize_with_fallback(
+                    text, output_path, voice, language or self._language, **kwargs)
 
         # VRAM safety: delegate to VRAMManager (single source of truth).
         # CUDA OOM can kill the ENTIRE process (C-level abort, uncatchable).
@@ -3528,6 +3533,12 @@ class TTSEngine:
                 continue
             try:
                 if candidate not in self._backends:
+                    # An engine this interpreter cannot run (e.g. a venv another
+                    # Python built) is not started from a synth call: starting it
+                    # can mean a venv rebuild, i.e. gigabytes of downloads.
+                    if candidate != BACKEND_PIPER and not self._can_run_backend(candidate):
+                        logger.debug(f"Fallback skipping {candidate}: not runnable here")
+                        continue
                     self._backends[candidate] = self._create_backend(candidate)
                 inst = self._backends.get(candidate)
                 if not inst:
