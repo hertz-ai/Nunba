@@ -133,8 +133,11 @@ describe('useCameraFrameStream — VisionService :5460 handshake', () => {
       useCameraFrameStream({enabled: true, userId: '42'})
     );
 
+    // The camera is opened once the socket is open (it is freed while
+    // no one reads its frames), so wait for getUserMedia, not the socket.
     await act(async () => {
-      await flush(() => mockWsInstances[0]?.sent?.length >= 1);
+      await flush(() => navigator.mediaDevices.getUserMedia.mock.calls.length >= 1);
+      await flush(null, 30);
     });
     expect(mockTrack.stop).not.toHaveBeenCalled();
 
