@@ -2,7 +2,7 @@
 
 describe('Backend Health & API', () => {
   // Backend runs on port 5000
-  const API = 'http://localhost:5000';
+  const API = `${Cypress.env('apiUrl')}`;
 
   it('backend health endpoint returns ok', () => {
     cy.request({

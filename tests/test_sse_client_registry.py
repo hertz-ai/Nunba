@@ -506,6 +506,64 @@ class TestOneLockHold:
         assert 'gone' not in main_mod._sse_history
 
 
+class TestAStreamEndsWithinItsMaxAge:
+    """A stream ends itself after _SSE_STREAM_MAX_S, so a peer the server
+    never sees leave cannot hold a worker thread for good.
+
+    Under Hypercorn the WSGI stream runs on the 128-thread executor and a
+    write to a closed peer does not raise, so the heartbeat never reaches
+    the finally.  Measured 2026-11-06: 10 streams opened and closed on a
+    local server stayed registered 75 s later (heartbeat 30 s), and CI
+    shard 2 of 5fc11e2 climbed to 128 clients (= NUNBA_WORKER_THREADS) and
+    stayed there while page loads timed out.
+
+    This is not the old age eviction (TestAgeMustNotAffectDelivery): the
+    stream itself ends, the client sees the close, EventSource reconnects
+    and the replay window hands back what it missed.
+    """
+
+    def test_stream_past_its_max_age_ends_and_deregisters(self, main_mod,
+                                                         monkeypatch):
+        monkeypatch.setattr(main_mod, '_SSE_STREAM_MAX_S', 0)
+        gen = _open_stream(main_mod, 'aged')
+        _read_until_connected(gen)
+        assert 'aged' in main_mod._sse_clients
+
+        with pytest.raises(StopIteration):
+            next(gen)
+        assert 'aged' not in main_mod._sse_clients, (
+            "a stream past its max age stayed registered")
+
+    def test_a_young_stream_keeps_delivering(self, main_mod):
+        gen = _open_stream(main_mod, 'young')
+        _read_until_connected(gen)
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/y.wav'},
+                                     user_id='young')
+        assert '/y.wav' in str(next(gen))
+        gen.close()
+
+    def test_frames_published_across_the_end_are_replayed(self, main_mod,
+                                                          monkeypatch):
+        monkeypatch.setattr(main_mod, '_SSE_STREAM_MAX_S', 0)
+        gen = _open_stream(main_mod, 'u1')
+        cursor = _resume_id(_read_until_connected(gen)[-1])
+        with pytest.raises(StopIteration):
+            next(gen)
+        main_mod.broadcast_sse_event('tts', {'audio_url': '/gap.wav'},
+                                     user_id='u1')
+
+        monkeypatch.undo()
+        gen = _open_stream(main_mod, 'u1', since=cursor)
+        body = ''.join(_read_until_connected(gen))
+        gen.close()
+        assert '/gap.wav' in body, "the frame sent while reconnecting was lost"
+
+    def test_max_age_is_minutes_not_seconds_or_hours(self, main_mod):
+        # Short enough to free a dead peer's thread long before 128 pile up
+        # in a CI shard; long enough that a live page reconnects rarely.
+        assert 60 <= main_mod._SSE_STREAM_MAX_S <= 900
+
+
 class TestFullQueueResumesInsteadOfLosing:
     """A dropped frame on a full queue ends the stream; the client resumes
     from its last id and the replay window returns the dropped frame."""

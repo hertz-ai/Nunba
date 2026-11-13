@@ -152,7 +152,10 @@ function AdultLobby({
                 background: alpha(theme.palette.primary.main, 0.08),
               },
             }}
-            onClick={createSession}
+            // Not onClick={createSession}: React would pass the click event
+            // as maxPlayers, and serialising it threw before any request
+            // left (__tests__/AdultLobby.createRoom.test.js).
+            onClick={() => createSession()}
           >
             Create Room
           </Button>

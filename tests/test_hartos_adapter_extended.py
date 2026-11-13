@@ -17,6 +17,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 try:
+    import routes.hartos_backend_adapter as hba
     from routes.hartos_backend_adapter import (
         _hartos_backend_available,
         drain_thinking_traces,
@@ -59,6 +60,19 @@ class TestThinkingTraces:
 # ==========================================================================
 # 2. get_prompts
 # ==========================================================================
+@pytest.fixture
+def no_backend(monkeypatch):
+    """The fallback tier, set here rather than inherited.
+
+    _hartos_backend_available is process-wide: once any earlier test starts
+    the adapter's hartos-init thread and HARTOS imports, every later
+    get_prompts() goes to HARTOS's /prompts instead.  Without this the class
+    below tested whichever tier the run happened to leave behind (on CI,
+    Tier-1 from test 10 onward)."""
+    monkeypatch.setattr(hba, '_hartos_backend_available', False)
+
+
+@pytest.mark.usefixtures('no_backend')
 class TestGetPrompts:
     def test_returns_dict(self):
         result = get_prompts()
@@ -91,6 +105,44 @@ class TestGetPrompts:
         result = get_prompts(user_id='test_user')
         assert isinstance(result, dict)
         assert 'prompts' in result
+
+
+@pytest.fixture
+def in_process_hartos(monkeypatch):
+    """Tier-1 with a Flask app whose GET /prompts answers as HARTOS's does
+    (hart_intelligence_entry.get_prompts): 400 without a user_id, else that
+    user's agents as a bare list.  ``agents`` is what the list holds."""
+    from flask import Flask, jsonify, request
+
+    app = Flask('fake_hartos')
+    agents = []
+
+    @app.route('/prompts', methods=['GET'])
+    def prompts():
+        if not request.args.get('user_id'):
+            return jsonify({'error': 'user_id required'}), 400
+        return jsonify(agents)
+
+    monkeypatch.setattr(hba, '_hartos_backend_available', True)
+    monkeypatch.setattr(hba, '_hevolve_app', app)
+    return agents
+
+
+class TestGetPromptsInProcess:
+    """Tier-1: the adapter turns HARTOS's bare list into {"prompts": [...]}."""
+
+    def test_no_agents_is_an_empty_list_not_an_empty_dict(self, in_process_hartos):
+        # `resp.get_json() or {}` read HARTOS's [] as falsy and handed every
+        # caller {} - the /prompts proxy sent it on to the frontend.
+        assert get_prompts(user_id='test_user') == {'prompts': []}
+
+    def test_agents_come_back_under_prompts(self, in_process_hartos):
+        in_process_hartos.append({'prompt_id': 7, 'name': 'Tutor'})
+        assert get_prompts(user_id='test_user') == {
+            'prompts': [{'prompt_id': 7, 'name': 'Tutor'}]}
+
+    def test_without_a_user_id_hartos_error_is_passed_on(self, in_process_hartos):
+        assert get_prompts() == {'error': 'user_id required'}
 
 
 # ==========================================================================

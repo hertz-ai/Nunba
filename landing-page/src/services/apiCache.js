@@ -47,6 +47,14 @@ const INVALIDATION_RULES = [
   {mutation: /\/users\/[^/]+\/follow/, invalidate: [/\/users/]},
   {mutation: /\/notifications/, invalidate: [/\/notifications/]},
   {mutation: /\/auth\//, invalidate: [/\/auth\/me/]},
+  // DiscoverableTogglePanel re-reads its state right after a toggle; a cached
+  // read put the old state (e.g. "off" after turning it on) back on screen.
+  {mutation: /\/encounter\/discoverable/, invalidate: [/\/encounter\/discoverable/]},
+  {mutation: /\/encounter\/persona/, invalidate: [/\/encounter\/persona/]},
+  // PrivacySettingsPage (and every consent card) re-reads GET /consent right
+  // after a grant, revoke, decline or reopen; a cached read kept the old
+  // state ("not granted") on screen for up to the 60 s default TTL.
+  {mutation: /\/consent(\/|$)/, invalidate: [/\/consent/]},
 ];
 
 // ── Public Cache TTL Rules ────────────────────────────────────────────

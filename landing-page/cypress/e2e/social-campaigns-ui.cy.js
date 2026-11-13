@@ -22,7 +22,7 @@ describe('Social Campaigns -- Page UI', () => {
   it('should load the campaigns page without crashing', () => {
     cy.socialVisit('/social/campaigns');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.url().should('include', '/social/campaigns');
   });
@@ -180,11 +180,11 @@ describe('Social Campaigns -- Features', () => {
   it('should load the campaign creation page without crashing', () => {
     cy.socialVisit('/social/campaigns/create');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
 
     // CampaignStudio renders a stepper with goal cards
-    cy.get('body', {timeout: 300000}).then(($body) => {
+    cy.get('body', {timeout: 30000}).then(($body) => {
       const text = $body.text();
       expect(text.length).to.be.greaterThan(0);
     });

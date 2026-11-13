@@ -13,7 +13,7 @@
  */
 
 describe('WhatsApp Self-Chat Admin Toggle', () => {
-  const API = 'http://localhost:5000';
+  const API = `${Cypress.env('apiUrl')}`;
   const CHANNELS = `${API}/api/admin/channels`;
 
   before(() => {

@@ -38,12 +38,29 @@ def _fresh_auth_module(api_token: str = ''):
 
     API_TOKEN is read ONCE at module-import time (not per request) so
     we must re-import to test different token configs.
+
+    Reloaded IN PLACE, never dropped from sys.modules: a module that imported
+    a decorator from routes.auth earlier (routes.upload_routes, via main)
+    keeps the old module's globals, so a fresh module object left every later
+    test that monkeypatches routes.auth.API_TOKEN patching a copy nobody
+    reads (tests/test_upload_native_local_has_no_cap.py got 401, not 413).
     """
     os.environ['NUNBA_API_TOKEN'] = api_token
-    if 'routes.auth' in sys.modules:
-        del sys.modules['routes.auth']
     import routes.auth as auth_mod
     return importlib.reload(auth_mod)
+
+
+@pytest.fixture(scope='module', autouse=True)
+def _restore_auth_module():
+    """Put NUNBA_API_TOKEN and routes.auth back as this module found them."""
+    saved = os.environ.get('NUNBA_API_TOKEN')
+    yield
+    if saved is None:
+        os.environ.pop('NUNBA_API_TOKEN', None)
+    else:
+        os.environ['NUNBA_API_TOKEN'] = saved
+    import routes.auth as auth_mod
+    importlib.reload(auth_mod)
 
 
 def _make_app(auth_mod):

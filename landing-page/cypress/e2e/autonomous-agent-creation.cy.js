@@ -32,7 +32,7 @@
  *   - Backend API tests gracefully skip if Flask is not running.
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 describe('Autonomous Agent Creation E2E', () => {
   // =========================================================================
@@ -160,6 +160,9 @@ describe('Autonomous Agent Creation E2E', () => {
       win.localStorage.setItem('guest_user_id', 'cypress-auto-user');
       win.localStorage.setItem('guest_name_verified', 'true');
     });
+    // A sealed HART: unsealed, /local is the onboarding ceremony and has no
+    // chat textarea (cypress/support/e2e.js sealHart).
+    cy.sealHart('Test.Auto.User');
   }
 
   function setupBaseIntercepts() {
@@ -187,6 +190,19 @@ describe('Autonomous Agent Creation E2E', () => {
       statusCode: 200,
       body: {is_online: true},
     }).as('networkStatus');
+
+    // A ready local engine.  With {available: false} (a runner with no LLM)
+    // Demopage's handleSend queues every message for the first
+    // ENGINE_BOOT_GRACE_MS (20 s) of the page and a safety timer flushes the
+    // queue about 21 s in (hooks/useLocalEngineReady, Demopage.js).  Under the
+    // cy.clock() these tests used, that timer never fired, so the chat POST was
+    // never sent ("No request ever occurred"); without it every send waited for
+    // it.  CI run of 19d341e: tests that send took ~27 s, 8.1/8.2 (no send)
+    // took ~5.4 s.
+    cy.intercept('GET', '**/api/llm/status*', {
+      statusCode: 200,
+      body: {available: true},
+    }).as('llmStatus');
 
     cy.intercept('POST', '**/send_otp*', {
       statusCode: 200,
@@ -301,7 +317,7 @@ describe('Autonomous Agent Creation E2E', () => {
         },
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((response) => {
         expect(response.status).to.be.oneOf([400, 404, 500, 503]);
         if (response.status === 400) {
@@ -509,10 +525,18 @@ describe('Autonomous Agent Creation E2E', () => {
         agent_type: 'local',
       }).then((response) => {
         if (response.status === 200 && response.body.source) {
-          expect(response.body.source).to.be.oneOf([
-            'langchain_local',
-            'llama_local',
-          ]);
+          // With no local LLM loaded (a CI runner), /chat answers the setup
+          // card instead: source 'system' plus llm_setup_card
+          // (routes/chatbot_routes.py, "Still no LLM — return setup card").
+          // Any other answer names the local backend that made it.
+          if (response.body.source === 'system') {
+            expect(response.body).to.have.property('llm_setup_card');
+          } else {
+            expect(response.body.source).to.be.oneOf([
+              'langchain_local',
+              'llama_local',
+            ]);
+          }
         }
       });
     });
@@ -541,15 +565,15 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(3000);
 
       // Type and send a message
-      cy.get('textarea', {timeout: 300000}).first().type('Hello there', {force: true});
+      cy.get('textarea', {timeout: 30000}).first().type('Hello there', {force: true});
       cy.get('body').then(($body) => {
         // Find the send button (SendHorizontal icon or button)
         const sendBtns = $body.find('button');
         if (sendBtns.length > 0) {
           // Press Enter to send
-          cy.get('textarea', {timeout: 300000}).first().type('{enter}', {force: true});
+          cy.get('textarea', {timeout: 30000}).first().type('{enter}', {force: true});
 
-          cy.wait('@chatRequest', {timeout: 300000}).then((interception) => {
+          cy.wait('@chatRequest', {timeout: 30000}).then((interception) => {
             // Request should include autonomous_creation field (false by default)
             expect(interception.request.body).to.have.property('text');
             expect(interception.request.body).to.have.property('agent_type');
@@ -578,8 +602,8 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000}).first().type('Hello{enter}', {force: true});
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.get('textarea', {timeout: 30000}).first().type('Hello{enter}', {force: true});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Wait to ensure no auto-continuation happens
       cy.wait(3000).then(() => {
@@ -591,7 +615,11 @@ describe('Autonomous Agent Creation E2E', () => {
 
   // =========================================================================
   // 5. Frontend: Auto-Continuation Loop (Stubbed Chat API)
-  //    Uses cy.clock()/cy.tick() to control the 1500 ms auto-continue timer.
+  //    Real timers.  The next turn is a setTimeout(1500) that Demopage arms
+  //    only after it has processed the previous response; cy.wait('@chatRequest')
+  //    resolves before that, so a cy.tick() right after it could run first and
+  //    the frozen clock never fired the timer ("2nd request ... never occurred",
+  //    passing or failing by timing).  Real time costs ~1.5 s per hop.
   // =========================================================================
   describe('5. Frontend: Auto-Continuation Loop', () => {
     beforeEach(() => {
@@ -613,34 +641,24 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically for testing{enter}', {
           force: true,
         });
 
       // 1st: initial user request
-      cy.wait('@chatRequest', {timeout: 300000});
-      // Let React process the response & schedule auto-continuation timer
-      cy.then(() => {});
-      cy.tick(2000);
+      cy.wait('@chatRequest', {timeout: 30000});
       // 2nd: auto-continuation
-      cy.wait('@chatRequest', {timeout: 300000});
-      // Let React process again before next tick
-      cy.then(() => {});
-      cy.tick(2000);
+      cy.wait('@chatRequest', {timeout: 30000});
       // 3rd: auto-continuation (final)
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
-      cy.then(() => {});
-      cy.tick(1000);
-      cy.contains('Agent created successfully', {timeout: 300000}).should(
+      cy.contains('Agent created successfully', {timeout: 30000}).should(
         'exist'
       );
     });
@@ -661,22 +679,18 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
       // 1st: user message
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
+      cy.wait('@chatRequest', {timeout: 30000});
       // 2nd: auto-continuation with "proceed"
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       cy.then(() => {
         // First call is the user's message
@@ -703,20 +717,16 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       cy.then(() => {
         // Auto-continuation calls should have create_agent=true and autonomous_creation=true
@@ -746,22 +756,18 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
       // 1st: user message (prompt_id from initial response not yet set)
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
+      cy.wait('@chatRequest', {timeout: 30000});
       // 2nd: auto-continuation (should carry a prompt_id from the creation response)
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       cy.then(() => {
         // Auto-continuation call should carry a valid prompt_id (positive number)
@@ -774,8 +780,10 @@ describe('Autonomous Agent Creation E2E', () => {
 
     it('5.5 auto-continuation stops when agent_status is "completed"', () => {
       let callIndex = 0;
+      const capturedBodies = [];
 
       cy.intercept('POST', '**/chat', (req) => {
+        capturedBodies.push({...req.body});
         const responses = [
           autonomousCreationResponse,
           completedResponse, // immediate completion on 2nd call
@@ -785,26 +793,30 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
-      // Wait extra time to verify no more calls happen
-      cy.then(() => {});
-      cy.tick(5000).then(() => {
-        // Should have exactly 2 calls (initial + 1 auto-continue that completed)
-        expect(callIndex).to.eq(2);
+      // Wait extra time to verify no more continuation turns happen.
+      // Completion stops the "proceed" loop.  The one call that may follow is
+      // the auto-execute of the user's original request with the new agent
+      // (Demopage.js: original_task is set when the backend answers
+      // autonomous_creation, and run ~1 s after "completed").  The frozen
+      // cy.clock() these tests used never let that timer fire.
+      cy.wait(5000).then(() => {
+        const afterCompletion = capturedBodies.slice(2);
+        expect(afterCompletion.length, 'calls after completion').to.be.at.most(1);
+        afterCompletion.forEach((body) => {
+          expect(body.text).to.eq('create an agent automatically');
+          expect(body.create_agent).to.eq(false);
+        });
       });
     });
   });
@@ -832,11 +844,11 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000}).first().type('create an agent{enter}', {force: true});
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.get('textarea', {timeout: 30000}).first().type('create an agent{enter}', {force: true});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // The animation/label should show "Creating"
-      cy.contains('Creating', {timeout: 300000}).should('exist');
+      cy.contains('Creating', {timeout: 30000}).should('exist');
     });
 
     it('6.2 Review Mode shows "Reviewing" label', () => {
@@ -851,25 +863,19 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Should show "Reviewing" for Review Mode
-      cy.then(() => {});
-      cy.tick(500);
-      cy.contains('Reviewing', {timeout: 300000}).should('exist');
+      cy.contains('Reviewing', {timeout: 30000}).should('exist');
     });
 
     it('6.3 autonomous creation shows spinner with phase text', () => {
@@ -889,14 +895,16 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Should show the autonomous progress indicator with phase text
-      cy.contains(/Gathering details|Auto-creating/i, {timeout: 300000}).should(
+      // Creation Mode's spinner label (Demopage.js, Creation/Review Mode
+      // Animation); it never said 'Gathering details'.
+      cy.contains(/Gathering\.\.\.|Auto-creating/i, {timeout: 30000}).should(
         'exist'
       );
     });
@@ -910,24 +918,18 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // After completion, progress indicator should disappear
-      cy.then(() => {});
-      cy.tick(2000);
       cy.get('body').should(($body) => {
         const text = $body.text();
         // None of the autonomous progress labels should remain in the indicator
@@ -958,25 +960,19 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Success message should appear
-      cy.then(() => {});
-      cy.tick(1000);
-      cy.contains('Agent created successfully', {timeout: 300000}).should(
+      cy.contains('Agent created successfully', {timeout: 30000}).should(
         'exist'
       );
     });
@@ -994,11 +990,11 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000}).first().type('create an agent{enter}', {force: true});
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.get('textarea', {timeout: 30000}).first().type('create an agent{enter}', {force: true});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // The response text from the creation flow should appear in chat
-      cy.contains("Let's create a new agent", {timeout: 300000}).should('exist');
+      cy.contains("Let's create a new agent", {timeout: 30000}).should('exist');
     });
 
     it('7.3 autonomous creation phases shown as messages', () => {
@@ -1011,33 +1007,27 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
       // Phase 1: initial request
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
+      cy.wait('@chatRequest', {timeout: 30000});
       // Phase 2: auto-continuation → completed
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
-      cy.then(() => {});
-      cy.tick(1000);
 
       // Should see creation response text
       cy.contains('Starting autonomous agent creation', {
-        timeout: 300000,
+        timeout: 30000,
       }).should('exist');
 
       // Should see completion
-      cy.contains('Agent Created Successfully', {timeout: 300000}).should(
+      cy.contains('Agent Created Successfully', {timeout: 30000}).should(
         'exist'
       );
     });
@@ -1058,12 +1048,12 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(3000);
 
       // Click the Create new Agent button
-      cy.contains('Create new Agent', {timeout: 300000})
+      cy.contains('Create new Agent', {timeout: 30000})
         .first()
         .click({force: true});
 
       // Should show conversational creation prompt (not the cloud form)
-      cy.contains("Let's create a new agent", {timeout: 300000}).should('exist');
+      cy.contains("Let's create a new agent", {timeout: 30000}).should('exist');
 
       // Cloud form heading should NOT appear
       cy.contains('Create New Agent').should('not.exist');
@@ -1080,12 +1070,12 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(3000);
 
       // Click Create new Agent
-      cy.contains('Create new Agent', {timeout: 300000})
+      cy.contains('Create new Agent', {timeout: 30000})
         .first()
         .click({force: true});
 
       // Should show the creation mode animation
-      cy.contains('Creating', {timeout: 300000}).should('exist');
+      cy.contains('Creating', {timeout: 30000}).should('exist');
     });
 
     it('8.3 local creation clears previous messages and shows prompt', () => {
@@ -1099,16 +1089,16 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000}).first().type('Hello{enter}', {force: true});
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.get('textarea', {timeout: 30000}).first().type('Hello{enter}', {force: true});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Now click Create new Agent
-      cy.contains('Create new Agent', {timeout: 300000})
+      cy.contains('Create new Agent', {timeout: 30000})
         .first()
         .click({force: true});
 
       // Previous chat messages should be cleared, new creation prompt shown
-      cy.contains("Let's create a new agent", {timeout: 300000}).should('exist');
+      cy.contains("Let's create a new agent", {timeout: 30000}).should('exist');
     });
   });
 
@@ -1133,24 +1123,18 @@ describe('Autonomous Agent Creation E2E', () => {
         }
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Let the error response process
-      cy.then(() => {});
-      cy.tick(2000);
-      cy.contains(/interrupted|continue manually/i, {timeout: 300000}).should(
+      cy.contains(/interrupted|continue manually/i, {timeout: 30000}).should(
         'exist'
       );
     });
@@ -1166,24 +1150,18 @@ describe('Autonomous Agent Creation E2E', () => {
         }
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Let the error response process
-      cy.then(() => {});
-      cy.tick(3000);
-      cy.contains(/interrupted|continue manually/i, {timeout: 300000}).should(
+      cy.contains(/interrupted|continue manually/i, {timeout: 30000}).should(
         'exist'
       );
     });
@@ -1209,24 +1187,19 @@ describe('Autonomous Agent Creation E2E', () => {
         }
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Loop should stop (only 2 calls total)
-      cy.then(() => {});
-      cy.tick(5000).then(() => {
+      cy.wait(5000).then(() => {
         expect(callIndex).to.eq(2);
       });
     });
@@ -1434,33 +1407,27 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
       // Send autonomous creation request
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically for project management{enter}', {
           force: true,
         });
 
       // Phase 1: initial request
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
+      cy.wait('@chatRequest', {timeout: 30000});
       // Phase 2: auto-continue → completed
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Verify completion (multi-phase review is tested in 7.3)
-      cy.then(() => {});
-      cy.tick(1000);
-      cy.contains('Agent created successfully', {timeout: 300000}).should(
+      cy.contains('Agent created successfully', {timeout: 30000}).should(
         'exist'
       );
-      cy.contains('chat with your new agent', {timeout: 300000}).should('exist');
+      cy.contains('chat with your new agent', {timeout: 30000}).should('exist');
     });
 
     it('11.2 non-autonomous creation: user answers questions manually', () => {
@@ -1477,18 +1444,18 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(3000);
 
       // Create agent without autonomous keywords
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent for writing{enter}', {force: true});
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Should show creation mode but NOT auto-continue
-      cy.contains("Let's create a new agent", {timeout: 300000}).should('exist');
+      cy.contains("Let's create a new agent", {timeout: 30000}).should('exist');
 
       // Wait to verify no auto-continuation
       cy.wait(4000);
       // User can still type manually to continue
-      cy.get('textarea', {timeout: 300000}).first().should('not.be.disabled');
+      cy.get('textarea', {timeout: 30000}).first().should('not.be.disabled');
     });
 
     it('11.3 evaluation mode shown during agent evaluation phase', () => {
@@ -1504,25 +1471,19 @@ describe('Autonomous Agent Creation E2E', () => {
         req.reply({statusCode: 200, body: resp});
       }).as('chatRequest');
 
-      cy.clock();
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-      cy.tick(5000);
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      cy.tick(3000);
+      cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent automatically{enter}', {force: true});
 
-      cy.wait('@chatRequest', {timeout: 300000});
-      cy.then(() => {});
-      cy.tick(2000);
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Should show evaluation phase
-      cy.then(() => {});
-      cy.tick(500);
-      cy.contains(/Evaluating/i, {timeout: 300000}).should('exist');
+      cy.contains(/Evaluating/i, {timeout: 30000}).should('exist');
     });
   });
 
@@ -1545,17 +1506,17 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('analyze this complex data set{enter}', {force: true});
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Should show the agent's response text
-      cy.contains('specialized capabilities', {timeout: 300000}).should('exist');
+      cy.contains('specialized capabilities', {timeout: 30000}).should('exist');
 
       // Should show system message suggesting agent creation
       cy.contains(/suggests creating a specialized agent/i, {
-        timeout: 300000,
+        timeout: 30000,
       }).should('exist');
     });
 
@@ -1573,10 +1534,10 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
       cy.wait(3000);
 
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('help me with this task{enter}', {force: true});
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Wait to ensure no auto-continuation fires
       cy.wait(4000).then(() => {
@@ -1621,19 +1582,19 @@ describe('Autonomous Agent Creation E2E', () => {
       cy.wait(3000);
 
       // First message triggers creation_suggested
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('analyze this dataset{enter}', {force: true});
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // User sees suggestion and types "create an agent"
-      cy.get('textarea', {timeout: 300000})
+      cy.get('textarea', {timeout: 30000})
         .first()
         .type('create an agent for data analysis{enter}', {force: true});
-      cy.wait('@chatRequest', {timeout: 300000});
+      cy.wait('@chatRequest', {timeout: 30000});
 
       // Should now be in creation mode
-      cy.contains("Let's create a new agent", {timeout: 300000}).should('exist');
+      cy.contains("Let's create a new agent", {timeout: 30000}).should('exist');
     });
   });
 });

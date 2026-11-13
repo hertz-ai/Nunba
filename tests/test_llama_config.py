@@ -403,11 +403,17 @@ class TestModuleLevelHelpers:
             endpoint = get_llama_endpoint()
             assert "7777" in endpoint
 
-    def test_check_llama_health_false_when_connection_error(self):
+    def test_check_llama_health_false_when_connection_error(self, monkeypatch):
         import requests as req
 
         from llama import llama_config as lc
         lc._cached_config = None
+        # check_llama_health reads _find_live_llama_port's 3 s cache (5fa1ca0).
+        # A port an earlier test saw live within that window answered True
+        # with no probe at all (windows-latest, #72); start from an empty
+        # cache, as tests/test_llama_port_probe_cache.py does.
+        monkeypatch.setattr(lc, "_llama_port_probed_at", None, raising=False)
+        monkeypatch.setattr(lc, "_llama_port_cached", None, raising=False)
 
         with patch("llama.llama_config.requests.get", side_effect=req.exceptions.ConnectionError):
             result = lc.check_llama_health()

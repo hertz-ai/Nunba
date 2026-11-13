@@ -11,18 +11,21 @@ import {createGatewayTransport} from '../../embed/transports/gatewayTransport';
 
 const ASK = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
 
+// Plain functions, not jest.fn: this folder runs under both CRA's Jest
+// (`react-scripts test`) and vitest (`npm run test:embed`), and vitest has no
+// `jest` global.  The fakes only need to answer; `posted` is the record.
 function transport(status = 200, body = {status: 'ok'}) {
   const posted = [];
-  const fetchImpl = jest.fn((url, init) => {
+  const fetchImpl = (url, init) => {
     posted.push({url, init, body: JSON.parse(init.body)});
     return Promise.resolve({ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body)});
-  });
+  };
   const t = createGatewayTransport({
-    sink: {request: jest.fn(() => Promise.resolve({ok: true}))},
+    sink: {request: () => Promise.resolve({ok: true})},
     gatewayUrl: '/agent',
     getToken: async () => 'tok-person',
     fetchImpl,
-    realtime: {on: jest.fn(() => () => {}), off: jest.fn()},
+    realtime: {on: () => () => {}, off: () => {}},
   });
   return {t, posted};
 }

@@ -100,7 +100,18 @@ const LANGUAGES = [
 const styles = {
   root: {
     position: 'fixed',
-    inset: 0,
+    // Below the desktop window's titlebar, never over it.  The frameless
+    // window (Win+Linux) has no native chrome: NunbaTitleBar's strip is the
+    // only minimize / maximize / close and the only drag handle.  With
+    // inset:0 at zIndex 99999 (above the titlebar's 10000) a first-run
+    // person met this ceremony with no way to move or close the window.
+    // --nunba-titlebar-h is NunbaTitleBar's own offset, set only while the
+    // titlebar shows (the same one its stylesheet uses for .fixed.top-0 and
+    // the MUI drawers), so in a browser this is 0 and nothing moves.
+    top: 'var(--nunba-titlebar-h, 0px)',
+    right: 0,
+    bottom: 0,
+    left: 0,
     zIndex: 99999,
     bgcolor: '#000',
     display: 'flex',
@@ -117,12 +128,6 @@ const styles = {
     overflowX: 'hidden',
     cursor: 'default',
     userSelect: 'none',
-  },
-  canvas: {
-    position: 'absolute',
-    inset: 0,
-    zIndex: 0,
-    pointerEvents: 'none',
   },
   content: {
     position: 'relative',
@@ -270,25 +275,49 @@ function useParticles(canvasRef, phase, passionKey) {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
 
+    // The area the canvas fills: its container (the ceremony root), not the
+    // window.  In the frameless desktop window the root starts below the
+    // 32px titlebar, so a window-sized canvas overflowed it by 32px and gave
+    // the ceremony a scrollbar.  Falls back to the window before layout.
+    function area() {
+      const box = canvas.parentElement;
+      const w = (box && box.clientWidth) || window.innerWidth;
+      const h = (box && box.clientHeight) || window.innerHeight;
+      return { w, h };
+    }
+
     function resize() {
-      canvas.width = window.innerWidth * dpr;
-      canvas.height = window.innerHeight * dpr;
-      canvas.style.width = window.innerWidth + 'px';
-      canvas.style.height = window.innerHeight + 'px';
+      const { w, h } = area();
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
       ctx.scale(dpr, dpr);
     }
     resize();
-    window.addEventListener('resize', resize);
+    // Follow the root's own size, not only the window's: the root shrinks
+    // when the desktop titlebar appears (pywebview's bridge can attach after
+    // the ceremony has mounted) and when a scrollbar comes or goes, with no
+    // window resize.  The window listener is the fallback where
+    // ResizeObserver is missing.
+    let observer = null;
+    if (typeof ResizeObserver !== 'undefined' && canvas.parentElement) {
+      observer = new ResizeObserver(() => resize());
+      observer.observe(canvas.parentElement);
+    } else {
+      window.addEventListener('resize', resize);
+    }
 
     // Initialize particles, count adapts to device capability
     const count = Math.min(
       PARTICLE_COUNTS[_computeProfile],
-      Math.floor(window.innerWidth / 15)
+      Math.floor(area().w / 15)
     );
     if (particlesRef.current.length === 0) {
+      const start = area();
       particlesRef.current = Array.from({ length: count }, () => ({
-        x: Math.random() * window.innerWidth,
-        y: Math.random() * window.innerHeight,
+        x: Math.random() * start.w,
+        y: Math.random() * start.h,
         vx: (Math.random() - 0.5) * 0.3,
         vy: (Math.random() - 0.5) * 0.3,
         r: Math.random() * 2 + 0.5,
@@ -302,8 +331,7 @@ function useParticles(canvasRef, phase, passionKey) {
     const palette = passionKey ? PASSION_HUES[passionKey] : null;
 
     function draw() {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
+      const { w, h } = area();
       ctx.clearRect(0, 0, w, h);
 
       const isConverging = phase === 'pre_reveal' || phase === 'generating';
@@ -373,6 +401,7 @@ function useParticles(canvasRef, phase, passionKey) {
 
     return () => {
       cancelAnimationFrame(frameRef.current);
+      if (observer) observer.disconnect();
       window.removeEventListener('resize', resize);
     };
   }, [canvasRef, phase, passionKey]);
@@ -1237,7 +1266,11 @@ export default function LightYourHART({ userId, onComplete }) {
       <style>{keyframes}</style>
       <Box sx={styles.root}>
         {/* Particle canvas */}
-        <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
+        {/* Fixed to the root's own box (below the desktop titlebar), not
+            absolute inside it: the root scrolls when the language list is
+            taller than the window, and an absolute canvas scrolled away with
+            the list, leaving the bottom of the screen without particles. */}
+        <canvas ref={canvasRef} style={{ position: 'fixed', top: 'var(--nunba-titlebar-h, 0px)', left: 0, zIndex: 0, pointerEvents: 'none' }} />
 
         {/* Voice visualizer: only visible when PA is speaking.
 

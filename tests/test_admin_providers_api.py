@@ -162,8 +162,9 @@ class TestHelperResolvers:
         sys.modules.pop('integrations.providers.registry', None)
         _reset_optional_import_registry()
         with patch('importlib.import_module', side_effect=ImportError('forced')):
-            from main import _providers_registry
-            mod, err = _providers_registry()
+            from main import _providers_registry, app
+            with app.app_context():
+                mod, err = _providers_registry()
         assert mod is None
         resp, status = err
         assert status == 503
@@ -186,8 +187,9 @@ class TestHelperResolvers:
         sys.modules.pop('integrations.providers.efficiency_matrix', None)
         _reset_optional_import_registry()
         with patch('importlib.import_module', side_effect=ImportError('forced')):
-            from main import _providers_matrix
-            mod, err = _providers_matrix()
+            from main import _providers_matrix, app
+            with app.app_context():
+                mod, err = _providers_matrix()
         assert mod is None
         resp, status = err
         assert status == 503
@@ -203,8 +205,9 @@ class TestHelperResolvers:
         sys.modules.pop('wamp_router', None)
         _reset_optional_import_registry()
         with patch('importlib.import_module', side_effect=ImportError('forced')):
-            from main import _wamp_mod
-            mod, err = _wamp_mod()
+            from main import _wamp_mod, app
+            with app.app_context():
+                mod, err = _wamp_mod()
         assert mod is None
         resp, status = err
         assert status == 503
@@ -473,12 +476,12 @@ class TestWampEndpoints:
 
 
 class TestCrossbarHttpBridge:
-    """The /crossbar HTTP → WAMP publish bridge used by legacy clients."""
+    """The /publish HTTP → WAMP bridge (crossbarhttp3-compatible), used by legacy clients."""
 
     def test_publish_topic_forwards_to_wamp(self, app_client, fake_wamp_module):
         fake_wamp_module.is_running.return_value = True
         resp = app_client.post(
-            '/crossbar',
+            '/publish',
             json={'topic': 'com.hertzai.test', 'args': [1, 2], 'kwargs': {'k': 'v'}},
         )
         assert resp.status_code == 200
@@ -490,7 +493,7 @@ class TestCrossbarHttpBridge:
     def test_publish_not_running_returns_503(self, app_client, fake_wamp_module):
         fake_wamp_module.is_running.return_value = False
         resp = app_client.post(
-            '/crossbar',
+            '/publish',
             json={'topic': 'com.hertzai.test'},
         )
         assert resp.status_code == 503
@@ -498,7 +501,7 @@ class TestCrossbarHttpBridge:
 
     def test_publish_missing_topic_400(self, app_client, fake_wamp_module):
         fake_wamp_module.is_running.return_value = True
-        resp = app_client.post('/crossbar', json={'args': [1]})
+        resp = app_client.post('/publish', json={'args': [1]})
         assert resp.status_code == 400
         assert resp.get_json()['error'] == 'Missing topic'
 
@@ -507,7 +510,7 @@ class TestCrossbarHttpBridge:
         # bridge unwraps it so subscribers see the original structure.
         fake_wamp_module.is_running.return_value = True
         resp = app_client.post(
-            '/crossbar',
+            '/publish',
             json={'topic': 'com.hertzai.test', 'args': _flask_json.dumps({'wrapped': True})},
         )
         assert resp.status_code == 200
@@ -518,6 +521,6 @@ class TestCrossbarHttpBridge:
         sys.modules.pop('wamp_router', None)
         _reset_optional_import_registry()
         with patch('importlib.import_module', side_effect=ImportError('no mod')):
-            resp = app_client.post('/crossbar', json={'topic': 'x'})
+            resp = app_client.post('/publish', json={'topic': 'x'})
         assert resp.status_code == 503
         assert resp.get_json()['error'] == 'WAMP router not available'

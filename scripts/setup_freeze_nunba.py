@@ -2249,6 +2249,12 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
             Done as an explicit pre-pass rather than rmtree's error hook because
             that hook changed name in 3.12 (onerror -> onexc); a pre-pass works
             the same on every version the build might run under.
+
+            The write bit is ADDED to the existing mode, not set alone: a bare
+            chmod(S_IWRITE) leaves a POSIX directory at 0o200, unlistable, so
+            os.walk skipped it and rmtree then failed on it (CI, Linux and
+            macOS, tests/test_build_tmp_sweep.py).  Windows reads only the
+            write bit, so there it is the same call as before.
             """
             import stat as _stat
             for _attempt in range(3):
@@ -2257,7 +2263,7 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                         for _n in _ds + _fs:
                             _p = os.path.join(_r, _n)
                             try:
-                                os.chmod(_p, _stat.S_IWRITE)
+                                os.chmod(_p, os.stat(_p).st_mode | _stat.S_IWRITE)
                             except OSError:
                                 pass          # best effort; rmtree reports below
                     _shutil.rmtree(path)

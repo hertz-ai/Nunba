@@ -25,6 +25,19 @@ import {useState, useEffect, useRef, useCallback} from 'react';
 const POLL_INTERVAL = 3000; // Fallback polling when SSE/crossbar unavailable
 
 /**
+ * The session in a create / join / quick-match answer, or null.
+ *
+ * gamesApi resolves to the response BODY ({success, data: {...session}},
+ * services/axiosFactory).  These three calls used to test
+ * `res.data?.success || res.data?.data`, fields of the session object, so a
+ * room the backend created never left 'creating'
+ * (__tests__/hooks/useMultiplayerSync.session.test.js).
+ */
+function sessionFrom(res) {
+  return res?.success && res.data ? res.data : null;
+}
+
+/**
  * @param {Object} options
  * @param {string} options.gameConfigId - The game config ID (e.g., 'counting-animals')
  * @param {string} options.gameTitle - Display title
@@ -66,8 +79,8 @@ export default function useMultiplayerSync({
           context_type: 'kids_learning',
         });
 
-        if (res.data?.success || res.data?.data?.id) {
-          const session = res.data?.data || res.data;
+        const session = sessionFrom(res);
+        if (session?.id) {
           setSessionId(session.id);
           setIsHost(true);
           setStatus('waiting');
@@ -92,8 +105,8 @@ export default function useMultiplayerSync({
 
       try {
         const res = await gamesApi.join(id);
-        if (res.data?.success || res.data?.data) {
-          const session = res.data?.data || res.data;
+        const session = sessionFrom(res);
+        if (session) {
           setSessionId(id);
           setIsHost(false);
           setStatus('waiting');
@@ -121,8 +134,8 @@ export default function useMultiplayerSync({
         game_config_id: gameConfigId,
       });
 
-      if (res.data?.success || res.data?.data) {
-        const session = res.data?.data || res.data;
+      const session = sessionFrom(res);
+      if (session?.id) {
         setSessionId(session.id);
         setIsHost(session.is_host || false);
         setStatus('waiting');

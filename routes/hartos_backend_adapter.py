@@ -1048,7 +1048,7 @@ def get_prompts(user_id: str = None) -> dict[str, Any]:
         try:
             with _hevolve_app.test_client() as client:
                 resp = client.get('/prompts', query_string=params)
-                data = resp.get_json() or {}
+                data = resp.get_json()
                 # HARTOS /prompts returns a LIST of prompts directly;
                 # coerce to {"prompts": [...]} so callers using
                 # data.get('error') / data.get('prompts') don't crash
@@ -1056,9 +1056,12 @@ def get_prompts(user_id: str = None) -> dict[str, Any]:
                 # bug: chatbot_routes.py:2210 tried result.get('error')
                 # on a list and the agent dropdown silently lost the
                 # HARTOS-side agents 3x per chat.
+                # Coerce BEFORE any falsy default: a user with no agents
+                # gets [], and `[] or {}` handed callers {} with no
+                # "prompts" key (the /prompts proxy sent it to the UI).
                 if isinstance(data, list):
                     data = {"prompts": data}
-                return data
+                return data or {}
         except Exception as e:
             logger.warning(f"Direct get_prompts failed: {e}")
 

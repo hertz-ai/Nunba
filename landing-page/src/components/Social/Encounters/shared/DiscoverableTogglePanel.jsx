@@ -265,7 +265,10 @@ export default function DiscoverableTogglePanel() {
       // Refresh full state to pick up the new toggle_count_24h.
       fetchState();
     } catch (err) {
-      const status = err?.response?.status;
+      // setDiscoverable sets keepStatus, so the rejection is the server's
+      // JSON with the HTTP status beside it (axiosFactory); a bare axios
+      // error (.response.status) never reaches here.
+      const status = err?.status;
       if (status === 429) {
         setError429(true);
         setLockedFor429(true);

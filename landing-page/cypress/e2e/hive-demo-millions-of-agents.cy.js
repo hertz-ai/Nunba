@@ -323,31 +323,31 @@ describe('Hevolve Hive — Millions of Agents on Your Idea', () => {
 
       // The hive view should render with summary bar and agent cards
       // Even with 0 active agents, the page should load
-      cy.get('body', { timeout: 300000 }).should('exist');
+      cy.get('body', { timeout: 30000 }).should('exist');
 
       // Look for hive view elements (summary stats, view switcher, or agent cards)
-      cy.contains(/hive|agents|active|swarm|experiment/i, { timeout: 300000 })
+      cy.contains(/hive|agents|active|swarm|experiment/i, { timeout: 30000 })
         .should('be.visible');
     });
 
     it('loads the Experiment Tracker — per-experiment deep dive', () => {
       cy.socialVisit('/social/tracker');
 
-      cy.get('body', { timeout: 300000 }).should('exist');
-      cy.contains(/tracker|experiment|agent|progress/i, { timeout: 300000 })
+      cy.get('body', { timeout: 30000 }).should('exist');
+      cy.contains(/tracker|experiment|agent|progress/i, { timeout: 30000 })
         .should('be.visible');
     });
 
     it('loads the Experiment Discovery — ideas seeking the hive', () => {
       cy.socialVisit('/social/experiments');
 
-      cy.get('body', { timeout: 300000 }).should('exist');
+      cy.get('body', { timeout: 30000 }).should('exist');
     });
 
     it('loads the Channel Bindings — one agent, every channel', () => {
       cy.socialVisit('/social/channels');
 
-      cy.get('body', { timeout: 300000 }).should('exist');
+      cy.get('body', { timeout: 30000 }).should('exist');
     });
   });
 

@@ -68,7 +68,8 @@ describe('bleEncounterApi.setDiscoverable', () => {
         face_visible: true,
         avatar_style: 'pixel_art',
         vibe_tags: ['hiking', 'coffee'],
-      }
+      },
+      {keepStatus: true, silentError: [403, 429]}
     );
   });
 
@@ -91,7 +92,8 @@ describe('bleEncounterApi.setDiscoverable', () => {
         face_visible: true,
         avatar_style: 'studio_ghibli',
         vibe_tags: [],
-      }
+      },
+      {keepStatus: true, silentError: [403, 429]}
     );
   });
 
@@ -113,7 +115,8 @@ describe('bleEncounterApi.setDiscoverable', () => {
         face_visible: false,
         avatar_style: 'studio_ghibli',
         vibe_tags: [],
-      }
+      },
+      {keepStatus: true, silentError: [403, 429]}
     );
   });
 
@@ -180,7 +183,8 @@ describe('bleEncounterApi.setDiscoverable', () => {
     });
     expect(mockAxiosInstance.post).toHaveBeenCalledWith(
       '/encounter/discoverable',
-      expect.objectContaining({ttl_sec: undefined})
+      expect.objectContaining({ttl_sec: undefined}),
+      {keepStatus: true, silentError: [403, 429]}
     );
   });
 });

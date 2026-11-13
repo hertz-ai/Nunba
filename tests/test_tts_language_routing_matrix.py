@@ -273,6 +273,12 @@ def test_preferred_engine_supports_language(lang):
     # English is special (en is in multiple engines)
     if lang == 'en':
         assert 'en' in caps['languages']
+    elif '-' in lang:
+        # A region code ('en-IN') routes by its exact-code key on purpose (so
+        # en-IN reaches Indic Parler), while engines declare the bare language.
+        base = lang.split('-')[0]
+        assert lang in caps['languages'] or base in caps['languages'], \
+            f"Engine {first} supports neither {lang} nor {base} but is first choice"
     else:
         assert lang in caps['languages'], \
             f"Engine {first} doesn't support {lang} but is first choice"

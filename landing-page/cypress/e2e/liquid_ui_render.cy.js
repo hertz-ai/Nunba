@@ -67,8 +67,13 @@ describe('Liquid UI server-driven render', () => {
     }).as('wampPublish');
   });
 
-  it('landing page (/local or /) loads without throwing', () => {
-    cy.visit('/', {failOnStatusCode: false});
+  // Every visit is /local, the page the desktop window opens.  Not '/':
+  // Flask's '/' (main.py serve_landing_page_root) redirects to
+  // https://hevolve.ai whenever that answers, so on an online runner a visit
+  // to '/' loaded the hosted site, not this build.
+  it('landing page (/local) loads without throwing', () => {
+    cy.visit('/local', {failOnStatusCode: false});
+    cy.location('pathname').should('eq', '/local');
     // The React bundle rendered — any visible text means the renderer
     // is live (LiquidUI is imported by pages downstream).
     cy.get('body', {timeout: 15000}).should('exist');
@@ -79,7 +84,7 @@ describe('Liquid UI server-driven render', () => {
     // the endpoint to confirm front-end integration would flow if it
     // were added. Cypress does not inspect the backend; it inspects
     // the React tree's response to stub data.
-    cy.visit('/', {failOnStatusCode: false});
+    cy.visit('/local', {failOnStatusCode: false});
     cy.request({
       url: '/api/ui/publish',
       method: 'POST',
@@ -93,7 +98,7 @@ describe('Liquid UI server-driven render', () => {
   });
 
   it('unknown component tree does not 5xx the bridge', () => {
-    cy.visit('/', {failOnStatusCode: false});
+    cy.visit('/local', {failOnStatusCode: false});
     cy.request({
       url: '/publish',
       method: 'POST',
@@ -103,9 +108,15 @@ describe('Liquid UI server-driven render', () => {
         args: [UNKNOWN_TYPE_TREE],
       },
     }).then((resp) => {
-      // 200 (router running), 503 (router off), 404 (unmounted)
-      // — NEVER a 5xx crash.
-      expect(resp.status).to.be.below(500).or.to.equal(503);
+      // 200 (router running), 404 (unmounted), or the documented 503 when
+      // the WAMP router is off (main.py publish route): never another 5xx.
+      // (Chai has no `.or`: `below(500).or.to.equal(503)` asserted below(500)
+      // alone, so the documented 503 failed the test.)
+      if (resp.status === 503) {
+        expect(resp.body).to.have.property('error', 'WAMP router not running');
+      } else {
+        expect(resp.status).to.be.below(500);
+      }
     });
   });
 

@@ -50,6 +50,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.windows_only import needs_win32_chrome
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 APP_PY = REPO_ROOT / "app.py"
 
@@ -269,6 +271,7 @@ class OneDpiConversion(unittest.TestCase):
             mock.patch.object(win32_chrome, "_HAS_GETDPIFORWINDOW", True),
         )
 
+    @needs_win32_chrome
     def test_set_window_size_scales_by_the_windows_dpi_not_the_systems(self):
         """The hazard, concretely: the system (primary) display at 150% and
         the window living on a 200% display.  Sizing by the system factor
@@ -288,6 +291,7 @@ class OneDpiConversion(unittest.TestCase):
                         "the system/primary DPI and is wrong for a window on "
                         "a differently scaled monitor.")
 
+    @needs_win32_chrome
     def test_dpi_scale_with_a_handle_reads_that_window(self):
         from desktop import platform_utils
 
@@ -308,6 +312,7 @@ class OneDpiConversion(unittest.TestCase):
             self.assertEqual(platform_utils._get_win32_dpi_scale(), 1.5)
         self.assertEqual(fake.named("GetDpiForWindow"), [])
 
+    @needs_win32_chrome
     def test_unreadable_window_dpi_falls_back_to_the_system(self):
         """Pre-Win10-1607 has no GetDpiForWindow.  'I cannot ask' must not
         read as 'this window is unscaled' -- that would silently reinstate
@@ -320,6 +325,7 @@ class OneDpiConversion(unittest.TestCase):
             self.assertEqual(
                 platform_utils._get_win32_dpi_scale(self.HWND), 1.5)
 
+    @needs_win32_chrome
     def test_win32_chrome_dpi_scale_says_None_when_it_cannot_read(self):
         from desktop import win32_chrome
 
@@ -334,6 +340,7 @@ class GeometryIsObservable(unittest.TestCase):
 
     HWND = 0x000A0B0C
 
+    @needs_win32_chrome
     def test_window_rect_is_the_one_reader(self):
         from desktop import win32_chrome
 
@@ -344,6 +351,7 @@ class GeometryIsObservable(unittest.TestCase):
                              (1710, 0, 740, 1313))
             self.assertIsNone(win32_chrome.window_rect(0))
 
+    @needs_win32_chrome
     def test_snap_logs_the_rect_the_window_actually_took(self):
         """The existing line logged what the snap ASKED for.  The drift the
         owner saw is the difference between asked and taken, so the taken

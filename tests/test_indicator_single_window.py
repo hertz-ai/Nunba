@@ -16,11 +16,20 @@ the pair (two "Ribbon tab created" 2 ms apart); the installed app's gui_app.log
 12:15:06-09 shows it too, 0.9 s apart, which only missed colliding by luck and
 still leaked a window.
 """
+import sys
 import threading
 import time
 import types
 
 import pytest
+
+# a7802af: on macOS initialize_indicator declines and starts no builder thread
+# (Tk off the main thread aborts the process there), so the one-builder race
+# these tests pin cannot happen; tests/test_indicator_window.py
+# ::TestRibbonBuild pins the macOS refusal itself.
+pytestmark = pytest.mark.skipif(
+    sys.platform == 'darwin',
+    reason='macOS builds no ribbon on a background thread (a7802af)')
 
 
 @pytest.fixture

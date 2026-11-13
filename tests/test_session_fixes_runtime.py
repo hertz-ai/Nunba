@@ -87,9 +87,18 @@ class TestB_WampSecurity:
             'com.hertzai.hevolve.chat.alice', 'bob') is False
 
     def test_b1_public_prefix_open_to_anonymous(self):
+        """Anonymous gets the topics the platform classifies as everyone's
+        (core.platform.events.topic_audience) and nothing addressed to someone.
+        HARTOS replaced its old public-prefix list with that one classifier
+        (integrations/social/realtime.py says so), and 'chat.social' is an
+        ADDRESSED topic under it."""
+        from core.platform.events import AUDIENCE_ADDRESSED, AUDIENCE_EVERYONE, topic_audience
+
         from wamp_router import _authorize_topic_for_authid
-        assert _authorize_topic_for_authid('chat.social', 'anonymous') is True
+        assert topic_audience('community.feed') == AUDIENCE_EVERYONE
         assert _authorize_topic_for_authid('community.feed', 'anonymous') is True
+        assert topic_audience('chat.social') == AUDIENCE_ADDRESSED
+        assert _authorize_topic_for_authid('chat.social', 'anonymous') is False
 
     def test_b1_anonymous_refused_user_scoped(self):
         from wamp_router import _authorize_topic_for_authid
@@ -243,9 +252,15 @@ class TestE_Resilience:
         assert 'k199' in d  # newest kept
         assert 'k0' not in d  # oldest evicted
 
-    def test_e3_disk_preflight_min_is_10gb(self):
+    def test_e3_disk_preflight_has_a_floor(self):
+        """The build refuses to start below a free-disk floor.  The floor is 7 GB
+        today (scripts/build.py _MIN_DISK_GB); this pins that it exists and does
+        not drop below that, instead of pinning a number the code left."""
+        import re
         src = (REPO / 'scripts' / 'build.py').read_text(encoding='utf-8')
-        assert '_MIN_DISK_GB = 10' in src or '_MIN_DISK_GB = 10.0' in src
+        m = re.search(r'_MIN_DISK_GB\s*=\s*(\d+(?:\.\d+)?)', src)
+        assert m, 'scripts/build.py has no _MIN_DISK_GB preflight floor'
+        assert float(m.group(1)) >= 7.0, f'preflight floor dropped to {m.group(1)} GB'
 
     def test_e6_hartos_adapter_tuple_timeout(self):
         src = (REPO / 'routes' / 'hartos_backend_adapter.py').read_text(encoding='utf-8')
@@ -267,7 +282,10 @@ class TestF_Vision:
     def test_f5_wizard_adds_qwen08b(self):
         src = (REPO / 'desktop' / 'ai_installer.py').read_text(encoding='utf-8')
         assert 'Qwen3.5-0.8B' in src
-        assert 'unsloth/Qwen3.5-0.8B-GGUF' in src
+        # The wizard step names the model; the repo it downloads from is the
+        # llama installer's, which the step calls.
+        installer = (REPO / 'llama' / 'llama_installer.py').read_text(encoding='utf-8')
+        assert 'unsloth/Qwen3.5-0.8B-GGUF' in installer
 
     def test_f1_qwen08b_is_available_file_aware(self, tmp_path, monkeypatch):
         """is_available() is True when the 0.8B's weights are in Nunba's
@@ -329,7 +347,13 @@ class TestF_Vision:
 
 class TestG_Hygiene:
     def test_g1_setup_lock_bypass_threadlocal_exists(self):
-        src = (REPO / 'main.py').read_text(encoding='utf-8')
+        # The bypass window moved to HARTOS's bootstrap, which calls Nunba's
+        # route hook inside it (main.py: "HARTOS calls this inside its
+        # setup-lock-bypass window").
+        hartos = REPO.parent / 'HARTOS'
+        if not hartos.is_dir():
+            pytest.skip('HARTOS sibling missing')
+        src = (hartos / 'hartos' / 'hartos_bootstrap.py').read_text(encoding='utf-8')
         assert '_setup_lock_bypass = threading.local()' in src
         assert '_patched_check' in src
         assert '_setup_lock_bypass.active = True' in src
@@ -352,7 +376,12 @@ class TestG_Hygiene:
         fn_start = src.find('def _announce_to_all')
         fn_end = src.find('\n    def ', fn_start + 1)
         body = src[fn_start:fn_end]
-        assert 'difference_update(self.seed_peers)' in body
+        # Reversed on purpose: flat-mode installs MUST reach central (the seed
+        # peers) for the universal peer-join and central report-in; the 2026-04
+        # version that dropped the seeds silently broke central registration for
+        # every desktop install.  PeerBackoff absorbs the DNS noise instead.
+        assert 'urls.update(self.seed_peers)' in body
+        assert 'difference_update(self.seed_peers)' not in body
 
     def test_g4_rotating_file_handler_used(self):
         gui = (REPO / 'app.py').read_text(encoding='utf-8')
@@ -407,12 +436,17 @@ class TestJ_ProbeCorrectness:
                "model_type != 'llm'" in body
 
     def test_probe_dispatcher_routes_venv_to_is_venv_healthy(self):
+        # Venv routing is HARTOS's decision (TTSEngineSpec.install_target ==
+        # 'venv'), mirrored in BACKEND_VENV_PACKAGES; indic_parler is one of
+        # several venv backends now (kokoro, chatterbox_turbo, f5_tts, ...), so
+        # the dispatcher is checked against that table, not a hard-coded pair.
+        from tts.package_installer import BACKEND_VENV_PACKAGES
         from tts.tts_engine import _is_venv_backend, _probe_backend_runnable
-        # indic_parler is the one known venv backend
         assert _is_venv_backend('indic_parler') is True
-        # Main-interp backends are NOT flagged as venv
-        assert _is_venv_backend('kokoro') is False
-        assert _is_venv_backend('chatterbox_turbo') is False
+        for backend in ('kokoro', 'chatterbox_turbo', 'indic_parler'):
+            assert _is_venv_backend(backend) is (backend in BACKEND_VENV_PACKAGES), backend
+        # Bundled / main-interpreter backends are NOT flagged as venv
+        assert _is_venv_backend('piper') is False
 
     def test_warmup_probe_uses_canonical_import_name(self):
         """Commit 273b3237: main.py warmup uses _get_required_package +
@@ -515,8 +549,13 @@ class TestLM_Smaller:
 
 class TestI_DriftGuard:
     def test_speakers_drift_guard_file_present(self):
+        """tests/unit/test_indic_parler_speakers_drift.py guarded a SECOND copy of
+        the speaker table (a Nunba-side _SPEAKERS that could drift from the
+        engine's).  77b0388 ("TTS parallel paths, DRY violation corrected")
+        removed the copy and its guard together, so there is nothing left to
+        drift: the guard's absence is the fix, and this pins that the parallel
+        table does not come back."""
         guard = REPO / 'tests' / 'unit' / 'test_indic_parler_speakers_drift.py'
-        assert guard.is_file()
-        content = guard.read_text(encoding='utf-8')
-        assert '_SPEAKERS' in content
-        assert 'ast.literal_eval' in content or 'ast.parse' in content
+        assert not guard.exists()
+        engine = (REPO / 'tts' / 'tts_engine.py').read_text(encoding='utf-8')
+        assert '\n_SPEAKERS =' not in engine

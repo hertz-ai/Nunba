@@ -30,7 +30,7 @@
  * 90 tests across 8 sections.
  */
 describe('Voice Pipeline E2E', () => {
-  const FLASK = 'http://localhost:5000';
+  const FLASK = `${Cypress.env('apiUrl')}`;
   const TTS_BASE = `${FLASK}/tts`;
 
   // ── Fixtures ──────────────────────────────────────────────────────────
@@ -244,7 +244,7 @@ describe('Voice Pipeline E2E', () => {
       }).catch(() => {
         /* OK if offline */
       }),
-      {timeout: 300000}
+      {timeout: 30000}
     );
   });
 
@@ -268,7 +268,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1500);
 
         // Look for mic button (Mic icon) and click it
@@ -303,7 +303,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Page should still be usable — no crash
@@ -325,7 +325,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Page should not crash
@@ -346,7 +346,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Validate mock stream structure (contract check)
         expect(mockStream.getAudioTracks()).to.have.length(1);
@@ -379,7 +379,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Contract: AudioContext constructor should be available for VAD
         cy.window().then((win) => {
@@ -430,7 +430,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Page should not crash
         cy.get('body').should('exist');
@@ -443,7 +443,7 @@ describe('Voice Pipeline E2E', () => {
         setupBaseIntercepts();
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // No recording indicator should be visible
@@ -466,7 +466,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1500);
 
         // Find mic button and click it
@@ -673,7 +673,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         cy.window().then((win) => {
           expect(win.SpeechRecognition).to.exist;
@@ -691,7 +691,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         cy.window().then((win) => {
           const SR = win.SpeechRecognition || win.webkitSpeechRecognition;
@@ -868,7 +868,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Contract: without SpeechRecognition, server STT should be used
         cy.window().then((win) => {
@@ -1049,7 +1049,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Page should still be interactive
@@ -1133,7 +1133,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(2000);
 
         // When browser PocketTTS is ready AND text is English:
@@ -1193,7 +1193,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(2000);
 
         // After page load with browser TTS ready + English text:
@@ -1320,7 +1320,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(2000);
 
         // Pipeline contract validated: all stubs in place
@@ -1436,7 +1436,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Page should still be interactive after chat error
@@ -1457,7 +1457,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Contract: chat response text is displayed even when TTS fails
         cy.log('Text response displayed regardless of TTS availability');
@@ -1481,7 +1481,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(2000);
 
         // Verify page loaded and is interactive
@@ -1493,7 +1493,7 @@ describe('Voice Pipeline E2E', () => {
         setupBaseIntercepts();
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Initially, no recording indicator
@@ -1528,7 +1528,7 @@ describe('Voice Pipeline E2E', () => {
           method: 'GET',
           url: 'http://localhost:9891/',
           failOnStatusCode: false,
-          timeout: 300000,
+          timeout: 30000,
         }).then((res) => {
           // May not be running — that's OK, just probe
           cy.log(`MiniCPM probe: status ${res.status}`);
@@ -1555,7 +1555,7 @@ describe('Voice Pipeline E2E', () => {
           method: 'GET',
           url: 'http://localhost:6777/',
           failOnStatusCode: false,
-          timeout: 300000,
+          timeout: 30000,
         }).then((res) => {
           cy.log(`LangChain service probe: status ${res.status}`);
         });
@@ -1569,7 +1569,7 @@ describe('Voice Pipeline E2E', () => {
           method: 'GET',
           url: `${FLASK}/api/social/events/stream`,
           failOnStatusCode: false,
-          timeout: 300000,
+          timeout: 30000,
         }).then((res) => {
           // SSE endpoint without auth should be rejected or return event stream
           expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
@@ -1590,7 +1590,7 @@ describe('Voice Pipeline E2E', () => {
           method: 'GET',
           url: `${FLASK}/api/social/events/stream`,
           failOnStatusCode: false,
-          timeout: 300000,
+          timeout: 30000,
         }).then((res) => {
           // Without token, should be rejected or return empty stream
           expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);

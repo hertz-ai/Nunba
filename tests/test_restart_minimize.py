@@ -67,6 +67,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from tests.windows_only import needs_win32_chrome
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 APP_PY = REPO_ROOT / "app.py"
 COMPANION_HTML = REPO_ROOT / "landing-page" / "public" / "nanba-companion.html"
@@ -521,6 +523,7 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertIn("WS_EX_TOOLWINDOW = 0x00000080", helper)
 
     # ── Invariant K: the resolver reads pythonnet's IntPtr handle ─────
+    @needs_win32_chrome
     def test_resolve_hwnd_converts_pywebviews_intptr_handle(self):
         """Live 2026-09-15 (hot-patched 6bc7b4f8, PID 49556): the companion
         was created on screen and hid itself, yet its exstyle stayed 0x50008
@@ -570,6 +573,7 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         self.assertEqual(resolve(types.SimpleNamespace(
             native=types.SimpleNamespace(Handle=594172))), 594172)
 
+    @needs_win32_chrome
     def test_resolve_hwnd_failure_is_visible_not_debug(self):
         """Why the portrait dock regressed unseen (owner 2026-09-16): dd34d410
         made this resolver raise on every window, the catch-all turned that

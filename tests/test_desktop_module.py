@@ -317,6 +317,10 @@ class TestTrayHandler:
         time.sleep(0.1)  # Let thread run
         mock_win.show.assert_called()
 
+    # The pystray path.  On a macOS runner IS_MACOS is True and a MagicMock
+    # also answers hasattr('quit_application'), so stop() took the rumps
+    # branch, which leaves the stop to rumps' quit callback (CI macOS, PR #72).
+    @patch("desktop.tray_handler.IS_MACOS", False)
     def test_stop_sets_running_false(self):
         th = self._import_module()
         self._reset_globals(th)

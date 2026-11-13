@@ -937,11 +937,14 @@ const realtimeService = new RealtimeService();
 // Dev/test hook: expose the singleton so Cypress (and curl-style
 // dev probes) can inject synthetic events to verify the full
 // agent_ui_update → AgentOverlay → DOM chain without spinning up
-// Flask + HARTOS + WAMP.  Production builds skip this — the check
-// uses CRA's NODE_ENV which is statically replaced at build time, so
-// the production bundle excludes the assignment via dead-code-elim.
+// Flask + HARTOS + WAMP.  A production bundle exposes it only inside a
+// Cypress run (window.Cypress, which the Cypress runner sets on the page
+// before the app's scripts load): CI's Cypress job serves the production
+// build (`npm run build`), where the NODE_ENV check alone left the handle
+// out, so the specs that drive it (agent_overlay_ui_update, agent-consent-
+// ui) could never pass there.  A person's browser has no window.Cypress.
 if (typeof window !== 'undefined' &&
-    process.env.NODE_ENV !== 'production') {
+    (process.env.NODE_ENV !== 'production' || window.Cypress)) {
   window.__realtimeService = realtimeService;
 }
 

@@ -40,6 +40,10 @@ const AUTO_DISMISS_MS = 15000;
 // file_request: an agent waits on her files (HARTOS person_ask), so the card
 // stays until it is answered here or anywhere else (ask.answered).
 const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair', 'file_request']);
+// The HARTOS shell's own HOME composition (LiquidUIService.compose_home ->
+// HartHome.compose).  The web app has no HOME to compose, so these are never a
+// card; they used to show their payload as raw JSON.
+const SHELL_HOME_TYPES = ['home_compose', 'home'];
 
 // The card's frosted surface is the ONE HART glass (src/theme/hartGlass,
 // mirroring HARTOS theme_service.py's emitted shell values), so an overlay
@@ -1226,6 +1230,22 @@ export function OverlayContent({ data, onDismiss, navigate, onAction }) {
       };
       return <NotificationCard data={oauthData} navigate={navigate} onDismiss={onDismiss} />;
     }
+    case 'app_installed': {
+      // HARTOS's shell pins a desktop icon and toasts "Installed"
+      // (app_installer._push_desktop_icon).  The web app has no desktop
+      // icons, so it shows the same notice as a notification.
+      const installedData = {
+        title: 'Installed',
+        message: `${data.title || data.id || 'App'} was installed.`,
+        severity: 'info',
+      };
+      return <NotificationCard data={installedData} navigate={navigate} onDismiss={onDismiss} />;
+    }
+    case 'home_compose':
+    case 'home':
+      // HOME composition for the HARTOS shell (SHELL_HOME_TYPES): nothing to
+      // show here, including as a layout child.
+      return null;
     case 'product_card': return <ProductCardOverlay data={data} onAction={onAction} />;
     case 'cart': return <CartOverlay data={data} onAction={onAction} />;
     case 'checkout': return <CheckoutOverlay data={data} onAction={onAction} />;
@@ -1624,6 +1644,9 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     // agent_id there) and used to render through the default branch as
     // raw JSON; the answer listener below is what acts on it.
     if (CONSENT_ANSWER_TYPES.includes(type)) return;
+
+    // A HOME composition is for the HARTOS shell, not a card (SHELL_HOME_TYPES).
+    if (SHELL_HOME_TYPES.includes(type)) return;
 
     // Navigate type: orchestrate page navigation, don't render overlay
     if (type === 'navigate' && navigate && payload.target) {

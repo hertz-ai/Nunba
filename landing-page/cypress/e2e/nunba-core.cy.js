@@ -12,7 +12,7 @@
  * 6. Notification toast system
  */
 
-const API = Cypress.config('baseUrl') || 'http://localhost:5000';
+const API = Cypress.config('baseUrl') || `${Cypress.env('apiUrl')}`;
 
 describe('Habit Features', () => {
 
@@ -89,27 +89,27 @@ describe('Habit Features', () => {
     });
 
     it('has mic button (voice input)', () => {
-      cy.get('button[title="Voice input"], button svg.lucide-mic', { timeout: 300000 })
+      cy.get('button[title="Voice input"], button svg.lucide-mic', { timeout: 30000 })
         .should('exist');
     });
 
     it('has clipboard paste button', () => {
-      cy.get('button[title="Paste from clipboard"]', { timeout: 300000 })
+      cy.get('button[title="Paste from clipboard"]', { timeout: 30000 })
         .should('exist');
     });
 
     it('has camera capture button', () => {
-      cy.get('button[title="Take photo"]', { timeout: 300000 })
+      cy.get('button[title="Take photo"]', { timeout: 30000 })
         .should('exist');
     });
 
     it('has memory panel button', () => {
-      cy.get('button[title="Memories"]', { timeout: 300000 })
+      cy.get('button[title="Memories"]', { timeout: 30000 })
         .should('exist');
     });
 
     it('has wake word toggle button', () => {
-      cy.get('button[title*="Hey Nunba"], button[title*="listening"]', { timeout: 300000 })
+      cy.get('button[title*="Hey Nunba"], button[title*="listening"]', { timeout: 30000 })
         .should('exist');
     });
   });
@@ -158,7 +158,7 @@ describe('Habit Features', () => {
       cy.request({
         url: `${API}/backend/health`,
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         expect(res.status).to.eq(200);
         expect(res.body.healthy).to.eq(true);
