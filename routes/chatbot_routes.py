@@ -811,6 +811,24 @@ def _get_vision_service():
     return None
 
 
+def _shrink_frame(frame_bytes, max_side=640, quality=70):
+    """``frame_bytes`` re-encoded as a JPEG at most ``max_side`` px on its
+    long side, the size the page's own camera sends and the caption model
+    reads; None when the bytes are no image."""
+    import cv2
+    import numpy as np
+    img = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    scale = min(1.0, float(max_side) / max(h, w))
+    if scale < 1.0:
+        img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                         interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return buf.tobytes() if ok else None
+
+
 def vision_frame_ingest():
     """POST /api/vision/frame?user_id=&channel=camera|screen, body=JPEG bytes.
 
@@ -835,13 +853,18 @@ def vision_frame_ingest():
     the query or X-User-Id as sent.  A phone the owner allowed (HARTOS's
     gate admitted it): it acts only as its token's user, named or not;
     another user is 403.
-    Body cap: 512KB (5 FPS × ~40KB JPEG @ 640×480 q=0.6 = ~200KB/s,
-    cap above that rejects size-bomb DoS).
+    Sizes: the store keeps a frame of at most 512KB (5 FPS × ~40KB JPEG @
+    640×480 q=0.6 = ~200KB/s).  A larger frame up to the 8MB upload ceiling
+    is shrunk to caption size (_shrink_frame) instead of refused: a phone
+    sends its camera's own frames, and every one was answered 413 (live
+    13 Nov 2026 14:42 IST, build 75), so no phone frame reached the caption
+    model.  Past the ceiling, or a body that is no image, is still 413.
     """
     _MAX_FRAME_BYTES = 512_000
-    if request.content_length and request.content_length > _MAX_FRAME_BYTES:
+    _MAX_UPLOAD_BYTES = 8_000_000
+    if request.content_length and request.content_length > _MAX_UPLOAD_BYTES:
         return jsonify({'ok': False, 'error': 'frame_too_large',
-                        'max_bytes': _MAX_FRAME_BYTES}), 413
+                        'max_bytes': _MAX_UPLOAD_BYTES}), 413
     svc = _get_vision_service()
     if svc is None or not getattr(svc, 'store', None):
         return jsonify({'ok': False,
@@ -862,9 +885,14 @@ def vision_frame_ingest():
     frame_bytes = request.get_data() or b''
     if not frame_bytes:
         return jsonify({'ok': False, 'error': 'empty_frame'}), 400
-    if len(frame_bytes) > _MAX_FRAME_BYTES:
+    if len(frame_bytes) > _MAX_UPLOAD_BYTES:
         return jsonify({'ok': False, 'error': 'frame_too_large',
-                        'max_bytes': _MAX_FRAME_BYTES}), 413
+                        'max_bytes': _MAX_UPLOAD_BYTES}), 413
+    if len(frame_bytes) > _MAX_FRAME_BYTES:
+        frame_bytes = _shrink_frame(frame_bytes)
+        if not frame_bytes or len(frame_bytes) > _MAX_FRAME_BYTES:
+            return jsonify({'ok': False, 'error': 'frame_too_large',
+                            'max_bytes': _MAX_FRAME_BYTES}), 413
     # Who sent it: this route, by the caller's address (the store keeps it
     # beside the frame and the caption row carries it).
     sender = f"http:{request.remote_addr or 'unknown'}"
