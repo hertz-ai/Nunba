@@ -11,12 +11,13 @@
 
 describe('Local Chat Flow', () => {
   beforeEach(() => {
-    // Set hart_sealed so we skip onboarding
-    localStorage.setItem('hart_sealed', 'true');
-    localStorage.setItem('hart_name', 'CypressTest');
-    localStorage.setItem('guest_mode', 'true');
+    // cy.openLocalChat: a sealed HART, the speech-consent question answered,
+    // and /api/llm/status reporting a model.  CI has no local model, so
+    // without the stub Demopage queues every send for 20 s
+    // (ENGINE_BOOT_GRACE_MS) and the 15 s wait below never saw the user's
+    // message ("Queued (1)", reproduced locally with the status stubbed off).
     localStorage.setItem('guest_user_id', 'cypress_user_001');
-    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    cy.openLocalChat();
   });
 
   describe('Page Load & Hero Transition', () => {
@@ -75,7 +76,7 @@ describe('Local Chat Flow', () => {
   describe('Toolbar on Mobile', () => {
     beforeEach(() => {
       cy.viewport(375, 812); // iPhone X
-      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.openLocalChat();
     });
 
     it('toolbar is visible and does not cover full width', () => {
