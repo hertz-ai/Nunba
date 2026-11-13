@@ -102,8 +102,12 @@ describe('Distributed Goal Notifications E2E', () => {
     it('1.3 POST /api/distributed/goals responds with auth token', () => {
       cy.socialRequest('POST', `${DISTRIBUTED}/goals`, {
         objective: 'Test goal from Cypress',
+        // A fresh task id per run: the ledger keeps tasks, and a task id it
+        // already holds is refused with 409 (submit_goal: "the client's id"),
+        // so a fixed 'test_task_1' failed every run after the first on the
+        // same server.
         tasks: [
-          {task_id: 'test_task_1', description: 'Test task', capabilities: []},
+          {task_id: `cypress_task_${Date.now()}`, description: 'Test task', capabilities: []},
         ],
         context: {source: 'cypress_test'},
       }).then((res) => {
@@ -113,8 +117,11 @@ describe('Distributed Goal Notifications E2E', () => {
     });
 
     it('1.4 POST /api/distributed/tasks/claim responds with auth token', () => {
+      // No agent_id: the claim is made as the signed-in user's own agent.
+      // Naming another agent ('cypress-agent') is refused with 403 "Cannot
+      // act as another agent" (HARTOS distributed_agent/api.py claim_task),
+      // which is the guard working, not the route failing.
       cy.socialRequest('POST', `${DISTRIBUTED}/tasks/claim`, {
-        agent_id: 'cypress-agent',
         capabilities: ['testing'],
       }).then((res) => {
         expect(res.status).to.be.oneOf([200, 401, 404, 500, 503]);
@@ -217,56 +224,17 @@ describe('Distributed Goal Notifications E2E', () => {
 
   // =========================================================================
   // 3. NotificationsPage UI with Goal Notifications (Stubbed)
-  //    Each test stubs /auth/me so SocialContext sees an authenticated user
-  //    and RoleGuard allows access to /social/notifications (minRole=flat).
+  //    The page is opened as the user cy.socialAuth() signed in (a real
+  //    token), so RoleGuard (minRole=flat) admits it; only the notification
+  //    list is stubbed.  A made-up token is no longer accepted by the auth
+  //    hydration, so RoleGuard sent the old version back to /social as a
+  //    guest and the list was never on screen.
   // =========================================================================
   describe('3. NotificationsPage UI', () => {
-    // Helper: visit /social/notifications with full SocialContext stubs
-    // so RoleGuard sees an authenticated flat-tier user.
     function visitNotificationsPage() {
-      // Stub /auth/me so SocialContext sets accessTier='flat'
-      cy.intercept('GET', '**/api/social/auth/me', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: {
-            id: 'test-user',
-            username: 'cypress_test',
-            role: 'flat',
-          },
-        },
-      }).as('authMe');
-
-      // Stub resonance/onboarding calls that SocialContext makes on init
-      cy.intercept('GET', '**/api/social/resonance/**', {
-        statusCode: 200,
-        body: {success: true, data: null},
-      });
-      cy.intercept('GET', '**/api/social/onboarding/**', {
-        statusCode: 200,
-        body: {success: true, data: null},
-      });
-      // Stub feed endpoint in case redirect happens (prevents hanging requests)
-      cy.intercept('GET', '**/api/social/feed/**', {
-        statusCode: 200,
-        body: {success: true, data: []},
-      });
-
-      cy.visit('/social/notifications', {
-        timeout: 60000,
-        onBeforeLoad(win) {
-          // Set a token so SocialContext's useEffect enters the auth branch
-          win.localStorage.setItem(
-            'access_token',
-            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InRlc3QtdXNlciIsInJvbGUiOiJmbGF0In0.stub'
-          );
-          win.localStorage.setItem('social_user_id', 'test-user');
-          win.localStorage.setItem('social_username', 'cypress_test');
-        },
-      });
-
-      // Wait for the auth/me intercept to fire and SocialContext to resolve
-      cy.wait('@authMe');
+      cy.socialVisit('/social/notifications');
+      cy.location('pathname', {timeout: 30000}).should('eq', '/social/notifications');
+      cy.wait('@getNotifications');
     }
 
     it('3.1 goal_contribution notification renders on /social/notifications', () => {
