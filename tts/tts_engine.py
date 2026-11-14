@@ -745,6 +745,23 @@ def _get_engine_registry():
         return {}
 
 
+def _runs_on_cpu(backend: str) -> bool:
+    """True when the HARTOS engine registry says ``backend`` can run on the
+    CPU: device GPU_PREFERRED ("CPU works, GPU faster") or CPU_ONLY.  Free
+    VRAM then decides where such an engine runs, never whether it speaks.
+    A GPU-only engine, or one the registry does not name, answers False and
+    keeps every VRAM check."""
+    key = _BACKEND_TO_REGISTRY_KEY.get(backend)
+    spec = _get_engine_registry().get(key) if key else None
+    if spec is None:
+        return False
+    try:
+        from integrations.channels.media.tts_router import TTSDevice
+    except Exception:
+        return False
+    return spec.device in (TTSDevice.GPU_PREFERRED, TTSDevice.CPU_ONLY)
+
+
 def _registry_key_to_catalog_id(registry_key: str) -> str:
     """Convert 'f5_tts' → 'f5-tts' (HARTOS ModelCatalog uses hyphens)."""
     return registry_key.replace('_', '-')
@@ -909,12 +926,17 @@ _LADDER_FILTER_CACHE_MAX = 256
 
 
 def _filter_ladder_by_vram_budget(prefs: list[str]) -> list[str]:
-    """Drop GPU backends whose declared min_vram exceeds free VRAM.
+    """Drop GPU-only backends whose declared min_vram exceeds free VRAM.
 
     Why this exists: without it, the ladder probes chatterbox_turbo
     (5.6 GB min) on every chat even on a 4 GB GPU, wasting an OOM
     round-trip per backend before falling through.  CPU-friendly
     backends (no VRAM_BUDGETS entry — piper/espeak) ALWAYS pass.
+    So does an engine the registry says also runs on the CPU
+    (_runs_on_cpu: mms_tts, kokoro, melotts, neutts_air): with the GPU
+    full it runs on the CPU.  Live 14 Nov 2026, 1021 MiB free: dropping
+    mms_tts left the Tamil ladder [omnivoice, piper], and the person
+    heard nothing.
     When the catalog hasn't loaded or there's no GPU signal, returns
     prefs unchanged (fail-open: the existing per-attempt circuit
     breaker still demotes after live failures).
@@ -937,6 +959,8 @@ def _filter_ladder_by_vram_budget(prefs: list[str]) -> list[str]:
         registry_key = _BACKEND_TO_REGISTRY_KEY.get(be)
         if not registry_key:
             return True  # CPU backend (piper/espeak) — no GPU budget entry
+        if _runs_on_cpu(be):
+            return True  # runs on the CPU when the GPU has no room
         budget = VRAM_BUDGETS.get(f'tts_{registry_key}')
         if not budget:
             return True  # unknown to vram_manager → assume fits
@@ -1716,6 +1740,12 @@ class TTSEngine:
                     return True
             except Exception as se:
                 logger.debug(f"swap-for-VRAM attempt failed: {se}")
+            if _runs_on_cpu(backend):
+                logger.info(
+                    f"Backend {backend}: {tool_name} won't fit in free VRAM; "
+                    f"kept, the engine registry says it runs on the CPU",
+                )
+                return True
             logger.info(
                 f"Backend {backend} blocked: VRAMManager says "
                 f"{tool_name} won't fit (boot-time draft gating should "
@@ -3324,8 +3354,9 @@ class TTSEngine:
         The one path for a whole line (synthesize) and a speech segment
         (_synth_speech_segment).  The line goes to
         ``_synthesize_with_fallback`` when the engine never came up
-        (counted), lacks the GPU memory to speak now (Piper speaks this
-        line only, not counted), cannot speak ``language`` (not counted),
+        (counted), is GPU-only and lacks the GPU memory to speak now (Piper
+        speaks this line only, not counted; an engine the registry says
+        runs on the CPU speaks it), cannot speak ``language`` (not counted),
         raises (counted unless transient; a non-transient raise also
         unloads it, its CUDA state may be corrupted), or returns no audio
         (counted).  Audio clears the engine's failure counter.  ``speed``
@@ -3360,7 +3391,15 @@ class TTSEngine:
                     vram_ok = free_gb >= 0.4
                 else:
                     vram_ok = vram_manager.suggest_offload_mode(tool_name) != 'cpu_only'
-                if not vram_ok:
+                if not vram_ok and _runs_on_cpu(self._active_backend):
+                    # A full GPU decides where this engine runs, not whether
+                    # it speaks: Piper has no voice for Tamil, so handing
+                    # the line to Piper meant no audio at all.
+                    logger.info(
+                        f"VRAM insufficient for {self._active_backend} "
+                        f"({vram_manager.get_free_vram():.1f}GB free); it speaks "
+                        f"this line, the engine registry says it runs on the CPU")
+                elif not vram_ok:
                     logger.warning(
                         f"VRAM insufficient for {self._active_backend} "
                         f"({'inference' if already_on_cuda else 'load'} "

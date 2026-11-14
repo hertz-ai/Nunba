@@ -227,15 +227,17 @@ def test_a_transient_raise_is_not_counted_and_piper_speaks_this_line_only(rig, e
 @pytest.mark.parametrize('entry', ['line', 'segment'])
 def test_a_gpu_engine_without_room_hands_this_line_to_piper_only(rig, entry):
     """The laptop GPU is full (the LLM holds most of it): Piper speaks this
-    line; mms_tts is not asked, not counted, and stays selected."""
+    line; Indic Parler (GPU-only) is not asked, not counted, and stays
+    selected.  An engine that also runs on the CPU (mms_tts) speaks the line
+    itself: tests/test_tts_cpu_capable_engine_speaks_without_vram.py."""
     mod = rig.mod
-    eng = rig.start(mod.BACKEND_MMS_TTS, 'en')
+    eng = rig.start(mod.BACKEND_INDIC_PARLER, 'en')
     rig.room['mode'] = 'cpu_only'
     assert _speak(rig, eng, entry, EN, 'en') == rig.out
     assert rig.log.spoken == [(mod.BACKEND_PIPER, EN, 'en')]
-    assert eng._active_backend == mod.BACKEND_MMS_TTS
-    assert mod.BACKEND_MMS_TTS in eng._backends
-    assert not eng._consecutive_failures.get(mod.BACKEND_MMS_TTS)
+    assert eng._active_backend == mod.BACKEND_INDIC_PARLER
+    assert mod.BACKEND_INDIC_PARLER in eng._backends
+    assert not eng._consecutive_failures.get(mod.BACKEND_INDIC_PARLER)
 
 
 def test_a_whole_line_reaches_the_engine_with_its_speed(rig):
