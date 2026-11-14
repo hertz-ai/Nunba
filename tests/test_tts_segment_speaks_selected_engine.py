@@ -10,12 +10,21 @@ omnivoice was never counted and kept being picked, and Piper never spoke an
 English fragment.  An English fragment's switch to Piper shut down the mms_tts
 worker serving Tamil, which then reloaded its Tamil weights (about 40 s).
 
+The review of c326236f (14 Nov 2026) found two more: a switch to a GPU engine
+freed only the active engine, which after an English fragment is Piper, so
+mms_tts -> Piper -> Indic Parler kept both GPU engines loaded; and the segment
+path carried its own copy of synthesize()'s speak block, which already
+differed (a raising engine stayed loaded, no GPU-room check, no audio counted
+on one path only).  A whole line and a segment now take one path, and the
+cases marked 'line' and 'segment' pin that they behave the same.
+
 Real TTSEngine.synthesize, _synthesize_multilingual, _synth_speech_segment,
 set_language, _switch_backend, initialize, _create_backend,
-_synthesize_with_fallback and the failure counters.  Stand-ins only at the
-edges: the worker adapter and Piper (no process, no model), the venv layer,
-the lifecycle manager, the catalog ladder and capability data, the selector's
-picks, and the self-heal reporters.
+_synthesize_with_fallback, verify_synth_via_backend and the failure counters.
+Stand-ins only at the edges: the worker adapter and Piper (no process, no
+model), the venv layer, the lifecycle manager, the VRAM manager, the CUDA
+cache, the realtime publisher, the catalog ladder and capability data, the
+selector's picks, and the self-heal reporters.
 
     python -m pytest tests/test_tts_segment_speaks_selected_engine.py -q
 """
@@ -66,8 +75,23 @@ def rig(monkeypatch, tmp_path):
     lifecycle = types.ModuleType('integrations.service_tools.model_lifecycle')
     lifecycle.get_model_lifecycle_manager = lambda: MagicMock()
     monkeypatch.setitem(sys.modules, 'integrations.service_tools.model_lifecycle', lifecycle)
+    # GPU room as the VRAM manager reports it: room by default.
+    room = {'mode': 'gpu'}
+    vram = types.ModuleType('integrations.service_tools.vram_manager')
+    vram.vram_manager = types.SimpleNamespace(
+        get_free_vram=lambda: 6.0,
+        suggest_offload_mode=lambda tool: room['mode'])
+    monkeypatch.setitem(sys.modules, 'integrations.service_tools.vram_manager', vram)
+    realtime = types.ModuleType('core.realtime')
+    realtime.publish_async = lambda *_a, **_k: None
+    monkeypatch.setitem(sys.modules, 'core.realtime', realtime)
 
-    log = types.SimpleNamespace(spoken=[], built=[], unloaded=[], fail={})
+    log = types.SimpleNamespace(spoken=[], built=[], unloaded=[], fail={},
+                                released=[], allocated=[], cuda_cleared=0, speeds=[])
+
+    def _cuda_cleared():
+        log.cuda_cleared += 1
+    monkeypatch.setattr(mod, '_clear_cuda_cache', _cuda_cleared)
 
     class _Voice:
         """A worker adapter's or Piper's place: no process, no model."""
@@ -80,6 +104,11 @@ def rig(monkeypatch, tmp_path):
             how = log.fail.get(self.engine_id)
             if how == 'raise':
                 raise RuntimeError(f'{self.engine_id}: synth blew up')
+            if how == 'transient':
+                err = RuntimeError(f'{self.engine_id}: worker ran out of GPU memory')
+                err.transient = True
+                raise err
+            log.speeds.append(_k.get('speed'))
             log.spoken.append((self.engine_id, text, language))
             if how == 'nothing':
                 return None
@@ -119,6 +148,8 @@ def rig(monkeypatch, tmp_path):
     eng._synth_lock = threading.Lock()
     eng._presynth = _NoCache()
     eng._initialized = True
+    eng._vram_manager = types.SimpleNamespace(allocate=log.allocated.append,
+                                              release=log.released.append)
 
     def start(active, language, loaded=None):
         eng._active_backend = active
@@ -129,8 +160,15 @@ def rig(monkeypatch, tmp_path):
         return eng
 
     return types.SimpleNamespace(mod=mod, start=start, log=log, ladders=ladders,
-                                 picks=picks, healthy=healthy,
+                                 picks=picks, healthy=healthy, room=room,
                                  out=str(tmp_path / 'seg.wav'))
+
+
+def _speak(rig, eng, entry, text, lang):
+    """A whole line through synthesize(), or one speech segment."""
+    if entry == 'line':
+        return eng.synthesize(text, output_path=rig.out, language=lang)
+    return eng._synth_speech_segment(text, lang, rig.out)
 
 
 def test_a_tamil_segment_is_spoken_by_the_selected_engine(rig):
@@ -150,15 +188,72 @@ def test_an_english_segment_is_spoken_by_piper_when_piper_is_selected(rig):
     assert rig.log.built == []
 
 
+@pytest.mark.parametrize('entry', ['line', 'segment'])
 @pytest.mark.parametrize('how', ['raise', 'nothing'])
-def test_a_selected_engine_that_fails_is_counted_and_the_ladder_speaks(rig, how):
+def test_a_selected_engine_that_fails_is_counted_and_the_ladder_speaks(rig, how, entry):
+    """Both paths: the failure counts against mms_tts and Indic Parler speaks.
+    A raise may leave the engine's CUDA state corrupted, so the engine is
+    unloaded and the CUDA cache cleared; no audio leaves it loaded."""
     mod = rig.mod
     rig.healthy[mod.BACKEND_INDIC_PARLER] = True
     eng = rig.start(mod.BACKEND_MMS_TTS, 'ta')
     rig.log.fail[mod.BACKEND_MMS_TTS] = how
-    assert eng._synth_speech_segment(TA1, 'ta', rig.out) == rig.out
+    assert _speak(rig, eng, entry, TA1, 'ta') == rig.out
     assert rig.log.spoken[-1] == (mod.BACKEND_INDIC_PARLER, TA1, 'ta')
     assert eng._consecutive_failures.get(mod.BACKEND_MMS_TTS) == 1
+    if how == 'raise':
+        assert rig.log.unloaded == [mod.BACKEND_MMS_TTS]
+        assert mod.BACKEND_MMS_TTS not in eng._backends
+        assert rig.log.cuda_cleared == 1
+    else:
+        assert rig.log.unloaded == []
+        assert mod.BACKEND_MMS_TTS in eng._backends
+
+
+@pytest.mark.parametrize('entry', ['line', 'segment'])
+def test_a_transient_raise_is_not_counted_and_piper_speaks_this_line_only(rig, entry):
+    """A worker that ran out of GPU memory once: Piper speaks this line, and
+    mms_tts stays loaded, selected and uncounted for the next one."""
+    mod = rig.mod
+    eng = rig.start(mod.BACKEND_MMS_TTS, 'en')
+    rig.log.fail[mod.BACKEND_MMS_TTS] = 'transient'
+    assert _speak(rig, eng, entry, EN, 'en') == rig.out
+    assert rig.log.spoken == [(mod.BACKEND_PIPER, EN, 'en')]
+    assert not eng._consecutive_failures.get(mod.BACKEND_MMS_TTS)
+    assert eng._active_backend == mod.BACKEND_MMS_TTS
+    assert rig.log.unloaded == []
+
+
+@pytest.mark.parametrize('entry', ['line', 'segment'])
+def test_a_gpu_engine_without_room_hands_this_line_to_piper_only(rig, entry):
+    """The laptop GPU is full (the LLM holds most of it): Piper speaks this
+    line; mms_tts is not asked, not counted, and stays selected."""
+    mod = rig.mod
+    eng = rig.start(mod.BACKEND_MMS_TTS, 'en')
+    rig.room['mode'] = 'cpu_only'
+    assert _speak(rig, eng, entry, EN, 'en') == rig.out
+    assert rig.log.spoken == [(mod.BACKEND_PIPER, EN, 'en')]
+    assert eng._active_backend == mod.BACKEND_MMS_TTS
+    assert mod.BACKEND_MMS_TTS in eng._backends
+    assert not eng._consecutive_failures.get(mod.BACKEND_MMS_TTS)
+
+
+def test_a_whole_line_reaches_the_engine_with_its_speed(rig):
+    mod = rig.mod
+    eng = rig.start(mod.BACKEND_PIPER, 'en')
+    assert eng.synthesize(EN, output_path=rig.out, speed=0.8, language='en') == rig.out
+    assert rig.log.spoken == [(mod.BACKEND_PIPER, EN, 'en')]
+    assert rig.log.speeds == [0.8]
+
+
+@pytest.mark.parametrize('entry', ['line', 'segment'])
+def test_audio_clears_the_engines_failure_counter(rig, entry):
+    mod = rig.mod
+    eng = rig.start(mod.BACKEND_MMS_TTS, 'ta')
+    eng._consecutive_failures[mod.BACKEND_MMS_TTS] = 2
+    assert _speak(rig, eng, entry, TA1, 'ta') == rig.out
+    assert rig.log.spoken == [(mod.BACKEND_MMS_TTS, TA1, 'ta')]
+    assert eng._consecutive_failures.get(mod.BACKEND_MMS_TTS) == 0
 
 
 def test_a_selected_engine_that_never_came_up_is_counted_until_demoted(rig):
@@ -201,6 +296,32 @@ def test_switching_to_a_gpu_engine_unloads_the_previous_one(rig):
     eng._switch_backend(mod.BACKEND_INDIC_PARLER)
     assert rig.log.unloaded == [mod.BACKEND_MMS_TTS]
     assert mod.BACKEND_MMS_TTS not in eng._backends
+
+
+def test_a_gpu_engine_frees_the_idle_gpu_engine_too(rig):
+    """mms_tts, then Piper for an English line, then Indic Parler: the active
+    engine at the last switch is Piper, yet the GPU room Indic Parler needs is
+    held by mms_tts.  mms_tts is unloaded and its VRAM released, as is the
+    active engine (Piper), so only Indic Parler stays loaded."""
+    mod = rig.mod
+    eng = rig.start(mod.BACKEND_MMS_TTS, 'ta')
+    eng._switch_backend(mod.BACKEND_PIPER)
+    eng._switch_backend(mod.BACKEND_INDIC_PARLER)
+    assert list(eng._backends) == [mod.BACKEND_INDIC_PARLER]
+    assert sorted(rig.log.unloaded) == sorted([mod.BACKEND_MMS_TTS, mod.BACKEND_PIPER])
+    assert rig.log.released == ['tts_mms_tts']
+    assert rig.log.allocated == ['tts_indic_parler']
+
+
+def test_a_probe_of_another_engine_puts_the_selected_engine_back(rig):
+    """The handshake probes Indic Parler while mms_tts serves Tamil: Indic
+    Parler speaks the probe, and mms_tts is the selected engine again after."""
+    mod = rig.mod
+    eng = rig.start(mod.BACKEND_MMS_TTS, 'ta')
+    assert eng.verify_synth_via_backend(
+        mod.BACKEND_INDIC_PARLER, TA1, rig.out, language='ta') == rig.out
+    assert rig.log.spoken == [(mod.BACKEND_INDIC_PARLER, TA1, 'ta')]
+    assert eng._active_backend == mod.BACKEND_MMS_TTS
 
 
 def test_a_tamil_reply_with_an_english_fragment_keeps_one_tamil_worker(rig):

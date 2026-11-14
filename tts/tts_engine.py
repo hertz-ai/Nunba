@@ -2679,16 +2679,20 @@ class TTSEngine:
                 logger.warning(f"J214: pin {new_tool!r} failed: {e}")
 
     def _switch_backend(self, new_backend):
-        """Switch to a new backend, unloading the old one if needed.
+        """Switch to a new backend, unloading engines to make GPU room.
 
-        The old engine is unloaded only to make GPU room for a new engine
-        that needs GPU memory, i.e. one the engine registry gives a VRAM
-        budget (vram_key), the same tool name this method allocates and
-        releases.  Switching to one with none (Piper) leaves the old engine
-        loaded, so switching back costs no reload."""
-        old = self._active_backend
+        Engines are unloaded only to make GPU room for a new engine that
+        needs GPU memory, i.e. one the engine registry gives a VRAM budget
+        (vram_key), the same tool name this method allocates and releases.
+        Then the active engine goes, and with it every other loaded engine
+        that has a budget: after an English line the active engine is
+        Piper while a GPU engine sits idle.  Switching to an engine with
+        none (Piper) unloads nothing, so switching back costs no reload."""
+        active = self._active_backend
         needs_gpu = self._get_vram_tool_name(new_backend) is not None
-        if needs_gpu and old in self._backends and old != new_backend:
+        to_unload = [b for b in self._backends if needs_gpu and b != new_backend
+                     and (b == active or self._get_vram_tool_name(b) is not None)]
+        for old in to_unload:
             old_inst = self._backends.pop(old, None)
             if old_inst:
                 if hasattr(old_inst, 'unload_model'):
@@ -2965,14 +2969,12 @@ class TTSEngine:
     def _synth_speech_segment(self, text, lang, out_path, **kwargs):
         """Synthesize one speech segment with language-appropriate TTS engine.
 
-        The selected engine speaks first when it can speak the segment's
-        language.  Every other case goes to ``_synthesize_with_fallback``:
-        the engine never came up, raised (e.g. Piper's
-        ``PiperLangUnavailable`` for a language it has no voice for),
-        returned no audio, or cannot speak the language.  The ladder's
-        wrong-language gate and its ``_publish_lang_unsupported`` event
-        (the frontend's "setting up TTS for this language" card) apply
-        there.
+        The selected engine speaks first, through ``_speak_with_active_engine``,
+        the one path synthesize() also uses.  Every other case goes to
+        ``_synthesize_with_fallback`` (e.g. Piper's ``PiperLangUnavailable``
+        for a language it has no voice for).  The ladder's wrong-language
+        gate and its ``_publish_lang_unsupported`` event (the frontend's
+        "setting up TTS for this language" card) apply there.
 
         Also call ``ensure_inference_headroom`` before synth so the
         LLM-stays / TTS-yields VRAM rule fires when the chat LLM owns
@@ -3008,45 +3010,10 @@ class TTSEngine:
         except Exception as _hr_err:
             logger.debug(f"ensure_inference_headroom skipped: {_hr_err}")
 
-        # The selected engine speaks the segment first, as in synthesize().
-        # The ladder is asked only when that engine never came up, raises,
-        # or returns no audio, and each of those counts against the engine,
-        # so repeated failures demote it.  An engine that cannot speak the
-        # segment's language is not asked and not counted.
-        voice = kwargs.pop('voice', None)
-        active = self._active_backend
-        inst = self._backends.get(active)
-        if inst is None:
-            self._record_never_came_up(active)
-        elif _normalize_lang(lang) == 'en' or active in _capable_backends_for(lang):
-            try:
-                with self._synth_lock:
-                    raw = inst.synthesize(text=text, output_path=out_path, voice=voice,
-                                          language=lang, **kwargs)
-                result = _normalize_tts_result(raw, out_path)
-                if result:
-                    self._record_backend_success(active)
-                    return result
-                self._record_backend_failure(
-                    active, RuntimeError(f"{active}: synthesize returned no audio"))
-            except Exception as e:
-                is_transient = bool(getattr(e, 'transient', False))
-                logger.error(f"Synthesis failed ({active}): {e} [transient={is_transient}]")
-                try:
-                    from tts.verified_synth import _surface_backend_exception
-                    _surface_backend_exception(active, e)
-                except Exception:
-                    pass
-                if not is_transient:
-                    self._record_backend_failure(active, e)
-
-        return self._synthesize_with_fallback(
-            text=text,
-            output_path=out_path,
-            voice=voice,
-            language=lang,
-            **kwargs,
-        )
+        # The selected engine speaks the segment through the same path as a
+        # whole line in synthesize().
+        return self._speak_with_active_engine(
+            text, out_path, kwargs.pop('voice', None), lang, **kwargs)
 
     def _synth_media_segment(self, modality, text, out_path,
                               genre='', duration=30, **kwargs):
@@ -3347,17 +3314,35 @@ class TTSEngine:
                     inst = self._backends.get(self._active_backend)
                     if inst:
                         break
-            if not inst:
-                # The selected engine never came up: it counts as a failure of
-                # that engine, and the line goes to the ladder, which speaks it
-                # with the next engine for the language.
-                logger.warning("TTS backend %s never came up (available=%s, pending=%s); "
-                               "handing the line to the fallback ladder",
-                               self._active_backend, list(self._backends.keys()),
-                               getattr(self, '_pending_backend', None))
-                self._record_never_came_up(self._active_backend)
-                return self._synthesize_with_fallback(
-                    text, output_path, voice, language or self._language, **kwargs)
+        return self._speak_with_active_engine(
+            text, output_path, voice, self._language, speed=speed, **kwargs)
+
+    def _speak_with_active_engine(self, text, output_path, voice, language,
+                                  speed=None, **kwargs):
+        """The selected engine speaks one line, or the ladder does.
+
+        The one path for a whole line (synthesize) and a speech segment
+        (_synth_speech_segment).  The line goes to
+        ``_synthesize_with_fallback`` when the engine never came up
+        (counted), lacks the GPU memory to speak now (Piper speaks this
+        line only, not counted), cannot speak ``language`` (not counted),
+        raises (counted unless transient; a non-transient raise also
+        unloads it, its CUDA state may be corrupted), or returns no audio
+        (counted).  Audio clears the engine's failure counter.  ``speed``
+        reaches the engine only when given.
+        """
+        inst = self._backends.get(self._active_backend)
+        if not inst:
+            # The selected engine never came up: it counts as a failure of
+            # that engine, and the line goes to the ladder, which speaks it
+            # with the next engine for the language.
+            logger.warning("TTS backend %s never came up (available=%s, pending=%s); "
+                           "handing the line to the fallback ladder",
+                           self._active_backend, list(self._backends.keys()),
+                           getattr(self, '_pending_backend', None))
+            self._record_never_came_up(self._active_backend)
+            return self._synthesize_with_fallback(
+                text, output_path, voice, language, **kwargs)
 
         # VRAM safety: delegate to VRAMManager (single source of truth).
         # CUDA OOM can kill the ENTIRE process (C-level abort, uncatchable).
@@ -3384,7 +3369,7 @@ class TTSEngine:
                     # Do NOT permanently switch _active_backend. F5 will be
                     # retried on next request when VRAM may be free again.
                     return self._synthesize_with_fallback(
-                        text, output_path, voice, self._language,
+                        text, output_path, voice, language,
                         _transient=True, **kwargs)
             except Exception:
                 pass
@@ -3404,27 +3389,27 @@ class TTSEngine:
         # the primary path from producing wrong-language mumble audio
         # before any exception is raised.
         try:
-            _lang_norm = _normalize_lang(self._language)
+            _lang_norm = _normalize_lang(language)
             if (_lang_norm != 'en'
-                    and self._active_backend not in _capable_backends_for(self._language)):
+                    and self._active_backend not in _capable_backends_for(language)):
                 logger.warning(
                     f"Active backend '{self._active_backend}' cannot speak "
-                    f"lang='{self._language}' — routing through capability-gated "
+                    f"lang='{language}'; routing through capability-gated "
                     f"fallback chain instead of producing wrong-language audio."
                 )
                 return self._synthesize_with_fallback(
-                    text, output_path, voice, self._language, **kwargs)
+                    text, output_path, voice, language, **kwargs)
         except Exception:
             pass
 
         try:
             _preferred = _FALLBACK_LANG_ENGINE_PREFERENCE.get(
-                (self._language or 'en').split('-')[0],
+                (language or 'en').split('-')[0],
                 _DEFAULT_PREFERENCE,
             )
             if self._active_backend not in _preferred:
                 logger.warning(
-                    f"TTS language mismatch: requested lang='{self._language}' "
+                    f"TTS language mismatch: requested lang='{language}' "
                     f"but active backend '{self._active_backend}' is not in "
                     f"the preferred ladder {_preferred} — audio quality may "
                     f"be degraded or wrong-language.",
@@ -3438,7 +3423,7 @@ class TTSEngine:
                     _wamp_pub(
                         'com.hertzai.hevolve.tts.lang_mismatch',
                         {
-                            'requested_lang': self._language,
+                            'requested_lang': language,
                             'active_backend': self._active_backend,
                             'preferred': _preferred,
                         },
@@ -3454,14 +3439,16 @@ class TTSEngine:
         # corruption, CUDA state errors, or segfaults.
         #
         # speed is forwarded explicitly because it's declared as its own
-        # param on this method's signature — **kwargs does NOT capture
+        # param on synthesize()'s signature: **kwargs does NOT capture
         # named params, so without this pass-through the profile
         # multiplier (and caller overrides) would be silently dropped.
+        # A segment passes none, and the engine is then not given one.
+        engine_kwargs = dict(kwargs) if speed is None else dict(kwargs, speed=speed)
         with self._synth_lock:
             try:
                 raw = inst.synthesize(text=text, output_path=output_path,
-                                      voice=voice, speed=speed,
-                                      language=self._language, **kwargs)
+                                      voice=voice,
+                                      language=language, **engine_kwargs)
                 result = _normalize_tts_result(raw, output_path)
                 if result and os.path.isfile(result):
                     try:
@@ -3475,7 +3462,8 @@ class TTSEngine:
                     # so a one-off transient error doesn't accumulate
                     # into a session-permanent demotion.
                     self._record_backend_success(self._active_backend)
-                return result
+                if result:
+                    return result
             except Exception as e:
                 # Transient GPU failure (CUDA OOM in subprocess, worker
                 # crash, stdout desync) is signaled by the subprocess
@@ -3519,7 +3507,7 @@ class TTSEngine:
                     # Subprocess already isolated the crash — don't tear
                     # down the worker or clear CUDA cache from the parent.
                     return self._synthesize_with_fallback(
-                        text, output_path, voice, self._language,
+                        text, output_path, voice, language,
                         _transient=True, **kwargs,
                     )
 
@@ -3536,14 +3524,23 @@ class TTSEngine:
                 del failed_inst
                 _clear_cuda_cache()
                 return self._synthesize_with_fallback(
-                    text, output_path, voice, self._language, **kwargs)
+                    text, output_path, voice, language, **kwargs)
+
+            # No audio: it counts against the engine, and the ladder speaks
+            # the line with the next engine for the language.
+            self._record_backend_failure(
+                self._active_backend,
+                RuntimeError(f"{self._active_backend}: synthesize returned no audio"))
+            return self._synthesize_with_fallback(
+                text, output_path, voice, language, **kwargs)
 
     def _synthesize_with_fallback(self, text, output_path, voice, language, **kwargs):
         """Try remaining engines in the preference chain after the primary fails.
 
-        Called when the selected engine raises, never came up, or cannot
-        speak the language.  Walks the language's preference ladder without
-        the active engine; Piper is appended when the ladder lacks it.
+        Called when the selected engine raises, never came up, returns no
+        audio, or cannot speak the language.  Walks the language's
+        preference ladder without the active engine; Piper is appended
+        when the ladder lacks it.
 
         _transient=True: VRAM pressure fallback — don't permanently switch
         _active_backend. The GPU engine will be retried on next request.
