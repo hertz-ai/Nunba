@@ -729,6 +729,13 @@ def ensure_user_site_on_path():
     sp = get_user_site_packages()
     if sp not in sys.path:
         sys.path.insert(0, sp)
+    # The private D: site is where an install goes when C: has no room (the
+    # CUDA-torch fallback, the crawl4ai setup).  Nothing put it on sys.path,
+    # so a package installed there was never importable.  It goes AFTER the
+    # C: site: a package present in both is still the C: copy.
+    for _d_sp in _private_d_drive_sites():
+        if _d_sp not in sys.path:
+            sys.path.append(_d_sp)
     # Windows: add torch/lib to DLL search path for CUDA DLLs
     if sys.platform == 'win32':
         _torch_lib = os.path.join(sp, 'torch', 'lib')
