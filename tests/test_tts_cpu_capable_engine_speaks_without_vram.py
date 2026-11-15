@@ -316,3 +316,50 @@ def test_switching_to_mms_tts_still_unloads_the_other_gpu_engines(rig):
     assert rig.log.released == ['tts_indic_parler']
     assert eng._active_backend == mod.BACKEND_MMS_TTS
     assert set(eng._backends) == {mod.BACKEND_MMS_TTS}
+
+
+# Review of f885318e (rv_66e6x, must-fix): engines the registry says run on
+# the CPU kept their place in the English ladder, so with kokoro and melotts
+# installed and the GPU full the selector picked melotts on the CPU over
+# kokoro on the GPU (1021 MiB free) and over Piper (0.3 GB), and a running
+# kokoro with no headroom kept an English line on the full GPU.  A full GPU
+# now decides the order (those engines go last) and the speak path keeps
+# Piper for a language Piper speaks.
+
+def _english_engines_installed(rig, monkeypatch):
+    mod = rig.mod
+    have = {mod.BACKEND_MMS_TTS, mod.BACKEND_INDIC_PARLER, mod.BACKEND_CHATTERBOX_ML,
+            mod.BACKEND_MELOTTS, mod.BACKEND_KOKORO}
+    monkeypatch.setattr(mod, '_probe_backend_runnable', lambda b, _pkg: b in have)
+    monkeypatch.setattr(sys.modules['tts.tts_handshake'], 'is_verified_backend',
+                        lambda b: b in have)
+    monkeypatch.setattr(mod.TTSEngine, '_import_check_cache', {'_torch_cuda': True})
+
+
+@pytest.mark.parametrize('free, expected', [(LIVE_FREE_GB, 'kokoro'), (NO_ROOM_GB, 'piper')],
+                         ids=['1021MiB', '0.3GB'])
+def test_on_a_full_gpu_english_keeps_the_pick_it_had(rig, monkeypatch, free, expected):
+    """kokoro (0.5 GB) fits in 1021 MiB and is picked as before; at 0.3 GB
+    Piper is.  melotts (1.5 GB) would run on the CPU, so it goes after them."""
+    mod = rig.mod
+    _english_engines_installed(rig, monkeypatch)
+    rig.vram.free = free
+    eng = rig.start(mod.BACKEND_PIPER, 'en')
+    want = {'kokoro': mod.BACKEND_KOKORO, 'piper': mod.BACKEND_PIPER}[expected]
+    assert eng._select_backend_for_language('en') == want
+    ladder = mod._get_lang_preference('en')
+    assert ladder.index(mod.BACKEND_MELOTTS) > ladder.index(want), ladder
+
+
+@pytest.mark.parametrize('entry', ['line', 'segment'])
+def test_a_running_kokoro_without_headroom_hands_an_english_line_to_piper(rig, entry):
+    """kokoro's worker is on the GPU and 0.3 GB is free: Piper speaks this
+    English line, kokoro stays selected and is not counted (as before
+    f885318e).  Only a language Piper cannot speak stays with the engine."""
+    mod = rig.mod
+    eng = rig.start(mod.BACKEND_KOKORO, 'en', on_cuda=True)
+    rig.vram.free = NO_ROOM_GB
+    assert _speak(rig, eng, entry, EN, 'en') == rig.out
+    assert rig.log.spoken == [(mod.BACKEND_PIPER, EN, 'en')]
+    assert eng._active_backend == mod.BACKEND_KOKORO
+    assert not eng._consecutive_failures.get(mod.BACKEND_KOKORO)

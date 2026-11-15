@@ -967,7 +967,23 @@ def _filter_ladder_by_vram_budget(prefs: list[str]) -> list[str]:
         min_vram_gb, _model_size = budget
         return min_vram_gb <= free_gb
 
-    filtered = [be for be in prefs if _backend_fits(be)]
+    # A full GPU decides the ORDER, never whether a language has a voice: an
+    # engine that only fits by running on the CPU goes after every engine
+    # that fits as it is, so English keeps the pick it had (kokoro with 1 GB
+    # free, Piper with 0.3 GB) and Tamil, which Piper cannot speak, still
+    # reaches mms_tts.  Review of f885318e: keeping them in place made
+    # English pick melotts on the CPU over kokoro on the GPU.
+    def _fits_as_is(be: str) -> bool:
+        return not _runs_on_cpu(be) or _backend_fits_without_cpu(be)
+
+    def _backend_fits_without_cpu(be: str) -> bool:
+        registry_key = _BACKEND_TO_REGISTRY_KEY.get(be)
+        budget = VRAM_BUDGETS.get(f'tts_{registry_key}') if registry_key else None
+        return not budget or budget[0] <= free_gb
+
+    kept = [be for be in prefs if _backend_fits(be)]
+    filtered = ([be for be in kept if _fits_as_is(be)]
+                + [be for be in kept if not _fits_as_is(be)])
     # Never let the filter empty the ladder — at minimum keep Piper /
     # Kokoro / espeak as a CPU floor.  If filter ate everything,
     # fall back to the original list and let the runtime circuit
@@ -2720,7 +2736,9 @@ class TTSEngine:
         none (Piper) unloads nothing, so switching back costs no reload."""
         active = self._active_backend
         needs_gpu = self._get_vram_tool_name(new_backend) is not None
-        to_unload = [b for b in self._backends if needs_gpu and b != new_backend
+        # A copy: a synth thread can add a fallback engine to _backends
+        # while this switch runs on its own thread (review of 3ebaee4f).
+        to_unload = [b for b in list(self._backends) if needs_gpu and b != new_backend
                      and (b == active or self._get_vram_tool_name(b) is not None)]
         for old in to_unload:
             old_inst = self._backends.pop(old, None)
@@ -3391,10 +3409,14 @@ class TTSEngine:
                     vram_ok = free_gb >= 0.4
                 else:
                     vram_ok = vram_manager.suggest_offload_mode(tool_name) != 'cpu_only'
-                if not vram_ok and _runs_on_cpu(self._active_backend):
+                if (not vram_ok and _runs_on_cpu(self._active_backend)
+                        and BACKEND_PIPER not in _capable_backends_for(language)):
                     # A full GPU decides where this engine runs, not whether
                     # it speaks: Piper has no voice for Tamil, so handing
-                    # the line to Piper meant no audio at all.
+                    # the line to Piper meant no audio at all.  A language
+                    # Piper speaks still goes to Piper for this line, as
+                    # before (review of f885318e: a hot kokoro with 0.3 GB
+                    # free must not run an English line on the full GPU).
                     logger.info(
                         f"VRAM insufficient for {self._active_backend} "
                         f"({vram_manager.get_free_vram():.1f}GB free); it speaks "
@@ -3588,11 +3610,21 @@ class TTSEngine:
         failed = self._active_backend
         lang_norm = _normalize_lang(language)
         capable = _capable_backends_for(language)
-        if transient:
+        if transient and (lang_norm == 'en' or BACKEND_PIPER in capable):
             # VRAM pressure: skip all GPU-capable engines, go straight to Piper.
             # Loading torch-based engines on CPU still touches CUDA internals
             # and crashes when VRAM is exhausted.
             candidates = [BACKEND_PIPER]
+        elif transient:
+            # This line only, the selected engine stays selected: Piper has
+            # no voice for this language, so the language's own engines in
+            # ladder order (the VRAM filter has already dropped GPU-only
+            # engines without room and put CPU-run ones last; each runs in
+            # its own worker process).  Review of 3ebaee4f: a Tamil line
+            # whose engine raised once (Indic Parler healthy), or whose
+            # GPU-only engine had no room, went to Piper alone: no audio.
+            candidates = [b for b in _get_lang_preference(language or 'en')
+                          if b != failed]
         else:
             prefs = _get_lang_preference(language or 'en')
             candidates = [b for b in prefs if b != failed]

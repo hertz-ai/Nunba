@@ -339,3 +339,33 @@ def test_a_tamil_reply_with_an_english_fragment_keeps_one_tamil_worker(rig):
                               (mod.BACKEND_MMS_TTS, TA2, 'ta')]
     assert rig.log.built == [mod.BACKEND_PIPER]
     assert rig.log.unloaded == []
+
+
+# Review of 3ebaee4f (rv_n2, must-fix): a this-line-only hand-off went to
+# Piper alone, so a Tamil line got no audio when its engine raised once or a
+# GPU-only engine had no room.  It goes to Piper when Piper speaks the
+# language, else to the language's own engines; the selected engine stays.
+
+@pytest.mark.parametrize('entry', ['line', 'segment'])
+def test_a_transient_raise_on_a_tamil_line_hands_it_to_a_tamil_engine(rig, entry):
+    mod = rig.mod
+    rig.healthy[mod.BACKEND_INDIC_PARLER] = True
+    eng = rig.start(mod.BACKEND_MMS_TTS, 'ta')
+    rig.log.fail[mod.BACKEND_MMS_TTS] = 'transient'
+    assert _speak(rig, eng, entry, TA1, 'ta') == rig.out
+    assert rig.log.spoken == [(mod.BACKEND_INDIC_PARLER, TA1, 'ta')]
+    assert eng._active_backend == mod.BACKEND_MMS_TTS
+    assert not eng._consecutive_failures.get(mod.BACKEND_MMS_TTS)
+    assert rig.log.unloaded == []
+
+
+@pytest.mark.parametrize('entry', ['line', 'segment'])
+def test_a_gpu_only_engine_without_room_hands_a_tamil_line_to_a_tamil_engine(rig, entry):
+    mod = rig.mod
+    rig.healthy[mod.BACKEND_INDIC_PARLER] = True
+    eng = rig.start(mod.BACKEND_INDIC_PARLER, 'ta')
+    rig.room['mode'] = 'cpu_only'
+    assert _speak(rig, eng, entry, TA1, 'ta') == rig.out
+    assert rig.log.spoken == [(mod.BACKEND_MMS_TTS, TA1, 'ta')]
+    assert eng._active_backend == mod.BACKEND_INDIC_PARLER
+    assert not eng._consecutive_failures.get(mod.BACKEND_INDIC_PARLER)
