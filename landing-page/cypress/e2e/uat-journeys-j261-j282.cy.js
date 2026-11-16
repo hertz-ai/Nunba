@@ -189,8 +189,13 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
   });
 
   it('J276: SPA route / returns renderable HTML (or a 200 JSON at /local)', () => {
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|welcome|type a message/i, {timeout: 10000}).should('exist');
+    // A first visit to /local shows the HART language picker, which has none
+    // of the chat's words (chat-flow 1.3).  cy.openLocalChat is the sealed,
+    // returning guest, whose /local is the chat with its composer.
+    cy.openLocalChat();
+    cy.get('textarea', {timeout: 30000})
+      .should('have.attr', 'placeholder')
+      .and('match', /message/i);
   });
 
   it('J277: POST /api/liquid/render returns envelope (server-driven render)', () => {
