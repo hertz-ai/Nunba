@@ -295,31 +295,6 @@ describe('Arcade games — input moves the game', () => {
               });
             }
             cy.wait(1200);
-          } else if (g.id === '__never__') {
-            // 8x8 grid, centred. A move is a swap of two ADJACENT cells, so
-            // tap one cell then the one beside it. A generic centre drag is
-            // not a legal move and left the board unchanged (0.03% pixels).
-            const cell = Math.min(r.width, r.height) * 0.8 / 8;
-            cy.wrap($c)
-              .trigger('pointerdown', ptr({ clientX: cx, clientY: cy0 }))
-              .trigger('pointerup', ptr({ clientX: cx, clientY: cy0, buttons: 0 }))
-              .wait(350)
-              .trigger('pointerdown', ptr({ clientX: cx + cell, clientY: cy0 }))
-              .trigger('pointerup', ptr({ clientX: cx + cell, clientY: cy0, buttons: 0 }));
-            cy.wait(1200);
-          } else if (g.id === 'bubble-shooter') {
-            // Cannon sits at (w/2, h-40); pointermove AIMS, pointerdown FIRES.
-            // Fire twice at different angles and allow bubble travel time.
-            [-0.25, 0.2].forEach((skew) => {
-              const tx = cx + r.width * skew;
-              const ty = r.top + r.height * 0.25;
-              cy.wrap($c)
-                .trigger('pointermove', ptr({ clientX: tx, clientY: ty }))
-                .wait(250)
-                .trigger('pointerdown', ptr({ clientX: tx, clientY: ty }))
-                .trigger('pointerup', ptr({ clientX: tx, clientY: ty, buttons: 0 }));
-              cy.wait(1400); // let the bubble fly and settle
-            });
           } else {
             // One event per step on the canvas as it is then, not a chain on
             // the first one.  A step can end the run (a pointerdown flaps
