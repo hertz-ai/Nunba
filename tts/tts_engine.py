@@ -1777,17 +1777,20 @@ class TTSEngine:
                 'build': _installed_build(),
                 'reason': (lines[-1] if lines else 'unknown')[:300],
             }
-        # Saved through the process's engine (get_tts_engine) when there is
-        # one: the save writes 'demoted' from the saving instance's own set,
-        # and this runs on the engine TTSLoader.load built at boot, whose set
-        # is the file as it was ~3 min earlier, so it erased demotions the
-        # live engine wrote meanwhile.  'install_failed' is class-level, so
-        # either instance writes the same rows for it.
-        writer = _engine if _engine is not None else self
         try:
-            writer._save_persisted_demotions()
+            self._state_writer()._save_persisted_demotions()
         except Exception as _pe:  # noqa: BLE001
             logger.debug(f"TTS install-failure persist skipped: {_pe}")
+
+    def _state_writer(self) -> 'TTSEngine':
+        """The engine whose save writes tts_state.json for the install path:
+        the process's live engine (get_tts_engine) when there is one, else
+        this one.  The save writes 'demoted' from the saving instance's own
+        set, and the install path also runs on the engine TTSLoader.load
+        built at boot, whose set is the file as it was minutes earlier:
+        saving from it erased demotions the live engine wrote meanwhile.
+        'install_failed' is class-level, so either writes the same rows."""
+        return _engine if _engine is not None else self
 
     def _try_auto_install_backend(self, backend):
         """Trigger a background install of the given backend's packages + models.
@@ -1926,14 +1929,6 @@ class TTSEngine:
                             TTSEngine._auto_install_failed.discard(backend)
                             _had_record = TTSEngine._auto_install_failed_meta.pop(
                                 backend, None) is not None
-                        if _had_record and backend not in self._demoted_backends:
-                            # The demotion clear below saves too; this one
-                            # drops a failed-install record kept on disk.
-                            try:
-                                self._save_persisted_demotions()
-                            except Exception as _pe:
-                                logger.debug(
-                                    f"persist-after-clear failed: {_pe}")
                         # Autonomous-recovery close-the-loop (#TTS-demote-heal,
                         # 2026-05-28): a verified install means the engine is
                         # NOT broken anymore — clear the session demotion so
@@ -1944,15 +1939,29 @@ class TTSEngine:
                         # forever even after a successful reinstall via the
                         # autonomous path PASS 2 just triggered — defeating
                         # the autonomous-recovery contract.
-                        if backend in self._demoted_backends:
-                            self._demoted_backends.discard(backend)
-                            self._demotion_meta.pop(backend, None)
-                            self._consecutive_failures[backend] = 0
+                        #
+                        # Cleared on this engine AND on the process's live
+                        # one (get_tts_engine): the install may run on the
+                        # engine TTSLoader.load built at boot, and clearing
+                        # only that one left the live engine skipping the
+                        # backend all session.  Saved through the live
+                        # engine, whose demotion set is current (see
+                        # _state_writer).
+                        writer = self._state_writer()
+                        cleared = False
+                        for eng in {id(self): self, id(writer): writer}.values():
+                            if backend in eng._demoted_backends:
+                                eng._demoted_backends.discard(backend)
+                                eng._demotion_meta.pop(backend, None)
+                                eng._consecutive_failures[backend] = 0
+                                cleared = True
+                        if cleared or _had_record:
                             try:
-                                self._save_persisted_demotions()
+                                writer._save_persisted_demotions()
                             except Exception as _pe:
                                 logger.debug(
                                     f"persist-after-clear failed: {_pe}")
+                        if cleared:
                             logger.info(
                                 f"[auto-install] '{backend}' demotion CLEARED "
                                 f"— engine is selectable again")
@@ -2358,7 +2367,9 @@ class TTSEngine:
         import time as _time
         now = _time.time()
         demoted_payload: dict[str, dict[str, Any]] = {}
-        for backend in self._demoted_backends:
+        # A snapshot: the install thread may save through the live engine
+        # while its synth threads add demotions.
+        for backend in list(self._demoted_backends):
             if backend in (BACKEND_PIPER, BACKEND_NONE):
                 continue
             # An entry already on file keeps its own clock; only a backend

@@ -460,8 +460,12 @@ def test_save_keeps_an_older_entrys_original_timestamps(state_path):
 def install_state(monkeypatch):
     """Fresh class-level install bookkeeping for each test (it is shared by
     every TTSEngine in the process, and other tests leave entries in it)."""
+    from tts import tts_engine as _te
     from tts.tts_engine import TTSEngine
 
+    # No live engine left behind by another test (get_tts_engine): it
+    # would become the writer of every save below.
+    monkeypatch.setattr(_te, '_engine', None)
     monkeypatch.setattr(TTSEngine, '_auto_install_failed', set())
     monkeypatch.setattr(TTSEngine, '_auto_install_failed_meta', {},
                         raising=False)
@@ -662,3 +666,48 @@ def test_verified_install_drops_the_failure_record(
     written = json.loads(state_path.read_text())
     assert 'neutts_air' not in written.get('install_failed', {})
     assert 'neutts_air' not in _te.TTSEngine._auto_install_failed
+
+
+def test_verified_install_on_the_boot_engine_clears_the_live_demotion(
+        state_path, install_state, monkeypatch):
+    """A demoted backend reinstalled and verified on TTSLoader.load's
+    engine is selectable again on the live engine too, and stays
+    un-demoted on disk; the live engine's other demotions are kept."""
+    import types
+
+    from tts import tts_engine as _te
+    from tts import tts_handshake as _hs
+
+    live = _te.TTSEngine(auto_init=False)
+    monkeypatch.setattr(_te, '_engine', live)
+    live._demoted_backends.update({'neutts_air', 'kokoro'})
+    live._save_persisted_demotions()
+    boot = _te.TTSEngine(auto_init=False)      # hydrates both
+    live._demoted_backends.add('f5')           # demoted after boot read it
+
+    monkeypatch.setattr(_hs, 'run_handshake', lambda *a, **k:
+                        types.SimpleNamespace(ok=True, n_bytes=48000,
+                                              err='', elapsed_s=1.0))
+    _run_background_install(boot, 'neutts_air', monkeypatch, (True, 'Ready'))
+
+    assert 'neutts_air' not in live._demoted_backends
+    written = json.loads(state_path.read_text())['demoted']
+    assert 'neutts_air' not in written
+    assert {'kokoro', 'f5'} <= set(written)
+
+
+def test_piper_install_failure_is_never_hydrated(state_path, install_state):
+    from tts.tts_engine import _TTS_STATE_SCHEMA, BACKEND_PIPER, TTSEngine, _installed_build
+
+    now = time.time()
+    state_path.write_text(json.dumps({
+        'schema': _TTS_STATE_SCHEMA,
+        'install_failed': {BACKEND_PIPER: {
+            'failed_at': now, 'expires_at': now + 3600,
+            'build': _installed_build(), 'reason': 'x'}},
+    }))
+
+    TTSEngine(auto_init=False)
+    assert BACKEND_PIPER not in TTSEngine._auto_install_failed
+    written = json.loads(state_path.read_text())
+    assert BACKEND_PIPER not in written.get('install_failed', {})
