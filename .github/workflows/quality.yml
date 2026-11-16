@@ -144,6 +144,12 @@ jobs:
           python -m pip install $(grep -E '^(pillow|sqlalchemy|cryptography|json-repair|beautifulsoup4|redis|huggingface_hub|pytz|waitress|pydantic|aiohttp|python-dotenv)==' requirements.txt | sort -u)
           # psutil is pinned only in requirements-lock.txt.
           python -m pip install $(grep -E '^psutil==' requirements-lock.txt | sort -u)
+          # OpenCV at the app's own pin: tests/test_a_large_phone_frame_is_shrunk.py
+          # drives the real /api/vision/frame shrink with real OpenCV, and without
+          # cv2 its collection error stopped the whole run (PR #72, 1f86f380:
+          # "No module named 'cv2'").  The headless build of the same version
+          # gives the same cv2 module without needing libGL on the runner.
+          python -m pip install $(grep -E '^opencv-python==' requirements.txt | sed 's/^opencv-python==/opencv-python-headless==/')
 
       # Install HARTOS (hart-backend) so `from core.*` / `from
       # integrations.*` imports in Nunba's tests resolve.  Without
