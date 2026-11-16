@@ -27,6 +27,15 @@ module.exports = defineConfig({
     video: false,
     screenshotOnRunFailure: true,
     chromeWebSecurity: false,
+    // index.html loads Google Analytics as an async script
+    // (www.googletagmanager.com/gtag/js), and the page's `load` event waits
+    // for it.  When that host is slow, cy.visit fails with "did not fire its
+    // `load` event within 30000ms": social-pages "rapid navigation" on CI
+    // (#72, runs on ec4b9f0d and 8f037c5e).  Measured locally: a 40 s delay
+    // on that host gives exactly that error; a refused request does not.
+    // Blocked hosts get an instant 503, so no test waits on analytics, and
+    // test runs no longer send hits to the real Analytics property.
+    blockHosts: ['www.googletagmanager.com', '*.google-analytics.com'],
     experimentalMemoryManagement: true,
     numTestsKeptInMemory: 5,
 
