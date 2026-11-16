@@ -923,9 +923,28 @@ def _verify_user_site_imports(success_line: str | None, args: list,
     python_exe = get_embed_python()
     failed: list[str] = []
 
+    # The user site's entries as they are spelled on disk.  A distribution
+    # named with capitals installs a lowercase package (MarkupSafe ->
+    # markupsafe, Jinja2 -> jinja2, Pygments -> pygments).  On Windows the
+    # existence check below matched it case-insensitively and the import
+    # then ran as `import MarkupSafe`, which Python refuses although the
+    # install is fine: live 2026-11-16 06:33 the crawl4ai setup (crawl4ai
+    # 0.9.5 + playwright 1.65.2, pip rc 0) was reported failed and
+    # markupsafe's dist-info quarantined.  The import uses the disk spelling.
+    try:
+        on_disk = {entry.lower(): entry for entry in os.listdir(user_sp)}
+    except OSError:
+        on_disk = {}
+
     for name in dict.fromkeys(names):          # keep order, drop dupes
         candidate = name.replace('-', '_')
         top = candidate.split('.')[0]          # filesystem unit for dotted names
+        spelled = on_disk.get(top.lower())
+        if spelled is None and (top.lower() + '.py') in on_disk:
+            spelled = on_disk[top.lower() + '.py'][:-3]
+        if spelled is not None and spelled != top:
+            candidate = spelled + candidate[len(top):]
+            top = spelled
         target_dir = os.path.join(user_sp, top)
         target_mod = os.path.join(user_sp, top + '.py')
         if not os.path.isdir(target_dir) and not os.path.isfile(target_mod):
