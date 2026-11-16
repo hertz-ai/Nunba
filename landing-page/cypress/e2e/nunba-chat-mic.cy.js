@@ -15,17 +15,12 @@
 
 // Helper: open the floating chat panel.  The panel is anchored bottom-right
 // and toggled by NunbaChatPill — visiting /social mounts it but the chat is
-// collapsed by default.  We simulate the user expanding it.
+// collapsed by default.  We click the pill, as a person does.  The desktop
+// pill (this spec's 1280px viewport) carries the caption "Your guardian
+// angel" (NunbaChatPill.jsx); the pill has no data-testid or aria-label,
+// which this helper used to look for, so it never found the pill.
 function openChatPanel() {
-  // Trigger the same path the pill uses by setting context state.  In a real
-  // E2E this is done by clicking the pill; we expose a window hook for the
-  // test only when CYPRESS_OPEN_CHAT is set.  Fallback: click any element
-  // matching the pill.
-  cy.get('[data-testid="nunba-chat-pill"], [aria-label="Open Nunba chat"]', {
-    timeout: 30000,
-  })
-    .first()
-    .click({force: true});
+  cy.contains('Your guardian angel', {timeout: 30000}).click({force: true});
 }
 
 // Stub getUserMedia + WebSocket before the page loads.
@@ -51,9 +46,14 @@ function stubMicAndWs(opts = {}) {
         getTracks: () => [fakeTrack],
         getAudioTracks: () => [fakeTrack],
       };
-      win.navigator.mediaDevices = win.navigator.mediaDevices || {};
-      win.navigator.mediaDevices.getUserMedia = () =>
-        Promise.resolve(fakeStream);
+      // Chrome's navigator.mediaDevices is a getter with no setter, so
+      // assigning to it threw "Cannot set property mediaDevices of
+      // [object Navigator] which has only a getter" before the page loaded
+      // (CI, shard 3).  Define it on this window's navigator instead.
+      Object.defineProperty(win.navigator, 'mediaDevices', {
+        configurable: true,
+        value: {getUserMedia: () => Promise.resolve(fakeStream)},
+      });
 
       // Mock WebSocket.  When wsConnects=true, simulate an open() so the
       // panel sees `activeMethod === 'ws'`.  When false, fail immediately
