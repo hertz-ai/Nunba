@@ -118,6 +118,18 @@ function countAnimationFrames(win, ms = 2000) {
   });
 }
 
+/**
+ * Send one pointer event to the game canvas, if the game still has one.
+ * The run may already be over (the engine unmounts the canvas for its
+ * completion screen), and then there is nothing left to send it to.
+ */
+function pointerOnLiveCanvas(type, opts) {
+  cy.get('body').then(($b) => {
+    const $c = $b.find('canvas');
+    if ($c.length) cy.wrap($c.first()).trigger(type, opts);
+  });
+}
+
 // ─────────────────────────── BOARD GAMES ───────────────────────────
 // Drive: click a playable cell, assert the board mutated.
 
@@ -309,14 +321,18 @@ describe('Arcade games — input moves the game', () => {
               cy.wait(1400); // let the bubble fly and settle
             });
           } else {
-            cy.wrap($c)
-              .trigger('pointermove', ptr({ clientX: cx - 60, clientY: cy0 - 40 }))
-              .wait(200)
-              .trigger('pointerdown', ptr({ clientX: cx, clientY: cy0 }))
-              .wait(200)
-              .trigger('pointermove', ptr({ clientX: cx + 80, clientY: cy0 }))
-              .wait(200)
-              .trigger('pointerup', ptr({ clientX: cx + 80, clientY: cy0, buttons: 0 }));
+            // One event per step on the canvas as it is then, not a chain on
+            // the first one.  A step can end the run (a pointerdown flaps
+            // Flappy into a pipe) and the engine unmounts the canvas; the
+            // chained .trigger() after it then failed on a detached subject
+            // (shard 3 on e1df35c2: "The subject is no longer attached").
+            pointerOnLiveCanvas('pointermove', ptr({ clientX: cx - 60, clientY: cy0 - 40 }));
+            cy.wait(200);
+            pointerOnLiveCanvas('pointerdown', ptr({ clientX: cx, clientY: cy0 }));
+            cy.wait(200);
+            pointerOnLiveCanvas('pointermove', ptr({ clientX: cx + 80, clientY: cy0 }));
+            cy.wait(200);
+            pointerOnLiveCanvas('pointerup', ptr({ clientX: cx + 80, clientY: cy0, buttons: 0 }));
           }
         });
       });
