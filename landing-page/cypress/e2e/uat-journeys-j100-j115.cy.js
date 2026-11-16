@@ -174,28 +174,29 @@ describe('J104: memory tool chain exposed', () => {
     installBaselineStubs();
   });
 
-  // The memory HTTP surface is GET /api/memory/recent and GET
-  // /api/memory/search (routes/chatbot_routes.py; MemoryPanel.jsx calls
-  // both).  There is no POST /api/memory/remember or /recall: those POSTs
-  // matched the DELETE-only /api/memory/<memory_id> rule and got 405.
-  // Memories are written by the agent's own memory tools, not over HTTP.
-  it('GET /api/memory/recent returns envelope', () => {
-    cy.request({
-      url: `${Cypress.env('apiUrl')}/api/memory/recent?user_id=test&limit=5`,
-      failOnStatusCode: false,
-    }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
-      if (resp.status === 200) expect(resp.body).to.be.an('array');
-    });
-  });
-
-  it('GET /api/memory/search (recall) returns envelope', () => {
-    cy.request({
-      url: `${Cypress.env('apiUrl')}/api/memory/search?q=cats&user_id=test`,
-      failOnStatusCode: false,
-    }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
-      if (resp.status === 200) expect(resp.body).to.be.an('array');
+  // J104 per tests/journey/PRODUCT_MAP.md: MCP `remember` -> `recall`, the
+  // tool chain the agent uses, reached over HTTP the way an MCP client
+  // reaches it (cy.mcpExecute, /api/mcp/local/tools/execute), as J71 does.
+  // POST /api/memory/remember and /recall, which this used to call, were
+  // never registered: they matched the DELETE-only /api/memory/<memory_id>
+  // rule and got 405.  The journey's last step (/chat answering from the
+  // recalled memory) needs a model, which the CI runner does not have, so
+  // on CI this checks no more than J71 does, with J104's fact.
+  // The run stamp is in the query too: recall returns 5 rows and equal
+  // matches come back oldest first, so on a graph that kept earlier runs a
+  // bare 'My dog is Max' stopped finding this run's row from the sixth run.
+  it('MCP remember stores a fact that recall finds', () => {
+    const fact = `My dog is Max j104${Date.now()}`;
+    cy.mcpExecute('remember', {content: fact}).then((r) => {
+      expect(r.status).to.eq(200);
+      expect(r.body.success).to.eq(true);
+      expect(r.body.result).to.have.property('stored', true);
+      const id = r.body.result.memory_id;
+      expect(id).to.be.a('string').and.not.be.empty;
+      cy.mcpExecute('recall', {q: fact}).then((rr) => {
+        expect(rr.status).to.eq(200);
+        expect((rr.body.result.memories || []).map((m) => m.id)).to.include(id);
+      });
     });
   });
 });
