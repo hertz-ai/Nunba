@@ -129,6 +129,23 @@ describe('Voice Pipeline E2E', () => {
   }
 
   /**
+   * Make sure win.navigator.mediaDevices is there for cy.stub.  Chrome's
+   * navigator.mediaDevices is a getter with no setter, so the spec's old
+   * `win.navigator.mediaDevices = win.navigator.mediaDevices || {}` threw
+   * "Cannot set property mediaDevices of [object Navigator] which has only
+   * a getter" in onBeforeLoad (the nunba-chat-mic failure, 9e33a0f5).  On
+   * localhost it exists; only where it does not is a plain object defined.
+   */
+  function ensureMediaDevices(win) {
+    if (!win.navigator.mediaDevices) {
+      Object.defineProperty(win.navigator, 'mediaDevices', {
+        configurable: true,
+        value: {},
+      });
+    }
+  }
+
+  /**
    * Create a mock MediaStream with a stubbed audio track.
    */
   function createMockStream() {
@@ -261,7 +278,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').callsFake(
               getUserMediaStub
             );
@@ -296,7 +313,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').rejects(
               new DOMException('Permission denied', 'NotAllowedError')
             );
@@ -318,7 +335,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').rejects(
               new DOMException('Requested device not found', 'NotFoundError')
             );
@@ -339,7 +356,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').resolves(
               mockStream
             );
@@ -457,7 +474,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').resolves(
               mockStream
             );
@@ -1311,7 +1328,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').resolves(
               mockStream
             );
@@ -1472,7 +1489,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').resolves(
               mockStream
             );
