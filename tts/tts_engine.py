@@ -78,6 +78,28 @@ BACKEND_NONE = "none"
 _TTS_STATE_SCHEMA = 1
 _DEMOTION_TTL_SECONDS = 7 * 86400
 
+# An automatic backend install that ran and failed is kept in the same
+# file ('install_failed'), so the next boot does not run the same failing
+# install again: TTSLoader.load builds a fresh TTSEngine on every boot and
+# asks _try_auto_install_backend, whose "already failed" set used to live
+# only in memory.  Measured 2026-11-12..16 on a Windows box without long
+# paths: `pip install neutts[all]` re-ran on every boot (3 attempts, ~3 min)
+# and failed the same way 9 times.  Same rule as the CUDA ctranslate2 install
+# (tts/package_installer.py, _record_ct2_install_failure): a day at most, and
+# at once after an update, since the record is kept for the build it failed on.
+_INSTALL_FAILURE_TTL_SECONDS = 24 * 3600
+
+
+def _installed_build() -> str:
+    """The installed build, for "has anything changed since the failure":
+    package_installer's own _installed_build_id, which the CUDA
+    ctranslate2 failure record is keyed on."""
+    try:
+        from tts.package_installer import _installed_build_id
+        return _installed_build_id()
+    except Exception:  # noqa: BLE001 -- recorded and compared the same way
+        return 'unknown'
+
 
 def _get_tts_state_path() -> str:
     """Return the canonical path to the persisted TTS state file.
@@ -1730,7 +1752,35 @@ class TTSEngine:
     _auto_install_pending = set()
     # Cache backends that failed to install — don't retry every request
     _auto_install_failed = set()
+    # The failures in _auto_install_failed that are kept across boots (an
+    # install that ran and failed): backend -> {failed_at, expires_at, build,
+    # reason}.  Written by _save_persisted_demotions, read back by
+    # _load_persisted_demotions; see _INSTALL_FAILURE_TTL_SECONDS.
+    _auto_install_failed_meta: dict[str, dict[str, Any]] = {}
     _auto_install_lock = threading.Lock()
+
+    def _record_install_failure(self, backend: str, reason: str) -> None:
+        """Remember that installing ``backend`` ran and failed: in this
+        process, and in tts_state.json so the next boot does not run the same
+        install again before _INSTALL_FAILURE_TTL_SECONDS or an update."""
+        import time as _time
+        now = _time.time()
+        # The last line that says something: pip's tail ends with a lone
+        # quote after its HINT line.
+        lines = [ln.strip() for ln in str(reason or '').splitlines()
+                 if any(ch.isalpha() for ch in ln)]
+        with TTSEngine._auto_install_lock:
+            TTSEngine._auto_install_failed.add(backend)
+            TTSEngine._auto_install_failed_meta[backend] = {
+                'failed_at': now,
+                'expires_at': now + _INSTALL_FAILURE_TTL_SECONDS,
+                'build': _installed_build(),
+                'reason': (lines[-1] if lines else 'unknown')[:300],
+            }
+        try:
+            self._save_persisted_demotions()
+        except Exception as _pe:  # noqa: BLE001
+            logger.debug(f"TTS install-failure persist skipped: {_pe}")
 
     def _try_auto_install_backend(self, backend):
         """Trigger a background install of the given backend's packages + models.
@@ -1867,6 +1917,16 @@ class TTSEngine:
                         # test_b7_failed_cleared_on_success for the contract.
                         with TTSEngine._auto_install_lock:
                             TTSEngine._auto_install_failed.discard(backend)
+                            _had_record = TTSEngine._auto_install_failed_meta.pop(
+                                backend, None) is not None
+                        if _had_record and backend not in self._demoted_backends:
+                            # The demotion clear below saves too; this one
+                            # drops a failed-install record kept on disk.
+                            try:
+                                self._save_persisted_demotions()
+                            except Exception as _pe:
+                                logger.debug(
+                                    f"persist-after-clear failed: {_pe}")
                         # Autonomous-recovery close-the-loop (#TTS-demote-heal,
                         # 2026-05-28): a verified install means the engine is
                         # NOT broken anymore — clear the session demotion so
@@ -1899,15 +1959,21 @@ class TTSEngine:
                         if progress:
                             progress(f"{backend} installed but synthesis failed: "
                                      f"{verdict.err[:80]}")
-                        with TTSEngine._auto_install_lock:
-                            TTSEngine._auto_install_failed.add(backend)
+                        self._record_install_failure(
+                            backend, f"synthesis failed: {verdict.err}")
                         ok = False  # completion event reflects the truth
                 else:
                     logger.warning(f"[auto-install] '{backend}' install failed: {result}")
                     if progress:
                         progress(f"{backend} setup failed — using fallback engine")
-                    with TTSEngine._auto_install_lock:
-                        TTSEngine._auto_install_failed.add(backend)
+                    from tts.package_installer import INSTALL_IN_PROGRESS
+                    if str(result).startswith(INSTALL_IN_PROGRESS):
+                        # Another installer holds the lock: not a failure of
+                        # this box, so nothing is kept for the next boot.
+                        with TTSEngine._auto_install_lock:
+                            TTSEngine._auto_install_failed.add(backend)
+                    else:
+                        self._record_install_failure(backend, result)
             except ImportError:
                 logger.warning(f"[auto-install] package_installer not available, "
                                f"cannot auto-install '{backend}'")
@@ -2193,12 +2259,14 @@ class TTSEngine:
             )
             return
 
-        persisted = data.get('demoted')
-        if not isinstance(persisted, dict):
-            return
-
         import time as _time
         now = _time.time()
+        stale_install_rows = self._hydrate_install_failures(
+            data.get('install_failed'), now)
+
+        persisted = data.get('demoted')
+        if not isinstance(persisted, dict):
+            persisted = {}
         hydrated: list[str] = []
         expired: list[str] = []
         for backend, info in persisted.items():
@@ -2232,10 +2300,41 @@ class TTSEngine:
                 f"TTS persisted demotion: dropped {len(expired)} expired "
                 f"entries on hydrate ({', '.join(sorted(expired))})"
             )
+        if expired or stale_install_rows:
             try:
                 self._save_persisted_demotions()
             except Exception:
                 pass
+
+    @staticmethod
+    def _hydrate_install_failures(rows, now: float) -> bool:
+        """Put the failed installs on file back into
+        ``_auto_install_failed`` when they were recorded for this build and
+        have not expired.  Returns True when the file holds rows that no
+        longer stand, so the caller rewrites it without them."""
+        if not isinstance(rows, dict):
+            return False
+        build = _installed_build()
+        stale = False
+        for backend, info in rows.items():
+            if not isinstance(info, dict):
+                stale = True
+                continue
+            expires_at = info.get('expires_at')
+            if (not isinstance(expires_at, (int, float)) or expires_at < now
+                    or info.get('build') != build):
+                stale = True
+                continue
+            with TTSEngine._auto_install_lock:
+                TTSEngine._auto_install_failed.add(backend)
+                TTSEngine._auto_install_failed_meta[backend] = dict(info)
+            import time as _time
+            logger.info(
+                f"TTS auto-install of '{backend}' failed before "
+                f"({info.get('reason', 'unknown reason')}); not run again "
+                f"until {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(expires_at))}"
+                f" or an update")
+        return stale
 
     def _save_persisted_demotions(self) -> None:
         """Atomic-write the in-memory demotion set to disk.
@@ -2268,10 +2367,17 @@ class TTSEngine:
                 'failures_at_demotion': self._consecutive_failures.get(
                     backend, self._failure_threshold),
             }
+        with TTSEngine._auto_install_lock:
+            install_failed_payload = {
+                backend: dict(meta)
+                for backend, meta in TTSEngine._auto_install_failed_meta.items()
+                if backend in TTSEngine._auto_install_failed
+            }
         payload = {
             'schema': _TTS_STATE_SCHEMA,
             'updated_at': now,
             'demoted': demoted_payload,
+            'install_failed': install_failed_payload,
         }
 
         try:
@@ -2318,7 +2424,17 @@ class TTSEngine:
         ``backend=None`` clears every demotion. Returns the count of
         rows removed (0 when no state file exists). Idempotent and
         safe under concurrent calls (``os.replace`` is atomic).
+
+        A failed auto-install kept on file (``install_failed``) is
+        cleared the same way, in this process too, so a reinstall or a
+        reset gives that install a fresh chance.
         """
+        with cls._auto_install_lock:
+            for _b in (list(cls._auto_install_failed_meta)
+                       if backend is None else [backend]):
+                if cls._auto_install_failed_meta.pop(_b, None) is not None:
+                    cls._auto_install_failed.discard(_b)
+
         path = _get_tts_state_path()
         if not os.path.isfile(path):
             return 0
@@ -2328,18 +2444,19 @@ class TTSEngine:
         except (OSError, ValueError):
             return 0
 
-        persisted = data.get('demoted')
-        if not isinstance(persisted, dict) or not persisted:
+        cleared = 0
+        for key in ('demoted', 'install_failed'):
+            rows = data.get(key)
+            if not isinstance(rows, dict) or not rows:
+                continue
+            if backend is None:
+                cleared += len(rows)
+                data[key] = {}
+            elif backend in rows:
+                del rows[backend]
+                cleared += 1
+        if not cleared:
             return 0
-
-        if backend is None:
-            cleared = len(persisted)
-            data['demoted'] = {}
-        else:
-            if backend not in persisted:
-                return 0
-            del persisted[backend]
-            cleared = 1
 
         import tempfile as _tf
         try:

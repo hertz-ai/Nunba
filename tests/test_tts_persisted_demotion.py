@@ -442,3 +442,176 @@ def test_save_keeps_an_older_entrys_original_timestamps(state_path):
     assert written['kokoro']['first_demoted_at'] == pytest.approx(t0)
     assert written['kokoro']['expires_at'] == pytest.approx(t0 + 7 * 86400)
     assert written['f5']['first_demoted_at'] > t0 + 4 * 86400   # new row is now
+
+
+# ────────────────────────────────────────────────────────────────────
+# 10. An install that ran and failed is not re-run on every boot
+# ────────────────────────────────────────────────────────────────────
+#
+# Measured on a Windows box without long-path support, 2026-11-12..16: every
+# boot re-ran `pip install neutts[all]` for NeuTTS Air (3 attempts, ~3 min)
+# and failed the same way ("Windows Long Path support"), 9 times in 5 days.
+# The "already failed" record (_auto_install_failed) lived only in memory,
+# so each new process started without it.  It is now kept in tts_state.json
+# beside the demotions, for the build it failed on, for a day.
+
+
+@pytest.fixture
+def install_state(monkeypatch):
+    """Fresh class-level install bookkeeping for each test (it is shared by
+    every TTSEngine in the process, and other tests leave entries in it)."""
+    from tts.tts_engine import TTSEngine
+
+    monkeypatch.setattr(TTSEngine, '_auto_install_failed', set())
+    monkeypatch.setattr(TTSEngine, '_auto_install_failed_meta', {},
+                        raising=False)
+    monkeypatch.setattr(TTSEngine, '_auto_install_pending', set())
+    return TTSEngine
+
+
+def _new_process(engine_cls):
+    """What a restart does to the class-level sets: they start empty."""
+    engine_cls._auto_install_failed = set()
+    engine_cls._auto_install_failed_meta = {}
+    engine_cls._auto_install_pending = set()
+
+
+_LONG_PATH_FAILURE = (
+    "venv install failed: pip install 'neutts[all]' failed after 3 attempts: "
+    "rc=1 tail=\"...ChatAttachmentsListItemThumbnailFile.svelte'\n"
+    "HINT: This error might have occurred since this system does not have "
+    "Windows Long Path support enabled.\n\n\"")
+
+
+def _run_background_install(eng, backend, monkeypatch, result):
+    """Drive the real _try_auto_install_backend -> _bg_install path with
+    install_backend_full answering ``result``, and wait for it to finish."""
+    from tts import package_installer as _pi
+    from tts import tts_engine as _te
+
+    monkeypatch.setattr(_te, '_get_engine_capabilities',
+                        lambda b=None: {'vram_gb': 0})
+    monkeypatch.setattr(_te.TTSEngine, '_get_required_package',
+                        classmethod(lambda cls, b: 'neutts'))
+    monkeypatch.setattr(_te, '_probe_backend_runnable', lambda b, p: False)
+    monkeypatch.setattr(_pi, 'make_chat_progress_callback',
+                        lambda **kw: None)
+    monkeypatch.setattr(_pi, 'install_backend_full',
+                        lambda b, progress_cb=None: result)
+
+    assert eng._try_auto_install_backend(backend) is False
+    deadline = time.time() + 10
+    while backend in _te.TTSEngine._auto_install_pending:
+        assert time.time() < deadline, 'background install never finished'
+        time.sleep(0.02)
+
+
+def test_failed_install_is_not_rerun_after_restart(
+        state_path, install_state, monkeypatch):
+    from tts import package_installer as _pi
+    from tts import tts_engine as _te
+
+    eng = _te.TTSEngine(auto_init=False)
+    _run_background_install(eng, 'neutts_air', monkeypatch,
+                            (False, _LONG_PATH_FAILURE))
+
+    written = json.loads(state_path.read_text())
+    row = written['install_failed']['neutts_air']
+    assert 'Long Path' in row['reason']
+    assert row['expires_at'] > time.time()
+
+    # Next boot: a new process, a new engine (TTSLoader.load builds one).
+    _new_process(_te.TTSEngine)
+    called = []
+    monkeypatch.setattr(_pi, 'install_backend_full',
+                        lambda b, progress_cb=None: called.append(b))
+    eng2 = _te.TTSEngine(auto_init=False)
+    assert 'neutts_air' in _te.TTSEngine._auto_install_failed, (
+        'the failed install was not remembered across the restart, so the '
+        'boot runs the same failing pip install again')
+    assert eng2._try_auto_install_backend('neutts_air') is False
+    assert 'neutts_air' not in _te.TTSEngine._auto_install_pending
+    assert called == []
+
+
+def test_install_in_progress_elsewhere_is_not_a_failure(
+        state_path, install_state, monkeypatch):
+    """Another installer holding the lock is not a failure of this box."""
+    from tts import tts_engine as _te
+    from tts.package_installer import INSTALL_IN_PROGRESS
+
+    eng = _te.TTSEngine(auto_init=False)
+    _run_background_install(
+        eng, 'neutts_air', monkeypatch,
+        (False, INSTALL_IN_PROGRESS + 'neutts_air installation already in progress'))
+
+    written = json.loads(state_path.read_text()) if state_path.exists() else {}
+    assert 'neutts_air' not in written.get('install_failed', {})
+
+
+def test_install_failure_on_another_build_is_retried(
+        state_path, install_state):
+    """An update may fix what failed, so a failure recorded for another
+    build does not hold."""
+    from tts.tts_engine import _TTS_STATE_SCHEMA, TTSEngine
+
+    now = time.time()
+    state_path.write_text(json.dumps({
+        'schema': _TTS_STATE_SCHEMA,
+        'demoted': {},
+        'install_failed': {'neutts_air': {
+            'failed_at': now - 60, 'expires_at': now + 3600,
+            'build': 'build:not-this-one', 'reason': 'x'}},
+    }))
+
+    TTSEngine(auto_init=False)
+    assert 'neutts_air' not in TTSEngine._auto_install_failed
+
+
+def test_expired_install_failure_is_retried(state_path, install_state):
+    from tts.tts_engine import _TTS_STATE_SCHEMA, TTSEngine, _installed_build
+
+    now = time.time()
+    state_path.write_text(json.dumps({
+        'schema': _TTS_STATE_SCHEMA,
+        'install_failed': {'neutts_air': {
+            'failed_at': now - 2 * 86400, 'expires_at': now - 60,
+            'build': _installed_build(), 'reason': 'x'}},
+    }))
+
+    TTSEngine(auto_init=False)
+    assert 'neutts_air' not in TTSEngine._auto_install_failed
+
+
+def test_clear_also_forgets_a_failed_install(state_path, install_state,
+                                             monkeypatch):
+    """The hub-install / admin reset hook gives a failed install a fresh
+    chance too, on disk and in this process."""
+    from tts.tts_engine import TTSEngine
+
+    eng = TTSEngine(auto_init=False)
+    _run_background_install(eng, 'neutts_air', monkeypatch,
+                            (False, _LONG_PATH_FAILURE))
+    assert 'neutts_air' in TTSEngine._auto_install_failed
+
+    assert TTSEngine.clear_persisted_demotions('neutts_air') == 1
+    written = json.loads(state_path.read_text())
+    assert 'neutts_air' not in written.get('install_failed', {})
+    assert 'neutts_air' not in TTSEngine._auto_install_failed
+
+
+def test_failed_install_survives_an_unrelated_demotion_save(
+        state_path, install_state, monkeypatch):
+    """tts_state.json has one writer; a later demotion save must keep the
+    install failure it already holds."""
+    from tts.tts_engine import TTSEngine
+
+    eng = TTSEngine(auto_init=False)
+    _run_background_install(eng, 'neutts_air', monkeypatch,
+                            (False, _LONG_PATH_FAILURE))
+    eng._demoted_backends.add('kokoro')
+    eng._save_persisted_demotions()
+
+    written = json.loads(state_path.read_text())
+    assert 'kokoro' in written['demoted']
+    assert 'neutts_air' in written['install_failed']

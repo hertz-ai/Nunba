@@ -2245,11 +2245,15 @@ def install_backend_full(backend: str,
     """
     global _installing
 
+    # Both "someone else is installing it" answers carry INSTALL_IN_PROGRESS:
+    # not a failure of this box, so TTSEngine does not keep them as a failed
+    # install across boots (tts_engine._record_install_failure).
     if _installing.get(backend):
-        return False, f"{backend} installation already in progress"
+        return False, f"{INSTALL_IN_PROGRESS}{backend} installation already in progress"
 
     if not _acquire_file_lock(f'install_{backend}'):
-        return False, f"{backend} installation in progress (another Nunba instance)"
+        return False, (f"{INSTALL_IN_PROGRESS}{backend} installation in progress "
+                       f"(another Nunba instance)")
 
     with _install_lock:
         _installing[backend] = True
