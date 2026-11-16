@@ -1018,16 +1018,8 @@ describe('Cross-Endpoint Consistency', () => {
   });
 
   // /backend/health carries no is_online (it is the GPU-tier classifier);
-  // /prompts and /network/status both do, from the same connectivity check.
-  it('/prompts is_online and /network/status is_online should agree', () => {
-    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((promptsRes) => {
-      cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((networkRes) => {
-        expect(promptsRes.body.is_online).to.be.a('boolean');
-        expect(promptsRes.body.is_online).to.eq(networkRes.body.is_online);
-      });
-    });
-  });
-
+  // its old agreement test is gone: the /prompts vs /network/status check
+  // below is the one that covers is_online.
   it('/prompts is_online should agree with /network/status is_online', () => {
     cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((networkRes) => {
       cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((promptsRes) => {

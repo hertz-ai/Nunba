@@ -156,7 +156,7 @@ describe('Habit Features', () => {
   });
 
   describe('6. Health & Chat', () => {
-    it('backend health returns healthy', () => {
+    it('backend health reports operational', () => {
       cy.request({
         url: `${API}/backend/health`,
         failOnStatusCode: false,
