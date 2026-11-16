@@ -82,9 +82,16 @@ describe('Admin pages — role guard rejects non-admin', () => {
   // desktop's own admin pages take minRole="guest" (MainRoute.js): the flat
   // owner of this box administers it.  The pages a flat user must NOT reach
   // are the central-only ones, which fall back to /admin.
+  // Signed in for real as a flat user (cy.socialAuth registers one; its
+  // /auth/me role is 'flat', measured).  A made-up token does not do: the
+  // server answers its other calls 401, the page drops the token and the
+  // visit runs as anonymous, landing on /social like the test below.  A
+  // flat user is sent from the central-only page to /admin, where the
+  // desktop's own admin pages are.
   it('flat user visiting a central-only admin page is redirected away', () => {
-    cy.visit('/admin/users', {failOnStatusCode: false});
-    cy.location('pathname', {timeout: 10000}).should('not.eq', '/admin/users');
+    cy.socialAuth();
+    cy.socialVisit('/admin/users');
+    cy.location('pathname', {timeout: 30000}).should('eq', '/admin');
   });
 
   it('anonymous user visiting /admin/settings is redirected away', () => {
