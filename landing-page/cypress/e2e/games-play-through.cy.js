@@ -89,16 +89,32 @@ function realMoveTo(x, y) {
   return cdpMouse('mouseMoved', p.x, p.y, { button: 'none', buttons: 0 });
 }
 
-function countAnimationFrames(win, ms = 800) {
+/**
+ * How many frames the PAGE itself asked for in `ms`.
+ *
+ * Phaser's loop calls window.requestAnimationFrame(step) once per frame
+ * (node_modules/phaser/src/dom/RequestAnimationFrame.js, Phaser 3.90), so a
+ * running scene keeps asking.  This used to queue its OWN rAF callback and
+ * count how often the browser ran it: that measured the runner's frame rate,
+ * not the game, and a busy CI runner gave 4 frames in 800 ms (Match 3,
+ * shard 3 on 8f037c5e: "expected 4 to be above 5").  Counting the page's
+ * calls answers "is the game loop running" instead.  The bar is "more
+ * than one call": a loop that asked for a frame and then asked again is
+ * running, a stopped one asks for none, and that holds at any frame rate
+ * (this CPU-only box's headless Chrome ran ~2 frames a second).
+ */
+function countAnimationFrames(win, ms = 2000) {
   return new Cypress.Promise((resolve) => {
-    let frames = 0;
-    const stop = Date.now() + ms;
-    const tick = () => {
-      frames += 1;
-      if (Date.now() < stop) win.requestAnimationFrame(tick);
-      else resolve(frames);
+    const real = win.requestAnimationFrame;
+    let calls = 0;
+    win.requestAnimationFrame = function countingRaf(cb) {
+      calls += 1;
+      return real.call(win, cb);
     };
-    win.requestAnimationFrame(tick);
+    win.setTimeout(() => {
+      win.requestAnimationFrame = real;
+      resolve(calls);
+    }, ms);
   });
 }
 
@@ -192,7 +208,7 @@ describe('Arcade games — input moves the game', () => {
 
       // The scene must actually be running an animation loop.
       cy.window().then((win) => countAnimationFrames(win)).then((frames) => {
-        expect(frames, `${g.name} must be driving requestAnimationFrame`).to.be.greaterThan(5);
+        expect(frames, `${g.name} must be driving requestAnimationFrame`).to.be.greaterThan(1);
       });
 
       // Drive it with HELD keys, not taps.
@@ -325,7 +341,7 @@ describe('Arcade games — input moves the game', () => {
         } else {
           cy.get('canvas').should('exist');
           cy.window().then((win) => countAnimationFrames(win)).then((frames) => {
-            expect(frames, `${g.name} must still be animating after input`).to.be.greaterThan(5);
+            expect(frames, `${g.name} must still be animating after input`).to.be.greaterThan(1);
           });
         }
       });
