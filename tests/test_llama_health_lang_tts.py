@@ -451,8 +451,10 @@ class TestCreatePlan:
         mock_entry.vram_gb = 2.0
         mock_orch.select_best.return_value = mock_entry
 
-        with patch("models.language_bootstrap.get_orchestrator", return_value=mock_orch, create=True):
-            # Patch the import inside _create_plan
+        with patch("models.language_bootstrap.get_orchestrator", return_value=mock_orch, create=True), \
+             patch("models.language_bootstrap._tts_exclusions", return_value=[]):
+            # Patch the import inside _create_plan.  _tts_exclusions is stubbed:
+            # the real one builds the TTS singleton and leaves it for later tests.
             with patch.dict("sys.modules", {"models.orchestrator": MagicMock(get_orchestrator=lambda: mock_orch)}):
                 result = lb._create_plan("en", {"free_gb": 2.0})
                 # Optional types (AUDIO_GEN, VIDEO_GEN) should be skipped
