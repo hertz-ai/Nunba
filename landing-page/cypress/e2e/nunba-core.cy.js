@@ -53,9 +53,10 @@ describe('Habit Features', () => {
       }).then((res) => {
         // May return 200 with empty array or 503 if memory module not installed
         expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
+        // memory_recent (routes/chatbot_routes.py) answers a bare list,
+        // which is what MemoryPanel.jsx reads.
         if (res.status === 200) {
-          expect(res.body).to.have.property('memories');
-          expect(res.body.memories).to.be.an('array');
+          expect(res.body).to.be.an('array');
         }
       });
     });
@@ -67,8 +68,9 @@ describe('Habit Features', () => {
         failOnStatusCode: false,
       }).then((res) => {
         expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
+        // memory_search answers a bare list of matches, as MemoryPanel reads.
         if (res.status === 200) {
-          expect(res.body).to.have.property('results');
+          expect(res.body).to.be.an('array');
         }
       });
     });
@@ -161,7 +163,10 @@ describe('Habit Features', () => {
         timeout: 30000,
       }).then((res) => {
         expect(res.status).to.eq(200);
-        expect(res.body.healthy).to.eq(true);
+        // main.py backend_health, the GPU-tier classifier the chat badge
+        // polls; the `healthy` field came from a chatbot_routes handler that
+        // is registered on the same rule after it and never served.
+        expect(res.body.status).to.eq('operational');
       });
     });
 

@@ -18,7 +18,8 @@
  *   - llama_health_endpoint.py wraps llama.cpp health with Nunba identification
  *   - llama.cpp runs on port 8080 by default (separate from Flask 5000)
  *   - LlamaHealthWrapper adds managed_by, nunba_version, timestamp, status
- *   - chatbot_routes.py registers /backend/health, /network/status, /prompts, /chat
+ *   - main.py serves /backend/health (the GPU-tier classifier);
+ *     chatbot_routes.py registers /network/status, /prompts, /chat
  *   - SQLite DB: hevolve_social at ~/Documents/Nunba/data/hevolve_database.db
  *   - Social API base: /api/social
  *   - Backend startup logs: "Local agents: 3, Cloud agents: 3"
@@ -348,42 +349,31 @@ describe('Backend Health Endpoint (/backend/health)', () => {
     });
   });
 
-  it('should indicate backend is healthy', () => {
+  // /backend/health is main.py backend_health: the GPU-tier classifier the
+  // chat GpuTierBadge polls (bf0e3f0e, 2026-04-15).  The healthy / is_online
+  // / local / cloud payload these tests used to read is chatbot_routes'
+  // backend_health_route, registered later on the same rule, so Flask
+  // never serves it.  Online state is /network/status (section 5); local
+  // LLM state is /api/llm/status (section 9).
+  it('should report the backend as operational', () => {
     cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
-      expect(response.body).to.have.property('healthy', true);
+      expect(response.body).to.have.property('status', 'operational');
     });
   });
 
-  it('should include is_online boolean', () => {
+  it('should classify the GPU tier', () => {
     cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
-      expect(response.body).to.have.property('is_online');
-      expect(response.body.is_online).to.be.a('boolean');
+      // core.gpu_tier.GpuTier
+      expect(response.body.gpu_tier).to.be.oneOf(['ultra', 'full', 'standard', 'none']);
+      expect(response.body.cuda_available).to.be.a('boolean');
+      expect(response.body.speculation_enabled).to.be.a('boolean');
     });
   });
 
-  it('should include local agent information', () => {
+  it('should report VRAM in GB', () => {
     cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
-      expect(response.body).to.have.property('local');
-      expect(response.body.local).to.be.an('object');
-      expect(response.body.local).to.have.property('available');
-      expect(response.body.local.available).to.be.a('boolean');
-      expect(response.body.local).to.have.property('agents_count');
-      expect(response.body.local.agents_count).to.be.a('number');
-      expect(response.body.local.agents_count).to.be.greaterThan(0);
-    });
-  });
-
-  it('should include cloud agent information', () => {
-    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
-      expect(response.body).to.have.property('cloud');
-      expect(response.body.cloud).to.be.an('object');
-      expect(response.body.cloud).to.have.property('available');
-      expect(response.body.cloud.available).to.be.a('boolean');
-      expect(response.body.cloud).to.have.property('endpoint');
-      expect(response.body.cloud.endpoint).to.be.a('string');
-      expect(response.body.cloud).to.have.property('agents_count');
-      expect(response.body.cloud.agents_count).to.be.a('number');
-      expect(response.body.cloud.agents_count).to.be.greaterThan(0);
+      expect(response.body.vram_total_gb).to.be.a('number').and.be.at.least(0);
+      expect(response.body.vram_free_gb).to.be.a('number').and.be.at.least(0);
     });
   });
 
@@ -693,7 +683,7 @@ describe('Infrastructure Resilience', () => {
     });
 
     cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((backendRes) => {
-      expect(backendRes.body).to.have.property('healthy', true);
+      expect(backendRes.body).to.have.property('status', 'operational');
     });
   });
 });
@@ -861,32 +851,23 @@ describe('Llama Health Check Integration', () => {
    *   - Returns True if either responds with 200, False otherwise
    */
 
-  it('9.1 Backend health shows local LLM availability status', () => {
-    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
-      expect(response.body).to.have.property('local');
-      expect(response.body.local).to.have.property('available');
-      expect(response.body.local.available).to.be.a('boolean');
+  // Local LLM state is /api/llm/status (the chat page's readiness check,
+  // socialApi llmStatus), not /backend/health, which is the GPU-tier
+  // classifier (section 4).  Running-server details are /nunba/ai/status
+  // (section 3).
+  it('9.1 /api/llm/status shows local LLM availability status', () => {
+    cy.request({url: `${API}/api/llm/status`, failOnStatusCode: false}).then((response) => {
+      expect(response.status).to.eq(200);
+      expect(response.body).to.have.property('available');
+      expect(response.body.available).to.be.a('boolean');
     });
   });
 
-  it('9.2 Backend health local.info contains LLM details when running', () => {
-    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((response) => {
-      expect(response.body).to.have.property('local');
-      expect(response.body.local).to.have.property('info');
-      // info is an object (may be empty if LLM not running)
-      expect(response.body.local.info).to.be.an('object');
-
-      // If LLM is running, info will contain details
-      if (
-        response.body.local.available &&
-        Object.keys(response.body.local.info).length > 0
-      ) {
-        const info = response.body.local.info;
-        // Per get_llama_info() in llama_config.py lines 719-746
-        expect(info).to.have.property('running');
-        expect(info).to.have.property('port');
-        expect(info).to.have.property('endpoint');
-      }
+  it('9.2 /api/llm/status names the LLM mode and first-run state', () => {
+    cy.request({url: `${API}/api/llm/status`, failOnStatusCode: false}).then((response) => {
+      expect(response.body.llm_mode).to.be.a('string');
+      expect(response.body.first_run).to.be.a('boolean');
+      expect(response.body.setup_needed).to.be.a('boolean');
     });
   });
 
@@ -1036,10 +1017,13 @@ describe('Cross-Endpoint Consistency', () => {
     });
   });
 
-  it('/backend/health is_online and /network/status is_online should agree', () => {
-    cy.request({url: `${API}/backend/health`, failOnStatusCode: false}).then((backendRes) => {
+  // /backend/health carries no is_online (it is the GPU-tier classifier);
+  // /prompts and /network/status both do, from the same connectivity check.
+  it('/prompts is_online and /network/status is_online should agree', () => {
+    cy.request({url: `${API}/prompts`, failOnStatusCode: false}).then((promptsRes) => {
       cy.request({url: `${API}/network/status`, failOnStatusCode: false}).then((networkRes) => {
-        expect(backendRes.body.is_online).to.eq(networkRes.body.is_online);
+        expect(promptsRes.body.is_online).to.be.a('boolean');
+        expect(promptsRes.body.is_online).to.eq(networkRes.body.is_online);
       });
     });
   });
