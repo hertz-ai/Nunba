@@ -217,13 +217,19 @@ describe('J20: disk-full / OOM graceful degradation', () => {
   });
 
   it('/api/admin/diag/thread-dump returns dump envelope', () => {
+    // The route is POST-only (main.py admin_diag_thread_dump); a GET got 405.
     cy.request({
-      method: 'GET',
+      method: 'POST',
       url: `${Cypress.env('apiUrl')}/api/admin/diag/thread-dump`,
+      body: {reason: 'cypress J20'},
       failOnStatusCode: false,
     }).then((resp) => {
       // Admin-guarded endpoint — gated by require_local_or_token.
       expect(resp.status).to.be.oneOf([200, 401, 403, 500, 503]);
+      if (resp.status === 200) {
+        expect(resp.body).to.include({success: true, reason: 'cypress J20'});
+        expect(resp.body.threads_dumped).to.be.a('number');
+      }
     });
   });
 
@@ -241,9 +247,12 @@ describe('J20: disk-full / OOM graceful degradation', () => {
       statusCode: 200,
       body: {text: 'I can still chat in text-only mode.', source: 'local-text-only', degraded: true},
     }).as('degradedChat');
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|type a message/i, {timeout: 10000});
-    cy.get('textarea, input[type="text"]').first().type('hello{enter}', {force: true});
+    // cy.openLocalChat: a sealed HART, so /local shows the chat and not the
+    // first-run language picker (which has no chat text to find).
+    cy.openLocalChat();
+    cy.get('textarea, input[type="text"]', {timeout: 30000})
+      .first()
+      .type('hello{enter}', {force: true});
     cy.wait('@degradedChat').its('response.body.text').should('contain', 'text-only');
   });
 
