@@ -53,12 +53,29 @@ describe('J221-J231: restore + forget + cloud sync', () => {
   });
 
   it('J222: DELETE /api/guest-id wipes guest id', () => {
+    // main.py api_guest_id_delete refuses a DELETE without
+    // {"confirm": true} (400 confirm_required), on purpose.
     cy.request({
       method: 'DELETE',
       url: `${Cypress.env('apiUrl')}/api/guest-id`,
       failOnStatusCode: false,
     }).then((r) => {
+      // 401/403 when the local-or-token gate (it runs first) refuses.
+      expect(r.status).to.be.oneOf([400, 401, 403]);
+      if (r.status === 400) {
+        expect(r.body).to.have.property('error', 'confirm_required');
+      }
+    });
+    cy.request({
+      method: 'DELETE',
+      url: `${Cypress.env('apiUrl')}/api/guest-id`,
+      body: {confirm: true},
+      failOnStatusCode: false,
+    }).then((r) => {
       expect(r.status).to.be.oneOf([200, 204, 401, 403, 404, 500, 503]);
+      if (r.status === 200) {
+        expect(r.body).to.have.property('deleted', true);
+      }
     });
   });
 
@@ -108,8 +125,18 @@ describe('J240-J249: admin surfaces', () => {
   });
 
   it('J243: /api/admin/diag/thread-dump envelope shape', () => {
-    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/diag/thread-dump`, failOnStatusCode: false}).then((r) => {
+    // POST-only route (main.py admin_diag_thread_dump); a GET got 405.
+    cy.request({
+      method: 'POST',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/thread-dump`,
+      body: {reason: 'cypress J243'},
+      failOnStatusCode: false,
+    }).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
+      if (r.status === 200) {
+        expect(r.body).to.include({success: true, reason: 'cypress J243'});
+        expect(r.body.threads_dumped).to.be.a('number');
+      }
     });
   });
 
