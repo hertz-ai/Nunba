@@ -202,11 +202,8 @@ def _hwnd(window_handle):
 def _resolve_handle(window_handle):
     """An HWND out of whatever the caller has: an int, or a pywebview Window.
 
-    The one resolver for the companion-presence pair below
-    (is_main_window_foreground and main_window_state_readable).  They have to
-    agree on which window they are talking about or the gate and its
-    readability check drift, which is the whole defect the pair exists to
-    close -- so there is one of these, not one each.
+    The one resolver for the helpers here and desktop/glass.py, so they
+    agree on which window they are talking about.
 
     0 means "no window": either nothing was passed, or pywebview has not
     attached the WinForms form yet and resolve_hwnd said so.
@@ -361,45 +358,6 @@ def set_window_floating_presence(window_handle, on=True):
             logger.error(f"Error setting floating-presence style: {e}")
 
 
-def main_window_state_readable(main_window_handle):
-    """True iff the main window's foreground state could actually be READ.
-
-    ``is_main_window_foreground`` answers a yes/no question with a bool, so it
-    has nowhere to put "I could not tell".  It returns False for that case --
-    and False means "the main window is NOT in front", which is the PERMISSIVE
-    answer for the floating companion: it shows.
-
-    That is not hypothetical.  ``win32_chrome.resolve_hwnd`` returns 0 for a
-    form that is not up yet (its own docstring says so), and pywebview only
-    sets ``Window.native`` once the WinForms form exists.  During startup the
-    two windows come up concurrently, so there is a real window in which the
-    main window object exists, its HWND does not, the gate reads False, and
-    the companion appears beside a foreground Nunba -- exactly the state the
-    owner reported 2026-09-20.
-
-    Callers that must fail CLOSED (show nothing unless we can prove Nunba is
-    backgrounded) pair this with is_main_window_foreground:
-
-        if is_main_window_foreground(w, c) or not main_window_state_readable(w):
-            hide()
-
-    Same resolution order as the gate itself, so the two cannot drift.
-    """
-    if not IS_WINDOWS:
-        return False
-    try:
-        import ctypes
-        user32 = ctypes.windll.user32
-
-        m_hwnd = _resolve_handle(main_window_handle)
-        if not m_hwnd:
-            return False
-        return bool(user32.IsWindow(_hwnd(m_hwnd)))
-    except Exception as e:
-        logger.debug('main_window_state_readable failed: %s', e)
-        return False
-
-
 def _logical_to_physical(width, height, scale):
     """A logical (DPI-independent) size in physical pixels at `scale`."""
     return (round(width * scale), round(height * scale))
@@ -479,95 +437,6 @@ def _shape_box(shape, client_w, client_h):
     ew = min(right - left, round(2 * r * sx))
     eh = min(bottom - top, round(2 * r * sy))
     return (left, top, right, bottom, ew, eh)
-
-
-def is_main_window_foreground(main_window_handle, companion_window_handle=None):
-    """True when the Nunba main window is the one the owner is looking at.
-
-    The floating companion exists to be present while the owner is in ANOTHER
-    application.  When Nunba's own window is in front there is already a chat
-    on screen, so a second copy of the same conversation floating over it is
-    noise -- the companion hides.
-
-    The companion's own handle is passed so it can be told apart: clicking the
-    companion makes IT the foreground window, and that must not read as "the
-    main window is in front" and hide the thing the owner just clicked.
-
-    Returns a bool, so "I could not read the state" collapses into False --
-    which here means "not in front", i.e. SHOW.  That is the permissive
-    answer.  Callers that must fail closed pair this with
-    ``main_window_state_readable`` above; the two resolve a handle the same
-    way so they cannot disagree about which window they are talking about.
-    """
-    if IS_WINDOWS:
-        try:
-            import ctypes
-            GA_ROOT = 2
-            GA_ROOTOWNER = 3
-
-            user32 = ctypes.windll.user32
-            fg = user32.GetForegroundWindow()
-            if not fg:
-                return False
-
-            def _root(h):
-                hwnd = _hwnd(h)
-                owner = user32.GetAncestor(hwnd, GA_ROOTOWNER)
-                return owner or user32.GetAncestor(hwnd, GA_ROOT) or int(h)
-
-            fg_root = _root(fg)
-
-            if companion_window_handle:
-                try:
-                    c_hwnd = _resolve_handle(companion_window_handle)
-                    if c_hwnd and _root(c_hwnd) == fg_root:
-                        return False
-                except Exception:
-                    pass
-
-            m_hwnd = _resolve_handle(main_window_handle)
-            if not m_hwnd:
-                return False
-            # A minimized window can still BE the foreground window: minimize
-            # with nothing else to activate and GetForegroundWindow keeps
-            # returning it (measured 2026-10-03, IsIconic=1).  Minimized is
-            # not "the owner is looking at it", so the orb must show.
-            if user32.IsIconic(_hwnd(m_hwnd)):
-                return False
-            return _root(m_hwnd) == fg_root
-        except Exception as e:
-            logger.debug('is_main_window_foreground failed on Windows: %s', e)
-            return False
-
-    if sys.platform == 'darwin':
-        try:
-            from AppKit import NSApplication, NSWorkspace
-            front = NSWorkspace.sharedWorkspace().frontmostApplication()
-            if front is None:
-                return False
-            own = NSApplication.sharedApplication()
-            # Per-window resolution needs the Accessibility permission, which
-            # this app does not ask for; app-level frontmost is what we have.
-            return bool(front.processIdentifier() == os.getpid()
-                        and own.isActive())
-        except Exception as e:
-            logger.debug('is_main_window_foreground failed on macOS: %s', e)
-            return False
-
-    try:
-        import subprocess
-        out = subprocess.run(['xdotool', 'getactivewindow'],
-                             capture_output=True, text=True, timeout=2,
-                             **get_subprocess_flags())
-        active = (out.stdout or '').strip()
-        if not active:
-            return False
-        if companion_window_handle and active == str(companion_window_handle):
-            return False
-        return active == str(main_window_handle)
-    except Exception as e:
-        logger.debug('is_main_window_foreground failed on Linux: %s', e)
-        return False
 
 
 # NOTE: `enable_window_acrylic` used to live here.  It is GONE, not moved

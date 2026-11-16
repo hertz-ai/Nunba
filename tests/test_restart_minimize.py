@@ -491,10 +491,16 @@ class RestartMinimizeStaticTests(unittest.TestCase):
                       src, re.S)
         self.assertIsNotNone(m, "on_companion_presence not found on the bridge")
         body = m.group(1)
-        self.assertIn("_companion_window.hide()", body)
-        self.assertIn("_companion_window.show()", body)
-        self.assertIn("_companion_raise()", body)
+        # The show/hide/raise moved one hop (review of c8968c3b): the bridge
+        # hands the request to desktop.main_page_presence's applier, whose
+        # behaviour tests drive the real class with a fake window
+        # (tests/test_main_page_presence.py).  This follows the hop.
+        self.assertIn("_companion_gate.request(state, shape)", body)
         self.assertNotIn(".on_top = ", body)
+        gate = re.search(r"_companion_gate = CompanionPresenceApplier\((.*?)\)", src, re.S)
+        self.assertIsNotNone(gate, "the bridge's gate is not built in app.py")
+        for arg in ("_companion_window", "_companion_shape", "_companion_raise"):
+            self.assertIn(arg, gate.group(1))
 
         # The tool-window style is still applied once the handle exists --
         # it just moved one hop.  On 2026-09-22 the three calls that make a
@@ -640,10 +646,13 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         m = re.search(r"def on_companion_presence\(self, state, shape=None\):(.*?)\n            _companion_api",
                       src, re.S)
         self.assertIsNotNone(m, "on_companion_presence must accept the page's shape")
-        body = m.group(1)
-        self.assertIn("set_window_shape(_comp_hwnd, shape)", body)
-        self.assertIn("_companion_window.hide()", body)
-        self.assertIn("_companion_raise()", body)
+        self.assertIn("_companion_gate.request(state, shape)", m.group(1))
+        # The shape reaches the window through the applier's apply_shape
+        # (review of c8968c3b moved it one hop; behaviour in
+        # tests/test_main_page_presence.py).
+        shape_fn = re.search(r"def _companion_shape\(shape\):(.*?)\n\n", src, re.S)
+        self.assertIsNotNone(shape_fn, "the applier's apply_shape is not in app.py")
+        self.assertIn("set_window_shape(_comp_hwnd, shape)", shape_fn.group(1))
 
         helper = (REPO_ROOT / "desktop" / "platform_utils.py").read_text(encoding="utf-8")
         self.assertIn("def set_window_shape(window_handle, shape):", helper)

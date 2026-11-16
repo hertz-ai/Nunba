@@ -1756,11 +1756,14 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
             '@keyframes agentSlideUp': { from: { opacity: 0, transform: 'translateY(20px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
             ...cardSx,
           }}>
-            {/* Agent badge: the agent's name.  A bare id (a prompt id) means
-                nothing to a person, so an overlay with only an id gets no
-                badge. */}
+            {/* Agent badge: the agent's name, said as an agent's (askerName),
+                because it is the first word on the card: a bare "Vijai" read
+                as a person asking (owner 2026-11-11), and a camera ask's body
+                is HARTOS's reason, which names no one.  A bare id (a prompt
+                id) means nothing to a person, so an overlay with only an id
+                gets no badge. */}
             {overlay.agent_name && (
-              <Chip label={overlay.agent_name} size="small"
+              <Chip label={askerName(overlay.agent_name)} size="small"
                 sx={{ position: 'absolute', top: 8, left: 12, fontSize: '0.65rem', height: 20,
                   background: 'rgba(108,99,255,0.2)', color: ACCENT, border: '1px solid rgba(108,99,255,0.3)' }} />
             )}

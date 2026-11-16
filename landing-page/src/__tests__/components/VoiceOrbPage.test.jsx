@@ -279,9 +279,9 @@ describe('hosted in the desktop companion window', () => {
 
       act(() => { uiHandler(ASK); });
       act(() => { jest.advanceTimersByTime(50); });
-      expect(screen.getByText('Spider-Man asks to control this computer.')).toBeInTheDocument();
+      expect(screen.getByText('Agent Spider-Man asks to control this computer.')).toBeInTheDocument();
       expect(screen.queryByText('79211163351')).not.toBeInTheDocument();
-      expect(screen.getByRole('button', {name: "Don't allow Spider-Man"})).toBeInTheDocument();
+      expect(screen.getByRole('button', {name: "Don't allow Agent Spider-Man"})).toBeInTheDocument();
       // The card needs the owner: the whole window, however idle it was.
       expect(presence).toHaveBeenCalledWith('shown', expect.objectContaining({x: 0, y: 0, r: 24}));
       expect(screen.getByTestId('voice-orb').dataset.presence).toBe('shown');
@@ -296,7 +296,7 @@ describe('hosted in the desktop companion window', () => {
     test('the same ask re-sent while its card is up shows one card', () => {
       render(<VoiceOrbPage />);
       act(() => { uiHandler(ASK); uiHandler(ASK); uiHandler(ASK); });
-      expect(screen.getAllByText('Spider-Man asks to control this computer.')).toHaveLength(1);
+      expect(screen.getAllByText('Agent Spider-Man asks to control this computer.')).toHaveLength(1);
     });
 
     test('granting answers through the one consent API and lets the window go', async () => {
@@ -308,7 +308,7 @@ describe('hosted in the desktop companion window', () => {
         consent_type: 'computer_control', scope: '*',
       }));
       await waitFor(() =>
-        expect(screen.queryByText('Spider-Man asks to control this computer.')).not.toBeInTheDocument());
+        expect(screen.queryByText('Agent Spider-Man asks to control this computer.')).not.toBeInTheDocument());
       // Answered: the ask no longer holds the window open (the presence
       // effect runs after the dismiss, which arrives from the grant's promise).
       await waitFor(() =>
@@ -330,7 +330,7 @@ describe('hosted in the desktop companion window', () => {
           consent_type: 'computer_control', scope: '*', agent_id: null});
       });
       act(() => { jest.advanceTimersByTime(50); });
-      expect(screen.queryByText('Spider-Man asks to control this computer.')).not.toBeInTheDocument();
+      expect(screen.queryByText('Agent Spider-Man asks to control this computer.')).not.toBeInTheDocument();
       expect(screen.getByTestId('voice-orb').dataset.presence).toBe('hidden');
     });
 

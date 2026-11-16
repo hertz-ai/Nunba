@@ -91,7 +91,7 @@ import PdfViewer from './chat/PdfViewer';
 import ChatInputBar from './chat/ChatInputBar';
 import ChatMessageList from './chat/ChatMessageList';
 import LlmUpgradeCard from './chat/LlmUpgradeCard';
-import {withSetupProgress} from './chat/SetupProgressCard';
+import {pollBootstrapStatus, withSetupProgress} from './chat/SetupProgressCard';
 import ProactiveConciergeCard from '../components/chat/ProactiveConciergeCard';
 
 const HOSTED_URL = 'https://hevolve.hertzai.com';
@@ -4760,58 +4760,24 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       });
       const data = await res.json();
 
-      // Poll for completion
-      const pollStatus = async () => {
-        for (let i = 0; i < 120; i++) { // poll up to 2 min
-          await new Promise(r => setTimeout(r, 1000));
-          try {
-            const statusRes = await fetch('/api/ai/bootstrap/status');
-            const status = await statusRes.json();
-
-            // Update progress in chat
-            if (status.steps) {
-              const stepMsgs = Object.values(status.steps)
-                .filter(s => s.status !== 'pending')
-                .map(s => `${s.model_name || s.model_type}: ${s.status}${s.detail ? ' — ' + s.detail : ''}`);
-              if (stepMsgs.length > 0) {
-                setMessages((prev) => {
-                  const idx = prev.findIndex(m => m.type === 'setup_progress' && m.jobType === 'bootstrap');
-                  const card = {
-                    type: 'setup_progress',
-                    jobType: 'bootstrap',
-                    steps: Object.values(status.steps).map(s => ({
-                      job_type: s.model_type,
-                      message: `${s.model_name || s.model_type}: ${s.detail || s.status}`,
-                      status: s.status,
-                    })),
-                    isComplete: status.phase === 'done',
-                  };
-                  if (idx >= 0) {
-                    const updated = [...prev];
-                    updated[idx] = card;
-                    return updated;
-                  }
-                  return [...prev, card];
-                });
-              }
-            }
-
-            if (status.phase === 'done') {
-              setIsRequestInFlight(false);
-              if (status.error) {
-                pushNotification({ type: 'warning', message: `Setup completed with issues: ${status.error}` });
-              } else {
-                pushNotification({ type: 'success', message: 'All AI models ready', detail: `GPU: ${status.gpu_name || 'CPU'}` });
-              }
-              return;
-            }
-          } catch { /* poll error, keep trying */ }
-        }
-        setIsRequestInFlight(false);
-        pushNotification({ type: 'warning', message: 'Setup is taking longer than expected — it will continue in the background' });
-      };
-
-      pollStatus();
+      // Poll for completion, up to 2 min (pollBootstrapStatus, beside the card).
+      pollBootstrapStatus({
+        fetchStatus: async () => (await fetch('/api/ai/bootstrap/status')).json(),
+        setMessages,
+        wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+        onDone: (status) => {
+          setIsRequestInFlight(false);
+          if (status.error) {
+            pushNotification({ type: 'warning', message: `Setup completed with issues: ${status.error}` });
+          } else {
+            pushNotification({ type: 'success', message: 'All AI models ready', detail: `GPU: ${status.gpu_name || 'CPU'}` });
+          }
+        },
+        onTimeout: () => {
+          setIsRequestInFlight(false);
+          pushNotification({ type: 'warning', message: 'Setup is taking longer than expected — it will continue in the background' });
+        },
+      });
     } catch (err) {
       setIsRequestInFlight(false);
       logger.error('Bootstrap setup failed:', err);

@@ -9,6 +9,7 @@ import {GA_TRACKING_ID, API_BASE_URL} from './config/apiBase';
 import {RealtimeProvider} from './contexts/RealtimeContext';
 import {SocialProvider} from './contexts/SocialContext';
 import {NunbaThemeProvider} from './contexts/ThemeContext';
+import useMainPagePresence from './hooks/useMainPagePresence';
 import {useReferral} from './hooks/useReferral';
 import useStorageSync from './hooks/useStorageSync';
 import MainRoutes from './MainRoute';
@@ -30,6 +31,10 @@ function App() {
   // Capture ?ref=<channel> from flywheel install links app-wide → localStorage,
   // so it attributes on signup (and DownloadPage records the click/download).
   useReferral();
+
+  // Desktop: tell the host whether the owner is looking at this page, so the
+  // floating companion hides over Nunba (no-op in the companion and a browser).
+  useMainPagePresence();
 
   const [contactRequest, setContactRequest] = useState(null);
   const navigate = useNavigate();

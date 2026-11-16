@@ -570,6 +570,10 @@ build_exe_options = {
                           # here, i.e. the tracer followed app.py's
                           # function-local import of it.  Listed anyway, the
                           # same belt-and-braces as desktop.glass above.
+        "desktop.main_page_presence",  # The floating companion's gate:
+                          # imported in main() before the main window is
+                          # created, so a miss would stop the app, not
+                          # just the companion (review of c8968c3b).
         "desktop.boot_record",  # One durable line per boot decision.  Every
                           # import of it is function-local (inside app.py's
                           # companion block, on BOTH the success and the
@@ -640,6 +644,15 @@ build_exe_options = {
         # lib/ FIRST and python-embed last (app.py appends it), so a copy
         # here is the one the main exe imports.
         "sympy",
+        # ddgs (the keyless web search, HARTOS hartos/helper.py tier A) finds
+        # its engines at run time: ddgs/engines/__init__.py walks the
+        # package with pkgutil.iter_modules + importlib.import_module, which
+        # the tracer cannot follow.  Traced only, lib/ddgs/engines/ held
+        # __init__.pyc and no engine, so in Nunba.exe ENGINES was empty and
+        # every search raised KeyError 'text' (measured on build 75, 16 Nov
+        # 2026: every research turn came back with no results while yahoo
+        # alone, from python-embed's full copy, returned 3 rows).
+        "ddgs",
     ],
     "zip_includes": [],
     "build_exe": "build/Nunba",
