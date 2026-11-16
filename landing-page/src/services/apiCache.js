@@ -47,6 +47,10 @@ const INVALIDATION_RULES = [
   {mutation: /\/users\/[^/]+\/follow/, invalidate: [/\/users/]},
   {mutation: /\/notifications/, invalidate: [/\/notifications/]},
   {mutation: /\/auth\//, invalidate: [/\/auth\/me/]},
+  // Grant / revoke / decline / reopen change what GET /consent lists; the
+  // Privacy cards re-read it right after the change (a blocked phone kept
+  // showing ALLOWED from the cache).
+  {mutation: /\/consent(\/(revoke|decline|reopen))?$/, invalidate: [/\/consent/]},
 ];
 
 // ── Public Cache TTL Rules ────────────────────────────────────────────

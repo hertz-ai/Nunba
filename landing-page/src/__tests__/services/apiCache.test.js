@@ -261,6 +261,25 @@ describe('apiCache.invalidateOnMutation', () => {
     expect(apiCache.get('anon:GET:/communities:')).toBeNull();
   });
 
+  // Privacy's phone card re-reads /consent right after Block / Allow.  With
+  // no rule, the GET was served from the 60 s cache, so a blocked phone still
+  // showed ALLOWED with a Block button, and a second Block answered 404 "no
+  // active consent" (measured 2026-11-16 on the desktop).
+  it.each([
+    ['grant', 'http://localhost:5000/api/social/consent'],
+    ['revoke', 'http://localhost:5000/api/social/consent/revoke'],
+    ['decline', 'http://localhost:5000/api/social/consent/decline'],
+    ['reopen', 'http://localhost:5000/api/social/consent/reopen'],
+  ])('a consent %s drops every cached consent list', (_what, url) => {
+    apiCache.set('u1:GET:/consent:{"consent_type":"device_access"}', 'phones', '/consent');
+    apiCache.set('u1:GET:/consent:{"active_only":"true"}', 'active', '/consent');
+    apiCache.set('anon:GET:/posts:', 'data', '/posts');
+    apiCache.invalidateOnMutation(url);
+    expect(apiCache.get('u1:GET:/consent:{"consent_type":"device_access"}')).toBeNull();
+    expect(apiCache.get('u1:GET:/consent:{"active_only":"true"}')).toBeNull();
+    expect(apiCache.get('anon:GET:/posts:')).not.toBeNull();
+  });
+
   it('does nothing for non-matching mutations', () => {
     apiCache.set('anon:GET:/posts:', 'data', '/posts');
     apiCache.invalidateOnMutation('/some/random/endpoint');
