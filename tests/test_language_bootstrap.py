@@ -181,7 +181,7 @@ class TestPlanCreation:
         mock_orch.select_best.return_value = None
         mock_mod = MagicMock()
         mock_mod.get_orchestrator.return_value = mock_orch
-        with patch.dict('sys.modules', {'models.orchestrator': mock_mod}):
+        with patch.dict('sys.modules', {'models.orchestrator': mock_mod}),              patch('models.language_bootstrap._tts_exclusions', return_value=[]):
             gpu_info = {'free_gb': 3.0, 'total_gb': 4.0}
             plan = _create_plan('en', gpu_info)
         for mt in (ModelType.AUDIO_GEN, ModelType.VIDEO_GEN):
@@ -206,7 +206,9 @@ class TestPlanCreation:
         mock_orch.select_best.return_value = mock_entry
         mock_mod = MagicMock()
         mock_mod.get_orchestrator.return_value = mock_orch
-        with patch.dict('sys.modules', {'models.orchestrator': mock_mod}):
+        # The real _tts_exclusions would build the TTS singleton and leave it
+        # behind for later tests (review of 888f62b3).
+        with patch.dict('sys.modules', {'models.orchestrator': mock_mod}),              patch('models.language_bootstrap._tts_exclusions', return_value=[]):
             plan = _create_plan('en', {'free_gb': 16.0, 'total_gb': 16.0})
         for mt in BOOTSTRAP_ORDER:
             assert mt in plan, f"Missing {mt} from plan"
