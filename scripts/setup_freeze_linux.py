@@ -429,6 +429,11 @@ _optional_packages = [
     "google.oauth2",
     # Linux notification support
     "gi",  # PyGObject (GTK bindings)
+    # ddgs (keyless web search) finds its engines with pkgutil at run time,
+    # which the tracer cannot follow: traced only, the frozen copy had no
+    # engine and every search failed (Windows build 75, 16 Nov 2026; see
+    # setup_freeze_nunba.py packages[]).
+    "ddgs",
 ]
 for _pkg in _optional_packages:
     if _ilu.find_spec(_pkg):

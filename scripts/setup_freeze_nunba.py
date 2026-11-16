@@ -640,6 +640,15 @@ build_exe_options = {
         # lib/ FIRST and python-embed last (app.py appends it), so a copy
         # here is the one the main exe imports.
         "sympy",
+        # ddgs (the keyless web search, HARTOS hartos/helper.py tier A) finds
+        # its engines at run time: ddgs/engines/__init__.py walks the
+        # package with pkgutil.iter_modules + importlib.import_module, which
+        # the tracer cannot follow.  Traced only, lib/ddgs/engines/ held
+        # __init__.pyc and no engine, so in Nunba.exe ENGINES was empty and
+        # every search raised KeyError 'text' (measured on build 75, 16 Nov
+        # 2026: every research turn came back with no results while yahoo
+        # alone, from python-embed's full copy, returned 3 rows).
+        "ddgs",
     ],
     "zip_includes": [],
     "build_exe": "build/Nunba",
