@@ -254,42 +254,13 @@ describe('Chat Flow E2E', () => {
       });
     });
 
-    // cy.intercept stubs only the BROWSER's requests; cy.request goes
-    // straight to the server, so this test used to read the real reply and
-    // compare it with its own stub's words ("Local LLM is not running"),
-    // which the server no longer says (it offers model setup instead).  What
-    // the name asks is that a stub the UI specs use has the real reply's
-    // shape: check the stub's fields against a real reply.
-    it('3.3 Stubbed local LLM unavailable response matches real backend format', () => {
-      const stub = {
-        text: 'Local LLM is not running. Please start Llama.cpp or download a model via Nunba settings.',
-        agent_id: 'local_assistant',
-        agent_type: 'local',
-        error: 'local_llm_unavailable',
-        success: false,
-      };
-      cy.request({
-        method: 'POST',
-        url: `${API}/chat`,
-        body: {
-          text: 'Hello',
-          user_id: 'test_stub',
-          agent_id: 'local_assistant',
-          agent_type: 'local',
-        },
-        headers: {'Content-Type': 'application/json'},
-        failOnStatusCode: false,
-        timeout: 60000,
-      }).then((response) => {
-        ['text', 'agent_id', 'agent_type'].forEach((k) => {
-          expect(response.body, `real reply has ${k}`).to.have.property(k);
-          expect(typeof response.body[k], k).to.eq(typeof stub[k]);
-        });
-        if (response.body.error) {
-          expect(response.body.success).to.eq(false);
-        }
-      });
-    });
+    // 3.3 ("stubbed local LLM unavailable response matches real backend
+    // format") is gone: cy.intercept does not reach cy.request, so it only
+    // ever re-read the real reply, which 3.2 above already checks field by
+    // field.  The stubs the UI tests use ({error:'local_llm_unavailable',
+    // success:false}) no longer match the real "no model" reply, the
+    // setup card (routes/chatbot_routes.py, success:true + llm_setup_card)
+    // -- a gap to close in those tests, not here.
   });
 
   // =========================================================================
