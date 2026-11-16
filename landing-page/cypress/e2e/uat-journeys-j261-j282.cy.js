@@ -49,6 +49,11 @@ describe('J261-J270: HARTOS/MCP/WAMP/memory/onboarding', () => {
   it('J262: GET /api/mcp/local/tools/list returns tool inventory envelope', () => {
     cy.request({url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/list`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 403, 503]);
+      if (r.status === 200) {
+        // The inventory offers memory's tools (J71 / J104 run them).
+        const names = (r.body.tools || []).map((t) => t.name);
+        expect(names).to.include.members(['remember', 'recall']);
+      }
     });
   });
 
@@ -86,22 +91,26 @@ describe('J261-J270: HARTOS/MCP/WAMP/memory/onboarding', () => {
     });
   });
 
-  it('J267: POST /api/memory/remember + POST /api/memory/recall both return envelopes', () => {
-    cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
-      body: {text: 'j267 test', agent_id: 'j267'},
-      failOnStatusCode: false,
-    }).then((r) => {
-      expect(r.status).to.be.oneOf([200, 201, 400, 401, 403, 404, 503]);
+  // /api/memory/* is GET recent, GET search and DELETE <id>
+  // (routes/chatbot_routes.py; tests/journey/test_J267_memory_crud_breadth.py
+  // is the pytest side).  remember / recall are MCP tools (J71, J104), not
+  // routes here: the POSTs this used to send matched the DELETE-only rule
+  // and got 405.
+  it('J267: memory routes answer recent, search and delete', () => {
+    const api = `${Cypress.env('apiUrl')}/api/memory`;
+    cy.request({url: `${api}/recent?user_id=j267&limit=5`, failOnStatusCode: false}).then((r) => {
+      expect(r.status).to.be.oneOf([200, 401, 403, 503]);
+      if (r.status === 200) expect(r.body).to.be.an('array');
+    });
+    cy.request({url: `${api}/search?user_id=j267`, failOnStatusCode: false}).then((r) => {
+      expect(r.status, 'search without q').to.be.oneOf([400, 401, 403]);
     });
     cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/recall`,
-      body: {query: 'j267', agent_id: 'j267'},
+      method: 'DELETE',
+      url: `${api}/j267-no-such-memory?user_id=j267`,
       failOnStatusCode: false,
     }).then((r) => {
-      expect(r.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
+      expect(r.status, 'delete of an unknown id').to.be.oneOf([404, 401, 403, 503]);
     });
   });
 
