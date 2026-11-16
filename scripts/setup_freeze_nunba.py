@@ -570,6 +570,10 @@ build_exe_options = {
                           # here, i.e. the tracer followed app.py's
                           # function-local import of it.  Listed anyway, the
                           # same belt-and-braces as desktop.glass above.
+        "desktop.main_page_presence",  # The floating companion's gate:
+                          # imported in main() before the main window is
+                          # created, so a miss would stop the app, not
+                          # just the companion (review of c8968c3b).
         "desktop.boot_record",  # One durable line per boot decision.  Every
                           # import of it is function-local (inside app.py's
                           # companion block, on BOTH the success and the

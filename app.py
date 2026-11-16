@@ -8199,13 +8199,12 @@ def main():
             _comp_x, _comp_y = _companion_origin(_screen_w, _screen_h,
                                                  _comp_w, _comp_h)
 
-            # What the PAGE last asked for.  The companion page owns presence
-            # (on_companion_presence below); the main page's own report
-            # (_main_page) owns whether that presence is allowed on screen
-            # right now.  Two different questions, so the answer to the first
-            # is kept here rather than inferred from whether the window
-            # happens to be visible -- which is what the report changes.
-            _companion_desired = {'state': 'hidden', 'shape': None}
+            # The companion page owns presence (on_companion_presence below);
+            # the main page's own report (_main_page) owns whether it may be on
+            # screen right now.  The gate that joins the two is built once the
+            # window exists (desktop/main_page_presence.
+            # CompanionPresenceApplier, tested with fake windows there).
+            _companion_gate = None
 
             class CompanionAPI:
                 """Python bridge for the companion window JS.
@@ -8337,38 +8336,11 @@ def main():
                     pywebview's show()/hide() marshal to the UI thread
                     themselves; the region and topmost calls are Win32.
                     """
-                    try:
-                        _companion_desired['state'] = state
-                        _companion_desired['shape'] = shape
-                        if state == 'hidden':
-                            _companion_window.hide()
-                            return
-                        # Fail closed.  This surface is for when the owner is
-                        # somewhere else; over Nunba's own window it is a
-                        # second copy of the same conversation.  The main page
-                        # reports whether it is in front, and until it has
-                        # said "not in front" (startup, a page that failed to
-                        # load) the companion stays hidden
-                        # (desktop/main_page_presence.py).
-                        _suppress = not _main_page.companion_may_show()
-                        # The success path logged nothing, which made the gate
-                        # unfalsifiable: an absent line could mean "never ran"
-                        # or "ran and allowed", and a live check could not tell
-                        # those apart.  One line per decision.
-                        logger.info("[COMPANION] presence %s -> %s", state,
-                                    'hide' if _suppress else 'show')
-                        if _suppress:
-                            _companion_window.hide()
-                            return
-                        _comp_hwnd = _resolve_hwnd(_companion_window)
-                        if _comp_hwnd and shape:
-                            from desktop.platform_utils import set_window_shape
-                            set_window_shape(_comp_hwnd, shape)
-                        _companion_window.show()
-                        _companion_raise()
-                    except Exception as _pres_err:
-                        logger.debug("[COMPANION] presence %s failed: %s",
-                                     state, _pres_err)
+                    # Fail closed: shown only while the main page has said it
+                    # is not in front, and only where the companion has been
+                    # measured (desktop/main_page_presence.py).
+                    if _companion_gate is not None:
+                        _companion_gate.request(state, shape)
 
             _companion_api = CompanionAPI()
 
@@ -8530,30 +8502,23 @@ def main():
             if _companion_window:
                 _companion_window.events.loaded += _on_companion_loaded
 
-            def _on_main_page_presence(in_front):
-                """The main page came to the front, or left it.
-
-                on_companion_presence only runs when the COMPANION page
-                changes its mind.  The owner alt-tabbing to Nunba changes
-                nothing there, so the main page's own report (focus, blur,
-                visibility; desktop/main_page_presence.py) is applied here to
-                what the companion page last asked for: hide when the main
-                page is in front, else the companion page's last request
-                again, through the same handler and its fail-closed gate.
-                """
-                try:
-                    if in_front:
-                        _companion_window.hide()
-                    elif _companion_desired['state'] != 'hidden':
-                        _companion_api.on_companion_presence(
-                            _companion_desired['state'],
-                            _companion_desired['shape'])
-                except Exception as _fg_err:
-                    logger.debug("[COMPANION] main page presence %s failed: "
-                                 "%s", in_front, _fg_err)
-
             if _companion_window:
-                _main_page.on_change(_on_main_page_presence)
+                from desktop.main_page_presence import CompanionPresenceApplier
+
+                def _companion_shape(shape):
+                    # The window region (Win32): only the orb's rect is on
+                    # screen and clickable.
+                    _comp_hwnd = _resolve_hwnd(_companion_window)
+                    if _comp_hwnd:
+                        from desktop.platform_utils import set_window_shape
+                        set_window_shape(_comp_hwnd, shape)
+
+                # The owner alt-tabbing to Nunba changes nothing on the
+                # COMPANION page; the gate re-applies its last request on every
+                # change of the main page's report.
+                _companion_gate = CompanionPresenceApplier(
+                    _main_page, _companion_window, _companion_shape,
+                    _companion_raise)
 
         except Exception as _comp_err:
             logger.warning("[COMPANION] Companion window not created: %s", _comp_err)
@@ -8619,6 +8584,13 @@ def main():
                     logger.warning("[CHROME] install_custom_chrome failed: %s", _chrome_err)
             _window.events.loaded += _install_chrome
             _window.events.shown += _install_chrome
+
+        # A report belongs to the page that sent it.  Each time the main window
+        # loads a page again (reload, navigation, the REMOUNT watchdog) the old
+        # report is cleared, so the companion stays hidden until the new page
+        # says it is not in front (review of c8968c3b: a page that never
+        # mounted again left "not in front" behind, over Nunba).
+        _window.events.before_load += _main_page.reset
 
         # Set up system tray
         _tray_icon = setup_system_tray(_window)

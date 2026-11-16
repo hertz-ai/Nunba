@@ -21,11 +21,39 @@ Fail closed: until the page has said "not in front", the companion stays
 hidden.  "No report yet" covers startup, a page that failed to load and an old
 cached page that never reports; in each of them the owner may well be looking
 at Nunba, and showing a duplicate over it is the defect this gate exists for.
+A report belongs to the page that sent it: when the main window starts loading
+a page again (reload, navigation, the REMOUNT watchdog) it is reset to "no
+report" (MainPagePresence.reset), so a page that never mounts again cannot
+leave an old "not in front" behind (review of c8968c3b).
+
+CompanionPresenceApplier puts what the companion page asked for on screen
+through that gate; app.py only wires the windows to it, so the decision is
+tested with fake windows here rather than read out of app.py's text.
 """
 import logging
+import sys
 import threading
 
 logger = logging.getLogger(__name__)
+
+# Where the floating companion has been measured.  Before c8968c3b the gate read
+# the operating system's foreground window through Win32 only, so off Windows
+# it always read "unreadable" and the companion never showed.  The page's
+# report works on every OS, but on macOS pywebview's show() activates the app
+# (cocoa BrowserView.show, read in pywebview 6.1, not run), taking focus from
+# the owner's other application, and the orb clipping (set_window_shape) is
+# Win32 only, so the whole card would show.  It stays on Windows until it is
+# measured there (review of c8968c3b; design checklist c4, f5).
+COMPANION_MEASURED_PLATFORMS = ('win32',)
+
+
+def _tell(listeners, value):
+    for listener in listeners:
+        try:
+            listener(value)
+        except Exception as err:
+            logger.warning("[COMPANION] main page presence listener "
+                           "failed: %s", err, exc_info=True)
 
 
 class MainPagePresence:
@@ -65,13 +93,89 @@ class MainPagePresence:
             listeners = list(self._listeners)
         logger.info("[COMPANION] main page %s",
                     'in front' if in_front else 'not in front')
-        for listener in listeners:
-            try:
-                listener(in_front)
-            except Exception as err:
-                logger.warning("[COMPANION] main page presence listener "
-                               "failed: %s", err, exc_info=True)
+        _tell(listeners, in_front)
         return True
+
+    def reset(self):
+        """The main window is loading a page again; the last report was the
+        old page's.  Back to "no report", so the companion stays hidden until
+        the new page says it is not in front.  Wired to the main window's
+        ``events.before_load``."""
+        with self._lock:
+            if self._in_front is None:
+                return
+            self._in_front = None
+            listeners = list(self._listeners)
+        logger.info("[COMPANION] main page loading again; its report is "
+                    "cleared until it reports")
+        _tell(listeners, None)
+
+
+class CompanionPresenceApplier:
+    """What the companion page asked for, on screen, through the gate.
+
+    The companion page asks for 'hidden', 'orb' (an agent is speaking: the
+    window cut to the orb's rect, ``shape``) or 'shown' (the whole card).  A
+    request and a change of the main page's report both re-apply the last
+    request under ONE lock, so the window ends in the state the last request
+    and the last report say, whichever thread arrives last (pywebview runs
+    each js_api call on its own thread).
+
+    ``window`` needs show() and hide(); ``apply_shape(shape)`` cuts the window
+    to the orb and ``raise_window()`` puts it on top (Win32 helpers in app.py).
+    """
+
+    def __init__(self, presence, window, apply_shape, raise_window,
+                 platform=None):
+        self._presence = presence
+        self._window = window
+        self._apply_shape = apply_shape
+        self._raise = raise_window
+        self._platform = sys.platform if platform is None else platform
+        self._lock = threading.Lock()
+        self._state, self._shape = 'hidden', None
+        presence.on_change(self._on_main_page)
+
+    def request(self, state, shape=None):
+        """The companion page's request."""
+        with self._lock:
+            self._state, self._shape = state, shape
+            self._apply()
+
+    def _on_main_page(self, _in_front):
+        with self._lock:
+            self._apply()
+
+    def _why_hidden(self):
+        """Why the companion may not show now, in words for the log, or None."""
+        if self._platform not in COMPANION_MEASURED_PLATFORMS:
+            return f'not measured on {self._platform} yet'
+        if self._presence.companion_may_show():
+            return None
+        if self._presence.in_front is None:
+            return 'the main page has not reported since it loaded'
+        return 'the main page is in front'
+
+    def _apply(self):
+        try:
+            if self._state == 'hidden':
+                self._window.hide()
+                return
+            reason = self._why_hidden()
+            # One line per decision, with the reason when it hides: an absent
+            # line could mean "never ran" or "ran and allowed".
+            logger.info("[COMPANION] presence %s -> %s", self._state,
+                        f'hide ({reason})' if reason else 'show')
+            if reason:
+                self._window.hide()
+                return
+            if self._shape:
+                self._apply_shape(self._shape)
+            self._window.show()
+            self._raise()
+        except Exception as err:
+            logger.warning("[COMPANION] presence %s failed: %s",
+                           self._state, err)
 
 
 class MainPagePresenceApi:
