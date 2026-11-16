@@ -78,9 +78,13 @@ describe('Admin pages — role guard rejects non-admin', () => {
     cy.clearLocalStorage();
   });
 
-  it('flat user visiting /admin/dashboard is redirected away', () => {
-    cy.visit('/admin/dashboard', {failOnStatusCode: false});
-    cy.location('pathname', {timeout: 10000}).should('not.eq', '/admin/dashboard');
+  // There is no /admin/dashboard route (the dashboard is /admin), and the
+  // desktop's own admin pages take minRole="guest" (MainRoute.js): the flat
+  // owner of this box administers it.  The pages a flat user must NOT reach
+  // are the central-only ones, which fall back to /admin.
+  it('flat user visiting a central-only admin page is redirected away', () => {
+    cy.visit('/admin/users', {failOnStatusCode: false});
+    cy.location('pathname', {timeout: 10000}).should('not.eq', '/admin/users');
   });
 
   it('anonymous user visiting /admin/settings is redirected away', () => {
