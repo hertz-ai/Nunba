@@ -2261,8 +2261,18 @@ class TTSEngine:
                 f"{_DEMOTION_TTL_SECONDS // 86400}d) so subsequent "
                 f"boots don't re-burn latency on the same engine."
             )
+            # Recorded on the live engine too and saved through it
+            # (_state_writer): this may be the engine TTSLoader.load built at
+            # boot (the install handshake synthesizes on it), whose set is
+            # stale; saving from it erased the live engine's later
+            # demotions, and the live engine kept selecting this backend.
+            writer = self._state_writer()
+            if writer is not self:
+                writer._demoted_backends.add(backend)
+                writer._consecutive_failures[backend] = max(
+                    writer._consecutive_failures.get(backend, 0), n)
             try:
-                self._save_persisted_demotions()
+                writer._save_persisted_demotions()
             except Exception as _pe:
                 logger.debug(f"TTS demotion persist skipped: {_pe}")
 

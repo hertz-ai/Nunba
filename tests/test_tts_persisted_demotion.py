@@ -711,3 +711,26 @@ def test_piper_install_failure_is_never_hydrated(state_path, install_state):
     assert BACKEND_PIPER not in TTSEngine._auto_install_failed
     written = json.loads(state_path.read_text())
     assert BACKEND_PIPER not in written.get('install_failed', {})
+
+
+def test_boot_engine_demotion_keeps_the_live_engines_and_reaches_it(
+        state_path, install_state, monkeypatch):
+    """A failure recorded on TTSLoader.load's engine (e.g. the install
+    handshake's synth) used to save that engine's stale set, erasing what
+    the live engine demoted since boot, and the live engine never learned
+    of the new demotion."""
+    from tts import tts_engine as _te
+
+    live = _te.TTSEngine(auto_init=False)
+    monkeypatch.setattr(_te, '_engine', live)
+    boot = _te.TTSEngine(auto_init=False)
+    live._demoted_backends.add('kokoro')       # demoted after boot read it
+    live._save_persisted_demotions()
+
+    boot._record_backend_failure(
+        'f5', RuntimeError('f5_tts: worker startup failed: died during startup'))
+
+    written = json.loads(state_path.read_text())['demoted']
+    assert {'kokoro', 'f5'} <= set(written), written
+    assert 'f5' in live._demoted_backends
+
