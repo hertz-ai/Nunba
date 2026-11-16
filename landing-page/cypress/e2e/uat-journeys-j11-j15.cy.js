@@ -156,7 +156,11 @@ describe('J13: kids media pipeline (3-tier asset resolution)', () => {
   it('GET /api/media/asset/status/<job_id> returns job envelope or 404', () => {
     cy.request({
       method: 'GET',
-      url: `${Cypress.env('apiUrl')}/api/media/asset/status/nonexistent-job`,
+      // A well-formed id no job has.  media_asset_status refuses any id that
+      // is not music_/video_ + 12 hex with 400 before it looks one up
+      // (routes/kids_media_routes.py), so 'nonexistent-job' never reached
+      // the lookup this test is about.
+      url: `${Cypress.env('apiUrl')}/api/media/asset/status/music_000000000000`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 404, 503]);

@@ -351,8 +351,11 @@ describe('J195-J199: auto-evolve + journey engine + kids game', () => {
   it('J195: POST /api/social/experiments/pause-evolve returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/social/experiments/pause-evolve`,
-      body: {experiment_id: 'j195_test'},
+      // The experiment id is in the path (HARTOS api_thought_experiments.py
+      // pause_evolve).  /experiments/pause-evolve matched the GET-only
+      // /experiments/<experiment_id> route instead and answered 405.
+      url: `${Cypress.env('apiUrl')}/api/social/experiments/j195_test/pause-evolve`,
+      body: {},
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
@@ -362,8 +365,9 @@ describe('J195-J199: auto-evolve + journey engine + kids game', () => {
   it('J195: POST /api/social/experiments/resume-evolve returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/social/experiments/resume-evolve`,
-      body: {experiment_id: 'j195_test'},
+      // Id in the path, as for pause-evolve above.
+      url: `${Cypress.env('apiUrl')}/api/social/experiments/j195_test/resume-evolve`,
+      body: {},
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
