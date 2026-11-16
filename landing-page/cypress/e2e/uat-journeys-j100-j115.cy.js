@@ -174,25 +174,28 @@ describe('J104: memory tool chain exposed', () => {
     installBaselineStubs();
   });
 
-  it('POST /api/memory/remember returns envelope', () => {
+  // The memory HTTP surface is GET /api/memory/recent and GET
+  // /api/memory/search (routes/chatbot_routes.py; MemoryPanel.jsx calls
+  // both).  There is no POST /api/memory/remember or /recall: those POSTs
+  // matched the DELETE-only /api/memory/<memory_id> rule and got 405.
+  // Memories are written by the agent's own memory tools, not over HTTP.
+  it('GET /api/memory/recent returns envelope', () => {
     cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/remember`,
-      body: {text: 'user loves cats', agent_id: 'test'},
+      url: `${Cypress.env('apiUrl')}/api/memory/recent?user_id=test&limit=5`,
       failOnStatusCode: false,
     }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 201, 400, 401, 403, 404, 503]);
+      expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
+      if (resp.status === 200) expect(resp.body).to.be.an('array');
     });
   });
 
-  it('POST /api/memory/recall returns envelope', () => {
+  it('GET /api/memory/search (recall) returns envelope', () => {
     cy.request({
-      method: 'POST',
-      url: `${Cypress.env('apiUrl')}/api/memory/recall`,
-      body: {query: 'cats', agent_id: 'test'},
+      url: `${Cypress.env('apiUrl')}/api/memory/search?q=cats&user_id=test`,
       failOnStatusCode: false,
     }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
+      expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
+      if (resp.status === 200) expect(resp.body).to.be.an('array');
     });
   });
 });
@@ -232,16 +235,31 @@ describe('J106: SSE stream endpoint exists (Last-Event-ID GAP)', () => {
   });
 
   it('GET /api/social/events/stream responds with text/event-stream or 503', () => {
-    cy.request({
-      method: 'GET',
-      url: `${Cypress.env('apiUrl')}/api/social/events/stream`,
-      failOnStatusCode: false,
-      timeout: 10000,
-    }).then((resp) => {
-      expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
-      if (resp.status === 200) {
-        expect(resp.headers['content-type']).to.match(/event-stream|application\/json/);
-      }
+    // A 200 here is an SSE stream that never ends, and cy.request waits for
+    // the whole body: it timed out after 10 s on CI (main.py sets
+    // NUNBA_BUNDLED, so the route streams for a local guest without a
+    // token).  fetch() under Cypress did not resolve either (measured).
+    // EventSource opens only on a 200 with Content-Type text/event-stream;
+    // anything else is an error, and a non-stream answer cy.request can read.
+    const url = `${Cypress.env('apiUrl')}/api/social/events/stream`;
+    cy.wrap(
+      new Promise((resolve) => {
+        const es = new EventSource(url);
+        es.onopen = () => {
+          es.close();
+          resolve('open');
+        };
+        es.onerror = () => {
+          es.close();
+          resolve('error');
+        };
+      }),
+      {timeout: 10000},
+    ).then((outcome) => {
+      if (outcome === 'open') return; // 200 + text/event-stream
+      cy.request({url, failOnStatusCode: false, timeout: 10000}).then((resp) => {
+        expect(resp.status).to.be.oneOf([401, 403, 404, 503]);
+      });
     });
   });
 });
