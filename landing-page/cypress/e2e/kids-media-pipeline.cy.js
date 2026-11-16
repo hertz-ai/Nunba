@@ -100,8 +100,11 @@ describe('Kids Media Pipeline', () => {
   // =========================================================================
   describe('GET /api/media/asset/status/<job_id>', () => {
     it('returns 404 for unknown job_id', () => {
+      // A well-formed id no job has.  media_asset_status checks the format
+      // first (^(music|video)_[a-f0-9]{12}$) and answers 400 to anything
+      // else, so 'nonexistent_abc123' only ever reached that 400.
       cy.request({
-        url: `${Cypress.env('apiUrl')}/api/media/asset/status/nonexistent_abc123`,
+        url: `${Cypress.env('apiUrl')}/api/media/asset/status/music_000000000000`,
         failOnStatusCode: false,
       }).then((res) => {
         expect([404, 500, 503]).to.include(res.status);
