@@ -19,7 +19,10 @@ describe('Demopage - Agent Loading E2E', () => {
   });
 
   it('renders agent names from API response in the UI', () => {
-    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    // The agents show in the chat, which a first visit does not reach (it
+    // asks for the HART language first): open the sealed, returning-guest
+    // chat.  A plain visit only ever rendered the language picker here.
+    cy.openLocalChat();
 
     cy.wait('@getPrompts', {timeout: 30000}).then((interception) => {
       const agentNames = interception.response.body.prompts.map((p) => p.name);

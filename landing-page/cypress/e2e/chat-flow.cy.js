@@ -28,58 +28,39 @@ describe('Chat Flow E2E', () => {
   // 1. UI Presence Tests
   // =========================================================================
   describe('1. UI Presence Tests', () => {
+    // /local today: a first visit shows the HART language picker (no chat
+    // yet, no sign-in prompt); once the HART is sealed, the chat is open to a
+    // guest without signing in -- the demo catalog's J02 "guest chat".
+    // cy.openLocalChat is that sealed, returning-guest state.  These tests
+    // used to expect a login prompt and a disabled composer for a guest,
+    // which the page no longer has (measured on /local, 2026-11-16).
     it('1.1 demo page has chat UI elements (textarea + buttons)', () => {
-      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.openLocalChat();
 
-      cy.wait('@getPrompts', {timeout: 30000});
-      cy.wait(2000);
-
-      // Page should render with content
       cy.get('#root').invoke('html').should('not.be.empty');
       cy.get('button', {timeout: 30000}).should('have.length.greaterThan', 0);
-
-      // Chat textarea should exist (may be disabled if not logged in)
       cy.get('textarea', {timeout: 30000}).should('exist');
     });
 
     it('1.2 chat textarea is present and shows placeholder', () => {
-      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+      cy.openLocalChat();
 
-      cy.wait('@getPrompts', {timeout: 30000});
-      cy.wait(2000);
-
-      // Textarea should have a placeholder
-      cy.get('textarea', {timeout: 30000}).should('exist');
-      cy.get('textarea', {timeout: 30000}).should('have.attr', 'placeholder');
+      cy.get('textarea', {timeout: 30000})
+        .should('have.attr', 'placeholder')
+        .and('match', /message/i);
     });
 
-    it('1.3 shows login prompt when not authenticated', () => {
+    it('1.3 a first visit asks for the HART language before the chat', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@getPrompts', {timeout: 30000});
-      cy.wait(2000);
-
-      // When not logged in, the page should prompt login
-      cy.get('#root')
-        .invoke('text')
-        .then((text) => {
-          const hasLoginPrompt =
-            text.includes('Login') ||
-            text.includes('login') ||
-            text.includes('Sign') ||
-            text.includes('sign');
-          expect(hasLoginPrompt, 'Should show login/sign prompt').to.be.true;
-        });
+      cy.contains(/what language feels like home/i, {timeout: 30000}).should('be.visible');
+      cy.get('textarea').should('not.exist');
     });
 
-    it('1.4 chat textarea is disabled when not logged in (expected behavior)', () => {
-      cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    it('1.4 a guest can type in the chat without signing in (J02)', () => {
+      cy.openLocalChat();
 
-      cy.wait('@getPrompts', {timeout: 30000});
-      cy.wait(2000);
-
-      // Textarea should be disabled since user isn't authenticated
-      cy.get('textarea', {timeout: 30000}).should('be.disabled');
+      cy.get('textarea', {timeout: 30000}).first().should('not.be.disabled');
     });
   });
 
@@ -186,7 +167,12 @@ describe('Chat Flow E2E', () => {
       });
     });
 
-    it('2.6 POST /chat with unknown agent_type returns 400 error', () => {
+    // The chat route never reads the client's agent_type: the server derives
+    // it from the resolved agent, and an unknown agent_id falls back to the
+    // default local assistant instead of a 400 (routes/chatbot_routes.py,
+    // "agent_type from the request is NEVER read"), so the person keeps
+    // chatting.  This used to expect that 400.
+    it('2.6 POST /chat ignores an unknown agent_type and answers as the default agent', () => {
       cy.request({
         method: 'POST',
         url: `${API}/chat`,
@@ -198,10 +184,11 @@ describe('Chat Flow E2E', () => {
         },
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
+        timeout: 60000,
       }).then((response) => {
-        expect(response.status).to.eq(400);
-        expect(response.body).to.have.property('error');
-        expect(response.body.error).to.include('agent type');
+        expect(response.status).to.eq(200);
+        expect(response.body).to.have.property('text');
+        expect(response.body.agent_type).to.be.oneOf(['local', 'cloud']);
       });
     });
   });
@@ -267,20 +254,20 @@ describe('Chat Flow E2E', () => {
       });
     });
 
+    // cy.intercept stubs only the BROWSER's requests; cy.request goes
+    // straight to the server, so this test used to read the real reply and
+    // compare it with its own stub's words ("Local LLM is not running"),
+    // which the server no longer says (it offers model setup instead).  What
+    // the name asks is that a stub the UI specs use has the real reply's
+    // shape: check the stub's fields against a real reply.
     it('3.3 Stubbed local LLM unavailable response matches real backend format', () => {
-      // Stub the /chat endpoint with the exact format from chatbot_routes.py
-      cy.intercept('POST', `${API}/chat`, {
-        statusCode: 200,
-        body: {
-          text: 'Local LLM is not running. Please start Llama.cpp or download a model via Nunba settings.',
-          agent_id: 'local_assistant',
-          agent_type: 'local',
-          error: 'local_llm_unavailable',
-          success: false,
-        },
-      }).as('localChatStubbed');
-
-      // Make a request through the stub
+      const stub = {
+        text: 'Local LLM is not running. Please start Llama.cpp or download a model via Nunba settings.',
+        agent_id: 'local_assistant',
+        agent_type: 'local',
+        error: 'local_llm_unavailable',
+        success: false,
+      };
       cy.request({
         method: 'POST',
         url: `${API}/chat`,
@@ -291,12 +278,16 @@ describe('Chat Flow E2E', () => {
           agent_type: 'local',
         },
         headers: {'Content-Type': 'application/json'},
+        failOnStatusCode: false,
+        timeout: 60000,
       }).then((response) => {
-        // Verify the stub matches expected format
-        expect(response.body.text).to.include('Local LLM is not running');
-        expect(response.body.error).to.eq('local_llm_unavailable');
-        expect(response.body.success).to.eq(false);
-        expect(response.body.agent_type).to.eq('local');
+        ['text', 'agent_id', 'agent_type'].forEach((k) => {
+          expect(response.body, `real reply has ${k}`).to.have.property(k);
+          expect(typeof response.body[k], k).to.eq(typeof stub[k]);
+        });
+        if (response.body.error) {
+          expect(response.body.success).to.eq(false);
+        }
       });
     });
   });
