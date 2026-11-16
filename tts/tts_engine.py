@@ -1777,8 +1777,15 @@ class TTSEngine:
                 'build': _installed_build(),
                 'reason': (lines[-1] if lines else 'unknown')[:300],
             }
+        # Saved through the process's engine (get_tts_engine) when there is
+        # one: the save writes 'demoted' from the saving instance's own set,
+        # and this runs on the engine TTSLoader.load built at boot, whose set
+        # is the file as it was ~3 min earlier, so it erased demotions the
+        # live engine wrote meanwhile.  'install_failed' is class-level, so
+        # either instance writes the same rows for it.
+        writer = _engine if _engine is not None else self
         try:
-            self._save_persisted_demotions()
+            writer._save_persisted_demotions()
         except Exception as _pe:  # noqa: BLE001
             logger.debug(f"TTS install-failure persist skipped: {_pe}")
 
@@ -2317,7 +2324,9 @@ class TTSEngine:
         build = _installed_build()
         stale = False
         for backend, info in rows.items():
-            if not isinstance(info, dict):
+            # Piper / NONE are never blocked, as in the demotion hydrate.
+            if not isinstance(info, dict) or backend in (BACKEND_PIPER,
+                                                         BACKEND_NONE):
                 stale = True
                 continue
             expires_at = info.get('expires_at')

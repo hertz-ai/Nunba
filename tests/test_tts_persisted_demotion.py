@@ -615,3 +615,50 @@ def test_failed_install_survives_an_unrelated_demotion_save(
     written = json.loads(state_path.read_text())
     assert 'kokoro' in written['demoted']
     assert 'neutts_air' in written['install_failed']
+
+
+def test_install_failure_save_keeps_the_live_engines_demotions(
+        state_path, install_state, monkeypatch):
+    """The failure is recorded on the engine TTSLoader.load built at boot,
+    ~3 min after it read the file.  Saving from that engine's own demoted
+    set erased what the live engine (get_tts_engine) demoted meanwhile."""
+    from tts import tts_engine as _te
+
+    live = _te.TTSEngine(auto_init=False)
+    monkeypatch.setattr(_te, '_engine', live)
+    boot = _te.TTSEngine(auto_init=False)      # TTSLoader.load's engine
+    live._demoted_backends.add('kokoro')       # demoted while pip runs
+    live._save_persisted_demotions()
+
+    _run_background_install(boot, 'neutts_air', monkeypatch,
+                            (False, _LONG_PATH_FAILURE))
+
+    written = json.loads(state_path.read_text())
+    assert 'kokoro' in written['demoted'], (
+        "the boot engine's save erased the live engine's demotion")
+    assert 'neutts_air' in written['install_failed']
+
+
+def test_verified_install_drops_the_failure_record(
+        state_path, install_state, monkeypatch):
+    """Once the record lapses and the install is run again and verified,
+    the record leaves the file too, not just memory."""
+    import types
+
+    from tts import tts_engine as _te
+    from tts import tts_handshake as _hs
+
+    eng = _te.TTSEngine(auto_init=False)
+    _run_background_install(eng, 'neutts_air', monkeypatch,
+                            (False, _LONG_PATH_FAILURE))
+    assert 'neutts_air' in json.loads(state_path.read_text())['install_failed']
+
+    _te.TTSEngine._auto_install_failed.discard('neutts_air')  # lapsed
+    monkeypatch.setattr(_hs, 'run_handshake', lambda *a, **k:
+                        types.SimpleNamespace(ok=True, n_bytes=48000,
+                                              err='', elapsed_s=1.0))
+    _run_background_install(eng, 'neutts_air', monkeypatch, (True, 'Ready'))
+
+    written = json.loads(state_path.read_text())
+    assert 'neutts_air' not in written.get('install_failed', {})
+    assert 'neutts_air' not in _te.TTSEngine._auto_install_failed
