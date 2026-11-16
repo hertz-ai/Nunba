@@ -110,12 +110,12 @@ class _Vram:
 
 @pytest.fixture
 def rig(monkeypatch, tmp_path):
+    # The registry is HARTOS's own: the device class is read from it.
+    from integrations.channels.media.tts_router import ENGINE_REGISTRY, TTSDevice
+
     import tts as tts_pkg
     from tts import backend_venv
     from tts import tts_engine as mod
-
-    # The registry is HARTOS's own: the device class is read from it.
-    from integrations.channels.media.tts_router import ENGINE_REGISTRY, TTSDevice
     assert ENGINE_REGISTRY['mms_tts'].device == TTSDevice.GPU_PREFERRED
     assert ENGINE_REGISTRY['indic_parler'].device == TTSDevice.GPU_ONLY
     assert ENGINE_REGISTRY['chatterbox_ml'].device == TTSDevice.GPU_ONLY
