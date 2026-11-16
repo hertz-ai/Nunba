@@ -138,17 +138,35 @@ def embeddings_args(spec_args) -> list:
 _LLAMA_THINK_OFF_ENV = 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS'
 _LLAMA_THINK_OFF_VALUE = '{"enable_thinking":false}'
 
+# The prompt cache each llama-server keeps in host RAM.  Build 10330's own
+# ``--help``: ``--cache-ram N  set the maximum cache size in MiB (default:
+# 8192, -1 - no limit, 0 - disable) (env: LLAMA_ARG_CACHE_RAM)``.  Neither
+# spawn set it, so each server could keep 8 GB of prompts.  Measured on the
+# owner's desktop 2026-11-05 23:05Z (39.7 GB RAM, 0.14 GB free): the 4B
+# server held 15.2 GB private and its log evicted 100-531 MiB entries at the
+# cap; the caption server held 5.7 GB and grew 86 MB a minute.  Measured with
+# 2048 set (2026-11-06/07, same desktop): both servers level off at their
+# start size + ~2.1 GB, and the 4B still took 8.3% of its prompt tokens from
+# the cache (2129 tasks) against 8.0% uncapped (740 tasks), so the cap cost
+# no measurable reuse.  Same env-var spelling as thinking-off, for the same
+# reason: an older build ignores it instead of exiting.  An operator's own
+# setting wins (-1 restores no limit).
+_LLAMA_CACHE_RAM_ENV = 'LLAMA_ARG_CACHE_RAM'
+_LLAMA_CACHE_RAM_MIB = '2048'
+
 
 def llama_child_env(base: dict | None = None) -> dict:
-    """Environment for a spawned llama-server: inherited env + thinking off.
+    """Environment for a spawned llama-server: inherited env + thinking off
+    + a bounded host-RAM prompt cache.
 
     Pure dict construction — no I/O, no mutation of ``os.environ`` (which
     would leak the setting to every unrelated child of this process).
-    An operator who has deliberately set the variable wins; we never
+    An operator who has deliberately set either variable wins; we never
     override an explicit choice.
     """
     env = dict(base) if base is not None else os.environ.copy()
     env.setdefault(_LLAMA_THINK_OFF_ENV, _LLAMA_THINK_OFF_VALUE)
+    env.setdefault(_LLAMA_CACHE_RAM_ENV, _LLAMA_CACHE_RAM_MIB)
     return env
 
 

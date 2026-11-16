@@ -196,12 +196,41 @@ describe('AgentOverlay consent.request', () => {
       reason: '',
     });
 
+    // Named as an AGENT: "Spider-Man asks to ..." read as a person asking
+    // (owner 2026-11-11, of "Vijai asks you").
     expect(
-      await screen.findByText('Spider-Man asks to control this computer.'),
+      await screen.findByText('Agent Spider-Man asks to control this computer.'),
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', {name: "Don't allow Spider-Man"})).toBeInTheDocument();
-    expect(screen.getAllByText('Spider-Man').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole('button', {name: "Don't allow Agent Spider-Man"})).toBeInTheDocument();
+    // The badge at the top of the card names an agent too; nothing on the
+    // card reads as the bare name.
+    expect(screen.getByText('Agent Spider-Man')).toBeInTheDocument();
+    expect(screen.queryByText('Spider-Man')).not.toBeInTheDocument();
     expect(screen.queryByText('79211163351')).not.toBeInTheDocument();
+  });
+
+  test("the camera tool's ask names its agent as an agent at the top", async () => {
+    // HARTOS's real camera ask (hartos/helper.py: ask_owner('camera_capture',
+    // 'Camera access needed: ...')) carries a reason, which the card shows in
+    // place of "X asks to ...", so the badge is the only place the agent is
+    // named.  Review of 71477fa7: it still read just "Vijai".
+    const send = mountOverlay();
+    send({
+      type: 'consent.request',
+      msg_id: 'consent.request:row-cam',
+      consent_type: 'camera_capture',
+      scope: '*',
+      agent_id: '70264903070',
+      agent_name: 'Vijai',
+      reason: 'Camera access needed: show me the drawing',
+    });
+
+    expect(
+      await screen.findByText('Camera access needed: show me the drawing'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Agent Vijai')).toBeInTheDocument();
+    expect(screen.queryByText('Vijai')).not.toBeInTheDocument();
+    expect(screen.queryByText('70264903070')).not.toBeInTheDocument();
   });
 
   test('an ask with only an id shows no id anywhere', async () => {

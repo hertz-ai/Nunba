@@ -146,6 +146,58 @@ class TestCreateOrGetActions:
         data = resp.get_json()
         assert data["status"] == "created"
 
+    def test_a_caption_row_keeps_where_its_frame_came_from(self, client):
+        """Owner 2026-11-10: "my images do not have source provenance?"  The
+        producer states the source; a row posted without one reads None, and
+        every other field reads as before."""
+        client.post("/create_action", json={
+            "user_id": 7, "action": "child looks at the screen",
+            "zeroshot_label": "Video Reasoning", "gpt3_label": "Visual Context",
+            "source": "camera|ws:127.0.0.1:61167"})
+        client.post("/create_action", json={
+            "user_id": 7, "action": "an older producer",
+            "zeroshot_label": "Video Reasoning", "gpt3_label": "Visual Context"})
+        newest, first = client.get("/create_action?user_id=7").get_json()
+        assert first["source"] == "camera|ws:127.0.0.1:61167"
+        assert first["action"] == "child looks at the screen"
+        assert first["gpt3_label"] == "Visual Context"
+        assert newest["source"] is None
+        by_mins = client.get("/get_visual_bymins?user_id=7&mins=5").get_json()
+        assert {r["source"] for r in by_mins} == {"camera|ws:127.0.0.1:61167", None}
+
+    def test_a_database_from_an_older_build_gains_the_source_column(self, tmp_nunba_dir):
+        """The actions table of an installed node predates the column: it is
+        added in place and the old rows still read back."""
+        import importlib
+        import sqlite3
+        # Where db_routes keeps it: <NUNBA_DATA_DIR>/data/nunba_db.sqlite.
+        os.makedirs(os.path.join(tmp_nunba_dir, "data"), exist_ok=True)
+        old = sqlite3.connect(os.path.join(tmp_nunba_dir, "data", "nunba_db.sqlite"))
+        old.executescript("""
+            CREATE TABLE actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, conv_id TEXT,
+                user_id INTEGER NOT NULL, action TEXT NOT NULL,
+                zeroshot_label TEXT DEFAULT '', gpt3_label TEXT DEFAULT '',
+                created_date TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT);
+            INSERT INTO actions (user_id, action) VALUES (5, 'from the old build');
+        """)
+        old.commit()
+        old.close()
+        from flask import Flask
+        with patch.dict(os.environ, {"NUNBA_DATA_DIR": tmp_nunba_dir}):
+            import routes.db_routes as db_mod
+            importlib.reload(db_mod)
+            importlib.reload(db_mod)        # a second start changes nothing
+            app = Flask(__name__, static_folder=None)
+            db_mod.register_db_routes(app)
+        old_client = app.test_client()
+        rows = old_client.get("/create_action?user_id=5").get_json()
+        assert [(r["action"], r["source"]) for r in rows] == [("from the old build", None)]
+        old_client.post("/create_action", json={
+            "user_id": 5, "action": "new", "source": "screen|desktop-capture"})
+        assert old_client.get("/create_action?user_id=5").get_json()[0]["source"] == \
+            "screen|desktop-capture"
+
     def test_get_actions_by_user_id(self, client):
         # Create two actions for user 99
         client.post("/create_action", json={"user_id": 99, "action": "a1"})
@@ -575,6 +627,10 @@ class TestGetAllPrompts:
             "12165936867_personality",  # personality
             "10009855073.proposed.r0",  # proposal variant
             "10009855073.proposed.r1",
+            # The plan waiting on its creator's approval card (HARTOS
+            # _hold_for_the_creator writes {pid}.proposed.json on every hold
+            # and keeps it after approve or deny; review of HARTOS 06f729559).
+            "10009855073.proposed",
             # Per-action file whose PARENT id is a UUID, not digits.  Live
             # 2026-09-06 the registry carried exactly one:
             # c38e8b7c-ccbc-4127-a0a4-7604f69f9203_0_1, with an empty prompt
@@ -590,6 +646,14 @@ class TestGetAllPrompts:
             "10009855073",              # ordinary numeric id
             "hive_economics_d2f34440",  # underscores, but a REAL agent
             "p2p_food_2d57bc33",
+            # Near misses of the plan names, which HARTOS's
+            # is_proposed_plan_filename does not match: a filter wider than
+            # HARTOS's naming rule would hide these real agents (review of
+            # 38e6dd78, two surviving mutants).
+            "12.proposedx",
+            "12proposed",
+            "hive_proposed_9",
+            "12.proposed.rx",
         ]
         for stem in real_agents:
             (prompts_dir / f"{stem}.json").write_text(
