@@ -4254,6 +4254,31 @@ def get_tts_engine(**kwargs) -> TTSEngine:
         return _engine
 
 
+def unusable_tts_catalog_ids() -> list[str]:
+    """Catalog ids ('tts-...') of the TTS engines this machine has proved it
+    cannot use right now: demoted ones (tts_state.json 'demoted') and ones
+    whose automatic install failed ('install_failed', and this process's
+    failed installs).  The same engines _select_backend_for_language skips
+    and _try_auto_install_backend will not install again.
+
+    For the model bootstrap (models/language_bootstrap.py), which picks its
+    TTS from the HARTOS catalog: without this it picked NeuTTS Air on every
+    boot of a box where that install cannot succeed, the loader failed, and
+    the 'tts Failed' card showed each time.  Piper, the CPU last resort, is
+    never listed.  Never raises; an empty list means "nothing known".
+    """
+    try:
+        eng = get_tts_engine()
+        with TTSEngine._auto_install_lock:
+            failed = set(TTSEngine._auto_install_failed)
+        broken = (set(eng._demoted_backends) | failed) - {BACKEND_PIPER, BACKEND_NONE}
+        return sorted(f'tts-{_BACKEND_TO_CATALOG[b]}'
+                      for b in broken if b in _BACKEND_TO_CATALOG)
+    except Exception as e:  # noqa: BLE001 -- a bootstrap hint, never fatal
+        logger.debug(f"unusable_tts_catalog_ids: {e}")
+        return []
+
+
 def synthesize_text(text: str,
                     voice: str | None = None,
                     speed: float = 1.0,

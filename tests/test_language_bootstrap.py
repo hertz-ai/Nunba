@@ -211,6 +211,43 @@ class TestPlanCreation:
         for mt in BOOTSTRAP_ORDER:
             assert mt in plan, f"Missing {mt} from plan"
 
+    def test_tts_pick_excludes_engines_this_machine_cannot_use(self):
+        """A TTS engine whose install already failed here (NeuTTS Air on a
+        box without long paths) or that is demoted must not be the one the
+        bootstrap picks: picking it again made the loader fail and showed
+        the 'tts Failed' card on every boot."""
+        from models.language_bootstrap import ModelType, _create_plan
+        mock_orch = MagicMock()
+        mock_orch.select_best.return_value = None
+        mock_mod = MagicMock()
+        mock_mod.get_orchestrator.return_value = mock_orch
+        with patch.dict('sys.modules', {'models.orchestrator': mock_mod}), \
+             patch('models.language_bootstrap._tts_exclusions',
+                   return_value=['tts-neutts-air']):
+            _create_plan('en', {'free_gb': 0.0, 'total_gb': 0.0})
+        calls = {c.args[0]: c.kwargs for c in mock_orch.select_best.call_args_list}
+        assert calls[ModelType.TTS].get('exclude') == ['tts-neutts-air']
+        assert not calls[ModelType.LLM].get('exclude')
+
+
+class TestTtsExclusions:
+    """The bootstrap asks the TTS engine which engines it has proved broken."""
+
+    def test_a_failed_install_is_excluded_by_its_catalog_id(self, monkeypatch, tmp_path):
+        from tts import tts_engine as _te
+        monkeypatch.setenv('NUNBA_TTS_STATE_PATH', str(tmp_path / 'tts_state.json'))
+        monkeypatch.setattr(_te, '_engine', None)
+        monkeypatch.setattr(_te.TTSEngine, '_auto_install_failed', {'neutts_air'})
+        monkeypatch.setattr(_te.TTSEngine, '_auto_install_failed_meta', {})
+        ids = _te.unusable_tts_catalog_ids()
+        assert 'tts-neutts-air' in ids
+        assert not any('piper' in i for i in ids)
+
+    def test_bootstrap_helper_never_raises(self, monkeypatch):
+        from models import language_bootstrap as lb
+        with patch.dict('sys.modules', {'tts.tts_engine': None}):
+            assert lb._tts_exclusions() == []
+
 
 # ============================================================
 # start_bootstrap — state machine
