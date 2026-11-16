@@ -40,7 +40,10 @@ describe('Mindstory Page', () => {
 
   it('renders the Mindstory page with header', () => {
     cy.socialVisit('/social/mindstory');
-    cy.contains('Mindstory', {timeout: 30000}).should('be.visible');
+    // The page header (MindstoryPage.jsx, an h6).  A bare
+    // cy.contains('Mindstory') found the sidebar's Mindstory link first,
+    // scrolled out of view inside the fixed drawer.
+    cy.contains('h6', 'Mindstory', {timeout: 30000}).should('be.visible');
     cy.contains('Create AI videos from any character').should('be.visible');
   });
 
@@ -84,8 +87,12 @@ describe('Mindstory Page', () => {
 
   it('is accessible from the sidebar navigation', () => {
     cy.socialVisit('/social');
-    cy.contains('Mindstory', {timeout: 30000}).should('be.visible');
-    cy.contains('Mindstory').click({force: true});
+    // The link sits low in the sidebar, which scrolls inside a fixed
+    // drawer: scroll it into view as a person would, then click it.
+    cy.contains('a', 'Mindstory', {timeout: 30000})
+      .scrollIntoView()
+      .should('be.visible')
+      .click();
     cy.url().should('include', '/social/mindstory');
   });
 });
