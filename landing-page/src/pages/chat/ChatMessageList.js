@@ -72,6 +72,7 @@ function formatTimestamp(ts) {
 import ThinkingProcessContainer from './ThinkingProcessContainer';
 import WorkflowFlowchart from './WorkflowFlowchart';
 import SetupProgressCard from './SetupProgressCard';
+import {isSetupCard} from '../../utils/serverChatHistory';
 
 const THINKING_VERBS = [
   'Analyzing',
@@ -241,10 +242,23 @@ const ChatMessageList = ({
   // Replies so far.  The hourglass row compares it across a request to tell
   // a request that got its reply from one that ended without one.
   const replyCount = messages.filter(isReplyMessage).length;
+  // Setup cards (engine installs, model downloads) report the app's setup,
+  // not this conversation.  Each is a message: a new one is added at the end
+  // and every open one is carried to the end of the next agent's chat, so
+  // they piled up under the newest reply (owner 2026-11-17: "lots of cards
+  // are spamming the bottom of conversation, why are they not at the top?").
+  // They are drawn above the conversation, in their own order; every other
+  // message keeps its place.  Each keeps its own index: dismiss and the
+  // other handlers find a message by it.
+  const indexed = messages.map((message, index) => [message, index]);
+  const drawOrder = [
+    ...indexed.filter(([message]) => isSetupCard(message)),
+    ...indexed.filter(([message]) => !isSetupCard(message)),
+  ];
 
   return (
     <div className="w-full px-3 py-4 space-y-6" role="log" aria-live="polite" aria-label="Chat messages">
-      {messages.map((message, index) => {
+      {drawOrder.map(([message, index]) => {
         if (message.type === 'thinking_container') {
           if (!showThinkingTraces) return null;  // #508 — toggle OFF: hide collapsible
           return (

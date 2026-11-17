@@ -12,7 +12,7 @@
  * what sends React down the keyed path where the copies pile up.
  */
 import React from 'react';
-import {render, screen} from '@testing-library/react';
+import {fireEvent, render, screen} from '@testing-library/react';
 
 jest.mock('lottie-react', () => ({__esModule: true, default: () => null}));
 jest.mock('../../assets/hourglass-lottie.json', () => ({}), {virtual: true});
@@ -27,11 +27,16 @@ jest.mock('../../pages/chat/SetupProgressCard', () => {
   return {
     ...jest.requireActual('../../pages/chat/SetupProgressCard'),
     __esModule: true,
-    default: ({jobType, firstSeen}) => {
+    default: ({jobType, firstSeen, onDismiss}) => {
       ReactInMock.useEffect(() => {
         mockMounts.push(`${jobType}@${firstSeen}`);
       }, []);
-      return <div data-testid="setup-card">{jobType}</div>;
+      return (
+        <div data-testid="setup-card">
+          {jobType}
+          <button type="button" aria-label={`dismiss ${jobType}`} onClick={onDismiss} />
+        </div>
+      );
     },
   };
 });
@@ -226,5 +231,53 @@ describe('the setup card of a live chat', () => {
     rerender(<ChatMessageList {...props} messages={mergeRestoredMessages(stored, live)} />);
     expect(screen.getAllByTestId('setup-card')).toHaveLength(1);
     expect(mockMounts.length).toBe(mountsBefore);
+  });
+});
+
+// Owner 2026-11-17: "lots of cards are spamming the bottom of conversation,
+// why are they not at the top?"  A setup card is a message: a new one is
+// added at the end (withSetupProgress) and every open one is carried to the
+// end of the next agent's chat on a switch, so they sat under the newest
+// reply.  They report the app's setup, not this conversation, so they render
+// above it; the conversation keeps its own order.
+describe('setup cards in a conversation', () => {
+  const at = (s) => `2026-11-17T05:00:${String(s).padStart(2, '0')}.000Z`;
+  const chat = [
+    {type: 'user', content: 'first question', timestamp: at(1)},
+    card('tts_setup_neutts_air', {timestamp: at(2)}),
+    {type: 'assistant', content: 'first answer', timestamp: at(3)},
+    {type: 'user', content: 'second question', timestamp: at(4)},
+    card('llm', {timestamp: at(5)}),
+    {type: 'assistant', content: 'second answer', timestamp: at(6)},
+  ];
+  const before = (a, b) => Boolean(
+    a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+  it('render above the conversation, not under the newest reply', () => {
+    render(<ChatMessageList {...props} messages={chat} />);
+    const cards = screen.getAllByTestId('setup-card');
+    expect(cards.map((c) => c.textContent)).toEqual(['tts_setup_neutts_air', 'llm']);
+    const firstMessage = screen.getByText('first question');
+    cards.forEach((c) => expect(before(c, firstMessage)).toBe(true));
+  });
+
+  it('leave the conversation in its own order', () => {
+    render(<ChatMessageList {...props} messages={chat} />);
+    const order = ['first question', 'first answer', 'second question', 'second answer']
+      .map((t) => screen.getByText(t));
+    for (let i = 1; i < order.length; i += 1) {
+      expect(before(order[i - 1], order[i])).toBe(true);
+    }
+  });
+
+  // Dismiss finds its card by the message's place in the list; drawn first,
+  // each card must still be given its own message's place.
+  it('dismiss the card that was clicked, not the message in its place', () => {
+    const setMessages = jest.fn();
+    render(<ChatMessageList {...props} setMessages={setMessages} messages={chat} />);
+    fireEvent.click(screen.getByRole('button', {name: 'dismiss llm'}));
+    const after = setMessages.mock.calls[0][0](chat);
+    expect(after.map((m) => Boolean(m.dismissed))).toEqual(
+      [false, false, false, false, true, false]);
   });
 });
