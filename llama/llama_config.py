@@ -14,6 +14,7 @@ Historical note:
 """
 import json
 import logging
+import ntpath
 import os
 import socket
 import subprocess
@@ -2073,11 +2074,20 @@ class LlamaConfig:
 
                         # Match GGUF filename to MODEL_PRESETS display name
                         # MODEL_PRESETS is already imported at module level (line 18)
+                        # llama-server names the model by the path it was
+                        # started with ('C:\\...\\Qwen3.5-4B-UD-Q4_K_XL.gguf',
+                        # live 11-17), so compare its file name: comparing
+                        # the path never matched, the running 4B read as
+                        # unknown and Auto Setup saved the 2B as the choice.
+                        # ntpath splits on both separators.
+                        served_file = ntpath.basename(actual_gguf)
                         display_name = actual_gguf  # fallback
+                        reused_preset = None
                         try:
                             for p in MODEL_PRESETS:
-                                if p.file_name == actual_gguf:
+                                if p.file_name == served_file:
                                     display_name = p.display_name
+                                    reused_preset = p
                                     # Update config to reflect the actual running model
                                     idx = MODEL_PRESETS.index(p)
                                     if self.config.get('selected_model_index') != idx:
@@ -2119,6 +2129,24 @@ class LlamaConfig:
                             logger.info(
                                 f"Catalog synced: LLM '{display_name}' marked "
                                 f"as loaded on {_device}")
+                            # Count the reused model's video memory the way
+                            # the spawn path counts one it started (canonical
+                            # key 'llm', the model's size).  notify_loaded's
+                            # own allocate('llm') has no budget row and books
+                            # 0.0, which left 5.8 GB of a running 4B unseen
+                            # (live 11-17).  Only a known preset: an unknown
+                            # model's size would be a guess.
+                            if _on_gpu and reused_preset is not None:
+                                vm = self._get_vram_manager()
+                                if vm:
+                                    _booked = model_size_gib(
+                                        reused_preset, model_path=actual_gguf,
+                                        installer=self.installer)
+                                    vm._allocations['llm'] = _booked
+                                    logger.info(
+                                        "VRAM allocation registered: llm = "
+                                        "%.3fGiB (reused server, from file)",
+                                        _booked)
                         except ImportError:
                             pass
                 except Exception as _sync_err:
