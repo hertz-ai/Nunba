@@ -137,6 +137,16 @@ def embeddings_args(spec_args) -> list:
 # the two can never drift on whether thinking is suppressed.
 _LLAMA_THINK_OFF_ENV = 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS'
 _LLAMA_THINK_OFF_VALUE = '{"enable_thinking":false}'
+# The same parameter's spelling on OLDER llama.cpp builds.  Build 476
+# (312cf03, the macOS arm64 binary in ~/.nunba/llama.cpp) documents it as
+#   --chat-template-kwargs STRING ... (env: LLAMA_CHAT_TEMPLATE_KWARGS)
+# and ignores the LLAMA_ARG_ name.  Its main server still does not think
+# because it also carries --reasoning-budget 0, but the caption server on
+# :8081 has only this env var, so on that build it thought on every call.
+# Measured 2026-11-17 on an M4: 500 tokens of reasoning_content, content ''
+# after 11.5 s; with both names set, content 'OK', reasoning 0.
+# Both names are set; a build that does not know a name ignores it.
+_LLAMA_THINK_OFF_ENV_LEGACY = 'LLAMA_CHAT_TEMPLATE_KWARGS'
 
 # The prompt cache each llama-server keeps in host RAM.  Build 10330's own
 # ``--help``: ``--cache-ram N  set the maximum cache size in MiB (default:
@@ -178,7 +188,12 @@ def llama_child_env(base: dict | None = None) -> dict:
     override an explicit choice.
     """
     env = dict(base) if base is not None else os.environ.copy()
-    env.setdefault(_LLAMA_THINK_OFF_ENV, _LLAMA_THINK_OFF_VALUE)
+    # An operator's value under either spelling is the choice for both.
+    _think = (env.get(_LLAMA_THINK_OFF_ENV)
+              or env.get(_LLAMA_THINK_OFF_ENV_LEGACY)
+              or _LLAMA_THINK_OFF_VALUE)
+    env.setdefault(_LLAMA_THINK_OFF_ENV, _think)
+    env.setdefault(_LLAMA_THINK_OFF_ENV_LEGACY, _think)
     env.setdefault(_LLAMA_CACHE_RAM_ENV, _LLAMA_CACHE_RAM_MIB)
     return env
 

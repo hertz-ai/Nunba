@@ -27,6 +27,7 @@ import pytest
 
 from llama.llama_config import (
     _LLAMA_THINK_OFF_ENV,
+    _LLAMA_THINK_OFF_ENV_LEGACY,
     _LLAMA_THINK_OFF_VALUE,
     llama_child_env,
 )
@@ -37,6 +38,20 @@ _CONFIG_PATH = Path(__file__).resolve().parents[1] / 'llama' / 'llama_config.py'
 def test_env_sets_thinking_off():
     env = llama_child_env()
     assert env[_LLAMA_THINK_OFF_ENV] == _LLAMA_THINK_OFF_VALUE
+
+
+def test_env_sets_thinking_off_under_the_older_build_spelling_too():
+    """Build 476 (macOS arm64) reads LLAMA_CHAT_TEMPLATE_KWARGS only; without
+    it the caption/draft server thought on every call (measured 2026-11-17)."""
+    env = llama_child_env({})
+    assert env[_LLAMA_THINK_OFF_ENV] == _LLAMA_THINK_OFF_VALUE
+    assert env[_LLAMA_THINK_OFF_ENV_LEGACY] == _LLAMA_THINK_OFF_VALUE
+
+
+def test_operator_choice_under_the_older_spelling_wins_for_both():
+    env = llama_child_env({_LLAMA_THINK_OFF_ENV_LEGACY: '{"enable_thinking":true}'})
+    assert env[_LLAMA_THINK_OFF_ENV] == '{"enable_thinking":true}'
+    assert env[_LLAMA_THINK_OFF_ENV_LEGACY] == '{"enable_thinking":true}'
 
 
 def test_value_is_valid_json_llama_can_parse():
