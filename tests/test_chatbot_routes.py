@@ -383,6 +383,24 @@ class TestAgentRouting:
         assert body['text'] == 'cloud says hi'
         assert node['cloud_headers'][0]['Authorization'] == 'Bearer t'
 
+    @pytest.mark.parametrize('issued_here, expected', [(True, False), (False, True)])
+    def test_the_agent_list_offers_cloud_agents_only_with_a_cloud_credential(
+            self, client, node, issued_here, expected):
+        # The same question as the cloud branch ("is there a credential the
+        # cloud accepts"), asked by /prompts to mark cloud agents usable.  It
+        # had its own rule, any Authorization at all, so a desktop-only
+        # sign-in listed cloud agents as usable while every turn to them was
+        # answered by local_assistant (review of dbfee43b).
+        import routes.chatbot_routes as cr
+        claims = dict(self._THIS_NODES_TOKEN) if issued_here else {}
+        with patch('integrations.social.auth.decode_jwt', return_value=claims), \
+                patch.object(cr, 'HEVOLVE_PROMPTS_AVAILABLE', False):
+            body = client.get('/prompts?type=cloud',
+                              headers={'Authorization': 'Bearer t'}).get_json()
+        cloud = [a for a in body['prompts'] if a.get('origin') == 'hive']
+        assert cloud, 'the listing offers cloud agents when online'
+        assert all(a['available'] is expected for a in cloud)
+
     def test_an_unknown_agent_is_answered_by_local_assistant(self, client, node):
         body = self._send(client, agent_id='nonexistent_agent_xyz',
                           agent_type='quantum_ai')

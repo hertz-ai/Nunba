@@ -2796,7 +2796,12 @@ def get_prompts_route():
             logger.warning(f'HARTOS agent fetch failed: {e}')
 
     # ── 3. Cloud agents last (only when online + authenticated) ──
-    has_auth = bool(request.headers.get('Authorization') or os.environ.get('HEVOLVE_LLM_API_KEY'))
+    # Usable only with a credential the cloud accepts: the same rule the
+    # cloud branch of chat_route sends a turn with (_cloud_authorization),
+    # so the desktop's own sign-in does not list cloud agents as usable.
+    has_auth = _cloud_authorization(
+        request.headers.get('Authorization'),
+        os.environ.get('HEVOLVE_LLM_API_KEY')) is not None
     if agent_type in ['all', 'cloud'] and is_online:
         for agent in CLOUD_AGENTS:
             if not any(_is_same_agent(a, agent) for a in agents):
