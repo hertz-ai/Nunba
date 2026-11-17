@@ -1879,6 +1879,16 @@ def install_backend_packages(backend: str,
     """
     packages = BACKEND_PACKAGES.get(backend, [])
     if not packages:
+        # An engine that installs into its own venv has an empty main
+        # plan by design; reaching here means its venv plan was not
+        # found, so nothing would be installed.  That is a failure to
+        # report, not "nothing needed" (F5 read as installed for weeks).
+        if get_install_target(backend) == 'venv':
+            return False, (f"{backend} installs into its own environment, "
+                           f"but no install plan was found for it, so "
+                           f"nothing was installed. Set it up by its HARTOS "
+                           f"engine id, or give that engine a "
+                           f"pip_install_plan in the HARTOS engine registry")
         return True, f"No packages needed for {backend}"
 
     # Check what's already installed.  Pip specs like `parler-tts==0.2.2`
@@ -2271,10 +2281,21 @@ def install_backend_full(backend: str,
     """
     global _installing
 
+    # The venv plans, the venvs, the workers and the install lock are
+    # keyed by the HARTOS engine id, and some callers still use Nunba's
+    # older name ('f5' for 'f5_tts').  Looked up under 'f5', F5's plan was
+    # never found: the main path answered "No packages needed for f5"
+    # and nothing was installed (audit 2026-11-17).  The lock goes by the
+    # same id, so an install asked as 'f5' and one asked as 'f5_tts'
+    # (or backend_venv.install_in_background, which takes this lock)
+    # never pip into the same venv at once.
+    engine = (backend if backend in BACKEND_VENV_PACKAGES
+              else _NUNBA_TO_HARTOS_BACKEND.get(backend, backend))
+
     if _installing.get(backend):
         return False, f"{backend} installation already in progress"
 
-    if not _acquire_file_lock(f'install_{backend}'):
+    if not _acquire_file_lock(f'install_{engine}'):
         return False, f"{backend} installation in progress (another Nunba instance)"
 
     with _install_lock:
@@ -2289,7 +2310,8 @@ def install_backend_full(backend: str,
         # install into its dedicated venv instead of the main interp.
         # Track B, Phase 6: Indic Parler's parler-tts+transformers pins
         # collide with the main interpreter, so it lives in its own venv.
-        venv_pkgs = BACKEND_VENV_PACKAGES.get(backend)
+        # Looked up by the engine id resolved above, not the caller's name.
+        venv_pkgs = BACKEND_VENV_PACKAGES.get(engine)
         if venv_pkgs:
             if progress_cb:
                 progress_cb(
@@ -2297,8 +2319,8 @@ def install_backend_full(backend: str,
                     f"({len(venv_pkgs)} packages)..."
                 )
             from tts.backend_venv import ensure_venv, install_into_venv
-            venv_python = ensure_venv(backend)
-            venv_ok, venv_msg = install_into_venv(backend, venv_pkgs)
+            venv_python = ensure_venv(engine)
+            venv_ok, venv_msg = install_into_venv(engine, venv_pkgs)
             if not venv_ok:
                 return False, f"venv install failed: {venv_msg}"
             pkg_ok, pkg_msg = True, venv_msg
@@ -2309,7 +2331,7 @@ def install_backend_full(backend: str,
             # conflicts.  Use the spec already in BACKEND_VENV_PACKAGES
             # path: HARTOS owns tool_module + tool_worker_attr.
             try:
-                spec = _hartos_engine_registry().get(backend)
+                spec = _hartos_engine_registry().get(engine)
                 if spec and spec.tool_module and spec.tool_worker_attr:
                     import importlib
                     worker = getattr(
@@ -2355,7 +2377,7 @@ def install_backend_full(backend: str,
 
     finally:
         _installing[backend] = False
-        _release_file_lock(f'install_{backend}')
+        _release_file_lock(f'install_{engine}')
 
 
 def _is_hf_model_cached(model_id: str) -> bool:
