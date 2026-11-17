@@ -155,6 +155,19 @@ _LLAMA_CACHE_RAM_ENV = 'LLAMA_ARG_CACHE_RAM'
 _LLAMA_CACHE_RAM_MIB = '2048'
 
 
+def _darwin_unified_free_gib() -> float:
+    """Available unified memory in GiB on macOS; 0.0 if unreadable.
+
+    Used only by the ctx-size decision (see _derive_ctx_size).  0.0 keeps
+    the caller's existing smallest-tier behaviour when psutil is missing.
+    """
+    try:
+        import psutil
+        return psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
 def llama_child_env(base: dict | None = None) -> dict:
     """Environment for a spawned llama-server: inherited env + thinking off
     + a bounded host-RAM prompt cache.
@@ -1922,6 +1935,21 @@ class LlamaConfig:
                 # 28160128202 produced 0 action files in 3 CREATE turns.
                 free_gb = vram_manager.refresh_gpu_info(
                     force=True).get('free_gb', 0)
+                # macOS only, and only for THIS sizing decision: a Mac has no
+                # nvidia-smi/rocm-smi, and vram_manager latches the all-zero
+                # reading for such hosts before its Metal branch runs, so
+                # free_gb is 0.0 on every Mac and ctx pins at the 4096 tier,
+                # below the ~8k-token tool schema (every agentic turn 400s).
+                # Measured 2026-11-17 on an M4 16 GB:
+                #   Dynamic context size: 4096 (VRAM free=0.000GiB ...)
+                #   llama 400: request (4288 tokens) exceeds ... (4096 tokens)
+                # Metal shares unified memory, so available RAM is the headroom.
+                # Read here, not in vram_manager, so model/TTS/STT selection
+                # and every other platform are untouched.  Applies only when
+                # the probe gave nothing, so a probe that learns Metal later
+                # wins.
+                if not free_gb and sys.platform == 'darwin':
+                    free_gb = _darwin_unified_free_gib()
                 # MEASURE the weights.  `preset.size_mb / 1024.0` mixed units:
                 # size_mb is decimal MB on the rows whose files were measured
                 # (2B, 4B), so dividing by the binary 1024 overstated the 4B
