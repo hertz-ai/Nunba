@@ -281,3 +281,97 @@ describe('setup cards in a conversation', () => {
       [false, false, false, false, true, false]);
   });
 });
+
+// Review of da19a7f9: when /chat has no local LLM it answers with the local
+// LLM setup card.  Demopage adds that card carrying the reply text and adds
+// no other reply, so the card IS the answer to the newest question.  Drawn
+// above the history with the progress cards, the answer and its Auto Setup
+// button left the screen and the person's own question was the last thing
+// on it.  Only progress cards go above the conversation; this card stays
+// under its question.
+describe('the local LLM setup card that answers a question', () => {
+  const at = (s) => `2026-11-17T06:00:${String(s).padStart(2, '0')}.000Z`;
+  const replyText = 'A local LLM is needed for chat.';
+  const llmCard = {
+    type: 'llm_setup_card',
+    content: replyText,
+    setupCard: {model_name: 'Qwen3-4B', size_mb: 2600, description: 'Runs on this computer', gpu_mode: 'GPU'},
+    timestamp: at(4),
+  };
+  // The chat the review measured: an older question and answer, the newest
+  // question, then the card that answers it.
+  const chat = [
+    {type: 'user', content: 'old q', timestamp: at(1)},
+    {type: 'assistant', content: 'old a', timestamp: at(2)},
+    {type: 'user', content: 'newest q', timestamp: at(3)},
+    llmCard,
+  ];
+  const follows = (a, b) => Boolean(
+    a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  // The list's own row that holds an element.
+  const rowOf = (el) => {
+    const log = screen.getByRole('log');
+    let node = el;
+    while (node.parentElement !== log) node = node.parentElement;
+    return node;
+  };
+
+  it('stays under the newest question as the last thing above the scroll anchor', () => {
+    const anchor = React.createRef();
+    render(<ChatMessageList {...props} messagesEndRef={anchor} messages={chat} />);
+    const reply = rowOf(screen.getByText(replyText));
+    expect(follows(rowOf(screen.getByText('newest q')), reply)).toBe(true);
+    expect(follows(rowOf(screen.getByText('newest q')), screen.getByText('Auto Setup'))).toBe(true);
+    expect(reply.nextElementSibling).toBe(anchor.current);
+  });
+
+  // Auto Setup then adds its progress card at the end of the chat: that card
+  // goes above the conversation and the answer stays the last thing on screen.
+  it('stays the last thing on screen after Auto Setup adds its progress card', () => {
+    const anchor = React.createRef();
+    const afterClick = [...chat, card('llm', {isComplete: false, timestamp: at(5)})];
+    render(<ChatMessageList {...props} messagesEndRef={anchor} messages={afterClick} />);
+    const reply = rowOf(screen.getByText(replyText));
+    expect(reply.nextElementSibling).toBe(anchor.current);
+    expect(follows(screen.getByTestId('setup-card'), rowOf(screen.getByText('old q')))).toBe(true);
+  });
+
+  // An answer from earlier in the chat keeps its place between its question
+  // and the next one.
+  it('keeps an earlier answer between its question and the next question', () => {
+    const earlier = [
+      {type: 'user', content: 'asked before setup', timestamp: at(1)},
+      {...llmCard, timestamp: at(2)},
+      {type: 'user', content: 'asked after setup', timestamp: at(3)},
+      {type: 'assistant', content: 'answered after setup', timestamp: at(4)},
+    ];
+    render(<ChatMessageList {...props} messages={earlier} />);
+    const reply = rowOf(screen.getByText(replyText));
+    expect(follows(rowOf(screen.getByText('asked before setup')), reply)).toBe(true);
+    expect(follows(reply, rowOf(screen.getByText('asked after setup')))).toBe(true);
+  });
+
+  // Guards: what already worked keeps working.
+  it('leaves the progress cards above the conversation', () => {
+    const mixed = [
+      chat[0],
+      card('tts', {timestamp: at(5)}),
+      chat[1],
+      chat[2],
+      llmCard,
+      card('llm', {isComplete: false, timestamp: at(6)}),
+    ];
+    render(<ChatMessageList {...props} messages={mixed} />);
+    const cards = screen.getAllByTestId('setup-card');
+    expect(cards.map((c) => c.textContent)).toEqual(['tts', 'llm']);
+    const firstQuestion = rowOf(screen.getByText('old q'));
+    cards.forEach((c) => expect(follows(c, firstQuestion)).toBe(true));
+  });
+
+  it('sets up the model it names when Auto Setup is clicked', () => {
+    const onSetupLlm = jest.fn();
+    render(<ChatMessageList {...props} onSetupLlm={onSetupLlm} messages={chat} />);
+    fireEvent.click(screen.getByText('Auto Setup'));
+    expect(onSetupLlm).toHaveBeenCalledWith(llmCard.setupCard);
+  });
+});

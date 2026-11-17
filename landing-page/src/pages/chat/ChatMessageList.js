@@ -72,7 +72,6 @@ function formatTimestamp(ts) {
 import ThinkingProcessContainer from './ThinkingProcessContainer';
 import WorkflowFlowchart from './WorkflowFlowchart';
 import SetupProgressCard from './SetupProgressCard';
-import {isSetupCard} from '../../utils/serverChatHistory';
 
 const THINKING_VERBS = [
   'Analyzing',
@@ -250,10 +249,18 @@ const ChatMessageList = ({
   // They are drawn above the conversation, in their own order; every other
   // message keeps its place.  Each keeps its own index: dismiss and the
   // other handlers find a message by it.
+  // Only progress cards move.  The local LLM setup card (llm_setup_card) is
+  // also a setup card to the history merge (isSetupCard), but when /chat has
+  // no local LLM it IS the answer to the newest question: Demopage adds it
+  // with the reply text and adds no other reply.  Moved up, the answer and
+  // its Auto Setup button sat above the whole history and the last thing on
+  // screen was the person's own question (review of da19a7f9).  It stays
+  // under its question.
+  const drawnAbove = (message) => message.type === 'setup_progress';
   const indexed = messages.map((message, index) => [message, index]);
   const drawOrder = [
-    ...indexed.filter(([message]) => isSetupCard(message)),
-    ...indexed.filter(([message]) => !isSetupCard(message)),
+    ...indexed.filter(([message]) => drawnAbove(message)),
+    ...indexed.filter(([message]) => !drawnAbove(message)),
   ];
 
   return (
