@@ -1,5 +1,14 @@
+import CheckoutSignIn from '../components/CheckoutSignIn';
 import Footer from '../components/footer';
 import Navbar from '../components/navbar';
+import usePlanCheckout from '../hooks/usePlanCheckout';
+import {
+  FREE_TRIAL_NOTE,
+  planIsFreeTrial,
+  parsePositiveInt,
+  seatsFor,
+  totalFor,
+} from '../services/planCheckout';
 import {mailerApi} from '../services/socialApi';
 import {logger} from '../utils/logger';
 
@@ -7,20 +16,21 @@ import React, {useEffect, useState} from 'react';
 import ReactGA from 'react-ga';
 import {AiOutlineClose} from 'react-icons/ai';
 import {FiCheckCircle} from 'react-icons/fi';
-import {Link, useNavigate, useLocation} from 'react-router-dom';
-import {v4 as uuidv4} from 'uuid';
+import {Link, useLocation, useSearchParams} from 'react-router-dom';
 
 
 export default function SpeechPricing() {
-  const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const [hevolvedroid, setIshevolvedroid] = useState(true);
   const [subscriptionData, setSubscriptionData] = useState(null);
   const [numOfStudents, setNumOfStudents] = useState(null);
-  const [selectedSubscription, setSelectedSubscription] = useState(null);
   const {DataForPricePage} = location.state || {};
   const [planId, setPlanId] = useState(6);
   const [planMessage, setPlanMessage] = useState(null);
+  const {buy, busyPlanId, problem, signIn, closeSignIn} = usePlanCheckout({
+    notifyApp: hevolvedroid,
+  });
 
   useEffect(() => {
     const userAgent = navigator.userAgent;
@@ -31,8 +41,16 @@ export default function SpeechPricing() {
   }, []);
 
   useEffect(() => {
+    // Inside the app, the app says which plan to show.  In a plain browser there
+    // is no window.Handy, so a link says it: /speechtherapy?plan=<plan_id>
+    // (without either, the plan stays the default, 6, as before).
+    if (!window.Handy || typeof window.Handy.getPlanDetails !== 'function') {
+      const requested = parsePositiveInt(searchParams.get('plan'));
+      if (requested !== null) setPlanId(requested);
+      return;
+    }
     try {
-      const userDetails = window.Handy?.getPlanDetails();
+      const userDetails = window.Handy.getPlanDetails();
       if (!userDetails) throw new Error('No user details found');
       logger.log('Raw userDetails:', userDetails);
       const userJson = JSON.parse(userDetails);
@@ -44,7 +62,7 @@ export default function SpeechPricing() {
     } catch (error) {
       console.error('Error fetching or parsing user details:', error);
     }
-  }, []);
+  }, [searchParams]);
 
   useEffect(() => {
     logger.log('Chatbot Details Updated:', planId, planMessage);
@@ -86,64 +104,15 @@ export default function SpeechPricing() {
     getSubscriptionsByPlans();
   }, [hevolvedroid, planId, planMessage]);
 
-  const handlePayNowClick = async (subscription) => {
-    setSelectedSubscription(subscription);
-    const uuid = uuidv4();
-    const truncatedUuid = uuid.replace(/-/g, '').substring(0, 36);
-    const transactionid = 'T' + truncatedUuid;
-
-    let userData = {};
-
-    // Always fetch user details
-    try {
-      const userDetails = window.Handy.getUserDetails();
-      const userJson = JSON.parse(userDetails);
-      userData = userJson;
-
-      // Set transaction ID if the user is from HevolveDroid
-      if (hevolvedroid) {
-        const myVariable = {TRANSACTION_ID: transactionid};
-        const jsTransaction = JSON.stringify(myVariable);
-        window.Handy.setTransactionId(jsTransaction);
-      }
-    } catch (error) {
-      console.error('Error fetching user details:', error);
-      return; // Early exit if user details cannot be fetched
-    }
-
-    const postData = {
-      phone_number: userData.phone_number,
-      plan_id: subscription.plan_id,
-      transaction_id: transactionid,
-    };
-
-    // Send subscription data to the first endpoint
-    try {
-      await mailerApi.addSubscription(postData);
-    } catch (error) {
-      console.error('Error sending subscription data:', error);
-      return; // Early exit if the subscription data fails
-    }
-
-    const Total_Amount = userData.num_of_students
-      ? subscription?.price * userData.num_of_students
-      : subscription?.price;
-
-    const payload = {
-      mobile_number: userData.phone_number,
-      plan_id: subscription.plan_id,
-      transaction_id: transactionid,
-      amount: Total_Amount,
-    };
-
-    // Send payment data to the second endpoint
-    try {
-      // mailerApi auto-unwraps response.data
-      const redirect = await mailerApi.makePayment(payload);
-      window.location.href = redirect;
-    } catch (error) {
-      console.error('Error during payment process:', error);
-    }
+  // The whole checkout is usePlanCheckout: the bearer token and the phone come
+  // from the signed-in session (or, inside the app, the app's own phone), the
+  // subscription row is created first and the payment follows at the server's
+  // own price.  It used to need window.Handy and gave up silently without it.
+  const handlePayNowClick = (subscription) => {
+    buy(subscription, {
+      numStudents: seatsFor(subscription, numOfStudents),
+      returnPath: `/speechtherapy?plan=${subscription.plan_id}`,
+    });
   };
 
   ReactGA.event({
@@ -154,13 +123,14 @@ export default function SpeechPricing() {
 
   return (
     <>
+      <CheckoutSignIn signIn={signIn} onClose={closeSignIn} />
       {!hevolvedroid && <Navbar />}
       <section style={{paddingTop: '4rem'}} className="relative mt-4">
         <div className="container relative">
           <div className="grid grid-cols-1 text-center">
             <div>
               <h5 className="md:text-4xl text-3xl md:leading-normal leading-normal tracking-wider font-semibold text-white mb-0">
-                {planMessage}
+                {planMessage || 'Speech Therapy'}
               </h5>
             </div>
             <ul className="tracking-[0.5px] mb-0 inline-block">
@@ -198,9 +168,10 @@ export default function SpeechPricing() {
                     <div className="flex mt-4">
                       <span className="text-lg font-semibold">₹</span>
                       <span className="text-5xl font-semibold mb-0 ms-1">
-                        {numOfStudents
-                          ? subscription.price * numOfStudents
-                          : subscription.price}
+                        {totalFor(
+                          subscription,
+                          seatsFor(subscription, numOfStudents)
+                        )}
                       </span>
                     </div>
                     <p className="text-slate-400 uppercase text-xs">
@@ -208,6 +179,7 @@ export default function SpeechPricing() {
                     </p>
                     <div className="mt-6">
                       <button
+                        disabled={busyPlanId !== null}
                         onClick={() => handlePayNowClick(subscription)}
                         style={{
                           background:
@@ -222,9 +194,16 @@ export default function SpeechPricing() {
                           ? 'Register For Free'
                           : 'Pay Now'}
                       </button>
-                      <p className="text-slate-400 text-sm mt-3">
-                        No credit card required. Free 14-days trial
-                      </p>
+                      {planIsFreeTrial(subscription) && (
+                        <p className="text-slate-400 text-sm mt-3">
+                          {FREE_TRIAL_NOTE}
+                        </p>
+                      )}
+                      {problem && problem.planId === subscription.plan_id && (
+                        <p role="alert" className="text-red-400 text-sm mt-3">
+                          {problem.message}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="absolute top-5 right-0 mr-4 mt-4">
