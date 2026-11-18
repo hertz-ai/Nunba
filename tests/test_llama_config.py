@@ -291,20 +291,58 @@ class TestCheckServerType:
         said = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("8080" in m and "ReadTimeout" in m for m in said), said
 
-    def test_nothing_listening_stays_quiet(self, tmp_config_dir, caplog):
-        """Port scans probe free ports on purpose; a refused connection is the
-        normal answer there and must not become a warning per port."""
+    def test_a_server_that_drops_the_reply_says_why(self, tmp_config_dir, caplog):
+        """A real socket that accepts the probe, reads it and closes with no
+        reply.  requests raises ConnectionError for that too (Connection
+        aborted), so it must not be mistaken for "nothing listening"."""
         import logging
-
-        import requests as req
 
         from llama.llama_config import LlamaConfig, ServerType
         cfg = LlamaConfig(config_dir=tmp_config_dir)
 
-        with caplog.at_level(logging.WARNING, logger="NunbaLlamaConfig"), \
-             patch("llama.llama_config.requests.get",
-                   side_effect=req.exceptions.ConnectionError("refused")):
-            server_type, _ = cfg.check_server_type(8080)
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(5)
+        srv.settimeout(10)
+        port = srv.getsockname()[1]
+
+        def drop_every_reply():
+            try:
+                while True:
+                    conn, _ = srv.accept()
+                    conn.recv(4096)
+                    conn.close()
+            except OSError:
+                return
+
+        import threading
+        threading.Thread(target=drop_every_reply, daemon=True).start()
+        try:
+            with caplog.at_level(logging.WARNING, logger="NunbaLlamaConfig"):
+                server_type, _ = cfg.check_server_type(port)
+        finally:
+            srv.close()
+
+        assert server_type == ServerType.NOT_RUNNING
+        said = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any(str(port) in m and "ConnectionError" in m for m in said), said
+
+    def test_a_free_port_stays_quiet(self, tmp_config_dir, caplog):
+        """Port scans probe free ports on purpose; a real free port must not
+        become a warning per port (on Windows requests reports it as a
+        ConnectTimeout, elsewhere as a refused connection)."""
+        import logging
+
+        from llama.llama_config import LlamaConfig, ServerType
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+
+        with caplog.at_level(logging.WARNING, logger="NunbaLlamaConfig"):
+            server_type, _ = cfg.check_server_type(port)
 
         assert server_type == ServerType.NOT_RUNNING
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
