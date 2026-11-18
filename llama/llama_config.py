@@ -1477,10 +1477,19 @@ class LlamaConfig:
                 # Same unit as every other VRAM figure (GiB, measured from the
                 # file) — this row is what TTS/STT/vision subtract when they
                 # decide whether they fit, so a 133 MB overstatement here
-                # propagates into their decisions too.
-                model_gb = model_size_gib(preset, installer=self.installer)
-                vm._allocations['llm'] = model_gb
-                logger.info(f"Registered VRAM allocation: llm = {model_gb:.3f}GiB")
+                # propagates into their decisions too.  The spawn inside
+                # start_server may just have measured this file on the card
+                # (a --cpu-moe mixture of experts takes far less than its
+                # file); that figure is kept, as the reused-server path keeps
+                # it.  Measured 2026-11-18 by rv_b9: 2.910 booked at spawn,
+                # then 2.712 (the file size) written over it here.
+                if llm_vram_measured_for(vm, self.installer.get_model_path(preset)):
+                    logger.info("VRAM allocation kept: llm = %.3fGiB (measured "
+                                "when the server started)", vm._allocations['llm'])
+                else:
+                    model_gb = model_size_gib(preset, installer=self.installer)
+                    book_llm_vram(vm, model_gb)
+                    logger.info(f"Registered VRAM allocation: llm = {model_gb:.3f}GiB")
 
         mode_label = 'GPU' if diag['run_mode'] == 'gpu' else 'CPU'
         if started:
