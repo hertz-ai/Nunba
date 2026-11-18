@@ -144,14 +144,39 @@ class TestTTSEngineSynthesizeGuards:
         result = engine.synthesize("   \n  ")
         assert result is None
 
-    def test_synthesize_no_backend_loaded(self):
-        """synthesize returns None when no backend is loaded in _backends."""
+    @staticmethod
+    def _engine_with_no_backend_loaded():
         from tts.tts_engine import BACKEND_PIPER, TTSEngine
         engine = TTSEngine(auto_init=False)
         engine._initialized = True
+        engine._language = 'en'
         engine._active_backend = BACKEND_PIPER
         engine._backends = {}  # no actual backend loaded
-        result = engine.synthesize("Hello world")
+        engine._presynth = MagicMock(get=MagicMock(return_value=None))
+        return engine
+
+    def test_synthesize_no_backend_loaded(self):
+        """An active engine with no instance hands the line to the fallback
+        ladder, and the ladder's engine speaks it.  Engines are stand-ins:
+        no real Piper, no probe."""
+        from tts.tts_engine import BACKEND_PIPER
+        engine = self._engine_with_no_backend_loaded()
+        voice = MagicMock()
+        voice.synthesize.return_value = "/tmp/ladder.wav"
+        with patch("tts.tts_engine._get_lang_preference", return_value=[BACKEND_PIPER]), \
+                patch.object(engine, "_create_backend", return_value=voice) as create:
+            result = engine.synthesize("Hello world")
+        assert result == "/tmp/ladder.wav"
+        create.assert_called_once_with(BACKEND_PIPER)
+        assert voice.synthesize.call_args.kwargs["text"] == "Hello world"
+
+    def test_synthesize_no_backend_loaded_and_none_buildable(self):
+        """With no engine in the ladder buildable, synthesize returns None."""
+        from tts.tts_engine import BACKEND_PIPER
+        engine = self._engine_with_no_backend_loaded()
+        with patch("tts.tts_engine._get_lang_preference", return_value=[BACKEND_PIPER]), \
+                patch.object(engine, "_create_backend", return_value=None):
+            result = engine.synthesize("Hello world")
         assert result is None
 
     def test_clone_voice_requires_vibevoice(self):

@@ -96,7 +96,9 @@ describe('the speaking orb follows syllables', () => {
 });
 
 describe('the drawn ring follows the voice', () => {
-  const FRAME_MS = 1000 / FPS;
+  // The owner's display draws 165 frames a second (Win32_VideoController,
+  // 2026-11-10), and requestAnimationFrame runs at the display's rate.
+  const OWNER_FPS = 165;
   // A speaking level well inside the orb's headroom (-70 dB on the analyser's
   // -100..-30 dB scale, byte 109): it swells the ring without any of it
   // reaching the canvas edge, where the size would stop tracking the voice.
@@ -181,8 +183,11 @@ describe('the drawn ring follows the voice', () => {
   // The orb's size per drawn frame (mean distance of the stroked ring from the
   // centre, backing-store px) through half a second of silence, one second of
   // a steady voice, then half a second of silence while the clip is still
-  // playing (a gap between words, so the orb stays active throughout).
-  function ringThroughOneWord() {
+  // playing (a gap between words, so the orb stays active throughout), on a
+  // display drawing `fps` frames a second.
+  function ringThroughOneWord(fps = FPS) {
+    const frameMs = 1000 / fps;
+    const frames = (seconds) => Math.round(seconds * fps);
     const voice = { level: 0 };
     const analyser = analyserFor(voice);
     window.AudioContext = function FakeAudioContext() {
@@ -199,28 +204,29 @@ describe('the drawn ring follows the voice', () => {
       React.createElement(VoiceVisualizer, { audioRef, isActive: true, size: 200 }));
     const centre = container.querySelector('canvas').width / 2;
 
-    const run = (frames) => {
-      for (let n = 0; n < frames; n++) {
-        now += FRAME_MS;
+    const run = (count) => {
+      for (let n = 0; n < count; n++) {
+        now += frameMs;
         const due = queued;
         queued = [];
         due.forEach((frame) => frame.cb(now));
       }
     };
-    run(30);
+    run(frames(0.5));
     const onset = rings.length;
     voice.level = SPEAKING;
-    run(60);
+    run(frames(1));
     const stop = rings.length;
     voice.level = 0;
-    run(30);
+    run(frames(0.5));
     unmount();
 
     const size = rings.map((ring) => mean(
       ring.map(([x, y]) => Math.hypot(x - centre, y - centre))));
     return {
-      rest: mean(size.slice(onset - 10, onset)),
-      speaking: mean(size.slice(stop - 30, stop)),
+      frameMs,
+      rest: mean(size.slice(onset - frames(1 / 6), onset)),
+      speaking: mean(size.slice(stop - frames(0.5), stop)),
       fromOnset: size.slice(onset),
       fromStop: size.slice(stop),
     };
@@ -235,10 +241,14 @@ describe('the drawn ring follows the voice', () => {
   //
   // Milliseconds from a change in the voice to the first frame that meets
   // `meets` (Infinity when none does).
-  const msUntil = (sizes, meets) => {
+  const msUntil = (sizes, meets, frameMs) => {
     const i = sizes.findIndex(meets);
-    return i < 0 ? Infinity : (i + 1) * FRAME_MS;
+    return i < 0 ? Infinity : (i + 1) * frameMs;
   };
+  const riseMs = ({ rest, speaking, fromOnset, frameMs }) => msUntil(
+    fromOnset, (s) => s >= rest + 0.8 * (speaking - rest), frameMs);
+  const fallMs = ({ rest, speaking, fromStop, frameMs }) => msUntil(
+    fromStop, (s) => s <= rest + 0.2 * (speaking - rest), frameMs);
 
   test('the voice swells the ring', () => {
     const { rest, speaking } = ringThroughOneWord();
@@ -246,14 +256,34 @@ describe('the drawn ring follows the voice', () => {
   });
 
   test('the ring reaches 80% of its speaking size within 100 ms of the voice starting', () => {
-    const { rest, speaking, fromOnset } = ringThroughOneWord();
-    const ms = msUntil(fromOnset, (s) => s >= rest + 0.8 * (speaking - rest));
-    expect(ms).toBeLessThanOrEqual(100);
+    expect(riseMs(ringThroughOneWord())).toBeLessThanOrEqual(100);
   });
 
   test('the ring falls back to within 20% of rest within 150 ms of the voice stopping', () => {
-    const { rest, speaking, fromStop } = ringThroughOneWord();
-    const ms = msUntil(fromStop, (s) => s <= rest + 0.2 * (speaking - rest));
-    expect(ms).toBeLessThanOrEqual(150);
+    expect(fallMs(ringThroughOneWord())).toBeLessThanOrEqual(150);
+  });
+
+  // Owner 2026-11-10, after bbc25198: "the voice viz is too quick, voice viz
+  // is aggressively reacting to the voice". Both smoothers were stated per
+  // drawn frame, and the owner's display draws 165 a second, not the 60 they
+  // were tuned at: replaying two real reply clips at 165 fps, the orb rose in
+  // 15 ms and fell in 33 ms, and moved 2.8 times as much as before bbc25198.
+  // A display's frame rate must not change how the orb follows the voice.
+  test('the ring rises and falls at the same pace on a 165 Hz display as at 60 Hz', () => {
+    const at60 = ringThroughOneWord(FPS);
+    const atOwner = ringThroughOneWord(OWNER_FPS);
+    const oneFrameAt60 = 1000 / FPS;
+    expect(Math.abs(riseMs(atOwner) - riseMs(at60))).toBeLessThanOrEqual(oneFrameAt60);
+    expect(Math.abs(fallMs(atOwner) - fallMs(at60))).toBeLessThanOrEqual(oneFrameAt60);
+  });
+
+  // The "too quick" the owner saw was the 0.3 / 0.5 smoothing: 12 ms to swell
+  // on their 165 Hz display. Spread over time the same pair still swells in
+  // 33 ms at any frame rate; the calmer 0.4 / 0.35 takes 50 ms. The floor
+  // sits between, so going back to 0.3 / 0.5 fails here and not only in a
+  // comment.
+  test('the ring takes at least 40 ms to swell, at 60 Hz and on a 165 Hz display', () => {
+    expect(riseMs(ringThroughOneWord(FPS))).toBeGreaterThanOrEqual(40);
+    expect(riseMs(ringThroughOneWord(OWNER_FPS))).toBeGreaterThanOrEqual(40);
   });
 });

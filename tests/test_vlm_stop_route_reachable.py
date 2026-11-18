@@ -186,3 +186,55 @@ class TestTheAcceptedSetCoversWhatTheHandlerEmits:
         assert emitted, 'could not re-derive vlm_stop status values from HARTOS'
         assert HANDLER_EMITS <= emitted, (
             f'HANDLER_EMITS is stale: HARTOS now emits {sorted(emitted)}')
+
+
+class TestTheButtonAsksForANodeWideStop:
+    """The ribbon's Stop must stop EVERYTHING on this screen, and say so.
+
+    The demonstration recorder (HARTOS integrations/vlm/demo_session.py, owner
+    2026-11-11) shows this same ribbon with a recording symbol and relies on
+    this same button to end a recording: it registers in HARTOS's stop registry
+    next to the computer-use loops, and POST /api/vlm/stop {"scope": "node"}
+    stops every entry in it.  A per-user stop would still reach the owner's own
+    recording, but the contract the loops already depend on is the node-wide
+    one (tests/unit/test_vlm_stop_node_scope.py in HARTOS holds the handler's
+    side, including the demonstration case); this holds the sender's side.
+    """
+
+    def _call_stop_api(self):
+        with open(os.path.join(REPO, 'main.py'), encoding='utf-8',
+                  errors='replace') as fh:
+            tree = ast.parse(fh.read())
+        for fn in ast.walk(tree):
+            if isinstance(fn, ast.FunctionDef) and fn.name == 'call_stop_api':
+                return fn
+        raise AssertionError('call_stop_api() not found in main.py')
+
+    def test_the_payload_it_builds_is_a_node_wide_stop(self):
+        fn = self._call_stop_api()
+        payload = None
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == 'stop_payload'
+                            for t in node.targets)
+                    and isinstance(node.value, ast.Dict)):
+                payload = {k.value: v.value for k, v in zip(
+                    node.value.keys, node.value.values)
+                    if isinstance(k, ast.Constant) and isinstance(v, ast.Constant)}
+                break
+        assert payload is not None, (
+            'call_stop_api() no longer builds `stop_payload = {...}`')
+        assert payload.get('scope') == 'node', (
+            f"the Stop button must send scope=node so every registered session "
+            f"(computer-use loops and demonstrations) stops; it builds {payload}")
+
+    def test_that_payload_is_what_is_posted(self):
+        fn = self._call_stop_api()
+        sent = []
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == 'post'):
+                sent += [kw.value.id for kw in node.keywords
+                         if kw.arg == 'json' and isinstance(kw.value, ast.Name)]
+        assert sent == ['stop_payload'], (
+            f'call_stop_api() posts {sent}, not the stop_payload it builds')

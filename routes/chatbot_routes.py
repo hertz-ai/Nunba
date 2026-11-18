@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Auth decorator — single source of truth in routes/auth.py
 from routes.auth import require_local_or_token as _require_local_or_token
+from routes.auth import admitted_device_user, require_local_token_or_device
 
 # ============== Nunba-layer TTS (works on ALL tiers) ==============
 
@@ -511,6 +512,10 @@ def gpt_lang(message, user_id, prompt=None, prompt_id=None, timeout=120, probe=F
         "file_id": sessions.get(user_id, {}).get('file_id', 0),
         "tools": None,
         "prompt_id": prompt_id,
+        # Session shape, per the owner's 2026-08-24 design and pinned by
+        # HARTOS tests/unit/test_casual_conv_classifier_override.py.  HARTOS
+        # takes this value as sent: the resolver that briefly re-decided it
+        # from regex word lists is deleted (HARTOS c821bc722).
         "casual_conv": not bool(prompt_id or create_agent),
         "probe": probe,
         "intermediate": False,
@@ -806,6 +811,24 @@ def _get_vision_service():
     return None
 
 
+def _shrink_frame(frame_bytes, max_side=640, quality=70):
+    """``frame_bytes`` re-encoded as a JPEG at most ``max_side`` px on its
+    long side, the size the page's own camera sends and the caption model
+    reads; None when the bytes are no image."""
+    import cv2
+    import numpy as np
+    img = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    scale = min(1.0, float(max_side) / max(h, w))
+    if scale < 1.0:
+        img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                         interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return buf.tobytes() if ok else None
+
+
 def vision_frame_ingest():
     """POST /api/vision/frame?user_id=&channel=camera|screen, body=JPEG bytes.
 
@@ -825,34 +848,66 @@ def vision_frame_ingest():
     WKWebView / WebKitGTK — single frontend path for every OS, not a
     Mac-only fallback.
 
-    Auth: wrapped via _require_local_or_token at route registration.
-    user_id is read from query/header (then pinned to authenticated
-    principal by the decorator's session context where available).
-    Body cap: 512KB (5 FPS × ~40KB JPEG @ 640×480 q=0.6 = ~200KB/s,
-    cap above that rejects size-bomb DoS).
+    Auth: wrapped via routes.auth.require_local_token_or_device at route
+    registration.  This machine or the local token: user_id is read from
+    the query or X-User-Id as sent.  A phone the owner allowed (HARTOS's
+    gate admitted it): it acts only as its token's user, named or not;
+    another user is 403.
+    Sizes: the store keeps a frame of at most 512KB (5 FPS × ~40KB JPEG @
+    640×480 q=0.6 = ~200KB/s).  A larger frame up to the 8MB upload ceiling
+    is shrunk to caption size (_shrink_frame) instead of refused: a phone
+    sends its camera's own frames, and every one was answered 413 (live
+    13 Nov 2026 14:42 IST, build 75), so no phone frame reached the caption
+    model.  Past the ceiling, or a body that is no image, is still 413.
     """
     _MAX_FRAME_BYTES = 512_000
-    if request.content_length and request.content_length > _MAX_FRAME_BYTES:
+    _MAX_UPLOAD_BYTES = 8_000_000
+    if request.content_length and request.content_length > _MAX_UPLOAD_BYTES:
         return jsonify({'ok': False, 'error': 'frame_too_large',
-                        'max_bytes': _MAX_FRAME_BYTES}), 413
+                        'max_bytes': _MAX_UPLOAD_BYTES}), 413
     svc = _get_vision_service()
     if svc is None or not getattr(svc, 'store', None):
         return jsonify({'ok': False,
                         'error': 'vision_service_unavailable'}), 503
-    user_id = str(request.args.get('user_id') or
-                  request.headers.get('X-User-Id') or 'anon')
+    asked_for = request.args.get('user_id') or request.headers.get('X-User-Id')
+    device_user = admitted_device_user()
+    if device_user is not None:
+        # A phone acts only as its token's user: the gate holds a JSON body
+        # to that rule (#51), and this body is a JPEG, so it is held here.
+        if asked_for and str(asked_for) != device_user:
+            return jsonify({'ok': False,
+                            'error': ("This phone sends frames as its own user only: "
+                                      "drop user_id, or send the user its token names.")}), 403
+        user_id = device_user
+    else:
+        user_id = str(asked_for or 'anon')
     channel = (request.args.get('channel') or 'camera').lower()
     frame_bytes = request.get_data() or b''
     if not frame_bytes:
         return jsonify({'ok': False, 'error': 'empty_frame'}), 400
-    if len(frame_bytes) > _MAX_FRAME_BYTES:
+    if len(frame_bytes) > _MAX_UPLOAD_BYTES:
         return jsonify({'ok': False, 'error': 'frame_too_large',
-                        'max_bytes': _MAX_FRAME_BYTES}), 413
+                        'max_bytes': _MAX_UPLOAD_BYTES}), 413
+    if len(frame_bytes) > _MAX_FRAME_BYTES:
+        frame_bytes = _shrink_frame(frame_bytes)
+        if not frame_bytes or len(frame_bytes) > _MAX_FRAME_BYTES:
+            return jsonify({'ok': False, 'error': 'frame_too_large',
+                            'max_bytes': _MAX_FRAME_BYTES}), 413
+    # Who sent it: this route, by the caller's address (the store keeps it
+    # beside the frame and the caption row carries it).
+    sender = f"http:{request.remote_addr or 'unknown'}"
+    if device_user is not None:
+        # The phone's own key says which phone, written as the owner's
+        # trusted-phones list shows it ('3f9a 1c02 77de b4e1'); its address
+        # over the relay is the link's, not the phone's.
+        from flask import g
+        from integrations.social.consent_service import device_fingerprint
+        sender = f"device:{device_fingerprint(str(g.device_public_key))}"
     try:
         if channel == 'screen':
-            svc.store.put_screen_frame(user_id, frame_bytes)
+            svc.store.put_screen_frame(user_id, frame_bytes, source=sender)
         else:
-            svc.store.put_frame(user_id, frame_bytes)
+            svc.store.put_frame(user_id, frame_bytes, source=sender)
         return ('', 204)
     except Exception as _e:
         logger.warning(f"vision_frame_ingest error: {_e}")
@@ -3463,32 +3518,82 @@ def _run_chat_turn(data):
                 # computation to save latency. Agent-creation and
                 # channel-connect both get handled by the draft flags
                 # the adapter surfaces on the /chat response.
-                # Default to casual (0.8B draft) unless an agentic flow needs tools.
+                # The caller does NOT decide this any more.  OWNER 2026-11-09:
+                # "remove the friggin hardcodi".  What stood here was a tuple of
+                # substrings ('remember that', 'open my', 'summarize the pdf'...)
+                # added 2026-09-25 and labelled in its own comment as "a stopgap,
+                # not a replacement for a real classifier".  It contradicted this
+                # module's own architecture note at :236 -- intent classification
+                # lives in the HARTOS draft, and the earlier phrase tables
+                # (_CASUAL_EXACT, _TOOL_TRIGGER_TOKENS...) were deleted as "shadow
+                # code that couldn't keep up with paraphrases".  It was also wrong
+                # in both directions: substring matching sent "open the pod bay
+                # doors" to the tool path, while a question about the person's own
+                # book matched nothing at all, so the 0.8B draft answered it with
+                # zero tool calls and SPOKE an invented "about 200 metres" where
+                # the book says 57.3 (live, request liveproof-20261103-0).
                 #
-                # Pragmatic override (2026-09-25): the 0.8B draft classifier
-                # was not escalating plainly actionable/memory-carrying
-                # requests ("remember that...", "open my Downloads folder")
-                # out of casual_conv — they got a friendly-sounding LLM
-                # reply with zero tool access (remember()/open_file_gui()
-                # never called), which is silently wrong, not just slow.
-                # This keyword check is a stopgap, not a replacement for a
-                # real classifier — it only widens the set of requests that
-                # get real tool access; it never narrows it.
-                _text_lower = (text or '').lower()
-                _looks_actionable = any(kw in _text_lower for kw in (
-                    'remember that', 'remember this', 'remember my',
-                    "don't forget", 'forget that', 'forget my', 'forget about',
-                    'open my', 'open the', 'find my', 'find the',
-                    'summarize the pdf', 'summarize this pdf',
-                    'summarize the document', 'summarize this document',
-                ))
+                # What stays: SESSION SHAPE, unchanged.  The owner's 2026-08-24
+                # design is that a session without a prompt_id behaves like a
+                # casual companion and one with a prompt_id is agent-bound; a
+                # same-day change that overrode this per-turn was reverted as a
+                # regression and is pinned by
+                # HARTOS tests/unit/test_casual_conv_classifier_override.py.
+                # So this value is still `not _needs_tools` and nothing here
+                # reads the person's words.
+                #
+                # WHAT HAPPENS TO THIS HINT DOWNSTREAM, and why there is no
+                # word list at either end of the wire any more.
+                #
+                # For one day (2026-11-09 to 11-10) HARTOS re-decided this
+                # flag through core/prompt_difficulty.py, which was EIGHT
+                # regex word lists.  That was the same keyword matching the
+                # owner had just had deleted from here, moved one layer down,
+                # and the module is deleted (HARTOS c821bc722).  Do not
+                # reintroduce either end of it.
+                #
+                # What the 2026-09-25 tuple was actually written for --
+                # "remember that..." and friends answered with no tool --
+                # already has a model-based owner, and that is the point of
+                # deleting the tuple rather than replacing it:
+                # speculative_dispatcher.py promotes delegate='none' to
+                # 'local' when the draft's OWN classifier sets memory_query,
+                # channel_connect, is_create_agent, language_change,
+                # invite_intent or join_room_intent.
+                #
+                # CORRECTED 2026-11-10, same day, by review: an earlier
+                # version of this comment said "memory_query IS the
+                # 'remember that my exam is on friday' case".  IT IS NOT.
+                # The classifier's own instruction
+                # (speculative_dispatcher.py:1272-1284) defines memory_query
+                # as RECALL of past conversations -- "what did we speak 2
+                # days back", "recall my previous question on Y" -- and it
+                # routes to the recall_memory tool.  A request to STORE
+                # something is a different thing and no listed flag names it.
+                # So the honest state after deleting the tuple is: a store
+                # request escalates only if the draft's own `delegate` says
+                # so, and nobody has watched that happen.
+                #
+                # What the tuple's removal is still right for: a model reads
+                # the sentence and a substring list cannot.  That list sent
+                # "open the pod bay doors" to the tool path and missed a
+                # question about the person's own book entirely.  Putting it
+                # back would not fix the gap, it would re-add the 14 phrasings
+                # someone happened to think of in September 2026.
+                #
+                # STILL UNMEASURED, so do not claim it is covered: nobody has
+                # watched a live turn confirm memory_query firing for these
+                # phrasings end to end.  One desktop turn settles it.  If it
+                # turns out not to fire, the fix is in the classifier or its
+                # guard -- NOT a phrase list here.
                 _needs_tools = bool(langchain_prompt_id or create_agent
                                     or agentic_execute or agentic_plan
-                                    or autonomous_creation or _looks_actionable)
+                                    or autonomous_creation)
+                _casual_hint = not _needs_tools
                 logger.info(
                     f"hevolve_chat dispatch: media_mode={media_mode} "
                     f"text[:160]={text[:160]!r} "
-                    f"conv_id={conversation_id} casual={not _needs_tools}"
+                    f"conv_id={conversation_id} casual_hint={_casual_hint}"
                 )
                 result = hevolve_chat(
                     text=text,
@@ -3497,7 +3602,7 @@ def _run_chat_turn(data):
                     conversation_id=conversation_id,
                     request_id=request_id,
                     create_agent=bool(create_agent),
-                    casual_conv=not _needs_tools,
+                    casual_conv=_casual_hint,
                     media_mode=media_mode,
                     autonomous=bool(autonomous_creation),
                     agentic_execute=bool(agentic_execute),
@@ -4202,10 +4307,17 @@ def agents_sync_get():
 
     prompts_dir = _get_prompts_dir()
     agents = []
+    # Agent records only, by the one predicate the database listings use: the
+    # per-action, recipe and personality files and the plan waiting on its
+    # creator's card sit in the same directory.  Without it the waiting plan
+    # came back twice under the real agent's id and the page added both to
+    # the person's agent list (review of 38e6dd78).
+    from pathlib import Path
+    from routes.db_routes import _is_agent_record
 
     if os.path.isdir(prompts_dir):
         for fname in os.listdir(prompts_dir):
-            if not fname.endswith('.json'):
+            if not _is_agent_record(Path(fname)):
                 continue
             fpath = os.path.join(prompts_dir, fname)
             try:
@@ -5182,8 +5294,9 @@ def register_routes(app):
     # cross-OS canonical transport.  Wrapped in _require_local_or_token so
     # only the authenticated principal can write frames (prevents any local
     # process from POSTing attacker-controlled imagery as another user).
+    # A phone the owner allowed is let in too, as its token's user only.
     app.add_url_rule("/api/vision/frame",
-                     view_func=_require_local_or_token(vision_frame_ingest),
+                     view_func=require_local_token_or_device(vision_frame_ingest),
                      methods=["POST"], endpoint="vision_frame_ingest")
 
     # Kids Learning TTS routes (called by kidsLearningApi.js TTSManager)
