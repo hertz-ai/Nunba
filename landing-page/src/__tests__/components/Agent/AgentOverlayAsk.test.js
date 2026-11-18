@@ -382,3 +382,104 @@ describe('an ask answered anywhere', () => {
     expect(agentFormApi.submit).not.toHaveBeenCalled();
   });
 });
+
+// Owner, 2026-11-03: "dismissing a request dismisses and answering in one
+// client device clears everything".  Before, the X only hid the card on this
+// screen and the ask stayed open on every other surface.
+describe('an ask dismissed here', () => {
+  test('the X tells HARTOS, as her, so every surface drops it, and the card goes', async () => {
+    const send = mountOverlay();
+    send(CLIPS);
+
+    fireEvent.click(screen.getByLabelText('Dismiss'));
+
+    expect(screen.queryByTestId('liquid-file-request')).toBeNull();
+    await waitFor(() => expect(calls('/api/agent/approval')).toHaveLength(1));
+    const [, init] = calls('/api/agent/approval')[0];
+    expect(init.method).toBe('POST');
+    expect(init.headers.Authorization).toBe('Bearer tok-owner');
+    expect(JSON.parse(init.body)).toEqual({ask_id: ASK, dismiss: true});
+  });
+
+  test('a refused dismissal still takes the card off this screen', async () => {
+    global.fetch = jest.fn(() => reply(409, {status: 'error', reason: 'already_answered'}));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const send = mountOverlay();
+      send(CLIPS);
+
+      fireEvent.click(screen.getByLabelText('Dismiss'));
+
+      expect(screen.queryByTestId('liquid-file-request')).toBeNull();
+      await waitFor(() => expect(warn).toHaveBeenCalled());
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Owner, 2026-11-04: "Later" on an ask card dismisses everywhere, as the X does.
+  test("Later on an ask's approval card dismisses it everywhere, as her, and the card goes", async () => {
+    const send = mountOverlay();
+    send({type: 'approval', msg_id: ASK, ask_id: ASK, agent_id: '342',
+          action: 'post_the_reel', title: 'Post today\'s reel?'});
+
+    fireEvent.click(screen.getByText('Later'));
+
+    expect(screen.queryByText('Approve')).toBeNull();
+    await waitFor(() => expect(calls('/api/agent/approval')).toHaveLength(1));
+    const [, init] = calls('/api/agent/approval')[0];
+    expect(init.method).toBe('POST');
+    expect(init.headers.Authorization).toBe('Bearer tok-owner');
+    expect(JSON.parse(init.body)).toEqual({ask_id: ASK, dismiss: true});
+  });
+
+  test('Later on an approval that is not an ask closes it here and tells HARTOS nothing', async () => {
+    const send = mountOverlay();
+    send({type: 'approval', msg_id: 'm-plain-later', agent_id: '342',
+          action: 'post_the_reel', title: 'Post today\'s reel?'});
+
+    fireEvent.click(screen.getByText('Later'));
+
+    expect(screen.queryByText('Approve')).toBeNull();
+    await act(() => Promise.resolve());
+    expect(calls('/api/agent/approval')).toHaveLength(0);
+  });
+
+  test('closing a card that is not an ask tells HARTOS nothing', async () => {
+    const send = mountOverlay();
+    send({type: 'approval', msg_id: 'm-plain', agent_id: '342',
+          action: 'post_the_reel', title: 'Post today\'s reel?'});
+
+    fireEvent.click(screen.getByLabelText('Dismiss'));
+
+    expect(screen.queryByText('Approve')).toBeNull();
+    await act(() => Promise.resolve());
+    expect(calls('/api/agent/approval')).toHaveLength(0);
+  });
+});
+
+describe('an ask in an embed (onAction: a host page\'s session)', () => {
+  const {OverlayContent} = require('../../../components/AgentOverlay/AgentOverlay');
+
+  test('a file request says where to answer and offers no picker', () => {
+    const onAction = jest.fn();
+    render(<OverlayContent data={CLIPS} onDismiss={jest.fn()} onAction={onAction} />);
+    expect(screen.getByText('Send me the clips for your reel')).toBeTruthy();
+    expect(screen.getByText(/Answer this in the Nunba app on your desktop or phone/)).toBeTruthy();
+    expect(screen.queryByTestId('liquid-file-request-input')).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  test("an approval ask's yes goes to the session with the ask's id", async () => {
+    const onAction = jest.fn(() => Promise.resolve({ok: true}));
+    const onDismiss = jest.fn();
+    render(<OverlayContent data={{type: 'approval', ask_id: ASK, agent_id: '342', title: 'Post it?',
+      description: 'Post the reel today?', action: 'post_the_reel'}} onDismiss={onDismiss} onAction={onAction} />);
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => expect(onDismiss).toHaveBeenCalled());
+    expect(onAction).toHaveBeenCalledWith('approval.decide',
+      expect.objectContaining({ask_id: ASK, decision: 'approve'}));
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});

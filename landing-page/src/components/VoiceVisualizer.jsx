@@ -130,6 +130,46 @@ export function nextFramePolicy({ isActive, hidden, reducedMotion }) {
   return { mode: 'timeout', delayMs: IDLE_FRAME_MS };
 }
 
+// ── How closely the orb follows the voice ──────────────────────────────
+// Two smoothers sit between the voice and the silhouette. The analyser
+// averages each read of the spectrum with the previous one by
+// ANALYSER_SMOOTHING (Web Audio's smoothingTimeConstant), and each band then
+// steps toward the analyser's reading by BAND_FOLLOW. Kept here, named, so
+// the test drives the numbers the loop uses.
+//
+// Both are stated per SMOOTHING_STEP_S (a 60th of a second) and scaled to
+// the real time between frames by keptOver(), because the speaking orb draws
+// at the display's rate. Applied once per frame, they followed the voice
+// 2.75 times faster on the owner's 165 Hz display than at the 60 fps they
+// were tuned at: the drawn ring rose in 12 ms and fell in 18 ms, against
+// 33 ms and 50 ms at 60 fps. Owner 2026-11-10: "the voice viz is too quick,
+// voice viz is aggressively reacting to the voice".
+//
+// History, replaying the analyser on real reply clips:
+//   - 0.8 and 0.12/0.10/0.08 (ccd49b67 to 2026-11-04): at 60 fps, 10% of the
+//     orb's movement at syllable rate (2-8 Hz) against 50% in the voice,
+//     67 ms behind it -- the orb swelled with sentences.
+//   - 0.3 and 0.5 per frame (bbc25198): on the owner's 165 Hz display the orb
+//     travelled 2.8 times as far as before (energy 3.08 vs 1.10 per second)
+//     and flickered faster than syllables.
+//   - 0.4 and 0.35 per 60th of a second (now): on that display 24 ms behind
+//     the voice (correlation 0.77), 38% at syllable rate, half the travel
+//     of 0.3/0.5 there (1.50 per second); 1.53 at 60 fps and 1.59 at 30,
+//     where 0.3/0.5 per frame ranged from 1.22 to 3.08.
+export const SMOOTHING_STEP_S = 1 / 60;
+export const ANALYSER_SMOOTHING = 0.4;
+export const BAND_FOLLOW = { bass: 0.35, mid: 0.35, treble: 0.35 };
+
+export function followBand(current, target, rate) {
+  return current + (target - current) * rate;
+}
+
+// The share of the old value a smoother keeps over `dt` seconds, when it
+// keeps `keptPerStep` of it per SMOOTHING_STEP_S.
+export function keptOver(keptPerStep, dt) {
+  return Math.pow(keptPerStep, Math.max(0, dt) / SMOOTHING_STEP_S);
+}
+
 const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, fill, idleGain }) {
   // `size` is an optional CAP, not the orb's size.  Deliberately NOT defaulted
   // (it used to be `size || 200`): the orb is driven by the box it lives in,
@@ -212,7 +252,7 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.8;
+      analyser.smoothingTimeConstant = ANALYSER_SMOOTHING;
       analyser.connect(ctx.destination);
       const source = ctx.createMediaElementSource(el);
       source.connect(analyser);
@@ -300,6 +340,9 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
       const an = analyserRef.current;
 
       if (isActive && an) {
+        // Web Audio applies the smoothing once per read, and the loop reads
+        // once per frame, so the constant is set for this frame's length.
+        an.smoothingTimeConstant = keptOver(ANALYSER_SMOOTHING, dt);
         an.getByteFrequencyData(freqData);
         let bS = 0, mS = 0, tS = 0, len = freqData.length;
         for (var i = 0; i < len; i++) {
@@ -319,9 +362,9 @@ const VoiceVisualizer = function({ audioRef, isActive, size, style, canvasMax, f
         s.bass *= 0.95; s.mid *= 0.95; s.treble *= 0.95;
       }
 
-      s.bassCur += (s.bass - s.bassCur) * 0.12;
-      s.midCur += (s.mid - s.midCur) * 0.10;
-      s.trebleCur += (s.treble - s.trebleCur) * 0.08;
+      s.bassCur = followBand(s.bassCur, s.bass, 1 - keptOver(1 - BAND_FOLLOW.bass, dt));
+      s.midCur = followBand(s.midCur, s.mid, 1 - keptOver(1 - BAND_FOLLOW.mid, dt));
+      s.trebleCur = followBand(s.trebleCur, s.treble, 1 - keptOver(1 - BAND_FOLLOW.treble, dt));
       const energy = s.bassCur * 0.5 + s.midCur * 0.35 + s.trebleCur * 0.15;
 
       // Flip wave direction on natural speech pauses

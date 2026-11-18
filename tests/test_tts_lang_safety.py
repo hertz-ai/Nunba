@@ -185,7 +185,10 @@ def test_tamil_with_indic_parler_uses_indic_parler():
             return fake
         raise RuntimeError(f"{name} not available")
 
-    with patch.object(engine, '_create_backend', side_effect=_create):
+    # Indic Parler is venv-backed; "fits" includes a venv this interpreter
+    # runs, which the ladder asks the venv layer before starting it.
+    with patch.object(engine, '_create_backend', side_effect=_create), \
+            patch('tts.backend_venv.is_venv_healthy', return_value=True):
         result = engine._synthesize_with_fallback(
             text="வணக்கம்",
             output_path="/tmp/out.wav",
@@ -209,7 +212,8 @@ def test_hindi_with_indic_parler_uses_indic_parler():
             return fake
         raise RuntimeError(f"{name} not available")
 
-    with patch.object(engine, '_create_backend', side_effect=_create):
+    with patch.object(engine, '_create_backend', side_effect=_create), \
+            patch('tts.backend_venv.is_venv_healthy', return_value=True):
         result = engine._synthesize_with_fallback(
             text="नमस्ते",
             output_path="/tmp/out.wav",

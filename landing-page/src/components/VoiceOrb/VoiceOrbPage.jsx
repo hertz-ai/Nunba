@@ -450,7 +450,6 @@ export default function VoiceOrbPage() {
   // reads: the card and the guidance route can never disagree.
   const {activity: computerActivity, liveRun} = useComputerActivity();
   const [indicatorStep, setIndicatorStep] = useState(null);
-  const [mainForeground, setMainForeground] = useState(false);
   // The model's live reasoning, off the SAME chat envelope the main window
   // renders as Thought-process Steps.  The owner asked for the floating
   // window to show what the agent is thinking while it works, not only that
@@ -466,27 +465,22 @@ export default function VoiceOrbPage() {
 
   const active = speaking || computerBusy || Boolean(indicatorStep);
 
-  // Canonical bridge listener for live indicator commentary and main window foreground detection
+  // Canonical bridge listener for live indicator commentary.  Whether the
+  // main window is in front is the host's gate, not this page's
+  // (desktop/main_page_presence.py).
   useEffect(() => {
     const onIndicatorStep = (text) => {
       setIndicatorStep(text ? String(text).trim() : null);
     };
-    const onMainForeground = (isFg) => {
-      setMainForeground(Boolean(isFg));
-    };
 
     window.__onIndicatorStep = onIndicatorStep;
-    window.__setMainForeground = onMainForeground;
     if (!window.companionAPI) window.companionAPI = {};
     window.companionAPI.setIndicatorStep = onIndicatorStep;
-    window.companionAPI.setMainForeground = onMainForeground;
 
     return () => {
       delete window.__onIndicatorStep;
-      delete window.__setMainForeground;
       if (window.companionAPI) {
         delete window.companionAPI.setIndicatorStep;
-        delete window.companionAPI.setMainForeground;
       }
     };
   }, []);
@@ -573,13 +567,8 @@ export default function VoiceOrbPage() {
   // wins ('shown'), then the agent talking ('orb', lingering one idle window
   // past the clip), else idle ('hidden'). Decided on every change of
   // speaking or asking and once a second, like a taskbar's auto-hide.
-  // Suppressed contextually if the main Nunba desktop app is already in the foreground.
   useEffect(() => {
     const decide = () => {
-      if (mainForeground) {
-        setPresence('hidden');
-        return;
-      }
       const now = Date.now();
       // `computerBusy`, NOT Boolean(computerActivity): a run that has already
       // finished must not hold the card open.  That mismatch with `active`
@@ -615,7 +604,7 @@ export default function VoiceOrbPage() {
     // `trace` belongs here: each line re-decides at once (so the window is
     // up for the FIRST line, not the next tick), and its expiry -- written
     // by decide() itself -- re-runs the decision that lets the window go.
-  }, [active, asking, computerBusy, indicatorStep, mainForeground, trace]);
+  }, [active, asking, computerBusy, indicatorStep, trace]);
 
   // Hosted: the window follows the page's state and shape.  Sent on every
   // change, again at 'pywebviewready' (`.api` may not exist when the first

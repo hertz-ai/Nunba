@@ -131,9 +131,11 @@ export default function NotificationBell() {
 
   const load = useCallback(async () => {
     try {
+      // silentError [404]: the bell mounts with the chat page, often before
+      // HARTOS has registered /notifications; the 30 s poll asks again.
       const resp = await notificationsApi.list({
         unread: true, limit: 10,
-      });
+      }, {silentError: [404]});
       // socialApi.get response shape: {data: {data: [...], meta?}}
       // Match the social_bp _ok() contract used by /notifications.
       const payload = resp?.data?.data || resp?.data || [];

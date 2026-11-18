@@ -37,6 +37,13 @@ jest.mock('../../utils/encryption', () => ({
   },
 }));
 
+// clearAuth tells the desktop's sign-in record that the user signed out;
+// the mock records that post.
+jest.mock('../../services/socialApi', () => ({
+  __esModule: true,
+  chatApi: {post: jest.fn(() => Promise.resolve({}))},
+}));
+
 const useAuthSession = require('../../hooks/useAuthSession').default;
 const {
   readAuthSession,
@@ -419,6 +426,41 @@ describe('writers — Phase 4 centralised mutation surface', () => {
       } finally {
         window.removeEventListener('nunba:auth_changed', handler);
       }
+    });
+
+    // The desktop's sign-in record (user_data.json) decides who owns the
+    // desktop, and the server refuses the page's 'guest' placeholder over a
+    // real user.  Sign-out is the one place that clears it, with ''.
+    test('clears the sign-in on the desktop record with the empty sentinel', () => {
+      const {chatApi} = require('../../services/socialApi');
+      chatApi.post.mockClear();
+      localStorage.setItem('access_token', 'tok');
+      localStorage.setItem('user_id', encrypt('10202'));
+      localStorage.setItem('email_address', encrypt('Sales@hertzai.com'));
+
+      clearAuth();
+
+      expect(chatApi.post).toHaveBeenCalledTimes(1);
+      // silentError: a sign-out with the desktop down must not raise the
+      // global error banner (axiosFactory's hevolve:api-error).
+      expect(chatApi.post).toHaveBeenCalledWith(
+        '/api/storage/set', {user_id: '', access_token: '', email: ''},
+        {silentError: true});
+    });
+
+    test('signs out in the page even when the desktop cannot be reached', async () => {
+      const {chatApi} = require('../../services/socialApi');
+      chatApi.post.mockClear();
+      chatApi.post.mockImplementationOnce(() => Promise.reject(new Error('down')));
+      localStorage.setItem('access_token', 'tok');
+      localStorage.setItem('user_id', encrypt('10202'));
+
+      const next = clearAuth();
+      await Promise.resolve();
+
+      expect(next.status).toBe('unauthenticated');
+      expect(localStorage.getItem('access_token')).toBeNull();
+      expect(localStorage.getItem('user_id')).toBeNull();
     });
   });
 

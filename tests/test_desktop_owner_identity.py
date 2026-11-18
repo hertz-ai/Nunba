@@ -211,6 +211,154 @@ def test_source_guard_boot_and_sign_in_both_export_through_the_one_writer():
     assert setdefaults == [], f'main.py still setdefaults {OWNER_ENV} at {setdefaults}'
 
 
+# ── The page's placeholder is never the sign-in ───────────────────────────
+#
+# The page posts user_id 'guest' when it holds no identity of its own
+# (Demopage effectiveUserId's last fallback).  Live 2026-11-01 11:06:57 a page
+# that could not read its sign-in posted that over the owner's record:
+# "desktop owner is now guest (was 10202)", every consent ask went to 'guest'
+# and the owner's answers, made as 10202, never closed one.  On a record with
+# nobody on it the placeholder is read back as an identity too: the next boot's
+# useStorageSync makes 'guest' the page's own guest id, and HARTOS's shell
+# (liquid_ui_service._desktop_owner_id) answers as 'guest'.
+
+
+@pytest.mark.parametrize('posted, placeholder', [
+    ('guest', True),
+    ('10202', False),
+    (10202, False),
+    (USER_ID, False),
+    (GUEST, False),                 # a guest session is a real identity
+    ('', False),                    # '' is the clear sentinel, not this rule
+    (None, False),
+])
+def test_only_the_placeholder_is_refused(gi, posted, placeholder):
+    assert gi.is_placeholder_user_id(posted) is placeholder
+
+
+def _set_storage_handler(json_module=json):
+    """app.py's own set_storage body, as a function of one post.
+
+    It is nested inside the serving-app builder, and importing app.py drags
+    in the boot path, so its source is compiled on its own with the route
+    decorator dropped and the request and jsonify it reads stood in for.
+    """
+    import logging
+    from types import SimpleNamespace
+    tree = ast.parse((REPO / 'app.py').read_text(encoding='utf-8'))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == 'set_storage')
+    fn.decorator_list = []
+    ns = {'jsonify': lambda body: body, 'os': os, 'json': json_module,
+          'logger': logging.getLogger('test_set_storage')}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), 'app.py', 'exec'), ns)
+
+    def post(posted):
+        ns['request'] = SimpleNamespace(method='POST', json=posted)
+        return ns['set_storage']()
+    return post
+
+
+def _post_to_set_storage(posted):
+    return _set_storage_handler()(posted)
+
+
+def test_a_post_of_the_placeholder_keeps_the_owner(fake_home, gi, clean_owner_env):
+    """RED before the fix: the record and the export both became 'guest'."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'old'}))
+    gi.sync_owner_identity_env()
+    reply = _post_to_set_storage({'user_id': 'guest', 'access_token': 'new'})
+    assert reply['success'] is True
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert record == {'user_id': '10202', 'access_token': 'new'}
+    assert os.environ[OWNER_ENV] == '10202'
+
+
+def test_with_nobody_signed_in_the_placeholder_is_not_stored(
+        fake_home, gi, clean_owner_env):
+    """RED before the fix: the record became {'user_id': 'guest'}."""
+    _post_to_set_storage({'user_id': 'guest', 'hart_name': 'h'})
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert record == {'hart_name': 'h'}
+    assert os.environ[OWNER_ENV] == GUEST
+
+
+def test_after_sign_out_the_page_placeholder_leaves_the_desktop_to_the_guest(
+        fake_home, gi, clean_owner_env):
+    """Signing out on the chat page: clearAuth's clear, then the remounted
+    page mirrors its state, now with no identity, as user_id 'guest'.  RED
+    before the fix: the desktop owner became 'guest' (reviewer case S1),
+    where signing out from the navbar leaves the hardware guest."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'tok',
+                                  'email': 'x', 'hart_name': 'h'}))
+    gi.sync_owner_identity_env()
+    _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
+    _post_to_set_storage({'agentname': 'Nunba', 'email': None, 'access_token': None,
+                          'user_id': 'guest', 'hart_name': 'h'})
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert 'user_id' not in record
+    assert os.environ[OWNER_ENV] == GUEST
+
+
+def test_sign_out_clears_the_owner_from_the_record(fake_home, gi, clean_owner_env):
+    """Sign-out (landing-page clearAuth) posts '' for the identity keys.
+    The record drops them and the desktop goes back to the guest; the
+    refused placeholder is not a sign-out."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'tok',
+                                  'email': 'x', 'hart_name': 'h'}))
+    gi.sync_owner_identity_env()
+    _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
+    assert json.loads(_record(fake_home).read_text(encoding='utf-8')) == {'hart_name': 'h'}
+    assert os.environ[OWNER_ENV] == GUEST
+
+
+def test_a_post_that_read_before_a_sign_out_cannot_write_the_owner_back(
+        fake_home, gi, clean_owner_env):
+    """Posts land on different server threads.  The page's mirror post reads
+    the record, the sign-out's clear lands while it is still working, then the
+    mirror writes back the record it read.  RED before the lock: 10202 and its
+    token came back (reviewer case S4).
+
+    The mirror waits after its read until the clear has answered.  With the
+    lock the clear cannot answer first, so the mirror goes on after 1 s.
+    """
+    import threading
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'tok',
+                                  'email': 'x', 'hart_name': 'h'}))
+    gi.sync_owner_identity_env()
+    read_done = threading.Event()
+    clear_done = threading.Event()
+
+    class ReadsThenWaits:
+        @staticmethod
+        def load(f):
+            data = json.load(f)
+            read_done.set()
+            clear_done.wait(1)
+            return data
+        dump = staticmethod(json.dump)
+
+    mirror_post = _set_storage_handler(ReadsThenWaits)
+    clear_post = _set_storage_handler()
+    mirror = threading.Thread(target=mirror_post, args=({'hart_emoji': 'E'},))
+    mirror.start()
+    assert read_done.wait(5)
+    clear_post({'user_id': '', 'access_token': '', 'email': ''})
+    clear_done.set()
+    mirror.join(5)
+    assert not mirror.is_alive()
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert record == {'hart_name': 'h', 'hart_emoji': 'E'}
+    assert os.environ[OWNER_ENV] == GUEST
+
+
+def test_a_real_sign_in_still_replaces_the_owner(fake_home, gi, clean_owner_env):
+    _write(fake_home, json.dumps({'user_id': '10202'}))
+    _post_to_set_storage({'user_id': USER_ID})
+    assert json.loads(_record(fake_home).read_text(encoding='utf-8'))['user_id'] == USER_ID
+    assert os.environ[OWNER_ENV] == USER_ID
+
+
 def test_main_does_not_derive_its_own_record_path():
     """RED before the fix: main.py joined get_data_dir()/storage/user_data.json."""
     tree = ast.parse((REPO / 'main.py').read_text(encoding='utf-8'))

@@ -5472,6 +5472,14 @@ def setup_connectivity_monitor(window, port):
     // ── Universal rescue: intercept ALL failures ──
 
     // 1. Fetch interceptor — catches /chat errors AND any failed API call
+    // A chat request has a path segment that is exactly "chat" (/chat,
+    // /api/social/agent/<id>/chat, /chat/teachme2).  Matching "/chat"
+    // anywhere also took /api/chat-sync/...: with cloud sync off, its
+    // refusal {"error": "sync_disabled"} showed as "Chat error" (2026-11-13).
+    function _isChatRequest(url) {
+        var path = String(url || '').split(/[?#]/)[0];
+        return path.slice(-5) === '/chat' || path.indexOf('/chat/') !== -1;
+    }
     var _origFetch = window.fetch;
     window.fetch = function() {
         var args = arguments;
@@ -5479,7 +5487,7 @@ def setup_connectivity_monitor(window, port):
         return _origFetch.apply(this, args).then(function(response) {
             try {
                 // /chat responses — detect compute source or errors
-                if (url.indexOf('/chat') !== -1) {
+                if (_isChatRequest(url)) {
                     response.clone().json().then(function(data) {
                         if (data.error && !data.success) {
                             if (data.error === 'auth_required' || data.error === 'auth_failed') {
@@ -5499,7 +5507,7 @@ def setup_connectivity_monitor(window, port):
                     }).catch(function() {});
                 }
                 // Any API returning 5xx (skip known-flaky endpoints)
-                if (response.status >= 500 && url.indexOf('/chat') === -1 && !_isSilentUrl(url)) {
+                if (response.status >= 500 && !_isChatRequest(url) && !_isSilentUrl(url)) {
                     _errorCount++;
                     if (_errorCount >= _errorThreshold) {
                         showErrorPill('Server error — tap to reload', function() { location.reload(); });
@@ -5540,7 +5548,7 @@ def setup_connectivity_monitor(window, port):
             }
         });
         xhr.addEventListener('load', function() {
-            if (xhr.status >= 500 && xhr._nunbaUrl && xhr._nunbaUrl.indexOf('/chat') === -1 && !_isSilentUrl(xhr._nunbaUrl)) {
+            if (xhr.status >= 500 && xhr._nunbaUrl && !_isChatRequest(xhr._nunbaUrl) && !_isSilentUrl(xhr._nunbaUrl)) {
                 _errorCount++;
                 if (_errorCount >= _errorThreshold) showErrorPill('Server error — tap to reload', function() { location.reload(); });
             } else if (xhr.status < 400) {
@@ -5999,7 +6007,12 @@ def start_flask():
                 set_keys = [key for key in found_keys if data[key] != '']
 
                 # Store in a file
-                from desktop.guest_identity import get_user_data_file_path
+                from desktop.guest_identity import (
+                    PLACEHOLDER_USER_ID,
+                    USER_DATA_LOCK,
+                    get_user_data_file_path,
+                    is_placeholder_user_id,
+                )
                 user_data_file = get_user_data_file_path()
                 os.makedirs(os.path.dirname(user_data_file), exist_ok=True)
 
@@ -6012,52 +6025,69 @@ def start_flask():
                 for key in set_keys:
                     user_data[key] = data[key]
 
-                # What we PERSIST — merged into the existing document.
-                #
-                # Until 2026-08-11 this handler wrote `user_data` straight out
-                # with mode 'w', rebuilding the file from ONLY the posted keys.
-                # Any caller sending a subset therefore deleted everything it
-                # did not mention.  That made a HART-identity reset
-                # inexpressible: SettingsPage could not clear hart_* without
-                # also destroying access_token / email / user_id and signing
-                # the user out, so the reset cleared localStorage only —
-                # whereupon useStorageSync re-hydrated hart_* straight back
-                # out of this file and the naming ceremony never ran.
-                stored = {}
-                if os.path.exists(user_data_file):
+                # One step from reading the record to exporting its owner: posts land
+                # on different server threads, and a post that read the record before
+                # a sign-out's clear wrote the signed-in user back (reviewer case S4).
+                with USER_DATA_LOCK:
+                    # What we PERSIST — merged into the existing document.
+                    #
+                    # Until 2026-08-11 this handler wrote `user_data` straight out
+                    # with mode 'w', rebuilding the file from ONLY the posted keys.
+                    # Any caller sending a subset therefore deleted everything it
+                    # did not mention.  That made a HART-identity reset
+                    # inexpressible: SettingsPage could not clear hart_* without
+                    # also destroying access_token / email / user_id and signing
+                    # the user out, so the reset cleared localStorage only —
+                    # whereupon useStorageSync re-hydrated hart_* straight back
+                    # out of this file and the naming ceremony never ran.
+                    stored = {}
+                    if os.path.exists(user_data_file):
+                        try:
+                            with open(user_data_file) as f:
+                                _existing = json.load(f)
+                            if isinstance(_existing, dict):
+                                stored = _existing
+                        except (OSError, ValueError) as _read_err:
+                            # Corrupt or unreadable: fall back to the pre-merge
+                            # behaviour (start clean) rather than refusing the write.
+                            logger.warning(
+                                f"user_data.json unreadable ({_read_err}) — rebuilding")
+                            stored = {}
+
+                    # A page that holds no identity posts the placeholder; it names
+                    # nobody, so it is never stored, over a signed-in user or on an
+                    # empty record.  Sign-out clears the identity with the ''
+                    # sentinel (landing-page clearAuth).
+                    if 'user_id' in user_data and is_placeholder_user_id(
+                            user_data['user_id']):
+                        logger.info(
+                            "user_data.json does not store the placeholder "
+                            f"{PLACEHOLDER_USER_ID!r} (on file: "
+                            f"{stored.get('user_id') or 'nobody'})")
+                        user_data.pop('user_id')
+                        set_keys.remove('user_id')
+
+                    _cleared = []
+                    for key in clear_keys:
+                        if stored.pop(key, None) is not None:
+                            _cleared.append(key)
+                    stored.update(user_data)
+
+                    with open(user_data_file, 'w') as f:
+                        json.dump(stored, f)
+
+                    logger.info(
+                        f"user_data.json merged — set={set_keys} "
+                        f"cleared={_cleared} now={list(stored.keys())}")
+
+                    # This file IS the sign-in record, so every write can change
+                    # who owns the desktop.  Re-export it so the consent gates act
+                    # for the person signed in NOW, not the boot-time guest.
                     try:
-                        with open(user_data_file) as f:
-                            _existing = json.load(f)
-                        if isinstance(_existing, dict):
-                            stored = _existing
-                    except (OSError, ValueError) as _read_err:
-                        # Corrupt or unreadable: fall back to the pre-merge
-                        # behaviour (start clean) rather than refusing the write.
-                        logger.warning(
-                            f"user_data.json unreadable ({_read_err}) — rebuilding")
-                        stored = {}
-
-                _cleared = []
-                for key in clear_keys:
-                    if stored.pop(key, None) is not None:
-                        _cleared.append(key)
-                stored.update(user_data)
-
-                with open(user_data_file, 'w') as f:
-                    json.dump(stored, f)
-
-                logger.info(
-                    f"user_data.json merged — set={set_keys} "
-                    f"cleared={_cleared} now={list(stored.keys())}")
-
-                # This file IS the sign-in record, so every write can change
-                # who owns the desktop.  Re-export it so the consent gates act
-                # for the person signed in NOW, not the boot-time guest.
-                try:
-                    from desktop.guest_identity import sync_owner_identity_env
-                    sync_owner_identity_env()
-                except Exception as _own_err:
-                    logger.warning(f"desktop owner re-export failed: {_own_err}")
+                        from desktop.guest_identity import sync_owner_identity_env
+                        sync_owner_identity_env()
+                    except Exception as _own_err:
+                        logger.warning(f"desktop owner re-export failed: {_own_err}")
 
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']
@@ -8090,6 +8120,16 @@ def main():
             FilePickerApi(lambda: _window),
             _native_api,
         )
+        # The main page says whether the owner is looking at it; the floating
+        # companion follows that (desktop/main_page_presence.py).  On the MAIN
+        # window's js_api only: the companion page has no such method.
+        from desktop.main_page_presence import (
+            MainPagePresence,
+            MainPagePresenceApi,
+        )
+        _main_page = MainPagePresence()
+        _native_api.main_page_presence = (
+            MainPagePresenceApi(_main_page).main_page_presence)
 
         # Create window with conditional hidden status and frameless design.
         # frameless=True on Win+Linux: dark NunbaTitleBar replaces native chrome.
@@ -8159,19 +8199,12 @@ def main():
             _comp_x, _comp_y = _companion_origin(_screen_w, _screen_h,
                                                  _comp_w, _comp_h)
 
-            # What the PAGE last asked for.  The page owns presence
-            # (on_companion_presence below); the foreground monitor owns
-            # whether that presence is allowed on screen right now.  Two
-            # different questions, so the answer to the first is kept here
-            # rather than inferred from whether the window happens to be
-            # visible -- which is what the monitor is busy changing.
-            _companion_desired = {'state': 'hidden', 'shape': None}
-            # The foreground monitor's lifetime is this window's lifetime.
-            # app.py has no process-wide shutdown signal to hang it on, and
-            # inventing one here would be a second answer to a question
-            # nothing else in this file asks; the window's own closed event
-            # is the real end of the thing being watched.
-            _companion_stop = threading.Event()
+            # The companion page owns presence (on_companion_presence below);
+            # the main page's own report (_main_page) owns whether it may be on
+            # screen right now.  The gate that joins the two is built once the
+            # window exists (desktop/main_page_presence.
+            # CompanionPresenceApplier, tested with fake windows there).
+            _companion_gate = None
 
             class CompanionAPI:
                 """Python bridge for the companion window JS.
@@ -8303,51 +8336,11 @@ def main():
                     pywebview's show()/hide() marshal to the UI thread
                     themselves; the region and topmost calls are Win32.
                     """
-                    try:
-                        _companion_desired['state'] = state
-                        _companion_desired['shape'] = shape
-                        if state == 'hidden':
-                            _companion_window.hide()
-                            return
-                        from desktop.platform_utils import (
-                            is_main_window_foreground,
-                            main_window_state_readable,
-                        )
-                        # Fail closed.  This surface is for when the owner is
-                        # in ANOTHER application; over Nunba's own window it
-                        # is a second copy of the same conversation.  And
-                        # "could not read the main window" must suppress too:
-                        # the bool alone returns False for unreadable, which
-                        # means "not in front", which SHOWS -- and during
-                        # startup the two windows race, so unreadable is a
-                        # state that really happens (see
-                        # tests/test_companion_presence_fails_closed.py).
-                        # Kept as ONE BoolOp: tests/test_companion_presence_
-                        # fails_closed.py walks for a condition containing
-                        # both calls, and splitting them into two names made
-                        # that guard fail (measured 2026-09-20) -- the pairing
-                        # is the thing being pinned, so it stays literal.
-                        _suppress = (
-                            is_main_window_foreground(_window, _companion_window)
-                            or not main_window_state_readable(_window))
-                        # The success path logged nothing, which made the gate
-                        # unfalsifiable: an absent line could mean "never ran"
-                        # or "ran and allowed", and a live check could not tell
-                        # those apart.  One line per decision.
-                        logger.info("[COMPANION] presence %s -> %s", state,
-                                    'hide' if _suppress else 'show')
-                        if _suppress:
-                            _companion_window.hide()
-                            return
-                        _comp_hwnd = _resolve_hwnd(_companion_window)
-                        if _comp_hwnd and shape:
-                            from desktop.platform_utils import set_window_shape
-                            set_window_shape(_comp_hwnd, shape)
-                        _companion_window.show()
-                        _companion_raise()
-                    except Exception as _pres_err:
-                        logger.debug("[COMPANION] presence %s failed: %s",
-                                     state, _pres_err)
+                    # Fail closed: shown only while the main page has said it
+                    # is not in front, and only where the companion has been
+                    # measured (desktop/main_page_presence.py).
+                    if _companion_gate is not None:
+                        _companion_gate.request(state, shape)
 
             _companion_api = CompanionAPI()
 
@@ -8509,53 +8502,23 @@ def main():
             if _companion_window:
                 _companion_window.events.loaded += _on_companion_loaded
 
-            def _companion_fg_monitor():
-                """Follow the owner's foreground window, not just page events.
-
-                on_companion_presence only fires when the PAGE changes its
-                mind.  The owner alt-tabbing to Nunba changes nothing on the
-                page, so without this tick the companion would sit on top of
-                the main window until the agent next spoke.  0.35s is under
-                the ~0.4s an alt-tab takes to settle, so the companion is
-                gone by the time the owner is looking at Nunba.
-
-                Same fail-closed pair as the presence handler: in front OR
-                unreadable means hide.  The gate is written out here rather
-                than shared with the handler because the two answer at
-                different moments -- the handler on a page event, this on a
-                clock -- and a single shared applier was tried and drifts the
-                page's desired state against the clock's view of it.
-                """
-                from desktop.platform_utils import (
-                    is_main_window_foreground,
-                    main_window_state_readable,
-                )
-                _last = None
-                while not _companion_stop.is_set():
-                    try:
-                        if _companion_desired['state'] != 'hidden':
-                            suppress = (
-                                is_main_window_foreground(_window,
-                                                          _companion_window)
-                                or not main_window_state_readable(_window))
-                            if suppress != _last:
-                                if suppress:
-                                    _companion_window.hide()
-                                else:
-                                    _companion_window.show()
-                                    _companion_raise()
-                                _last = suppress
-                        else:
-                            _last = None
-                    except Exception as _fg_err:
-                        logger.debug("[COMPANION] fg monitor tick failed: %s",
-                                     _fg_err)
-                    _companion_stop.wait(0.35)
-
             if _companion_window:
-                _companion_window.events.closed += _companion_stop.set
-                threading.Thread(target=_companion_fg_monitor, daemon=True,
-                                 name='companion_fg_monitor').start()
+                from desktop.main_page_presence import CompanionPresenceApplier
+
+                def _companion_shape(shape):
+                    # The window region (Win32): only the orb's rect is on
+                    # screen and clickable.
+                    _comp_hwnd = _resolve_hwnd(_companion_window)
+                    if _comp_hwnd:
+                        from desktop.platform_utils import set_window_shape
+                        set_window_shape(_comp_hwnd, shape)
+
+                # The owner alt-tabbing to Nunba changes nothing on the
+                # COMPANION page; the gate re-applies its last request on every
+                # change of the main page's report.
+                _companion_gate = CompanionPresenceApplier(
+                    _main_page, _companion_window, _companion_shape,
+                    _companion_raise)
 
         except Exception as _comp_err:
             logger.warning("[COMPANION] Companion window not created: %s", _comp_err)
@@ -8621,6 +8584,13 @@ def main():
                     logger.warning("[CHROME] install_custom_chrome failed: %s", _chrome_err)
             _window.events.loaded += _install_chrome
             _window.events.shown += _install_chrome
+
+        # A report belongs to the page that sent it.  Each time the main window
+        # loads a page again (reload, navigation, the REMOUNT watchdog) the old
+        # report is cleared, so the companion stays hidden until the new page
+        # says it is not in front (review of c8968c3b: a page that never
+        # mounted again left "not in front" behind, over Nunba).
+        _window.events.before_load += _main_page.reset
 
         # Set up system tray
         _tray_icon = setup_system_tray(_window)

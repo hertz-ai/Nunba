@@ -168,61 +168,6 @@ def test_api_storage_path_get_and_post(tmp_path):
     assert os.path.abspath(post_info["models_dir"]) == os.path.abspath(new_dir)
 
 
-def test_is_main_window_foreground_cross_platform():
-    """Verify is_main_window_foreground handles Windows, macOS, and Linux cleanly."""
-    import desktop.platform_utils as pu
-
-    # 1. Win32 path
-    with patch.object(pu, "IS_WINDOWS", True), \
-         patch.object(pu, "IS_MACOS", False), \
-         patch.object(pu, "IS_LINUX", False):
-        mock_u32 = MagicMock()
-        mock_u32.IsIconic.return_value = 0
-        mock_u32.IsWindowVisible.return_value = 1
-        mock_u32.GetForegroundWindow.return_value = 12345
-        mock_u32.GetAncestor.side_effect = lambda hwnd, flag: getattr(hwnd, 'value', hwnd)
-        with patch("ctypes.windll.user32", mock_u32):
-            assert pu.is_main_window_foreground(12345) is True
-            assert pu.is_main_window_foreground(99999) is False
-
-    # 2. Darwin path
-    with patch.object(pu, "IS_WINDOWS", False), \
-         patch.object(pu, "IS_MACOS", True), \
-         patch.object(pu, "IS_LINUX", False), \
-         patch.object(pu.sys, "platform", "darwin"):
-        mock_appkit = MagicMock()
-        mock_ws = MagicMock()
-        mock_front = MagicMock()
-        mock_front.processIdentifier.return_value = os.getpid()
-        mock_ws.frontmostApplication.return_value = mock_front
-        mock_appkit.NSWorkspace.sharedWorkspace.return_value = mock_ws
-
-        mock_app = MagicMock()
-        mock_key = MagicMock()
-        mock_app.keyWindow.return_value = mock_key
-        mock_appkit.NSApplication.sharedApplication.return_value = mock_app
-
-        mock_win = MagicMock()
-        mock_win.native = mock_key
-
-        with patch.dict("sys.modules", {"AppKit": mock_appkit}):
-            assert pu.is_main_window_foreground(mock_win) is True
-
-            mock_win_other = MagicMock()
-            mock_win_other.native = MagicMock()  # Not equal to mock_key
-            # macOS foreground ownership is app-level without Accessibility.
-            mock_front.processIdentifier.return_value = os.getpid() + 1
-            assert pu.is_main_window_foreground(mock_win_other) is False
-
-    # 3. Linux path: current implementation uses the active X11 window ID.
-    with patch.object(pu, "IS_WINDOWS", False), \
-         patch.object(pu.sys, "platform", "linux"), \
-         patch("subprocess.run") as probe:
-        probe.return_value.stdout = '12345'
-        assert pu.is_main_window_foreground(12345) is True
-        assert pu.is_main_window_foreground(99999) is False
-
-
 def test_storage_save_failure_keeps_old_destination(tmp_path, monkeypatch):
     from llama.llama_config import LlamaConfig
     monkeypatch.delenv('NUNBA_MODELS_DIR', raising=False)

@@ -218,11 +218,15 @@ export function isPerRequester(consentType) {
   return Boolean(CONSENT_ASKS[consentType] && CONSENT_ASKS[consentType].perRequester);
 }
 
-// Who is asking, as a person would say it: the agent's name, else "An
-// agent".  (A phone's name is a claim and goes in the title, askTitle.)
+// Who is asking, as a person would say it: "Agent <name>", else "An agent".
+// An agent named like a person ("Vijai") read as that person asking (owner
+// 2026-11-11); the phone push says the same (HARTOS consent_service
+// .agent_as_asker), and a name that already says it is not doubled.  (A
+// phone's name is a claim and goes in the title, askTitle.)
 export function askerName(name) {
   const who = String(name || '').trim();
-  return who || 'An agent';
+  if (!who) return 'An agent';
+  return /^agent\b/i.test(who) ? who : `Agent ${who}`;
 }
 
 // The card's title.  A phone's name is what the phone said about itself,
@@ -279,7 +283,7 @@ export function declineNote(consentType, label) {
 export function declineLabel(consentType, agentId, name) {
   if (isPerRequester(consentType) || !agentId) return "Don't allow";
   const who = String(name || '').trim();
-  return who ? `Don't allow ${who}` : "Don't allow this agent";
+  return who ? `Don't allow ${askerName(who)}` : "Don't allow this agent";
 }
 
 // The events HARTOS broadcasts when an ask is answered, on any surface.

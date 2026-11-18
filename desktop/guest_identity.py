@@ -62,8 +62,11 @@ Public API
     get_guest_id() -> str            # "g_<16 hex>", cached
     get_guest_id_file_path() -> str  # absolute path to guest_id.json
     get_user_data_file_path() -> str # the signed-in user's user_data.json
+    USER_DATA_LOCK                   # held around each write of that record
     get_desktop_owner_id() -> str    # signed-in user_id, else the guest id
     sync_owner_identity_env() -> str # export it to HEVOLVE_OWNER_USER_ID
+    is_placeholder_user_id(user_id) -> bool
+                                     # the page's no-identity placeholder
     _derive_guest_id() -> (str, str) # (id, source) — no cache, for tests
 """
 
@@ -76,6 +79,7 @@ import os
 import platform
 import sys
 import tempfile
+import threading
 import uuid
 
 from desktop.platform_utils import get_subprocess_flags
@@ -339,6 +343,12 @@ def get_user_data_file_path() -> str:
                         "user_data.json")
 
 
+# /api/storage/set holds it from reading the record to exporting its owner.
+# Posts land on different server threads, and a post that read the record
+# before a sign-out's clear would write the signed-in user back.
+USER_DATA_LOCK = threading.Lock()
+
+
 def get_desktop_owner_id() -> str | None:
     """The person this desktop acts for: the signed-in user, else the guest.
 
@@ -359,6 +369,24 @@ def get_desktop_owner_id() -> str | None:
     except Exception as e:  # noqa: BLE001
         logger.warning("desktop owner: guest id unavailable (%s)", e)
         return None
+
+
+# What the page posts as user_id when it holds no identity of its own
+# (landing-page Demopage effectiveUserId's last fallback).  It names nobody.
+PLACEHOLDER_USER_ID = 'guest'
+
+
+def is_placeholder_user_id(user_id) -> bool:
+    """True for the placeholder, which /api/storage/set never stores.
+
+    Live 2026-11-01 a page that could not read its sign-in posted 'guest' over
+    the owner's record, the desktop owner became 'guest', and every consent
+    ask went to it while the owner's answers were recorded for the owner.
+    Stored on a record with nobody on it, it is still read back as a person:
+    the next boot's useStorageSync makes it the page's guest id, and HARTOS's
+    shell (liquid_ui_service._desktop_owner_id) answers as 'guest'.
+    """
+    return str(user_id) == PLACEHOLDER_USER_ID
 
 
 # The env var every HARTOS consent gate reads to know whose machine this is

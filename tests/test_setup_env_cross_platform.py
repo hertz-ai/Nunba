@@ -112,3 +112,61 @@ def test_launcher_falls_back_when_resolved_bash_cannot_run(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "using the portable setup" in result.stderr
     assert (project / ".env.local").read_text(encoding="utf-8") == "FALLBACK=works\n"
+
+
+# The sign-in key (REACT_APP_SECRET_KEY) reaches the bundle only through an
+# env file, and prebuild is what puts one in place.  On 2026-11-01 a bundle
+# built without prebuild went onto the desktop: decrypt() returned null for
+# every stored sign-in, the page ran as 'guest', and every consent ask the
+# owner answered came back (the asks were filed for 'guest', the answers
+# for the owner).
+
+CONFIG_OVERRIDES = LANDING_PAGE / "config-overrides.js"
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def _run_webpack_override(env_name, key):
+    # config-overrides resolves two polyfills from node_modules, which the
+    # backend test job does not install; the stub answers those two names.
+    snippet = (
+        "const M=require('module');const o=M._resolveFilename;"
+        "M._resolveFilename=function(r,...a){"
+        "return r==='stream-browserify'||r==='buffer/'?r:o.call(this,r,...a)};"
+        "require(process.argv[1]).webpack({},process.argv[2]);"
+    )
+    env = os.environ.copy()
+    env.pop("REACT_APP_SECRET_KEY", None)
+    if key is not None:
+        env["REACT_APP_SECRET_KEY"] = key
+    return subprocess.run(
+        [_node(), "-e", snippet, str(CONFIG_OVERRIDES), env_name],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_a_production_build_without_the_sign_in_key_stops():
+    result = _run_webpack_override("production", None)
+    assert result.returncode != 0
+    assert "REACT_APP_SECRET_KEY" in result.stderr
+
+
+def test_a_production_build_with_the_sign_in_key_goes_on():
+    result = _run_webpack_override("production", "k" * 28)
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_dev_server_starts_without_the_sign_in_key():
+    result = _run_webpack_override("development", None)
+    assert result.returncode == 0, result.stderr
+
+
+def test_every_ci_build_of_the_page_runs_prebuild():
+    bare = []
+    for workflow in sorted(WORKFLOWS.glob("*.yml")):
+        for number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), 1):
+            if "react-app-rewired build" in line or "react-scripts build" in line:
+                bare.append(f"{workflow.name}:{number}: {line.strip()}")
+    assert bare == [], "build the page with `npm run build` so prebuild sets the key:\n" + "\n".join(bare)
