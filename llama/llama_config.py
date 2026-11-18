@@ -1768,7 +1768,17 @@ class LlamaConfig:
             # Nothing running on this port
             return ServerType.NOT_RUNNING, None
         except Exception as e:
-            logger.debug(f"Error checking server on port {port}: {e}")
+            # Not "nothing listening" (that is the ConnectionError above): the
+            # port answered, or hung, and the probe still failed.  It reads as
+            # NOT_RUNNING, which the LLM watchdog (HARTOS model_lifecycle
+            # _check_llm_health) treats as a dead server and restarts, so the
+            # reason belongs in the log the installed app keeps.  At DEBUG it
+            # was lost: 2026-11-17 10:59:29 the watchdog called 8080
+            # UNREACHABLE between two completions it answered with 200, and no
+            # log said why.
+            logger.warning(
+                f"llama-server probe on port {port} failed "
+                f"({type(e).__name__}: {e}) - reading it as NOT_RUNNING")
             return ServerType.NOT_RUNNING, None
 
     def check_server_running(self, port: int | None = None) -> bool:

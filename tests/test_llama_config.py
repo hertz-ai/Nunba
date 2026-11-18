@@ -267,6 +267,48 @@ class TestCheckServerType:
             assert server_type == ServerType.NOT_RUNNING
             assert info is None
 
+    def test_a_probe_that_fails_on_a_listening_server_says_why(self, tmp_config_dir, caplog):
+        """A probe error other than "nothing listening" reads as NOT_RUNNING
+        and the LLM watchdog restarts the server on it, so its reason must
+        reach the log at WARNING (the installed app does not keep DEBUG).
+
+        Measured 2026-11-17 10:59:29: the watchdog called llama-server on 8080
+        UNREACHABLE between two completions that server answered with 200
+        (10:59:25 and 10:59:30), and nothing in any log said why."""
+        import logging
+
+        import requests as req
+
+        from llama.llama_config import LlamaConfig, ServerType
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+
+        with caplog.at_level(logging.WARNING, logger="NunbaLlamaConfig"), \
+             patch("llama.llama_config.requests.get",
+                   side_effect=req.exceptions.ReadTimeout("read timed out (2 s)")):
+            server_type, info = cfg.check_server_type(8080)
+
+        assert (server_type, info) == (ServerType.NOT_RUNNING, None)
+        said = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("8080" in m and "ReadTimeout" in m for m in said), said
+
+    def test_nothing_listening_stays_quiet(self, tmp_config_dir, caplog):
+        """Port scans probe free ports on purpose; a refused connection is the
+        normal answer there and must not become a warning per port."""
+        import logging
+
+        import requests as req
+
+        from llama.llama_config import LlamaConfig, ServerType
+        cfg = LlamaConfig(config_dir=tmp_config_dir)
+
+        with caplog.at_level(logging.WARNING, logger="NunbaLlamaConfig"), \
+             patch("llama.llama_config.requests.get",
+                   side_effect=req.exceptions.ConnectionError("refused")):
+            server_type, _ = cfg.check_server_type(8080)
+
+        assert server_type == ServerType.NOT_RUNNING
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
     def test_check_server_running_uses_config_port(self, tmp_config_dir):
         """check_server_running uses the configured port when none provided."""
         from llama.llama_config import LlamaConfig, ServerType
