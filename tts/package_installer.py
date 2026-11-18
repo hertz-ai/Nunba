@@ -2452,31 +2452,16 @@ class _WeightsRefused(Exception):
     row back by itself once the key is stored (HARTOS ModelEntry.
     setup_failure_current)."""
 
-    def __init__(self, answer: str, ask_for_key: bool):
-        super().__init__(answer)
-        self.ask_for_key = ask_for_key
-
-
-def _hf_token() -> str:
-    """The owner's Hugging Face token.  The vault keeps it as
-    HEVOLVE_HF_TOKEN (environment first, then the vault), a name
-    huggingface_hub does not read, so no download ever carried it."""
-    try:
-        from hartos.ai_key_vault import get_ai_key_vault
-        return get_ai_key_vault().get_tool_key('HEVOLVE_HF_TOKEN') or ''
-    except Exception as e:  # a public repo needs no token: never block one
-        logger.debug(f"Hugging Face token lookup failed: {e}")
-        return ''
-
-
 def _hub_snapshot_download(repo_id: str, **kwargs):
     """huggingface_hub.snapshot_download with the owner's token, answering a
     gated or missing repo as _WeightsRefused instead of a raw HTTP error that
-    raised out of setup."""
+    raised out of setup.  The token lookup and the gated answer (which asks
+    the owner for the key once) are HARTOS's, the ones the voice worker uses."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import (
         GatedRepoError, HfHubHTTPError, RepositoryNotFoundError)
-    token = _hf_token()
+    from hartos.ai_key_vault import gated_weights_answer, hf_token
+    token = hf_token()
     if token:
         kwargs.setdefault('token', token)
     page = f"https://huggingface.co/{repo_id}"
@@ -2488,10 +2473,8 @@ def _hub_snapshot_download(repo_id: str, **kwargs):
             # the failure and nobody is asked for a key they gave.
             return _WeightsRefused(
                 f"{repo_id} refused the stored HEVOLVE_HF_TOKEN; accept its "
-                f"terms at {page} with that account", ask_for_key=False)
-        return _WeightsRefused(
-            f"needs HEVOLVE_HF_TOKEN: {repo_id} is gated; accept its terms "
-            f"at {page}", ask_for_key=True)
+                f"terms at {page} with that account")
+        return _WeightsRefused(gated_weights_answer(repo_id, 'voice setup'))
 
     # Most specific first: GatedRepoError is a RepositoryNotFoundError, and
     # both are HfHubHTTPError.
@@ -2500,8 +2483,7 @@ def _hub_snapshot_download(repo_id: str, **kwargs):
     except GatedRepoError:
         raise gated()
     except RepositoryNotFoundError:
-        raise _WeightsRefused(f"repository does not exist: {repo_id}",
-                              ask_for_key=False)
+        raise _WeightsRefused(f"repository does not exist: {repo_id}")
     except HfHubHTTPError as e:
         status = getattr(getattr(e, 'response', None), 'status_code', None)
         if status not in (401, 403):
@@ -2512,8 +2494,8 @@ def _hub_snapshot_download(repo_id: str, **kwargs):
 def _answers_refused_downloads(download):
     """Every branch of _download_model_weights downloads through
     _hub_snapshot_download; this turns a refusal into the (False, answer)
-    setup reports, and asks the owner for the key once when one is needed
-    (the vault's request_credential, the path post_to_channel uses)."""
+    setup reports.  The owner was already asked for a missing key, once, by
+    ai_key_vault.gated_weights_answer."""
     import functools
 
     @functools.wraps(download)
@@ -2521,17 +2503,6 @@ def _answers_refused_downloads(download):
         try:
             return download(backend, progress_cb)
         except _WeightsRefused as refused:
-            if refused.ask_for_key:
-                import json
-                from hartos.ai_key_vault import request_credential
-                request_credential(json.dumps({
-                    'resource_type': 'api_key',
-                    'key_name': 'HEVOLVE_HF_TOKEN',
-                    'label': 'Hugging Face access token',
-                    'used_by': 'voice setup',
-                    'description': f"Needed to download the {backend} voice: "
-                                   f"{refused}",
-                }), agent_id=None, tell_alias=False)
             return False, str(refused)
     return answered
 

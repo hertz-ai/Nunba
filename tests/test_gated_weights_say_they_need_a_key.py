@@ -23,8 +23,15 @@ def hub(monkeypatch):
     monkeypatch.delenv('HEVOLVE_HF_TOKEN', raising=False)
     monkeypatch.delenv('HF_TOKEN', raising=False)
     monkeypatch.setattr(pi, '_is_hf_model_cached', lambda mid: False)
-    monkeypatch.setattr(pi, '_hf_token', lambda: __import__('os').environ.get('HEVOLVE_HF_TOKEN', ''))
     state = {'calls': [], 'asks': [], 'raise': 'gated'}
+    # The vault, not the owner's real one: the key comes from the
+    # environment, and an ask is pending once request_credential ran.
+    pending = set()
+    vault = type('V', (), {
+        'get_tool_key': lambda self, k: __import__('os').environ.get(k, ''),
+        'has_pending': lambda self, k: k in pending,
+    })()
+    monkeypatch.setattr(akv, 'get_ai_key_vault', lambda: vault)
 
     def fake(repo_id, **kw):
         state['calls'].append((repo_id, kw))
@@ -39,8 +46,11 @@ def hub(monkeypatch):
         return '/tmp/x'
 
     monkeypatch.setattr(huggingface_hub, 'snapshot_download', fake)
-    monkeypatch.setattr(akv, 'request_credential',
-                        lambda desc, agent_id=None, **kw: state['asks'].append(desc) or 'asked')
+    def ask(desc, agent_id=None, **kw):
+        state['asks'].append(desc)
+        pending.add('HEVOLVE_HF_TOKEN')
+        return 'asked'
+    monkeypatch.setattr(akv, 'request_credential', ask)
     return pi, state
 
 
@@ -107,6 +117,22 @@ def test_setup_passes_the_needs_a_key_answer_through_unwrapped(hub, monkeypatch)
     monkeypatch.setattr(pi, '_acquire_file_lock', lambda name: True)
     monkeypatch.setattr(pi, '_release_file_lock', lambda name: None, raising=False)
     monkeypatch.setattr(pi, 'get_install_target', lambda b: 'main')
+    # Indic Parler has its own venv, and setup installs into it before the
+    # weights step: a real venv and a real pip of torch and parler-tts.  This
+    # test is about the weights answer, so setup takes the stubbed path.
+    monkeypatch.delitem(pi.BACKEND_VENV_PACKAGES,
+                        pi.registry_engine_id('indic_parler'), raising=False)
     ok, answer = pi.install_backend_full('indic_parler')
     assert ok is False
     assert answer.startswith('needs HEVOLVE_HF_TOKEN:')
+
+
+def test_two_gated_downloads_ask_the_owner_once(hub):
+    """The ask is HARTOS's ai_key_vault.gated_weights_answer, the one the
+    voice worker uses: a second gated voice finds the ask pending and does
+    not ask again (rv_b9: Nunba's own copy had no such guard)."""
+    pi, state = hub
+    pi._download_model_weights('indic_parler')
+    ok, answer = pi._download_model_weights('neutts_air')
+    assert ok is False and answer.startswith('needs HEVOLVE_HF_TOKEN:')
+    assert len(state['asks']) == 1
