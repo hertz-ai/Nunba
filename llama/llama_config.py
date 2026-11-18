@@ -84,6 +84,36 @@ def spawn_vram_delta_gb(before, after):
     return None
 
 
+# The weight file the ledger's 'llm' row was MEASURED for in this process,
+# and the figure booked.  The row itself is only a number, so a reuse of a
+# running server could not tell a measured booking from a file-size one and
+# wrote the file size over it (11-17: this process spawned the 2B at 10:54
+# and measured 2.910 GiB; the 11:41 switch reused that server, and Nunba
+# 1d352a71 would have booked 1.248, the 2B's file size).  Kept in memory
+# because the ledger it describes is in memory too.
+_llm_measured = {'file': None, 'gb': None}
+
+
+def book_llm_vram(vm, gb, measured_file=None):
+    """Write the VRAM ledger's 'llm' row.
+
+    ``measured_file`` is the weight file when ``gb`` was measured on the card
+    around its spawn; leave it None when ``gb`` is the file size.
+    """
+    vm._allocations['llm'] = gb
+    _llm_measured['file'] = (ntpath.basename(str(measured_file))
+                             if measured_file else None)
+    _llm_measured['gb'] = gb if measured_file else None
+
+
+def llm_vram_measured_for(vm, file_name) -> bool:
+    """True when the 'llm' row still holds the figure this process measured
+    for the weight file ``file_name``.  No row, a row measured for another
+    file, or a row another writer changed since all read False."""
+    return (_llm_measured['file'] == ntpath.basename(str(file_name))
+            and _llm_measured['gb'] == vm._allocations.get('llm'))
+
+
 def embeddings_args(spec_args) -> list:
     """``--embeddings`` for the main server, unless the spawn runs MTP.
 
@@ -2129,28 +2159,49 @@ class LlamaConfig:
                             logger.info(
                                 f"Catalog synced: LLM '{display_name}' marked "
                                 f"as loaded on {_device}")
-                            # Count the reused model's video memory the way
-                            # the spawn path counts one it started (canonical
-                            # key 'llm', the model's size).  notify_loaded's
-                            # own allocate('llm') has no budget row and books
-                            # 0.0, which left 5.8 GB of a running 4B unseen
-                            # (live 11-17).  Only a known preset: an unknown
-                            # model's size would be a guess.
+                            # Count the reused model's video memory under the
+                            # spawn path's key 'llm'.  notify_loaded's own
+                            # allocate('llm') has no budget row, so with no
+                            # row it books 0.0, which left 5.8 GB of a
+                            # running 4B unseen (live 11-17).  A figure this
+                            # process measured
+                            # for this same file around its spawn is what the
+                            # model really takes (a mixture of experts run
+                            # with --cpu-moe: 2.87 GiB for a 21.19 GiB file),
+                            # so it is kept; the file size is booked only
+                            # when nothing was measured for this file.  Only
+                            # a known preset: an unknown model's size would
+                            # be a guess.
                             if _on_gpu and reused_preset is not None:
                                 vm = self._get_vram_manager()
-                                if vm:
+                                if vm and llm_vram_measured_for(vm, served_file):
+                                    logger.info(
+                                        "VRAM allocation kept: llm = %.3fGiB "
+                                        "(reused server, measured when this "
+                                        "process started %s)",
+                                        vm._allocations['llm'], served_file)
+                                elif vm:
                                     _booked = model_size_gib(
                                         reused_preset, model_path=actual_gguf,
                                         installer=self.installer)
-                                    vm._allocations['llm'] = _booked
+                                    book_llm_vram(vm, _booked)
                                     logger.info(
                                         "VRAM allocation registered: llm = "
                                         "%.3fGiB (reused server, from file)",
                                         _booked)
                         except ImportError:
                             pass
+                    else:
+                        logger.info(
+                            f"Reused server on :{_port} answered /v1/models "
+                            f"with HTTP {resp.status_code} (still loading?); "
+                            f"its model is not synced or booked, the next "
+                            f"start that finds this server tries again")
                 except Exception as _sync_err:
-                    logger.debug(f"Catalog sync skipped: {_sync_err}")
+                    logger.info(
+                        f"Reused server on :{_port}: catalog sync and VRAM "
+                        f"booking stopped ({_sync_err!r}); the next start "
+                        f"that finds this server tries again")
 
                 return True
 
@@ -2805,7 +2856,9 @@ class LlamaConfig:
                                     f"post-spawn VRAM read skipped: {_post_err}")
 
                             _booked = _measured_gb if _measured_gb else model_gb
-                            vm._allocations['llm'] = _booked
+                            book_llm_vram(
+                                vm, _booked,
+                                measured_file=model_path if _measured_gb else None)
                             logger.info(
                                 "VRAM allocation registered: llm = %.3fGiB "
                                 "(%s; file is %.3fGiB)", _booked,
