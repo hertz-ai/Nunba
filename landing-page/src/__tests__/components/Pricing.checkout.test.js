@@ -1,6 +1,5 @@
-/* eslint-disable testing-library/no-node-access -- a plan card is a plain div with no role or label, so the test reaches it from its title */
+/* eslint-disable react/display-name -- jest.mock factories return anonymous stand-in components */
 import {
-  PLANS,
   SESSION,
   TX,
   PAY_URL,
@@ -12,6 +11,7 @@ import {
   stubLocation,
   asApp,
   leaveApp,
+  planServer,
 } from '../../testSupport/checkoutKit';
 import Pricing from '../../components/Pricing';
 
@@ -44,30 +44,14 @@ jest.mock(
   '../../utils/encryption',
   () => jest.requireActual('../../testSupport/checkoutKit').encryptionMock
 );
-// mailerApi behaves as axiosFactory's mailer client does: the stored token is
-// attached as a bearer, and the response body is what the call resolves to.  The
-// checkout itself does not use it for the two writes (it needs the HTTP status),
-// but the plan list does, and this keeps the boundary the same for any caller.
-jest.mock('../../services/socialApi', () => {
-  const mailerPost = (path, data) => {
-    const token = global.localStorage.getItem('access_token');
-    return require('axios')
-      .post(
-        `https://mailer.hertzai.com${path}`,
-        data,
-        token ? {headers: {Authorization: `Bearer ${token}`}} : undefined
-      )
-      .then((response) => response.data);
-  };
-  return {
-    mailerApi: {
-      getPlans: jest.fn(),
-      addSubscription: (data) => mailerPost('/addsubscription_by_phone', data),
-      makePayment: (data) => mailerPost('/makepayment', data),
-    },
-    chatApi: {post: jest.fn(() => Promise.resolve({}))},
-  };
-});
+// The plan list is mailerApi.getPlans, answered by the account store model in
+// the kit (planServer): speech plans only by ?plan_id=.  The checkout's two
+// writes do not go through mailerApi (they need the HTTP status), so only
+// getPlans is here.
+jest.mock('../../services/socialApi', () => ({
+  mailerApi: {getPlans: jest.fn()},
+  chatApi: {post: jest.fn(() => Promise.resolve({}))},
+}));
 let mockModalProps = null;
 jest.mock('../../pages/OtpAuthModal', () => (props) => {
   mockModalProps = props;
@@ -88,11 +72,13 @@ const cardOf = (title) => screen.getByText(title).closest('.relative');
 const buttonOf = (title) => within(cardOf(title)).getByRole('button');
 
 let restoreLocation;
+let server;
 beforeEach(() => {
   jest.clearAllMocks();
   localStorage.clear();
   mockModalProps = null;
-  mailerApi.getPlans.mockImplementation(() => Promise.resolve(PLANS));
+  server = planServer();
+  mailerApi.getPlans.mockImplementation(server.getPlans);
   routeAxios();
   restoreLocation = stubLocation();
   Element.prototype.scrollIntoView = jest.fn();
@@ -161,7 +147,7 @@ describe('Plan page checkout: who is paying and in what order', () => {
 
     expect(
       await within(cardOf('Hevolve+')).findByRole('alert')
-    ).toHaveTextContent('No active plan with plan_id 1');
+    ).toHaveTextContent(/not available any more/i);
     expect(postsTo('/makepayment')).toHaveLength(0);
     expect(window.location.href).toBe('http://localhost/Plan');
   });
@@ -182,7 +168,7 @@ describe('Plan page checkout: who is paying and in what order', () => {
 
     expect(
       await within(cardOf('Hevolve+')).findByRole('alert')
-    ).toHaveTextContent('Reload the plan list');
+    ).toHaveTextContent(/price of this plan changed/i);
     expect(window.location.href).toBe('http://localhost/Plan');
   });
 
@@ -358,7 +344,7 @@ describe('Plan page: the free-trial line is shown only where it is true', () => 
   test('the free 14-day plan carries the line, and it is the only card that does', async () => {
     await renderPlan();
     expect(
-      within(cardOf('Speech therapy pilot, 14 days')).getByText(
+      within(cardOf('Hevolve Trial')).getByText(
         'No credit card required. Free 14-days trial'
       )
     ).toBeInTheDocument();
@@ -407,6 +393,99 @@ describe('Plan page: /Plan?plan=<plan_id> preselects a plan', () => {
     await renderPlan('/Plan?plan=abc');
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(document.querySelector('[data-selected="true"]')).toBeNull();
+  });
+});
+
+describe('Plan page: /Plan?plan=<id> reaches a plan the server keeps off the public list', () => {
+  test('a speech plan is fetched by plan_id, listed and marked selected', async () => {
+    await renderPlan('/Plan?plan=22');
+    expect(
+      await screen.findByText('Speech therapy, per child per month')
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(cardOf('Speech therapy, per child per month')).toHaveAttribute(
+        'data-selected',
+        'true'
+      )
+    );
+    expect(server.calls).toContainEqual({plan_id: 22});
+  });
+
+  test('the plan it fetched can be bought: row first, then payment for the per-child price', async () => {
+    signIn();
+    await renderPlan('/Plan?plan=22');
+    fireEvent.click(buttonOf('Speech therapy, per child per month'));
+
+    await waitFor(() => expect(postsTo('/makepayment')).toHaveLength(1));
+    expect(postsTo('/addsubscription_by_phone')[0][1].plan_id).toBe(22);
+    expect(postsTo('/makepayment')[0][1]).toMatchObject({
+      plan_id: 22,
+      amount: 5000,
+      num_students: 1,
+    });
+  });
+
+  test('an id the server does not know is looked up and then reported as not available', async () => {
+    await renderPlan('/Plan?plan=999');
+    expect(await screen.findByRole('status')).toHaveTextContent(/999/);
+    expect(server.calls).toContainEqual({plan_id: 999});
+  });
+
+  test('a plan the public list already has is not fetched a second time', async () => {
+    await renderPlan('/Plan?plan=2');
+    await waitFor(() =>
+      expect(cardOf('Hevolve+ Pro')).toHaveAttribute('data-selected', 'true')
+    );
+    expect(server.calls.filter((c) => c && c.plan_id)).toHaveLength(0);
+  });
+
+  test('a page-hidden plan that the public list carries (price 29) is not fetched a second time either', async () => {
+    await renderPlan('/Plan?plan=5');
+    await waitFor(() =>
+      expect(cardOf('Hevolve Basic')).toHaveAttribute('data-selected', 'true')
+    );
+    expect(server.calls.filter((c) => c && c.plan_id)).toHaveLength(0);
+  });
+
+  test('a server that ignores plan_id still works: the named plan is picked out of the full list', async () => {
+    server = planServer({ignoresPlanId: true});
+    mailerApi.getPlans.mockImplementation(server.getPlans);
+    await renderPlan('/Plan?plan=22');
+    await waitFor(() =>
+      expect(cardOf('Speech therapy, per child per month')).toHaveAttribute(
+        'data-selected',
+        'true'
+      )
+    );
+  });
+});
+
+describe('Plan page checkout: a stalled server', () => {
+  test('a timeout tells the person so and gives the buttons back, with nothing paid', async () => {
+    signIn();
+    const stalled = Object.assign(new Error('timeout of 15000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    routeAxios({sub: () => Promise.reject(stalled)});
+    await renderPlan();
+    fireEvent.click(buttonOf('Hevolve+'));
+
+    expect(
+      await within(cardOf('Hevolve+')).findByRole('alert')
+    ).toHaveTextContent(/too long/i);
+    expect(postsTo('/makepayment')).toHaveLength(0);
+    expect(buttonOf('Hevolve+')).not.toBeDisabled();
+    expect(buttonOf('Hevolve+ Pro')).not.toBeDisabled();
+  });
+});
+
+describe('Plan page: the line under the price', () => {
+  test('names one user, never an empty count', async () => {
+    await renderPlan();
+    expect(
+      within(cardOf('Hevolve+')).getByText(/per month \/ per user/i)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/for\s+user/i)).not.toBeInTheDocument();
   });
 });
 

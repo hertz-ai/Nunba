@@ -2,7 +2,7 @@
  * Jest source-shape smoke for landing-page/src/pages/*.js — batch #44.
  *
  * 21 uncovered pages (OtpAuthModal + chat already have dedicated tests):
- *   AI carousel, controls, agent form, credits, demo, home, signup,
+ *   AI carousel, controls, agent form, demo, home, signup,
  *   OTP, share, speech therapy, trial pricing, about, contact, worker,
  *   key-gen, index-three, institution, login, newHomeforDemo, pricing,
  *   plain-signup, signup-lite.
@@ -19,7 +19,6 @@ const PAGES = [
   'AIAssistantCarousel',
   'Controls',
   'CreateAgentForm',
-  'Credits',
   'Demopage',
   'Home',
   'NewSignup',

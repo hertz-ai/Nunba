@@ -7,12 +7,13 @@ import {
   planIsFreeTrial,
   parsePositiveInt,
   seatsFor,
+  seatsLabel,
   totalFor,
+  fetchPlans,
 } from '../services/planCheckout';
-import {mailerApi} from '../services/socialApi';
 import {logger} from '../utils/logger';
 
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useLayoutEffect, useState} from 'react';
 import ReactGA from 'react-ga';
 import {AiOutlineClose} from 'react-icons/ai';
 import {FiCheckCircle} from 'react-icons/fi';
@@ -26,7 +27,11 @@ export default function SpeechPricing() {
   const [subscriptionData, setSubscriptionData] = useState(null);
   const [numOfStudents, setNumOfStudents] = useState(null);
   const {DataForPricePage} = location.state || {};
-  const [planId, setPlanId] = useState(6);
+  // No plan until the app or the link names one.  It used to default to 6, which
+  // is Hevolve++ and not a speech plan at all, so a visit with no plan sold
+  // Hevolve++ under a "Speech Therapy" heading.  Null first, on purpose: the
+  // prerenderer-style first render has to match a visit with no plan.
+  const [planId, setPlanId] = useState(null);
   const [planMessage, setPlanMessage] = useState(null);
   const {buy, busyPlanId, problem, signIn, closeSignIn} = usePlanCheckout({
     notifyApp: hevolvedroid,
@@ -40,10 +45,12 @@ export default function SpeechPricing() {
     document.documentElement.classList.remove('light');
   }, []);
 
-  useEffect(() => {
+  // A layout effect so a visitor who HAS a plan never sees the "no plan was
+  // chosen" line flash before it is applied.
+  useLayoutEffect(() => {
     // Inside the app, the app says which plan to show.  In a plain browser there
-    // is no window.Handy, so a link says it: /speechtherapy?plan=<plan_id>
-    // (without either, the plan stays the default, 6, as before).
+    // is no window.Handy, so a link says it: /speechtherapy?plan=<plan_id>.
+    // With neither, no plan is chosen and the page says so.
     if (!window.Handy || typeof window.Handy.getPlanDetails !== 'function') {
       const requested = parsePositiveInt(searchParams.get('plan'));
       if (requested !== null) setPlanId(requested);
@@ -57,7 +64,7 @@ export default function SpeechPricing() {
       logger.log(userJson, 'this is the userJson');
 
       // Set plan_id and plan_message in separate states
-      setPlanId(userJson.plan_ID || null);
+      setPlanId(parsePositiveInt(userJson.plan_ID));
       setPlanMessage(userJson.plan_message || null);
     } catch (error) {
       console.error('Error fetching or parsing user details:', error);
@@ -75,10 +82,14 @@ export default function SpeechPricing() {
   }, [DataForPricePage]);
 
   useEffect(() => {
+    // Nothing to look up until a plan is chosen.
+    if (planId === null) return;
     const getSubscriptionsByPlans = async () => {
       try {
-        // mailerApi auto-unwraps response.data
-        const data = await mailerApi.getPlans();
+        // The speech plans are not on the public list: the account store returns
+        // one only for ?plan_id=<id>.  The filter below stays, so a server that
+        // ignores the parameter (and sends everything) still shows just this plan.
+        const data = await fetchPlans(planId);
         logger.log('data', data);
         logger.log('chatbotplandetails', planId);
         logger.log('Type of chatbotDetails.plan_id:', typeof planId);
@@ -150,6 +161,28 @@ export default function SpeechPricing() {
 
       <section className="relative md:pb-24 pb-16">
         <div className="container relative">
+          {planId === null && (
+            <p role="status" className="text-slate-400 text-center mt-6">
+              No plan was chosen for this page. Open the link you were sent, or
+              pick a plan on the{' '}
+              <Link to="/Plan" className="text-white underline">
+                pricing page
+              </Link>
+              .
+            </p>
+          )}
+          {planId !== null &&
+            subscriptionData &&
+            subscriptionData.length === 0 && (
+              <p role="status" className="text-slate-400 text-center mt-6">
+                Plan {planId} is not available. Check the link you were sent,
+                or pick a plan on the{' '}
+                <Link to="/Plan" className="text-white underline">
+                  pricing page
+                </Link>
+                .
+              </p>
+            )}
           <div className="grid lg:grid-cols-3 md:grid-cols-2 grid-cols-1 mt-6 gap-6">
             {subscriptionData &&
               subscriptionData.map((subscription) => (
@@ -175,7 +208,7 @@ export default function SpeechPricing() {
                       </span>
                     </div>
                     <p className="text-slate-400 uppercase text-xs">
-                      per month / For {numOfStudents} User
+                      {seatsLabel(seatsFor(subscription, numOfStudents))}
                     </p>
                     <div className="mt-6">
                       <button

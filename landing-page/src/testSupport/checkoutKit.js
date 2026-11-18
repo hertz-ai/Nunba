@@ -5,10 +5,15 @@
  *
  * Plan rows are in the shape GET /getallplandetails returns.  The first six are
  * the live plan list as it was read on 2026-11-18 (id, title, price, days,
- * type).  The last two are NOT live yet and their ids are invented:
- * 'Speech therapy pilot, 14 days' is what the account store's migration
- * 0eba2ac3f05c seeds (Rs 0, 14 days, business), and 'Hevolve Business' is the
- * title the plan page filters its business mode on.
+ * type).  The rest are NOT live yet and their ids are invented:
+ *   - 'Speech therapy pilot, 14 days' (Rs 0, 14 days, business) and 'Speech
+ *     therapy, per child per month' (Rs 5000, 30 days): the two speech plans the
+ *     account store's migrations seed.  `speech: true` marks the rows that
+ *     account store commit c1eeb2131 leaves OFF the public list (only
+ *     ?plan_id=N returns them); the flag itself is never sent to the page.
+ *   - 'Hevolve Business', the title the plan page filters its business mode on.
+ *   - 'Hevolve Trial' (Rs 0, 14 days, individual): a public free 14-day plan, so
+ *     the free-trial line has a card to appear on now that the pilot is hidden.
  *
  * `axios` is imported here but mocked by each suite's own jest.mock('axios'),
  * so the helpers drive the suite's mock.  The encryption mock every suite uses
@@ -33,9 +38,60 @@ export const PLANS = [
   row(6, 'Hevolve++', 299, 30),
   row(2, 'Hevolve+ Pro', 699, 30),
   {...row(7, 'Custom Credits', 1000, 365), features: []},
-  row(20, 'Speech therapy pilot, 14 days', 0, 14, 'business'),
+  {
+    ...row(20, 'Speech therapy pilot, 14 days', 0, 14, 'business'),
+    speech: true,
+  },
   row(21, 'Hevolve Business', 500, 30, 'business'),
+  {
+    ...row(22, 'Speech therapy, per child per month', 5000, 30, 'business'),
+    speech: true,
+  },
+  row(23, 'Hevolve Trial', 0, 14),
 ];
+
+/**
+ * What GET /getallplandetails answers, as the account store does at c1eeb2131:
+ * the public list leaves the speech plans out, and ?plan_id=N returns plan N
+ * whatever it is (an unknown id returns an empty list).  `ignoresPlanId` models
+ * a server that does not know the parameter (the one live today): it answers the
+ * whole list every time.  `params` is what mailerApi.getPlans was given.
+ */
+export function answerPlans(
+  params,
+  plans = PLANS,
+  {ignoresPlanId = false} = {}
+) {
+  const wanted =
+    params && params.plan_id !== undefined && params.plan_id !== null
+      ? String(params.plan_id)
+      : null;
+  let list = plans;
+  if (!ignoresPlanId) {
+    list =
+      wanted !== null
+        ? plans.filter((p) => String(p.plan_id) === wanted)
+        : plans.filter((p) => !p.speech);
+  }
+  return list.map(({speech, ...rest}) => rest);
+}
+
+/**
+ * That server as mailerApi.getPlans.  Use:
+ *   const server = planServer();
+ *   mailerApi.getPlans.mockImplementation(server.getPlans);
+ * `server.calls` is what each call was given, in order.
+ */
+export function planServer({plans = PLANS, ignoresPlanId = false} = {}) {
+  const calls = [];
+  return {
+    calls,
+    getPlans: (params) => {
+      calls.push(params === undefined ? null : params);
+      return Promise.resolve(answerPlans(params, plans, {ignoresPlanId}));
+    },
+  };
+}
 
 export const SESSION = {token: 'tok-test-123', phone: '9000000001'};
 

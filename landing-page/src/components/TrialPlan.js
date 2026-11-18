@@ -5,9 +5,10 @@ import {
   FREE_TRIAL_NOTE,
   planIsFreeTrial,
   seatsFor,
+  seatsLabel,
   totalFor,
+  fetchPlans,
 } from '../services/planCheckout';
-import {mailerApi} from '../services/socialApi';
 
 import React, {useState, useEffect} from 'react';
 import ReactGA from 'react-ga';
@@ -42,8 +43,7 @@ export default function TrialPlan() {
   useEffect(() => {
     const getSubscriptionsByPlans = async () => {
       try {
-        // mailerApi auto-unwraps response.data
-        const data = await mailerApi.getPlans();
+        const data = await fetchPlans();
 
         const showHevolveBusiness =
           DataForPricePage &&
@@ -126,7 +126,7 @@ export default function TrialPlan() {
                     </span>
                   </div>
                   <p className="text-slate-400 uppercase text-xs">
-                    per month/ For {numOfStudents} User
+                    {seatsLabel(seatsFor(subscription, numOfStudents))}
                   </p>
                   <div className="mt-6">
                     {subscription.price === 0 ? (
@@ -241,7 +241,7 @@ export default function TrialPlan() {
                     </span>
                   </div>
                   <p className="text-slate-400 uppercase text-xs">
-                    per month/ For {numOfStudents} User
+                    {seatsLabel(seatsFor(subscription, numOfStudents))}
                   </p>
                   <div className="mt-6">
                     {subscription.price === 0 ? (

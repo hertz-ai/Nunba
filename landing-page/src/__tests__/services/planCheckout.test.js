@@ -19,10 +19,13 @@ import {
   seatsFor,
   totalFor,
   FREE_TRIAL_NOTE,
+  fetchPlans,
+  seatsLabel,
 } from '../../services/planCheckout';
 
 jest.mock('axios', () => ({post: jest.fn(), get: jest.fn()}));
 jest.mock('../../services/socialApi', () => ({
+  mailerApi: {getPlans: jest.fn()},
   chatApi: {post: jest.fn(() => Promise.resolve({}))},
 }));
 jest.mock('uuid', () => ({v4: () => '11111111-2222-3333-4444-555555555555'}));
@@ -113,7 +116,7 @@ describe('startCheckout', () => {
     });
     const refused = await startCheckout({plan: PAID});
     expect(refused.status).toBe('error');
-    expect(refused.message).toMatch(/does not belong/);
+    expect(refused.message).toMatch(/different account|not the account/i);
     expect(postsTo('/makepayment')).toHaveLength(0);
   });
 
@@ -259,5 +262,136 @@ describe('plan helpers', () => {
     expect(seatsFor(PAID, 3)).toBeNull();
     expect(totalFor(BUSINESS, 3)).toBe(1500);
     expect(totalFor(PAID, null)).toBe(199);
+  });
+});
+
+describe('startCheckout: a stalled server', () => {
+  test('both calls carry a timeout, so a server that never answers cannot hold the buttons for ever', async () => {
+    signIn();
+    await startCheckout({plan: PAID});
+    const timeouts = [
+      postsTo('/addsubscription_by_phone')[0][2].timeout,
+      postsTo('/makepayment')[0][2].timeout,
+    ];
+    for (const t of timeouts) {
+      expect(typeof t).toBe('number');
+      expect(t).toBeGreaterThan(0);
+      expect(t).toBeLessThanOrEqual(30000);
+    }
+  });
+
+  test.each([
+    ['the row', 'sub'],
+    ['the payment', 'pay'],
+  ])(
+    'a timeout while asking for %s says the server took too long and that nothing was charged',
+    async (_what, leg) => {
+      signIn();
+      const stalled = Object.assign(new Error('timeout of 15000ms exceeded'), {
+        code: 'ECONNABORTED',
+      });
+      routeAxios({[leg]: () => Promise.reject(stalled)});
+      const outcome = await startCheckout({plan: PAID});
+      expect(outcome.status).toBe('error');
+      expect(outcome.message).toMatch(/too long/i);
+      expect(outcome.message).toMatch(/nothing was charged/i);
+    }
+  );
+});
+
+describe('startCheckout: a refusal is worded for the buyer', () => {
+  // The server's own refusal text names its API (plan_id, quantity,
+  // /addsubscription_by_phone).  Each real text of account store c1eeb2131 that a
+  // buyer can reach is turned into words about the buyer's situation.
+  test.each([
+    [
+      'sub',
+      400,
+      'The amount sent (199) is not the price of this plan: 249 for quantity 1. Reload the plan list and send quantity.',
+      /price of this plan changed/i,
+    ],
+    [
+      'sub',
+      403,
+      'This access token does not belong to the account with that phone number. A subscription can only be added for the signed-in user.',
+      /different account|not the account/i,
+    ],
+    [
+      'pay',
+      400,
+      'No pending subscription for this transaction, user and plan. Create it first with POST /addsubscription_by_phone (signed in) using the same transaction_id, plan_id and phone number, then call makepayment.',
+      /could not start this order/i,
+    ],
+    [
+      'sub',
+      400,
+      'The mobile number must be at least 10 characters (with country code if it has one); sign in again so the app can send it.',
+      /phone number.*sign in again/i,
+    ],
+    [
+      'pay',
+      400,
+      'No account has that mobile number. Sign up first, then pay.',
+      /could not find one account/i,
+    ],
+    [
+      'sub',
+      400,
+      'No active plan with plan_id 7. Pick a plan_id from GET /getallplandetails.',
+      /not available any more/i,
+    ],
+    ['pay', 400, 'quantity must be between 1 and 1000.', /between 1 and 1000/i],
+  ])('%s %i: %s', async (leg, status, detail, expected) => {
+    signIn();
+    routeAxios({[leg]: () => Promise.reject(httpError(status, detail))});
+    const outcome = await startCheckout({plan: PAID});
+    expect(outcome.status).toBe('error');
+    expect(outcome.message).toMatch(expected);
+    expect(outcome.message).not.toMatch(
+      /plan_id|quantity|num_students|transaction_id|makepayment|addsubscription|\bPOST\b|\bGET\b/
+    );
+  });
+
+  test("a refusal that is not one of those keeps the server's own words", async () => {
+    signIn();
+    routeAxios({
+      sub: () =>
+        Promise.reject(httpError(400, 'Something the server worded itself.')),
+    });
+    expect((await startCheckout({plan: PAID})).message).toBe(
+      'Something the server worded itself.'
+    );
+  });
+});
+
+describe('fetchPlans: the plan list, or one plan by id', () => {
+  const {mailerApi} = require('../../services/socialApi');
+
+  test('without an id it asks for the public list', async () => {
+    mailerApi.getPlans.mockResolvedValueOnce([PAID]);
+    expect(await fetchPlans()).toEqual([PAID]);
+    expect(mailerApi.getPlans).toHaveBeenCalledWith(undefined);
+  });
+
+  test('with an id it sends plan_id, the only way to reach a plan the public list leaves out', async () => {
+    mailerApi.getPlans.mockResolvedValueOnce([BUSINESS]);
+    await fetchPlans(22);
+    expect(mailerApi.getPlans).toHaveBeenCalledWith({plan_id: 22});
+  });
+
+  test('a failure is an error the caller can show or ignore', async () => {
+    mailerApi.getPlans.mockRejectedValueOnce(new Error('503'));
+    await expect(fetchPlans()).rejects.toThrow(/503/);
+  });
+});
+
+describe('seatsLabel: what the card says under the price', () => {
+  test('a single person, nobody, or an unknown count all read "per user"', () => {
+    for (const seats of [null, undefined, 0, 1]) {
+      expect(seatsLabel(seats)).toBe('per month / per user');
+    }
+  });
+  test('several seats read "for N users"', () => {
+    expect(seatsLabel(3)).toBe('per month / for 3 users');
   });
 });
