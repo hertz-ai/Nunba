@@ -1678,8 +1678,11 @@ def tts_install_voice():
             # Sync catalog download state
             try:
                 from models.orchestrator import get_orchestrator
+                from tts.package_installer import registry_engine_id
                 backend = info.get('backend', '')
-                get_orchestrator().notify_downloaded(ModelType.TTS, backend)
+                # The catalog row is named by the registry id ('f5' is f5_tts).
+                get_orchestrator().notify_downloaded(
+                    ModelType.TTS, registry_engine_id(backend))
             except Exception:
                 pass
             return jsonify({"success": True, "message": f"Voice {voice_id} installed"})
@@ -1791,7 +1794,9 @@ def tts_setup_engine():
     if ok:
         try:
             from models.orchestrator import get_orchestrator
-            get_orchestrator().notify_downloaded(ModelType.TTS, backend)
+            from tts.package_installer import registry_engine_id
+            get_orchestrator().notify_downloaded(
+                ModelType.TTS, registry_engine_id(backend))
         except Exception:
             pass
     return jsonify({
