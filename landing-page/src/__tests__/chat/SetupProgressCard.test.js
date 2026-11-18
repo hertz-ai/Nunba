@@ -22,7 +22,9 @@
 import React from 'react';
 import {act, render, screen} from '@testing-library/react';
 
-import SetupProgressCard, {STALE_AFTER_MS, withSetupProgress} from '../../pages/chat/SetupProgressCard';
+import SetupProgressCard, {
+  STALE_AFTER_MS, pollBootstrapStatus, withBootstrapStatus, withSetupProgress,
+} from '../../pages/chat/SetupProgressCard';
 
 const CARD = 'setup-progress-card';
 
@@ -258,5 +260,227 @@ describe('withSetupProgress (the setup_progress reducer)', () => {
     const [card] = [tts, end, more].reduce((prev, e) => withSetupProgress(prev, e, NOW), []);
     expect(card.steps).toEqual([tts, end, more]);
     expect(card.isComplete).toBe(false);
+  });
+});
+
+/*
+ * First-run Auto Setup (Demopage handleSetupLlm) polls /api/ai/bootstrap/status
+ * once a second and shows one 'AI models' card.  The replies below have the
+ * shape models/language_bootstrap.py BootstrapState.to_dict() returns: steps by
+ * model type, each pending | selecting | downloading | loading | ready |
+ * skipped | failed, and phase detecting | planning | running | done.
+ */
+const BOOT_STEP = (model_type, model_name, status, detail = '') => ({
+  model_type, model_id: null, model_name, status, detail, vram_gb: 0, run_mode: '',
+});
+const BOOT = (phase, steps) => ({
+  language: 'en', phase, gpu_name: 'CPU only', vram_total_gb: 0, vram_free_gb: 0,
+  steps: Object.fromEntries(steps.map((s) => [s.model_type, s])), error: null, elapsed_s: 1,
+});
+const PLANNED = BOOT('running', [
+  BOOT_STEP('stt', 'Moonshine Base', 'selecting', 'Selected: Moonshine Base'),
+  BOOT_STEP('tts', 'Piper', 'pending'),
+  BOOT_STEP('llm', '', 'loading'),
+]);
+// STT failed and the others still load: the card reads Failed and offers its
+// dismiss while the run goes on.
+const STT_FAILED = BOOT('running', [
+  BOOT_STEP('stt', 'Moonshine Base', 'failed', 'Load failed (insufficient resources?)'),
+  BOOT_STEP('tts', 'Piper', 'loading', 'Starting Piper...'),
+  BOOT_STEP('llm', 'Qwen3-4B', 'loading', 'Starting Qwen3-4B...'),
+]);
+const DONE = BOOT('done', [
+  BOOT_STEP('stt', 'Moonshine Base', 'ready', 'Moonshine Base (cpu)'),
+  BOOT_STEP('tts', 'Piper', 'ready', 'Piper (cpu)'),
+  BOOT_STEP('llm', 'Qwen3-4B', 'ready', 'Qwen3-4B (gpu)'),
+]);
+
+const bootstrapCards = (messages) => messages.filter(
+  (m) => m.type === 'setup_progress' && m.jobType === 'bootstrap');
+
+describe('withBootstrapStatus (the Auto Setup poll reducer)', () => {
+  const NOW = new Date('2026-11-11T09:00:00Z');
+  const LATER = new Date('2026-11-11T09:00:05Z');
+  const NEXT_DAY = new Date('2026-11-12T10:00:00Z');
+
+  it('opens the AI models card, dated now, from the reply steps', () => {
+    const [card] = withBootstrapStatus([], PLANNED, NOW);
+    expect(card).toEqual({
+      type: 'setup_progress', jobType: 'bootstrap', isComplete: false, timestamp: NOW,
+      steps: [
+        {job_type: 'stt', message: 'Moonshine Base: Selected: Moonshine Base', status: 'selecting'},
+        {job_type: 'tts', message: 'Piper: pending', status: 'pending'},
+        {job_type: 'llm', message: 'llm: loading', status: 'loading'},
+      ],
+    });
+  });
+
+  it('replaces the steps with each reply, keeps the card date and records the change', () => {
+    const chat = withBootstrapStatus(withBootstrapStatus([], PLANNED, NOW), STT_FAILED, LATER);
+    expect(bootstrapCards(chat)).toHaveLength(1);
+    const [card] = bootstrapCards(chat);
+    expect(card.steps.map((s) => s.message)).toEqual([
+      'Moonshine Base: Load failed (insufficient resources?)',
+      'Piper: Starting Piper...',
+      'Qwen3-4B: Starting Qwen3-4B...',
+    ]);
+    expect(card.timestamp).toBe(NOW);
+    expect(card.updatedAt).toBe(LATER);
+  });
+
+  it('is complete when the phase is done, and not before', () => {
+    const running = withBootstrapStatus([], PLANNED, NOW);
+    expect(bootstrapCards(running)[0].isComplete).toBe(false);
+    const done = withBootstrapStatus(running, DONE, LATER);
+    expect(bootstrapCards(done)[0].isComplete).toBe(true);
+  });
+
+  it('a new run starts a card that dismissed itself over: shown again, dated now', () => {
+    // Ready, then dismissed by itself 4 s later (SetupProgressCard).
+    const ended = withBootstrapStatus(withBootstrapStatus([], PLANNED, NOW), DONE, LATER)
+      .map((m) => (m.type === 'setup_progress' ? {...m, dismissed: true} : m));
+    const [card] = bootstrapCards(withBootstrapStatus(ended, PLANNED, NEXT_DAY, true));
+    expect(card).toMatchObject({dismissed: false, isComplete: false,
+      timestamp: NEXT_DAY, updatedAt: NEXT_DAY});
+    expect(card.steps.map((s) => s.status)).toEqual(['selecting', 'pending', 'loading']);
+  });
+
+  it('a new run shows a dismissed card restored from the stored chat again', () => {
+    // Stored mid-run (times as ISO strings), dismissed after a step failed.
+    const stored = JSON.parse(JSON.stringify(
+      withBootstrapStatus([], STT_FAILED, NOW).map((m) => ({...m, dismissed: true}))));
+    const [card] = bootstrapCards(withBootstrapStatus(stored, PLANNED, NEXT_DAY, true));
+    expect(card.dismissed).toBe(false);
+    expect(card.timestamp).toBe(NEXT_DAY);
+  });
+
+  it('a new run dates a finished card that is still on screen now', () => {
+    const finished = withBootstrapStatus(withBootstrapStatus([], PLANNED, NOW), DONE, LATER);
+    const [card] = bootstrapCards(withBootstrapStatus(finished, PLANNED, NEXT_DAY, true));
+    expect(card.timestamp).toBe(NEXT_DAY);
+    expect(card.isComplete).toBe(false);
+  });
+
+  it('within a run, a card dismissed after a step failed stays dismissed', () => {
+    const dismissed = withBootstrapStatus([], STT_FAILED, NOW)
+      .map((m) => ({...m, dismissed: true}));
+    const [card] = bootstrapCards(withBootstrapStatus(dismissed, STT_FAILED, LATER));
+    expect(card.dismissed).toBe(true);
+    expect(card.timestamp).toBe(NOW);
+  });
+
+  it('keeps every other message where it is', () => {
+    const chat = [{type: 'user', content: 'set up'}, {type: 'system', content: 'Setting up AI models'}];
+    const out = withBootstrapStatus(chat, PLANNED, NOW);
+    expect(out.slice(0, 2)).toEqual(chat);
+    expect(out).toHaveLength(3);
+  });
+});
+
+describe('pollBootstrapStatus (the Auto Setup poll Demopage runs)', () => {
+  // The poll with its effects in hand: the chat as a value, replies in order.
+  function harness(replies, {messages = [], tries = 120, beforeReply = () => {}} = {}) {
+    const h = {
+      messages,
+      fetches: 0,
+      onDone: jest.fn(),
+      onTimeout: jest.fn(),
+      wait: jest.fn(() => Promise.resolve()),
+    };
+    h.run = () => pollBootstrapStatus({
+      fetchStatus: async () => {
+        const reply = replies[Math.min(h.fetches, replies.length - 1)];
+        h.fetches += 1;
+        beforeReply(h);
+        if (reply instanceof Error) throw reply;
+        return reply;
+      },
+      setMessages: (update) => { h.messages = update(h.messages); },
+      wait: h.wait,
+      onDone: h.onDone,
+      onTimeout: h.onTimeout,
+      tries,
+    });
+    return h;
+  }
+
+  it('waits a second before each request and ends on phase done with that reply', async () => {
+    const h = harness([BOOT('detecting', []), PLANNED, STT_FAILED, DONE]);
+    await h.run();
+    expect(h.fetches).toBe(4);
+    expect(h.wait).toHaveBeenCalledTimes(4);
+    expect(h.wait).toHaveBeenCalledWith(1000);
+    expect(h.onDone).toHaveBeenCalledTimes(1);
+    expect(h.onDone).toHaveBeenCalledWith(DONE);
+    expect(h.onTimeout).not.toHaveBeenCalled();
+    const cards = bootstrapCards(h.messages);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].isComplete).toBe(true);
+    expect(cards[0].steps.map((s) => s.status)).toEqual(['ready', 'ready', 'ready']);
+  });
+
+  it('shows nothing for a reply with no step under way, and skips a failed request', async () => {
+    const allPending = BOOT('planning', [BOOT_STEP('stt', 'Moonshine Base', 'pending')]);
+    let cardsBeforeFirstStep = null;
+    const h = harness([new Error('offline'), allPending, BOOT('detecting', []), STT_FAILED, DONE], {
+      beforeReply: (state) => {
+        if (state.fetches === 4) cardsBeforeFirstStep = bootstrapCards(state.messages).length;
+      },
+    });
+    await h.run();
+    expect(cardsBeforeFirstStep).toBe(0);
+    expect(h.fetches).toBe(5);
+    expect(h.onDone).toHaveBeenCalledWith(DONE);
+    expect(bootstrapCards(h.messages)).toHaveLength(1);
+  });
+
+  it('gives up after its tries and says so', async () => {
+    const h = harness([STT_FAILED], {tries: 3});
+    await h.run();
+    expect(h.fetches).toBe(3);
+    expect(h.onTimeout).toHaveBeenCalledTimes(1);
+    expect(h.onDone).not.toHaveBeenCalled();
+  });
+
+  it('starts the run with its first reply, and a card dismissed later in the run stays dismissed', async () => {
+    // The last run's card: finished, then dismissed by itself.
+    const lastRun = [{type: 'setup_progress', jobType: 'bootstrap', steps: [], isComplete: true,
+      dismissed: true, timestamp: '2026-11-04T07:52:10.759Z'}];
+    // Read between the first and second reply (the poll swallows a throw from
+    // its request, so this only records): the card is back for this run and
+    // reads Failed; then the person dismisses it.
+    let seen = null;
+    const h = harness([STT_FAILED, STT_FAILED, DONE], {
+      messages: lastRun,
+      beforeReply: (state) => {
+        if (state.fetches !== 2) return;
+        seen = bootstrapCards(state.messages).map((c) => ({dismissed: c.dismissed, timestamp: c.timestamp}));
+        state.messages = state.messages.map((m) => ({...m, dismissed: true}));
+      },
+    });
+    await h.run();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].dismissed).toBe(false);
+    expect(seen[0].timestamp).toBeInstanceOf(Date);
+    const [card] = bootstrapCards(h.messages);
+    expect(card.dismissed).toBe(true);
+    expect(card.timestamp).toBe(seen[0].timestamp);
+    expect(card.isComplete).toBe(true);
+  });
+});
+
+describe("Demopage's Auto Setup runs this poll", () => {
+  const fs = require('fs');
+  const path = require('path');
+  const src = fs.readFileSync(path.resolve(__dirname, '../../pages/Demopage.js'), 'utf-8');
+  const start = src.indexOf('const handleSetupLlm = useCallback');
+  const handler = src.slice(start, src.indexOf('const handleConfigureLlm', start));
+
+  it('calls pollBootstrapStatus and builds no AI models card of its own', () => {
+    expect(start).toBeGreaterThan(-1);
+    expect(src).toMatch(/import \{[^}]*\bpollBootstrapStatus\b[^}]*\} from '\.\/chat\/SetupProgressCard'/);
+    expect(handler).toMatch(/pollBootstrapStatus\(\{/);
+    expect(handler).not.toMatch(/for \(let i = 0/);
+    expect(src).not.toMatch(/jobType: 'bootstrap'/);
   });
 });

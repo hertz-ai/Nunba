@@ -118,6 +118,15 @@ def _init_db():
             CREATE INDEX IF NOT EXISTS idx_conv_topic ON conversations(topic);
             CREATE INDEX IF NOT EXISTS idx_conv_request_id ON conversations(request_id);
         """)
+        # actions.source (2026-11-10): where a caption's frame came from, as
+        # VisionService states it ('camera|ws:127.0.0.1:61167',
+        # 'screen|desktop-capture').  A row carried only labels the producer
+        # chose, so a caption could not be traced to a camera, a screen grab
+        # or a connection (owner: "my images do not have source provenance?").
+        # Nullable and added in place: older rows and every reader are
+        # untouched.
+        if 'source' not in {r[1] for r in conn.execute("PRAGMA table_info(actions)")}:
+            conn.execute("ALTER TABLE actions ADD COLUMN source TEXT")
         conn.commit()
         # Teacher avatars and their voice samples (replace cloud
         # /upload_teacher_avatar, /upload_voice_sample, /get_image_by_id and
@@ -212,14 +221,16 @@ def create_or_get_actions():
     conv_id = data.get('conv_id')
     zeroshot_label = data.get('zeroshot_label', '')
     gpt3_label = data.get('gpt3_label', '')
+    # Where the caption's frame came from, when the producer states it.
+    source = str(data.get('source') or '')[:200] or None
 
     conn = _get_db()
     try:
         now = datetime.now(UTC).isoformat()
         cursor = conn.execute(
-            """INSERT INTO actions (conv_id, user_id, action, zeroshot_label, gpt3_label, created_date)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (conv_id, user_id, action_text, zeroshot_label, gpt3_label, now)
+            """INSERT INTO actions (conv_id, user_id, action, zeroshot_label, gpt3_label, created_date, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (conv_id, user_id, action_text, zeroshot_label, gpt3_label, now, source)
         )
         conn.commit()
         action_id = cursor.lastrowid
@@ -473,8 +484,14 @@ def _get_prompts_dir():
 #   {pid}_{flow}_{n}      per-action record written as each action is authored
 #   {pid}_{flow}_recipe   the assembled recipe
 #   {pid}_personality     the persona blob
-#   {pid}.proposed.rN     a proposal variant
+#   {pid}.proposed        the plan waiting on its creator's approval card
+#   {pid}.proposed.rN     a plan of one auto-review round
 #   {pid}_vlm_agent       the vlm agent record
+#
+# The two plan shapes are HARTOS's to name (core.prompt_files.
+# proposed_plan_filename), so they are told apart by HARTOS's own
+# is_proposed_plan_filename, not by a second copy of the pattern here: the
+# copy here missed {pid}.proposed and listed the waiting plan as an agent.
 #
 # Measured live 2026-09-06: GET /getprompt_all/ returned 1,844 rows of which
 # 1,161 (63%) were these files — 588 per-action, 386 personality, 187 proposal
@@ -500,7 +517,6 @@ _ARTIFACT_STEM_RE = re.compile(
     r'|_recipe'              # assembled recipe
     r'|_vlm_agent'           # vlm agent record
     r'|_personality$'        # personality blob
-    r'|\.proposed\.r\d+$'    # proposal variant
 )
 
 
@@ -512,6 +528,9 @@ def _is_agent_record(path):
     pipeline actually writes.
     """
     if path.suffix != '.json':
+        return False
+    from core.prompt_files import is_proposed_plan_filename
+    if is_proposed_plan_filename(path.name):
         return False
     return not _ARTIFACT_STEM_RE.search(path.stem)
 

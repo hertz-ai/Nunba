@@ -353,6 +353,10 @@ _optional_packages = [
     "langchain", "langchain_core", "langchain_community", "langchain_openai",
     "cryptography", "sentry_sdk",
     "google.auth", "google.oauth2",
+    # ddgs (keyless web search) finds its engines with pkgutil at run time,
+    # which the tracer cannot follow: traced only, the frozen copy had no
+    # engine and every search failed (Windows build 75, 16 Nov 2026).
+    "ddgs",
     # app.py's native_camera_start/native_mic_start (WKWebView TCC fallback,
     # own process identity for camera/mic) — unlike Windows/Linux, macOS
     # doesn't exclude cv2 (no PIL.ImageGrab fallback available) and
