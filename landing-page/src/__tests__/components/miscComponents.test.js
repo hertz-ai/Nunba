@@ -3,7 +3,7 @@
  *
  * Targets common public-facing pages + shared components:
  *   AppContext, Client-Side, CoolParallax, DeleteUserPage,
- *   PaymentFailure, PaymentSuccess, PendingPaymentPage, Plan,
+ *   PaymentFailure, PaymentSuccess, PendingPaymentPage,
  *   Pricing, ProtectedRoute, PupitAi, PupitCard, PupitCardContainer,
  *   RegisterClient, RoleGuard, SecureInputModal, Spacer, TrialPlan
  *
@@ -19,7 +19,6 @@ const COMPONENTS = [
   'PaymentFailure',
   'PaymentSuccess',
   'PendingPaymentPage',
-  'Plan',
   'Pricing',
   'ProtectedRoute',
   'PupitAi',
