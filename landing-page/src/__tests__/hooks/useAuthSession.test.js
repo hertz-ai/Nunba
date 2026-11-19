@@ -656,3 +656,52 @@ describe('writers — Phase 4 centralised mutation surface', () => {
     });
   });
 });
+
+describe('the sign-in phone the checkout needs', () => {
+  const {
+    readSessionPhone,
+    setSessionPhone,
+  } = require('../../hooks/useAuthSession');
+
+  beforeEach(() => localStorage.clear());
+
+  test('setAuthFromOtp keeps the phone encrypted, and readSessionPhone gives it back', () => {
+    setAuthFromOtp({
+      access_token: 'kong-bearer-xyz',
+      user_id: 10202,
+      phone_number: '9000000001',
+    });
+    expect(localStorage.getItem('phone_number')).toBe(encrypt('9000000001'));
+    expect(readSessionPhone()).toBe('9000000001');
+  });
+
+  test('a sign-in whose response has no phone removes one left by an earlier account', () => {
+    localStorage.setItem('phone_number', encrypt('9000000099'));
+    setAuthFromOtp({access_token: 'kong-bearer-xyz', user_id: 10202});
+    expect(localStorage.getItem('phone_number')).toBeNull();
+    expect(readSessionPhone()).toBeNull();
+  });
+
+  test('clearAuth removes the phone with the rest of the sign-in', () => {
+    setAuthFromOtp({access_token: 'kong-bearer-xyz', user_id: 10202});
+    // Seeded directly, so this fails on a clearAuth that forgets the phone key.
+    localStorage.setItem('phone_number', encrypt('9000000001'));
+    clearAuth();
+    expect(localStorage.getItem('phone_number')).toBeNull();
+  });
+
+  test.each([[undefined], [null], [''], ['   ']])(
+    'setSessionPhone(%j) stores nothing',
+    (phone) => {
+      localStorage.setItem('phone_number', encrypt('9000000099'));
+      setSessionPhone(phone);
+      expect(localStorage.getItem('phone_number')).toBeNull();
+    }
+  );
+
+  test('a phone that does not decrypt reads as none', () => {
+    localStorage.setItem('phone_number', 'not-ciphertext');
+    expect(readSessionPhone()).toBeNull();
+  });
+});
+

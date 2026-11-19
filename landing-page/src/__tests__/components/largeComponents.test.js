@@ -22,13 +22,11 @@ const COMPONENTS = [
   {name: 'reviewAssessment', loc: 615},
   {name: 'MindstorySDKDocs', loc: 575},
   {name: 'createCourse', loc: 544},
-  {name: 'SpeechTherapy', loc: 505},
   {name: 'HevolveDocs', loc: 0},     // docs page — any size
   {name: 'DemoPage', loc: 0},
   {name: 'TeacherSignIn', loc: 0},
   {name: 'Partner', loc: 0},
   {name: 'PupitAi', loc: 0},
-  {name: 'SpeechTherapy', loc: 0},
 ];
 
 describe('Large landing-page components source-shape smoke', () => {

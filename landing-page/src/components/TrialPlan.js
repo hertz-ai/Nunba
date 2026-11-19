@@ -1,23 +1,32 @@
-import {mailerApi} from '../services/socialApi';
+import CheckoutSignIn from './CheckoutSignIn';
+
+import usePlanCheckout from '../hooks/usePlanCheckout';
+import {
+  FREE_TRIAL_NOTE,
+  planIsFreeTrial,
+  seatsFor,
+  seatsLabel,
+  totalFor,
+  fetchPlans,
+} from '../services/planCheckout';
 
 import React, {useState, useEffect} from 'react';
 import ReactGA from 'react-ga';
 import {AiOutlineClose} from 'react-icons/ai';
 import {FiCheckCircle} from 'react-icons/fi';
-import {useNavigate, useLocation} from 'react-router-dom';
+import {useLocation} from 'react-router-dom';
 import {Swiper as SwiperComponent, SwiperSlide} from 'swiper/react';
-import {v4 as uuidv4} from 'uuid';
 import 'swiper/css';
 
 export default function TrialPlan() {
-  const navigate = useNavigate();
   const location = useLocation();
-  const [transactionId, setTransactionId] = useState('');
   const [hevolvedroid, setIshevolvedroid] = useState(false); // Default to false
   const [TrialPlan, setTrialPlan] = useState([]);
   const {DataForPricePage} = location.state || {};
   const [numOfStudents, setNumOfStudents] = useState(null);
-  const [selectedSubscription, setSelectedSubscription] = useState(null);
+  const {buy, busyPlanId, problem, signIn, closeSignIn} = usePlanCheckout({
+    notifyApp: hevolvedroid,
+  });
   const [subscriptionData, setSubscriptionData] = useState([]);
   const [activeSlide, setActiveSlide] = useState(0);
   useEffect(() => {
@@ -34,8 +43,7 @@ export default function TrialPlan() {
   useEffect(() => {
     const getSubscriptionsByPlans = async () => {
       try {
-        // mailerApi auto-unwraps response.data
-        const data = await mailerApi.getPlans();
+        const data = await fetchPlans();
 
         const showHevolveBusiness =
           DataForPricePage &&
@@ -69,66 +77,21 @@ export default function TrialPlan() {
     getSubscriptionsByPlans();
   }, [DataForPricePage, hevolvedroid]);
 
+  // The whole checkout (bearer token, phone from the signed-in session,
+  // subscription row first and then payment at the server's own price) is
+  // usePlanCheckout; after signing in the person comes back to /Plan?plan=<id>.
   const handlePayNowClick = (subscription) => {
-    setSelectedSubscription(subscription);
-    const uuid = uuidv4();
-    const truncatedUuid = uuid.replace(/-/g, '').substring(0, 36);
-    const transactionid = 'T' + truncatedUuid;
-    setTransactionId(transactionid);
-    if (hevolvedroid) {
-      try {
-        const userDetails = window.Handy.getUserDetails();
-        const userJson = JSON.parse(userDetails);
-        DataForPricePage = userJson;
-      } catch (error) {
-        console.error('Error fetching user details:', error);
-      }
-      const myVariable = {
-        TRANSACTION_ID: transactionId,
-      };
-      const jsTransaction = JSON.stringify(myVariable);
-      window.Handy.setTransactionId(jsTransaction);
-    }
-
-    const postData = {
-      phone_number: DataForPricePage ? DataForPricePage.phone_number : '',
-      plan_id: subscription.plan_id,
-      transaction_id: transactionid,
-    };
-
-    mailerApi.addSubscription(postData).catch((error) => {
-      console.error('Payment error:', error);
-    });
-
-    const payload = {
-      mobile_number: DataForPricePage ? DataForPricePage.phone_number : '',
-      plan_id: subscription.plan_id,
-      transaction_id: transactionid,
-      amount: numOfStudents
-        ? subscription.price * numOfStudents
-        : subscription.price,
-    };
-
-    // mailerApi auto-unwraps response.data
-    mailerApi
-      .makePayment(payload)
-      .then((data) => {
-        const redirect = data;
-        window.location.href = redirect;
-      })
-      .catch((error) => {
-        console.error('Error:', error);
-      });
-
     ReactGA.event({
       category: 'Button',
       action: 'Click',
       label: 'Payment Page Click',
     });
+    buy(subscription, {numStudents: seatsFor(subscription, numOfStudents)});
   };
 
   return (
     <div>
+      <CheckoutSignIn signIn={signIn} onClose={closeSignIn} />
       {hevolvedroid ? (
         <div>
           <SwiperComponent
@@ -156,18 +119,20 @@ export default function TrialPlan() {
                   <div className="flex mt-4">
                     <span className="text-lg font-semibold">₹</span>
                     <span className="text-5xl font-semibold mb-0 ms-1">
-                      {numOfStudents
-                        ? subscription.price * numOfStudents
-                        : subscription.price}
+                      {totalFor(
+                        subscription,
+                        seatsFor(subscription, numOfStudents)
+                      )}
                     </span>
                   </div>
                   <p className="text-slate-400 uppercase text-xs">
-                    per month/ For {numOfStudents} User
+                    {seatsLabel(seatsFor(subscription, numOfStudents))}
                   </p>
                   <div className="mt-6">
                     {subscription.price === 0 ? (
                       <button
                         aria-label="Register For Free"
+                        disabled={busyPlanId !== null}
                         style={{
                           background:
                             'linear-gradient(to right, #00e89d, #0078ff)',
@@ -182,6 +147,7 @@ export default function TrialPlan() {
                     ) : (
                       <button
                         aria-label="Pay Now"
+                        disabled={busyPlanId !== null}
                         onClick={() => handlePayNowClick(subscription)}
                         style={{
                           background:
@@ -194,9 +160,16 @@ export default function TrialPlan() {
                         Pay Now
                       </button>
                     )}
-                    <p className="text-slate-400 text-sm mt-3">
-                      No credit card required. Free 14-days trial
-                    </p>
+                    {planIsFreeTrial(subscription) && (
+                      <p className="text-slate-400 text-sm mt-3">
+                        {FREE_TRIAL_NOTE}
+                      </p>
+                    )}
+                    {problem && problem.planId === subscription.plan_id && (
+                      <p role="alert" className="text-red-400 text-sm mt-3">
+                        {problem.message}
+                      </p>
+                    )}
                   </div>
                   <div className="p-6 bg-gray-50 dark:bg-slate-800">
                     <ul className="list-none text-slate-400">
@@ -261,18 +234,20 @@ export default function TrialPlan() {
                   <div className="flex mt-4">
                     <span className="text-lg font-semibold">₹</span>
                     <span className="text-5xl font-semibold mb-0 ms-1">
-                      {numOfStudents
-                        ? subscription.price * numOfStudents
-                        : subscription.price}
+                      {totalFor(
+                        subscription,
+                        seatsFor(subscription, numOfStudents)
+                      )}
                     </span>
                   </div>
                   <p className="text-slate-400 uppercase text-xs">
-                    per month/ For {numOfStudents} User
+                    {seatsLabel(seatsFor(subscription, numOfStudents))}
                   </p>
                   <div className="mt-6">
                     {subscription.price === 0 ? (
                       <button
                         aria-label="Register For Free"
+                        disabled={busyPlanId !== null}
                         style={{
                           background:
                             'linear-gradient(to right, #00e89d, #0078ff)',
@@ -287,6 +262,7 @@ export default function TrialPlan() {
                     ) : (
                       <button
                         aria-label="Pay Now"
+                        disabled={busyPlanId !== null}
                         onClick={() => handlePayNowClick(subscription)}
                         style={{
                           background:
@@ -299,9 +275,16 @@ export default function TrialPlan() {
                         Pay Now
                       </button>
                     )}
-                    <p className="text-slate-400 text-sm mt-3">
-                      No credit card required. Free 14-days trial
-                    </p>
+                    {planIsFreeTrial(subscription) && (
+                      <p className="text-slate-400 text-sm mt-3">
+                        {FREE_TRIAL_NOTE}
+                      </p>
+                    )}
+                    {problem && problem.planId === subscription.plan_id && (
+                      <p role="alert" className="text-red-400 text-sm mt-3">
+                        {problem.message}
+                      </p>
+                    )}
                   </div>
                   <div className="p-6 bg-gray-50 dark:bg-slate-800">
                     <ul className="list-none text-slate-400">
