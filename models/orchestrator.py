@@ -302,8 +302,13 @@ class TTSLoader(ModelLoader):
             from tts.tts_engine import TTSEngine
             engine = TTSEngine(prefer_gpu=(run_mode == 'gpu'), auto_init=False)
             can_run = engine._can_run_backend(backend_name)
+            # The install gate asks the engine's environment again, past the
+            # answer cached before an install.  When it finds the engine
+            # already runnable (True), judge it again instead of reporting
+            # packages missing right after a successful download.
+            if not can_run and engine._try_auto_install_backend(backend_name) is True:
+                can_run = engine._can_run_backend(backend_name)
             if not can_run:
-                engine._try_auto_install_backend(backend_name)
                 logger.info(f"TTS backend {backend_name} install triggered")
                 entry.loaded = False
                 entry.error = f"{backend_name} packages missing"

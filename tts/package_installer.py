@@ -77,6 +77,19 @@ _NUNBA_TO_HARTOS_BACKEND = {
     'f5':                      'f5_tts',
 }
 
+
+def registry_engine_id(backend: str) -> str:
+    """The HARTOS engine registry id for an engine name.
+
+    Nunba still calls two engines by older names ('f5' for 'f5_tts',
+    'chatterbox_multilingual' for 'chatterbox_ml').  An engine's install
+    plan, venv, worker and install lock are all kept under its registry
+    id, so every place that looks one of those up by name asks here
+    first.  Any other name already is its registry id and comes back as
+    it is.  The one place a name is resolved; the aliases stay in
+    _NUNBA_TO_HARTOS_BACKEND above."""
+    return _NUNBA_TO_HARTOS_BACKEND.get(backend, backend)
+
 # Backends Nunba ships bundled (piper voices in python-embed, luxtts
 # in HARTOS image) — no pip install needed; keys must still appear in
 # BACKEND_PACKAGES so callers iterating it see the full surface.
@@ -268,14 +281,9 @@ def get_install_target(backend: str) -> str:
     Defaults to 'main' if the engine isn't in HARTOS's ENGINE_REGISTRY
     (matches the dataclass default; preserves Nunba's prior behavior
     for any legacy backend ID a caller might still address)."""
-    registry = _hartos_engine_registry()
-    spec = registry.get(backend)
-    if spec is None:
-        # Resolve through Nunba alias map before giving up (e.g.
-        # 'chatterbox_multilingual' -> 'chatterbox_ml').
-        canonical = _NUNBA_TO_HARTOS_BACKEND.get(backend)
-        if canonical:
-            spec = registry.get(canonical)
+    # A Nunba name ('chatterbox_multilingual') is looked up by its
+    # registry id ('chatterbox_ml').
+    spec = _hartos_engine_registry().get(registry_engine_id(backend))
     return getattr(spec, 'install_target', 'main') if spec is not None else 'main'
 
 # pip package name → import name (for verification)
@@ -1594,6 +1602,17 @@ def _ct2_failure_is_recordable(msg: str) -> bool:
     return not (msg or '').startswith(_CT2_NOT_RUN_PREFIXES)
 
 
+def install_did_not_run(msg) -> bool:
+    """True when an install's answer means nothing was tried, so it is not a
+    failure to remember: another install holds the lock (INSTALL_IN_PROGRESS)
+    or pip never got to run (_CT2_NOT_RUN_PREFIXES; install_backend_full
+    passes those on inside its own words, "Failed to install x: deferred:
+    ...", so they are looked for anywhere in the answer)."""
+    text = str(msg or '')
+    return text.startswith(INSTALL_IN_PROGRESS) or any(
+        p in text for p in _CT2_NOT_RUN_PREFIXES)
+
+
 def _ct2_failure_marker_path() -> str:
     return os.path.join(_INSTALL_LOCK_DIR, 'cuda_ctranslate2_failed.json')
 
@@ -1879,6 +1898,15 @@ def install_backend_packages(backend: str,
     """
     packages = BACKEND_PACKAGES.get(backend, [])
     if not packages:
+        # An engine that installs into its own venv has an empty main
+        # plan by design; reaching here means its venv plan was not
+        # found, so nothing would be installed.  That is a failure to
+        # report, not "nothing needed" (F5 read as installed for weeks).
+        if get_install_target(backend) == 'venv':
+            return False, (f"{backend} installs into its own environment, "
+                           f"but no install plan was found for it, so "
+                           f"nothing was installed. Give that engine a "
+                           f"pip_install_plan in the HARTOS engine registry")
         return True, f"No packages needed for {backend}"
 
     # Check what's already installed.  Pip specs like `parler-tts==0.2.2`
@@ -2112,10 +2140,7 @@ def _self_heal_missing_transitives(
     # Resolve the required_package from HARTOS's spec.  No-op for
     # engines that don't declare one (espeak / piper / makeittalk —
     # the bundled / cloud paths).
-    registry = _hartos_engine_registry()
-    spec = registry.get(backend) or registry.get(
-        _NUNBA_TO_HARTOS_BACKEND.get(backend, ''),
-    )
+    spec = _hartos_engine_registry().get(registry_engine_id(backend))
     required_pkg = getattr(spec, 'required_package', None) if spec else None
     if not required_pkg:
         return True, []  # nothing to probe; treat as healthy
@@ -2271,15 +2296,21 @@ def install_backend_full(backend: str,
     """
     global _installing
 
-    # Both "someone else is installing it" answers carry INSTALL_IN_PROGRESS:
-    # not a failure of this box, so TTSEngine does not keep them as a failed
-    # install across boots (tts_engine._record_install_failure).
+    # The venv plans, the venvs, the workers and the install lock are
+    # keyed by the HARTOS engine id, and some callers still use Nunba's
+    # older name ('f5' for 'f5_tts').  Looked up under 'f5', F5's plan was
+    # never found: the main path answered "No packages needed for f5"
+    # and nothing was installed (audit 2026-11-17).  The lock goes by the
+    # same id, so an install asked as 'f5' and one asked as 'f5_tts'
+    # (or backend_venv.install_in_background, which takes this lock)
+    # never pip into the same venv at once.
+    engine = registry_engine_id(backend)
+
     if _installing.get(backend):
         return False, f"{INSTALL_IN_PROGRESS}{backend} installation already in progress"
 
-    if not _acquire_file_lock(f'install_{backend}'):
-        return False, (f"{INSTALL_IN_PROGRESS}{backend} installation in progress "
-                       f"(another Nunba instance)")
+    if not _acquire_file_lock(f'install_{engine}'):
+        return False, f"{INSTALL_IN_PROGRESS}{backend} installation in progress (another Nunba instance)"
 
     with _install_lock:
         _installing[backend] = True
@@ -2293,7 +2324,8 @@ def install_backend_full(backend: str,
         # install into its dedicated venv instead of the main interp.
         # Track B, Phase 6: Indic Parler's parler-tts+transformers pins
         # collide with the main interpreter, so it lives in its own venv.
-        venv_pkgs = BACKEND_VENV_PACKAGES.get(backend)
+        # Looked up by the engine id resolved above, not the caller's name.
+        venv_pkgs = BACKEND_VENV_PACKAGES.get(engine)
         if venv_pkgs:
             if progress_cb:
                 progress_cb(
@@ -2301,11 +2333,15 @@ def install_backend_full(backend: str,
                     f"({len(venv_pkgs)} packages)..."
                 )
             from tts.backend_venv import ensure_venv, install_into_venv
-            venv_python = ensure_venv(backend)
-            venv_ok, venv_msg = install_into_venv(backend, venv_pkgs)
+            venv_python = ensure_venv(engine)
+            venv_ok, venv_msg = install_into_venv(engine, venv_pkgs)
             if not venv_ok:
                 return False, f"venv install failed: {venv_msg}"
             pkg_ok, pkg_msg = True, venv_msg
+            # Drop the "cannot run" answers cached before this install, as
+            # the main-interpreter path does after pip; otherwise the engine
+            # stays unpicked and TTSLoader.load reports its packages missing.
+            _invalidate_import_cache()
             # Wire the HARTOS ToolWorker to spawn its dispatch subprocess
             # under THIS venv's python (#53 contract).  Without this,
             # install_target='venv' only routes the install — synth still
@@ -2313,7 +2349,7 @@ def install_backend_full(backend: str,
             # conflicts.  Use the spec already in BACKEND_VENV_PACKAGES
             # path: HARTOS owns tool_module + tool_worker_attr.
             try:
-                spec = _hartos_engine_registry().get(backend)
+                spec = _hartos_engine_registry().get(engine)
                 if spec and spec.tool_module and spec.tool_worker_attr:
                     import importlib
                     worker = getattr(
@@ -2355,11 +2391,15 @@ def install_backend_full(backend: str,
             else:
                 progress_cb(f"{display_name} setup incomplete: {status}")
 
+        if not model_ok and str(model_msg).startswith('needs '):
+            # The reason, unwrapped: the catalog row reads "needs <KEY>:" to
+            # come back by itself once the key is stored.
+            return False, model_msg
         return success, status
 
     finally:
         _installing[backend] = False
-        _release_file_lock(f'install_{backend}')
+        _release_file_lock(f'install_{engine}')
 
 
 def _is_hf_model_cached(model_id: str) -> bool:
@@ -2405,16 +2445,111 @@ def _apply_post_install_patches(backend: str):
                 logger.debug(f"DAC decode patch skipped: {e}")
 
 
+class _WeightsRefused(Exception):
+    """A Hugging Face repo refused a weight download.  str() is the answer
+    setup gives.  A gated repo with no stored token answers "needs
+    HEVOLVE_HF_TOKEN: ...": the catalog row keeps that failure and brings the
+    row back by itself once the key is stored (HARTOS ModelEntry.
+    setup_failure_current)."""
+
+    def __init__(self, answer: str, ask_for_key: bool):
+        super().__init__(answer)
+        self.ask_for_key = ask_for_key
+
+
+def _hf_token() -> str:
+    """The owner's Hugging Face token.  The vault keeps it as
+    HEVOLVE_HF_TOKEN (environment first, then the vault), a name
+    huggingface_hub does not read, so no download ever carried it."""
+    try:
+        from hartos.ai_key_vault import get_ai_key_vault
+        return get_ai_key_vault().get_tool_key('HEVOLVE_HF_TOKEN') or ''
+    except Exception as e:  # a public repo needs no token: never block one
+        logger.debug(f"Hugging Face token lookup failed: {e}")
+        return ''
+
+
+def _hub_snapshot_download(repo_id: str, **kwargs):
+    """huggingface_hub.snapshot_download with the owner's token, answering a
+    gated or missing repo as _WeightsRefused instead of a raw HTTP error that
+    raised out of setup."""
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import (
+        GatedRepoError, HfHubHTTPError, RepositoryNotFoundError)
+    token = _hf_token()
+    if token:
+        kwargs.setdefault('token', token)
+    page = f"https://huggingface.co/{repo_id}"
+
+    def gated():
+        if token:
+            # The key is there and the repo still refuses it: its terms
+            # were never accepted.  Not "needs" a key, so the row keeps
+            # the failure and nobody is asked for a key they gave.
+            return _WeightsRefused(
+                f"{repo_id} refused the stored HEVOLVE_HF_TOKEN; accept its "
+                f"terms at {page} with that account", ask_for_key=False)
+        return _WeightsRefused(
+            f"needs HEVOLVE_HF_TOKEN: {repo_id} is gated; accept its terms "
+            f"at {page}", ask_for_key=True)
+
+    # Most specific first: GatedRepoError is a RepositoryNotFoundError, and
+    # both are HfHubHTTPError.
+    try:
+        return snapshot_download(repo_id, **kwargs)
+    except GatedRepoError:
+        raise gated()
+    except RepositoryNotFoundError:
+        raise _WeightsRefused(f"repository does not exist: {repo_id}",
+                              ask_for_key=False)
+    except HfHubHTTPError as e:
+        status = getattr(getattr(e, 'response', None), 'status_code', None)
+        if status not in (401, 403):
+            raise
+        raise gated()
+
+
+def _answers_refused_downloads(download):
+    """Every branch of _download_model_weights downloads through
+    _hub_snapshot_download; this turns a refusal into the (False, answer)
+    setup reports, and asks the owner for the key once when one is needed
+    (the vault's request_credential, the path post_to_channel uses)."""
+    import functools
+
+    @functools.wraps(download)
+    def answered(backend, progress_cb=None):
+        try:
+            return download(backend, progress_cb)
+        except _WeightsRefused as refused:
+            if refused.ask_for_key:
+                import json
+                from hartos.ai_key_vault import request_credential
+                request_credential(json.dumps({
+                    'resource_type': 'api_key',
+                    'key_name': 'HEVOLVE_HF_TOKEN',
+                    'label': 'Hugging Face access token',
+                    'used_by': 'voice setup',
+                    'description': f"Needed to download the {backend} voice: "
+                                   f"{refused}",
+                }), agent_id=None, tell_alias=False)
+            return False, str(refused)
+    return answered
+
+
+@_answers_refused_downloads
 def _download_model_weights(backend: str,
                              progress_cb: Callable | None = None) -> tuple[bool, str]:
     """Download model weights from HuggingFace for a backend.
 
     Checks ~/.cache/huggingface/hub/ AND ~/.nunba/ before downloading.
+    Every download goes through _hub_snapshot_download (the stored token,
+    and a gated or missing repo answered instead of raised).
     """
     try:
-        from huggingface_hub import snapshot_download
+        import huggingface_hub  # noqa: F401  (is the hub installed at all)
     except ImportError:
         return False, "huggingface_hub not available"
+    snapshot_download = _hub_snapshot_download
 
     if backend in ('chatterbox_turbo', 'chatterbox_multilingual'):
         model_id = 'ResembleAI/chatterbox-turbo'
@@ -2451,7 +2586,7 @@ def _download_model_weights(backend: str,
                           local_dir=cosyvoice_dir)
         return True, "Model downloaded"
 
-    elif backend == 'f5':
+    elif registry_engine_id(backend) == 'f5_tts':   # asked as 'f5' or 'f5_tts'
         model_id = 'SWivid/F5-TTS'
         if _is_hf_model_cached(model_id):
             return True, "Already downloaded"
@@ -2480,6 +2615,8 @@ def _download_model_weights(backend: str,
                 snapshot_download(backbone_id)
             if not _is_hf_model_cached(codec_id):
                 snapshot_download(codec_id)
+        except _WeightsRefused:
+            raise   # answered by _answers_refused_downloads, key ask included
         except Exception as e:
             return False, f"NeuTTS download failed: {e}"
         return True, "Model downloaded"
@@ -2601,18 +2738,21 @@ def get_backend_status() -> dict[str, dict]:
 
     status = {}
     for backend, packages in BACKEND_PACKAGES.items():
-        if backend in BACKEND_VENV_PACKAGES:
+        # A Nunba name ('f5') is judged by the venv of its registry id
+        # ('f5_tts'), not by its empty main-interpreter plan.
+        engine = registry_engine_id(backend)
+        if engine in BACKEND_VENV_PACKAGES:
             # Venv-quarantined: ask backend_venv, not main interpreter.
             try:
                 from tts.backend_venv import is_venv_healthy
-                healthy = is_venv_healthy(backend, _VENV_PROBE.get(backend))
+                healthy = is_venv_healthy(engine, _VENV_PROBE.get(engine))
             except Exception:
                 healthy = False
             status[backend] = {
                 'display_name': BACKEND_DISPLAY_NAMES.get(backend, backend),
                 'installed': healthy,
                 'packages_missing': (
-                    [] if healthy else list(BACKEND_VENV_PACKAGES[backend])
+                    [] if healthy else list(BACKEND_VENV_PACKAGES[engine])
                 ),
                 'installing': _installing.get(backend, False),
                 'venv_backed': True,

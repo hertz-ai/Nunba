@@ -242,10 +242,25 @@ class TestTtsExclusions:
         monkeypatch.setenv('NUNBA_TTS_STATE_PATH', str(tmp_path / 'tts_state.json'))
         monkeypatch.setattr(_te, '_engine', None)
         monkeypatch.setattr(_te.TTSEngine, '_auto_install_failed', {'neutts_air'})
-        monkeypatch.setattr(_te.TTSEngine, '_auto_install_failed_meta', {})
+        monkeypatch.setattr(_te, '_setup_failed_on_row', lambda b: False)
         ids = _te.unusable_tts_catalog_ids()
         assert 'tts-neutts-air' in ids
         assert not any('piper' in i for i in ids)
+
+    def test_a_failure_kept_on_the_catalog_row_is_excluded_after_a_restart(
+            self, monkeypatch, tmp_path):
+        """A new process starts with an empty _auto_install_failed; the
+        failed install is then known only from its catalog row
+        (_remember_setup_failure / _setup_failed_on_row, main 247c65dc)."""
+        from tts import tts_engine as _te
+        monkeypatch.setenv('NUNBA_TTS_STATE_PATH', str(tmp_path / 'tts_state.json'))
+        monkeypatch.setattr(_te, '_engine', None)
+        monkeypatch.setattr(_te.TTSEngine, '_auto_install_failed', set())
+        monkeypatch.setattr(_te, '_setup_failed_on_row',
+                            lambda b: b in ('neutts_air', _te.BACKEND_PIPER))
+        ids = _te.unusable_tts_catalog_ids()
+        assert 'tts-neutts-air' in ids
+        assert not any('piper' in i for i in ids), 'Piper is never excluded'
 
     def test_bootstrap_helper_never_raises(self, monkeypatch):
         from models import language_bootstrap as lb

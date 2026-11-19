@@ -445,21 +445,23 @@ def test_save_keeps_an_older_entrys_original_timestamps(state_path):
 
 
 # ────────────────────────────────────────────────────────────────────
-# 10. An install that ran and failed is not re-run on every boot
+# 10. The install path writes tts_state.json through the live engine
 # ────────────────────────────────────────────────────────────────────
 #
-# Measured on a Windows box without long-path support, 2026-11-12..16: every
-# boot re-ran `pip install neutts[all]` for NeuTTS Air (3 attempts, ~3 min)
-# and failed the same way ("Windows Long Path support"), 9 times in 5 days.
-# The "already failed" record (_auto_install_failed) lived only in memory,
-# so each new process started without it.  It is now kept in tts_state.json
-# beside the demotions, for the build it failed on, for a day.
+# TTSLoader.load builds its own TTSEngine at boot, and the install path
+# (and the install handshake's synth) runs on it.  That engine read
+# tts_state.json minutes earlier, so saving its 'demoted' set erased what
+# the live engine (get_tts_engine) demoted meanwhile, and a demotion it
+# cleared or recorded never reached the live engine.  A failed install is
+# not kept in this file: it is kept on the engine's catalog row
+# (_remember_setup_failure, main 247c65dc), so these tests stub that row.
 
 
 @pytest.fixture
 def install_state(monkeypatch):
     """Fresh class-level install bookkeeping for each test (it is shared by
-    every TTSEngine in the process, and other tests leave entries in it)."""
+    every TTSEngine in the process, and other tests leave entries in it),
+    and a stub catalog row, so no test reads or writes the real catalog."""
     from tts import tts_engine as _te
     from tts.tts_engine import TTSEngine
 
@@ -467,24 +469,15 @@ def install_state(monkeypatch):
     # would become the writer of every save below.
     monkeypatch.setattr(_te, '_engine', None)
     monkeypatch.setattr(TTSEngine, '_auto_install_failed', set())
-    monkeypatch.setattr(TTSEngine, '_auto_install_failed_meta', {},
-                        raising=False)
     monkeypatch.setattr(TTSEngine, '_auto_install_pending', set())
-    return TTSEngine
-
-
-def _new_process(engine_cls):
-    """What a restart does to the class-level sets: they start empty."""
-    engine_cls._auto_install_failed = set()
-    engine_cls._auto_install_failed_meta = {}
-    engine_cls._auto_install_pending = set()
-
-
-_LONG_PATH_FAILURE = (
-    "venv install failed: pip install 'neutts[all]' failed after 3 attempts: "
-    "rc=1 tail=\"...ChatAttachmentsListItemThumbnailFile.svelte'\n"
-    "HINT: This error might have occurred since this system does not have "
-    "Windows Long Path support enabled.\n\n\"")
+    remembered = []
+    monkeypatch.setattr(_te, '_catalog_row', lambda b: (None, None))
+    monkeypatch.setattr(_te, '_setup_failed_on_row', lambda b: False)
+    monkeypatch.setattr(_te, '_remember_setup_failure',
+                        lambda b, why: remembered.append((b, why)))
+    TTSEngine.remembered_setup_failures = remembered
+    yield TTSEngine
+    del TTSEngine.remembered_setup_failures
 
 
 def _run_background_install(eng, backend, monkeypatch, result):
@@ -510,162 +503,13 @@ def _run_background_install(eng, backend, monkeypatch, result):
         time.sleep(0.02)
 
 
-def test_failed_install_is_not_rerun_after_restart(
-        state_path, install_state, monkeypatch):
-    from tts import package_installer as _pi
-    from tts import tts_engine as _te
-
-    eng = _te.TTSEngine(auto_init=False)
-    _run_background_install(eng, 'neutts_air', monkeypatch,
-                            (False, _LONG_PATH_FAILURE))
-
-    written = json.loads(state_path.read_text())
-    row = written['install_failed']['neutts_air']
-    assert 'Long Path' in row['reason']
-    assert row['expires_at'] > time.time()
-
-    # Next boot: a new process, a new engine (TTSLoader.load builds one).
-    _new_process(_te.TTSEngine)
-    called = []
-    monkeypatch.setattr(_pi, 'install_backend_full',
-                        lambda b, progress_cb=None: called.append(b))
-    eng2 = _te.TTSEngine(auto_init=False)
-    assert 'neutts_air' in _te.TTSEngine._auto_install_failed, (
-        'the failed install was not remembered across the restart, so the '
-        'boot runs the same failing pip install again')
-    assert eng2._try_auto_install_backend('neutts_air') is False
-    assert 'neutts_air' not in _te.TTSEngine._auto_install_pending
-    assert called == []
-
-
-def test_install_in_progress_elsewhere_is_not_a_failure(
-        state_path, install_state, monkeypatch):
-    """Another installer holding the lock is not a failure of this box."""
-    from tts import tts_engine as _te
-    from tts.package_installer import INSTALL_IN_PROGRESS
-
-    eng = _te.TTSEngine(auto_init=False)
-    _run_background_install(
-        eng, 'neutts_air', monkeypatch,
-        (False, INSTALL_IN_PROGRESS + 'neutts_air installation already in progress'))
-
-    written = json.loads(state_path.read_text()) if state_path.exists() else {}
-    assert 'neutts_air' not in written.get('install_failed', {})
-
-
-def test_install_failure_on_another_build_is_retried(
-        state_path, install_state):
-    """An update may fix what failed, so a failure recorded for another
-    build does not hold."""
-    from tts.tts_engine import _TTS_STATE_SCHEMA, TTSEngine
-
-    now = time.time()
-    state_path.write_text(json.dumps({
-        'schema': _TTS_STATE_SCHEMA,
-        'demoted': {},
-        'install_failed': {'neutts_air': {
-            'failed_at': now - 60, 'expires_at': now + 3600,
-            'build': 'build:not-this-one', 'reason': 'x'}},
-    }))
-
-    TTSEngine(auto_init=False)
-    assert 'neutts_air' not in TTSEngine._auto_install_failed
-
-
-def test_expired_install_failure_is_retried(state_path, install_state):
-    from tts.tts_engine import _TTS_STATE_SCHEMA, TTSEngine, _installed_build
-
-    now = time.time()
-    state_path.write_text(json.dumps({
-        'schema': _TTS_STATE_SCHEMA,
-        'install_failed': {'neutts_air': {
-            'failed_at': now - 2 * 86400, 'expires_at': now - 60,
-            'build': _installed_build(), 'reason': 'x'}},
-    }))
-
-    TTSEngine(auto_init=False)
-    assert 'neutts_air' not in TTSEngine._auto_install_failed
-
-
-def test_clear_also_forgets_a_failed_install(state_path, install_state,
-                                             monkeypatch):
-    """The hub-install / admin reset hook gives a failed install a fresh
-    chance too, on disk and in this process."""
-    from tts.tts_engine import TTSEngine
-
-    eng = TTSEngine(auto_init=False)
-    _run_background_install(eng, 'neutts_air', monkeypatch,
-                            (False, _LONG_PATH_FAILURE))
-    assert 'neutts_air' in TTSEngine._auto_install_failed
-
-    assert TTSEngine.clear_persisted_demotions('neutts_air') == 1
-    written = json.loads(state_path.read_text())
-    assert 'neutts_air' not in written.get('install_failed', {})
-    assert 'neutts_air' not in TTSEngine._auto_install_failed
-
-
-def test_failed_install_survives_an_unrelated_demotion_save(
-        state_path, install_state, monkeypatch):
-    """tts_state.json has one writer; a later demotion save must keep the
-    install failure it already holds."""
-    from tts.tts_engine import TTSEngine
-
-    eng = TTSEngine(auto_init=False)
-    _run_background_install(eng, 'neutts_air', monkeypatch,
-                            (False, _LONG_PATH_FAILURE))
-    eng._demoted_backends.add('kokoro')
-    eng._save_persisted_demotions()
-
-    written = json.loads(state_path.read_text())
-    assert 'kokoro' in written['demoted']
-    assert 'neutts_air' in written['install_failed']
-
-
-def test_install_failure_save_keeps_the_live_engines_demotions(
-        state_path, install_state, monkeypatch):
-    """The failure is recorded on the engine TTSLoader.load built at boot,
-    ~3 min after it read the file.  Saving from that engine's own demoted
-    set erased what the live engine (get_tts_engine) demoted meanwhile."""
-    from tts import tts_engine as _te
-
-    live = _te.TTSEngine(auto_init=False)
-    monkeypatch.setattr(_te, '_engine', live)
-    boot = _te.TTSEngine(auto_init=False)      # TTSLoader.load's engine
-    live._demoted_backends.add('kokoro')       # demoted while pip runs
-    live._save_persisted_demotions()
-
-    _run_background_install(boot, 'neutts_air', monkeypatch,
-                            (False, _LONG_PATH_FAILURE))
-
-    written = json.loads(state_path.read_text())
-    assert 'kokoro' in written['demoted'], (
-        "the boot engine's save erased the live engine's demotion")
-    assert 'neutts_air' in written['install_failed']
-
-
-def test_verified_install_drops_the_failure_record(
-        state_path, install_state, monkeypatch):
-    """Once the record lapses and the install is run again and verified,
-    the record leaves the file too, not just memory."""
+def _handshake(monkeypatch, ok, err=''):
     import types
 
-    from tts import tts_engine as _te
     from tts import tts_handshake as _hs
-
-    eng = _te.TTSEngine(auto_init=False)
-    _run_background_install(eng, 'neutts_air', monkeypatch,
-                            (False, _LONG_PATH_FAILURE))
-    assert 'neutts_air' in json.loads(state_path.read_text())['install_failed']
-
-    _te.TTSEngine._auto_install_failed.discard('neutts_air')  # lapsed
     monkeypatch.setattr(_hs, 'run_handshake', lambda *a, **k:
-                        types.SimpleNamespace(ok=True, n_bytes=48000,
-                                              err='', elapsed_s=1.0))
-    _run_background_install(eng, 'neutts_air', monkeypatch, (True, 'Ready'))
-
-    written = json.loads(state_path.read_text())
-    assert 'neutts_air' not in written.get('install_failed', {})
-    assert 'neutts_air' not in _te.TTSEngine._auto_install_failed
+                        types.SimpleNamespace(ok=ok, n_bytes=48000 if ok else 0,
+                                              err=err, elapsed_s=1.0))
 
 
 def test_verified_install_on_the_boot_engine_clears_the_live_demotion(
@@ -673,10 +517,7 @@ def test_verified_install_on_the_boot_engine_clears_the_live_demotion(
     """A demoted backend reinstalled and verified on TTSLoader.load's
     engine is selectable again on the live engine too, and stays
     un-demoted on disk; the live engine's other demotions are kept."""
-    import types
-
     from tts import tts_engine as _te
-    from tts import tts_handshake as _hs
 
     live = _te.TTSEngine(auto_init=False)
     monkeypatch.setattr(_te, '_engine', live)
@@ -685,32 +526,13 @@ def test_verified_install_on_the_boot_engine_clears_the_live_demotion(
     boot = _te.TTSEngine(auto_init=False)      # hydrates both
     live._demoted_backends.add('f5')           # demoted after boot read it
 
-    monkeypatch.setattr(_hs, 'run_handshake', lambda *a, **k:
-                        types.SimpleNamespace(ok=True, n_bytes=48000,
-                                              err='', elapsed_s=1.0))
+    _handshake(monkeypatch, ok=True)
     _run_background_install(boot, 'neutts_air', monkeypatch, (True, 'Ready'))
 
     assert 'neutts_air' not in live._demoted_backends
     written = json.loads(state_path.read_text())['demoted']
     assert 'neutts_air' not in written
     assert {'kokoro', 'f5'} <= set(written)
-
-
-def test_piper_install_failure_is_never_hydrated(state_path, install_state):
-    from tts.tts_engine import _TTS_STATE_SCHEMA, BACKEND_PIPER, TTSEngine, _installed_build
-
-    now = time.time()
-    state_path.write_text(json.dumps({
-        'schema': _TTS_STATE_SCHEMA,
-        'install_failed': {BACKEND_PIPER: {
-            'failed_at': now, 'expires_at': now + 3600,
-            'build': _installed_build(), 'reason': 'x'}},
-    }))
-
-    TTSEngine(auto_init=False)
-    assert BACKEND_PIPER not in TTSEngine._auto_install_failed
-    written = json.loads(state_path.read_text())
-    assert BACKEND_PIPER not in written.get('install_failed', {})
 
 
 def test_boot_engine_demotion_keeps_the_live_engines_and_reaches_it(
@@ -734,3 +556,39 @@ def test_boot_engine_demotion_keeps_the_live_engines_and_reaches_it(
     assert {'kokoro', 'f5'} <= set(written), written
     assert 'f5' in live._demoted_backends
 
+
+def test_an_install_whose_synthesis_fails_is_kept_on_its_row(
+        state_path, install_state, monkeypatch):
+    """pip succeeded but the engine produced no audio: the next boot would
+    install and fail the same way, so it is kept on the catalog row like a
+    failed pip run, and nothing about it goes into tts_state.json."""
+    from tts import tts_engine as _te
+
+    eng = _te.TTSEngine(auto_init=False)
+    _handshake(monkeypatch, ok=False, err='no audio produced')
+    _run_background_install(eng, 'neutts_air', monkeypatch, (True, 'Ready'))
+
+    assert 'neutts_air' in _te.TTSEngine._auto_install_failed
+    assert [b for b, _ in install_state.remembered_setup_failures] == ['neutts_air']
+    assert 'synthesis failed' in install_state.remembered_setup_failures[0][1]
+    if state_path.exists():
+        assert 'install_failed' not in json.loads(state_path.read_text())
+
+
+def test_a_failed_install_is_kept_on_its_row_not_in_the_state_file(
+        state_path, install_state, monkeypatch):
+    """One writer per persisted value (CLAUDE.md Gate 4): a failed install
+    lives on its catalog row only."""
+    from tts import tts_engine as _te
+
+    eng = _te.TTSEngine(auto_init=False)
+    eng._demoted_backends.add('kokoro')
+    eng._save_persisted_demotions()
+    _run_background_install(eng, 'neutts_air', monkeypatch,
+                            (False, "venv install failed: pip install 'neutts[all]' "
+                                    "failed after 3 attempts"))
+
+    assert [b for b, _ in install_state.remembered_setup_failures] == ['neutts_air']
+    written = json.loads(state_path.read_text())
+    assert 'install_failed' not in written
+    assert 'kokoro' in written['demoted']
