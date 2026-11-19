@@ -6,9 +6,10 @@ import {
   planIsFreeTrial,
   parsePositiveInt,
   seatsFor,
+  seatsLabel,
   totalFor,
+  fetchPlans,
 } from '../services/planCheckout';
-import {mailerApi} from '../services/socialApi';
 import {logger} from '../utils/logger';
 
 import React, {useState, useEffect} from 'react';
@@ -62,8 +63,27 @@ export default function Pricing() {
   useEffect(() => {
     const getSubscriptionsByPlans = async () => {
       try {
-        const data = await mailerApi.getPlans();
+        let data = await fetchPlans();
         logger.log(data);
+
+        // A link can name a plan the server keeps off the public list (the
+        // speech plans).  Ask for that one by its id, so the offer the link makes
+        // can still be shown; the filter below lets it in.
+        if (
+          requestedPlanId !== null &&
+          !data.some((subscription) => subscription.plan_id === requestedPlanId)
+        ) {
+          try {
+            const named = await fetchPlans(requestedPlanId);
+            data = data.concat(
+              named.filter(
+                (subscription) => subscription.plan_id === requestedPlanId
+              )
+            );
+          } catch (error) {
+            console.error('Error fetching the named plan:', error.message);
+          }
+        }
 
         const filteredData = data.filter((subscription) => {
           // A link that names this plan is an offer of exactly this plan, so it
@@ -187,7 +207,7 @@ export default function Pricing() {
                     </span>
                   </div>
                   <p className="text-slate-400 uppercase text-xs">
-                    per month/ For {seats} User
+                    {seatsLabel(seats)}
                   </p>
 
                   <div className="mt-6">

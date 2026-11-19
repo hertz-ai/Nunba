@@ -1,6 +1,5 @@
-/* eslint-disable testing-library/no-node-access -- a plan card is a plain div with no role or label, so the test reaches it from its title */
+/* eslint-disable react/display-name -- jest.mock factories return anonymous stand-in components */
 import {
-  PLANS,
   SESSION,
   TX,
   PAY_URL,
@@ -11,6 +10,7 @@ import {
   stubLocation,
   asApp,
   leaveApp,
+  planServer,
 } from '../../testSupport/checkoutKit';
 import TrialPlan from '../../components/TrialPlan';
 
@@ -51,30 +51,14 @@ jest.mock(
   '../../utils/encryption',
   () => jest.requireActual('../../testSupport/checkoutKit').encryptionMock
 );
-// mailerApi behaves as axiosFactory's mailer client does: the stored token is
-// attached as a bearer, and the response body is what the call resolves to.  The
-// checkout itself does not use it for the two writes (it needs the HTTP status),
-// but the plan list does, and this keeps the boundary the same for any caller.
-jest.mock('../../services/socialApi', () => {
-  const mailerPost = (path, data) => {
-    const token = global.localStorage.getItem('access_token');
-    return require('axios')
-      .post(
-        `https://mailer.hertzai.com${path}`,
-        data,
-        token ? {headers: {Authorization: `Bearer ${token}`}} : undefined
-      )
-      .then((response) => response.data);
-  };
-  return {
-    mailerApi: {
-      getPlans: jest.fn(),
-      addSubscription: (data) => mailerPost('/addsubscription_by_phone', data),
-      makePayment: (data) => mailerPost('/makepayment', data),
-    },
-    chatApi: {post: jest.fn(() => Promise.resolve({}))},
-  };
-});
+// The plan list is mailerApi.getPlans, answered by the account store model in
+// the kit (planServer): speech plans only by ?plan_id=.  The checkout's two
+// writes do not go through mailerApi (they need the HTTP status), so only
+// getPlans is here.
+jest.mock('../../services/socialApi', () => ({
+  mailerApi: {getPlans: jest.fn()},
+  chatApi: {post: jest.fn(() => Promise.resolve({}))},
+}));
 let mockModalProps = null;
 jest.mock('../../pages/OtpAuthModal', () => (props) => {
   mockModalProps = props;
@@ -99,7 +83,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   localStorage.clear();
   mockModalProps = null;
-  mailerApi.getPlans.mockImplementation(() => Promise.resolve(PLANS));
+  mailerApi.getPlans.mockImplementation(planServer().getPlans);
   routeAxios();
   restoreLocation = stubLocation(
     'http://localhost/trialplan',
@@ -176,7 +160,7 @@ describe('TrialPlan checkout', () => {
 
     expect(
       await within(cardOf('Hevolve+')).findByRole('alert')
-    ).toHaveTextContent('does not belong to the account');
+    ).toHaveTextContent(/different account/i);
     expect(postsTo('/makepayment')).toHaveLength(0);
   });
 
@@ -252,5 +236,15 @@ describe('TrialPlan checkout inside the Android webview', () => {
     expect(window.Handy.setTransactionId).toHaveBeenCalledTimes(1);
     const told = JSON.parse(window.Handy.setTransactionId.mock.calls[0][0]);
     expect(told.TRANSACTION_ID).toBe(TX);
+  });
+});
+
+describe('TrialPlan: the line under the price', () => {
+  test('names one user, never an empty count', async () => {
+    await renderTrial();
+    expect(
+      within(cardOf('Hevolve+')).getByText(/per month \/ per user/i)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/for\s+user/i)).not.toBeInTheDocument();
   });
 });

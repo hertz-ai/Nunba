@@ -1,16 +1,18 @@
 /**
  * The one checkout for a plan: create the subscription row, THEN pay.
  *
- * Port of Hevolve web's src/services/planCheckout.js (commit ab8555c).
+ * Port of Hevolve web's src/services/planCheckout.js (commits ab8555c, cae609f).
  *
- * Contract (account store commit 11b2401f, #286 and #202):
+ * Contract (account store commits 11b2401f and c1eeb2131, #286 and #202):
  *   POST /addsubscription_by_phone  needs 'Authorization: Bearer <access_token>'
  *     and the token's credential must belong to the target user.  It writes the
  *     pending (switched-off) subscription row.
- *   POST /makepayment  prices the order itself: plan price x num_students.  The
+ *   POST /makepayment  prices the order itself: plan price x quantity.  The
  *     browser's `amount` is only compared with that price (a mismatch is a 400
  *     with a hint).  It refuses free or unknown plans and any transaction that
  *     has no pending row of this user and plan, so it must come second.
+ *   GET /getallplandetails  leaves the speech plans off the public list; only
+ *     ?plan_id=<id> returns one (fetchPlans).
  *
  * Every page that sells a plan (Plan, trial plan, speech therapy) calls
  * startCheckout, so the order, the header and the refusals live here once.
@@ -19,14 +21,23 @@
  * 400 (show the server's hint).  The token is the one axiosFactory would attach
  * (localStorage access_token), read through utils/checkoutSession.
  */
+import {mailerApi} from './socialApi';
+
 import {ADD_SUBSCRIPTION_URL, PAYMENT_URL} from '../config/apiBase';
 import {readPayer} from '../utils/checkoutSession';
 
 import axios from 'axios';
 import {v4 as uuidv4} from 'uuid';
 
+// A stalled server must end in a message, not in plan buttons that stay
+// disabled until the page is reloaded.  axios has no timeout unless one is set;
+// the mailer client this checkout used to go through had 15 s.
+export const REQUEST_TIMEOUT_MS = 15000;
+
 // The field /makepayment multiplies the plan price by (crud.makepayment: plan
-// amount x this, for ANY plan, 1..1000).  The one place it is named here.
+// amount x this, for ANY plan, 1..1000).  The server documents `quantity` as the
+// clear name and `num_students` as the same number under its first name; either
+// is accepted (both and different is a 400).  The one place it is named here.
 export const QUANTITY_FIELD = 'num_students';
 
 export const FREE_TRIAL_NOTE = 'No credit card required. Free 14-days trial';
@@ -61,19 +72,82 @@ export const seatsFor = (plan, numStudents) =>
 /** The total the page shows for a plan: price x seats. */
 export const totalFor = (plan, seats) => plan.price * (seats || 1);
 
+/** What a card says under the price: one person's price, or the price for N seats. */
+export const seatsLabel = (seats) =>
+  seats > 1 ? `per month / for ${seats} users` : 'per month / per user';
+
+/**
+ * The plan list.  With a plan id it asks GET /getallplandetails?plan_id=<id>, the
+ * only way to reach a plan the public list leaves out (the speech plans); a
+ * server that ignores the parameter answers the whole list, so callers still
+ * pick their plan out of what comes back.
+ */
+export function fetchPlans(planId = null) {
+  return mailerApi.getPlans(planId === null ? undefined : {plan_id: planId});
+}
+
 const newTransactionId = () =>
   `T${uuidv4().replace(/-/g, '').substring(0, 36)}`;
 
-/** Why a call failed, in words the person can act on (the server's detail when it gave one). */
+// What a buyer is told for each refusal the account store can send.  The
+// server's own text names its API (plan_id, quantity, /addsubscription_by_phone),
+// which means nothing to someone paying; each real text a buyer can reach is
+// turned into words about the buyer's situation.  Anything else keeps the
+// server's words.
+const PLAIN_REFUSALS = [
+  [
+    /is not the price of this plan/i,
+    'The price of this plan changed while this page was open. Please reload the page and try again.',
+  ],
+  [
+    /does not belong to (the account|user_id)/i,
+    'You are signed in to a different account than that phone number. Sign out, then sign in with the phone number you want to pay with.',
+  ],
+  [
+    /No pending subscription/i,
+    'We could not start this order. Please try again.',
+  ],
+  [
+    /mobile number must be at least/i,
+    'We do not have your phone number. Please sign in again.',
+  ],
+  [
+    /No account has that mobile number|matches more than one account/i,
+    'We could not find one account for that phone number. Please sign in again, or contact support.',
+  ],
+  [
+    /No active plan with plan_id/i,
+    'This plan is not available any more. Please pick another plan.',
+  ],
+  [
+    /(quantity|num_students) must be between/i,
+    'That number is out of range. Choose between 1 and 1000.',
+  ],
+  [/already (priced|used)/i, 'This order was already used. Please try again.'],
+];
+
+const isTimeout = (error) =>
+  Boolean(error) &&
+  (error.code === 'ECONNABORTED' ||
+    error.code === 'ETIMEDOUT' ||
+    /timeout/i.test(error.message || ''));
+
+/** Why a call failed, in words the person can act on. */
 function reasonOf(error) {
   const detail =
     error &&
     error.response &&
     error.response.data &&
     error.response.data.detail;
-  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (typeof detail === 'string' && detail.trim()) {
+    const plain = PLAIN_REFUSALS.find(([pattern]) => pattern.test(detail));
+    return plain ? plain[1] : detail;
+  }
   if (error && error.response) {
     return `The server could not process this (${error.response.status}). Please try again, or contact support.`;
+  }
+  if (isTimeout(error)) {
+    return 'The server took too long to answer. Nothing was charged. Please try again.';
   }
   return 'Could not reach the server. Check your connection and try again.';
 }
@@ -137,6 +211,7 @@ export async function startCheckout({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${payer.accessToken}`,
         },
+        timeout: REQUEST_TIMEOUT_MS,
       }
     );
   } catch (error) {
@@ -158,6 +233,7 @@ export async function startCheckout({
   try {
     response = await axios.post(PAYMENT_URL, payload, {
       headers: {'Content-Type': 'application/json'},
+      timeout: REQUEST_TIMEOUT_MS,
     });
   } catch (error) {
     return {status: 'error', message: reasonOf(error)};
