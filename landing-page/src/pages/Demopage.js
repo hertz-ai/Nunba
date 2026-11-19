@@ -56,7 +56,6 @@ import 'react-pdf/dist/esm/Page/TextLayer.css';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import Agents from '../components/Agent/Agents';
 import CreateAgentForm from './CreateAgentForm';
-import CreditSystem from './Credits';
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/legacy/build/pdf.worker.min.mjs`;
 
 // ── Use existing Nunba API services for local/global integration ──
