@@ -241,10 +241,31 @@ const ChatMessageList = ({
   // Replies so far.  The hourglass row compares it across a request to tell
   // a request that got its reply from one that ended without one.
   const replyCount = messages.filter(isReplyMessage).length;
+  // Setup cards (engine installs, model downloads) report the app's setup,
+  // not this conversation.  Each is a message: a new one is added at the end
+  // and every open one is carried to the end of the next agent's chat, so
+  // they piled up under the newest reply (owner 2026-11-17: "lots of cards
+  // are spamming the bottom of conversation, why are they not at the top?").
+  // They are drawn above the conversation, in their own order; every other
+  // message keeps its place.  Each keeps its own index: dismiss and the
+  // other handlers find a message by it.
+  // Only progress cards move.  The local LLM setup card (llm_setup_card) is
+  // also a setup card to the history merge (isSetupCard), but when /chat has
+  // no local LLM it IS the answer to the newest question: Demopage adds it
+  // with the reply text and adds no other reply.  Moved up, the answer and
+  // its Auto Setup button sat above the whole history and the last thing on
+  // screen was the person's own question (review of da19a7f9).  It stays
+  // under its question.
+  const drawnAbove = (message) => message.type === 'setup_progress';
+  const indexed = messages.map((message, index) => [message, index]);
+  const drawOrder = [
+    ...indexed.filter(([message]) => drawnAbove(message)),
+    ...indexed.filter(([message]) => !drawnAbove(message)),
+  ];
 
   return (
     <div className="w-full px-3 py-4 space-y-6" role="log" aria-live="polite" aria-label="Chat messages">
-      {messages.map((message, index) => {
+      {drawOrder.map(([message, index]) => {
         if (message.type === 'thinking_container') {
           if (!showThinkingTraces) return null;  // #508 — toggle OFF: hide collapsible
           return (
