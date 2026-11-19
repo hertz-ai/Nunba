@@ -42,6 +42,7 @@ import HiveIcon from '@mui/icons-material/Hive';
 import HomeIcon from '@mui/icons-material/Home';
 import InboxIcon from '@mui/icons-material/Inbox';
 import MemoryIcon from '@mui/icons-material/Memory';
+import LogoutIcon from '@mui/icons-material/Logout';
 import MenuIcon from '@mui/icons-material/Menu';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import NewspaperIcon from '@mui/icons-material/Newspaper';
@@ -366,7 +367,7 @@ export default function SocialLayout({children}) {
   const navigate = useNavigate();
   const location = useLocation();
   const theme = useTheme();
-  const {currentUser, unreadCount, accessTier, resonance} = useSocial();
+  const {currentUser, unreadCount, accessTier, resonance, logout} = useSocial();
   const {canWrite} = useRoleAccess();
   const {isVisitorTheme, visitorUser, clearVisitorTheme} = useNunbaTheme();
   usePageObserver(); // Track page dwell time for agent self-critique
@@ -841,6 +842,21 @@ export default function SocialLayout({children}) {
                 @{currentUser.username}
               </Typography>
             </Box>
+            {accessTier !== 'guest' && (
+              <IconButton
+                aria-label="Sign out"
+                title="Sign out"
+                size="small"
+                sx={{color: theme.palette.text.secondary}}
+                onClick={(event) => {
+                  event.stopPropagation(); // the card itself opens the profile
+                  logout();
+                  navigate('/');
+                }}
+              >
+                <LogoutIcon fontSize="small" />
+              </IconButton>
+            )}
           </Box>
         </Box>
       )}

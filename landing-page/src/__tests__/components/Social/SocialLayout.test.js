@@ -1,6 +1,6 @@
 import {renderWithProviders} from '../../testHelpers';
 
-import {screen, within} from '@testing-library/react';
+import {fireEvent, screen, within} from '@testing-library/react';
 import React from 'react';
 
 /* The manual mock at services/__mocks__/socialApi.js, picked up with no
@@ -230,5 +230,30 @@ describe('SocialLayout navigation', () => {
   it('renders its children', () => {
     renderAs('central');
     expect(screen.getByTestId('page-body')).toBeInTheDocument();
+  });
+});
+
+describe('SocialLayout sign out', () => {
+  const user = {id: '17350', username: 'account_17350', display_name: 'Monisha'};
+
+  function renderSignedIn(accessTier, logout = jest.fn()) {
+    renderWithProviders(
+      <SocialLayout>
+        <div data-testid="page-body">Body</div>
+      </SocialLayout>,
+      {socialContextValue: {accessTier, currentUser: user, resonance: {level: 0}, logout}}
+    );
+    return logout;
+  }
+
+  it('a signed-in member can sign out from Social', () => {
+    const logout = renderSignedIn('flat');
+    fireEvent.click(screen.getAllByRole('button', {name: 'Sign out'})[0]);
+    expect(logout).toHaveBeenCalledTimes(1);
+  });
+
+  it('a guest is not offered a sign out', () => {
+    renderSignedIn('guest');
+    expect(screen.queryByRole('button', {name: 'Sign out'})).toBeNull();
   });
 });
