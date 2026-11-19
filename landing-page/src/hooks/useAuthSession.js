@@ -309,6 +309,35 @@ export default function useAuthSession() {
 // the call sites one file per commit, each gated by cypress + jest.
 
 /**
+ * The phone number the account store returned at sign-in, decrypted, or null.
+ * The checkout needs it: /makepayment looks the payer up by phone.
+ */
+export function readSessionPhone() {
+  try {
+    return decrypt(localStorage.getItem('phone_number')) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * setSessionPhone — keep (or, with no phone, REMOVE) the sign-in phone.
+ * Called on every cloud sign-in, so a response without a phone clears an
+ * earlier account's phone instead of leaving it beside a new account's token.
+ * Encrypted like user_id and email.  With no encryption key encrypt() returns
+ * null and nothing is stored (never the text "null").
+ */
+export function setSessionPhone(phone) {
+  const value = phone == null ? '' : String(phone).trim();
+  const stored = value ? encrypt(value) : null;
+  if (stored) {
+    localStorage.setItem('phone_number', stored);
+  } else {
+    localStorage.removeItem('phone_number');
+  }
+}
+
+/**
  * setAuthFromOtp — completes a successful Kong OTP verify.
  * Replaces the localStorage block in OtpAuthModal.js:316-336.
  *
@@ -328,6 +357,7 @@ export function setAuthFromOtp(payload) {
     email_address,
     refresh_token,
     expires_in,
+    phone_number,
   } = payload;
 
   localStorage.setItem('access_token', String(access_token));
@@ -345,6 +375,7 @@ export function setAuthFromOtp(payload) {
     const enc_refresh = encrypt(String(refresh_token));
     if (enc_refresh) localStorage.setItem('refresh_token', enc_refresh);
   }
+  setSessionPhone(phone_number);
   // Cloud signin clears any prior guest identity and partial-state
   // sentinels — they are mutually exclusive states.
   ['guest_mode', 'guest_user_id', 'guest_name', 'guest_name_verified',
@@ -425,6 +456,7 @@ export function clearAuth() {
     'hevolve_access_id',
     'pending_cloud_user_id',
     'pending_cloud_email',
+    'phone_number',
   ];
   AUTH_KEYS.forEach((k) => localStorage.removeItem(k));
   // Note: guest_name + hart_sealed/hart_name/hart_emoji/hart_language

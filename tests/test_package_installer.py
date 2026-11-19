@@ -648,6 +648,20 @@ class TestInstallGpuTorchReleasesItsLock:
 
 # ========================== install_backend_packages ======================
 
+@pytest.fixture
+def f5_on_the_main_interpreter(monkeypatch):
+    """The setup the 'f5' tests below were written for: F5 installs into
+    the main interpreter with a two-package plan.  The live HARTOS
+    registry now gives F5 its own venv, and install_backend_full looks
+    'f5' up under its registry id, so without this the tests would follow
+    whatever the registry says (and build a real venv)."""
+    monkeypatch.setattr(pi, '_hartos_engine_registry', lambda: {})
+    monkeypatch.setattr(pi, 'BACKEND_PACKAGES',
+                        {'f5': ['torchaudio', 'f5-tts'], 'piper': []})
+    monkeypatch.setattr(pi, 'BACKEND_VENV_PACKAGES', {})
+
+
+@pytest.mark.usefixtures('f5_on_the_main_interpreter')
 class TestInstallBackendPackages:
 
     def test_no_packages_needed(self):
@@ -1332,6 +1346,23 @@ class TestChatterboxClassRegression:
 
 # ========================== install_backend_full ==========================
 
+@pytest.fixture
+def install_lock_in_memory(monkeypatch):
+    """install_backend_full's cross-process lock, kept in memory instead
+    of a file under the home directory."""
+    held = set()
+
+    def acquire(name):
+        if name in held:
+            return False
+        held.add(name)
+        return True
+
+    monkeypatch.setattr(pi, '_acquire_file_lock', acquire)
+    monkeypatch.setattr(pi, '_release_file_lock', held.discard)
+
+
+@pytest.mark.usefixtures('f5_on_the_main_interpreter', 'install_lock_in_memory')
 class TestInstallBackendFull:
 
     def setup_method(self):

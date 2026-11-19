@@ -1095,11 +1095,12 @@ export const mailerApi = {
   getBooksByCourse: (courseId) =>
     mailerApiClient.get(`/getbooksbycourse?course_name=${courseId}`),
 
-  // Subscriptions/Payments
-  getPlans: () => mailerApiClient.get('/getallplandetails'),
-  addSubscription: (data) =>
-    mailerApiClient.post('/addsubscription_by_phone', data),
-  makePayment: (data) => mailerApiClient.post('/makepayment', data),
+  // Subscriptions/Payments.  The checkout itself (the subscription row, then the
+  // payment) is NOT here: it is services/planCheckout.js, the one place that does
+  // it in the order and with the header the account store requires.
+  // getPlans({plan_id}) asks for one plan by id: the only way to reach a speech
+  // plan, which the account store keeps off the public list.
+  getPlans: (params) => mailerApiClient.get('/getallplandetails', {params}),
   deductCredits: (data) => mailerApiClient.post('/deduct-credits', data),
 
   // Assessments
