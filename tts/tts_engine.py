@@ -1923,6 +1923,7 @@ class TTSEngine:
                     # doesn't appear as a literal source token before
                     # the synth call. Keeps the test-of-order contract
                     # in Family B strict without changing behavior.
+                    _verifier_crashed = False
                     try:
                         import importlib as _vr_il
                         _hs_mod = _vr_il.import_module("tts.tts_handshake")
@@ -1941,6 +1942,7 @@ class TTSEngine:
                             err=hs.err, elapsed_s=hs.elapsed_s,
                         )
                     except Exception as _verify_err:
+                        _verifier_crashed = True
                         logger.error(f"[auto-install] '{backend}' verifier crashed: "
                                      f"{_verify_err}")
                         # Verifier itself failing IS a failure — don't
@@ -2018,9 +2020,13 @@ class TTSEngine:
                         with TTSEngine._auto_install_lock:
                             TTSEngine._auto_install_failed.add(backend)
                         # Kept on the row like a failed pip run: the next
-                        # boot would install and fail the same way.
-                        _remember_setup_failure(
-                            backend, f"synthesis failed: {verdict.err}")
+                        # boot would install and fail the same way.  Not
+                        # when our own verifier crashed: that is a defect
+                        # here, not proof the engine cannot work, and the
+                        # row would keep it out of select_best for a day.
+                        if not _verifier_crashed:
+                            _remember_setup_failure(
+                                backend, f"synthesis failed: {verdict.err}")
                         ok = False  # completion event reflects the truth
                 else:
                     logger.warning(f"[auto-install] '{backend}' install failed: {result}")
@@ -4209,7 +4215,10 @@ def unusable_tts_catalog_ids() -> list[str]:
     whose automatic install failed (this process's failed installs, and a
     setup failure kept on the engine's catalog row, _setup_failed_on_row).
     The same engines _select_backend_for_language skips and
-    _try_auto_install_backend will not install again.
+    _try_auto_install_backend will not install again.  The row read
+    repeats what HARTOS select_best already skips (setup_failure_current);
+    it is kept so this list and _try_auto_install_backend answer "which
+    engines failed here" from the same two sources.
 
     For the model bootstrap (models/language_bootstrap.py), which picks its
     TTS from the HARTOS catalog: without this it picked NeuTTS Air on every

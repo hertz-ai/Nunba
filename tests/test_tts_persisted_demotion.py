@@ -461,7 +461,8 @@ def test_save_keeps_an_older_entrys_original_timestamps(state_path):
 def install_state(monkeypatch):
     """Fresh class-level install bookkeeping for each test (it is shared by
     every TTSEngine in the process, and other tests leave entries in it),
-    and a stub catalog row, so no test reads or writes the real catalog."""
+    and a stub catalog row, so no test reads or writes the real catalog.
+    Returns the (backend, why) pairs the stub was asked to remember."""
     from tts import tts_engine as _te
     from tts.tts_engine import TTSEngine
 
@@ -475,9 +476,7 @@ def install_state(monkeypatch):
     monkeypatch.setattr(_te, '_setup_failed_on_row', lambda b: False)
     monkeypatch.setattr(_te, '_remember_setup_failure',
                         lambda b, why: remembered.append((b, why)))
-    TTSEngine.remembered_setup_failures = remembered
-    yield TTSEngine
-    del TTSEngine.remembered_setup_failures
+    return remembered
 
 
 def _run_background_install(eng, backend, monkeypatch, result):
@@ -569,10 +568,28 @@ def test_an_install_whose_synthesis_fails_is_kept_on_its_row(
     _run_background_install(eng, 'neutts_air', monkeypatch, (True, 'Ready'))
 
     assert 'neutts_air' in _te.TTSEngine._auto_install_failed
-    assert [b for b, _ in install_state.remembered_setup_failures] == ['neutts_air']
-    assert 'synthesis failed' in install_state.remembered_setup_failures[0][1]
+    assert [b for b, _ in install_state] == ['neutts_air']
+    assert 'synthesis failed' in install_state[0][1]
     if state_path.exists():
         assert 'install_failed' not in json.loads(state_path.read_text())
+
+
+def test_a_crash_of_our_own_verifier_is_not_kept_on_the_row(
+        state_path, install_state, monkeypatch):
+    """The handshake raising is a defect here, not proof the engine cannot
+    work: it fails this install only, and the row (which keeps an engine
+    out of select_best for a day) is not marked."""
+    from tts import tts_engine as _te
+    from tts import tts_handshake as _hs
+
+    def _crash(*a, **k):
+        raise RuntimeError('handshake bug')
+    monkeypatch.setattr(_hs, 'run_handshake', _crash)
+    eng = _te.TTSEngine(auto_init=False)
+    _run_background_install(eng, 'neutts_air', monkeypatch, (True, 'Ready'))
+
+    assert 'neutts_air' in _te.TTSEngine._auto_install_failed
+    assert install_state == []
 
 
 def test_a_failed_install_is_kept_on_its_row_not_in_the_state_file(
@@ -588,7 +605,7 @@ def test_a_failed_install_is_kept_on_its_row_not_in_the_state_file(
                             (False, "venv install failed: pip install 'neutts[all]' "
                                     "failed after 3 attempts"))
 
-    assert [b for b, _ in install_state.remembered_setup_failures] == ['neutts_air']
+    assert [b for b, _ in install_state] == ['neutts_air']
     written = json.loads(state_path.read_text())
     assert 'install_failed' not in written
     assert 'kokoro' in written['demoted']
