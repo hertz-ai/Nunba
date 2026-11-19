@@ -254,6 +254,25 @@ class ServerType:
     OTHER_SERVICE = "other_service"
 
 
+def _probe_never_connected(exc: BaseException) -> bool:
+    """True when a ``requests`` probe failed before a connection existed:
+    nothing listens on the port, so NOT_RUNNING is simply the answer.
+
+    ``requests.exceptions.ConnectionError`` alone does not say that.  It is
+    also what a server that accepted and then dropped, reset or garbled its
+    reply raises (``ProtocolError('Connection aborted.', ...)``).  What marks
+    a connection that never formed is the urllib3 reason beneath it
+    (``NewConnectionError``, a ``ConnectTimeoutError`` in urllib3 2.x) or a
+    ``ConnectTimeout``, which is how a free port answers on Windows.
+    """
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return True
+    from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
+    cause = exc.args[0] if getattr(exc, 'args', None) else None
+    reason = getattr(cause, 'reason', cause)
+    return isinstance(reason, (NewConnectionError, ConnectTimeoutError))
+
+
 # Common LLM endpoints to scan
 KNOWN_LLM_ENDPOINTS = [
     {"name": "Ollama", "base_url": "http://localhost:11434",
@@ -1764,11 +1783,22 @@ class LlamaConfig:
             logger.warning(f"Port {port} is occupied by a non-llama.cpp service")
             return ServerType.OTHER_SERVICE, None
 
-        except requests.exceptions.ConnectionError:
-            # Nothing running on this port
-            return ServerType.NOT_RUNNING, None
         except Exception as e:
-            logger.debug(f"Error checking server on port {port}: {e}")
+            if _probe_never_connected(e):
+                # Nothing listening on this port: port scans probe free ports
+                # on purpose, so this stays quiet.
+                return ServerType.NOT_RUNNING, None
+            # The port took the connection, then the probe failed: it hung
+            # (ReadTimeout), or the reply was dropped, reset or not HTTP.  It
+            # still reads as NOT_RUNNING, which the LLM watchdog (HARTOS
+            # model_lifecycle _check_llm_health) treats as a dead server and
+            # restarts, so the reason belongs in the log the installed app
+            # keeps.  At DEBUG it was lost: 2026-11-17 10:59:29 the watchdog
+            # called 8080 UNREACHABLE between two completions it answered
+            # with 200, and no log said why.
+            logger.warning(
+                f"llama-server probe on port {port} failed "
+                f"({type(e).__name__}: {e}) - reading it as NOT_RUNNING")
             return ServerType.NOT_RUNNING, None
 
     def check_server_running(self, port: int | None = None) -> bool:
