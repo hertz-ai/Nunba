@@ -9,16 +9,16 @@ the vault keeps it as HEVOLVE_HF_TOKEN, a name huggingface_hub does not read.
 Real _download_model_weights and install_backend_full's answer; faked: the
 hub download (no network) and request_credential (recorded, no card).
 """
+import huggingface_hub
 import pytest
 import requests
-
-import huggingface_hub
 from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
 
 
 @pytest.fixture
 def hub(monkeypatch):
     import hartos.ai_key_vault as akv
+
     import tts.package_installer as pi
     monkeypatch.delenv('HEVOLVE_HF_TOKEN', raising=False)
     monkeypatch.delenv('HF_TOKEN', raising=False)
@@ -102,11 +102,23 @@ def test_a_public_download_still_works_without_a_key(hub):
 
 def test_setup_passes_the_needs_a_key_answer_through_unwrapped(hub, monkeypatch):
     pi, _ = hub
+    import tts.backend_venv as bv
+
+    def _no_real_venv(*a, **k):
+        raise AssertionError('the test reached a real venv install (pip)')
     monkeypatch.setattr(pi, 'install_backend_packages', lambda b, progress_cb=None: (True, 'ok'))
     monkeypatch.setattr(pi, '_apply_post_install_patches', lambda b: None)
     monkeypatch.setattr(pi, '_acquire_file_lock', lambda name: True)
     monkeypatch.setattr(pi, '_release_file_lock', lambda name: None, raising=False)
-    monkeypatch.setattr(pi, 'get_install_target', lambda b: 'main')
+    # install_backend_full routes on BACKEND_VENV_PACKAGES (by registry id),
+    # not on get_install_target, and indic_parler is a venv engine: without
+    # this the test ran a real pip install into the user's
+    # ~/Documents/Nunba/data/venvs/indic_parler and timed out (measured
+    # 2026-11-19 on a Windows dev box).  The pip step is install_backend_
+    # packages' job, faked above; this test is about the weights' answer.
+    monkeypatch.setattr(pi, 'BACKEND_VENV_PACKAGES', {})
+    monkeypatch.setattr(bv, 'ensure_venv', _no_real_venv)
+    monkeypatch.setattr(bv, 'install_into_venv', _no_real_venv)
     ok, answer = pi.install_backend_full('indic_parler')
     assert ok is False
     assert answer.startswith('needs HEVOLVE_HF_TOKEN:')
