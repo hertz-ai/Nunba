@@ -6,6 +6,7 @@ import {
 } from '../config/apiBase';
 import {setAuthFromOtp, setGuestIdentity} from '../hooks/useAuthSession';
 import {agentApi, authApi, chatApi, mailerApi} from '../services/socialApi';
+import {safeReturnPath} from '../utils/checkoutSession';
 import {getStableDeviceId} from '../utils/deviceId';
 import {encrypt} from '../utils/encryption';
 import {logger} from '../utils/logger';
@@ -86,7 +87,16 @@ const generateThreeWordName = (username = '') => {
   return prefix;
 };
 
-const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
+// returnTo: a page of this site to land on after a cloud sign-in, instead of the
+// agents page.  The checkout sets it so a person who had to sign in to pay comes
+// back to the plan they chose.
+const OtpAuthModal = ({
+  isOpen,
+  onClose,
+  message,
+  forceGuestMode = false,
+  returnTo,
+}) => {
   const navigate = useNavigate();
   const [countryCode, setCountryCode] = useState('IN');
   const [loginMethod, setLoginMethod] = useState('phone');
@@ -326,6 +336,9 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
             email_address: emailAddress,
             refresh_token: refresh_token,
             expires_in: expireTokenTime,
+            // The checkout names the payer by phone (/makepayment looks the
+            // account up by it); cleared when this response has none.
+            phone_number: data.phone_number,
           });
 
           // Migrate guest agent data (chat history attaches by user_id;
@@ -346,7 +359,7 @@ const OtpAuthModal = ({isOpen, onClose, message, forceGuestMode = false}) => {
 
           resetForm();
           onClose();
-          navigate('/agents/Hevolve');
+          navigate(safeReturnPath(returnTo) || '/agents/Hevolve');
 
           const startLoginTime = Date.now();
           setStartTime(startLoginTime);

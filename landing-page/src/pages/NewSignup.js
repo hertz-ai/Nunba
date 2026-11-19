@@ -1,5 +1,6 @@
 import OTPModal from './OTPModal';
 
+import {setSessionPhone} from '../hooks/useAuthSession';
 import {mailerApi} from '../services/socialApi';
 import {encrypt} from '../utils/encryption';
 
@@ -187,6 +188,8 @@ export default function NewSignUp() {
         localStorage.setItem('access_token', result.access_token);
         localStorage.setItem('user_id', encryptedUserId);
         localStorage.setItem('email_address', encryptedUserEmail);
+        // The checkout names the payer by phone; see utils/checkoutSession.
+        setSessionPhone(result.phone_number);
 
         setIsOtpModalOpen(false);
 
