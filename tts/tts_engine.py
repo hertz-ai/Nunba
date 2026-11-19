@@ -1947,12 +1947,16 @@ class TTSEngine:
                                      f"{_verify_err}")
                         # Verifier itself failing IS a failure — don't
                         # fall back to a shallow check. That's how the
-                        # original lie got in.
-                        import importlib as _vr_il
-                        _VR = _vr_il.import_module("tts.verified_synth").Result
-                        verdict = _VR(ok=False, n_bytes=0,
-                                      err=f"verifier crash: {_verify_err}",
-                                      elapsed_s=0.0)
+                        # original lie got in.  Built without importing
+                        # tts.verified_synth again: when that import is
+                        # what failed, a second try raised out of this
+                        # handler into the outer ImportError one, which
+                        # marked the engine's row "install could not start".
+                        import types as _vr_types
+                        verdict = _vr_types.SimpleNamespace(
+                            ok=False, n_bytes=0,
+                            err=f"verifier crash: {_verify_err}",
+                            elapsed_s=0.0)
 
                     if verdict.ok:
                         logger.info(f"[auto-install] '{backend}' verified: "

@@ -592,6 +592,23 @@ def test_a_crash_of_our_own_verifier_is_not_kept_on_the_row(
     assert install_state == []
 
 
+def test_a_verifier_that_cannot_import_is_not_kept_on_the_row(
+        state_path, install_state, monkeypatch):
+    """Review of 4200cb9f: with tts.verified_synth unimportable, the
+    handler's own re-import raised into the outer ImportError handler and
+    the row was marked 'install could not start'."""
+    import sys
+
+    from tts import tts_engine as _te
+
+    monkeypatch.setitem(sys.modules, 'tts.verified_synth', None)
+    eng = _te.TTSEngine(auto_init=False)
+    _run_background_install(eng, 'neutts_air', monkeypatch, (True, 'Ready'))
+
+    assert 'neutts_air' in _te.TTSEngine._auto_install_failed
+    assert install_state == []
+
+
 def test_a_failed_install_is_kept_on_its_row_not_in_the_state_file(
         state_path, install_state, monkeypatch):
     """One writer per persisted value (CLAUDE.md Gate 4): a failed install
