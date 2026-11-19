@@ -886,8 +886,7 @@ def _get_engine_capabilities(backend=None) -> dict:
             if result:
                 return result
         else:
-            catalog_id = _BACKEND_TO_CATALOG.get(backend, backend)
-            entry = catalog.get(f'tts-{catalog_id}')
+            entry = _catalog_row(backend)[1]
             if entry:
                 return _entry_to_legacy_caps(entry)
     except Exception:
@@ -897,6 +896,37 @@ def _get_engine_capabilities(backend=None) -> dict:
     if backend is None:
         return _FALLBACK_ENGINE_CAPABILITIES
     return _FALLBACK_ENGINE_CAPABILITIES.get(backend, {})
+
+
+def _catalog_row(backend):
+    """(catalog, row) for a Nunba backend name, or (None, None) when the
+    catalog is unavailable or has no row for it.  The one backend -> row
+    rule: _BACKEND_TO_CATALOG, then the 'tts-' prefix."""
+    try:
+        from models.catalog import get_catalog
+        catalog = get_catalog()
+        return catalog, catalog.get(f'tts-{_BACKEND_TO_CATALOG.get(backend, backend)}')
+    except Exception:
+        return None, None
+
+
+def _remember_setup_failure(backend, why):
+    """A backend's install failed: keep it on its catalog row, which
+    survives a restart for this build and platform (HARTOS
+    mark_setup_failed).  TTSEngine._auto_install_failed is per process,
+    so on its own every boot ran the same failing install again (NeuTTS:
+    107 boots, live 2026-11-17)."""
+    catalog, entry = _catalog_row(backend)
+    if entry is not None:
+        catalog.mark_setup_failed(entry.id, why)
+
+
+def _setup_failed_on_row(backend) -> bool:
+    """True while the backend's row holds a setup failure that still
+    applies: same build, same platform, and (for a gated download) its
+    key has not arrived since."""
+    entry = _catalog_row(backend)[1]
+    return bool(entry is not None and entry.setup_failure_current())
 
 
 def _free_vram_gb() -> float | None:
@@ -1395,10 +1425,15 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 def _is_venv_backend(backend: str) -> bool:
-    """True iff this backend is installed into its own venv."""
+    """True iff this backend is installed into its own venv.
+
+    The venv plans are keyed by the HARTOS registry id, so a Nunba name
+    ('f5') is looked up as its id ('f5_tts').  Asked as 'f5' before, F5
+    was judged in the main interpreter, where f5_tts never imports, and
+    was never picked even with its venv installed."""
     try:
-        from tts.package_installer import BACKEND_VENV_PACKAGES
-        return backend in BACKEND_VENV_PACKAGES
+        from tts.package_installer import BACKEND_VENV_PACKAGES, registry_engine_id
+        return registry_engine_id(backend) in BACKEND_VENV_PACKAGES
     except Exception:
         return False
 
@@ -1416,7 +1451,9 @@ def _probe_backend_runnable(backend: str, required_pkg: str) -> bool:
     try:
         if _is_venv_backend(backend):
             from tts.backend_venv import is_venv_healthy
-            return is_venv_healthy(backend, required_pkg)
+            from tts.package_installer import registry_engine_id
+            # The venv the install filled: 'f5' lives in the 'f5_tts' venv.
+            return is_venv_healthy(registry_engine_id(backend), required_pkg)
         from tts._torch_probe import check_backend_runnable
         return check_backend_runnable(backend, required_pkg)
     except Exception:
@@ -1797,8 +1834,11 @@ class TTSEngine:
                 return False
 
         with TTSEngine._auto_install_lock:
-            # Already failed? Don't retry every request
-            if backend in TTSEngine._auto_install_failed:
+            # Already failed? Don't retry every request.  This process's
+            # set, or the catalog row, which keeps a failed install across
+            # restarts until a newer build, another platform, a successful
+            # install, or (gated weights) the key arriving.
+            if backend in TTSEngine._auto_install_failed or _setup_failed_on_row(backend):
                 logger.debug(f"Auto-install for '{backend}' previously failed, skipping")
                 return False
 
@@ -1913,6 +1953,12 @@ class TTSEngine:
                         # test_b7_failed_cleared_on_success for the contract.
                         with TTSEngine._auto_install_lock:
                             TTSEngine._auto_install_failed.discard(backend)
+                        # A failure the row kept (a gated download whose key
+                        # has since arrived) no longer holds: this install
+                        # delivered and synthesised.
+                        _cat, _row = _catalog_row(backend)
+                        if _row is not None and _row.error_build:
+                            _cat.mark_downloaded(_row.id, True)
                         # Autonomous-recovery close-the-loop (#TTS-demote-heal,
                         # 2026-05-28): a verified install means the engine is
                         # NOT broken anymore — clear the session demotion so
@@ -1954,17 +2000,26 @@ class TTSEngine:
                         progress(f"{backend} setup failed — using fallback engine")
                     with TTSEngine._auto_install_lock:
                         TTSEngine._auto_install_failed.add(backend)
-            except ImportError:
+                    # The installer's own text, unprefixed: a gated download
+                    # says "needs <KEY>: ..." and the row reads the key name.
+                    # An answer that tried nothing (another install holds the
+                    # lock; pip deferred to the next boot) is not a failure.
+                    from tts.package_installer import install_did_not_run
+                    if not install_did_not_run(result):
+                        _remember_setup_failure(backend, str(result))
+            except ImportError as e:
                 logger.warning(f"[auto-install] package_installer not available, "
                                f"cannot auto-install '{backend}'")
                 with TTSEngine._auto_install_lock:
                     TTSEngine._auto_install_failed.add(backend)
+                _remember_setup_failure(backend, f"install could not start: {e}")
             except Exception as e:
                 logger.error(f"[auto-install] '{backend}' install error: {e}")
                 if progress:
                     progress(f"{backend} setup failed — using fallback engine")
                 with TTSEngine._auto_install_lock:
                     TTSEngine._auto_install_failed.add(backend)
+                _remember_setup_failure(backend, f"install error: {e}")
             finally:
                 with TTSEngine._auto_install_lock:
                     TTSEngine._auto_install_pending.discard(backend)
@@ -3668,7 +3723,8 @@ class TTSEngine:
                     # speaks on a machine without them.
                     if _is_venv_backend(candidate):
                         from tts.backend_venv import is_venv_healthy
-                        if not is_venv_healthy(candidate):
+                        from tts.package_installer import registry_engine_id
+                        if not is_venv_healthy(registry_engine_id(candidate)):
                             logger.info(f"Fallback skipping {candidate}: its venv is "
                                         f"missing or built by another interpreter")
                             continue
