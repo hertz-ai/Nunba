@@ -146,8 +146,10 @@ describe('Chat Agent Selection', () => {
     // model, so its boot pushed an 'llm Failed' setup_progress card over
     // this stream into the chat messages; a non-empty chat drops the
     // empty-chat block and the active agent's heading with it (CI run
-    // 44481178298, shard 3 screenshots).  204 ends the EventSource
-    // without a retry, as agent_overlay_ui_update.cy.js does.
+    // 44481178298, shard 3 screenshots).  The 204 fails the EventSource;
+    // realtimeService reopens it every 3 s and each reopen gets this stub
+    // again, so nothing reaches the backend (agent_overlay_ui_update.cy.js
+    // uses the same stub).
     cy.intercept('GET', '**/api/social/events/stream*', {
       statusCode: 204,
       body: '',
