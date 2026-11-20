@@ -141,6 +141,17 @@ describe('Chat Agent Selection', () => {
       statusCode: 200,
       body: { agents: [] },
     }).as('agentsSync');
+
+    // The live event stream, closed.  The runner's real backend has no
+    // model, so its boot pushed an 'llm Failed' setup_progress card over
+    // this stream into the chat messages; a non-empty chat drops the
+    // empty-chat block and the active agent's heading with it (CI run
+    // 44481178298, shard 3 screenshots).  204 ends the EventSource
+    // without a retry, as agent_overlay_ui_update.cy.js does.
+    cy.intercept('GET', '**/api/social/events/stream*', {
+      statusCode: 204,
+      body: '',
+    }).as('eventStream');
   }
 
   /**
