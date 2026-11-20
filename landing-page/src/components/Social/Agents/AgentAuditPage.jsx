@@ -232,11 +232,13 @@ function TrailView({agentId}) {
       const safeId = String(agentId).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
       const res = await saveTextFile(`audit_${safeId}.jsonl`, text, 'application/x-ndjson');
       if (!res.saved) {
-        setExportNote('Export cancelled; nothing was saved.');
+        setExportNote(res.cancelled
+          ? 'Export cancelled; nothing was saved.'
+          : `Export failed: ${res.error}`);
         return;
       }
       const capped = lines >= TRAIL_EXPORT_CAP
-        ? ` These are the newest ${TRAIL_EXPORT_CAP}; the complete record is in the node's audit_trail folder.`
+        ? ` That is the ${TRAIL_EXPORT_CAP}-line limit, so there may be older lines; the complete record is in the node's audit_trail folder.`
         : '';
       setExportNote(`Exported ${lines} line(s) to ${res.where}.${capped}`);
     } catch (err) {

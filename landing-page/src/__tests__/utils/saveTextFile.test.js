@@ -14,16 +14,27 @@ afterEach(() => {
 });
 
 it('hands the text to the desktop save dialog and reports where it went', async () => {
-  const nativeSave = jest.fn().mockResolvedValue('C:\\Users\\a\\audit_54.jsonl');
+  const nativeSave = jest.fn().mockResolvedValue(
+    {saved: true, path: 'C:\\Users\\a\\audit_54.jsonl'});
   window.pywebview = {api: {window_minimize: () => {}, native_file_save: nativeSave}};
   const res = await saveTextFile('audit_54.jsonl', '{"a":1}\n');
   expect(nativeSave).toHaveBeenCalledWith('audit_54.jsonl', '{"a":1}\n');
   expect(res).toEqual({saved: true, where: 'C:\\Users\\a\\audit_54.jsonl'});
 });
 
-it('reports a cancelled desktop dialog as not saved', async () => {
-  window.pywebview = {api: {native_file_save: jest.fn().mockResolvedValue('')}};
-  expect(await saveTextFile('x.jsonl', 'z')).toEqual({saved: false});
+it('reports a cancelled desktop dialog as cancelled', async () => {
+  window.pywebview = {api: {native_file_save: jest.fn().mockResolvedValue(
+    {saved: false, cancelled: true})}};
+  expect(await saveTextFile('x.jsonl', 'z')).toEqual({saved: false, cancelled: true});
+});
+
+it('reports a failed desktop write with its reason, never as a cancel', async () => {
+  window.pywebview = {api: {native_file_save: jest.fn().mockResolvedValue(
+    {saved: false, error: 'D:\\ro\\x.jsonl could not be written (Permission denied)'})}};
+  const res = await saveTextFile('x.jsonl', 'z');
+  expect(res.saved).toBe(false);
+  expect(res.cancelled).toBeUndefined();
+  expect(res.error).toMatch(/Permission denied/);
 });
 
 it('downloads in a browser, where there is no desktop api', async () => {

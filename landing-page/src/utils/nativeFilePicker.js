@@ -21,14 +21,16 @@ export const baseName = (filePath) => String(filePath || '').split(/[\\/]/).pop(
  * native_file_pick).  A browser gets an ordinary download.
  *
  * Resolves {saved: true, where} with the path chosen on the desktop or the
- * file name in a browser, or {saved: false} when the person cancelled the
- * dialog or it could not be written.
+ * file name in a browser, {saved: false, cancelled: true} when the person
+ * closed the dialog, or {saved: false, error} when it could not be written.
  */
 export const saveTextFile = async (name, text, mime = 'text/plain') => {
   const api = typeof window !== 'undefined' ? window.pywebview?.api : null;
   if (typeof api?.native_file_save === 'function') {
-    const where = await api.native_file_save(name, text);
-    return where ? {saved: true, where} : {saved: false};
+    const res = (await api.native_file_save(name, text)) || {};
+    if (res.saved) return {saved: true, where: res.path};
+    if (res.cancelled) return {saved: false, cancelled: true};
+    return {saved: false, error: res.error || 'the file could not be written'};
   }
   const url = URL.createObjectURL(new Blob([text], {type: mime}));
   const a = document.createElement('a');

@@ -27,6 +27,13 @@ describe('trailBody', () => {
     expect(body).toContain('first 5 of 25000 characters kept');
   });
 
+  it('counts characters the way HARTOS does, so cut emoji text is still marked', () => {
+    // 3 emoji = 3 code points (HARTOS len) but 6 UTF-16 units (JS length).
+    const body = trailBody({text: '😀😀😀', text_len: 5});
+    expect(body).toContain('first 3 of 5 characters kept');
+    expect(trailBody({text: '😀😀😀', text_len: 3})).toBe('😀😀😀');
+  });
+
   it('shows whole text as it is', () => {
     expect(trailBody({text: 'hello', text_len: undefined})).toBe('hello');
   });
@@ -55,9 +62,8 @@ describe('trailError', () => {
   });
 });
 
-it('has a filter for every media kind the trail records', () => {
-  const kinds = TRAIL_KINDS.map(([k]) => k);
-  ['message', 'transcript', 'audio', 'video', 'file', 'image_caption',
-    'screen_caption', 'video_caption', 'llm_call', 'speech_out', 'action']
-    .forEach((k) => expect(kinds).toContain(k));
+it('has a filter for every kind the trail records, and none it never records', () => {
+  const kinds = TRAIL_KINDS.map(([k]) => k).filter(Boolean);
+  expect(kinds.sort()).toEqual(['action', 'audio', 'file', 'image_caption', 'llm_call',
+    'message', 'screen_caption', 'speech_out', 'transcript', 'video_caption']);
 });

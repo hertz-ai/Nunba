@@ -5,13 +5,13 @@
  */
 
 // The audit trail's kinds (HARTOS security.audit_trail.KINDS, less the
-// trail's own gap / storage lines), as filters.
+// trail's own gap / storage lines), as filters.  Raw video is not a kind:
+// camera input reaches the trail as video_caption.
 export const TRAIL_KINDS = [
   ['', 'All'],
   ['message', 'Messages'],
   ['transcript', 'Transcripts'],
   ['audio', 'Audio'],
-  ['video', 'Video'],
   ['file', 'Files'],
   ['image_caption', 'Image captions'],
   ['screen_caption', 'Screen captions'],
@@ -38,8 +38,11 @@ export function trailWho(row) {
 // The line's words, or what it points at, and whether text was cut or held.
 export function trailBody(row) {
   if (row.text) {
-    return row.text_len > row.text.length
-      ? `${row.text}\n… first ${row.text.length} of ${row.text_len} characters kept; the checksum covers all of them`
+    // HARTOS counts characters as code points; a JS string's length counts
+    // UTF-16 units, so an emoji would count twice and hide the cut.
+    const kept = [...row.text].length;
+    return row.text_len > kept
+      ? `${row.text}\n… first ${kept} of ${row.text_len} characters kept; the checksum covers all of them`
       : row.text;
   }
   const ex = row.extra || {};

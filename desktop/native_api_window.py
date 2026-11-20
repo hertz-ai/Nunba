@@ -424,33 +424,45 @@ class FilePickerApi:
         file_dialog = getattr(webview, 'FileDialog', None)
         return file_dialog.SAVE if file_dialog is not None else webview.SAVE_DIALOG
 
-    def native_file_save(self, name='export.txt', text='') -> str:
-        """Ask the person where to keep ``text`` (the OS save dialog), write
-        it there as UTF-8, and return the path; '' when they cancel or it
-        could not be written.
+    def native_file_save(self, name='export.txt', text='') -> dict:
+        """Ask the person where to keep ``text`` (the OS save dialog) and
+        write it there as UTF-8.
+
+        Returns {'saved': True, 'path': ...}, {'saved': False,
+        'cancelled': True} when they close the dialog, or {'saved': False,
+        'error': why} when no dialog could be shown or the file could not
+        be written, so the page never calls a failed write a cancel.
+        ``text`` must be a string; anything else is refused before the file
+        is opened, so a chosen file is never emptied.
 
         The desktop window refuses page downloads (pywebview's
         ALLOW_DOWNLOADS is off), so a page that offers a file to keep, such
         as the audit trail export, hands the text here instead
         (landing-page utils/nativeFilePicker.js saveTextFile).
         """
+        if not isinstance(text, str):
+            return {'saved': False, 'error': 'only text can be saved'}
         try:
             window = self._get_window()
             if window is None:
-                return ''
+                return {'saved': False, 'error': 'the desktop window is not open'}
             safe_name = str(name or 'export.txt').replace('\\', '/').rsplit('/', 1)[-1]
             chosen = window.create_file_dialog(self._save_dialog_type(),
                                                save_filename=safe_name)
-            if not chosen:
-                return ''
-            path = str(chosen if isinstance(chosen, str) else chosen[0])
-            with open(path, 'w', encoding='utf-8', newline='') as f:
-                f.write(text or '')
-            logger.info('[NATIVE-FILE] Saved %d characters to %s', len(text or ''), path)
-            return path
         except Exception as exc:
-            logger.error('[NATIVE-FILE] Save failed: %s', exc)
-            return ''
+            logger.error('[NATIVE-FILE] Save dialog failed: %s', exc)
+            return {'saved': False, 'error': f'the save dialog could not open ({exc})'}
+        if not chosen:
+            return {'saved': False, 'cancelled': True}
+        path = str(chosen if isinstance(chosen, str) else chosen[0])
+        try:
+            with open(path, 'w', encoding='utf-8', newline='') as f:
+                f.write(text)
+        except OSError as exc:
+            logger.error('[NATIVE-FILE] Save to %s failed: %s', path, exc)
+            return {'saved': False, 'error': f'{path} could not be written ({exc.strerror or exc})'}
+        logger.info('[NATIVE-FILE] Saved %d characters to %s', len(text), path)
+        return {'saved': True, 'path': path}
 
 
 def compose_js_api(window_api, file_picker, platform_api=None):

@@ -105,19 +105,23 @@ class _FakeSaveWindow:
 
 class TestNativeFileSave:
     """The desktop window refuses page downloads, so the audit trail's Export
-    hands its text here and the person picks where it goes."""
+    hands its text here and the person picks where it goes.  A cancel, a
+    failed write and a save are three different answers (review of
+    41cd8060: a failed write read as a cancel)."""
 
     def test_writes_the_text_where_the_person_chose(self, fake_webview, tmp_path):
         target = tmp_path / 'audit_54.jsonl'
         win = _FakeSaveWindow((str(target),))
-        path = _picker(win).native_file_save('audit_54.jsonl', '{"a": 1}\n{"b": "é"}\n')
-        assert path == str(target)
-        assert target.read_text(encoding='utf-8') == '{"a": 1}\n{"b": "é"}\n'
+        body = '{"a": 1}\n{"b": "é"}\n'
+        res = _picker(win).native_file_save('audit_54.jsonl', body)
+        assert res == {'saved': True, 'path': str(target)}
+        assert target.read_text(encoding='utf-8') == body
         assert win.calls == [{'dialog_type': 30, 'save_filename': 'audit_54.jsonl'}]
 
     def test_a_bare_string_answer_is_a_path_too(self, fake_webview, tmp_path):
         target = tmp_path / 'x.jsonl'
-        assert _picker(_FakeSaveWindow(str(target))).native_file_save('x.jsonl', 'z') == str(target)
+        res = _picker(_FakeSaveWindow(str(target))).native_file_save('x.jsonl', 'z')
+        assert res == {'saved': True, 'path': str(target)}
         assert target.read_text(encoding='utf-8') == 'z'
 
     def test_the_suggested_name_is_only_a_file_name(self, fake_webview, tmp_path):
@@ -125,16 +129,29 @@ class TestNativeFileSave:
         _picker(win).native_file_save('..\\..\\Windows\\evil.jsonl', 'z')
         assert win.calls[0]['save_filename'] == 'evil.jsonl'
 
-    def test_a_cancelled_dialog_writes_nothing(self, fake_webview, tmp_path):
-        assert _picker(_FakeSaveWindow(None)).native_file_save('x.jsonl', 'z') == ''
+    def test_a_cancelled_dialog_says_cancelled_and_writes_nothing(self, fake_webview, tmp_path):
+        assert _picker(_FakeSaveWindow(None)).native_file_save('x.jsonl', 'z') == {
+            'saved': False, 'cancelled': True}
         assert list(tmp_path.iterdir()) == []
 
-    def test_an_unwritable_place_is_an_empty_string(self, fake_webview, tmp_path):
+    def test_an_unwritable_place_is_an_error_not_a_cancel(self, fake_webview, tmp_path):
         missing = tmp_path / 'no_such_dir' / 'x.jsonl'
-        assert _picker(_FakeSaveWindow((str(missing),))).native_file_save('x.jsonl', 'z') == ''
+        res = _picker(_FakeSaveWindow((str(missing),))).native_file_save('x.jsonl', 'z')
+        assert res['saved'] is False and 'cancelled' not in res
+        assert str(missing) in res['error']
 
-    def test_no_window_is_an_empty_string(self, fake_webview):
-        assert _picker(None).native_file_save('x.jsonl', 'z') == ''
+    def test_non_text_is_refused_before_a_chosen_file_is_touched(self, fake_webview, tmp_path):
+        target = tmp_path / 'keep.jsonl'
+        target.write_text('already here', encoding='utf-8')
+        win = _FakeSaveWindow((str(target),))
+        res = _picker(win).native_file_save('keep.jsonl', {'not': 'text'})
+        assert res == {'saved': False, 'error': 'only text can be saved'}
+        assert win.calls == [], 'the dialog opened for a refused save'
+        assert target.read_text(encoding='utf-8') == 'already here'
+
+    def test_no_window_is_an_error(self, fake_webview):
+        res = _picker(None).native_file_save('x.jsonl', 'z')
+        assert res['saved'] is False and res['error']
 
 
 class TestComposeJsApi:
